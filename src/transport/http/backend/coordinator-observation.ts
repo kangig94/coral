@@ -35,18 +35,22 @@ export type CoordinatorObservation =
   | Readonly<{ kind: 'addressed'; coordinator: AddressedCoordinator; pidLiveness: 'alive' | 'unknown' }>
   /** The file exists and could not be read as a record. Not an absence, and the path is the remedy. */
   | Readonly<{ kind: 'unreadable-record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }>
-  /** No coordinator recorded itself, and its IPC socket file does not exist either. A real absence. */
+  /**
+   * No discovery record or current IPC socket exists. This does not exclude an unpublished v0.10.9
+   * coordinator at an unenumerated fallback address.
+   */
   | Readonly<{ kind: 'no-record' }>
   /**
    * No record decoded, but the coordinator's own IPC socket file exists. `src/coordinator/lifecycle.ts` binds
    * that socket well before it publishes the discovery record, so a coordinator caught in that exact window
    * produces this; a socket file a coordinator left behind without unlinking it (a SIGKILL, an OOM kill)
-   * produces the same evidence and cannot be told apart from a boot in progress. Neither reading may be folded
-   * into `no-record`'s decisive absence.
+   * produces the same evidence and cannot be told apart from a boot in progress. The surviving current socket
+   * keeps this distinct from `no-record`, even though neither variant proves whether any coordinator is running.
    */
   | Readonly<{ kind: 'no-record-socket-present'; socketPath: string }>
   /**
-   * A record names a pid that decisively no longer exists. Also a real absence.
+   * A record names a pid that decisively no longer exists. This establishes absence only for the process that
+   * record names; a stale record does not exclude a different unpublished coordinator.
    *
    * It carries both halves of the dead coordinator's identity because absence is where they are needed:
    * `status` reads a startup diagnostic to explain the absence, and a diagnostic is only this coordinator's if

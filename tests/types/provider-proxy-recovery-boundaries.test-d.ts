@@ -1,9 +1,16 @@
 import type { z } from 'zod';
 
 import type { DurableCliProcessEvidence } from '../../src/jobs/carrier-observation.js';
+import type { ControlClient } from '../../src/provider-proxy/control-client.js';
 import type { HandoffCapsuleV2, HandoffCapsuleV3 } from '../../src/provider-proxy/handoff-capsule.js';
 import type { ProviderProxySetAuthorityDependencies } from '../../src/coordinator/live/provider-proxy/set-authority.js';
 import type { RoleControlPlan } from '../../src/coordinator/live/provider-proxy/role-control.js';
+import {
+  type guardianHandoffRedeemResultSchema,
+  type ProviderProxyControlRedemptionBundle,
+  type ProviderProxyControlRedemptionOutcome,
+  type RedeemedProviderProxyControl,
+} from '../../src/coordinator/live/provider-proxy/control-redemption.js';
 import type {
   ProviderProxyRecoveryExactContext,
   ProviderProxyRecoveryProducerInput,
@@ -63,6 +70,38 @@ const guardianProviderEvents: GuardianPlan['onProviderEvent'] = async () => ({
   committedThroughProviderSeq: 0,
 });
 void guardianProviderEvents;
+
+declare const rawRedemptionBundle: ProviderProxyControlRedemptionBundle;
+declare const structuralRedemptionSuccess: Readonly<{ kind: 'redeemed' }>;
+declare const holderString: string;
+declare const rawControlClient: ControlClient;
+declare const parsedGuardianReply: z.infer<typeof guardianHandoffRedeemResultSchema>;
+
+// @ts-expect-error possession of the holder identity is not proof that all three controls were redeemed.
+const holderCannotPromote: RedeemedProviderProxyControl = holderString;
+void holderCannotPromote;
+
+// @ts-expect-error one raw control client cannot stand in for the owner-verified three-role bundle.
+const rawClientCannotPromote: RedeemedProviderProxyControl = rawControlClient;
+void rawClientCannotPromote;
+
+// @ts-expect-error one parsed role reply cannot mint the redemption owner's private success brand.
+const parsedReplyCannotPromote: RedeemedProviderProxyControl = parsedGuardianReply;
+void parsedReplyCannotPromote;
+
+// @ts-expect-error three raw sessions do not prove that the redemption owner verified and bundled them.
+const rawBundleCannotPromote: RedeemedProviderProxyControl = rawRedemptionBundle;
+void rawBundleCannotPromote;
+
+// @ts-expect-error a structurally matching literal cannot mint the redemption owner's private success brand.
+const literalCannotPromote: RedeemedProviderProxyControl = structuralRedemptionSuccess;
+void literalCannotPromote;
+
+declare const refusedRedemption: Extract<ProviderProxyControlRedemptionOutcome, { kind: 'refused' }>;
+// @ts-expect-error a decisive refusal is not the unavailable result whose bound A2 may spend.
+const refusalIsNotUnavailability: Extract<ProviderProxyControlRedemptionOutcome, { kind: 'unavailable' }> =
+  refusedRedemption;
+void refusalIsNotUnavailability;
 
 type RecordedDurableCliProcess = Extract<DurableCliProcessEvidence, { kind: 'recorded' }>;
 const impossibleMissingTransportEvidence: RecordedDurableCliProcess = {

@@ -1,5 +1,7 @@
+import type { SuccessionOperationRegistrationOutcome } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { TimePort } from '#src/infra/port-types.js';
@@ -35,6 +37,7 @@ import {
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import {
   providerOperationPreparePermanentRefusalSchema,
   proxyOperationAttachResultSchema,
@@ -48,7 +51,10 @@ import {
   type ProviderOperationTerminalizationPort,
 } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -56,13 +62,23 @@ import {
 } from '#tests/helpers/provider-proxy-correlation.js';
 
 function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
-  return { kind: 'heartbeat-failed', role: 'proxy', method: 'control.heartbeat.v1', error };
+  return {
+    kind: 'heartbeat-failed',
+    role: 'proxy',
+    method: 'control.heartbeat.v1',
+    terminalReason: 'teardown-latched',
+    error,
+  };
 }
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const containmentProofRuntime = createRealRuntime('prod');
+const containmentProofDb = newRawDatabase(':memory:');
+applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+afterAll(() => containmentProofDb.close());
 
 const activationAck = {
   state: 'executing',
@@ -144,18 +160,25 @@ function lifecycleForSchedule(
     controlEstablished: () => undefined,
     time: {
       now: () => 100,
+      monotonicNow: () => 100n,
       setTimeout: () => ({ unref: () => undefined }),
       clearTimeout: () => undefined,
     },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
       {
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer(
+          containmentProofRuntime,
+          containmentProofDb,
+        ),
         'disappearance-consumer': ({ notice }) => reconciler.containmentDisappeared(notice),
       },
       (error) => {
         throw error;
       },
     ),
+    reapRecordedContainment: () => {
+      throw new Error('provider operation reconciler fixture unexpectedly requested recorded containment reaping');
+    },
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
@@ -480,9 +503,21 @@ function createHarness(
   const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
+    autonomousDeadline: {
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
     onIncident: () => () => undefined,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     setIdentity: {
       buildSetId: record.operation.buildSetId,
       hostFingerprint: record.locator.hostFingerprint,
@@ -501,7 +536,8 @@ function createHarness(
       proxyProcessGroupId: record.locator.containment.processGroupId,
       canonicalEndpoint: record.locator.proxy.controlEndpoint,
     },
-    registerSuccessionOperation: overrides.registerSuccessionOperation ?? (async () => undefined),
+    registerSuccessionOperation:
+      overrides.registerSuccessionOperation ?? (async () => ({ kind: 'registered' as const })),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
@@ -887,6 +923,54 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
     expect(harness.appended).toEqual([expect.objectContaining({ type: 'job.runtime.started' })]);
     expect(harness.registry.activate).toHaveBeenCalledOnce();
+  });
+
+  it('does not send prepare until recovery credential installation is explicit', async () => {
+    let registrationAttempts = 0;
+    const registerSuccessionOperation = vi.fn<DurableProviderProxyOperationAuthority['registerSuccessionOperation']>(
+      async (): Promise<SuccessionOperationRegistrationOutcome> => {
+        registrationAttempts += 1;
+        return registrationAttempts === 1
+          ? {
+              kind: 'retryable',
+              incident: {
+                role: 'guardian',
+                method: 'guardian.handoff-install.v1',
+                exchange: controlExchangeForTest({
+                  kind: 'not-sent',
+                  cause: 'write-threw',
+                  error: new Error('transient write failure'),
+                }),
+              },
+            }
+          : { kind: 'registered' };
+      },
+    );
+    const prepareOperation = vi.fn(async () => ({
+      state: 'pending-activation' as const,
+      reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+      leaseExpiresInMs: 15_000,
+      providerRoot: { pid: 104, incarnation: testIncarnation(1_003) },
+      jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+    }));
+    const harness = createHarness({ registerSuccessionOperation, prepareOperation });
+
+    const publication = harness.begin();
+    await vi.waitFor(() =>
+      expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+        phase: 'prepare-pending',
+        retryCount: 1,
+      }),
+    );
+
+    expect(prepareOperation).not.toHaveBeenCalled();
+    const retry = readProviderOperation(harness.db, harness.record.operation);
+    if (retry?.phase !== 'prepare-pending') throw new Error('expected retryable prepare registration');
+    await harness.reconciler.reconcile(retry, harness.authority);
+
+    await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+    expect(registerSuccessionOperation).toHaveBeenCalledTimes(2);
+    expect(prepareOperation).toHaveBeenCalledOnce();
   });
 
   it('honors the recorded abort intent at every publication cut before registry registration', async () => {
@@ -1485,6 +1569,42 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
   });
 
+  it('terminalizes abandonment with a distinct representation-release directive that never asserts disappearance', async () => {
+    const harness = createHarness();
+    const record = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, record);
+    const terminalize = harness.terminalization.terminalize;
+    const terminalization = vi
+      .spyOn(harness.terminalization, 'terminalize')
+      .mockImplementation((candidate, directive) => terminalize(candidate, directive));
+
+    await expect(
+      harness.reconciler.representationAbandoned({
+        operation: record.operation,
+        setIdentity: providerProxySetIdentityFromRecord(record),
+      }),
+    ).resolves.toEqual({
+      kind: 'accepted',
+      acceptance: {
+        kind: 'accepted',
+        operation: record.operation,
+        disposition: 'terminalization-committed',
+      },
+    });
+
+    const directive = terminalization.mock.calls[0]?.[1];
+    expect(directive).toEqual({
+      kind: 'terminal-failed',
+      code: 'coral_representation_abandoned',
+      reason: expect.stringContaining('without observing the process stop'),
+    });
+    const reason = directive?.kind === 'terminal-failed' ? directive.reason : '';
+    // The operator is the successor owner of a process nobody observed stop, so the reason has to name the
+    // set they must go and check, and must never claim the provider disappeared.
+    expect(reason).toContain(providerProxySetIdentityFromRecord(record).proxyInstanceId);
+    expect(reason).not.toMatch(/became unavailable|retry the job|containment disappeared/iu);
+  });
+
   it.each([
     'proxy-activation-pending',
     'activation-resolution-pending',
@@ -1793,6 +1913,7 @@ describe('ProviderOperationReconciler publication', () => {
       registerSuccessionOperation: async (operation) => {
         successorCalls.push('register');
         modeledProxyState.register(operation);
+        return { kind: 'registered' };
       },
       prepareOperation: async (attempt) => {
         successorCalls.push('prepare');

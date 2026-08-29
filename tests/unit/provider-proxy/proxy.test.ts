@@ -1,4 +1,5 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -307,13 +308,15 @@ async function startProxy(
     flavor: 'prod' as const,
     buildSetId,
   };
-  const opened = (await control.call(
+  const opened = (await strictTestExchange(
+    control,
     'control.open.v1',
     { bootstrapNonce: NONCE, coordinator: coordinatorIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
   // Control is not "active" (able to call mutation methods) until the first heartbeat is echoed back.
-  await control.call(
+  await strictTestExchange(
+    control,
     'control.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -333,14 +336,20 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
     const host = fakeHost();
     const { control, operation } = await startProxy(host);
 
-    const prepared = (await control.call(
+    const prepared = (await strictTestExchange(
+      control,
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { state: string };
     expect(prepared.state).toBe('pending-activation');
 
-    const stopped = (await control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000)) as {
+    const stopped = (await strictTestExchange(
+      control,
+      'operation.stop.v1',
+      { operation, cause: 'signal_abort' },
+      5_000,
+    )) as {
       state: string;
     };
 
@@ -363,7 +372,8 @@ describe('provider-proxy proxy: prepare result sender validation', () => {
       const { control, operation } = await startProxy(fakeHost());
 
       await expect(
-        control.call(
+        strictTestExchange(
+          control,
           'operation.prepare.v1',
           { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
           5_000,
@@ -388,12 +398,14 @@ describe('provider-proxy proxy: prepare result sender validation', () => {
     });
     const request = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(request);
-    const preparing = control.call('operation.prepare.v1', request, 5_000);
+    const preparing = strictTestExchange(control, 'operation.prepare.v1', request, 5_000);
     const prepareSettled = vi.fn();
     void preparing.then(prepareSettled, prepareSettled);
 
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'never-started',
     });
@@ -401,9 +413,9 @@ describe('provider-proxy proxy: prepare result sender validation', () => {
 
     release.resolve();
     await expect(preparing).resolves.toEqual(refusal);
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
-      refusal,
-    );
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toEqual(refusal);
   });
 });
 
@@ -418,7 +430,7 @@ describe('provider-proxy truthful operation authority', () => {
       prepared: PREPARED,
     };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
@@ -430,12 +442,17 @@ describe('provider-proxy truthful operation authority', () => {
     };
 
     const first = proxyOperationActivationOutcomeSchema.parse(
-      await control.call('operation.activate.v1', activation, 5_000),
+      await strictTestExchange(control, 'operation.activate.v1', activation, 5_000),
     );
-    const replay = await control.call('operation.activate.v1', activation, 5_000);
-    const awaitingPublication = await control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000);
-    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
-    const attached = await control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000);
+    const replay = await strictTestExchange(control, 'operation.activate.v1', activation, 5_000);
+    const awaitingPublication = await strictTestExchange(
+      control,
+      'operation.inspect.v1',
+      { operation, prepareAttemptKey },
+      5_000,
+    );
+    await strictTestExchange(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+    const attached = await strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000);
 
     expect(first).toEqual({
       state: 'executing',
@@ -462,7 +479,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
@@ -473,9 +490,11 @@ describe('provider-proxy truthful operation authority', () => {
       jointActivationReceipt: asJointActivationReceipt('activation-1'),
     };
 
-    const activating = control.call('operation.activate.v1', activation, 5_000);
+    const activating = strictTestExchange(control, 'operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'activation-indeterminate',
       activationAck: null,
@@ -489,10 +508,10 @@ describe('provider-proxy truthful operation authority', () => {
       prepareAttemptKey,
     };
     await expect(activating).resolves.toEqual(receipt);
-    await expect(control.call('operation.activate.v1', activation, 5_000)).resolves.toEqual(receipt);
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
-      receipt,
-    );
+    await expect(strictTestExchange(control, 'operation.activate.v1', activation, 5_000)).resolves.toEqual(receipt);
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toEqual(receipt);
     expect(proxy.ledger().get(operation)).toBeNull();
     expect(host.starts).toBe(1);
   });
@@ -514,11 +533,12 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
-    const activating = control.call(
+    const activating = strictTestExchange(
+      control,
       'operation.activate.v1',
       {
         operation,
@@ -535,7 +555,9 @@ describe('provider-proxy truthful operation authority', () => {
 
     await activationTimedOut;
     await vi.waitFor(() => expect(startAborted).toHaveBeenCalled());
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'released-never-started',
     });
   });
@@ -562,7 +584,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
@@ -572,7 +594,7 @@ describe('provider-proxy truthful operation authority', () => {
       jointContainmentReceipt: prepared.jointContainmentReceipt,
       jointActivationReceipt: asJointActivationReceipt('activation-1'),
     };
-    const activating = control.call('operation.activate.v1', activation, 5_000);
+    const activating = strictTestExchange(control, 'operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
 
     proxy.emitProviderEvent(operation, {
@@ -582,7 +604,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const inspectRequest = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
     const inspectResult = proxyOperationInspectResultSchema.parse(
-      await control.call('operation.inspect.v1', inspectRequest, 5_000),
+      await strictTestExchange(control, 'operation.inspect.v1', inspectRequest, 5_000),
     );
     expect(inspectResult).toMatchObject({ state: 'starting' });
     expect(inspectRequestParses).toHaveBeenCalledTimes(2);
@@ -604,7 +626,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     const attachRequest = proxyOperationAttachParamsSchema.parse({ operation, committedThroughProviderSeq: 0 });
     const attached = proxyOperationAttachResultSchema.parse(
-      await control.call('operation.attach.v1', attachRequest, 5_000),
+      await strictTestExchange(control, 'operation.attach.v1', attachRequest, 5_000),
     );
 
     expect(attached).toEqual({ state: 'attached', replayFromProviderSeq: 1 });
@@ -617,12 +639,14 @@ describe('provider-proxy truthful operation authority', () => {
 
   it('commits each encoded provider frame synchronously before another emission can begin', async () => {
     const { control, operation, proxy } = await startProxy(fakeHost());
-    const prepared = (await control.call(
+    const prepared = (await strictTestExchange(
+      control,
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { reservation: Reservation; jointContainmentReceipt: JointContainmentReceipt };
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.activate.v1',
       {
         operation,
@@ -632,7 +656,7 @@ describe('provider-proxy truthful operation authority', () => {
       },
       5_000,
     );
-    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+    await strictTestExchange(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
 
     const emissions = [
       proxy.emitProviderEvent(operation, { kind: 'progress', message: 'first' }),
@@ -651,7 +675,8 @@ describe('provider-proxy truthful operation authority', () => {
       readMilliseconds: controlled.readMilliseconds,
       releaseMembership,
     });
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
@@ -682,14 +707,16 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
+    const preparing = strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
 
     controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
 
     await vi.waitFor(() => expect(stageAborted).toHaveBeenCalledOnce());
     expect(proxy.ledger().get(operation)?.state).toBe('releasing');
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'never-started',
     });
@@ -715,9 +742,10 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
+    const preparing = strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
-    const cancelling = control.call(
+    const cancelling = strictTestExchange(
+      control,
       'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
@@ -735,9 +763,9 @@ describe('provider-proxy truthful operation authority', () => {
     expect(receipt).toMatchObject({ state: 'released-never-started' });
     expect(host.released).toContainEqual({ jobId: operation.jobId, operationId: operation.operationId });
     expect(proxy.ledger().get(operation)).toBeNull();
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
-      receipt,
-    );
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toEqual(receipt);
   });
 
   it('retains a failed guardian release and retries it from the releasing state', async () => {
@@ -753,7 +781,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    await control.call('operation.prepare.v1', prepareRequest, 5_000);
+    await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000);
 
     controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
 
@@ -764,7 +792,9 @@ describe('provider-proxy truthful operation authority', () => {
 
     await vi.waitFor(() => expect(releaseMembership).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(proxy.ledger().get(operation)).toBeNull());
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'released-never-started',
     });
   });
@@ -781,12 +811,19 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    await control.call('operation.prepare.v1', prepareRequest, 5_000);
+    await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000);
 
     await expect(
-      control.call('operation.cancel.v1', { operation, prepareAttemptNumber: 1, prepareAttemptKey }, 5_000),
+      strictTestExchange(
+        control,
+        'operation.cancel.v1',
+        { operation, prepareAttemptNumber: 1, prepareAttemptKey },
+        5_000,
+      ),
     ).rejects.toThrow('Provider operation cancellation did not settle within 10000ms.');
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'never-started',
     });
@@ -794,7 +831,9 @@ describe('provider-proxy truthful operation authority', () => {
     controlled.advance(OPERATION_RELEASE_RETRY_MS);
 
     await vi.waitFor(() => expect(stageAbortAndRelease).toHaveBeenCalledTimes(2));
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'released-never-started',
     });
     expect(proxy.ledger().get(operation)).toBeNull();
@@ -820,7 +859,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
 
     const cancelled = proxyOperationCancelResultSchema.parse(
-      await control.call('operation.cancel.v1', cancelRequest, 5_000),
+      await strictTestExchange(control, 'operation.cancel.v1', cancelRequest, 5_000),
     );
 
     expect(cancelled).toEqual({
@@ -829,7 +868,9 @@ describe('provider-proxy truthful operation authority', () => {
       prepareAttemptNumber: 1,
       prepareAttemptKey,
     });
-    await expect(control.call('operation.prepare.v1', prepareRequest, 5_000)).rejects.toThrow(/attempt is fenced/u);
+    await expect(strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000)).rejects.toThrow(
+      /attempt is fenced/u,
+    );
     expect(host.released).toEqual([]);
     expect(releaseMembership).not.toHaveBeenCalled();
     expect(cancelParamsParses).toHaveBeenCalledTimes(2);
@@ -846,14 +887,16 @@ describe('provider-proxy truthful operation authority', () => {
       prepared: PREPARED,
     };
     const higherAttemptKey = operationPrepareAttemptKey(higherPrepare);
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.cancel.v1',
       { operation, prepareAttemptNumber: 2, prepareAttemptKey: higherAttemptKey },
       5_000,
     );
 
     await expect(
-      control.call(
+      strictTestExchange(
+        control,
         'operation.prepare.v1',
         { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
         5_000,
@@ -872,19 +915,20 @@ describe('provider-proxy truthful operation authority', () => {
       prepared: PREPARED,
     };
     const firstAttemptKey = operationPrepareAttemptKey(firstRequest);
-    await control.call('operation.prepare.v1', firstRequest, 5_000);
+    await strictTestExchange(control, 'operation.prepare.v1', firstRequest, 5_000);
     const secondRequest = { ...firstRequest, prepareAttemptNumber: 2 };
 
-    await expect(control.call('operation.prepare.v1', secondRequest, 5_000)).rejects.toThrow(
+    await expect(strictTestExchange(control, 'operation.prepare.v1', secondRequest, 5_000)).rejects.toThrow(
       /previous prepare attempt is not fenced/u,
     );
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey: firstAttemptKey },
       5_000,
     );
 
-    await expect(control.call('operation.prepare.v1', secondRequest, 5_000)).resolves.toMatchObject({
+    await expect(strictTestExchange(control, 'operation.prepare.v1', secondRequest, 5_000)).resolves.toMatchObject({
       state: 'pending-activation',
     });
     expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
@@ -899,11 +943,12 @@ describe('provider-proxy truthful operation authority', () => {
       prepared: PREPARED,
     };
     const firstAttemptKey = operationPrepareAttemptKey(firstRequest);
-    const prepared = (await control.call('operation.prepare.v1', firstRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(control, 'operation.prepare.v1', firstRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.activate.v1',
       {
         operation,
@@ -913,21 +958,22 @@ describe('provider-proxy truthful operation authority', () => {
       },
       5_000,
     );
-    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+    await strictTestExchange(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
 
     await expect(
-      control.call(
+      strictTestExchange(
+        control,
         'operation.cancel.v1',
         { operation, prepareAttemptNumber: 1, prepareAttemptKey: firstAttemptKey },
         5_000,
       ),
     ).rejects.toThrow(/Activation has begun/u);
     await expect(
-      control.call('operation.prepare.v1', { ...firstRequest, prepareAttemptNumber: 2 }, 5_000),
+      strictTestExchange(control, 'operation.prepare.v1', { ...firstRequest, prepareAttemptNumber: 2 }, 5_000),
     ).rejects.toThrow();
 
     await expect(
-      control.call('operation.inspect.v1', { operation, prepareAttemptKey: firstAttemptKey }, 5_000),
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey: firstAttemptKey }, 5_000),
     ).resolves.toMatchObject({ state: 'executing' });
   });
 
@@ -946,12 +992,15 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
+    const preparing = strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
-    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(
+      strictTestExchange(control, 'operation.inspect.v1', { operation, prepareAttemptKey }, 5_000),
+    ).resolves.toMatchObject({
       state: 'preparing',
     });
-    const cancelling = control.call(
+    const cancelling = strictTestExchange(
+      control,
       'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
@@ -996,11 +1045,12 @@ describe('provider-proxy truthful operation authority', () => {
     const { control, operation, proxy } = await startProxy(host);
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
-    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(control, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
-    const activating = control.call(
+    const activating = strictTestExchange(
+      control,
       'operation.activate.v1',
       {
         operation,
@@ -1011,7 +1061,8 @@ describe('provider-proxy truthful operation authority', () => {
       5_000,
     );
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
-    const cancelling = control.call(
+    const cancelling = strictTestExchange(
+      control,
       'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
@@ -1034,12 +1085,14 @@ describe('provider-proxy truthful operation authority', () => {
       releaseMembership,
       onProviderEvent: (request) => ({ kind: 'ack', committedThroughProviderSeq: request.providerSeq }),
     });
-    const prepared = (await control.call(
+    const prepared = (await strictTestExchange(
+      control,
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { reservation: Reservation; jointContainmentReceipt: JointContainmentReceipt };
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.activate.v1',
       {
         operation,
@@ -1049,18 +1102,18 @@ describe('provider-proxy truthful operation authority', () => {
       },
       5_000,
     );
-    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+    await strictTestExchange(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
     proxy.emitProviderEvent(operation, { kind: 'progress', message: 'final' });
-    await control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
+    await strictTestExchange(control, 'operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
 
     const settleRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 1 });
     const settled = proxyOperationSettleResultSchema.parse(
-      await control.call('operation.settle.v1', settleRequest, 5_000),
+      await strictTestExchange(control, 'operation.settle.v1', settleRequest, 5_000),
     );
     expect(settled).toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
     const replayRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 0 });
     const replay = proxyOperationSettleResultSchema.parse(
-      await control.call('operation.settle.v1', replayRequest, 5_000),
+      await strictTestExchange(control, 'operation.settle.v1', replayRequest, 5_000),
     );
     expect(replay).toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
     expect(proxy.ledger().get(operation)).toBeNull();
@@ -1084,7 +1137,8 @@ describe('provider-proxy proxy: operation.prepare.v1 budget (BLOCKING B5)', () =
     const budgetsBeforePrepare = [...recording.budgets];
     expect(budgetsBeforePrepare).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_CONTROL_RPC_TIMEOUT_MS]);
 
-    await control.call(
+    await strictTestExchange(
+      control,
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,

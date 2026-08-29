@@ -177,33 +177,6 @@ export async function main(): Promise<number> {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
-  const coordinator = createCoordinatorServer({
-    pluginRoot: __PLUGIN_ROOT__,
-    onStopped: () => {
-      process.exit(0);
-    },
-    onFatalShutdownError: (error) => {
-      backendLog.error('Fatal shutdown error', error);
-      const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'fatal_shutdown_error', error, 1);
-      auditBootstrapFailure(
-        'bootstrap_fatal_shutdown',
-        __PLUGIN_ROOT__,
-        'fatal_shutdown_error',
-        error,
-        1,
-        diagnosticFile,
-      );
-      process.exit(1);
-    },
-  });
-
-  process.on('SIGTERM', () => {
-    void coordinator.shutdown('sigterm').catch(() => {});
-  });
-  process.on('SIGINT', () => {
-    void coordinator.shutdown('sigint').catch(() => {});
-  });
-
   // Hold a ref'd keepalive for the duration of startup. Without it, a contender
   // entering `bindWithHandoff`'s retry sleep can drain the event loop and exit
   // silently with code 0: `runtime.time.sleep` uses `timer.unref()` (real.ts),
@@ -213,6 +186,33 @@ export async function main(): Promise<number> {
   const startupKeepalive = setInterval(() => {}, 60_000);
 
   try {
+    const coordinator = createCoordinatorServer({
+      pluginRoot: __PLUGIN_ROOT__,
+      onStopped: () => {
+        process.exit(0);
+      },
+      onFatalShutdownError: (error) => {
+        backendLog.error('Fatal shutdown error', error);
+        const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'fatal_shutdown_error', error, 1);
+        auditBootstrapFailure(
+          'bootstrap_fatal_shutdown',
+          __PLUGIN_ROOT__,
+          'fatal_shutdown_error',
+          error,
+          1,
+          diagnosticFile,
+        );
+        process.exit(1);
+      },
+    });
+
+    process.on('SIGTERM', () => {
+      void coordinator.shutdown('sigterm').catch(() => {});
+    });
+    process.on('SIGINT', () => {
+      void coordinator.shutdown('sigint').catch(() => {});
+    });
+
     const info = await coordinator.start();
     backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;

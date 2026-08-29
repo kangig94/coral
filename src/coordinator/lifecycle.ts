@@ -61,7 +61,7 @@ import {
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
-import type { IpcListener } from '../transport/ipc/server.js';
+import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority } from '../store/backend-store-reset.js';
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
@@ -86,6 +86,7 @@ import {
 } from '../recovery/containment.js';
 import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
+import { createCoordinatorSocketAddressClaim } from './socket-address-claim.js';
 import {
   crashedJobTerminalizationSource,
   type RawCrashedJobRow,
@@ -270,7 +271,8 @@ export function verifiedIncumbentFromDiscovery(
  *   then refuses on its own terms if the record cannot be tied to the socket, which is the check that belongs
  *   here — not a pid probe standing in for it.
  * - `unreadable-record` has no record to agree with, so `null` is the only value available. It is not a claim
- *   that nobody is there: `probeCoordinator` warns, and the kernel's exclusive bind arbitrates.
+ *   that nobody is there: `probeCoordinator` warns, while coordinator startup separately refuses the
+ *   undecodable pre-bind discovery disposition.
  *
  * The switch is exhaustive on purpose. A fifth `CoordinatorProbe` shape leaves `record` unassigned and fails
  * the build, rather than defaulting into the `null` that reads as "no incumbent".
@@ -803,7 +805,11 @@ export type LifecycleDeps = {
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
   readonly ipcServer?: IpcListener;
   readonly closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
-  readonly listenIpcFn?: (listener: IpcListener) => Promise<{ socketPath: string }>;
+  readonly listenIpcFn?: (
+    listener: IpcListener,
+    additionalCompatibilitySocketPaths?: readonly string[],
+    publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
+  ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: () => void;
   readonly onFatalShutdownError?: (error: unknown) => void;
 };
@@ -899,22 +905,29 @@ async function runLifecycleStartup({
     // `ipcServer.onShutdownRequest`) is already installed before we reach
     // here, so a contender that arrives while we are still 'starting' triggers
     // immediate shutdown via that path.
+    // The address this coordinator publishes is its own canonical one; the claim additionally holds the
+    // legacy and published addresses, which are exclusion inputs rather than what this build serves.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
     let bound: BoundCoordinator | null = null;
     if (ipcServer && listenIpcFn) {
+      if (closeIpcServerFn === undefined) {
+        throw new Error('IPC startup requires a close operation before binding');
+      }
+      const addressClaim = createCoordinatorSocketAddressClaim(runtime, 'coordinator startup');
       bound = await bindWithHandoff({
-        socketPath,
+        socketPath: addressClaim.initialIncumbentSocketPath,
         desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
-          try {
-            await listenIpcFn(ipcServer);
-            return { kind: 'bound' as const };
-          } catch (error: unknown) {
-            if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-              return { kind: 'incumbent' as const, reason: 'live-listener' };
-            }
-            throw error;
-          }
+          signal.throwIfAborted();
+          const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
+            const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths, publishedSocketAddresses);
+            return listenResult.kind === 'incumbent'
+              ? listenResult
+              : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };
+          });
+          return binding.kind === 'incumbent'
+            ? { kind: 'addressed-incumbent' as const, socketPath: binding.socketPath }
+            : { kind: 'bound' as const };
         },
         runStartupRecovery,
         runtime,
@@ -925,6 +938,7 @@ async function runLifecycleStartup({
           ),
         signalLedger: createFileHandoffSignalLedger({
           storage: runtime.storage,
+          ids: runtime.ids,
           runDir: runtime.paths.coral.coordinator.runDir,
         }),
         signal,

@@ -99,8 +99,6 @@ export type ManagedAppServerSession = Readonly<{
   close(): void;
 }>;
 
-export { hostKeyFromSpec } from './state.js';
-
 function foldedKey(key: string, platform: string): string {
   return platform === 'win32' ? key.toLowerCase() : key;
 }
@@ -377,6 +375,8 @@ export class DefaultProviderHostManager
     }
     const observed: DurableProviderProxyOperationAuthority = {
       ...set,
+      promoteControl: async (redemption, signal) =>
+        this.observeGenerationCapacity(identityKey, entry, await set.promoteControl(redemption, signal)),
       prepareOperation: async (attempt) => {
         const result = await set.prepareOperation(attempt);
         if (result.state === 'capacity' && result.code === 'provider_root_generation_draining') {

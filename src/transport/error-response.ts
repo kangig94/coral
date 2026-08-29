@@ -29,6 +29,7 @@ function setupErrorStatusCode(code: string): number {
     case 'workflow_lifecycle_invalid':
     case 'legacy_foreign_generation':
     case 'legacy_source_not_quiescent':
+    case 'legacy_source_writer_observation_unknown':
     case 'active_store_coordination_invalid':
     case 'startup_bundle_unresolvable':
     case 'store_newer_incompatible':
@@ -44,6 +45,7 @@ function setupErrorStatusCode(code: string): number {
     case 'kb_commit_already_quarantined':
     case 'kb_commit_quarantine_failed':
     case 'recovery_quarantine_boundary_not_registered':
+    case 'recovery_quarantine_subject_not_found':
     case 'recovery_quarantine_revision_changed':
     case 'recovery_quarantine_continuation_pending':
     case 'recovery_quarantine_retry_in_progress':
@@ -72,6 +74,8 @@ function publicRecoveryQuarantineError(error: unknown): CoralSetupError | null {
   switch (error.code) {
     case 'boundary-not-registered':
       return documentedCoralSetupError('recovery_quarantine_boundary_not_registered');
+    case 'subject-not-found':
+      return documentedCoralSetupError('recovery_quarantine_subject_not_found');
     case 'revision-mismatch':
       return documentedCoralSetupError('recovery_quarantine_revision_changed');
     case 'continuation-not-active':

@@ -5,14 +5,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  ControlClientError,
   connectControlClient,
   type ControlClientTimer,
   type ProviderEventHandler,
 } from '#src/provider-proxy/control-client.js';
 import {
   encodeProxyControlFrame,
-  MAX_PROXY_CONTROL_FRAME_BYTES,
   PROVIDER_EVENT_METHOD,
   providerEventRequestSchema,
 } from '#src/provider-proxy/protocol.js';
@@ -44,7 +42,7 @@ afterEach(async () => {
 
 /**
  * A timer this suite fires itself rather than waiting on real elapsed time. `connectControlClient` and
- * `call()` both register their budget synchronously (inside a `new Promise` executor, which runs before
+ * `exchange()` both register their budget synchronously (inside a `new Promise` executor, which runs before
  * control returns to the caller), so a test can call `fireAll()` in the same tick and deterministically win
  * the race against any real socket event — which cannot arrive before the next tick. Nothing here needs a
  * millisecond to actually elapse.
@@ -109,14 +107,203 @@ function respondToNextRequest(serverSocket: Socket, buildResponse: (id: number |
 }
 
 describe('control client', () => {
-  it('connects and resolves a call with the server result', async () => {
+  it('names a correlated result as a response', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
     const serverSocket = await waitForAccept(sockets);
     respondToNextRequest(serverSocket, (id) => ({ jsonrpc: '2.0', id, result: { ok: true } }));
 
-    await expect(client.call('role.work.v1', {}, 5_000)).resolves.toEqual({ ok: true });
+    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'response',
+      response: { kind: 'result', value: { ok: true } },
+    });
+  });
+
+  it('names a correlated JSON-RPC error as a refusal', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Control admission was refused (control-active).',
+        data: { code: 'invalid_state', reason: 'control-active' },
+      },
+    }));
+
+    const outcome = await client.exchange('role.redeem.v1', {}, 5_000);
+
+    expect(outcome).toEqual({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_state',
+          admissionReason: 'control-active',
+          heartbeatRefusal: null,
+        },
+        error: expect.objectContaining({
+          code: 'control_call_failed',
+          origin: 'remote-response',
+          message: 'Control admission was refused (control-active).',
+        }),
+      },
+    });
+  });
+
+  it('names an unanswered written request that exceeds its budget as no-response', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const timer = manualTimer();
+    const client = await connectControlClient(socketPath, timer, 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.slow.v1', {}, 30);
+    timer.fireAll();
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'no-response',
+      cause: 'timeout',
+      error: expect.objectContaining({
+        code: 'control_call_failed',
+        origin: 'timeout',
+        message: 'role.slow.v1 exceeded its 30ms budget.',
+      }),
+    });
+  });
+
+  it('names an orderly channel closure with a written request pending as no-response', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.work.v1', {}, 5_000);
+    // `end` sends FIN and produces no socket error, which is what makes this an answerless close rather than
+    // an interrupted one.
+    serverSocket.end();
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'no-response',
+      cause: 'connection-closed-after-write',
+      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
+    });
+  });
+
+  it('names a reset with a written request pending as delivery-unconfirmed', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.work.v1', {}, 5_000);
+    serverSocket.destroy();
+
+    // A reset says the request may or may not have arrived, which is not the same as the peer declining to
+    // answer one it received.
+    await expect(exchange).resolves.toMatchObject({
+      kind: 'delivery-unconfirmed',
+      cause: 'socket-error-after-write',
+    });
+  });
+
+  it('names an exchange made after client closure as not-sent', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    client.close();
+
+    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'not-sent',
+      cause: 'connection-already-closed',
+      error: expect.objectContaining({ code: 'control_client_closed', origin: 'closed' }),
+    });
+  });
+
+  it('names frame encoding failure as not-sent', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const params: { self?: unknown } = {};
+    params.self = params;
+
+    await expect(client.exchange('role.work.v1', params, 5_000)).resolves.toEqual({
+      kind: 'not-sent',
+      cause: 'encode-failed',
+      error: expect.any(Error),
+    });
+  });
+
+  it('names a synchronous socket write throw as not-sent', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const sentinel = new Error('write sentinel');
+    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(() => {
+      throw sentinel;
+    });
+    cleanups.push(() => write.mockRestore());
+
+    await expect(client.exchange('role.write.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'not-sent',
+      cause: 'write-threw',
+      error: sentinel,
+    });
+  });
+
+  it('reports a pending asynchronous socket error before settling delivery as unconfirmed', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const sentinel = new Error('asynchronous socket sentinel');
+    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(function (this: Socket) {
+      setImmediate(() => this.emit('error', sentinel));
+      return true;
+    });
+    cleanups.push(() => write.mockRestore());
+    const settlements: string[] = [];
+    void client.faulted.then(() => settlements.push('faulted'));
+
+    const exchange = client.exchange('role.write.v1', {}, 5_000);
+    void exchange.then(() => settlements.push('exchange'));
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'delivery-unconfirmed',
+      cause: 'socket-error-after-write',
+      error: sentinel,
+    });
+    await Promise.resolve();
+    expect(settlements).toEqual(['faulted', 'exchange']);
+  });
+
+  it('names an invalid unattributable frame as a channel fault', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const exchange = client.exchange('role.work.v1', {}, 5_000);
+    serverSocket.write('not-json\n');
+
+    await expect(exchange).resolves.toEqual({
+      kind: 'channel-fault',
+      cause: 'invalid-unattributable-frame',
+      error: expect.objectContaining({
+        code: 'control_call_failed',
+        origin: 'remote-response',
+        remoteFailure: { kind: 'invalid-frame' },
+      }),
+    });
   });
 
   it('rejects with control_client_connect_failed when the connect budget is exceeded', async () => {
@@ -132,7 +319,6 @@ describe('control client', () => {
       code: 'control_client_connect_failed',
       origin: 'timeout',
       remoteFailure: null,
-      protocolCode: undefined,
       message: expect.stringContaining('exceeded 25ms'),
     });
   });
@@ -152,24 +338,7 @@ describe('control client', () => {
     });
   });
 
-  it('rejects a pending call with control_client_closed when the socket closes', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-
-    const call = client.call('role.work.v1', {}, 5_000);
-    serverSocket.destroy();
-
-    await expect(call).rejects.toMatchObject({
-      code: 'control_client_closed',
-      origin: 'closed',
-      remoteFailure: null,
-      protocolCode: undefined,
-    });
-  });
-
-  it('notifies current fault listeners inline before compatibility promise reactions', async () => {
+  it('notifies current fault listeners inline before fault promise reactions', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
@@ -202,60 +371,6 @@ describe('control client', () => {
     expect(unsubscribe).not.toThrow();
   });
 
-  it('rejects a call that exceeds its own budget with control_call_failed', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const timer = manualTimer();
-    const client = await connectControlClient(socketPath, timer, 5_000);
-    cleanups.push(() => client.close());
-    await waitForAccept(sockets);
-
-    // The server never responds; only the per-call budget can settle this.
-    const call = client.call('role.slow.v1', {}, 30);
-    timer.fireAll();
-
-    await expect(call).rejects.toMatchObject({
-      code: 'control_call_failed',
-      origin: 'timeout',
-      remoteFailure: null,
-      message: expect.stringContaining('role.slow.v1 exceeded its 30ms budget.'),
-    });
-  });
-
-  it('classifies a synchronous socket write failure by its write origin', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    await waitForAccept(sockets);
-    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(() => {
-      throw new Error('write sentinel');
-    });
-    cleanups.push(() => write.mockRestore());
-
-    await expect(client.call('role.write.v1', {}, 5_000)).rejects.toMatchObject({
-      code: 'control_call_failed',
-      origin: 'write',
-      remoteFailure: null,
-      message: 'role.write.v1 could not be sent.',
-    });
-  });
-
-  it('destroys the socket when incoming bytes exceed the frame cap before any newline', async () => {
-    const { socketPath, sockets } = await startTestServer();
-    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
-    cleanups.push(() => client.close());
-    const serverSocket = await waitForAccept(sockets);
-
-    const call = client.call('role.work.v1', {}, 5_000);
-    // No newline, so the client's reader must bound the accumulating buffer rather than wait for one.
-    serverSocket.write('x'.repeat(MAX_PROXY_CONTROL_FRAME_BYTES + 1));
-
-    await expect(call).rejects.toMatchObject({
-      code: 'control_call_failed',
-      origin: 'remote-response',
-      remoteFailure: { kind: 'invalid-frame' },
-    });
-  });
-
   it('refuses an inbound request when no provider-event handler is installed, without dropping the connection', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
@@ -263,8 +378,11 @@ describe('control client', () => {
     const serverSocket = await waitForAccept(sockets);
     respondToNextRequest(serverSocket, (id) => ({ jsonrpc: '2.0', id, result: { ok: true } }));
 
-    // The client's own in-flight call is unaffected by an unrelated inbound frame sharing no correlation to it.
-    await expect(client.call('role.work.v1', {}, 5_000)).resolves.toEqual({ ok: true });
+    // The client's own exchange is unaffected by an unrelated inbound frame sharing no correlation to it.
+    await expect(client.exchange('role.work.v1', {}, 5_000)).resolves.toEqual({
+      kind: 'response',
+      response: { kind: 'result', value: { ok: true } },
+    });
 
     const refusal = await new Promise<{ id: number; error: { data?: { code?: string } } }>((resolve) => {
       serverSocket.on('data', function onData(chunk: Buffer) {
@@ -393,7 +511,7 @@ describe('control client', () => {
     expect(refusal.error.message).toBe('durable commit failed');
   });
 
-  it('surfaces the server error data.code as protocolCode on the rejected error', async () => {
+  it('keeps the server protocol code inside the refusal evidence', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
@@ -408,23 +526,148 @@ describe('control client', () => {
       },
     }));
 
-    let observed: unknown;
-    try {
-      await client.call('role.redeem.v1', {}, 5_000);
-    } catch (error: unknown) {
-      observed = error;
-    }
-
-    expect(observed).toBeInstanceOf(ControlClientError);
-    expect((observed as ControlClientError).code).toBe('control_call_failed');
-    expect((observed as ControlClientError).origin).toBe('remote-response');
-    expect((observed as ControlClientError).remoteFailure).toEqual({
-      kind: 'json-rpc-error',
-      jsonRpcCode: -32_600,
-      protocolCode: 'invalid_state',
-      admissionReason: 'control-active',
+    await expect(client.exchange('role.redeem.v1', {}, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_state',
+          admissionReason: 'control-active',
+          heartbeatRefusal: null,
+        },
+      },
     });
-    expect((observed as ControlClientError).protocolCode).toBe('invalid_state');
+  });
+
+  it('parses a heartbeat mismatch and its replacement challenge from structured error data', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Heartbeat echo was not accepted (challenge-mismatch).',
+        data: {
+          code: 'invalid_request',
+          heartbeatRefusal: 'challenge-mismatch',
+          nextHeartbeatChallenge: 'challenge-2',
+        },
+      },
+    }));
+
+    await expect(client.exchange('role.heartbeat.v1', {}, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_request',
+          admissionReason: null,
+          heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-2' },
+        },
+      },
+    });
+  });
+
+  it('does not recognize a heartbeat or admission refusal from a contradictory error envelope', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_603,
+        message: 'internal failure',
+        data: {
+          code: 'protocol_violation',
+          reason: 'control-active',
+          heartbeatRefusal: 'teardown-latched',
+          nextHeartbeatChallenge: 'contradictory-challenge',
+        },
+      },
+    }));
+
+    await expect(client.exchange('role.heartbeat.v1', {}, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_603,
+          protocolCode: 'protocol_violation',
+          admissionReason: null,
+          heartbeatRefusal: null,
+        },
+      },
+    });
+  });
+
+  it('does not decode an admission refusal as a heartbeat refusal', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Control admission was refused (teardown-latched).',
+        data: { code: 'invalid_state', reason: 'teardown-latched' },
+      },
+    }));
+
+    await expect(client.exchange('role.redeem.v1', {}, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_state',
+          admissionReason: 'teardown-latched',
+          heartbeatRefusal: null,
+        },
+      },
+    });
+  });
+
+  it('does not decode a teardown-latched heartbeat refusal as an admission refusal', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32_600,
+        message: 'Heartbeat echo was not accepted (teardown-latched).',
+        data: { code: 'invalid_request', heartbeatRefusal: 'teardown-latched' },
+      },
+    }));
+
+    await expect(client.exchange('role.heartbeat.v1', {}, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_request',
+          admissionReason: null,
+          heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+        },
+      },
+    });
   });
 
   it('ignores a data.code the closed set does not recognize', async () => {
@@ -438,19 +681,18 @@ describe('control client', () => {
       error: { code: -32_600, message: 'Not from this endpoint.', data: { code: 'not_a_real_code' } },
     }));
 
-    let observed: unknown;
-    try {
-      await client.call('role.redeem.v1', {}, 5_000);
-    } catch (error: unknown) {
-      observed = error;
-    }
-
-    expect((observed as ControlClientError).remoteFailure).toEqual({
-      kind: 'json-rpc-error',
-      jsonRpcCode: -32_600,
-      protocolCode: null,
-      admissionReason: null,
+    await expect(client.exchange('role.redeem.v1', {}, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: null,
+          admissionReason: null,
+          heartbeatRefusal: null,
+        },
+      },
     });
-    expect((observed as ControlClientError).protocolCode).toBeUndefined();
   });
 });

@@ -1,0 +1,93 @@
+import { lstatSync, mkdtempSync, rmSync, statfsSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { testTempEnv, testTempRoot, userRootName } from '../../../vitest/temp-root.js';
+
+const TMPFS_MAGIC = 0x01021994;
+
+function shmIsUsableTmpfs(): boolean {
+  try {
+    const stats = statfsSync('/dev/shm');
+    return stats.type === TMPFS_MAGIC && stats.bavail * stats.bsize >= 1024 * 1024 * 1024;
+  } catch {
+    return false;
+  }
+}
+
+const created: string[] = [];
+
+function expectedUserRoot(base: string): string {
+  return join(base, userRootName());
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const path of created.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+describe('test temp root', () => {
+  it('falls back to the platform temp directory when no candidate is a usable tmpfs', () => {
+    expect(testTempRoot(['/nonexistent-candidate', undefined])).toBe(tmpdir());
+  });
+
+  it('falls back when a candidate exists and is writable but is not memory-backed', () => {
+    const writableCandidate = mkdtempSync(join(tmpdir(), 'coral-disk-temp-candidate-'));
+    created.push(writableCandidate);
+
+    expect(testTempRoot([writableCandidate], () => false)).toBe(tmpdir());
+  });
+
+  it('honours an explicit override ahead of every candidate', () => {
+    const override = mkdtempSync(join(tmpdir(), 'coral-temp-root-override-'));
+    created.push(override);
+    vi.stubEnv('CORAL_TEST_TMPDIR', override);
+
+    const classifyCandidate = vi.fn(() => false);
+    const root = testTempRoot(['/dev/shm'], classifyCandidate);
+    expect(root).toBe(expectedUserRoot(override));
+    expect(classifyCandidate).not.toHaveBeenCalled();
+    const stats = lstatSync(root);
+    expect(stats.isDirectory()).toBe(true);
+    expect(stats.mode & 0o777).toBe(0o700);
+    if (process.getuid !== undefined) expect(stats.uid).toBe(process.getuid());
+  });
+
+  it('treats an empty override as absent instead of publishing a relative temp root', () => {
+    vi.stubEnv('CORAL_TEST_TMPDIR', '');
+
+    const root = testTempRoot([], () => false);
+
+    expect(root).toBe(tmpdir());
+    expect(root).not.toBe(userRootName());
+  });
+
+  it('bounds the longest uid accepted by the per-user root name', () => {
+    expect(userRootName(4_294_967_294)).toMatch(/^coral-[a-zA-Z0-9_-]{7}$/u);
+  });
+
+  it.runIf(process.platform !== 'win32')('falls back when the per-user root is an existing symlink', () => {
+    const override = mkdtempSync(join(tmpdir(), 'coral-temp-root-symlink-'));
+    created.push(override);
+    const target = mkdtempSync(join(override, 'target-'));
+    symlinkSync(target, expectedUserRoot(override), 'dir');
+    vi.stubEnv('CORAL_TEST_TMPDIR', override);
+
+    expect(testTempRoot()).toBe(tmpdir());
+  });
+
+  it('publishes one root under every name a temp-directory lookup consults', () => {
+    const env = testTempEnv();
+
+    expect(new Set(Object.values(env)).size).toBe(1);
+    expect(Object.keys(env).sort()).toEqual(['TEMP', 'TMP', 'TMPDIR']);
+  });
+
+  it.runIf(shmIsUsableTmpfs() && testTempRoot(['/dev/shm']) !== tmpdir())(
+    'prefers a usable executable memory-backed root over the platform temp directory',
+    () => {
+      expect(testTempRoot()).toBe(expectedUserRoot('/dev/shm'));
+    },
+  );
+});

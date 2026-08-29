@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
+import { generationRoot } from '#src/infra/path/root.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
@@ -30,16 +31,17 @@ const identity: ProviderProxyEndpointIdentity = {
   proxyInstanceId: UUID_A,
 };
 
-const FALLBACK_DIRECTORY = socketFallbackDir(CURRENT_UID);
+const RELOCATED_BASE_DIR = pathOfLength(200);
+const FALLBACK_DIRECTORY = socketFallbackDir(generationRoot({ baseDir: RELOCATED_BASE_DIR }));
 const FALLBACK_ROOT = dirname(FALLBACK_DIRECTORY);
 
-function secureStorage(mode = 0o40700n): ProviderProxyEndpointEnvironment['storage'] {
+function secureStorage(mode = 0o40700n, ownerUid = CURRENT_UID): ProviderProxyEndpointEnvironment['storage'] {
   let current = mode;
   const stat = (value: bigint) => ({
     dev: 1n,
     ino: 1n,
     mode: value,
-    uid: BigInt(CURRENT_UID),
+    uid: BigInt(ownerUid),
     size: 0n,
     mtimeNs: 0n,
     isDirectory: () => (value & 0o170000n) === 0o040000n,
@@ -141,12 +143,24 @@ describe('provider proxy paths', () => {
     const mkdir = vi.fn();
     const endpoint = providerProxyEndpoint(
       identity,
-      environment({ baseDir: pathOfLength(200), storage: { ...secureStorage(), mkdirSync: mkdir } }),
+      environment({ baseDir: RELOCATED_BASE_DIR, storage: { ...secureStorage(), mkdirSync: mkdir } }),
     );
-    const fallbackDirectory = socketFallbackDir(CURRENT_UID);
 
-    expect(mkdir).toHaveBeenCalledWith(fallbackDirectory, { recursive: true, mode: 0o700 });
-    expect(endpoint.startsWith(`${fallbackDirectory}/provider-`)).toBe(true);
+    expect(mkdir).toHaveBeenCalledWith(FALLBACK_DIRECTORY, { recursive: true, mode: 0o700 });
+    expect(endpoint.startsWith(`${FALLBACK_DIRECTORY}/provider-`)).toBe(true);
+  });
+
+  it('keeps one relocated endpoint address for one state root when the calling uid changes', () => {
+    const userEndpoint = providerProxyEndpoint(
+      identity,
+      environment({ baseDir: RELOCATED_BASE_DIR, uid: 1_000, storage: secureStorage(0o40700n, 1_000) }),
+    );
+    const sudoEndpoint = providerProxyEndpoint(
+      identity,
+      environment({ baseDir: RELOCATED_BASE_DIR, uid: 0, storage: secureStorage(0o40700n, 0) }),
+    );
+
+    expect(userEndpoint).toBe(sudoEndpoint);
   });
 
   it('relocates a multibyte base path at the Linux byte threshold', () => {
@@ -159,16 +173,16 @@ describe('provider proxy paths', () => {
 
     const endpoint = providerProxyEndpoint(identity, environment({ baseDir }));
 
-    expect(endpoint.startsWith(`${socketFallbackDir(CURRENT_UID)}/provider-`)).toBe(true);
+    expect(endpoint.startsWith(`${socketFallbackDir(generationRoot({ baseDir }))}/provider-`)).toBe(true);
   });
 
   it('tightens an existing fallback directory of its own whose mode is not 0700', () => {
     const storage = secureStorage(0o40755n);
 
-    const endpoint = providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }));
+    const endpoint = providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }));
 
     expect(storage.chmodSync).toHaveBeenCalledWith(FALLBACK_DIRECTORY, 0o700);
-    expect(endpoint.startsWith(`${socketFallbackDir(CURRENT_UID)}/provider-`)).toBe(true);
+    expect(endpoint.startsWith(`${FALLBACK_DIRECTORY}/provider-`)).toBe(true);
   });
 
   it('refuses a fallback directory owned by another uid', () => {
@@ -181,7 +195,7 @@ describe('provider proxy paths', () => {
           : { ...loose.lstatSync(path, { bigint: true }), uid: BigInt(CURRENT_UID) + 1n },
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
         message:
@@ -202,7 +216,7 @@ describe('provider proxy paths', () => {
           : { ...loose.lstatSync(path, { bigint: true }), mode: 0o120777n, isDirectory: () => false },
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
         message:
@@ -223,7 +237,7 @@ describe('provider proxy paths', () => {
           : loose.statSync(path, { bigint: true }),
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_insecure',
         message:
@@ -243,7 +257,7 @@ describe('provider proxy paths', () => {
       },
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_unverified',
         message:
@@ -284,14 +298,14 @@ describe('provider proxy paths', () => {
       },
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_unverified',
         message: expect.stringContaining(`with mode 0700: ${expectedCause}.`),
         context: expect.objectContaining({ refusal: 'unverified', cause: expectedCause }),
       }),
     );
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.not.objectContaining({ message: expect.stringContaining('undefined') }),
     );
   });
@@ -306,7 +320,7 @@ describe('provider proxy paths', () => {
           : { ...loose.lstatSync(path, { bigint: true }), uid: undefined },
     };
 
-    expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), storage }))).toThrowError(
+    expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, storage }))).toThrowError(
       expect.objectContaining({
         code: 'proxy_endpoint_unverified',
         message: expect.stringContaining(
@@ -318,9 +332,9 @@ describe('provider proxy paths', () => {
   });
 
   it.each([Number.NaN, 0xffff_ffff, Number.MAX_SAFE_INTEGER])(
-    'names an owner uid the filesystem cannot represent from the fallback address (%s)',
+    'refuses a calling uid the filesystem cannot represent (%s)',
     (uid) => {
-      expect(() => providerProxyEndpoint(identity, environment({ baseDir: pathOfLength(200), uid }))).toThrowError(
+      expect(() => providerProxyEndpoint(identity, environment({ baseDir: RELOCATED_BASE_DIR, uid }))).toThrowError(
         expect.objectContaining({
           code: 'proxy_endpoint_unverified',
           message: expect.stringContaining(

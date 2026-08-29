@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -358,6 +359,45 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(result.status).toBe('ok');
     expect(result, 'the version an operator sees comes from the daemon, not the record').toMatchObject({
       health: { status: 'ok', version: '0.0.0', instanceId: 'test-instance', uptimeMs: 1_000 },
+    });
+  });
+
+  it('keeps a detailed answer usable while carrying the count of provider proxy set rows it skipped', async () => {
+    const understoodRow = {
+      setIdentity: {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      },
+      setToken: encodeProviderProxySetAddress({
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      }),
+      disposition: 'held',
+      incidentReason: 'control_channel_reattaching',
+      waitingFor: 'control-reattachment',
+    };
+    const forwardShapedDetailed = {
+      ...JSON.parse(detailed('ok')),
+      diagnostics: {
+        providerProxySets: [understoodRow, { ...understoodRow, disposition: 'released-by-successor' }],
+      },
+    };
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(JSON.stringify(forwardShapedDetailed), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: {
+        diagnostics: { providerProxySets: [understoodRow] },
+        skippedProviderProxySetRows: 1,
+        skippedProviderProxySetTokens: [understoodRow.setToken],
+      },
     });
   });
 

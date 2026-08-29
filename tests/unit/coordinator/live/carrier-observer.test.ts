@@ -11,7 +11,11 @@ import {
   type CarrierStatusConnector,
   type CarrierStatusRecord,
 } from '#src/coordinator/live/carrier-observer.js';
-import { ControlClientError } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import {
   PROXY_OPERATION_STATUS_MAX_OPERATIONS,
   operationIdentitySchema,
@@ -112,10 +116,22 @@ function respondingConnector(reply: (request: StatusParams) => unknown = validSt
     requests,
     close,
     connect: vi.fn<CarrierStatusConnector>(async () => ({
-      call: async (_method, params) => {
+      exchange: async (_method, params): Promise<ControlExchange> => {
         const request = proxyOperationStatusParamsSchema.parse(params);
         requests.push(request);
-        return reply(request);
+        try {
+          return controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: await reply(request) },
+          });
+        } catch (error: unknown) {
+          // A remote refusal is an answer, so it comes back as a variant; anything else is a real fault.
+          if (!(error instanceof ControlClientError) || error.remoteFailure === null) throw error;
+          return controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'refusal', failure: error.remoteFailure, error },
+          });
+        }
       },
       close,
     })),
@@ -132,6 +148,7 @@ function jsonRpcControlError(jsonRpcCode: number, protocolCode: 'method_not_foun
     jsonRpcCode,
     protocolCode,
     admissionReason: null,
+    heartbeatRefusal: null,
   });
 }
 

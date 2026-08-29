@@ -10,16 +10,25 @@ import {
   listRecoveryQuarantineLocal,
   registerBackendCommands,
   type RecoveryQuarantineCommandOperations,
+  type UnreadableProviderOperationDiscardCommandResult,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { collectCommandCoverage } from '#src/cli/classify.js';
-import { formatRecoveryQuarantineClear, formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
+import {
+  formatRecoveryQuarantineClear,
+  formatRecoveryQuarantineList,
+  formatUnreadableProviderOperationDiscard,
+} from '#src/cli/format/backend.js';
 import { buildProgram } from '#src/cli/program.js';
-import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
+import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
+import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import * as ipcEnsure from '#src/transport/ipc/ensure.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 const storeReset: StoreResetCommandOperations = {
   list: () => ({ incidents: [] }),
@@ -118,11 +127,264 @@ describe('backend recovery-quarantine commands', () => {
     expect(entries).toHaveLength(3);
     expect(stdout).toBe(`${formatRecoveryQuarantineList(entries)}\n`);
     expect(stdout).toContain(
-      '- boundary="workflow-recovery" key="workflow-1" revision="fingerprint:revision-1" state=active stage=hydrate',
+      `- boundary="workflow-recovery" key=${encodeRecoveryQuarantineKey(
+        'workflow-1',
+      )} revision="fingerprint:revision-1" state=active stage=hydrate`,
     );
-    expect(stdout).toContain('key="workflow-literal-sentinel" revision="fingerprint:until-cleared"');
-    expect(stdout).toContain('key="workflow-unversioned" revision="until-cleared"');
+    expect(stdout).toContain(
+      `key=${encodeRecoveryQuarantineKey('workflow-literal-sentinel')} revision="fingerprint:until-cleared"`,
+    );
+    expect(stdout).toContain(`key=${encodeRecoveryQuarantineKey('workflow-unversioned')} revision="until-cleared"`);
     expect(stderr).toBe('');
+  });
+
+  it('should derive a visible coordinate when an unreadable provider operation has no quarantine row', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-unreadable-provider-operation-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = openStoreDatabase({
+      path: dbPath,
+      storage: runtime.storage,
+      storeFormat: currentCoralStoreFormat(),
+      flavor: runtime.flavor,
+    });
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const key =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` + 'job-1:operation-1:proxy-1:build-1';
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
+    expect(RecoveryQuarantineStore.readOnly(db).list()).toEqual([]);
+    db.close();
+
+    const entries = listRecoveryQuarantineLocal(runtime);
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: expect.objectContaining({
+          key,
+          revision: { kind: 'fingerprint', value: expect.stringMatching(/^sha256:/u) },
+        }),
+        state: 'active',
+        stage: 'hydrate',
+        detectedAt: null,
+        updatedAt: null,
+      }),
+    ]);
+    const rendered = formatRecoveryQuarantineList(entries);
+    expect(rendered).toContain(`key=${encodeRecoveryQuarantineKey(key)}`);
+    expect(rendered).toContain('detected_at=unavailable updated_at=unavailable');
+    expect(rendered).toContain('derived from the durable unreadable provider operation row');
+    expect(rendered).not.toContain('discard=');
+  });
+
+  it.each([
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: true,
+    },
+    {
+      state: 'retrying' as const,
+      retry: { owner: 'retry-owner', token: 'retry-token' },
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'continuation' as const,
+      retry: null,
+      continuation: { kind: 'provider-retry', key: 'continuation-key' },
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: false,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'until-cleared' as const },
+      key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      prints: false,
+    },
+    {
+      state: 'active' as const,
+      retry: null,
+      continuation: null,
+      persisted: true,
+      revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
+      key: 'not-a-provider-operation-key',
+      prints: false,
+    },
+  ])(
+    'prints discard=$prints for $state persisted=$persisted evidence',
+    ({ state, retry, continuation, persisted, revision, key, prints }) => {
+      const rendered = formatRecoveryQuarantineList([
+        {
+          boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+          subject: { key, revision },
+          state,
+          stage: 'hydrate',
+          retry,
+          continuation,
+          errorMessage: 'unreadable',
+          detail: 'operator decision required',
+          detectedAt: persisted ? '2026-08-28T00:00:00.000Z' : null,
+          updatedAt: persisted ? '2026-08-28T00:00:00.000Z' : null,
+        },
+      ]);
+      expect(rendered.includes('discard=')).toBe(prints);
+    },
+  );
+
+  it('should send the exact listed unreadable row revision to the destructive discard operation', async () => {
+    const key =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      '00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:' +
+      '00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004';
+    const revision = `sha256:${'a'.repeat(64)}`;
+    const entry = {
+      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+      subject: { key, revision: { kind: 'fingerprint' as const, value: revision } },
+      state: 'active' as const,
+      stage: 'hydrate' as const,
+      retry: null,
+      continuation: null,
+      errorMessage: 'unreadable',
+      detail: 'discardable exact row',
+      detectedAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    };
+    const discardProviderOperation = vi.fn<
+      NonNullable<RecoveryQuarantineCommandOperations['discardProviderOperation']>
+    >(async (request) => ({ ...request, kind: 'discarded' as const }));
+
+    await programWith({ list: () => [entry], clear: vi.fn(), discardProviderOperation }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'discard-provider-operation',
+      '--key',
+      encodeRecoveryQuarantineKey(key),
+      '--revision',
+      `fingerprint:${revision}`,
+    ]);
+
+    expect(discardProviderOperation).toHaveBeenCalledWith({ key, revision });
+    expect(stdout).toBe(`${formatUnreadableProviderOperationDiscard({ key, revision, kind: 'discarded' })}\n`);
+    expect(stdout).toContain('permanently removed');
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it.each<
+    Readonly<{
+      result: UnreadableProviderOperationDiscardCommandResult;
+      exitCode: 0 | 1 | 75;
+      stream: 'stdout' | 'stderr';
+    }>
+  >([
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'discarded' },
+      exitCode: 0,
+      stream: 'stdout',
+    },
+    { result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'absent' }, exitCode: 1, stream: 'stderr' },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'readable' },
+      exitCode: 1,
+      stream: 'stderr',
+    },
+    {
+      result: {
+        key: 'raw-key',
+        revision: `sha256:${'a'.repeat(64)}`,
+        kind: 'revision-mismatch',
+        currentRevision: `sha256:${'b'.repeat(64)}`,
+      },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'quarantine-not-found' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'owned', state: 'retrying' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'owned', state: 'continuation' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'unsupported-coordinator' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'coordinator-draining' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'unsupported-coordinator-result' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'timeout' },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+  ])('maps discard result $result.kind to exit $exitCode on $stream', async ({ result, exitCode, stream }) => {
+    const discardProviderOperation = vi.fn(async () => result);
+    await programWith({ list: () => [], clear: vi.fn(), discardProviderOperation }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'discard-provider-operation',
+      '--key',
+      encodeRecoveryQuarantineKey(result.key),
+      '--revision',
+      `fingerprint:${result.revision}`,
+    ]);
+
+    expect(process.exitCode).toBe(exitCode);
+    const rendered = stream === 'stdout' ? stdout : stderr;
+    expect(rendered).toContain(encodeRecoveryQuarantineKey(result.key));
+    expect(rendered).toContain('Observed:');
+    expect(rendered).toContain('Not observed:');
+    expect(rendered).toContain('Effect:');
+    expect(rendered).toContain('Next step:');
+    expect(stream === 'stdout' ? stderr : stdout).toBe('');
+    if (result.kind.includes('coordinator') || result.kind === 'timeout') {
+      expect(stderr).toContain(`revision="fingerprint:${result.revision}"`);
+      expect(stderr).toContain('No discard verdict');
+    }
   });
 
   it('should round-trip a fingerprint equal to the until-cleared sentinel', async () => {
@@ -142,7 +404,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-literal-sentinel',
+      encodeRecoveryQuarantineKey('workflow-literal-sentinel'),
       '--revision',
       'fingerprint:until-cleared',
     ]);
@@ -238,7 +500,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -252,6 +514,78 @@ describe('backend recovery-quarantine commands', () => {
     expect(stdout).toContain('partial progress');
     expect(stdout).toContain('recovery-quarantine list');
     expect(stderr).toBe('');
+  });
+
+  it.each([
+    ['the new encoded token', encodeRecoveryQuarantineKey('job-123'), 'job-123'],
+    ['a shipped plain key', 'job-123', 'job-123'],
+    ['a shipped JSON-quoted key', '"job-123"', 'job-123'],
+    ['a shipped plain key with the encoding prefix', 'rqk1-legacy', 'rqk1-legacy'],
+  ])('should resolve %s to the stored recovery key', async (_form, argument, storedKey) => {
+    const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
+      ...request,
+      disposition: 'advanced' as const,
+    }));
+
+    await programWith({ list: () => [], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'workflow-recovery',
+      '--key',
+      argument,
+      '--revision',
+      'revision-1',
+    ]);
+
+    expect(clear).toHaveBeenCalledWith({
+      boundary: 'workflow-recovery',
+      key: storedKey,
+      revision: 'revision-1',
+    });
+  });
+
+  it('should resolve a stored raw key that is also a well-formed encoded token as the raw key', async () => {
+    const storedKey = 'rqk1-0061';
+    const entry = {
+      boundary: 'workflow-recovery',
+      subject: { key: storedKey, revision: { kind: 'fingerprint' as const, value: 'revision-1' } },
+      state: 'active' as const,
+      stage: 'hydrate' as const,
+      errorMessage: 'failed to hydrate persisted workflow',
+      detail: 'retained for operator retry',
+      retry: null,
+      continuation: null,
+      detectedAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    };
+    const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
+      ...request,
+      disposition: 'advanced' as const,
+    }));
+
+    await programWith({ list: () => [entry], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'workflow-recovery',
+      '--key',
+      storedKey,
+      '--revision',
+      'revision-1',
+    ]);
+
+    expect(clear).toHaveBeenCalledWith({
+      boundary: 'workflow-recovery',
+      key: storedKey,
+      revision: 'revision-1',
+    });
   });
 
   it('should execute the continuation instruction and show the durable continuation', async () => {
@@ -285,12 +619,7 @@ describe('backend recovery-quarantine commands', () => {
     expect(stderr).toBe('');
   });
 
-  // The error message on a bad coordinate tells the operator to run `list` and copy the exact key, and
-  // `list` renders every field with `JSON.stringify`. For `session-retention-work` that key joins two
-  // identifiers with a NUL, so the printed form is an escape sequence and the stored form is a byte no
-  // command line can carry. Copying what the tool prints has to work, or those rows are addressable by
-  // nothing.
-  it('should accept a subject key exactly as list prints it, escapes included', async () => {
+  it('should accept a NUL-containing subject key exactly as list prints it', async () => {
     const key = `3a15866c\u00006e83e33f:0:0`;
     const entry = {
       boundary: 'session-retention-work',
@@ -306,8 +635,8 @@ describe('backend recovery-quarantine commands', () => {
     };
 
     const printed = formatRecoveryQuarantineList([entry]);
-    const printedKey = /key=("(?:[^"\\]|\\.)*")/.exec(printed)?.[1];
-    expect(printedKey, 'list must render the key as a JSON string').toBeDefined();
+    const printedKey = /key=(rqk1-[0-9a-f]+)/u.exec(printed)?.[1];
+    expect(printedKey, 'list must render one shell-safe key token').toBeDefined();
     expect(printedKey).not.toContain('\u0000');
 
     const clear = vi.fn(async (request: { boundary: string; key: string; revision: string | null }) => ({
@@ -332,9 +661,31 @@ describe('backend recovery-quarantine commands', () => {
     expect(clear.mock.calls[0]?.[0].key, 'the coordinator must receive the stored key, not its rendering').toBe(key);
   });
 
+  it('should not accept shipped JSON quoting as an alternate encoding for a NUL-containing key', async () => {
+    const clear = vi.fn();
+
+    await programWith({ list: () => [], clear }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'clear',
+      '--boundary',
+      'session-retention-work',
+      '--key',
+      '"3a15866c\\u00006e83e33f:0:0"',
+      '--revision',
+      'fingerprint:sha256:revision-1',
+    ]);
+
+    expect(clear).not.toHaveBeenCalled();
+    expect(stderr).toContain('keys containing NUL must use the encoded key printed');
+  });
+
   it('should refuse clear when coordinator authority is unavailable', async () => {
     vi.spyOn(ipcEnsure, 'ensure').mockRejectedValue(new Error('connect ENOENT'));
     const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
+    vi.spyOn(recoveryQuarantine, 'list').mockReturnValue([]);
     const clear = vi.spyOn(recoveryQuarantine, 'clear');
 
     await programWith(recoveryQuarantine).parseAsync([
@@ -346,14 +697,14 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
 
     expect(clear).toHaveBeenCalledOnce();
     expect(stdout).toBe('');
-    expect(stderr).toContain('Recovery quarantine clear requires the canonical coordinator');
+    expect(stderr).toContain('Recovery quarantine mutation requires the canonical coordinator');
     expect(stderr).toContain('coral-cli backend status');
     expect(process.exitCode).toBe(69);
   });
@@ -383,12 +734,81 @@ describe('backend recovery-quarantine commands', () => {
     );
   });
 
+  it.each([
+    {
+      name: 'method-not-found',
+      respond: () => Promise.reject(new IpcRpcError({ code: -32601, message: 'Method not found' })),
+      kind: 'unsupported-coordinator' as const,
+    },
+    {
+      name: 'coordinator draining',
+      respond: () => Promise.resolve({ code: 'backend_shutting_down', message: 'Backend shutting down' }),
+      kind: 'coordinator-draining' as const,
+    },
+    {
+      name: 'future exact-coordinate result',
+      respond: () =>
+        Promise.resolve({
+          kind: 'discarded-with-audit',
+          key: 'raw-key',
+          revision: `sha256:${'a'.repeat(64)}`,
+        }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'known result without a coordinate',
+      respond: () => Promise.resolve({ kind: 'discarded' }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'result with malformed coordinates',
+      respond: () => Promise.resolve({ kind: 'discarded', key: 42, revision: null }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'result for a mismatched coordinate',
+      respond: () =>
+        Promise.resolve({
+          kind: 'discarded',
+          key: 'another-key',
+          revision: `sha256:${'b'.repeat(64)}`,
+        }),
+      kind: 'unsupported-coordinator-result' as const,
+    },
+    {
+      name: 'timeout',
+      respond: () =>
+        Promise.reject(
+          Object.assign(new Error('Failed to connect to the Coral coordinator.'), {
+            context: { cause: 'IPC connection deadline exceeded before retry' },
+          }),
+        ),
+      kind: 'timeout' as const,
+    },
+  ])('names discard $name as a typed no-verdict', async ({ respond, kind }) => {
+    const request = vi.fn(respond);
+    vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({ request } as never);
+    const coordinate = { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}` };
+
+    await expect(createRecoveryQuarantineCommandOperations().discardProviderOperation?.(coordinate)).resolves.toEqual({
+      ...coordinate,
+      kind,
+    });
+    expect(request).toHaveBeenCalledWith(
+      'coordinator.recovery_quarantine.discard_provider_operation',
+      coordinate,
+      expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
+    );
+  });
+
   it('should report coordinator contract drift without calling it unreachable', async () => {
     vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
       request: vi.fn().mockResolvedValue({ disposition: 'advanced' }),
     } as never);
+    const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
+    vi.spyOn(recoveryQuarantine, 'list').mockReturnValue([]);
 
-    await programWith(createRecoveryQuarantineCommandOperations()).parseAsync([
+    await programWith(recoveryQuarantine).parseAsync([
       'node',
       'coral-cli',
       'backend',
@@ -397,7 +817,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -410,8 +830,10 @@ describe('backend recovery-quarantine commands', () => {
     vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
       request: vi.fn().mockRejectedValue(new Error('IPC request timed out after 30000ms')),
     } as never);
+    const recoveryQuarantine = createRecoveryQuarantineCommandOperations();
+    vi.spyOn(recoveryQuarantine, 'list').mockReturnValue([]);
 
-    await programWith(createRecoveryQuarantineCommandOperations()).parseAsync([
+    await programWith(recoveryQuarantine).parseAsync([
       'node',
       'coral-cli',
       'backend',
@@ -420,7 +842,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       'workflow-recovery',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -441,7 +863,7 @@ describe('backend recovery-quarantine commands', () => {
       '--boundary',
       '',
       '--key',
-      'workflow-1',
+      encodeRecoveryQuarantineKey('workflow-1'),
       '--revision',
       'revision-1',
     ]);
@@ -478,6 +900,12 @@ describe('backend recovery-quarantine commands', () => {
       },
       {
         path: 'backend recovery-quarantine clear',
+        isLeaf: true,
+        kind: 'class',
+        commandClass: 'mutate',
+      },
+      {
+        path: 'backend recovery-quarantine discard-provider-operation',
         isLeaf: true,
         kind: 'class',
         commandClass: 'mutate',

@@ -12,7 +12,7 @@ import { writeAuditEvent } from '../infra/audit-log.js';
 import { incarnationMayAuthorizeSignal, isProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import type { Runtime } from '../runtime/ports.js';
+import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
 import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/index.js';
@@ -26,7 +26,7 @@ import {
 const SOCKET_BIND_POLL_MS = 200;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
 const DEFAULT_SIGNAL_COOLDOWN_MS = 60_000;
-const SIGNAL_LEDGER_FILE = 'handoff-signal.json';
+const LEGACY_SIGNAL_LEDGER_FILE = 'handoff-signal.json';
 export const HANDOFF_SIGNAL_POLICY_ENV = 'CORAL_HANDOFF_SIGNAL_POLICY';
 
 /**
@@ -56,7 +56,10 @@ export class BackendAlreadyRunningError extends Error {
   }
 }
 
-export type HandoffBindResult = { kind: 'bound' } | { kind: 'incumbent'; reason: string };
+export type HandoffBindResult =
+  | { kind: 'bound' }
+  | { kind: 'incumbent'; reason: string }
+  | { kind: 'addressed-incumbent'; socketPath: string };
 
 export type BoundCoordinator = Readonly<{
   readonly acquiredViaHandoff: boolean;
@@ -233,6 +236,7 @@ const HANDOFF_REFUSAL_REGISTRY = {
 } satisfies Record<HandoffRefusalCause, SignalRefusalText>;
 
 const HANDOFF_SIGNAL_RECORD_VERSION = 2 as const;
+const SIGNAL_LEDGER_FILE = `handoff-signal.v${HANDOFF_SIGNAL_RECORD_VERSION}.json`;
 
 export type HandoffSignalRecord = {
   version: typeof HANDOFF_SIGNAL_RECORD_VERSION;
@@ -243,16 +247,48 @@ export type HandoffSignalRecord = {
   instanceId?: string;
   signal: HandoffSignal;
   signaledAtMs: number;
+  publicationId?: string;
 };
 
 export type LegacyHandoffSignalAttemptRecord = Omit<HandoffSignalRecord, 'accepted' | 'version'> & {
   version: 1;
+  accepted?: never;
 };
 
-type HandoffSignalLedgerRecord = HandoffSignalRecord | LegacyHandoffSignalAttemptRecord;
+type HandoffSignalShadowRecord = Omit<HandoffSignalRecord, 'version'> & {
+  version: 1;
+};
+
+type HandoffSignalLedgerRecord = HandoffSignalRecord | HandoffSignalShadowRecord | LegacyHandoffSignalAttemptRecord;
+
+type HandoffSignalLedgerCandidate = Readonly<{
+  address: 'detail' | 'shadow';
+  provenance: 'detail-publication' | 'paired-shadow' | 'foreign-publication';
+  record: HandoffSignalLedgerRecord;
+}>;
+
+export type HandoffSignalCooldownDisposition =
+  | Readonly<{ kind: 'clear' }>
+  | Readonly<{
+      kind: 'accepted-signal';
+      signal: HandoffSignal;
+      ageMs: number;
+      retryInMs: number;
+    }>
+  | Readonly<{
+      kind: 'foreign-signal-attempt';
+      signal: HandoffSignal;
+      ageMs: number;
+      retryInMs: number;
+    }>;
 
 export interface HandoffSignalLedger {
-  read(): HandoffSignalLedgerRecord | null;
+  cooldownDisposition(input: {
+    socketPath: string;
+    incumbent: IncumbentIdentity;
+    nowMs: number;
+    cooldownMs: number;
+  }): HandoffSignalCooldownDisposition;
   write(record: HandoffSignalRecord): void;
 }
 
@@ -260,26 +296,100 @@ type HandoffSignalLedgerStorage = Pick<StoragePort, 'mkdirSync' | 'readFileSync'
 
 export function createFileHandoffSignalLedger(options: {
   storage: HandoffSignalLedgerStorage;
+  ids: IdPort;
   runDir: string;
 }): HandoffSignalLedger {
   const path = join(options.runDir, SIGNAL_LEDGER_FILE);
+  const legacyPath = join(options.runDir, LEGACY_SIGNAL_LEDGER_FILE);
+  const readAt = (
+    recordPath: string,
+    version: HandoffSignalLedgerRecord['version'],
+  ): HandoffSignalLedgerRecord | null => {
+    try {
+      const parsed = JSON.parse(options.storage.readFileSync(recordPath, 'utf-8')) as unknown;
+      const record = decodeHandoffSignalLedgerRecord(parsed);
+      return record?.version === version ? record : null;
+    } catch {
+      return null;
+    }
+  };
+  const writeAt = (recordPath: string, record: HandoffSignalLedgerRecord): boolean => {
+    try {
+      options.storage.writeAtomicSync(recordPath, `${JSON.stringify(record)}\n`, {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      return true;
+    } catch {
+      // Ledger persistence must fail open so a verified incumbent cannot become permanently unreplaceable.
+      return false;
+    }
+  };
   return {
-    read: () => {
-      try {
-        const parsed = JSON.parse(options.storage.readFileSync(path, 'utf-8')) as unknown;
-        return decodeHandoffSignalLedgerRecord(parsed);
-      } catch {
-        return null;
-      }
+    cooldownDisposition: ({ socketPath, incumbent, nowMs, cooldownMs }) => {
+      const current = readAt(path, HANDOFF_SIGNAL_RECORD_VERSION);
+      const legacy = readAt(legacyPath, 1);
+      const matchingCurrent = current !== null && isSameSignalTarget(current, socketPath, incumbent) ? current : null;
+      const matchingLegacy = legacy !== null && isSameSignalTarget(legacy, socketPath, incumbent) ? legacy : null;
+      const paired =
+        matchingCurrent !== null &&
+        matchingLegacy !== null &&
+        matchingCurrent.publicationId !== undefined &&
+        matchingCurrent.publicationId === matchingLegacy.publicationId;
+      const candidates: HandoffSignalLedgerCandidate[] = [
+        ...(matchingCurrent === null
+          ? []
+          : [{ address: 'detail', provenance: 'detail-publication', record: matchingCurrent } as const]),
+        ...(matchingLegacy === null
+          ? []
+          : [
+              {
+                address: 'shadow',
+                provenance: paired ? 'paired-shadow' : 'foreign-publication',
+                record: matchingLegacy,
+              } as const,
+            ]),
+      ];
+      const independent = candidates.filter((candidate) => candidate.provenance !== 'paired-shadow');
+      const active = independent.filter((candidate) => nowMs - candidate.record.signaledAtMs < cooldownMs);
+      active.sort((left, right) => {
+        const recency = right.record.signaledAtMs - left.record.signaledAtMs;
+        if (recency !== 0) return recency;
+        const leftIsIndeterminate = left.record.version === 1 && left.record.accepted !== true;
+        const rightIsIndeterminate = right.record.version === 1 && right.record.accepted !== true;
+        return Number(rightIsIndeterminate) - Number(leftIsIndeterminate);
+      });
+      const selectedCandidate = active[0];
+      if (selectedCandidate === undefined) return { kind: 'clear' };
+      const selected = selectedCandidate.record;
+      const ageMs = nowMs - selected.signaledAtMs;
+      const timing = { signal: selected.signal, ageMs, retryInMs: cooldownMs - ageMs };
+      return selected.version === 1 && selected.accepted !== true
+        ? { kind: 'foreign-signal-attempt', ...timing }
+        : { kind: 'accepted-signal', ...timing };
     },
     write: (record) => {
       try {
         options.storage.mkdirSync(options.runDir, { recursive: true });
-        options.storage.writeAtomicSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf-8', mode: 0o600 });
       } catch {
-        // Audit/cooldown is best-effort. A write failure must not leave a
-        // verified incumbent permanently unreplaceable.
+        return;
       }
+      const publicationId = options.ids.uuid();
+      const shadowWritten = writeAt(legacyPath, {
+        version: 1,
+        accepted: true,
+        socketPath: record.socketPath,
+        pid: record.pid,
+        ...(record.incarnation === undefined ? {} : { incarnation: record.incarnation }),
+        ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
+        signal: record.signal,
+        signaledAtMs: record.signaledAtMs,
+        publicationId,
+      });
+      if (!shadowWritten) {
+        return;
+      }
+      writeAt(path, { ...record, publicationId });
     },
   };
 }
@@ -295,12 +405,16 @@ function decodeHandoffSignalLedgerRecord(value: unknown): HandoffSignalLedgerRec
     (record.incarnation === undefined || isProcessIncarnation(record.incarnation)) &&
     (record.instanceId === undefined || typeof record.instanceId === 'string') &&
     (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
-    Number.isFinite(record.signaledAtMs);
+    Number.isFinite(record.signaledAtMs) &&
+    (record.publicationId === undefined ||
+      (typeof record.publicationId === 'string' && record.publicationId.length > 0));
   if (!commonShapeIsValid) {
     return null;
   }
   if (record.version === 1) {
-    return record as LegacyHandoffSignalAttemptRecord;
+    return record.accepted === true
+      ? (record as HandoffSignalShadowRecord)
+      : (record as LegacyHandoffSignalAttemptRecord);
   }
   return record.version === HANDOFF_SIGNAL_RECORD_VERSION && record.accepted === true
     ? (record as HandoffSignalRecord)
@@ -412,26 +526,25 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
   if (ledger === undefined) {
     return;
   }
-  const last = ledger.read();
-  if (last === null || !isSameSignalTarget(last, opts.socketPath, incumbent)) {
-    return;
-  }
   const cooldownMs = opts.signalCooldownMs ?? DEFAULT_SIGNAL_COOLDOWN_MS;
-  const ageMs = opts.runtime.time.now() - last.signaledAtMs;
-  if (ageMs >= cooldownMs) {
-    return;
-  }
-  if (last.version === 1) {
+  const disposition = ledger.cooldownDisposition({
+    socketPath: opts.socketPath,
+    incumbent,
+    nowMs: opts.runtime.time.now(),
+    cooldownMs,
+  });
+  if (disposition.kind === 'clear') return;
+  if (disposition.kind === 'foreign-signal-attempt') {
     refuseHandoff(
       `Refusing ${signal} for pid=${incumbent.pid}`,
       'legacy-signal-attempt-indeterminate',
-      `legacy ${last.signal} attempt was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
+      `legacy ${disposition.signal} attempt was ${disposition.ageMs}ms ago; retry in ${disposition.retryInMs}ms`,
     );
   }
   refuseHandoff(
     `Refusing repeated ${signal} for pid=${incumbent.pid}`,
     'signal-cooldown-active',
-    `last ${last.signal} was ${ageMs}ms ago; retry in ${cooldownMs - ageMs}ms`,
+    `last ${disposition.signal} was ${disposition.ageMs}ms ago; retry in ${disposition.retryInMs}ms`,
   );
 }
 
@@ -854,7 +967,8 @@ function createBoundCoordinator(sawIncumbent: boolean, opts: HandoffOptions): Bo
  * A contender must not evict a same-version incumbent solely because their bundle hashes differ, and an
  * older contender must not evict a healthy newer incumbent.
  */
-export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordinator> {
+export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<BoundCoordinator> {
+  let opts = { ...initialOptions };
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
   const platform = opts.runtime.env.platform() as NodeJS.Platform;
   const signalPolicy = resolveSignalPolicy(opts);
@@ -949,6 +1063,9 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordi
     const result = await opts.bindAttempt();
     if (result.kind === 'bound') {
       return createBoundCoordinator(sawIncumbent, opts);
+    }
+    if (result.kind === 'addressed-incumbent') {
+      opts = { ...opts, socketPath: result.socketPath };
     }
 
     sawIncumbent = true;

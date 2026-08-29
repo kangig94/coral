@@ -55,8 +55,47 @@ export type ProviderProxyDeadlineTiming = Readonly<{
   orphanTimeoutMs: number;
 }>;
 
+/**
+ * How long a role's own enforcer tolerates silence before its adoption deadline can fire, derived from the
+ * same two configuration fields `adoptionDeadline()` (below) itself subtracts. Exported so a consumer that
+ * needs to agree with this tolerance — the coordinator's own bounded heartbeat-hold escalation
+ * (`providerProxyHeartbeatHoldBound`, below) — derives it from this one formula instead of restating it as an
+ * independently chosen number.
+ */
+export function providerProxyAdoptionWindowMs(
+  configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
+): number {
+  return configuration.orphanTimeoutMs - configuration.teardownReserveMs;
+}
+
+/**
+ * `spanMs` is `providerProxyAdoptionWindowMs`'s own tolerance. `materialSchedulerLatenessMs` is one quarter of
+ * that span: a hold window with at least that much observed scheduler delay cannot authorize the coordinator's
+ * own bounded escalation. The established set carries this result beside the deadline agreement it came from.
+ */
+export type ProviderProxyHeartbeatHoldBound = Readonly<{
+  spanMs: number;
+  materialSchedulerLatenessMs: number;
+}>;
+
+/**
+ * A quarter-span scheduler delay is material: below it, at least three quarters of the window remains evidence
+ * about unanswered heartbeats; at or above it, scheduler starvation is too large a competing explanation for
+ * that window. The allowance derives here from the adoption window instead of becoming another independently
+ * configured duration.
+ */
+export function providerProxyHeartbeatHoldBound(
+  configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
+): ProviderProxyHeartbeatHoldBound {
+  const spanMs = providerProxyAdoptionWindowMs(configuration);
+  return {
+    spanMs,
+    materialSchedulerLatenessMs: Math.floor(spanMs / 4),
+  };
+}
+
 export function providerProxyDeadlineTimingIsValid(timing: ProviderProxyDeadlineTiming): boolean {
-  const adoptionWindowMs = timing.orphanTimeoutMs - timing.teardownReserveMs;
+  const adoptionWindowMs = providerProxyAdoptionWindowMs(timing);
   const successorTailMs = Math.max(
     2 * timing.rpcTimeoutMs,
     timing.redemptionDispatchMs + timing.rpcTimeoutMs + timing.startupAttachReserveMs,
@@ -123,7 +162,7 @@ export const providerProxyDeadlineConfigurationSchema = providerProxyDeadlineInp
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['orphanTimeoutMs'],
-        message: 'must satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy',
+        message: `${CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV} must be at least ${MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS}ms to satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy`,
       });
     }
     if (PROXY_TEARDOWN_RESERVE_MS !== EXPECTED_PROXY_TEARDOWN_RESERVE_MS) {
@@ -159,7 +198,6 @@ export type ProviderProxyEnforcerBounds<Scope extends symbol> = Readonly<{
   controlLossAt: MonotonicInstant<Scope>;
   exitDeadline: MonotonicInstant<Scope>;
   adoptionDeadline: MonotonicInstant<Scope>;
-  firstChallengeExpiresAt: MonotonicInstant<Scope> | null;
 }>;
 
 export type EnforcerDeadlineState = 'accepting-control' | 'teardown-latched' | 'containment-absent' | 'exited';
@@ -190,10 +228,12 @@ export type ChallengeEchoResult =
 
 export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
   state(): EnforcerDeadlineState;
+  /** Recovery grants must name the same orphan timeout this role was bootstrapped to enforce. */
+  orphanTimeoutMs(): number;
   bounds(): ProviderProxyEnforcerBounds<Scope>;
   /** Mints and installs the tenancy's first challenge in one act; the challenge travels back in the result. */
   issueFirstChallenge(): DeadlineChallengeIssueResult;
-  /** Whether the established tenancy still holds control on this enforcer's own clock. */
+  /** Whether recent evidence still satisfies this enforcer's live-control act preconditions. */
   controlIsLive(): boolean;
   echoChallenge(challenge: string): ChallengeEchoResult;
   /**
@@ -258,20 +298,13 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   // Pairing loss is a third, independent input — this machine's own state, not the lease's.
   let pairingLossAt: MonotonicInstant<Scope> | null = null;
 
-  /**
-   * The adoption deadline on its own, apart from `bounds()`: the evidence's own expiry ceiling is this
-   * value, and computing it through `bounds()` — which itself reads the evidence's challenge expiry — would
-   * recurse. Pairing loss may pull it earlier, never later, once the party that would linearize a successor
-   * is gone.
-   */
   function adoptionDeadline(): MonotonicInstant<Scope> {
     const exit = clock.shiftMilliseconds(evidence.lastRoundTripEvidenceAt(), configuration.orphanTimeoutMs);
     const derived = clock.shiftMilliseconds(exit, -configuration.teardownReserveMs);
     return pairingLossAt === null ? derived : clock.earlier(derived, pairingLossAt);
   }
 
-  // A challenge may not outlive the window it is evidence for, so its expiry is clamped to adoption.
-  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs, clock.now(), adoptionDeadline);
+  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs, clock.now());
 
   /**
    * The teardown deadlines this enforcer adds on top of the lease. Both are anchored on the same round-trip
@@ -286,7 +319,6 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       controlLossAt: evidence.controlLossAt(),
       exitDeadline: clock.shiftMilliseconds(lastRoundTripEvidenceAt, configuration.orphanTimeoutMs),
       adoptionDeadline: adoptionDeadline(),
-      firstChallengeExpiresAt: evidence.challengeExpiresAt(),
     });
   };
 
@@ -303,8 +335,9 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
 
   return Object.freeze({
     state: (): EnforcerDeadlineState => state,
-    // One definition of "control is held": round-trip evidence on this enforcer's clock. A socket that is
-    // merely still open belongs to a wedged coordinator, and a successor must be able to redeem past it.
+    orphanTimeoutMs: (): number => configuration.orphanTimeoutMs,
+    // Successor admission and mutation authority share this recent-evidence precondition. Its lapse permits
+    // those acts to change disposition; it does not itself end the tenancy.
     controlIsLive: (): boolean => evidence.isControlLive(clock.now()),
     bounds,
     issueFirstChallenge: (): DeadlineChallengeIssueResult => {
@@ -313,7 +346,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       const challenge = policy.mintChallenge();
       // A refusal, not a throw: "a first challenge already exists" is a state this machine models, and the
       // endpoint has to be able to answer the caller rather than fail the connection over it.
-      if (!evidence.issueFirstChallenge(challenge, now, 'bootstrap-first')) {
+      if (!evidence.issueFirstChallenge(challenge)) {
         return { accepted: false, reason: 'invalid-state' };
       }
       return { accepted: true, challenge };
@@ -349,7 +382,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       const challenge = policy.mintChallenge();
       // Installing a challenge before the credential is checked would let a refused replay poison a
       // legitimate successor's retry, while the reverse order costs nothing.
-      evidence.beginSuccessorControl(challenge, now);
+      evidence.beginSuccessorControl(challenge);
       return { accepted: true, challenge };
     },
     latchTeardown,

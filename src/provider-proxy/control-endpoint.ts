@@ -5,7 +5,6 @@ import { truncate } from '../infra/text.js';
 import {
   ProxyControlProtocolError,
   controlHeartbeatParamsSchema,
-  controlHeartbeatResultSchema,
   controlPairParamsSchema,
   controlPairResultSchema,
   createFrameReader,
@@ -13,6 +12,7 @@ import {
   encodeProxyControlFrame,
   type ProxyControlJsonRpcMessage,
 } from './protocol.js';
+import { acceptedHeartbeatResult } from './heartbeat-observation.js';
 
 /** JSON-RPC error codes this endpoint reports. Reserved-range values follow the JSON-RPC 2.0 spec. */
 const JSON_RPC_INVALID_REQUEST = -32_600;
@@ -85,6 +85,19 @@ class ControlAdmissionRefusedError extends ProxyControlProtocolError {
   }
 }
 
+class ControlHeartbeatRefusedError extends ProxyControlProtocolError {
+  readonly reason: Extract<ControlChallengeEcho, { accepted: false }>['reason'];
+  readonly nextHeartbeatChallenge: ControlChallenge | null;
+
+  constructor(refusal: Extract<ControlChallengeEcho, { accepted: false }>) {
+    super('invalid_request', `Heartbeat echo was not accepted (${refusal.reason}).`);
+    this.name = 'ControlHeartbeatRefusedError';
+    this.reason = refusal.reason;
+    this.nextHeartbeatChallenge = refusal.reason === 'challenge-mismatch' ? refusal.nextChallenge : null;
+    Object.setPrototypeOf(this, ControlHeartbeatRefusedError.prototype);
+  }
+}
+
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
 
 /** Who holds a control tenancy. Two opens naming the same holder are one tenancy re-reported, not two. */
@@ -144,7 +157,8 @@ export type ControlChallengeIssue =
 /** What `echoChallenge` answers: the next minted challenge on acceptance, or a refusal. */
 export type ControlChallengeEcho =
   | Readonly<{ accepted: true; nextChallenge: ControlChallenge }>
-  | Readonly<{ accepted: false; reason?: string }>;
+  | Readonly<{ accepted: false; reason: 'challenge-mismatch'; nextChallenge: ControlChallenge }>
+  | Readonly<{ accepted: false; reason: 'teardown-latched'; nextChallenge?: never }>;
 
 /**
  * The single owner of challenge state. The endpoint deliberately keeps none of its own: two stores each
@@ -168,15 +182,14 @@ export interface ControlChallengeAuthority {
    */
   reattachControl(): { readonly accepted: boolean; readonly reason?: string };
   /**
-   * Whether the established tenancy still holds control. Admission and mutation authorization read this
-   * rather than socket liveness: a wedged coordinator keeps its socket open indefinitely, but its lease must
-   * still end both its authority and its ability to exclude a successor.
+   * Whether recent evidence still excludes successor admission and authorizes mutations. These are acts
+   * that require a live-control precondition; a false answer does not itself end the tenancy.
    */
   controlIsLive(): boolean;
   /**
    * Verifies an echoed challenge against the outstanding one and, on acceptance, records the round-trip
    * evidence and mints and installs the replacement. The authority owns the comparison, so the endpoint
-   * cannot accept an echo the deadline model rejects.
+   * cannot accept evidence that was already consumed or displaced.
    */
   echoChallenge(challenge: ControlChallenge): ControlChallengeEcho;
 }
@@ -221,7 +234,7 @@ export interface ControlEndpoint {
 type Tenancy = {
   readonly epoch: ControlEpoch;
   readonly holder: ControlTenancyHolder;
-  /** The exact reply this tenancy opened with. Re-sent verbatim on a reattach; never recomputed. */
+  /** Identity and admission fields are stable across retries of the opening that earned this tenancy. */
   readonly opening: Record<string, unknown>;
   socket: Socket; // one tenancy, successive connections
   active: boolean;
@@ -268,6 +281,21 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
       jsonrpc: '2.0',
       id,
       error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code: error.code, reason: error.reason } },
+    };
+  }
+  if (error instanceof ControlHeartbeatRefusedError) {
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: JSON_RPC_INVALID_REQUEST,
+        message,
+        data: {
+          code: error.code,
+          heartbeatRefusal: error.reason,
+          ...(error.nextHeartbeatChallenge === null ? {} : { nextHeartbeatChallenge: error.nextHeartbeatChallenge }),
+        },
+      },
     };
   }
   if (error instanceof ProxyControlProtocolError) {
@@ -320,8 +348,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const { holder, fields } = await handle(params);
     const live = tenancy;
     if (live !== null && live.holder === holder) {
-      // The same tenancy earned again, on this socket or a new one — not a second tenancy to admit, so the
-      // reply that opened it is replayed verbatim rather than re-minted.
+      // The same tenancy earned again, on this socket or a new one — not a second tenancy to admit.
       const admitted = challenges.reattachControl();
       if (!admitted.accepted) throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');
       if (live.socket !== socket) {
@@ -372,19 +399,14 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     if (echo.controlEpoch !== live.epoch) {
       throw new ProxyControlProtocolError('invalid_request', 'Heartbeat did not name this control tenancy.');
     }
-    // The authority compares and consumes, so a replayed frame cannot re-earn evidence and the endpoint
-    // cannot accept an echo the deadline model has already ruled out.
     const recorded = challenges.echoChallenge(echo.heartbeatChallenge);
     if (!recorded.accepted) {
-      throw new ProxyControlProtocolError(
-        'invalid_request',
-        `Heartbeat echo was not accepted (${recorded.reason ?? 'rejected'}).`,
-      );
+      throw new ControlHeartbeatRefusedError(recorded);
     }
     const becameActive = !live.active;
     live.active = true;
     if (becameActive) observer.onControlActive?.(live.epoch);
-    return controlHeartbeatResultSchema.parse({ state: 'active', nextHeartbeatChallenge: recorded.nextChallenge });
+    return acceptedHeartbeatResult(recorded.nextChallenge);
   };
 
   const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {

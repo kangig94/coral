@@ -17,11 +17,17 @@ import {
   ProviderProxyRoleControlRemoteError,
   ProviderProxyRoleControlUnavailableError,
 } from '../live/provider-proxy/role-control.js';
+import type { ProviderProxyControlRedemptionOutcome } from '../live/provider-proxy/control-redemption.js';
 import {
   disappearanceDeliveryAttemptOutcomeSchema,
   type ContainmentDisappearanceNotice,
   type DisappearanceDeliveryAttemptOutcome,
 } from './provider-containment-disappearance.js';
+import {
+  representationAbandonmentDeliveryAttemptOutcomeSchema,
+  type ProviderRepresentationAbandonmentNotice,
+  type RepresentationAbandonmentDeliveryAttemptOutcome,
+} from './provider-representation-abandonment.js';
 import {
   providerHandoffCapsuleRetirementOutcomeSchema,
   type ProviderHandoffCapsuleRetirementOutcome,
@@ -37,6 +43,10 @@ import type {
   ProviderProxySetLocator,
   ProviderProxySetRedemptionOutcome,
 } from './provider-proxy-set/inheritance.js';
+import {
+  inspectProviderProxySetContainmentProof,
+  type ProviderProxySetContainmentProof,
+} from './provider-proxy-set/containment-proof.js';
 
 export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'disappearance-terminalization',
@@ -46,15 +56,18 @@ export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'containment-proof',
   'capsule-retirement',
   'disappearance-consumer',
+  'representation-abandonment-consumer',
 ] as const;
 
 export type ProviderProxyRecoveryProducerId = (typeof PROVIDER_PROXY_RECOVERY_PRODUCERS)[number];
 
 export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'disappearance-delivery',
+  'representation-abandonment-delivery',
   'startup-set-inheritance',
   'ordinary-set-inheritance',
   'containment-attempt',
+  'control-reattachment',
   'exact-capsule-recovery',
   'capsule-retirement',
   'foreign-capsule-retirement',
@@ -91,6 +104,7 @@ type ContainmentProofInput = Readonly<{
 
 type CapsuleRetirementInput = Readonly<{ path: string }>;
 type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
+type RepresentationAbandonmentConsumerInput = Readonly<{ notice: ProviderRepresentationAbandonmentNotice }>;
 
 export type ProviderProxyRecoveryProducerInput = {
   'disappearance-terminalization': DisappearanceTerminalizationInput;
@@ -100,6 +114,7 @@ export type ProviderProxyRecoveryProducerInput = {
   'containment-proof': ContainmentProofInput;
   'capsule-retirement': CapsuleRetirementInput;
   'disappearance-consumer': DisappearanceConsumerInput;
+  'representation-abandonment-consumer': RepresentationAbandonmentConsumerInput;
 };
 
 export interface ProviderProxyRecoveryProducerPorts {
@@ -109,11 +124,14 @@ export interface ProviderProxyRecoveryProducerPorts {
   'role-control'(input: RoleControlInput): Promise<unknown>;
   'set-inheritance'(input: SetInheritanceInput): Promise<ProviderProxySetInheritanceOutcome>;
   'capsule-redemption'(input: CapsuleRedemptionInput): Promise<ProviderProxySetRedemptionOutcome>;
-  'containment-proof'(input: ContainmentProofInput): Promise<string | null>;
+  'containment-proof'(input: ContainmentProofInput): Promise<ProviderProxySetContainmentProof>;
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
   'disappearance-consumer'(input: DisappearanceConsumerInput): Promise<DisappearanceDeliveryAttemptOutcome>;
+  'representation-abandonment-consumer'(
+    input: RepresentationAbandonmentConsumerInput,
+  ): Promise<RepresentationAbandonmentDeliveryAttemptOutcome>;
 }
 
 export type ProviderProxyRecoveryRetry = Readonly<{
@@ -145,7 +163,12 @@ const providerProxyRecoveryFatalOrigin: unique symbol = Symbol('provider-proxy-r
 export type ProviderProxySetLifecycleFatalError = Error &
   Readonly<{
     [providerProxyRecoveryFatalOrigin]: true;
-    stage: 'set-inheritance' | 'disappearance-delivery' | 'capsule-retirement' | 'capsule-recovery';
+    stage:
+      | 'set-inheritance'
+      | 'disappearance-delivery'
+      | 'representation-abandonment-delivery'
+      | 'capsule-retirement'
+      | 'capsule-recovery';
     seam: ProviderProxyRecoveryConsumerSeam;
     producerId: ProviderProxyRecoveryProducerId;
     operation?: OperationIdentity;
@@ -295,6 +318,10 @@ function sameOperationIdentity(left: OperationIdentity, right: OperationIdentity
   );
 }
 
+function containmentProofRequiresReap(value: unknown): value is ProviderProxySetContainmentProof {
+  return inspectProviderProxySetContainmentProof(value)?.evidence.kind === 'reap-required';
+}
+
 function classifyFulfillment(
   producerId: ProviderProxyRecoveryProducerId,
   value: unknown,
@@ -316,9 +343,13 @@ function classifyFulfillment(
       typeof value !== 'object' ||
       value === null ||
       !('kind' in value) ||
-      !['inherited', 'containment-disappeared', 'not-bequeathed', 'temporarily-unavailable'].includes(
-        String(value.kind),
-      )
+      ![
+        'inherited',
+        'containment-disappeared',
+        'recorded-group-unattributable',
+        'not-bequeathed',
+        'temporarily-unavailable',
+      ].includes(String(value.kind))
     ) {
       return unknown(producerId, new Error('provider_proxy_set_inheritance_contract_violation'));
     }
@@ -330,12 +361,13 @@ function classifyFulfillment(
       typeof value !== 'object' ||
       value === null ||
       !('kind' in value) ||
-      (value.kind !== 'redeemed' && value.kind !== 'temporarily-unavailable')
+      !['redeemed', 'protocol-incompatible', 'temporarily-unavailable'].includes(String(value.kind))
     ) {
       return unknown(producerId, new Error('provider_proxy_capsule_redemption_contract_violation'));
     }
     const outcome = value as ProviderProxySetRedemptionOutcome;
     if (outcome.kind === 'temporarily-unavailable') return unavailable(producerId, outcome.incident);
+    if (outcome.kind === 'protocol-incompatible') return evidence(outcome);
     if (
       context.capsule !== undefined &&
       !providerProxySetCapsuleMatchesIdentity(context.capsule, outcome.set.setIdentity)
@@ -350,8 +382,15 @@ function classifyFulfillment(
     }
     return evidence(outcome);
   }
-  if (producerId === 'containment-proof' && value !== null && typeof value !== 'string') {
-    return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
+  if (producerId === 'containment-proof') {
+    const proof = inspectProviderProxySetContainmentProof(value);
+    if (proof === null) {
+      return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
+    }
+    if (context.setIdentity === undefined || !providerProxySetIdentitiesEqual(context.setIdentity, proof.identity)) {
+      return corrupt(producerId, new Error('provider_proxy_containment_proof_identity_mismatch'));
+    }
+    return evidence(value);
   }
   if (producerId === 'capsule-retirement') {
     const parsed = providerHandoffCapsuleRetirementOutcomeSchema.safeParse(value);
@@ -371,6 +410,18 @@ function classifyFulfillment(
     if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
     if (context.operation === undefined || !sameOperationIdentity(outcome.acceptance.operation, context.operation)) {
       return corrupt(producerId, new Error('provider_proxy_disappearance_consumer_identity_mismatch'));
+    }
+    return evidence(outcome.acceptance);
+  }
+  if (producerId === 'representation-abandonment-consumer') {
+    const parsed = representationAbandonmentDeliveryAttemptOutcomeSchema.safeParse(value);
+    if (!parsed.success) {
+      return unknown(producerId, new Error('provider_proxy_representation_abandonment_consumer_contract_violation'));
+    }
+    const outcome = parsed.data;
+    if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
+    if (context.operation === undefined || !sameOperationIdentity(outcome.acceptance.operation, context.operation)) {
+      return corrupt(producerId, new Error('provider_proxy_representation_abandonment_consumer_identity_mismatch'));
     }
     return evidence(outcome.acceptance);
   }
@@ -426,7 +477,9 @@ function classifyRejection(
     }
     return unknown(producerId, error);
   }
-  if (producerId === 'disappearance-consumer') return unknown(producerId, error);
+  if (producerId === 'disappearance-consumer' || producerId === 'representation-abandonment-consumer') {
+    return unknown(producerId, error);
+  }
   if (error instanceof ProviderProxyRoleControlUnavailableError) return unavailable(producerId, error.incident);
   if (error instanceof ProviderProxyRoleControlRemoteError) return refused(producerId, error);
   if (
@@ -441,6 +494,7 @@ function classifyRejection(
 function fatalStage(seam: ProviderProxyRecoveryConsumerSeam): ProviderProxySetLifecycleFatalError['stage'] {
   if (seam === 'startup-set-inheritance' || seam === 'ordinary-set-inheritance') return 'set-inheritance';
   if (seam === 'disappearance-delivery') return 'disappearance-delivery';
+  if (seam === 'representation-abandonment-delivery') return 'representation-abandonment-delivery';
   if (seam === 'capsule-retirement') return 'capsule-retirement';
   return 'capsule-recovery';
 }
@@ -482,6 +536,8 @@ function invokeProducer(
       return producers['capsule-retirement'](source.input);
     case 'disappearance-consumer':
       return producers['disappearance-consumer'](source.input);
+    case 'representation-abandonment-consumer':
+      return producers['representation-abandonment-consumer'](source.input);
   }
 }
 
@@ -507,6 +563,7 @@ export function createProviderProxyRecoveryDispatcher(
       let retired = false;
       const aborters = new Set<(reason: unknown) => void>();
       const exactSources = new Map<string, Observation>();
+      const reattachmentSources = new Map<string, Observation>();
 
       const retireFatal = (observation: Extract<Observation, { kind: 'corrupt' | 'refused' | 'unknown' }>): void => {
         if (retired) return;
@@ -521,7 +578,11 @@ export function createProviderProxyRecoveryDispatcher(
         const redemption = exactSources.get('redemption');
         const absence = exactSources.get('absence');
         if (redemption === undefined || absence === undefined) return;
-        if (redemption.kind === 'evidence' && absence.kind === 'evidence' && absence.value !== null) {
+        if (
+          redemption.kind === 'evidence' &&
+          absence.kind === 'evidence' &&
+          containmentProofRequiresReap(absence.value)
+        ) {
           retireFatal(
             corrupt('capsule-redemption', new Error('provider_proxy_capsule_recovery_evidence_conflict')) as Extract<
               Observation,
@@ -535,7 +596,7 @@ export function createProviderProxyRecoveryDispatcher(
           sinks.evidence(redemption.value, 'redemption');
           return;
         }
-        if (absence.kind === 'evidence' && absence.value !== null) {
+        if (absence.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
           sinks.evidence(absence.value, 'absence');
           return;
         }
@@ -544,6 +605,61 @@ export function createProviderProxyRecoveryDispatcher(
           return;
         }
         throw new Error('provider_proxy_exact_capsule_reducer_incomplete');
+      };
+
+      const retireReattachment = (value: unknown, sourceId: string): void => {
+        if (retired) return;
+        retired = true;
+        const reason = new Error(`provider_proxy_control_reattachment_decided:${sourceId}`);
+        for (const abort of aborters) abort(reason);
+        sinks.evidence(value, sourceId);
+      };
+
+      const reduceControlReattachment = (): void => {
+        if (retired) return;
+        const absence = reattachmentSources.get('absence');
+        if (absence?.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
+          retireReattachment(absence.value, 'absence');
+          return;
+        }
+        const redemption = reattachmentSources.get('redemption');
+        if (redemption === undefined) return;
+        if (redemption.kind === 'evidence') {
+          const value = redemption.value;
+          if (typeof value !== 'object' || value === null || !('kind' in value)) {
+            retireFatal(
+              unknown('role-control', new Error('provider_proxy_control_redemption_contract_violation')) as Extract<
+                Observation,
+                { kind: 'unknown' }
+              >,
+            );
+            return;
+          }
+          const outcome = value as ProviderProxyControlRedemptionOutcome;
+          if (outcome.kind === 'redeemed' || outcome.kind === 'refused') {
+            retireReattachment(outcome, 'redemption');
+            return;
+          }
+          if (outcome.kind !== 'unavailable') {
+            retireFatal(
+              unknown('role-control', new Error('provider_proxy_control_redemption_contract_violation')) as Extract<
+                Observation,
+                { kind: 'unknown' }
+              >,
+            );
+            return;
+          }
+          if (absence === undefined) return;
+          retired = true;
+          for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
+          effects.retry(sinks, { producerId: 'role-control', incident: outcome.incident });
+          return;
+        }
+        if (redemption.kind === 'unavailable' && absence !== undefined) {
+          retired = true;
+          for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
+          effects.retry(sinks, { producerId: redemption.producerId, incident: redemption.incident });
+        }
       };
 
       const submit = (sourceId: string, observation: Observation): void => {
@@ -577,6 +693,11 @@ export function createProviderProxyRecoveryDispatcher(
         if (seam === 'exact-capsule-recovery') {
           exactSources.set(sourceId, observation);
           reduceExactCapsule();
+          return;
+        }
+        if (seam === 'control-reattachment') {
+          reattachmentSources.set(sourceId, observation);
+          reduceControlReattachment();
           return;
         }
         if (seam === 'containment-attempt') {

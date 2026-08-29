@@ -60,6 +60,17 @@ import {
   reclamationFailedProviderHostInventoryRecordSchema,
   retiredBlockedProviderHostInventoryRecordSchema,
 } from '../../providers/host-inventory-schema.js';
+import { operationIdentitySchema } from '../../provider-proxy/protocol.js';
+import { providerProxySetAddressSchema } from '../../provider-proxy/set-address.js';
+import type {
+  UnreadableProviderOperationDiscardRequest,
+  UnreadableProviderOperationDiscardResult,
+} from '../../recovery/unreadable-provider-operation.js';
+import {
+  providerProxySetAliveEnforcerObservationsSchema,
+  providerProxySetUnobservableEnforcerObservationsSchema,
+} from '../../provider-proxy/containment-proof-contract.js';
+import { PROVIDER_PROXY_SET_LIFECYCLE_STATES } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -96,6 +107,27 @@ export const recoveryQuarantineClearResultSchema = recoveryQuarantineClearReques
   })
   .strict();
 
+export const unreadableProviderOperationDiscardRequestSchema = z
+  .object({
+    key: z.string().min(1, 'Provider operation key is required'),
+    revision: z.string().regex(/^sha256:[0-9a-f]{64}$/u, 'Provider operation revision must be a SHA-256 fingerprint'),
+  })
+  .strict() satisfies ZodType<UnreadableProviderOperationDiscardRequest>;
+
+export const unreadableProviderOperationDiscardResultSchema: ZodType<UnreadableProviderOperationDiscardResult> =
+  z.discriminatedUnion('kind', [
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('discarded') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('absent') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema
+      .extend({ kind: z.literal('revision-mismatch'), currentRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/u) })
+      .strict(),
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('readable') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('quarantine-not-found') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema
+      .extend({ kind: z.literal('owned'), state: z.enum(['retrying', 'continuation']) })
+      .strict(),
+  ]);
+
 const providerHostOwnerShape = { ownerId: z.string().min(1) };
 export const providerHostInventoryRowSchema = z.discriminatedUnion('status', [
   liveProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
@@ -119,6 +151,133 @@ export type ProviderHostListResponse = z.output<typeof providerHostListResponseS
 export type ProviderHostInspectResponse = z.output<typeof providerHostInspectResponseSchema>;
 export type ProviderHostEvictResponse = z.output<typeof providerHostEvictResponseSchema>;
 
+export const providerProxySetContainRequestSchema = z
+  .object({
+    setIdentity: providerProxySetAddressSchema,
+    abandonWithoutAbsence: z.boolean(),
+  })
+  .strict();
+
+const providerProxySetOperationalIncidentBase = {
+  reason: z.string().min(1),
+  nextAttemptAtMs: z.number().finite(),
+};
+const providerProxySetOperationalIncidentSchema = z.discriminatedUnion('stage', [
+  z
+    .object({
+      stage: z.literal('disappearance-delivery'),
+      operation: operationIdentitySchema,
+      code: z.literal('disappearance_consumer_unavailable'),
+      ...providerProxySetOperationalIncidentBase,
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('representation-abandonment-delivery'),
+      operation: operationIdentitySchema,
+      code: z.literal('representation_abandonment_consumer_unavailable'),
+      ...providerProxySetOperationalIncidentBase,
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('capsule-retirement'),
+      code: z.literal('capsule_retirement_unavailable'),
+      ...providerProxySetOperationalIncidentBase,
+    })
+    .strict(),
+]);
+
+const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('completed') }).strict(),
+  z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),
+  z
+    .object({
+      kind: z.literal('operational-retry-owned'),
+      incidents: z.array(providerProxySetOperationalIncidentSchema).min(1).readonly(),
+    })
+    .strict(),
+]);
+
+const providerProxySetContainEffectSchema = z
+  .object({
+    signalsSent: z.array(z.enum(['SIGTERM', 'SIGKILL'])).readonly(),
+    containmentAbsent: z.boolean(),
+    representationAction: z.enum(['none', 'absence-release-started', 'abandonment-release-started']),
+  })
+  .strict();
+const providerProxySetContainResultBase = {
+  setIdentity: providerProxySetAddressSchema,
+  effect: providerProxySetContainEffectSchema,
+};
+const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('contained'),
+      ...providerProxySetContainResultBase,
+      disappearanceReceipt: z.string().min(1),
+      claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('abandoned'),
+      ...providerProxySetContainResultBase,
+      enforcerObservations: z.union([
+        providerProxySetAliveEnforcerObservationsSchema,
+        providerProxySetUnobservableEnforcerObservationsSchema,
+      ]),
+      claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('unattributable-group-abandoned'),
+      ...providerProxySetContainResultBase,
+      claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
+  z.object({ kind: z.literal('set-not-found'), ...providerProxySetContainResultBase }).strict(),
+  z
+    .object({
+      kind: z.literal('not-held'),
+      ...providerProxySetContainResultBase,
+      state: z.enum(PROVIDER_PROXY_SET_LIFECYCLE_STATES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('deadline-pending'),
+      ...providerProxySetContainResultBase,
+      remainingMs: z.number().finite().nonnegative(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('authorization-stale'), ...providerProxySetContainResultBase }).strict(),
+  z
+    .object({
+      kind: z.literal('enforcer-alive'),
+      ...providerProxySetContainResultBase,
+      enforcerObservations: providerProxySetAliveEnforcerObservationsSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('enforcer-unobservable'),
+      ...providerProxySetContainResultBase,
+      enforcerObservations: providerProxySetUnobservableEnforcerObservationsSchema,
+    })
+    .strict(),
+  z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainResultBase }).strict(),
+  z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
+]);
+
+export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema;
+
+/** Exact-set containment input; abandonment authority must be chosen explicitly by the caller. */
+export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
+/** Exhaustive wire verdict including observable effects of a partially completed containment attempt. */
+export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;
+
 export const recoveryQuarantineClearRpcSpec = {
   name: 'coordinator.recovery_quarantine.clear',
   kind: 'unary',
@@ -127,6 +286,17 @@ export const recoveryQuarantineClearRpcSpec = {
   responseKind: 'json',
   portKey: 'recoveryQuarantine',
   http: { method: 'POST', path: '/coordinator/recovery-quarantine/clear' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
+export const unreadableProviderOperationDiscardRpcSpec = {
+  name: 'coordinator.recovery_quarantine.discard_provider_operation',
+  kind: 'unary',
+  requires: 'system:shutdown',
+  requestSchema: unreadableProviderOperationDiscardRequestSchema,
+  responseSchema: unreadableProviderOperationDiscardResultSchema,
+  responseKind: 'json',
+  portKey: 'recoveryQuarantine',
+  http: { method: 'POST', path: '/coordinator/recovery-quarantine/discard-provider-operation' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
 export const providerHostListRpcSpec = {
@@ -165,6 +335,17 @@ export const providerHostEvictRpcSpec = {
   http: { method: 'POST', path: '/coordinator/provider-hosts/evict' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
+export const providerProxySetContainRpcSpec = {
+  name: 'coordinator.provider_proxy_set.contain',
+  kind: 'unary',
+  requires: 'system:shutdown',
+  requestSchema: providerProxySetContainRequestSchema,
+  responseSchema: providerProxySetContainResponseSchema,
+  responseKind: 'json',
+  portKey: 'providerProxySets',
+  http: { method: 'POST', path: '/coordinator/provider-proxy-sets/contain' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const transportOperationalCarveouts = [
   '/health',
   '/admin/shutdown',
@@ -192,9 +373,11 @@ export const rpcCatalog = [
     http: { method: 'POST', path: '/workflow' },
   },
   recoveryQuarantineClearRpcSpec,
+  unreadableProviderOperationDiscardRpcSpec,
   providerHostListRpcSpec,
   providerHostInspectRpcSpec,
   providerHostEvictRpcSpec,
+  providerProxySetContainRpcSpec,
   {
     name: 'coordinator.equipExpansion',
     kind: 'unary',

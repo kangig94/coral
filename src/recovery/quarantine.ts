@@ -12,6 +12,36 @@ import type {
 
 type RecoveryQuarantineClock = Pick<TimePort, 'now'>;
 
+const RECOVERY_QUARANTINE_KEY_PREFIX = 'rqk1-';
+const ENCODED_CODE_UNIT_WIDTH = 4;
+
+export type RecoveryQuarantineKeyDecode = Readonly<{ kind: 'decoded'; key: string }> | Readonly<{ kind: 'invalid' }>;
+
+/** A shell-safe rendering of the exact JavaScript string used as a recovery subject key. */
+export function encodeRecoveryQuarantineKey(key: string): string {
+  let encoded = RECOVERY_QUARANTINE_KEY_PREFIX;
+  for (let index = 0; index < key.length; index += 1) {
+    encoded += key.charCodeAt(index).toString(16).padStart(ENCODED_CODE_UNIT_WIDTH, '0');
+  }
+  return encoded;
+}
+
+export function decodeRecoveryQuarantineKey(encoded: string): RecoveryQuarantineKeyDecode {
+  if (!encoded.startsWith(RECOVERY_QUARANTINE_KEY_PREFIX)) {
+    return { kind: 'invalid' };
+  }
+  const payload = encoded.slice(RECOVERY_QUARANTINE_KEY_PREFIX.length);
+  if (payload.length === 0 || payload.length % ENCODED_CODE_UNIT_WIDTH !== 0 || !/^[0-9a-f]+$/u.test(payload)) {
+    return { kind: 'invalid' };
+  }
+
+  let key = '';
+  for (let offset = 0; offset < payload.length; offset += ENCODED_CODE_UNIT_WIDTH) {
+    key += String.fromCharCode(Number.parseInt(payload.slice(offset, offset + ENCODED_CODE_UNIT_WIDTH), 16));
+  }
+  return encodeRecoveryQuarantineKey(key) === encoded ? { kind: 'decoded', key } : { kind: 'invalid' };
+}
+
 const READ_ONLY_QUARANTINE_CLOCK: RecoveryQuarantineClock = {
   now() {
     throw new Error('Recovery quarantine mutations require a runtime time port.');
@@ -81,6 +111,13 @@ export type RecoveryQuarantineReclaim = RecoveryQuarantineClaim & {
   readonly expectedRetry: RecoveryRetryAuthority;
 };
 
+/** Exact retry claim that may be returned to active quarantine ownership without changing its evidence. */
+export type RecoveryQuarantineRelease = {
+  readonly boundary: string;
+  readonly subject: RecoverySubject;
+  readonly expectedRetry: RecoveryRetryAuthority;
+};
+
 export type RecoveryQuarantineEntry = {
   readonly boundary: string;
   readonly subject: RecoverySubject;
@@ -92,6 +129,11 @@ export type RecoveryQuarantineEntry = {
   readonly detail: string;
   readonly detectedAt: string;
   readonly updatedAt: string;
+};
+
+export type RecoveryQuarantineListEntry = Omit<RecoveryQuarantineEntry, 'detectedAt' | 'updatedAt'> & {
+  readonly detectedAt: string | null;
+  readonly updatedAt: string | null;
 };
 
 type RecoveryQuarantineColumns = {
@@ -281,9 +323,37 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
     return Number(result.changes) === 1;
   }
 
+  releaseRetry(request: RecoveryQuarantineRelease): boolean {
+    const result = prepareCached<[string, string, string | null, string, string]>(
+      this.db,
+      `UPDATE recovery_quarantine
+       SET state = 'active',
+           retry_owner = NULL,
+           retry_token = NULL
+       WHERE boundary_id = ?
+         AND subject_key = ?
+         AND subject_revision IS ?
+         AND state = 'retrying'
+         AND retry_owner = ?
+         AND retry_token = ?`,
+    ).run(
+      request.boundary,
+      request.subject.key,
+      revisionValue(request.subject),
+      request.expectedRetry.owner,
+      request.expectedRetry.token,
+    );
+    return Number(result.changes) === 1;
+  }
+
   upsert(write: RecoveryQuarantineWrite): boolean {
     const row = writeColumns(write);
     if (write.expectedRetry !== undefined) {
+      if (write.expectedRetry.subject.key !== write.subject.key) {
+        throw new Error(
+          `Recovery retry cannot move to a different subject key: ${write.boundary}:${write.subject.key}`,
+        );
+      }
       const result = prepareCached<
         [
           string | null,
@@ -330,7 +400,7 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
         this.timestamp(),
         row.boundaryId,
         row.subjectKey,
-        row.subjectRevision,
+        revisionValue(write.expectedRetry.subject),
         write.expectedRetry.owner,
         write.expectedRetry.token,
       );

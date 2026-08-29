@@ -1,3 +1,4 @@
+import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
@@ -9,7 +10,10 @@ import { z } from 'zod';
 
 import type { createEnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
 import { runtimeControlTimer, type connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 type CreateEnforcerDeadlineStateMachine = typeof createEnforcerDeadlineStateMachine;
 type ConnectRoleControlWithRetry = typeof connectRoleControlWithRetry;
@@ -59,7 +63,7 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
     }
     return {
       ...client,
-      async call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+      async exchange(method: string, params: unknown, timeoutMs: number) {
         if (method === 'guardian.open.v1') {
           bootstrapTimingHarness.nowMs = bootstrapTimingHarness.openingChallengeIssuedAtMs;
         }
@@ -69,28 +73,29 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
             bootstrapTimingHarness.nowMs = bootstrapTimingHarness.initialHeartbeatAcceptanceMs;
           }
         }
-        try {
-          const result = await client.call(method, params, timeoutMs);
-          if (method === 'reaper.pair.v1') {
-            bootstrapTimingHarness.nowMs = 9_400;
-            bootstrapTimingHarness.events.push('reaper-paired');
-          } else if (method === 'guardian.open.v1') {
-            bootstrapTimingHarness.nowMs = 14_300;
-            bootstrapTimingHarness.events.push('open-response');
-          } else if (method === 'guardian.heartbeat.v1' && bootstrapTimingHarness.heartbeatCalls === 1) {
-            bootstrapTimingHarness.events.push('initial-heartbeat-accepted');
-          } else if (method === 'guardian.heartbeat.v1') {
-            bootstrapTimingHarness.events.push(`recurring-heartbeat-settled:${bootstrapTimingHarness.heartbeatCalls}`);
-          }
-          return result;
-        } catch (error: unknown) {
-          if (method === 'guardian.heartbeat.v1' && bootstrapTimingHarness.heartbeatCalls === 1) {
-            bootstrapTimingHarness.events.push(`initial-heartbeat-rejected:${String(error)}`);
-          } else if (method === 'guardian.heartbeat.v1') {
-            bootstrapTimingHarness.events.push(`recurring-heartbeat-rejected:${String(error)}`);
-          }
-          throw error;
+        const outcome = await client.exchange(method, params, timeoutMs);
+        if (method === 'reaper.pair.v1') {
+          bootstrapTimingHarness.nowMs = 9_400;
+          bootstrapTimingHarness.events.push('reaper-paired');
         }
+        if (method === 'guardian.open.v1') {
+          bootstrapTimingHarness.nowMs = 14_300;
+          bootstrapTimingHarness.events.push('open-response');
+        }
+        if (method !== 'guardian.heartbeat.v1') return outcome;
+        // An exchange resolves for a refusal too, so the event trail reads the variant rather than settlement.
+        const accepted = outcome.kind === 'response' && outcome.response.kind === 'result';
+        const ordinal = bootstrapTimingHarness.heartbeatCalls;
+        const detail =
+          outcome.kind === 'response' && outcome.response.kind === 'refusal'
+            ? `:${String(outcome.response.error)}`
+            : `:${outcome.kind}`;
+        bootstrapTimingHarness.events.push(
+          ordinal === 1
+            ? `initial-heartbeat-${accepted ? 'accepted' : `rejected${detail}`}`
+            : `recurring-heartbeat-${accepted ? `settled:${ordinal}` : `rejected${detail}`}`,
+        );
+        return outcome;
       },
     };
   }) as ConnectRoleControlWithRetry;
@@ -139,9 +144,13 @@ import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/in
 import { isProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
-import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ProviderProxyAuthorityObservation,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { createProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import {
   attemptProviderProxySetInheritance,
   type ProviderProxySetLocator,
@@ -714,7 +723,7 @@ describe('provider-proxy process topology: guardian role main', () => {
       evidenceAt: bootstrapTimingHarness.guardianEvidenceOffsetMs?.(),
       state: bootstrapTimingHarness.guardianState?.(),
     }).toEqual({
-      control: expect.stringContaining('json-rpc-error:-32600:invalid_request:none'),
+      control: expect.stringContaining('json-rpc-error:-32600:invalid_request:heartbeat-refusal=teardown-latched'),
       evidenceAt: 0,
       state: 'teardown-latched',
     });
@@ -1010,8 +1019,10 @@ describe('provider-proxy process topology: guardian role main', () => {
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
 
+    // The reaper handle is closed under the forward, so the guardian sees a transport death; which errno
+    // reaches it first depends on whether the write or the read loses the race.
     await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
-      /control channel closed/u,
+      /control channel closed|EPIPE|ECONNRESET/u,
     );
 
     // Both the reaper (an ordinary child, signalled by its own pid) and the proxy (a detached leader,
@@ -1097,6 +1108,9 @@ describe('provider-proxy process topology: acquisition', () => {
       resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
     });
     cleanups.push(() => closeHandles(environment));
+    const containmentProofDb = newRawDatabase(':memory:');
+    applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+    cleanups.push(() => containmentProofDb.close());
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
@@ -1105,12 +1119,18 @@ describe('provider-proxy process topology: acquisition', () => {
       controlEstablished: () => undefined,
       time: environment.outerRuntime().time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer(
+          environment.outerRuntime(),
+          containmentProofDb,
+        ),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reapRecordedContainment: () => {
+        throw new Error('process topology fixture unexpectedly requested recorded containment reaping');
+      },
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
@@ -1129,23 +1149,30 @@ describe('provider-proxy process topology: acquisition', () => {
     lifecycle.acquisitionSucceeded(admission.slotId, set);
     expect(lifecycle.routeFor(routeKey)).toBe(set);
 
+    const channelIncident = new Promise<ProviderProxyAuthorityObservation>((resolve) => {
+      const unsubscribe = set.onIncident((incident) => {
+        if (incident.kind !== 'control-channel-fault') return;
+        unsubscribe();
+        resolve(incident);
+      });
+    });
     await environment.handles.reaper?.close();
-    const observedFault = await Promise.race([
-      set.faulted,
+    const observedIncident = await Promise.race([
+      channelIncident,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
     ]);
     const observation = {
-      fault:
-        observedFault?.kind === 'control-channel-fault'
-          ? { kind: observedFault.kind, role: observedFault.role }
-          : observedFault,
+      incident:
+        observedIncident?.kind === 'control-channel-fault'
+          ? { kind: observedIncident.kind, role: observedIncident.role, cause: observedIncident.cause }
+          : observedIncident,
       routeAvailable: lifecycle.routeFor(routeKey) !== null,
     };
     set.stopHeartbeats();
     await set.initiateControlClose();
 
     expect(observation).toEqual({
-      fault: { kind: 'control-channel-fault', role: 'reaper' },
+      incident: { kind: 'control-channel-fault', role: 'reaper', cause: 'closed' },
       routeAvailable: false,
     });
   });
@@ -1207,7 +1234,8 @@ describe('provider-proxy process topology: acquisition', () => {
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     insertProviderOperation(db, providerOperationRecord('prepare-pending', { operation, locator: reference.locator }));
 
-    await acquired.set.registerSuccessionOperation(operation);
+    const registration = await acquired.set.registerSuccessionOperation(operation);
+    expect(registration).toEqual({ kind: 'registered' });
     acquired.set.stopHeartbeats();
     await acquired.set.initiateControlClose();
 
@@ -1227,6 +1255,13 @@ describe('provider-proxy process topology: acquisition', () => {
         baseDir,
         coordinatorIdentity: successorIdentity,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(environment.outerRuntime()),
+        collectContainmentProof: (authorization, proofDb, proofSignal) =>
+          createProviderProxySetContainmentProver(environment.outerRuntime()).collectContainmentProof(
+            authorization,
+            proofDb,
+            proofSignal,
+          ),
       },
       AbortSignal.timeout(15_000),
     );

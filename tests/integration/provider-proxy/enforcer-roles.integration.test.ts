@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -11,7 +12,11 @@ import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  controlExchangeForTest,
+  type ControlClient,
+} from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
 import {
@@ -23,7 +28,7 @@ import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 import {
   guardianHandoffRedeemResultSchema,
   reaperHandoffRotateResultSchema,
-} from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+} from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
   createEnforcerDeadlineStateMachine,
   PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
@@ -153,7 +158,6 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
       controlLossAt: start,
       adoptionDeadline: clock.shiftMilliseconds(start, 60_000),
       exitDeadline: clock.shiftMilliseconds(start, 74_000),
-      firstChallengeExpiresAt: null,
     };
   };
   let controlLive = true;
@@ -163,6 +167,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     return `roles-challenge-${challengeCount}`;
   };
   const accepting = {
+    orphanTimeoutMs: () => 30_000,
     controlIsLive: () => controlLive,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
@@ -216,10 +221,10 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   // control connection — staging must work while control is still provisional.
   const reaperChannel = await connectControlClient(reaperEndpoint, timer, 5_000);
   cleanups.push(() => reaperChannel.close());
-  await reaperChannel.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  await strictTestExchange(reaperChannel, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
   // The guardian names the containment it watched being created. Until it does, the reaper holds nothing and
   // arms nothing — there is no identity for it to enforce.
-  await reaperChannel.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+  await strictTestExchange(reaperChannel, 'reaper.record-containment.v1', CONTAINMENT, 5_000);
 
   const guardian = createGuardian({
     capsule: {
@@ -272,12 +277,14 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   if (options.recordContainment ?? true) {
     control = await connectControlClient(guardianEndpoint, timer, 5_000);
     cleanups.push(() => control.close());
-    opened = (await control.call(
+    opened = (await strictTestExchange(
+      control,
       'guardian.open.v1',
       { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
       5_000,
     )) as { heartbeatChallenge: string; controlEpoch: number; proxy: unknown };
-    await control.call(
+    await strictTestExchange(
+      control,
       'guardian.heartbeat.v1',
       { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
       5_000,
@@ -291,7 +298,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
   // real provider pid, which is why root registration lives there rather than on coordinator control.
   const proxyChannel = await connectControlClient(guardianEndpoint, timer, 5_000);
   cleanups.push(() => proxyChannel.close());
-  await proxyChannel.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  await strictTestExchange(proxyChannel, 'guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
   const operationFor = (): Record<string, string> => ({
     jobId: randomUUID(),
@@ -342,7 +349,8 @@ async function installGrant(
   const grantId = randomUUID();
   const handoffOperations = [...operations].sort((left, right) => (left.operationId < right.operationId ? -1 : 1));
 
-  const installed = (await set.control.call(
+  const installed = (await strictTestExchange(
+    set.control,
     'guardian.handoff-install.v1',
     {
       grantId,
@@ -364,7 +372,8 @@ async function installGrant(
 async function openReaperControl(set: SetUnderTest): Promise<ControlClient> {
   const control = await connectControlClient(set.reaperEndpoint, timer, 5_000);
   cleanups.push(() => control.close());
-  const opened = (await control.call(
+  const opened = (await strictTestExchange(
+    control,
     'reaper.open.v1',
     {
       bootstrapNonce: NONCE,
@@ -375,7 +384,8 @@ async function openReaperControl(set: SetUnderTest): Promise<ControlClient> {
     },
     5_000,
   )) as { heartbeatChallenge: string; controlEpoch: number };
-  await control.call(
+  await strictTestExchange(
+    control,
     'reaper.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -390,7 +400,8 @@ async function stage(set: SetUnderTest): Promise<{
 }> {
   const operation = set.operationFor();
   const reservation = randomUUID();
-  const staged = (await set.proxyChannel.call(
+  const staged = (await strictTestExchange(
+    set.proxyChannel,
     'guardian.register-provider-root.v1',
     {
       proxy: set.proxyIdentity,
@@ -477,6 +488,7 @@ function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): Enfo
     return `bare-challenge-${challengeCount}`;
   };
   return {
+    orphanTimeoutMs: () => 30_000,
     controlIsLive: () => true,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintChallenge() }) as const,
@@ -493,7 +505,6 @@ function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): Enfo
       controlLossAt: clock.now(),
       adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
       exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
-      firstChallengeExpiresAt: null,
     }),
     state: () => 'accepting-control' as const,
   };
@@ -551,7 +562,8 @@ describe('provider-proxy guardian and reaper', () => {
     // The paired channel is proxy-authenticated only by its pairing secret, not by proxy identity — a caller
     // presenting some other proxy's instance id must be refused rather than staging a root against it.
     await expect(
-      set.proxyChannel.call(
+      strictTestExchange(
+        set.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: { ...set.proxyIdentity, proxyInstanceId: randomUUID() },
@@ -571,7 +583,8 @@ describe('provider-proxy guardian and reaper', () => {
     // The coordinator holds active control and still cannot stage a root: the proxy's channel is a separate
     // authority, which is what keeps the two-authority staging rule meaningful.
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
@@ -594,16 +607,17 @@ describe('provider-proxy guardian and reaper', () => {
   it('refuses an open that omits the documented identities', async () => {
     const set = await startSet();
 
-    await expect(set.control.call('guardian.open.v1', { bootstrapNonce: NONCE }, 5_000)).rejects.toMatchObject({
-      protocolCode: 'protocol_violation',
-    });
+    await expect(
+      strictTestExchange(set.control, 'guardian.open.v1', { bootstrapNonce: NONCE }, 5_000),
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'protocol_violation' } });
   });
 
   it('refuses activation that does not present the joint receipt', async () => {
     const set = await startSet();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.operation-activate.v1',
         {
           operation: set.operationFor(),
@@ -631,7 +645,8 @@ describe('provider-proxy guardian and reaper', () => {
     // the proxy it will contain even exists — so this window is real behaviour, not an edge case, and the
     // refusal in it must be the closed protocol vocabulary, not whatever the catch-all maps an uncaught throw to.
     await expect(
-      set.proxyChannel.call(
+      strictTestExchange(
+        set.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
@@ -642,7 +657,7 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'invalid_state' } });
   });
 
   // `guardian.stop-and-reap.v1` still refuses via its own `requireEnforcer()` while no containment is
@@ -661,12 +676,13 @@ describe('provider-proxy guardian and reaper', () => {
     const firstAttempt = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => firstAttempt.close());
     await expect(
-      firstAttempt.call(
+      strictTestExchange(
+        firstAttempt,
         'guardian.open.v1',
         { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity, proxy: set.proxyIdentity },
         5_000,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'invalid_state' } });
 
     await set.guardian.recordContainment(CONTAINMENT);
 
@@ -674,7 +690,8 @@ describe('provider-proxy guardian and reaper', () => {
     // holds something to enforce.
     const secondAttempt = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => secondAttempt.close());
-    const opened = (await secondAttempt.call(
+    const opened = (await strictTestExchange(
+      secondAttempt,
       'guardian.open.v1',
       { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity, proxy: set.proxyIdentity },
       5_000,
@@ -697,7 +714,7 @@ describe('provider-proxy guardian and reaper', () => {
     // The peer this guardian is the *origin* for, not a relay of: the forward below always fails, standing
     // in for a reaper that is unreachable (crashed, network partition, anything short of a normal reply).
     const unreachableReaperChannel = {
-      call: async (): Promise<never> => {
+      exchange: async (): Promise<never> => {
         throw new Error('reaper unreachable');
       },
       faulted: new Promise<never>(() => undefined),
@@ -756,7 +773,8 @@ describe('provider-proxy guardian and reaper', () => {
     const cycles = MAX_PROXY_OPERATION_LEDGERS + 40;
     for (let cycle = 0; cycle < cycles; cycle += 1) {
       const { operation, reservation } = await stage(set);
-      const released = (await set.proxyChannel.call(
+      const released = (await strictTestExchange(
+        set.proxyChannel,
         'guardian.operation-release.v1',
         { proxy: set.proxyIdentity, operation, reservation },
         5_000,
@@ -773,7 +791,8 @@ describe('provider-proxy guardian and reaper', () => {
     const set = await startSet();
     const { jointContainmentReceipt, operation, reservation } = await stage(set);
     const activate = () =>
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.operation-activate.v1',
         { operation, reservation, providerRoot: ROOT, jointContainmentReceipt },
         5_000,
@@ -793,7 +812,8 @@ describe('provider-proxy guardian and reaper', () => {
     const { jointContainmentReceipt, operation } = await stage(set);
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.operation-activate.v1',
         {
           operation,
@@ -811,7 +831,8 @@ describe('provider-proxy guardian and reaper', () => {
     const { jointContainmentReceipt, operation, reservation } = await stage(set);
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.operation-activate.v1',
         {
           operation,
@@ -829,7 +850,8 @@ describe('provider-proxy guardian and reaper', () => {
     const { operation } = await stage(set);
 
     await expect(
-      set.proxyChannel.call(
+      strictTestExchange(
+        set.proxyChannel,
         'guardian.operation-release.v1',
         { proxy: set.proxyIdentity, operation, reservation: randomUUID() },
         5_000,
@@ -843,18 +865,37 @@ describe('provider-proxy guardian and reaper', () => {
     const set = await startSet();
 
     await expect(
-      set.reaperChannel.call('reaper.confirm-provider-root.v1', { providerRoot: ROOT }, 5_000),
+      strictTestExchange(set.reaperChannel, 'reaper.confirm-provider-root.v1', { providerRoot: ROOT }, 5_000),
     ).rejects.toThrow(/never recorded/u);
   });
 
   it('strictly rejects unknown fields on every guardian-to-reaper request family', async () => {
     const set = await startSet();
     const calls: Array<() => Promise<unknown>> = [
-      () => set.reaperChannel.call('reaper.record-containment.v1', { ...CONTAINMENT, unexpected: true }, 5_000),
-      () => set.reaperChannel.call('reaper.register-provider-root.v1', { providerRoot: ROOT, unexpected: true }, 5_000),
-      () => set.reaperChannel.call('reaper.confirm-provider-root.v1', { providerRoot: ROOT, unexpected: true }, 5_000),
       () =>
-        set.reaperChannel.call(
+        strictTestExchange(
+          set.reaperChannel,
+          'reaper.record-containment.v1',
+          { ...CONTAINMENT, unexpected: true },
+          5_000,
+        ),
+      () =>
+        strictTestExchange(
+          set.reaperChannel,
+          'reaper.register-provider-root.v1',
+          { providerRoot: ROOT, unexpected: true },
+          5_000,
+        ),
+      () =>
+        strictTestExchange(
+          set.reaperChannel,
+          'reaper.confirm-provider-root.v1',
+          { providerRoot: ROOT, unexpected: true },
+          5_000,
+        ),
+      () =>
+        strictTestExchange(
+          set.reaperChannel,
           'reaper.record-redemption.v1',
           {
             grantId: randomUUID(),
@@ -868,7 +909,7 @@ describe('provider-proxy guardian and reaper', () => {
     ];
 
     for (const call of calls) {
-      await expect(call()).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+      await expect(call()).rejects.toMatchObject({ remoteFailure: { protocolCode: 'protocol_violation' } });
     }
   });
 
@@ -882,11 +923,12 @@ describe('provider-proxy guardian and reaper', () => {
 
     const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => pairing.close());
-    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
-    await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+    await strictTestExchange(pairing, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await strictTestExchange(pairing, 'reaper.record-containment.v1', CONTAINMENT, 5_000);
 
     for (let index = 0; index < MAX_PROXY_RECORDED_PROVIDER_ROOTS; index += 1) {
-      await pairing.call(
+      await strictTestExchange(
+        pairing,
         'reaper.register-provider-root.v1',
         { providerRoot: { pid: 20_000 + index, incarnation: testIncarnation(1) } },
         5_000,
@@ -894,14 +936,15 @@ describe('provider-proxy guardian and reaper', () => {
     }
 
     await expect(
-      pairing.call(
+      strictTestExchange(
+        pairing,
         'reaper.register-provider-root.v1',
         { providerRoot: { pid: 999_999, incarnation: testIncarnation(1) } },
         5_000,
       ),
-      // The rejection is a `ControlClientError` carrying the server's own closed-set code in `protocolCode`;
+      // The rejection is a `ControlClientError` carrying the server's closed-set code in `remoteFailure`;
       // the pre-fix behavior let `EnforcementError` escape untranslated, which reads as `protocol_violation`.
-    ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'invalid_state' } });
   });
 
   it('refuses guardian.register-provider-root.v1 once this guardian holds its maximum staged operations', async () => {
@@ -910,7 +953,8 @@ describe('provider-proxy guardian and reaper', () => {
     // Every registration reuses the same root, so only the staged-operation count — never the reaper's own
     // root count — can be what refuses the one past the cap.
     for (let index = 0; index < MAX_PROXY_OPERATION_LEDGERS; index += 1) {
-      const staged = (await set.proxyChannel.call(
+      const staged = (await strictTestExchange(
+        set.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
@@ -925,7 +969,8 @@ describe('provider-proxy guardian and reaper', () => {
     }
 
     await expect(
-      set.proxyChannel.call(
+      strictTestExchange(
+        set.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
@@ -948,7 +993,8 @@ describe('provider-proxy guardian and reaper', () => {
     for (let index = 0; index < MAX_PROXY_RECORDED_PROVIDER_ROOTS; index += 1) {
       const operation = set.operationFor();
       const reservation = randomUUID();
-      const staged = (await set.proxyChannel.call(
+      const staged = (await strictTestExchange(
+        set.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
@@ -960,7 +1006,8 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       )) as { state: string; jointContainmentReceipt: string };
       expect(staged.state).toBe('staged-contained');
-      const released = (await set.proxyChannel.call(
+      const released = (await strictTestExchange(
+        set.proxyChannel,
         'guardian.operation-release.v1',
         { proxy: set.proxyIdentity, operation, reservation },
         5_000,
@@ -969,7 +1016,8 @@ describe('provider-proxy guardian and reaper', () => {
     }
 
     await expect(
-      set.proxyChannel.call(
+      strictTestExchange(
+        set.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
@@ -1037,10 +1085,19 @@ describe('provider-proxy guardian and reaper', () => {
       timer,
       mintReceipt: () => 'receipt-bare-guardian',
       reaperChannel: {
-        call: (method, params) =>
+        exchange: async (method, params) =>
           method === 'reaper.record-containment.v1'
-            ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
-            : stubReaperCall(method, params),
+            ? controlExchangeForTest({
+                kind: 'response' as const,
+                response: {
+                  kind: 'result' as const,
+                  value: { state: 'containment-recorded', reaper: reaperIdentity },
+                },
+              })
+            : controlExchangeForTest({
+                kind: 'response' as const,
+                response: { kind: 'result' as const, value: await stubReaperCall(method, params) },
+              }),
         faulted: new Promise<never>(() => undefined),
         onFault: () => () => undefined,
         close: (): void => {},
@@ -1056,7 +1113,7 @@ describe('provider-proxy guardian and reaper', () => {
 
     const proxyChannel = await connectControlClient(guardianEndpoint, timer, 5_000);
     cleanups.push(() => proxyChannel.close());
-    await proxyChannel.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await strictTestExchange(proxyChannel, 'guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
     const proxyIdentity = {
       proxyInstanceId: shared.proxyInstanceId,
@@ -1084,12 +1141,14 @@ describe('provider-proxy guardian and reaper', () => {
       flavor: shared.flavor,
       buildSetId: shared.buildSetId,
     };
-    const opened = (await control.call(
+    const opened = (await strictTestExchange(
+      control,
       'guardian.open.v1',
       { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
       5_000,
     )) as { controlEpoch: number; heartbeatChallenge: string };
-    await control.call(
+    await strictTestExchange(
+      control,
       'guardian.heartbeat.v1',
       { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
       5_000,
@@ -1111,7 +1170,8 @@ describe('provider-proxy guardian and reaper', () => {
     );
 
     await expect(
-      bare.proxyChannel.call(
+      strictTestExchange(
+        bare.proxyChannel,
         'guardian.register-provider-root.v1',
         {
           proxy: bare.proxyIdentity,
@@ -1122,7 +1182,7 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'protocol_violation' } });
 
     // Deliberately not followed by "and no receipt was minted". A black-box activation call cannot tell that
     // apart from "this operation was never staged" — the guardian answers `unauthorized_control` either way —
@@ -1139,7 +1199,8 @@ describe('provider-proxy guardian and reaper', () => {
     });
     const operation = bare.operationFor();
     const reservation = randomUUID();
-    const staged = (await bare.proxyChannel.call(
+    const staged = (await strictTestExchange(
+      bare.proxyChannel,
       'guardian.register-provider-root.v1',
       {
         proxy: bare.proxyIdentity,
@@ -1152,7 +1213,8 @@ describe('provider-proxy guardian and reaper', () => {
     )) as { jointContainmentReceipt: string };
 
     await expect(
-      bare.control.call(
+      strictTestExchange(
+        bare.control,
         'guardian.operation-activate.v1',
         {
           operation,
@@ -1162,21 +1224,23 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'protocol_violation' } });
   });
 
   it('keeps a released membership recorded so only teardown may conclude absence', async () => {
     const set = await startSet();
     const { operation, reservation } = await stage(set);
 
-    const released = (await set.proxyChannel.call(
+    const released = (await strictTestExchange(
+      set.proxyChannel,
       'guardian.operation-release.v1',
       { proxy: set.proxyIdentity, operation, reservation },
       5_000,
     )) as { state: string };
     expect(released.state).toBe('membership-released');
 
-    const reaped = (await set.control.call(
+    const reaped = (await strictTestExchange(
+      set.control,
       'guardian.stop-and-reap.v1',
       {
         guardian: set.guardianIdentity,
@@ -1194,7 +1258,8 @@ describe('provider-proxy guardian and reaper', () => {
   it('reaps the recorded set through the documented stop-and-reap request', async () => {
     const set = await startSet();
 
-    const reaped = (await set.control.call(
+    const reaped = (await strictTestExchange(
+      set.control,
       'guardian.stop-and-reap.v1',
       {
         guardian: set.guardianIdentity,
@@ -1216,7 +1281,8 @@ describe('provider-proxy guardian and reaper', () => {
     // The same set-agreement the reaper enforces on its own half of this request — one authority must not
     // accept a teardown the other would refuse.
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.stop-and-reap.v1',
         {
           guardian: set.guardianIdentity,
@@ -1233,7 +1299,8 @@ describe('provider-proxy guardian and reaper', () => {
     const set = await startSet();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.stop-and-reap.v1',
         {
           guardian: { ...set.guardianIdentity, pid: set.guardianIdentity.pid + 1 },
@@ -1250,7 +1317,8 @@ describe('provider-proxy guardian and reaper', () => {
     const set = await startSet();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.stop-and-reap.v1',
         {
           guardian: set.guardianIdentity,
@@ -1268,7 +1336,8 @@ describe('provider-proxy guardian and reaper', () => {
     // Reach the reaper directly so its own set-agreement check is the one under test.
     const reaperControl = await connectControlClient(set.reaperIdentity.canonicalControlEndpoint, timer, 5_000);
     cleanups.push(() => reaperControl.close());
-    const opened = (await reaperControl.call(
+    const opened = (await strictTestExchange(
+      reaperControl,
       'reaper.open.v1',
       {
         bootstrapNonce: NONCE,
@@ -1286,14 +1355,16 @@ describe('provider-proxy guardian and reaper', () => {
       },
       5_000,
     )) as { controlEpoch: number; heartbeatChallenge: string };
-    await reaperControl.call(
+    await strictTestExchange(
+      reaperControl,
       'reaper.heartbeat.v1',
       { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
       5_000,
     );
 
     await expect(
-      reaperControl.call(
+      strictTestExchange(
+        reaperControl,
         'reaper.stop-and-reap.v1',
         {
           reaper: set.reaperIdentity,
@@ -1310,7 +1381,8 @@ describe('provider-proxy guardian and reaper', () => {
     // Reach the reaper directly so its own identity check is the one under test.
     const reaperControl = await connectControlClient(set.reaperIdentity.canonicalControlEndpoint, timer, 5_000);
     cleanups.push(() => reaperControl.close());
-    const opened = (await reaperControl.call(
+    const opened = (await strictTestExchange(
+      reaperControl,
       'reaper.open.v1',
       {
         bootstrapNonce: NONCE,
@@ -1328,14 +1400,16 @@ describe('provider-proxy guardian and reaper', () => {
       },
       5_000,
     )) as { controlEpoch: number; heartbeatChallenge: string };
-    await reaperControl.call(
+    await strictTestExchange(
+      reaperControl,
       'reaper.heartbeat.v1',
       { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
       5_000,
     );
 
     await expect(
-      reaperControl.call(
+      strictTestExchange(
+        reaperControl,
         'reaper.stop-and-reap.v1',
         {
           reaper: { ...set.reaperIdentity, pid: set.reaperIdentity.pid + 1 },
@@ -1355,7 +1429,8 @@ describe('provider-proxy guardian and reaper', () => {
     const set = await startSet();
     const reaperControl = await openReaperControl(set);
 
-    const reaped = (await reaperControl.call(
+    const reaped = (await strictTestExchange(
+      reaperControl,
       'reaper.stop-and-reap.v1',
       { reaper: set.reaperIdentity, proxy: set.proxyIdentity, providerRoots: [] },
       5_000,
@@ -1376,7 +1451,7 @@ describe('provider-proxy guardian and reaper', () => {
 
     const successor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => successor.close());
-    const redeemed = (await successor.call('guardian.handoff-redeem.v1', request, 5_000)) as {
+    const redeemed = (await strictTestExchange(successor, 'guardian.handoff-redeem.v1', request, 5_000)) as {
       state: string;
       redemptionReceipt: string;
       controlEpoch: number;
@@ -1395,7 +1470,8 @@ describe('provider-proxy guardian and reaper', () => {
     // Redemption yields a tenancy that is provisional until echoed, exactly like a bootstrap open — the
     // endpoint adds the epoch and first challenge; the grant only proves the successor earned them.
     expect(redeemed.controlEpoch).toBe(2);
-    const beat = (await successor.call(
+    const beat = (await strictTestExchange(
+      successor,
       'guardian.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
       5_000,
@@ -1421,7 +1497,7 @@ describe('provider-proxy guardian and reaper', () => {
       // A lost reply means the connection broke, so the retry necessarily arrives on a fresh one.
       const client = await connectControlClient(set.guardianEndpoint, timer, 5_000);
       cleanups.push(() => client.close());
-      const opened = (await client.call('guardian.handoff-redeem.v1', request_, 5_000)) as {
+      const opened = (await strictTestExchange(client, 'guardian.handoff-redeem.v1', request_, 5_000)) as {
         redemptionReceipt: string;
         controlEpoch: number;
         heartbeatChallenge: string;
@@ -1434,14 +1510,19 @@ describe('provider-proxy guardian and reaper', () => {
     // invalidate the one the successor may already be holding.
     const retried = await redeemOn(request);
     expect(retried.redemptionReceipt).toBe(first.redemptionReceipt);
-    await retried.client.call(
+    await strictTestExchange(
+      retried.client,
       'guardian.heartbeat.v1',
       { controlEpoch: retried.controlEpoch, heartbeatChallenge: retried.heartbeatChallenge },
       5_000,
     );
 
     const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
-    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/control channel closed/u);
+    // The endpoint answers a foreign successor by destroying the channel, so the caller sees a transport
+    // death; which errno reaches it first depends on whether the write or the read loses the race.
+    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(
+      /control channel closed|EPIPE|ECONNRESET/u,
+    );
   });
 
   it('refuses a redemption request that still names an operation set — the field no longer exists on the wire', async () => {
@@ -1458,15 +1539,16 @@ describe('provider-proxy guardian and reaper', () => {
     // could never fail in a legitimate flow, since a redeemer only ever echoed back what the capsule told it.
     // The new contract takes none: a caller still sending one is refused by the strict schema itself.
     await expect(
-      successor.call('guardian.handoff-redeem.v1', { ...request, operations: [] }, 5_000),
-    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+      strictTestExchange(successor, 'guardian.handoff-redeem.v1', { ...request, operations: [] }, 5_000),
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'protocol_violation' } });
   });
 
   it('refuses installing a grant for a coordinator of another build', async () => {
     const set = await startSet();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.handoff-install.v1',
         {
           grantId: randomUUID(),
@@ -1485,7 +1567,8 @@ describe('provider-proxy guardian and reaper', () => {
     const set = await startSet();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.handoff-install.v1',
         {
           grantId: randomUUID(),
@@ -1500,6 +1583,26 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/teardown reserve/u);
   });
 
+  it('refuses guardian.handoff-install.v1 naming an orphan timeout that is not its enforcer’s own', async () => {
+    const set = await startSet();
+
+    await expect(
+      strictTestExchange(
+        set.control,
+        'guardian.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations: [],
+          orphanTimeoutMs: 30_001,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/orphan timeout/u);
+  });
+
   it('refuses an unsorted or duplicated operation set at guardian.handoff-install.v1 ingress', async () => {
     const set = await startSet();
     const a = set.operationFor();
@@ -1507,7 +1610,8 @@ describe('provider-proxy guardian and reaper', () => {
     // Deliberately descending: whichever of the two sorts later goes first.
     const [first, second] = a.operationId < b.operationId ? [b, a] : [a, b];
     const install = (operations: Record<string, string>[]): Promise<unknown> =>
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.handoff-install.v1',
         {
           grantId: randomUUID(),
@@ -1522,9 +1626,13 @@ describe('provider-proxy guardian and reaper', () => {
 
     // The wire schema this method parses carries the same byte-sort refinement the installed grant's own
     // idempotency check depends on, so an unsorted or duplicated set is refused right here, at ingress.
-    await expect(install([first, second])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    await expect(install([first, second])).rejects.toMatchObject({
+      remoteFailure: { protocolCode: 'protocol_violation' },
+    });
     // Duplicated is refused for the same reason, not merely unsorted.
-    await expect(install([first, first])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    await expect(install([first, first])).rejects.toMatchObject({
+      remoteFailure: { protocolCode: 'protocol_violation' },
+    });
   });
 
   it("installs the same grant on the reaper's own active control, independent of the guardian's tenancy", async () => {
@@ -1534,7 +1642,8 @@ describe('provider-proxy guardian and reaper', () => {
     const grantId = randomUUID();
     const handoffOperations = [operation];
 
-    const installed = (await reaperControl.call(
+    const installed = (await strictTestExchange(
+      reaperControl,
       'reaper.handoff-install.v1',
       {
         grantId,
@@ -1555,7 +1664,8 @@ describe('provider-proxy guardian and reaper', () => {
     const reaperControl = await openReaperControl(set);
 
     await expect(
-      reaperControl.call(
+      strictTestExchange(
+        reaperControl,
         'reaper.handoff-install.v1',
         {
           grantId: randomUUID(),
@@ -1575,7 +1685,8 @@ describe('provider-proxy guardian and reaper', () => {
     const reaperControl = await openReaperControl(set);
 
     await expect(
-      reaperControl.call(
+      strictTestExchange(
+        reaperControl,
         'reaper.handoff-install.v1',
         {
           grantId: randomUUID(),
@@ -1590,6 +1701,27 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/teardown reserve/u);
   });
 
+  it('refuses reaper.handoff-install.v1 naming an orphan timeout that is not its enforcer’s own', async () => {
+    const set = await startSet();
+    const reaperControl = await openReaperControl(set);
+
+    await expect(
+      strictTestExchange(
+        reaperControl,
+        'reaper.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations: [],
+          orphanTimeoutMs: 30_001,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/orphan timeout/u);
+  });
+
   it('rotates reaper control once the guardian forwards the redemption receipt over the paired channel', async () => {
     const set = await startSet();
     const { operation } = await stage(set);
@@ -1602,7 +1734,7 @@ describe('provider-proxy guardian and reaper', () => {
 
     const successorGuardian = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => successorGuardian.close());
-    const redeemed = (await successorGuardian.call('guardian.handoff-redeem.v1', request, 5_000)) as {
+    const redeemed = (await strictTestExchange(successorGuardian, 'guardian.handoff-redeem.v1', request, 5_000)) as {
       redemptionReceipt: string;
     };
 
@@ -1610,7 +1742,8 @@ describe('provider-proxy guardian and reaper', () => {
     // is that push's evidence, not a value this successor derives from the grant itself.
     const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
     cleanups.push(() => successorReaper.close());
-    const rotated = (await successorReaper.call(
+    const rotated = (await strictTestExchange(
+      successorReaper,
       'reaper.handoff-rotate.v1',
       {
         grantId: request.grantId,
@@ -1633,7 +1766,8 @@ describe('provider-proxy guardian and reaper', () => {
     // `reaper.record-redemption.v1`.
     expect(rotated.operations).toEqual([operation]);
     expect(rotated.controlEpoch).toBe(2);
-    const beat = (await successorReaper.call(
+    const beat = (await strictTestExchange(
+      successorReaper,
       'reaper.heartbeat.v1',
       { controlEpoch: rotated.controlEpoch, heartbeatChallenge: rotated.heartbeatChallenge },
       5_000,
@@ -1659,7 +1793,7 @@ describe('provider-proxy guardian and reaper', () => {
 
     const successorGuardian = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => successorGuardian.close());
-    const redeemed = (await successorGuardian.call('guardian.handoff-redeem.v1', request, 5_000)) as {
+    const redeemed = (await strictTestExchange(successorGuardian, 'guardian.handoff-redeem.v1', request, 5_000)) as {
       redemptionReceipt: string;
       operations: Record<string, string>[];
     };
@@ -1667,7 +1801,8 @@ describe('provider-proxy guardian and reaper', () => {
 
     const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
     cleanups.push(() => successorReaper.close());
-    const rotated = (await successorReaper.call(
+    const rotated = (await strictTestExchange(
+      successorReaper,
       'reaper.handoff-rotate.v1',
       {
         grantId: request.grantId,
@@ -1680,7 +1815,8 @@ describe('provider-proxy guardian and reaper', () => {
     // Both authorities report the identical byte-sorted set the guardian alone forwarded — the reaper never
     // independently re-derives it, and the successor never presented one for either to check against.
     expect(rotated.operations).toEqual(sorted);
-    const beat = (await successorReaper.call(
+    const beat = (await strictTestExchange(
+      successorReaper,
       'reaper.heartbeat.v1',
       { controlEpoch: rotated.controlEpoch, heartbeatChallenge: rotated.heartbeatChallenge },
       5_000,
@@ -1699,20 +1835,21 @@ describe('provider-proxy guardian and reaper', () => {
 
     // The guardian's own pairing channel is the only authority that ever pushes this fact — reused here
     // rather than opened fresh, since the reaper accepts exactly one paired peer.
-    const recorded = (await set.reaperChannel.call('reaper.record-redemption.v1', first, 5_000)) as {
+    const recorded = (await strictTestExchange(set.reaperChannel, 'reaper.record-redemption.v1', first, 5_000)) as {
       state: string;
     };
     expect(recorded.state).toBe('redemption-recorded');
 
     // An identical repeat is idempotent (a retried guardian forward whose own reply was lost), so the
     // mismatch below has to change a field, not merely resend the same fact.
-    const repeat = (await set.reaperChannel.call('reaper.record-redemption.v1', first, 5_000)) as {
+    const repeat = (await strictTestExchange(set.reaperChannel, 'reaper.record-redemption.v1', first, 5_000)) as {
       state: string;
     };
     expect(repeat.state).toBe('redemption-recorded');
 
     await expect(
-      set.reaperChannel.call(
+      strictTestExchange(
+        set.reaperChannel,
         'reaper.record-redemption.v1',
         { ...first, redemptionReceipt: 'redemption-receipt-two' },
         5_000,
@@ -1730,7 +1867,7 @@ describe('provider-proxy guardian and reaper', () => {
       redemptionReceipt: 'redemption-receipt-shared',
     };
 
-    const recorded = (await set.reaperChannel.call('reaper.record-redemption.v1', first, 5_000)) as {
+    const recorded = (await strictTestExchange(set.reaperChannel, 'reaper.record-redemption.v1', first, 5_000)) as {
       state: string;
     };
     expect(recorded.state).toBe('redemption-recorded');
@@ -1738,7 +1875,12 @@ describe('provider-proxy guardian and reaper', () => {
     // Same receipt as `first`, but a different operation set — the receipt alone must not be read as
     // "the same fact repeated" when the set it names has moved.
     await expect(
-      set.reaperChannel.call('reaper.record-redemption.v1', { ...first, operations: [operation] }, 5_000),
+      strictTestExchange(
+        set.reaperChannel,
+        'reaper.record-redemption.v1',
+        { ...first, operations: [operation] },
+        5_000,
+      ),
     ).rejects.toThrow(/different live control epoch/u);
   });
 
@@ -1757,7 +1899,8 @@ describe('provider-proxy guardian and reaper', () => {
     // presented it there — closing exactly the gap a secret-checking reaper would leave open: two
     // successors, one still-unspent capsule, and no guardian involved yet.
     await expect(
-      successorReaper.call(
+      strictTestExchange(
+        successorReaper,
         'reaper.handoff-rotate.v1',
         {
           grantId: request.grantId,
@@ -1766,7 +1909,7 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'grant_invalid' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'grant_invalid' } });
   });
 
   it('refuses reaper.handoff-rotate.v1 presenting a receipt this reaper never recorded', async () => {
@@ -1780,13 +1923,14 @@ describe('provider-proxy guardian and reaper', () => {
 
     const successorGuardian = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => successorGuardian.close());
-    await successorGuardian.call('guardian.handoff-redeem.v1', request, 5_000);
+    await strictTestExchange(successorGuardian, 'guardian.handoff-redeem.v1', request, 5_000);
 
     const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
     cleanups.push(() => successorReaper.close());
 
     await expect(
-      successorReaper.call(
+      strictTestExchange(
+        successorReaper,
         'reaper.handoff-rotate.v1',
         {
           grantId: request.grantId,
@@ -1795,7 +1939,7 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'grant_invalid' });
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'grant_invalid' } });
   });
 
   it('holds nothing until the guardian names the containment it watched being created', async () => {
@@ -1824,6 +1968,7 @@ describe('provider-proxy guardian and reaper', () => {
       },
       clock,
       deadlines: {
+        orphanTimeoutMs: () => 74_000,
         controlIsLive: () => true,
         issueFirstChallenge: () => ({ accepted: true, challenge: randomUUID() }) as const,
         admitSuccessor: () => ({ accepted: true, challenge: randomUUID() }) as const,
@@ -1840,7 +1985,6 @@ describe('provider-proxy guardian and reaper', () => {
           controlLossAt: clock.now(),
           adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
           exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
-          firstChallengeExpiresAt: null,
         }),
         state: () => 'accepting-control' as const,
       },
@@ -1867,7 +2011,8 @@ describe('provider-proxy guardian and reaper', () => {
     const control = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => control.close());
     await expect(
-      control.call(
+      strictTestExchange(
+        control,
         'reaper.open.v1',
         {
           bootstrapNonce: NONCE,
@@ -1917,7 +2062,8 @@ describe('provider-proxy guardian and reaper', () => {
     // The coordinator's `containment` is an agreement check, not the source. A disagreement means the two
     // are reasoning about different sets, which teardown must surface rather than silently act on.
     await expect(
-      control.call(
+      strictTestExchange(
+        control,
         'reaper.open.v1',
         {
           bootstrapNonce: NONCE,
@@ -1940,7 +2086,8 @@ describe('provider-proxy guardian and reaper', () => {
     // bootstrap capsule — pid/incarnation are deliberately excluded (see its doc), so the mismatch has to land
     // on a capsule-stable field such as `guardianInstanceId`.
     await expect(
-      control.call(
+      strictTestExchange(
+        control,
         'reaper.open.v1',
         {
           bootstrapNonce: NONCE,
@@ -2050,10 +2197,16 @@ describe('provider-proxy guardian and reaper', () => {
       timer,
       mintReceipt: () => randomUUID(),
       reaperChannel: {
-        call: (method) =>
-          method === 'reaper.record-containment.v1'
-            ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
-            : Promise.reject(new Error(`Unexpected reaper call: ${method}`)),
+        exchange: async (method) => {
+          if (method !== 'reaper.record-containment.v1') throw new Error(`Unexpected reaper exchange: ${method}`);
+          return controlExchangeForTest({
+            kind: 'response' as const,
+            response: {
+              kind: 'result' as const,
+              value: { state: 'containment-recorded', reaper: reaperIdentity },
+            },
+          });
+        },
         faulted: new Promise<never>(() => undefined),
         onFault: () => () => undefined,
         close: () => {},
@@ -2090,7 +2243,8 @@ describe('provider-proxy guardian and reaper', () => {
     };
     const control = await connectControlClient(guardianEndpoint, timer, 5_000);
     cleanups.push(() => control.close());
-    const opened = (await control.call(
+    const opened = (await strictTestExchange(
+      control,
       'guardian.open.v1',
       { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
       5_000,
@@ -2098,7 +2252,8 @@ describe('provider-proxy guardian and reaper', () => {
     let heartbeatChallenge = opened.heartbeatChallenge;
     let lastAcceptedHeartbeatAt = clock.now();
     const sendHeartbeat = async (): Promise<void> => {
-      const response = (await control.call(
+      const response = (await strictTestExchange(
+        control,
         'guardian.heartbeat.v1',
         { controlEpoch: opened.controlEpoch, heartbeatChallenge },
         5_000,
@@ -2111,7 +2266,7 @@ describe('provider-proxy guardian and reaper', () => {
 
     const pairing = await connectControlClient(guardianEndpoint, timer, 5_000);
     cleanups.push(() => pairing.close());
-    await pairing.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await strictTestExchange(pairing, 'guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
     // The lease records the challenge's issuance time rather than its echo time, so stay one millisecond
     // inside half a lease: two consecutive in-flight round trips can never land exactly on expiry.
@@ -2193,16 +2348,22 @@ describe('provider-proxy guardian and reaper', () => {
 
     const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => pairing.close());
-    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
-    await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+    await strictTestExchange(pairing, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await strictTestExchange(pairing, 'reaper.record-containment.v1', CONTAINMENT, 5_000);
 
     const coordinator = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => coordinator.close());
-    const opened = (await coordinator.call('reaper.open.v1', bareOpenRequest(directory, shared), 5_000)) as {
+    const opened = (await strictTestExchange(
+      coordinator,
+      'reaper.open.v1',
+      bareOpenRequest(directory, shared),
+      5_000,
+    )) as {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
-    const firstBeat = (await coordinator.call(
+    const firstBeat = (await strictTestExchange(
+      coordinator,
       'reaper.heartbeat.v1',
       { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
       5_000,
@@ -2222,7 +2383,8 @@ describe('provider-proxy guardian and reaper', () => {
     // the very design that makes the acceleration real — but the coordinator did nothing wrong, so that
     // refusal must read as the containment retiring, never as this coordinator having lost control.
     await expect(
-      coordinator.call(
+      strictTestExchange(
+        coordinator,
         'reaper.heartbeat.v1',
         { controlEpoch: opened.controlEpoch, heartbeatChallenge: firstBeat.nextHeartbeatChallenge },
         5_000,
@@ -2240,20 +2402,20 @@ describe('provider-proxy guardian and reaper', () => {
 
     const first = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => first.close());
-    await expect(first.call('reaper.open.v1', bareOpenRequest(directory, shared), 5_000)).rejects.toThrow(
-      /holds no containment yet/u,
-    );
+    await expect(
+      strictTestExchange(first, 'reaper.open.v1', bareOpenRequest(directory, shared), 5_000),
+    ).rejects.toThrow(/holds no containment yet/u);
 
     const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => pairing.close());
-    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
-    await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+    await strictTestExchange(pairing, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await strictTestExchange(pairing, 'reaper.record-containment.v1', CONTAINMENT, 5_000);
 
     // The refusal above must not have spent the one-shot nonce: the same value still opens control once
     // this reaper actually has something to enforce.
     const second = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => second.close());
-    const opened = (await second.call('reaper.open.v1', bareOpenRequest(directory, shared), 5_000)) as {
+    const opened = (await strictTestExchange(second, 'reaper.open.v1', bareOpenRequest(directory, shared), 5_000)) as {
       controlEpoch: number;
     };
     expect(opened.controlEpoch).toBe(1);
@@ -2269,16 +2431,20 @@ describe('provider-proxy guardian and reaper', () => {
 
     const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
     cleanups.push(() => pairing.close());
-    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await strictTestExchange(pairing, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
-    const first = (await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000)) as { state: string };
+    const first = (await strictTestExchange(pairing, 'reaper.record-containment.v1', CONTAINMENT, 5_000)) as {
+      state: string;
+    };
     expect(first.state).toBe('containment-recorded');
 
-    const repeat = (await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000)) as { state: string };
+    const repeat = (await strictTestExchange(pairing, 'reaper.record-containment.v1', CONTAINMENT, 5_000)) as {
+      state: string;
+    };
     expect(repeat.state).toBe('containment-recorded');
 
     await expect(
-      pairing.call('reaper.record-containment.v1', { ...CONTAINMENT, processGroupId: 9_999 }, 5_000),
+      strictTestExchange(pairing, 'reaper.record-containment.v1', { ...CONTAINMENT, processGroupId: 9_999 }, 5_000),
     ).rejects.toThrow(/already holds a containment/u);
   });
 });
@@ -2287,7 +2453,9 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
   /** `stopAndReap`'s own `proxyClient` is never touched by it. */
   function unreachableClient(): ControlClient {
     return {
-      call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
+      exchange: () => {
+        throw new Error('unreachable: this client was not expected to exchange');
+      },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -2316,10 +2484,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       },
       coordinatorIdentity: set.coordinatorIdentity,
       handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
-      runtime: { ids: undefined, env: undefined, storage: undefined } as unknown as Pick<
-        Runtime,
-        'ids' | 'env' | 'storage'
-      >,
+      runtime: { ids: undefined, env: { get: () => undefined }, storage: undefined } as unknown as Runtime,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [ROOT] },
     });
 
@@ -2403,10 +2568,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       },
       coordinatorIdentity: set.coordinatorIdentity,
       handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
-      runtime: { ids: undefined, env: undefined, storage: undefined } as unknown as Pick<
-        Runtime,
-        'ids' | 'env' | 'storage'
-      >,
+      runtime: { ids: undefined, env: { get: () => undefined }, storage: undefined } as unknown as Runtime,
       operationRegistry,
     });
 

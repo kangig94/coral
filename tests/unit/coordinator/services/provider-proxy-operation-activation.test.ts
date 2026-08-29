@@ -27,10 +27,15 @@ import {
 import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityFault,
-  type ProviderProxyOperationIncident,
+  type ProviderProxyAuthorityIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
   buildSetId: randomUUID(),
@@ -95,10 +100,13 @@ function scriptedClient(answers: Record<string, unknown>): {
   return {
     calls,
     client: {
-      call: async (method, params) => {
+      exchange: async (method, params) => {
         calls.push({ method, params });
         if (!(method in answers)) throw new Error(`unscripted call to ${method}`);
-        return answers[method];
+        return controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: answers[method] },
+        });
       },
     },
   };
@@ -121,13 +129,13 @@ function faultRoutingDeps(
 ): Readonly<{
   activationDeps: ProviderProxyOperationActivationDeps;
   faults: ProviderProxyAuthorityFault[];
-  incidents: ProviderProxyOperationIncident[];
+  incidents: ProviderProxyAuthorityIncident[];
 }> {
   const latch = createProviderProxyAuthorityFaultLatch();
   const faults: ProviderProxyAuthorityFault[] = [];
-  const incidents: ProviderProxyOperationIncident[] = [];
+  const incidents: ProviderProxyAuthorityIncident[] = [];
   latch.onFault((fault) => faults.push(fault));
-  latch.onIncident((incident) => incidents.push(incident));
+  latch.onIncident((observation) => incidents.push(observation));
   return {
     activationDeps: {
       ...deps(client, guardianClient),
@@ -233,13 +241,13 @@ const POLICY_FAILURE_CASES = [
 ] as const satisfies readonly PolicyFailureCase[];
 
 describe('provider proxy operation mutations', () => {
-  it('routes every closed operation client call as a role-specific channel fault', async () => {
-    const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
-    const rejectingClient: OperationControlClient = { call: () => Promise.reject(closed) };
-    const faults: ProviderProxyAuthorityFault[] = [];
+  it('routes every closed operation client call as a role-specific channel incident', async () => {
+    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
+    const rejectingClient: OperationControlClient = { exchange: () => Promise.reject(closed) };
+    const incidents: ProviderProxyAuthorityIncident[] = [];
     const activationDeps: ProviderProxyOperationActivationDeps = {
       ...deps(rejectingClient, rejectingClient),
-      faultAuthority: (fault) => faults.push(fault),
+      reportIncident: (incident) => incidents.push(incident),
     };
     const prepareAttempt = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
     const calls = [
@@ -265,15 +273,15 @@ describe('provider proxy operation mutations', () => {
 
     for (const call of calls) await expect(call()).rejects.toBe(closed);
 
-    expect(faults).toEqual([
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'guardian', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
-      { kind: 'control-channel-fault', role: 'proxy', error: closed },
+    expect(incidents).toEqual([
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'guardian', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
+      { kind: 'control-channel-fault', role: 'proxy', cause: 'closed', error: closed },
     ]);
   });
 
@@ -283,7 +291,7 @@ describe('provider proxy operation mutations', () => {
       const failure = Object.assign(new Error(`${method} failed indeterminately`), { code: 'control_call_failed' });
       const calledMethods: string[] = [];
       const routing = faultRoutingDeps({
-        call: (calledMethod) => {
+        exchange: (calledMethod) => {
           calledMethods.push(calledMethod);
           return Promise.reject(failure);
         },
@@ -421,7 +429,7 @@ describe('provider proxy operation mutations', () => {
 
   it('reports a settlement timeout without consuming the authority fault latch', async () => {
     const timeout = Object.assign(new Error('settlement timed out'), { code: 'control_call_failed' });
-    const routing = faultRoutingDeps({ call: () => Promise.reject(timeout) });
+    const routing = faultRoutingDeps({ exchange: () => Promise.reject(timeout) });
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(timeout);
 
@@ -440,7 +448,15 @@ describe('provider proxy operation mutations', () => {
   });
 
   it('reports a malformed settlement reply without consuming the authority fault latch', async () => {
-    const routing = faultRoutingDeps({ call: () => Promise.resolve({ state: 'released-after-terminal' }) });
+    const routing = faultRoutingDeps({
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'released-after-terminal' } },
+          }),
+        ),
+    });
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toThrow();
 
@@ -458,28 +474,29 @@ describe('provider proxy operation mutations', () => {
     ]);
   });
 
-  it('faults authority for a closed settlement channel without reporting an incident', async () => {
-    const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
-    const routing = faultRoutingDeps({ call: () => Promise.reject(closed) });
+  it('reports a closed settlement channel without faulting authority', async () => {
+    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
+    const routing = faultRoutingDeps({ exchange: () => Promise.reject(closed) });
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(closed);
 
-    expect(routing.faults).toEqual([
+    expect(routing.faults).toEqual([]);
+    expect(routing.incidents).toEqual([
       {
         kind: 'control-channel-fault',
         role: 'proxy',
+        cause: 'closed',
         error: closed,
       },
     ]);
-    expect(routing.incidents).toEqual([]);
   });
 
-  it('allows a closed settlement channel to latch after a retry-safe incident is preserved', async () => {
+  it('reports a closed settlement channel after a retry-safe incident is preserved', async () => {
     const timeout = Object.assign(new Error('settlement timed out'), { code: 'control_call_failed' });
-    const closed = Object.assign(new Error('control client closed'), { code: 'control_client_closed' });
+    const closed = new ControlClientError('control_client_closed', 'control client closed', 'closed');
     const failures = [timeout, closed];
     const routing = faultRoutingDeps({
-      call: () => {
+      exchange: () => {
         const failure = failures.shift();
         return Promise.reject(failure instanceof Error ? failure : new Error('unexpected extra call'));
       },
@@ -490,14 +507,16 @@ describe('provider proxy operation mutations', () => {
     expect(routing.incidents).toHaveLength(1);
 
     await expect(settleProviderOperation(routing.activationDeps, OPERATION, 7)).rejects.toBe(closed);
-    expect(routing.faults).toEqual([
+    expect(routing.faults).toEqual([]);
+    expect(routing.incidents).toEqual([
+      expect.objectContaining({ kind: 'operation-control-failed' }),
       expect.objectContaining({
         kind: 'control-channel-fault',
         role: 'proxy',
+        cause: 'closed',
         error: closed,
       }),
     ]);
-    expect(routing.incidents).toHaveLength(1);
   });
 
   it.each([
@@ -584,14 +603,29 @@ describe('provider proxy operation mutations', () => {
       'operation_not_found',
       'unauthorized_control',
     ]);
-    const failure = (protocolCode: ProxyControlProtocolErrorCode): Error & { code: string; protocolCode: string } =>
-      Object.assign(new Error(protocolCode), { code: 'control_call_failed', protocolCode });
+    const refusal = (protocolCode: ProxyControlProtocolErrorCode): ControlExchange => {
+      const failure = {
+        kind: 'json-rpc-error' as const,
+        jsonRpcCode: -32_600,
+        protocolCode,
+        admissionReason: null,
+        heartbeatRefusal: null,
+      };
+      return controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'refusal',
+          failure,
+          error: new ControlClientError('control_call_failed', protocolCode, 'remote-response', failure),
+        },
+      });
+    };
     const observed: Array<readonly [ProxyControlProtocolErrorCode, number]> = [];
 
     for (const protocolCode of PROXY_CONTROL_PROTOCOL_ERROR_CODES) {
       const faults: unknown[] = [];
       const proxy: OperationControlClient = {
-        call: () => Promise.reject(failure(protocolCode)),
+        exchange: async () => refusal(protocolCode),
       };
       const activationDeps: ProviderProxyOperationActivationDeps = {
         ...deps(proxy, scriptedClient({}).client),

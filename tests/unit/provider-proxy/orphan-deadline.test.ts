@@ -9,6 +9,7 @@ import {
 } from '#src/infra/process-constants.js';
 import {
   createEnforcerDeadlineStateMachine,
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -23,7 +24,9 @@ import {
   PROXY_STARTUP_ATTACH_RESERVE_MS,
   PROXY_SUCCESSOR_TAIL_MS,
   PROXY_TEARDOWN_RESERVE_MS,
+  providerProxyAdoptionWindowMs,
   providerProxyDeadlineTimingIsValid,
+  providerProxyHeartbeatHoldBound,
   providerProxyDeadlineConfigurationSchema,
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerChallengePolicy,
@@ -151,7 +154,7 @@ describe('provider proxy orphan deadline configuration', () => {
   it('checks the controlling successor boundary on both sides', () => {
     const boundary = PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_LEASE_MS + PROXY_SUCCESSOR_TAIL_MS;
 
-    const issue = 'must satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy';
+    const issue = `${CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV} must be at least ${MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS}ms to satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy`;
     expect(issueMessages(String(boundary))).toContain(issue);
     expect(issueMessages(String(boundary + 1))).not.toContain(issue);
     expect(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)).orphanTimeoutMs).toBe(
@@ -190,6 +193,29 @@ describe('provider proxy orphan deadline configuration', () => {
     expect(3 * PROXY_CONTROL_ESTABLISH_READY_MS).toBeLessThan(acquisitionDeadlineMs);
     expect(acquisitionDeadlineMs).toBeLessThan(3 * processBootstrapMs);
     expect(adoptionWindowMs).toBeLessThan(acquisitionDeadlineMs);
+  });
+
+  it('exposes the adoption window as the single formula both an enforcer and the coordinator escalation share', () => {
+    expect(
+      providerProxyAdoptionWindowMs({
+        orphanTimeoutMs: DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+        teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
+      }),
+    ).toBe(23_000);
+    expect(providerProxyAdoptionWindowMs(configuration())).toBe(23_000);
+    expect(providerProxyAdoptionWindowMs(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)))).toBe(
+      22_001,
+    );
+  });
+
+  it('derives material scheduler lateness as one quarter of the same span', () => {
+    expect(providerProxyHeartbeatHoldBound(configuration())).toEqual({
+      spanMs: 23_000,
+      materialSchedulerLatenessMs: 5_750,
+    });
+    expect(
+      providerProxyHeartbeatHoldBound(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS))),
+    ).toEqual({ spanMs: 22_001, materialSchedulerLatenessMs: 5_500 });
   });
 
   it('rejects an unvalidated configuration object at the state-machine boundary', () => {
@@ -278,17 +304,6 @@ describe('provider proxy enforcer deadline evidence', () => {
     expect(guardian.issueFirstChallenge()).toEqual({ accepted: false, reason: 'invalid-state' });
   });
 
-  it('caps the first challenge at the adoption deadline', () => {
-    const fake = createFakeClock(guardianClockScope, 0);
-    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'));
-    const adoptionDeadline = guardian.bounds().adoptionDeadline;
-    fake.set(12_000);
-    guardian.issueFirstChallenge();
-
-    // The enforcer's challenge may not outlive the containment-recovery window it protects.
-    expectSameInstant(fake.clock, guardian.bounds().firstChallengeExpiresAt!, adoptionDeadline);
-  });
-
   it('lets the enforcer bootstrap echo win after ordinary loss but never at adoption equality', () => {
     const acceptedFake = createFakeClock(guardianClockScope, 0);
     const accepted = createEnforcerDeadlineStateMachine(acceptedFake.clock, configuration(), policy('accepted'));
@@ -321,31 +336,18 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(equalityFake.clock, afterEquality.controlLossAt, beforeEquality.controlLossAt);
     expectSameInstant(equalityFake.clock, afterEquality.exitDeadline, beforeEquality.exitDeadline);
     expectSameInstant(equalityFake.clock, afterEquality.adoptionDeadline, beforeEquality.adoptionDeadline);
-    expectSameInstant(
-      equalityFake.clock,
-      afterEquality.firstChallengeExpiresAt!,
-      beforeEquality.firstChallengeExpiresAt!,
-    );
   });
 
-  it('leaves every bound unchanged when a bootstrap echo reaches its challenge-expiry equality', () => {
+  it('accepts matching first and recurring echoes after the control lease while adoption remains open', () => {
     const fake = createFakeClock(guardianClockScope, 0);
-    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('expired'));
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('late'));
     const first = mustAccept(guardian.issueFirstChallenge());
-    const before = guardian.bounds();
     fake.set(PROXY_CONTROL_LEASE_MS);
 
-    expect(guardian.echoChallenge(first.challenge)).toEqual({
-      accepted: false,
-      reason: 'challenge-expired',
-    });
-    const after = guardian.bounds();
-    expectSameInstant(fake.clock, after.lastRoundTripEvidenceAt, before.lastRoundTripEvidenceAt);
-    expect(after.eofAt).toBe(before.eofAt);
-    expectSameInstant(fake.clock, after.controlLossAt, before.controlLossAt);
-    expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
-    expectSameInstant(fake.clock, after.adoptionDeadline, before.adoptionDeadline);
-    expectSameInstant(fake.clock, after.firstChallengeExpiresAt!, before.firstChallengeExpiresAt!);
+    expect(guardian.echoChallenge(first.challenge)).toEqual({ accepted: true, nextChallenge: 'late-2' });
+
+    fake.set(PROXY_CONTROL_LEASE_MS * 2 + 1);
+    expect(guardian.echoChallenge('late-2')).toEqual({ accepted: true, nextChallenge: 'late-3' });
   });
 
   it('rejects a successor challenge at the earlier adoption cutoff', () => {
@@ -376,6 +378,7 @@ describe('provider proxy enforcer deadline evidence', () => {
     expect(guardian.echoChallenge(first.challenge)).toEqual({
       accepted: false,
       reason: 'challenge-mismatch',
+      nextChallenge: 'c-3',
     });
     const after = guardian.bounds();
     expectSameInstant(fake.clock, after.lastRoundTripEvidenceAt, before.lastRoundTripEvidenceAt);
@@ -383,7 +386,7 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(fake.clock, after.controlLossAt, before.controlLossAt);
     expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
     expectSameInstant(fake.clock, after.adoptionDeadline, before.adoptionDeadline);
-    expectSameInstant(fake.clock, after.firstChallengeExpiresAt!, before.firstChallengeExpiresAt!);
+    expect(guardian.echoChallenge('c-3')).toEqual({ accepted: true, nextChallenge: 'c-4' });
   });
 
   it('ignores positive and negative wall-clock jumps', () => {

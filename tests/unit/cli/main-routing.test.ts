@@ -463,6 +463,73 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('names each exact provider-proxy set that successful handoff shutdown preserves', async () => {
+    const token = 'pps1.preserved-set';
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      backendStatus: {
+        getStatus: async () =>
+          ({
+            status: 'ok',
+            health: {
+              diagnostics: {
+                providerProxySets: [
+                  {
+                    setIdentity: {
+                      buildSetId: '11111111-1111-4111-8111-111111111111',
+                      hostFingerprint: 'a'.repeat(64),
+                      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+                    },
+                    setToken: token,
+                    disposition: 'held',
+                    liveClaims: 1,
+                    incidentReason: 'control_channel_reattaching',
+                    waitingFor: 'control-reattachment',
+                  },
+                ],
+              },
+            },
+          }) as never,
+      } as unknown as BackendStatusCommandOperations,
+    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: true });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout.split(token)).toHaveLength(2);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports an incomplete pre-shutdown set read and retains structurally valid opaque tokens', async () => {
+    const token = 'pps1.opaque-set';
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      backendStatus: {
+        getStatus: async () =>
+          ({
+            status: 'ok',
+            health: {
+              diagnostics: { providerProxySets: [] },
+              skippedProviderProxySetRows: 1,
+              skippedProviderProxySetTokens: [token],
+            },
+          }) as never,
+      } as unknown as BackendStatusCommandOperations,
+    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: true });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout.split(token)).toHaveLength(2);
+    expect(stdout).toContain('could not interpret 1 provider proxy set row(s)');
+    expect(stdout).toContain('could not confirm that every preserved set was named');
+    expect(stdout).not.toContain('No held provider proxy sets were reported');
+  });
+
   // The exit code is the only machine-readable channel this command has, and `docs/configuration.md` tells
   // operators to run it before `store-reset discard`. Every failure exited 1 alike, so a script could not tell
   // "it is stopped, proceed" from "I could not tell" — the disposition the type had just gained, discarded at
@@ -470,12 +537,12 @@ describe('cli main routing', () => {
   //
   // 75 rather than 2, which an earlier revision used: 2 is `invalid_usage` across this CLI, so "you called
   // this wrong" and "I could not observe the daemon" would have shared a code.
-  // `socket_refused` exits `75`, not `1`: a refused connection never establishes the recorded pid absent (an
-  // absent pid is excluded before any request is sent), so it cannot join the observed-absence/observed-refusal
-  // rows above it — see the production table's own comment for the deterministic mid-drain window this guards.
+  // `no_record` and `recorded_process_absent` both exit `75`: the former can miss an unpublished v0.10.9
+  // coordinator at an unenumerated fallback, while the latter proves only that the process named by a possibly
+  // stale record is gone. Neither observation establishes whether a different coordinator is running.
   const SHUTDOWN_EXIT_EXPECTATIONS = [
-    ['no_record', 1],
-    ['recorded_process_absent', 1],
+    ['no_record', 75],
+    ['recorded_process_absent', 75],
     ['nested_child', 1],
     ['capability_rejected', 1],
     ['unreadable_record', 75],
@@ -519,7 +586,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(process.exitCode, 'observed refusals exit 1; unobserved state exits 75').toBe(expected);
+    expect(process.exitCode, 'settled refusals exit 1; no-verdict refusals exit 75').toBe(expected);
   });
 
   // The rows above are written out by hand so they are an independent statement of the mapping rather than a

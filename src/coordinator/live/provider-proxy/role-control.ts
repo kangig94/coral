@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '../../../provider-proxy/protocol.js';
+import { PROXY_CONTROL_ESTABLISH_READY_MS } from '../../../provider-proxy/orphan-deadline.js';
 import type { ProxyControlProtocolErrorCode } from '../../../provider-proxy/protocol.js';
 import {
   connectRoleControlWithRetry,
@@ -14,9 +15,13 @@ import {
   type ControlClientRemoteFailure,
   type ProviderEventHandler,
 } from '../../../provider-proxy/control-client.js';
+import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
+import type { ProviderProxyHeartbeatMethod, ProviderProxyRole } from '../../services/provider-proxy-authority-fault.js';
 import { heartbeatOnce } from './heartbeat.js';
 
-export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';
+export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
+export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
+export const ESTABLISH_CONTROL_READY_DEADLINE_MS = PROXY_CONTROL_ESTABLISH_READY_MS;
 
 export type ProviderProxyRoleOpenMethod =
   | 'control.open.v1'
@@ -30,8 +35,6 @@ export type ProviderProxyRecoveryOpenMethod = Extract<
   ProviderProxyRoleOpenMethod,
   'guardian.handoff-redeem.v1' | 'reaper.handoff-rotate.v1' | 'handoff.redeem.v1'
 >;
-
-export type ProviderProxyHeartbeatMethod = 'control.heartbeat.v1' | 'guardian.heartbeat.v1' | 'reaper.heartbeat.v1';
 
 export type ProviderProxyRoleControlAvailabilityIncident =
   | Readonly<{
@@ -48,6 +51,12 @@ export type ProviderProxyRoleControlAvailabilityIncident =
       method: ProviderProxyRecoveryOpenMethod;
       protocolCode: 'invalid_state';
       admissionReason: 'control-active';
+    }>
+  | Readonly<{
+      kind: 'role-heartbeat-indeterminate';
+      role: ProviderProxyRole;
+      method: ProviderProxyHeartbeatMethod;
+      observation: HeartbeatObservation;
     }>;
 
 export class ProviderProxyRoleControlUnavailableError extends Error {
@@ -70,12 +79,15 @@ function requireRemoteFailure(error: ControlClientError): ControlClientRemoteFai
 
 function remoteFailureDiagnostic(remoteFailure: ControlClientRemoteFailure): string {
   if (remoteFailure.kind === 'invalid-frame') return remoteFailure.kind;
-  return [
+  const diagnostic = [
     remoteFailure.kind,
     String(remoteFailure.jsonRpcCode),
     remoteFailure.protocolCode ?? 'unrecognized',
-    remoteFailure.admissionReason ?? 'none',
   ].join(':');
+  const admission = remoteFailure.admissionReason === null ? '' : `:admission-reason=${remoteFailure.admissionReason}`;
+  const heartbeat =
+    remoteFailure.heartbeatRefusal === null ? '' : `:heartbeat-refusal=${remoteFailure.heartbeatRefusal.reason}`;
+  return `${diagnostic}${admission}${heartbeat}`;
 }
 
 export class ProviderProxyRoleControlRemoteError extends Error {
@@ -161,6 +173,56 @@ function classifyRoleControlFailure(
   throw new ProviderProxyRoleControlRemoteError(role, stage, method, error);
 }
 
+async function establishHeartbeat(
+  role: ProviderProxyRole,
+  client: ControlClient,
+  method: ProviderProxyHeartbeatMethod,
+  controlEpoch: number,
+  firstChallenge: string,
+): Promise<{ nextHeartbeatChallenge: string }> {
+  let challenge = firstChallenge;
+  let resynchronized = false;
+  for (;;) {
+    const observation = await heartbeatOnce(client, method, controlEpoch, challenge);
+    if (observation.kind === 'locally-unsent' || observation.kind === 'delivery-unconfirmed') {
+      throw observation.error;
+    }
+    if (observation.kind === 'channel-fault') {
+      classifyRoleControlFailure(role, 'heartbeat', method, observation.error);
+    }
+    if (observation.kind === 'reply') {
+      if (observation.reply.kind === 'accepted') {
+        return { nextHeartbeatChallenge: observation.reply.nextChallenge };
+      }
+      if (observation.reply.kind === 'challenge-mismatch' && !resynchronized) {
+        challenge = observation.reply.nextChallenge;
+        resynchronized = true;
+        continue;
+      }
+      if (observation.reply.kind === 'teardown-latched') {
+        throw new ProviderProxyRoleControlRemoteError(role, 'heartbeat', method, observation.reply.error);
+      }
+    }
+    throw new ProviderProxyRoleControlUnavailableError(
+      { kind: 'role-heartbeat-indeterminate', role, method, observation },
+      { cause: observation },
+    );
+  }
+}
+
+async function establishHeartbeatOrChannelFault(
+  role: ProviderProxyRole,
+  client: ControlClient,
+  method: ProviderProxyHeartbeatMethod,
+  controlEpoch: number,
+  firstChallenge: string,
+): Promise<{ nextHeartbeatChallenge: string }> {
+  const channelFaulted = client.faulted.then((fault): never =>
+    classifyRoleControlFailure(role, 'heartbeat', method, fault),
+  );
+  return Promise.race([establishHeartbeat(role, client, method, controlEpoch, firstChallenge), channelFaulted]);
+}
+
 /** Compares only the fields this acquisition can independently verify — everything it minted, plus (for the
  *  guardian alone) the pid and incarnation the acquisition observed by spawning it itself. A disagreement here
  *  means the connected process is not the one this acquisition created. */
@@ -182,9 +244,7 @@ export type ControlTimer = ReturnType<typeof runtimeControlTimer>;
 
 /** One role's connect→open→verify→heartbeat plan. `identity` pulls the role's own identity field out of the
  *  already-schema-validated open result — a selector rather than a `result[role]` lookup, so the compiler
- *  checks it against the concrete open-result type instead of trusting a string key at runtime. Exported so
- *  `services/provider-proxy-set/inheritance.ts` can describe its own redeem/rotate opens the same shape
- *  `establishRoleControl` already consumes, rather than a second, parallel plan type. */
+ *  checks it against the concrete open-result type instead of trusting a string key at runtime. */
 export type RoleControlPlan<
   TOpened extends { controlEpoch: number; heartbeatChallenge: string },
   /** No default: `RoleControlPlan<TOpened>` would make `openParams` `any` and quietly undo the check below.
@@ -235,11 +295,7 @@ export type RoleControlPlan<
  * failure — the same close-everything-opened behavior a single inline try/catch gave when this was one block
  * per role instead of one shared function.
  *
- * Exported: `services/provider-proxy-set/inheritance.ts` drives the identical connect→open→verify→heartbeat
- * sequence for a redeemed tenancy (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`,
- * `handoff.redeem.v1`) that `acquisition-steps.ts` drives for a freshly minted one — the opening credential
- * differs, the mechanics do not, so there is exactly one function that dials a role and keeps its first
- * challenge alive.
+ * See `redeemProviderProxyControl` in `coordinator/live/provider-proxy/control-redemption.ts`.
  */
 export async function establishRoleControl<
   TOpened extends { controlEpoch: number; heartbeatChallenge: string },
@@ -260,17 +316,24 @@ export async function establishRoleControl<
   const params = plan.openParamsSchema.parse(plan.openParams) as z.output<TOpenParams>;
   let raw: unknown;
   try {
-    raw = await client.call(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+    const exchange = await client.exchange(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+    if (exchange.kind === 'response') {
+      if (exchange.response.kind === 'result') raw = exchange.response.value;
+      else classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.response.error);
+    } else {
+      classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.error);
+    }
   } catch (error: unknown) {
     classifyRoleControlFailure(plan.role, 'open', plan.openMethod, error);
   }
   const result = plan.openResultSchema.parse(raw);
   assertIdentityFieldsAgree(plan.role, plan.expectedIdentity, plan.identity(result));
-  let beat: { nextHeartbeatChallenge: string };
-  try {
-    beat = await heartbeatOnce(client, plan.heartbeatMethod, result.controlEpoch, result.heartbeatChallenge);
-  } catch (error: unknown) {
-    classifyRoleControlFailure(plan.role, 'heartbeat', plan.heartbeatMethod, error);
-  }
+  const beat = await establishHeartbeatOrChannelFault(
+    plan.role,
+    client,
+    plan.heartbeatMethod,
+    result.controlEpoch,
+    result.heartbeatChallenge,
+  );
   return { client, opened: result, nextHeartbeatChallenge: beat.nextHeartbeatChallenge };
 }

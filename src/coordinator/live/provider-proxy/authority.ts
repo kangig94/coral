@@ -1,4 +1,5 @@
-import type { OperationIdentity, ProviderHostInventoryRecordWire } from '../../../provider-proxy/protocol.js';
+import type { ProviderHostInventoryRecordWire } from '../../../provider-proxy/protocol.js';
+import type { ProviderProxyHeartbeatHoldBound } from '../../../provider-proxy/orphan-deadline.js';
 import type { HostRef } from '../../../providers/contract.js';
 
 /**
@@ -35,10 +36,11 @@ export interface ProviderProxySetAuthority {
   }>;
 }
 
-export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
-  installRecoveryCredential(signal: AbortSignal): Promise<void>;
-  registerSuccessionOperation(operation: OperationIdentity, signal?: AbortSignal): Promise<void>;
-}
+export type ProviderProxyAutonomousDeadline = Readonly<{
+  orphanTimeoutMs: number;
+  adoptionWindowMs: number;
+  heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
+}>;
 
 export interface ProviderProxyAuthorityRegistry {
   /**

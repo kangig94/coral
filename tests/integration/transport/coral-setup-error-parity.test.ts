@@ -11,6 +11,8 @@ import {
   type SerializedCoralSetupError,
 } from '#src/runtime/errors.js';
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
+import { buildErrorEnvelope } from '#src/cli/errors.js';
+import { generationNotQuiescentError } from '#src/store/generation-mutation-coordination.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { createHttpHandler, sendJson } from '#src/transport/http/handler.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
@@ -249,6 +251,7 @@ async function requestHttpErrorPayload(
   baseUrl: string,
   token: string,
   expected: SerializedCoralSetupError,
+  expectedStatus = 500,
 ): Promise<SerializedCoralSetupError> {
   const response = await fetch(`${baseUrl}/coordinator/expansion`, {
     method: 'POST',
@@ -259,7 +262,7 @@ async function requestHttpErrorPayload(
     body: JSON.stringify({ name: 'vector' }),
   });
 
-  expect(response.status).toBe(500);
+  expect(response.status).toBe(expectedStatus);
   const body = await response.json();
   expect(body).toMatchObject(expected);
   const structured = serializeCoralSetupError(body);
@@ -268,6 +271,40 @@ async function requestHttpErrorPayload(
 }
 
 describe('coral setup error parity', () => {
+  it('carries the store-owned unobservable-writer code through direct, IPC, HTTP, and CLI boundaries', async () => {
+    const failure = generationNotQuiescentError(
+      { flavor: 'prod' },
+      'install:kiwi (pid 42), process identity unobservable',
+      'writer-unobservable',
+    );
+    const expected = serializeCoralSetupError(failure);
+    if (expected === null) throw new Error('Expected generation failure to serialize');
+    const ports = createPorts(() => failure);
+    const socketPath = makeSocketPath();
+    const ipcListener = createIpcServer(ports);
+    const { baseUrl } = await startHttpServer(ports);
+
+    await listenIpcServer(ipcListener, socketPath);
+    try {
+      const directCode = serializeCoralSetupError(failure)?.code;
+      const ipcCode = (await requestIpcErrorPayload(socketPath, expected)).code;
+      const httpCode = (await requestHttpErrorPayload(baseUrl, ports.identity.token, expected, 409)).code;
+      const httpBuilderCode = buildTransportErrorResponse(failure).body.code;
+      const cliCode = buildErrorEnvelope(failure).envelope.code;
+
+      expect({ directCode, ipcCode, httpCode, httpBuilderCode, cliCode }).toEqual({
+        directCode: 'legacy_source_writer_observation_unknown',
+        ipcCode: 'legacy_source_writer_observation_unknown',
+        httpCode: 'legacy_source_writer_observation_unknown',
+        httpBuilderCode: 'legacy_source_writer_observation_unknown',
+        cliCode: 'legacy_source_writer_observation_unknown',
+      });
+      expect(buildErrorEnvelope(failure).exitCode).toBe(75);
+    } finally {
+      await closeIpcServer(ipcListener);
+    }
+  });
+
   it('serializes workflow lifecycle conflicts as a safe HTTP 409 response', () => {
     const response = buildTransportErrorResponse(
       new CoralSetupError({

@@ -52,10 +52,7 @@ export type StoreResetDiscardDecision =
   | StoreResetDiscardResult
   | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget; readonly source: 'active-selection' };
 
-type AcquireStoreResetSocketGuard = (
-  paths: StoreResetTargetPaths,
-  flavor: BuildFlavor,
-) => Promise<StoreResetSocketGuard>;
+type AcquireStoreResetSocketGuard = (paths: StoreResetTargetPaths, runtime: Runtime) => Promise<StoreResetSocketGuard>;
 
 export type StoreResetDiscardOptions =
   | {
@@ -102,7 +99,6 @@ export function resolveStoreResetTargetPaths(
     quarantineRoot: join(dirname(storeDbPath), STORE_RESET_QUARANTINE_DIRECTORY),
     socketPath: socketPathForRunDir(runDirectory, runtime.flavor, {
       platform: runtime.env.platform(),
-      uid: process.getuid?.() ?? 0,
     }),
   };
 }
@@ -145,12 +141,14 @@ async function discardGeneratedStore(
         try {
           maintenance = await acquireGenerationMaintenanceLease(options.runtime, options.maintenanceTimeoutMs);
         } catch (error: unknown) {
-          if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+          if (
+            error instanceof CoralSetupError &&
+            (error.code === 'legacy_source_not_quiescent' || error.code === 'legacy_source_writer_observation_unknown')
+          ) {
             throw documentedCoralSetupError({
-              code: 'legacy_source_not_quiescent',
+              code: error.code,
               operation: 'store-reset',
               holder: error.context?.holder,
-              ...(error.context?.writerObservation === 'unknown' ? { writerObservation: 'unknown' } : {}),
               flavor: options.runtime.flavor,
               baseDir: paths.baseDir,
             });
@@ -208,7 +206,7 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
   }
 
   const paths = resolveStoreResetTargetPaths(options.runtime, options.target);
-  const socket = await options.acquireSocketGuard(paths, options.runtime.flavor);
+  const socket = await options.acquireSocketGuard(paths, options.runtime);
   try {
     return await discardGeneratedStore(options, paths);
   } finally {

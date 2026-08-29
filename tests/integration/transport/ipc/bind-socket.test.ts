@@ -77,7 +77,7 @@ afterEach(async () => {
   for (const root of tempDirs.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
-  // Never recursive, and only for an entry a test proved it created: this path is derived from a uid rather
+  // Never recursive, and only for an entry a test proved it created: this path is derived from a state root rather
   // than from mkdtemp, so a recursive remove of one this suite did not make is a remove of someone's data.
   for (const link of createdFallbackLinks.splice(0)) {
     unlinkSync(link);
@@ -126,36 +126,38 @@ describe('bindSocket', () => {
     expect(server.listening).toBe(false);
   });
 
-  it('reports an unusable address owner under the no-verdict code', async () => {
+  it('reports an unusable required owner under the no-verdict code', async () => {
     vi.spyOn(process, 'getuid').mockReturnValue(Number.NaN);
     const server = createServer();
     cleanupServers.push(server);
 
-    await expect(bindSocket(server, join(socketFallbackDir(Number.NaN), 'relocated.sock'))).rejects.toThrow(
+    await expect(
+      bindSocket(server, join(socketFallbackDir('/state/unusable-owner'), 'relocated.sock')),
+    ).rejects.toThrow(
       expect.objectContaining({
         code: 'coordinator_socket_dir_unverified',
-        userMessage: expect.stringContaining('the owner uid named by the socket address is not usable'),
+        userMessage: expect.stringContaining('the required socket-directory owner uid is not usable'),
       }),
     );
     expect(server.listening).toBe(false);
   });
 
-  it('asserts a fallback directory against the uid encoded in its address', async () => {
+  it('asserts an installation fallback directory against the calling uid', async () => {
     const addressUid = 9_000_000 + process.pid;
     const laterUid = anotherUid(addressUid);
     vi.spyOn(process, 'getuid').mockReturnValue(laterUid);
-    const directory = socketFallbackDir(addressUid);
+    const directory = socketFallbackDir('/state/caller-owner-check');
     mkdirSync(directory, { mode: 0o700 });
     createdFallbackDirectories.push(directory);
     reportFallbackParent(0n, 0o041777n);
-    reportFallbackEntryUid(directory, BigInt(laterUid));
+    reportFallbackEntryUid(directory, BigInt(addressUid));
     const server = createServer();
     cleanupServers.push(server);
 
     await expect(bindSocket(server, join(directory, 'relocated.sock'))).rejects.toThrow(
       expect.objectContaining({
         code: 'coordinator_socket_dir_insecure',
-        context: expect.objectContaining({ reason: 'foreign', uid: addressUid }),
+        context: expect.objectContaining({ reason: 'foreign', uid: laterUid }),
       }),
     );
     expect(server.listening).toBe(false);
@@ -166,7 +168,7 @@ describe('bindSocket', () => {
   it('maps an owned symlink to unusable and renders that reason, without listening', async () => {
     const uid = 9_000_000 + process.pid;
     vi.spyOn(process, 'getuid').mockReturnValue(uid);
-    const directory = socketFallbackDir(uid);
+    const directory = socketFallbackDir(`/state/symlink-${uid}`);
     const target = mkdtempSync(join(tmpdir(), 'coral-relocated-target-'));
     tempDirs.push(target);
     symlinkSync(target, directory);
@@ -192,7 +194,7 @@ describe('bindSocket', () => {
     const entryUid = process.getuid?.() ?? 0;
     const uid = anotherUid(entryUid);
     vi.spyOn(process, 'getuid').mockReturnValue(uid);
-    const directory = socketFallbackDir(uid);
+    const directory = socketFallbackDir(`/state/foreign-${uid}`);
     mkdirSync(directory, { mode: 0o700 });
     createdFallbackDirectories.push(directory);
     reportFallbackParent(0n, 0o041777n);
@@ -218,7 +220,7 @@ describe('bindSocket', () => {
     const uid = anotherUid(process.getuid?.() ?? 0);
     const observedUid = BigInt(anotherUid(uid));
     vi.spyOn(process, 'getuid').mockReturnValue(uid);
-    const directory = socketFallbackDir(uid);
+    const directory = socketFallbackDir(`/state/effective-parent-${uid}`);
     mkdirSync(directory, { mode: 0o700 });
     createdFallbackDirectories.push(directory);
     reportFallbackParent(observedUid, 0o040700n);

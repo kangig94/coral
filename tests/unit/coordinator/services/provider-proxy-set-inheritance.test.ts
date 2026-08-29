@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,23 +31,42 @@ import {
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
-import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import {
+  PROXY_CONTROL_HEARTBEAT_MS,
+  PROXY_CONTROL_LEASE_MS,
+  providerProxyHeartbeatHoldBound,
+} from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
+import { providerProxyDisappearanceReceipt } from '#src/provider-proxy/enforcement.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
-  attemptProviderProxySetInheritance,
+  attemptProviderProxySetInheritance as attemptProviderProxySetInheritanceWithRequiredContainment,
   createProviderProxySetInheritance,
+  type CreateProviderProxySetInheritanceOptions,
+  type ProviderProxySetInheritanceDeps,
   type ProviderProxySetLocator,
 } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  createProviderProxySetContainmentProver,
+  inspectProviderProxySetContainmentProof,
+  providerProxySetContainmentEvidenceFor,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import type { ProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import {
   isProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
@@ -59,7 +79,10 @@ import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-pr
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -75,7 +98,77 @@ const mockedProbe = vi.mocked(probeProcessIncarnation);
 // above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
 // this shared `.not.toHaveBeenCalled()`-style assertions must not see a sibling test's earlier calls.
 const runtime = createRealRuntime('prod');
-const unusedDb = {} as Database;
+const unusedDb = newRawDatabase(':memory:');
+applyBundledStoreSchema(unusedDb, currentCoralStoreFormat());
+const defaultContainmentProver = createProviderProxySetContainmentProver({
+  ...runtime,
+  process: {
+    ...runtime.process,
+    readProcessIncarnation: () => null,
+    observeLiveness: () => 'unknown',
+  },
+});
+const unexpectedInheritanceRecordedContainmentReap: ProviderProxySetRecordedContainmentReaper = (): never => {
+  throw new Error('provider proxy inheritance fixture unexpectedly requested recorded containment reaping');
+};
+const defaultInheritanceContainmentDeps = {
+  collectContainmentProof: defaultContainmentProver.collectContainmentProof,
+  reapRecordedContainment: unexpectedInheritanceRecordedContainmentReap,
+};
+const inheritanceReaperIsRequired: Record<PropertyKey, never> extends Pick<
+  ProviderProxySetInheritanceDeps,
+  'reapRecordedContainment'
+>
+  ? false
+  : true = true;
+const composedInheritanceReaperIsRequired: Record<PropertyKey, never> extends Pick<
+  CreateProviderProxySetInheritanceOptions,
+  'reapRecordedContainment'
+>
+  ? false
+  : true = true;
+void inheritanceReaperIsRequired;
+void composedInheritanceReaperIsRequired;
+type TestInheritanceDeps = Omit<
+  ProviderProxySetInheritanceDeps,
+  'collectContainmentProof' | 'reapRecordedContainment'
+> &
+  Partial<Pick<ProviderProxySetInheritanceDeps, 'collectContainmentProof' | 'reapRecordedContainment'>>;
+function attemptProviderProxySetInheritance(
+  locator: ProviderProxySetLocator,
+  db: Database,
+  deps: TestInheritanceDeps,
+  signal: AbortSignal,
+) {
+  return attemptProviderProxySetInheritanceWithRequiredContainment(
+    locator,
+    db,
+    { ...defaultInheritanceContainmentDeps, ...deps },
+    signal,
+  );
+}
+async function collectContainmentEvidenceForTest(
+  prover: ReturnType<typeof createProviderProxySetContainmentProver>,
+  identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+  db: Database,
+  signal: AbortSignal,
+) {
+  const proof = await prover.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+  const inspected = inspectProviderProxySetContainmentProof(proof);
+  if (inspected === null) throw new Error('containment prover returned an uninspectable proof');
+  return inspected.evidence;
+}
+const reapRecordedEvidence: ProviderProxySetRecordedContainmentReaper = async (identity, proof) => {
+  const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+  if (evidence.kind !== 'reap-required') throw new Error(`expected reap-required, received ${evidence.kind}`);
+  return {
+    kind: 'containment-absent',
+    disappearanceReceipt: providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots),
+  };
+};
+const unexpectedLifecycleRecordedContainmentReap = (): never => {
+  throw new Error('provider proxy inheritance fixture unexpectedly requested lifecycle recorded containment reaping');
+};
 // Every test in this file drives one redemption attempt to completion synchronously (fake clients settle
 // immediately), so a signal that never aborts exercises exactly the same path the never-aborted case in
 // production takes; the abort/deadline-checkpoint behavior itself is covered separately.
@@ -262,6 +355,31 @@ function byteSorted(operations: readonly OperationKey[]): OperationKey[] {
   return [...operations].sort((a, b) => (a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0));
 }
 
+async function scriptedHeartbeatExchange(
+  responses: Record<string, unknown | ((params: unknown) => unknown)>,
+  calls: { method: string; params: unknown }[],
+  method: string,
+  params: unknown,
+): Promise<ControlExchange> {
+  calls.push({ method, params });
+  const entry = responses[method];
+  if (entry === undefined) throw new Error(`unexpected exchange to ${method}`);
+  try {
+    const value = typeof entry === 'function' ? (entry as (value: unknown) => unknown)(params) : entry;
+    return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
+  } catch (error: unknown) {
+    if (!(error instanceof ControlClientError)) throw error;
+    if (error.remoteFailure !== null) {
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'refusal', failure: error.remoteFailure, error },
+      });
+    }
+    if (error.origin === 'timeout') return controlExchangeForTest({ kind: 'no-response', cause: 'timeout', error });
+    return controlExchangeForTest({ kind: 'not-sent', cause: 'connection-already-closed', error });
+  }
+}
+
 /** Method-dispatched fake `ControlClient`, shared across all three role connects — the wire methods this
  *  redemption calls (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`, `handoff.redeem.v1`, and
  *  `*.heartbeat.v1`) never collide across roles, so one responder
@@ -273,12 +391,7 @@ function fakeClient(
 ): ControlClient {
   const faulted = new Promise<never>(() => undefined);
   return {
-    call: async (method: string, params: unknown) => {
-      calls.push({ method, params });
-      const entry = responses[method];
-      if (entry === undefined) throw new Error(`unexpected call to ${method}`);
-      return typeof entry === 'function' ? (entry as (p: unknown) => unknown)(params) : entry;
-    },
+    exchange: (method, params) => scriptedHeartbeatExchange(responses, calls, method, params),
     faulted,
     onFault: () => () => undefined,
     close,
@@ -296,12 +409,7 @@ function faultableClient(
     resolveFault = resolve;
   });
   const client: ControlClient = {
-    call: async (method, params) => {
-      calls.push({ method, params });
-      const entry = responses[method];
-      if (entry === undefined) throw new Error(`unexpected call to ${method}`);
-      return typeof entry === 'function' ? (entry as (value: unknown) => unknown)(params) : entry;
-    },
+    exchange: (method, params) => scriptedHeartbeatExchange(responses, calls, method, params),
     faulted,
     onFault(listener) {
       if (latchedFault !== null) {
@@ -338,14 +446,14 @@ async function guardianLeaseClient(
   const socketPath = `/tmp/coral-inheritance-heartbeat-${randomUUID()}.sock`;
   const scope = Symbol('inheritance-heartbeat');
   const clock = createMonotonicClock(scope, { readMilliseconds: () => BigInt(time.now()) });
-  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now());
   let challengeNumber = 0;
   let acceptedEchoes = 0;
   const mintChallenge = () => `inheritance-challenge-${challengeNumber++}`;
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
+      return lease.issueFirstChallenge(challenge)
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -378,19 +486,31 @@ async function guardianLeaseClient(
   });
   await endpoint.listen();
   const realClient = await connectControlClient(socketPath, time, 5_000);
-  const opened = (await realClient.call('role.open.v1', {}, 5_000)) as {
+  const openedExchange = await realClient.exchange('role.open.v1', {}, 5_000);
+  if (openedExchange.kind !== 'response' || openedExchange.response.kind !== 'result') {
+    throw new Error('test role did not open');
+  }
+  const opened = openedExchange.response.value as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
   const client: ControlClient = {
-    call: (method, params, timeoutMs) =>
+    exchange: (method, params, timeoutMs) =>
       method === 'guardian.handoff-redeem.v1'
-        ? Promise.resolve({
-            ...openResponse,
-            controlEpoch: opened.controlEpoch,
-            heartbeatChallenge: opened.heartbeatChallenge,
-          })
-        : realClient.call(method, params, timeoutMs),
+        ? Promise.resolve(
+            controlExchangeForTest({
+              kind: 'response',
+              response: {
+                kind: 'result',
+                value: {
+                  ...openResponse,
+                  controlEpoch: opened.controlEpoch,
+                  heartbeatChallenge: opened.heartbeatChallenge,
+                },
+              },
+            }),
+          )
+        : realClient.exchange(method, params, timeoutMs),
     faulted: realClient.faulted,
     onFault: (listener) => realClient.onFault(listener),
     close: () => realClient.close(),
@@ -508,6 +628,10 @@ function redemptionResponses(
   operationSets: RedemptionOperationSets,
   overrides: Record<string, unknown | ((params: unknown) => unknown)> = {},
 ): Record<string, unknown | ((params: unknown) => unknown)> {
+  const installAck = (params: unknown) => ({
+    state: 'installed-dormant',
+    grantId: (params as { grantId: string }).grantId,
+  });
   return {
     'guardian.handoff-redeem.v1': {
       ...OPENING,
@@ -535,6 +659,9 @@ function redemptionResponses(
       operations: operationSets.proxy,
     },
     'control.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'p2' },
+    'guardian.handoff-install.v1': installAck,
+    'reaper.handoff-install.v1': installAck,
+    'handoff.install.v1': installAck,
     ...overrides,
   };
 }
@@ -590,32 +717,26 @@ async function startRegisteredProxy(
 
   const predecessor = await connectControlClient(capsule.proxyEndpoint, timer, 5_000);
   try {
-    const opened = (await predecessor.call(
-      'control.open.v1',
-      { bootstrapNonce, coordinator: COORDINATOR_IDENTITY },
-      5_000,
-    )) as { controlEpoch: number; heartbeatChallenge: string };
-    await predecessor.call(
-      'control.heartbeat.v1',
-      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
-      5_000,
-    );
-    await predecessor.call(
-      'handoff.install.v1',
-      {
-        grantId: capsule.grantId,
-        secretSha256: createHash('sha256').update(capsule.secret).digest('hex'),
-        generation: capsule.generation,
-        hostFingerprint: capsule.hostFingerprint,
-        buildSetId: capsule.buildSetId,
-        proxyInstanceId: capsule.proxyInstanceId,
-        operations: installedOperations,
-        orphanTimeoutMs: capsule.orphanTimeoutMs,
-      },
-      5_000,
-    );
+    const opened = (await strictTestExchange(predecessor, 'control.open.v1', {
+      bootstrapNonce,
+      coordinator: COORDINATOR_IDENTITY,
+    })) as { controlEpoch: number; heartbeatChallenge: string };
+    await strictTestExchange(predecessor, 'control.heartbeat.v1', {
+      controlEpoch: opened.controlEpoch,
+      heartbeatChallenge: opened.heartbeatChallenge,
+    });
+    await strictTestExchange(predecessor, 'handoff.install.v1', {
+      grantId: capsule.grantId,
+      secretSha256: createHash('sha256').update(capsule.secret).digest('hex'),
+      generation: capsule.generation,
+      hostFingerprint: capsule.hostFingerprint,
+      buildSetId: capsule.buildSetId,
+      proxyInstanceId: capsule.proxyInstanceId,
+      operations: installedOperations,
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+    });
     for (const operation of registeredOperations) {
-      await predecessor.call('succession.register-operation.v1', { operation }, 5_000);
+      await strictTestExchange(predecessor, 'succession.register-operation.v1', { operation });
     }
   } finally {
     predecessor.close();
@@ -711,12 +832,23 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
-  it('returns exact disappearance proof instead of treating a missing credential as authority to proceed', async () => {
+  it('reaps exact containment evidence instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const proveContainmentAbsent = vi.fn(
-      async () => 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    const collectContainmentProof = vi.fn(
+      createProviderProxySetContainmentProver({
+        ...runtime,
+        process: {
+          ...runtime.process,
+          readProcessIncarnation: () => null,
+          observeLiveness: () => 'absent',
+        },
+      }).collectContainmentProof,
     );
+    const reapRecordedContainment = vi.fn(async () => ({
+      kind: 'containment-absent' as const,
+      disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
+    }));
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -725,7 +857,8 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-        proveContainmentAbsent,
+        collectContainmentProof,
+        reapRecordedContainment,
       },
       neverAborts,
     );
@@ -734,7 +867,46 @@ describe('attemptProviderProxySetInheritance', () => {
       kind: 'containment-disappeared',
       disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
     });
-    expect(proveContainmentAbsent).toHaveBeenCalledWith(providerProxySetIdentityFromRecord(loc), unusedDb, neverAborts);
+    expect(collectContainmentProof).toHaveBeenCalledWith(expect.any(Object), unusedDb, neverAborts);
+    expect(reapRecordedContainment).toHaveBeenCalledWith(
+      providerProxySetIdentityFromRecord(loc),
+      expect.any(Object),
+      neverAborts,
+      expect.any(Function),
+    );
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  it('keeps a missing-credential set held when its recorded group is unattributable', async () => {
+    mockedReadCapsule.mockReturnValueOnce(null);
+    const loc = locator();
+    const collectContainmentProof = vi.fn(
+      createProviderProxySetContainmentProver({
+        ...runtime,
+        process: {
+          ...runtime.process,
+          readProcessIncarnation: () => null,
+          observeLiveness: () => 'absent',
+        },
+      }).collectContainmentProof,
+    );
+    const reapRecordedContainment = vi.fn(async () => ({ kind: 'recorded-group-unattributable' as const }));
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        collectContainmentProof,
+        reapRecordedContainment,
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'recorded-group-unattributable' });
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
@@ -807,6 +979,7 @@ describe('attemptProviderProxySetInheritance', () => {
       },
     };
     const capsule = capsuleFor(loc);
+    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
     mockedReadCapsule.mockReturnValueOnce(capsule);
     const otherIdentity = { jobId: randomUUID(), operationId: randomUUID() };
     const guardianOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
@@ -859,12 +1032,18 @@ describe('attemptProviderProxySetInheritance', () => {
       try {
         expect(sawGuardianReceiptOnRotate).toBe(true);
         expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
+        expect(outcome.set.autonomousDeadline).toMatchObject({
+          orphanTimeoutMs: capsule.orphanTimeoutMs,
+        });
         expect(connectionOrder).toEqual([
           loc.locator.guardian.controlEndpoint,
           loc.locator.reaper.controlEndpoint,
           loc.locator.proxy.controlEndpoint,
         ]);
         expect(calls.some((call) => call.method.startsWith('operation.'))).toBe(false);
+        expect(calls.map(({ method }) => method)).toEqual(
+          expect.arrayContaining(['guardian.handoff-install.v1', 'reaper.handoff-install.v1']),
+        );
       } finally {
         outcome.set.stopHeartbeats();
         await outcome.set.initiateControlClose();
@@ -872,6 +1051,56 @@ describe('attemptProviderProxySetInheritance', () => {
     } finally {
       await proxy.close();
     }
+  });
+
+  it('returns a redeemed authority with capsule timing when credential installation is refused', async () => {
+    const loc = locator();
+    const capsule = capsuleFor(loc);
+    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
+    mockedReadCapsule.mockReturnValueOnce(capsule);
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.handoff-install.v1': () => {
+          throw new ControlClientError(
+            'control_call_failed',
+            "identity_mismatch: the named orphan timeout is not this role's default",
+            'remote-response',
+            {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32_000,
+              protocolCode: 'identity_mismatch',
+              admissionReason: null,
+              heartbeatRefusal: null,
+            },
+          );
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    expect(outcome.set.autonomousDeadline).toEqual({
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+      adoptionWindowMs: capsule.orphanTimeoutMs - capsule.teardownReserveMs,
+      heartbeatHoldBound: providerProxyHeartbeatHoldBound(capsule),
+    });
+    expect(isProviderProxyOperationAuthority(outcome.set)).toBe(true);
+    expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
+    outcome.set.stopHeartbeats();
+    await outcome.set.initiateControlClose();
   });
 
   it('rejects and closes every opened role when one redeemed operation set is a strict subset', async () => {
@@ -952,21 +1181,35 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const closed: string[] = [];
     mockedConnect.mockImplementation(async (socketPath: string) => ({
-      call: async (method: string) => {
+      exchange: async (method: string) => {
         if (method === 'guardian.handoff-redeem.v1') {
-          return {
-            ...OPENING,
-            state: 'redeemed-provisional',
-            redemptionReceipt: 'g',
-            operations: [],
-            guardian: guardianIdentityFor(loc),
-            reaper: reaperIdentityFor(loc),
-            containment: containmentFor(loc),
-          };
+          return controlExchangeForTest({
+            kind: 'response' as const,
+            response: {
+              kind: 'result' as const,
+              value: {
+                ...OPENING,
+                state: 'redeemed-provisional',
+                redemptionReceipt: 'g',
+                operations: [],
+                guardian: guardianIdentityFor(loc),
+                reaper: reaperIdentityFor(loc),
+                containment: containmentFor(loc),
+              },
+            },
+          });
         }
-        if (method === 'guardian.heartbeat.v1') return { state: 'active', nextHeartbeatChallenge: 'g2' };
+        if (method === 'guardian.heartbeat.v1') {
+          return controlExchangeForTest({
+            kind: 'response' as const,
+            response: {
+              kind: 'result' as const,
+              value: { state: 'active', nextHeartbeatChallenge: 'g2' },
+            },
+          });
+        }
         if (method === 'reaper.handoff-rotate.v1') throw new Error('grant_invalid: replayed');
-        throw new Error(`unexpected ${method} for ${socketPath}`);
+        throw new Error(`unexpected exchange ${method} for ${socketPath}`);
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -1052,12 +1295,66 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(calls.some((c) => c.method === 'reaper.handoff-rotate.v1')).toBe(false);
     expect(calls.some((c) => c.method === 'handoff.redeem.v1')).toBe(false);
   });
+
+  // The reaper's control client already carries a stored fault before its role establishment even begins —
+  // `guardian.handoff-redeem.v1`/`reaper.handoff-rotate.v1` still answer normally, so nothing about the
+  // redemption's own request/response traffic reveals the channel is dead. `establishRoleControl` observes it
+  // by racing its own opening heartbeat against `client.faulted`, and the stored fault always wins that race
+  // (it is already settled; the heartbeat still has to round-trip). What this protects: that observation must
+  // land as a classified, retryable availability fact — never a raw throw, and never a completed redemption
+  // that goes on to publish an authority for a set whose reaper is already known dead.
+  it('classifies a reaper fault observed during establishment and never publishes an authority for it', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const calls: { method: string; params: unknown }[] = [];
+    const responses = redemptionResponses(loc, matchingOperationSets([]));
+    const guardianClient = fakeClient(responses, calls);
+    const reaper = faultableClient(responses, calls);
+    mockedConnect.mockImplementation(async (socketPath: string) => {
+      if (socketPath === loc.locator.guardian.controlEndpoint) return guardianClient;
+      if (socketPath === loc.locator.reaper.controlEndpoint) {
+        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.', 'closed'));
+        await reaper.client.faulted;
+        return reaper.client;
+      }
+      throw new Error(`unexpected connection to ${socketPath}`);
+    });
+    const registerInheritedSet = vi.fn();
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        registerInheritedSet,
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'temporarily-unavailable',
+      incident: {
+        kind: 'role-control-unavailable',
+        role: 'reaper',
+        stage: 'heartbeat',
+        method: 'reaper.heartbeat.v1',
+        origin: 'closed',
+        controlCode: 'control_client_closed',
+      },
+    });
+    expect(
+      registerInheritedSet,
+      'a stored fault must be observed before any authority is published',
+    ).not.toHaveBeenCalled();
+  });
 });
 
 describe('createProviderProxySetInheritance', () => {
   const identity = { instanceId: randomUUID(), buildSetId: BUILD_SET_ID, flavor: 'prod' as const };
 
-  it('stops reclamation after TERM when the bounded recovery signal aborts', async () => {
+  it('collects exact targets without signalling before lifecycle authorization', async () => {
     const reference = locator();
     const record = proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) });
     if (!('providerRoot' in record)) throw new Error('proof record did not retain its provider root');
@@ -1083,31 +1380,22 @@ describe('createProviderProxySetInheritance', () => {
       },
     };
     mockedProbe.mockImplementation((pid) => live.get(pid) ?? null);
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
-    const proof = inheritance.proveContainmentAbsent(
+    const evidence = collectContainmentEvidenceForTest(
+      containmentProver,
       providerProxySetIdentityFromRecord(reference),
       db,
       controller.signal,
     );
-    expect(signals).toEqual([
-      { pid: -reference.locator.containment.processGroupId, signal: 'SIGTERM' },
-      { pid: record.providerRoot.pid, signal: 'SIGTERM' },
-    ]);
-    const observedProof = proof.catch((error: unknown) => error);
-    controller.abort(new Error('recovery authority expired during TERM grace'));
-    await expect(observedProof).resolves.toBeInstanceOf(Error);
-
-    expect(signals).toEqual([
-      { pid: -reference.locator.containment.processGroupId, signal: 'SIGTERM' },
-      { pid: record.providerRoot.pid, signal: 'SIGTERM' },
-    ]);
-    expect(signals.some(({ signal }) => signal === 'SIGKILL')).toBe(false);
+    await expect(evidence).resolves.toEqual(
+      expect.objectContaining({
+        kind: 'reap-required',
+        containment: expect.objectContaining({ processGroupId: reference.locator.containment.processGroupId }),
+        recordedRoots: [record.providerRoot],
+      }),
+    );
+    expect(signals).toEqual([]);
   });
 
   // Unreadable is the only ambiguity left. While the recorded value carried a per-process clock term a
@@ -1137,18 +1425,55 @@ describe('createProviderProxySetInheritance', () => {
     // No pid can be read at all, while every one of them is alive.
     mockedProbe.mockImplementation(() => null);
 
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      collectContainmentEvidenceForTest(
+        containmentProver,
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        controller.signal,
+      ),
       'an unreadable but living pid is not evidence that the enforcer is gone',
-    ).resolves.toBeNull();
+    ).resolves.toEqual({
+      kind: 'enforcers-observed',
+      observations: [
+        { role: 'guardian', observation: 'alive' },
+        { role: 'reaper', observation: 'alive' },
+      ],
+    });
     expect(signals, 'nothing may be signalled while a target cannot be observed').toEqual([]);
+  });
+
+  it('retains every enforcer observation when alive is the decisive disposition', async () => {
+    const reference = locator();
+    const identity = providerProxySetIdentityFromRecord(reference);
+    const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
+    const base = createRealRuntime('prod');
+    const observedRuntime = {
+      ...base,
+      process: {
+        ...base.process,
+        observeLiveness: (pid: number) => (pid === identity.guardianPid ? 'alive' : 'unknown') as ProcessLiveness,
+        kill: () => true,
+      },
+    };
+    mockedProbe.mockImplementation(() => null);
+
+    await expect(
+      collectContainmentEvidenceForTest(
+        createProviderProxySetContainmentProver(observedRuntime),
+        identity,
+        db,
+        neverAborts,
+      ),
+    ).resolves.toEqual({
+      kind: 'enforcers-observed',
+      observations: [
+        { role: 'guardian', observation: 'alive' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
   });
 
   // The other half of the same rule, and the reason the one above had to narrow. A pid that reads back as a
@@ -1167,17 +1492,17 @@ describe('createProviderProxySetInheritance', () => {
     // Every pid is readable, and every one of them reads back as someone else.
     mockedProbe.mockImplementation(() => testIncarnation(9_999_999));
 
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, controller.signal),
+      collectContainmentEvidenceForTest(
+        containmentProver,
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        controller.signal,
+      ),
       'a pid that is provably someone else does not keep this set alive',
-    ).resolves.not.toBeNull();
+    ).resolves.toEqual(expect.objectContaining({ kind: 'reap-required' }));
   });
 
   // The third answer, and the polarity that makes it load-bearing: only a proven absence may discount an
@@ -1210,17 +1535,23 @@ describe('createProviderProxySetInheritance', () => {
     };
     mockedProbe.mockImplementation(probe);
 
-    const inheritance = createProviderProxySetInheritance({
-      runtime: boundedRuntime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(boundedRuntime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
+      collectContainmentEvidenceForTest(
+        containmentProver,
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        neverAborts,
+      ),
       'an enforcer that could not be observed is not one that is gone',
-    ).resolves.toBeNull();
+    ).resolves.toEqual({
+      kind: 'enforcers-observed',
+      observations: [
+        { role: 'guardian', observation: 'unknown' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
     expect(signals, 'evidence nobody could produce authorizes no signal').toEqual([]);
   });
 
@@ -1237,16 +1568,16 @@ describe('createProviderProxySetInheritance', () => {
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not json');
     const process = proofRuntime(new Map());
     mockedProbe.mockImplementation(() => testIncarnation('replacement'));
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.toBeNull();
+      collectContainmentEvidenceForTest(
+        containmentProver,
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        neverAborts,
+      ),
+    ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
 
@@ -1280,16 +1611,16 @@ describe('createProviderProxySetInheritance', () => {
     const db = proofDatabase([proofRecord(reference, { pid: 104, incarnation: testIncarnation(1_003) })]);
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(keyFor(), valueFor(reference));
     const process = proofRuntime(new Map());
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.toBeNull();
+      collectContainmentEvidenceForTest(
+        containmentProver,
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        neverAborts,
+      ),
+    ).resolves.toEqual({ kind: 'store-unreadable' });
     expect(process.signals).toEqual([]);
   });
 
@@ -1304,16 +1635,16 @@ describe('createProviderProxySetInheritance', () => {
       JSON.stringify({ version: 'broken', locator: null, operation: {} }),
     );
     const process = proofRuntime(new Map());
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
     await expect(
-      inheritance.proveContainmentAbsent(providerProxySetIdentityFromRecord(reference), db, neverAborts),
-    ).resolves.not.toBeNull();
+      collectContainmentEvidenceForTest(
+        containmentProver,
+        providerProxySetIdentityFromRecord(reference),
+        db,
+        neverAborts,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ kind: 'reap-required' }));
   });
 
   it('proves containment through the public factory without selecting an address-distinct root', async () => {
@@ -1331,30 +1662,29 @@ describe('createProviderProxySetInheritance', () => {
         [204, testIncarnation(2_003)],
       ]),
     );
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
-    const receipt = await inheritance.proveContainmentAbsent(
+    const evidence = await collectContainmentEvidenceForTest(
+      containmentProver,
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
     );
+    if (evidence.kind !== 'reap-required') throw new Error(`expected reap evidence, received ${evidence.kind}`);
 
     expect({
-      receipt,
+      containment: evidence.containment,
+      recordedRoots: evidence.recordedRoots,
       signals: process.signals,
       addressDistinctRootAlive: process.live.has(204),
     }).toEqual({
-      receipt:
-        'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3,root:104@linux:00000000-0000-4000-8000-000000000000:1003',
-      signals: [
-        { pid: -200, signal: 'SIGTERM' },
-        { pid: 104, signal: 'SIGTERM' },
-      ],
+      containment: {
+        pid: 200,
+        incarnation: testIncarnation(3),
+        processGroupId: 200,
+      },
+      recordedRoots: [{ pid: 104, incarnation: testIncarnation(1_003) }],
+      signals: [],
       addressDistinctRootAlive: true,
     });
   });
@@ -1370,21 +1700,18 @@ describe('createProviderProxySetInheritance', () => {
     );
     const db = proofDatabase([...exactRecords, ...distinctRecords]);
     const process = proofRuntime(new Map());
-    const inheritance = createProviderProxySetInheritance({
-      runtime: process.runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: () => undefined,
-    });
+    const containmentProver = createProviderProxySetContainmentProver(process.runtime);
 
-    const receipt = await inheritance.proveContainmentAbsent(
+    const evidence = await collectContainmentEvidenceForTest(
+      containmentProver,
       providerProxySetIdentityFromRecord(referenceA),
       db,
       neverAborts,
     );
+    if (evidence.kind !== 'reap-required') throw new Error(`expected reap evidence, received ${evidence.kind}`);
 
-    expect(receipt?.match(/root:/gu)).toHaveLength(65);
-    expect(receipt).not.toContain('root:2000@linux:00000000-0000-4000-8000-000000000000:20000');
+    expect(evidence.recordedRoots).toHaveLength(65);
+    expect(evidence.recordedRoots).not.toContainEqual({ pid: 2_000, incarnation: testIncarnation('20000-0') });
     expect(process.signals).toEqual([]);
   });
 
@@ -1394,6 +1721,8 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
+      containmentProver: createProviderProxySetContainmentProver(runtime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1412,6 +1741,8 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
+      containmentProver: createProviderProxySetContainmentProver(runtime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1439,8 +1770,9 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, unusedDb),
       }),
+      reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
@@ -1456,6 +1788,8 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
+      containmentProver: createProviderProxySetContainmentProver(runtime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
@@ -1505,14 +1839,17 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: established,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer({ ...runtime, time }, unusedDb),
       }),
+      reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const inheritance = createProviderProxySetInheritance({
       runtime: { ...runtime, time },
+      containmentProver: createProviderProxySetContainmentProver({ ...runtime, time }),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet: (set) => {
@@ -1538,76 +1875,6 @@ describe('createProviderProxySetInheritance', () => {
     }).toEqual({ acceptedRecurringEchoes: true, controlIsLive: true, announcements: 1 });
   });
 
-  it('observes a stored reaper fault inline before an inherited authority can be published', async () => {
-    const loc = locator();
-    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
-    const calls: { method: string; params: unknown }[] = [];
-    const responses = redemptionResponses(loc, matchingOperationSets([]), {
-      'guardian.stop-and-reap.v1': { disappearanceReceipt: 'guardian-absent' },
-      'reaper.stop-and-reap.v1': { disappearanceReceipt: 'reaper-absent' },
-    });
-    const guardian = faultableClient(responses, calls);
-    const reaper = faultableClient(responses, calls);
-    const proxy = faultableClient(responses, calls);
-    mockedConnect.mockImplementation(async (socketPath: string) => {
-      if (socketPath === loc.locator.guardian.controlEndpoint) return guardian.client;
-      if (socketPath === loc.locator.reaper.controlEndpoint) {
-        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.', 'closed'));
-        await reaper.client.faulted;
-        return reaper.client;
-      }
-      if (socketPath === loc.locator.proxy.controlEndpoint) return proxy.client;
-      throw new Error(`unexpected connection to ${socketPath}`);
-    });
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const established = vi.fn();
-    const lifecycle = new ProviderProxySetLifecycle({
-      buildSetId: FIXTURE_BUILD_SET_ID,
-      claims,
-      controlEstablished: established,
-      time: {
-        now: () => 0,
-        setTimeout: () => ({ unref: () => undefined }),
-        clearTimeout: () => undefined,
-      },
-      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
-        'disappearance-consumer': async ({ notice }) => ({
-          kind: 'accepted',
-          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
-        }),
-      }),
-      reportLifecycle: () => undefined,
-    });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-    let authorityInsideRegistration: ProviderProxyOperationAuthority | null | undefined;
-
-    const inheritance = createProviderProxySetInheritance({
-      runtime,
-      identity,
-      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: (set) => {
-        if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
-        lifecycle.registerInheritedSet(set);
-        authorityInsideRegistration = lifecycle.authorityFor(set.setIdentity);
-      },
-    });
-    const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
-
-    expect(outcome.kind).toBe('inherited');
-    expect({
-      authorityAcceptedDuringRegistration: authorityInsideRegistration !== null,
-      announcements: established.mock.calls.length,
-    }).toEqual({ authorityAcceptedDuringRegistration: false, announcements: 0 });
-    if (outcome.kind === 'inherited') {
-      expect(lifecycle.authorityFor(outcome.set.setIdentity)).toBeNull();
-      outcome.set.stopHeartbeats();
-      await outcome.set.initiateControlClose();
-    }
-  });
-
   it('removes inherited authority when the guardian heartbeat genuinely rejects', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
@@ -1619,7 +1886,18 @@ describe('createProviderProxySetInheritance', () => {
           if (guardianHeartbeats === 1) {
             return { state: 'active', nextHeartbeatChallenge: 'g2' };
           }
-          throw new Error('guardian heartbeat rejected');
+          throw new ControlClientError(
+            'control_call_failed',
+            'Heartbeat echo was not accepted (teardown-latched).',
+            'remote-response',
+            {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32600,
+              protocolCode: 'invalid_request',
+              admissionReason: null,
+              heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+            },
+          );
         },
       }),
       [],
@@ -1635,12 +1913,13 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: () => undefined,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer(inheritedRuntime, unusedDb),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();
@@ -1648,6 +1927,8 @@ describe('createProviderProxySetInheritance', () => {
 
     const inheritance = createProviderProxySetInheritance({
       runtime: inheritedRuntime,
+      containmentProver: createProviderProxySetContainmentProver(inheritedRuntime),
+      reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet: (set) => {

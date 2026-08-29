@@ -1,13 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { dirname } from 'node:path';
 
 import { socketPathForRunDir } from '#src/infra/path/coordinator.js';
 import { providerProxyEndpoint, type ProviderProxyEndpointEnvironment } from '#src/infra/path/provider-proxy.js';
-import {
-  isRelocatedSocket,
-  socketFallbackDir,
-  socketFallbackUid,
-  socketPathByteLimit,
-} from '#src/infra/path/unix-socket.js';
+import { generationRoot } from '#src/infra/path/root.js';
+import { isRelocatedSocket, socketFallbackDir, socketPathByteLimit } from '#src/infra/path/unix-socket.js';
 
 const PLATFORM_LIMITS = {
   aix: 104,
@@ -48,7 +45,6 @@ function providerBaseDirForCandidateLength(length: number): string {
 
 describe('relocated socket paths stay within the configured conservative byte ceilings', () => {
   const HEADROOM_RATIO = 0.75;
-  const WIDEST_UID = -Number.MAX_VALUE;
   // The widest uid the assertion will accept as an owner: `uid_t` is 32 bits, so no address it agrees to
   // check can encode a longer one.
   const WIDEST_OWNER_UID = 0xffff_fffe;
@@ -76,9 +72,9 @@ describe('relocated socket paths stay within the configured conservative byte ce
   }
 
   it.each(PLATFORMS)('keeps a relocated coordinator socket below 75% of the ceiling on %s', (platform) => {
-    const relocated = socketPathForRunDir(DEEP_RUN_DIR, 'prod', { platform, uid: WIDEST_UID });
+    const relocated = socketPathForRunDir(DEEP_RUN_DIR, 'prod', { platform });
 
-    expect(relocated.startsWith(`${socketFallbackDir(WIDEST_UID)}/`)).toBe(true);
+    expect(relocated.startsWith(`${socketFallbackDir(dirname(DEEP_RUN_DIR))}/`)).toBe(true);
     expect(Buffer.byteLength(relocated, 'utf8')).toBeLessThan(socketPathByteLimit(platform) * HEADROOM_RATIO);
   });
 
@@ -91,7 +87,7 @@ describe('relocated socket paths stay within the configured conservative byte ce
       storage: secureStorage(uid),
     });
 
-    expect(relocated.startsWith(`${socketFallbackDir(uid)}/`)).toBe(true);
+    expect(relocated.startsWith(`${socketFallbackDir(generationRoot({ baseDir: DEEP_RUN_DIR }))}/`)).toBe(true);
     expect(Buffer.byteLength(relocated, 'utf8')).toBeLessThan(socketPathByteLimit(platform) * HEADROOM_RATIO);
   });
 
@@ -106,10 +102,10 @@ describe('relocated socket paths stay within the configured conservative byte ce
   it.each(['darwin', 'freebsd', 'openbsd', 'future-platform'])(
     'relocates a 104-byte coordinator candidate on %s',
     (platform) => {
-      const uid = WIDEST_OWNER_UID;
-      const coordinator = socketPathForRunDir(coordinatorRunDirForCandidateLength(104), 'prod', { platform, uid });
+      const runDir = coordinatorRunDirForCandidateLength(104);
+      const coordinator = socketPathForRunDir(runDir, 'prod', { platform });
 
-      expect(coordinator.startsWith(`${socketFallbackDir(uid)}/`)).toBe(true);
+      expect(coordinator.startsWith(`${socketFallbackDir(dirname(runDir))}/`)).toBe(true);
     },
   );
 
@@ -124,7 +120,11 @@ describe('relocated socket paths stay within the configured conservative byte ce
         storage: secureStorage(uid),
       });
 
-      expect(provider.startsWith(`${socketFallbackDir(uid)}/`)).toBe(true);
+      expect(
+        provider.startsWith(
+          `${socketFallbackDir(generationRoot({ baseDir: providerBaseDirForCandidateLength(104) }))}/`,
+        ),
+      ).toBe(true);
     },
   );
 
@@ -132,7 +132,6 @@ describe('relocated socket paths stay within the configured conservative byte ce
     const uid = 4242;
     const coordinator = socketPathForRunDir(coordinatorRunDirForCandidateLength(104), 'prod', {
       platform: 'linux',
-      uid,
     });
     const provider = providerProxyEndpoint(PROVIDER_IDENTITY, {
       baseDir: providerBaseDirForCandidateLength(104),
@@ -143,29 +142,25 @@ describe('relocated socket paths stay within the configured conservative byte ce
 
     expect(Buffer.byteLength(coordinator, 'utf8')).toBe(104);
     expect(Buffer.byteLength(provider, 'utf8')).toBe(104);
-    expect(coordinator.startsWith(`${socketFallbackDir(uid)}/`)).toBe(false);
-    expect(provider.startsWith(`${socketFallbackDir(uid)}/`)).toBe(false);
+    expect(isRelocatedSocket(dirname(coordinator))).toBe(false);
+    expect(isRelocatedSocket(dirname(provider))).toBe(false);
   });
 });
 
 describe('the relocated address is a fixed shape, not whatever the helper happens to build', () => {
-  const UID = 4242;
+  const STATE_ROOT = '/home/user/.coral/gen2';
 
-  it('is the per-uid directory directly under the shared root', () => {
-    expect(socketFallbackDir(UID)).toBe(`/tmp/coral-${UID}`);
+  it('is the installation directory directly under the shared root', () => {
+    expect(socketFallbackDir(STATE_ROOT)).toMatch(/^\/tmp\/coral-[0-9a-f]{16}$/u);
   });
 
   it.each([
-    ['the fallback itself', `/tmp/coral-${UID}`, true],
-    ['another uid fallback', `/tmp/coral-${UID + 1}`, true],
-    ['a sibling sharing its prefix', `/tmp/coral-${UID}-other`, false],
-    ['a child of it', `/tmp/coral-${UID}/nested`, false],
-    ['a non-canonical uid', `/tmp/coral-0${UID}`, false],
+    ['the fallback itself', socketFallbackDir(STATE_ROOT), true],
+    ['another installation fallback', socketFallbackDir('/srv/coral/gen2'), true],
+    ['a sibling sharing its prefix', `${socketFallbackDir(STATE_ROOT)}-other`, false],
+    ['a child of it', `${socketFallbackDir(STATE_ROOT)}/nested`, false],
+    ['a non-canonical hash', '/tmp/coral-abc', false],
   ])('classifies %s as relocated=%s', (_label, directory, expected) => {
     expect(isRelocatedSocket(directory)).toBe(expected);
-  });
-
-  it.each([UID, Number.NaN, -1])('recovers the uid encoded by the fallback helper from %s', (uid) => {
-    expect(Object.is(socketFallbackUid(socketFallbackDir(uid)), uid)).toBe(true);
   });
 });

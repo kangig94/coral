@@ -106,7 +106,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const startedAt = clock.now();
   const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
-  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt, () => null);
+  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt);
   const grants = createGrantRegistry(mintReceipt, {
     mayReplaceRedemption: () => !evidence.isControlLive(clock.now()),
   });
@@ -127,9 +127,8 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   const challenges: ControlChallengeAuthority = {
     controlIsLive: () => evidence.isControlLive(clock.now()),
     issueFirstChallenge: () => {
-      const now = clock.now();
       const challenge = mintChallenge();
-      return evidence.issueFirstChallenge(challenge, now, 'recurring')
+      return evidence.issueFirstChallenge(challenge)
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'invalid-state' };
     },
@@ -137,7 +136,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       const now = clock.now();
       if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
       const challenge = mintChallenge();
-      evidence.beginSuccessorControl(challenge, now);
+      evidence.beginSuccessorControl(challenge);
       return { accepted: true, challenge };
     },
     reattachControl: () => {

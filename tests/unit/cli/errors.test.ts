@@ -148,6 +148,34 @@ describe('cli errors', () => {
       });
     });
 
+    it.each(['direct', 'ipc', 'http'] as const)(
+      'distinguishes an unknown writer observation from the shipped live-writer code over %s',
+      (transport) => {
+        const live = documentedCoralSetupError('legacy_source_not_quiescent', {
+          holder: 'install:kiwi (pid 42)',
+        });
+        const unknown = documentedCoralSetupError('legacy_source_writer_observation_unknown', {
+          holder: 'install:kiwi (pid 42)',
+        });
+        const carry = (error: ReturnType<typeof documentedCoralSetupError>) => {
+          if (transport === 'direct') return error;
+          const serialized = serializeCoralSetupError(error);
+          if (serialized === null) throw new Error('Expected setup error to serialize');
+          if (transport === 'ipc') {
+            return new IpcRpcError({ code: -32603, message: serialized.userMessage, data: serialized });
+          }
+          const response = buildTransportErrorResponse(error);
+          return new BackendToolHttpError(response.message, response.statusCode, response.body);
+        };
+
+        expect(buildErrorEnvelope(carry(live)).envelope.code).toBe('legacy_source_not_quiescent');
+        expect(buildErrorEnvelope(carry(unknown))).toMatchObject({
+          envelope: { code: 'legacy_source_writer_observation_unknown' },
+          exitCode: 75,
+        });
+      },
+    );
+
     it.each([
       [
         'invalid_store_reset_incident_id',
@@ -365,6 +393,7 @@ describe('cli errors', () => {
         'coordinator_unreachable',
         'coordinator_record_unreadable',
         'coordinator_socket_dir_unverified',
+        'legacy_source_writer_observation_unknown',
       ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');

@@ -161,13 +161,16 @@ describe('provider host drain properties', () => {
     expect(server.closeMock, 'child-only gracefulKill teardown was used').not.toHaveBeenCalled();
   });
 
-  it('does not signal a recycled coordinator-local process group', async () => {
+  it('refuses to close a recycled coordinator-local process group instead of reporting it gone', async () => {
     const recording = createRecordingReaper(testIncarnation('recycled'));
 
-    const server = await closeRecordedEntry(recording.reaper);
-
+    // A leader incarnation that no longer matches proves the pid was reused, not that the surviving group is
+    // gone. Signalling it would signal someone else's group, and reporting the close as done would retire a
+    // host this build cannot account for, so the only remaining answer is to refuse and keep the entry.
+    await expect(closeRecordedEntry(recording.reaper)).rejects.toMatchObject({
+      code: 'process_identity_unverified',
+    });
     expect(recording.signals).toEqual([]);
-    expect(server.closeMock).not.toHaveBeenCalled();
   });
 
   it('stops containment escalation when lifecycle cancellation aborts the reap', async () => {

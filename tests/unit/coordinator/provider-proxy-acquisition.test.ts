@@ -10,7 +10,15 @@ import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/prov
 
 const SET: ProviderProxyOperationAuthority = {
   proxyInstanceId: 'p1',
-  registerSuccessionOperation: async () => {},
+  autonomousDeadline: {
+    orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+    adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+    heartbeatHoldBound: {
+      spanMs: Number.MAX_SAFE_INTEGER,
+      materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+    },
+  },
+  registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
   stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
   stopHeartbeats: () => {},
   initiateControlClose: async () => {},

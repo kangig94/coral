@@ -22,7 +22,7 @@ import {
   SocketDirectoryError,
   type SocketDirectoryRefusal,
 } from '../../infra/private-socket-directory.js';
-import { socketFallbackUid } from '../../infra/path/index.js';
+import { isRelocatedSocket } from '../../infra/path/index.js';
 import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
@@ -91,6 +91,8 @@ export type IpcServerOptions = {
 export type IpcListener = {
   readonly server: NetServer;
   readonly sockets: Set<Socket>;
+  readonly compatibilityListeners?: IpcListener[];
+  createCompatibilityListener?(): IpcListener;
   socketPath: string | null;
   /**
    * Optional callback invoked alongside `transport.shutdown`'s `requestDrain`.
@@ -99,6 +101,13 @@ export type IpcListener = {
    * has not yet been installed). Setting/clearing is composition's job.
    */
   onShutdownRequest: ((reason: string) => void) | null;
+};
+
+type IpcResourceTracker = {
+  readonly sockets: Set<Socket>;
+  readonly maxOpenSockets: number;
+  readonly maxAggregatePendingFrameBytes: number;
+  aggregatePendingFrameBytes: number;
 };
 
 export type IpcDispatchEntry = {
@@ -360,6 +369,15 @@ async function clearStaleSocket(socketPath: string): Promise<boolean> {
  */
 export type BindSocketResult = { kind: 'bound' } | { kind: 'incumbent'; reason: 'live-listener' };
 
+export type PublishedIpcSocketAddress = Readonly<{
+  socketPath: string;
+  ownedSocketName: string;
+}>;
+
+export type ListenIpcServerResult =
+  | Readonly<{ kind: 'bound'; socketPath: string }>
+  | Readonly<{ kind: 'incumbent'; socketPath: string }>;
+
 function staleSocketClearLockDir(socketPath: string): string {
   return join(dirname(socketPath), `${basename(socketPath)}.clear.lock`);
 }
@@ -380,11 +398,11 @@ const SOCKET_DIRECTORY_REFUSAL_CODES = {
  */
 function prepareSocketParent(socketPath: string): void {
   const directory = resolve(dirname(socketPath));
-  const uid = socketFallbackUid(directory);
-  if (uid === undefined) {
+  if (!isRelocatedSocket(directory)) {
     mkdirSync(directory, { recursive: true });
     return;
   }
+  const uid = process.getuid?.() ?? 0;
   try {
     ensurePrivateSocketDir(directory, uid, { chmodSync, lstatSync, mkdirSync, statSync });
   } catch (error: unknown) {
@@ -400,8 +418,34 @@ function prepareSocketParent(socketPath: string): void {
   }
 }
 
-export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
-  prepareSocketParent(socketPath);
+function assertPublishedSocketAddress(address: PublishedIpcSocketAddress): void {
+  if (basename(address.socketPath) !== address.ownedSocketName) {
+    throw new Error(`Published coordinator socket is outside Coral's namespace: ${address.socketPath}`);
+  }
+  // An absent path has nothing to unlink, which is the only authority this address is being admitted for.
+  // Anything that exists and is not a socket is refused rather than cleared.
+  let entry;
+  try {
+    entry = lstatSync(address.socketPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+  if (!entry.isSocket()) {
+    throw new Error(`Published coordinator socket path is not a socket: ${address.socketPath}`);
+  }
+}
+
+async function bindSocketAtAddress(
+  server: NetServer,
+  address: string | PublishedIpcSocketAddress,
+): Promise<BindSocketResult> {
+  const socketPath = typeof address === 'string' ? address : address.socketPath;
+  if (typeof address === 'string') {
+    prepareSocketParent(socketPath);
+  } else {
+    assertPublishedSocketAddress(address);
+  }
 
   const finalize = (): void => {
     if (process.platform !== 'win32') {
@@ -435,6 +479,7 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
       }
     }
 
+    if (typeof address !== 'string') assertPublishedSocketAddress(address);
     const cleared = await clearStaleSocket(socketPath);
     if (cleared) {
       try {
@@ -455,15 +500,64 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   }
 }
 
-export async function listenIpcServer(listener: IpcListener, socketPath: string): Promise<{ socketPath: string }> {
+export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
+  return bindSocketAtAddress(server, socketPath);
+}
+
+export async function bindPublishedSocket(
+  server: NetServer,
+  address: PublishedIpcSocketAddress,
+): Promise<BindSocketResult> {
+  return bindSocketAtAddress(server, address);
+}
+
+export async function listenIpcServer(
+  listener: IpcListener,
+  socketPath: string,
+  compatibilitySocketPaths: readonly string[] = [],
+  publishedCompatibilitySocketAddresses: readonly PublishedIpcSocketAddress[] = [],
+): Promise<ListenIpcServerResult> {
   const result = await bindSocket(listener.server, socketPath);
   if (result.kind === 'incumbent') {
-    const error = new Error(`IPC socket already in use: ${socketPath}`) as NodeJS.ErrnoException;
-    error.code = 'EADDRINUSE';
-    throw error;
+    return { kind: 'incumbent', socketPath };
   }
   listener.socketPath = socketPath;
-  return { socketPath };
+  try {
+    const compatibilityAddresses = [
+      ...compatibilitySocketPaths.map((path) => ({ kind: 'computed' as const, path })),
+      ...publishedCompatibilitySocketAddresses.map((address) => ({
+        kind: 'published' as const,
+        path: address.socketPath,
+        address,
+      })),
+    ];
+    const attempted = new Set([socketPath]);
+    for (const compatibilityAddress of compatibilityAddresses) {
+      const compatibilitySocketPath = compatibilityAddress.path;
+      if (attempted.has(compatibilitySocketPath)) continue;
+      attempted.add(compatibilitySocketPath);
+      if (compatibilitySocketPath === socketPath) continue;
+      const compatibility = listener.createCompatibilityListener?.();
+      if (compatibility === undefined || listener.compatibilityListeners === undefined) {
+        throw new Error('IPC listener does not support compatibility sockets');
+      }
+      compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
+      const compatibilityResult =
+        compatibilityAddress.kind === 'published'
+          ? await bindPublishedSocket(compatibility.server, compatibilityAddress.address)
+          : await bindSocket(compatibility.server, compatibilitySocketPath);
+      if (compatibilityResult.kind === 'incumbent') {
+        await closeIpcServer(listener);
+        return { kind: 'incumbent', socketPath: compatibilitySocketPath };
+      }
+      compatibility.socketPath = compatibilitySocketPath;
+      listener.compatibilityListeners.push(compatibility);
+    }
+  } catch (error: unknown) {
+    await closeIpcServer(listener);
+    throw error;
+  }
+  return { kind: 'bound', socketPath };
 }
 
 /**
@@ -474,6 +568,9 @@ export async function listenIpcServer(listener: IpcListener, socketPath: string)
  * a SIGKILL or OOM kill skipped it, not a graceful shutdown that reached it.
  */
 export async function closeIpcServer(listener: IpcListener): Promise<void> {
+  for (const compatibility of listener.compatibilityListeners?.splice(0) ?? []) {
+    await closeIpcServer(compatibility);
+  }
   for (const socket of listener.sockets) {
     socket.destroy();
   }
@@ -818,35 +915,46 @@ async function dispatchFrame(
 }
 
 export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOptions = {}): IpcListener {
+  return createTrackedIpcListener(rpcPorts, options, {
+    sockets: new Set(),
+    maxOpenSockets: options.maxOpenSockets ?? IPC_DEFAULT_MAX_OPEN_SOCKETS,
+    maxAggregatePendingFrameBytes:
+      options.maxAggregatePendingFrameBytes ?? IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES,
+    aggregatePendingFrameBytes: 0,
+  });
+}
+
+function createTrackedIpcListener(
+  rpcPorts: HttpHandlerPorts,
+  options: IpcServerOptions,
+  resources: IpcResourceTracker,
+): IpcListener {
   const dispatchTable = buildCoordinatorIpcDispatchTable(rpcPorts);
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
-  const sockets = new Set<Socket>();
-  const maxOpenSockets = options.maxOpenSockets ?? IPC_DEFAULT_MAX_OPEN_SOCKETS;
   const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS;
-  const maxAggregatePendingFrameBytes =
-    options.maxAggregatePendingFrameBytes ?? IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES;
   const writeDrainTimeoutMs = options.writeDrainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS;
-  let aggregatePendingFrameBytes = 0;
   // Mutable holder so the per-connection `dispatchFrame` closure reads the
   // current callback via `listener.onShutdownRequest`. Composition writes to
   // it after wiring the lifecycle controller.
   const listenerRef: { current: IpcListener | null } = { current: null };
 
   const server = createServer((socket) => {
-    if (sockets.size >= maxOpenSockets) {
-      rpcPorts.identity.log(`IPC connection cap exceeded (${sockets.size} >= ${maxOpenSockets}); destroying socket\n`);
+    if (resources.sockets.size >= resources.maxOpenSockets) {
+      rpcPorts.identity.log(
+        `IPC connection cap exceeded (${resources.sockets.size} >= ${resources.maxOpenSockets}); destroying socket\n`,
+      );
       void writeEnvelope(
         socket,
         transportErrorResponse('Too many IPC connections', {
           code: 'too_many_ipc_connections',
-          maxOpenSockets,
+          maxOpenSockets: resources.maxOpenSockets,
         }),
         { drainTimeoutMs: writeDrainTimeoutMs },
       ).finally(() => socket.destroy());
       return;
     }
 
-    sockets.add(socket);
+    resources.sockets.add(socket);
     const framer = createLineFramer();
     let inflightRequest = false;
     let pendingFrameBytes = 0;
@@ -857,7 +965,7 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
     firstFrameTimer.unref?.();
 
     const updatePendingFrameBytes = (nextBytes: number) => {
-      aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
+      resources.aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
       pendingFrameBytes = nextBytes;
     };
 
@@ -877,7 +985,7 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
       timers.clearTimeout(firstFrameTimer);
       releasePendingFrameBytes();
       finishRequest();
-      sockets.delete(socket);
+      resources.sockets.delete(socket);
     });
 
     socket.on('error', (error) => {
@@ -911,16 +1019,16 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
         }
         throw error;
       }
-      if (aggregatePendingFrameBytes > maxAggregatePendingFrameBytes) {
+      if (resources.aggregatePendingFrameBytes > resources.maxAggregatePendingFrameBytes) {
         rpcPorts.identity.log(
-          `IPC pending frame budget exceeded (${aggregatePendingFrameBytes} > ${maxAggregatePendingFrameBytes}); destroying socket\n`,
+          `IPC pending frame budget exceeded (${resources.aggregatePendingFrameBytes} > ${resources.maxAggregatePendingFrameBytes}); destroying socket\n`,
         );
         void writeEnvelope(
           socket,
           transportErrorResponse('Too many pending IPC frame bytes', {
             code: 'ipc_pending_frame_budget_exceeded',
-            maxAggregatePendingFrameBytes,
-            observedBytes: aggregatePendingFrameBytes,
+            maxAggregatePendingFrameBytes: resources.maxAggregatePendingFrameBytes,
+            observedBytes: resources.aggregatePendingFrameBytes,
           }),
           { drainTimeoutMs: writeDrainTimeoutMs },
         ).finally(() => socket.destroy());
@@ -955,7 +1063,9 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOp
 
   const listener: IpcListener = {
     server,
-    sockets,
+    sockets: resources.sockets,
+    compatibilityListeners: [],
+    createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
     socketPath: null,
     onShutdownRequest: null,
   };

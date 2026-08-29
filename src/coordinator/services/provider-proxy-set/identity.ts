@@ -8,6 +8,7 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import type { HandoffCapsule, HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
+import { providerProxySetAddressSchema, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
@@ -35,15 +36,6 @@ export const providerProxySetIdentitySchema = z
 export type ProviderProxySetIdentity = z.output<typeof providerProxySetIdentitySchema>;
 export type ProviderProxySetKey = string & { readonly __providerProxySetKey: unique symbol };
 
-export const providerProxySetAddressSchema = z
-  .object({
-    buildSetId: canonicalUuidSchema,
-    hostFingerprint: hostFingerprintSchema,
-    proxyInstanceId: canonicalUuidSchema,
-  })
-  .strict();
-
-export type ProviderProxySetAddress = z.output<typeof providerProxySetAddressSchema>;
 export type ProviderProxySetAddressKey = string & { readonly __providerProxySetAddressKey: unique symbol };
 
 const IDENTITY_FIELDS = [

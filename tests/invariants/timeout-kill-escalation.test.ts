@@ -43,11 +43,15 @@ const PRIMITIVE_FILE = 'src/infra/process-supervision.ts';
 // `reapRecordedContainment`'s SIGTERM→SIGKILL sequence.
 const CONTAINMENT_HELPER_FILE = 'src/infra/process-containment.ts';
 // A negative primitive scan cannot prove an owner still reaps its containment:
-// deleting teardown entirely would also make that scan pass. Keep both owners
-// explicit so adding one cannot silently narrow the escalation guarantee.
+// deleting teardown entirely would also make that scan pass. Keep every owner
+// explicit so an ownership change cannot silently narrow the escalation guarantee.
 const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/enforcement.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
+  'src/coordinator/services/recovery/interrupted-performer.ts',
+  'src/coordinator/services/provider-proxy-set/index.ts',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts',
+  'src/coordinator/services/provider-proxy-set/recorded-containment-reaper.ts',
 ] as const;
 
 // File-level allowlist: call sites permitted to use the bare primitive, each
@@ -92,7 +96,7 @@ function callsSafeKill(source: string): boolean {
 }
 
 function callsReapRecordedContainment(source: string): boolean {
-  return /(^|[^.\w$])reapRecordedContainment\s*\(/u.test(codeTextOnly(source));
+  return /reapRecordedContainment\s*\(/u.test(codeTextOnly(source));
 }
 
 describe('process kills escalate SIGTERM→SIGKILL', () => {
@@ -327,7 +331,12 @@ function hasHandRolledEscalation(source: string): boolean {
 }
 
 describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside the sanctioned helpers', () => {
-  it('both recorded-containment owners reap their recorded groups through reapRecordedContainment without an allowlist exemption', () => {
+  it('every recorded-containment owner, including lifecycle and inheritance, delegates to reapRecordedContainment without an allowlist exemption', () => {
+    const recordedContainmentOwners = listSourceFiles(SRC_ROOT)
+      .map(canonicalSrcPath)
+      .filter((canonical) => canonical !== CONTAINMENT_HELPER_FILE)
+      .filter((canonical) => callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')))
+      .sort();
     const ownersWithoutRecordedContainmentReaping = RECORDED_CONTAINMENT_OWNER_FILES.filter(
       (canonical) => !callsReapRecordedContainment(readFileSync(join(REPO_ROOT, canonical), 'utf-8')),
     );
@@ -335,7 +344,8 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
       (canonical) => ALLOWLIST.has(canonical) || HAND_ROLLED_ESCALATION_ALLOWLIST.has(canonical),
     );
 
-    expect({ ownersWithoutRecordedContainmentReaping, exemptedOwners }).toEqual({
+    expect({ recordedContainmentOwners, ownersWithoutRecordedContainmentReaping, exemptedOwners }).toEqual({
+      recordedContainmentOwners: [...RECORDED_CONTAINMENT_OWNER_FILES].sort(),
       ownersWithoutRecordedContainmentReaping: [],
       exemptedOwners: [],
     });

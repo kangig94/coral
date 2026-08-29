@@ -117,9 +117,14 @@ const effects = exportedSymbol(policy, 'ProviderProxyRecoveryEffects');
 const fatalSink = exportedSymbol(policy, 'ProviderProxyRecoveryFatalSink');
 const inheritance = sourceFile('src/coordinator/services/provider-proxy-set/inheritance.ts');
 const disappearance = sourceFile('src/coordinator/services/provider-containment-disappearance.ts');
+const representationAbandonment = sourceFile('src/coordinator/services/provider-representation-abandonment.ts');
 const reconciler = sourceFile('src/coordinator/services/provider-operation-reconciler.ts');
 const lifecycle = sourceFile('src/coordinator/services/provider-proxy-set/index.ts');
 const disappearanceConsumer = exportedSymbol(disappearance, 'ProviderContainmentDisappearanceConsumer');
+const representationAbandonmentConsumer = exportedSymbol(
+  representationAbandonment,
+  'ProviderRepresentationAbandonmentConsumer',
+);
 const reconcilerClass = exportedSymbol(reconciler, 'ProviderOperationReconciler');
 const absenceAcceptance = exportedSymbol(lifecycle, 'ContainmentAbsenceAcceptance');
 const producerIds = [
@@ -130,6 +135,7 @@ const producerIds = [
   'containment-proof',
   'capsule-retirement',
   'disappearance-consumer',
+  'representation-abandonment-consumer',
 ] as const;
 
 const OWNED_SYMBOLS: readonly OwnedSymbol[] = [
@@ -165,6 +171,16 @@ const OWNED_SYMBOLS: readonly OwnedSymbol[] = [
     'ProviderOperationReconciler.containmentDisappeared',
     'raw-result',
     memberSymbol(reconcilerClass, 'containmentDisappeared'),
+  ),
+  owned(
+    'ProviderRepresentationAbandonmentConsumer.representationAbandoned',
+    'raw-result',
+    memberSymbol(representationAbandonmentConsumer, 'representationAbandoned'),
+  ),
+  owned(
+    'ProviderOperationReconciler.representationAbandoned',
+    'raw-result',
+    memberSymbol(reconcilerClass, 'representationAbandoned'),
   ),
   owned(
     'ContainmentAbsenceAcceptance.initialDisposition',
@@ -441,7 +457,13 @@ function initialDispositionRole(reference: Reference): string | null {
       (declaration) =>
         relativePath(declaration.getSourceFile()) === 'src/coordinator/services/provider-operation-reconciler.ts',
     ) === true;
-  return isAwaitStartupArgument ? 'awaitStartup-argument-zero' : 'unregistered-result-role';
+  if (isAwaitStartupArgument) return 'awaitStartup-argument-zero';
+  const owner = namedOwner(reference.node);
+  const isOperatorExitStateGatedRead =
+    ownerName(owner) === 'operatorExitClaimDischarge' &&
+    owner !== undefined &&
+    relativePath(owner.getSourceFile()) === 'src/coordinator/services/provider-proxy-set/index.ts';
+  return isOperatorExitStateGatedRead ? 'operator-exit-state-gated-read' : 'unregistered-result-role';
 }
 
 function valueEscapeViolations(references: readonly Reference[]): string[] {
@@ -451,7 +473,13 @@ function valueEscapeViolations(references: readonly Reference[]): string[] {
       if (ts.isCallExpression(reference.node)) return false;
       if (reference.nodeKind.startsWith('Contextual')) return false;
       if (ts.isImportSpecifier(reference.node)) return false;
-      if (initialDispositionRole(reference) === 'awaitStartup-argument-zero') return false;
+      if (
+        ['awaitStartup-argument-zero', 'operator-exit-state-gated-read'].includes(
+          initialDispositionRole(reference) ?? '',
+        )
+      ) {
+        return false;
+      }
       return !isExactCallCallee(reference.node);
     })
     .map(
@@ -484,7 +512,11 @@ function callsFor(targetKey: string, references: readonly Reference[]): Referenc
   return references.filter((reference) => reference.target.key === targetKey && ts.isCallExpression(reference.node));
 }
 
-function rejectionFingerprint(owner: ts.FunctionLikeDeclaration, catchClause: ts.CatchClause, ordinal: number): string {
+function rejectionFingerprint(
+  owner: ts.FunctionLikeDeclaration | undefined,
+  catchClause: ts.CatchClause,
+  ordinal: number,
+): string {
   const calls: string[] = [];
   const assignments: string[] = [];
   const visit = (node: ts.Node): void => {
@@ -499,7 +531,7 @@ function rejectionFingerprint(owner: ts.FunctionLikeDeclaration, catchClause: ts
     ts.forEachChild(node, visit);
   };
   visit(catchClause.block);
-  return `${relativePath(owner.getSourceFile())} :: ${ownerName(owner)} :: catch#${ordinal} :: calls=[${calls.join(
+  return `${relativePath(catchClause.getSourceFile())} :: ${ownerName(owner)} :: catch#${ordinal} :: calls=[${calls.join(
     ', ',
   )}] assignments=[${assignments.join(', ')}]`;
 }
@@ -586,19 +618,24 @@ function consumerRejectionViolations(references: readonly Reference[]): string[]
   return [...rejectionConsumerOwners(references)].flatMap((owner) => rejectionViolationsForOwner(owner, references));
 }
 
-function rejectionNodeInventory(): string[] {
+function rejectionNodeInventory(references: readonly Reference[]): string[] {
   const inventory: string[] = [];
   const catchOrdinals = new Map<string, number>();
+  // Union, not replacement: graph references pull in a file this inventory has never named, while the
+  // pinned fingerprints keep a file that stopped referencing a tracked symbol from leaving the scan
+  // unnoticed. Either source alone lets a rejection consumer go unwatched.
+  const rejectionFiles = new Set([
+    POLICY_FILE,
+    ...references.map((reference) => reference.file),
+    ...EXPECTED_REJECTION_NODE_INVENTORY.map((fingerprint) => fingerprint.slice(0, fingerprint.indexOf(' :: '))),
+  ]);
   for (const file of SOURCE_FILES) {
     const path = relativePath(file);
+    if (!rejectionFiles.has(path)) continue;
     const visit = (node: ts.Node): void => {
       const owner = namedOwner(node);
       const name = ownerName(owner);
-      if (!EXPECTED_REJECTION_OWNER_KEYS.has(`${path} :: ${name}`)) {
-        ts.forEachChild(node, visit);
-        return;
-      }
-      if (ts.isCatchClause(node) && owner !== undefined) {
+      if (ts.isCatchClause(node)) {
         const ordinalKey = `${path}:${name}`;
         const ordinal = (catchOrdinals.get(ordinalKey) ?? 0) + 1;
         catchOrdinals.set(ordinalKey, ordinal);
@@ -620,7 +657,6 @@ function rejectionNodeInventory(): string[] {
 const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#1 :: calls=[classifyRoleControlFailure] assignments=[]',
   'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#2 :: calls=[classifyRoleControlFailure] assignments=[]',
-  'src/coordinator/live/provider-proxy/role-control.ts :: establishRoleControl :: catch#3 :: calls=[classifyRoleControlFailure] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #attemptExecutingAttachment :: catch#1 :: calls=[readProviderOperation, this.#deps.getProgressStore().getDb, this.#deps.getProgressStore, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: Promise.then(rejected) :: pending.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: catch#1 :: calls=[reject, errorMessage] assignments=[]',
@@ -651,15 +687,30 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: containmentDisappeared :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: onControlEstablished :: Promise.catch :: this.#reconcileActiveForAuthority(authority).catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: reconcile :: Promise.catch :: this.#driveContext .run(context, () => this.#drive(record, preferredAuthority, context.signal)) .catch',
+  'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: active.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: requestStop :: catch#1 :: calls=[this.#deps.onError, providerOperationErrorReason] assignments=[]',
+  'src/coordinator/services/provider-proxy-recovery-policy.ts :: errorCode :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: runProviderProxyRecoveryDeadline :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.proveContainmentAbsent] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.collectContainmentProof, authorizeProviderProxySetContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: buildInheritedAuthority :: catch#1 :: calls=[closeRedeemedProviderProxyControl] assignments=[]',
+  'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;
 
@@ -679,11 +730,36 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.startsWith('src/coordinator/services/provider-proxy-set/inheritance.ts')) {
     return 'Producer-side inheritance protocol cleanup preserves causal evidence without consuming a dispatcher façade.';
   }
+  if (fingerprint.includes(' :: #beginContainment :: ')) {
+    return fingerprint.includes('Promise.then(rejected)')
+      ? 'Lifecycle retains the current containment attempt after its sanctioned exact-set reaper rejects.'
+      : 'A best-effort close cannot revoke a containment the lifecycle has already entered.';
+  }
+  if (fingerprint.includes(' :: #promoteControlReattachment :: ')) {
+    return 'Failed promotion keeps the original hold and displaced-control close failure cannot revoke the promoted authority.';
+  }
   if (fingerprint.includes(' :: containmentAbsent :: ')) {
     return 'Authority-close observation cannot settle or relabel disappearance delivery.';
   }
   if (fingerprint.includes(' :: createInitialDispositionLatch :: ')) {
     return 'No-op observer prevents an unhandled rejection while returning the original promise unchanged.';
+  }
+  if (fingerprint.includes(' :: #report :: ')) {
+    return 'Lifecycle observability failure cannot interrupt an authority transition.';
+  }
+  if (fingerprint.includes(' :: #recoverExactCapsule :: ')) {
+    return 'Lifecycle retains and retries exact-capsule recovery after its sanctioned exact-set reaper rejects.';
+  }
+  if (fingerprint.includes(' :: #runControlReattachmentAttempt :: ')) {
+    return 'Lifecycle retains the reattachment hold and schedules its bounded retry after exact-set reaping rejects.';
+  }
+  if (fingerprint.includes(' :: completeOperatorExit :: ')) {
+    return fingerprint.includes('catch#1')
+      ? 'Lifecycle converts a moved attempt after signalling into an honest partial authorization-stale outcome.'
+      : 'A best-effort control close cannot revoke accepted operator abandonment or relabel its process observation.';
+  }
+  if (fingerprint.includes(' :: readProviderHostUnserviceableEvidence :: ')) {
+    return 'Malformed provider-host evidence cannot authorize terminalization.';
   }
   return 'Atomic terminalization producer boundary preserves its narrow retry-safety proof.';
 }
@@ -692,10 +768,6 @@ const REJECTION_AUTHORIZATIONS = EXPECTED_REJECTION_NODE_INVENTORY.map((fingerpr
   fingerprint,
   justification: rejectionJustification(fingerprint),
 }));
-
-const EXPECTED_REJECTION_OWNER_KEYS = new Set(
-  EXPECTED_REJECTION_NODE_INVENTORY.map((fingerprint) => fingerprint.split(' :: ').slice(0, 2).join(' :: ')),
-);
 
 type JustifiedOccurrence = Readonly<{ occurrence: string; justification: string }>;
 
@@ -737,6 +809,11 @@ const BOUNDARY_AUTHORIZATIONS: readonly JustifiedOccurrence[] = [
   },
   {
     occurrence:
+      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: ProviderOperationReconciler.representationAbandoned',
+    justification: 'The abandonment-consumer producer closes over the distinct concrete reconciler method.',
+  },
+  {
+    occurrence:
       'src/coordinator/services/provider-operation-reconciler.ts :: <module> :: ImportSpecifier :: isProviderProxyRecoveryFatalError',
     justification: 'The reconciler imports the origin guard to seal already-published fatal evidence.',
   },
@@ -749,6 +826,12 @@ const BOUNDARY_AUTHORIZATIONS: readonly JustifiedOccurrence[] = [
     occurrence:
       'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileStartupSet :: PropertyAccessExpression :: ContainmentAbsenceAcceptance.initialDisposition :: awaitStartup-argument-zero',
     justification: 'Startup awaits the original lifecycle disposition promise through the identity-preserving helper.',
+  },
+  {
+    occurrence:
+      'src/coordinator/services/provider-proxy-set/index.ts :: operatorExitClaimDischarge :: PropertyAccessExpression :: ContainmentAbsenceAcceptance.initialDisposition :: operator-exit-state-gated-read',
+    justification:
+      'Operator exit reads through the latch-state gate, which reports pending ownership and awaits only an already-settled disposition.',
   },
   {
     occurrence:
@@ -974,7 +1057,7 @@ function diagnosticsFor(program: ts.Program, path: string): string[] {
  * budget rather than assuming the line above yours applies to you.
  */
 describe('provider proxy recovery policy construction', () => {
-  it('rejects unclassified recovery catches and direct policy effects', () => {
+  it('enforces recovery-policy boundaries and rejection inventories', () => {
     const references = collectReferences();
 
     const beginInventory = callsFor('ProviderProxyRecoveryDispatcher.begin', references)
@@ -988,6 +1071,11 @@ describe('provider proxy recovery policy construction', () => {
         occurrence:
           'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeDisappearance :: disappearance-delivery',
         justification: 'The reconciler opens the registered durable terminalization turn for one disappearance notice.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeAbandonment :: representation-abandonment-delivery',
+        justification: 'Abandonment terminalization retains its distinct fatal and retry ownership seam.',
       },
       {
         occurrence:
@@ -1017,8 +1105,18 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #deliverAbandonment :: representation-abandonment-delivery',
+        justification: 'Operator abandonment transfers each claim through its distinct acceptance seam before release.',
+      },
+      {
+        occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: exact-capsule-recovery',
         justification: 'Exact capsule recovery reduces redemption and absence evidence in one registered turn.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: control-reattachment',
+        justification: 'A channel hold reduces authenticated redemption and independent absence concurrently.',
       },
       {
         occurrence:
@@ -1045,6 +1143,11 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
+          'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeAbandonment :: terminalization/disappearance-terminalization',
+        justification: 'Abandonment reuses atomic terminalization while retaining its distinct consumer seam.',
+      },
+      {
+        occurrence:
           'src/coordinator/services/provider-proxy-set/inheritance.ts :: dispatchProviderProxySetInheritance :: inheritance/set-inheritance',
         justification: 'Both public inheritance façades delegate their one producer start to this adapter.',
       },
@@ -1065,6 +1168,11 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #deliverAbandonment :: delivery/representation-abandonment-consumer',
+        justification: 'Abandonment routes the captured notice through its separate registered consumer.',
+      },
+      {
+        occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: absence/containment-proof',
         justification: 'Exact recovery contributes independently proven absence under the absence source id.',
       },
@@ -1072,6 +1180,16 @@ describe('provider proxy recovery policy construction', () => {
         occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
         justification: 'Exact recovery contributes capsule redemption under the redemption source id.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: absence/containment-proof',
+        justification: 'The channel hold observes independent containment absence alongside redemption.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: redemption/role-control',
+        justification: 'The channel hold invokes the authority-owned authenticated redemption attempt.',
       },
       {
         occurrence:
@@ -1159,7 +1277,7 @@ describe('provider proxy recovery policy construction', () => {
         startInventory,
         producerCallInventory,
         directPolicyEffectViolations,
-        rejectionNodeInventory: rejectionNodeInventory(),
+        rejectionNodeInventory: rejectionNodeInventory(references),
         consumerRejectionViolations: consumerRejectionViolations(references),
         forbiddenAllSettled,
         forbiddenMethods,

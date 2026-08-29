@@ -12,7 +12,14 @@ import {
   createProviderProxySetAuthority,
   type ProviderProxySetAuthorityDependencies,
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  ControlClientError,
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlClientRemoteFailure,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
+import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   SIGKILL_GRACE_MS,
@@ -85,7 +92,9 @@ const COORDINATOR_IDENTITY: CoordinatorIdentity = {
 /** A client that must never be called — a test that reaches it is exercising a path it did not mean to. */
 function unreachableClient(): ControlClient {
   return {
-    call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
+    exchange: () => {
+      throw new Error('unreachable: this client was not expected to exchange');
+    },
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => {},
@@ -100,27 +109,27 @@ function inactiveHeartbeats() {
   };
 }
 
-/** `runtime.ids`/`env`/`storage` for the `stopAndReap`-only describe blocks below. */
-function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
+/** `runtime.ids`/`storage` plus the default deadline configuration for the `stopAndReap`-only blocks below. */
+function unusedRuntimePorts(): Runtime {
   const fail = (member: string) => (): never => {
     throw new Error(`unexpected use of runtime.${member} during stopAndReap`);
   };
   return {
     ids: { uuid: fail('ids.uuid'), randomBytes: fail('ids.randomBytes') } as unknown as Runtime['ids'],
-    env: { get: fail('env.get') } as unknown as Runtime['env'],
+    env: { get: () => undefined } as unknown as Runtime['env'],
     storage: new Proxy({}, { get: fail('storage') }) as unknown as Runtime['storage'],
-  };
+  } as unknown as Runtime;
 }
 
 /**
- * Mirrors the real `ControlClient.call`'s own race, without a real socket: a timeout timer at `timeoutMs`
+ * Mirrors the real `ControlClient.exchange`'s own race, without a real socket: a timeout timer at `timeoutMs`
  * (the budget the caller under test passed in) races a result timer fixed at `resolveAtMs`. Both are
  * scheduled on the injected `VirtualTime`, so a test drives the outcome with `time.tick(...)` instead of
  * sleeping in real time.
  */
 function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unknown): ControlClient {
   return {
-    call: (_method, _params, timeoutMs) =>
+    exchange: (_method, _params, timeoutMs) =>
       new Promise((resolve, reject) => {
         let settled = false;
         const timeoutHandle = time.setTimeout(() => {
@@ -133,7 +142,7 @@ function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unkno
           if (settled) return;
           settled = true;
           time.clearTimeout(timeoutHandle);
-          resolve(result);
+          resolve(controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: result } }));
         }, resolveAtMs);
       }),
     faulted: new Promise<never>(() => undefined),
@@ -240,35 +249,43 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 
   it('rejects a non-canonical inventory cwd at the real proxy response receiver', async () => {
     const proxyClient: ControlClient = {
-      call: () =>
-        Promise.resolve({
-          hosts: [
-            {
-              ref: {
-                provider: 'codex',
-                fingerprint: 'a'.repeat(64),
-                instanceId: 'host-instance',
-                leaseMode: 'shared',
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                hosts: [
+                  {
+                    ref: {
+                      provider: 'codex',
+                      fingerprint: 'a'.repeat(64),
+                      instanceId: 'host-instance',
+                      leaseMode: 'shared',
+                    },
+                    status: 'live',
+                    spec: {
+                      provider: 'codex',
+                      command: 'codex',
+                      args: ['app-server'],
+                      cwd: 'relative/provider-host',
+                      leaseMode: 'shared',
+                      idleRetirement: 'never',
+                    },
+                    host: { owner: 'provider-proxy' },
+                    diagnostics: {
+                      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+                      completedObservations: [],
+                      factsTruncatedBeforeSeq: 0,
+                    },
+                    diagnosticsRetention: { ownerBudgetTruncated: false },
+                  },
+                ],
               },
-              status: 'live',
-              spec: {
-                provider: 'codex',
-                command: 'codex',
-                args: ['app-server'],
-                cwd: 'relative/provider-host',
-                leaseMode: 'shared',
-                idleRetirement: 'never',
-              },
-              host: { owner: 'provider-proxy' },
-              diagnostics: {
-                hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
-                completedObservations: [],
-                factsTruncatedBeforeSeq: 0,
-              },
-              diagnosticsRetention: { ownerBudgetTruncated: false },
             },
-          ],
-        }),
+          }),
+        ),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => {},
@@ -284,9 +301,14 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   it('names this coordinator’s own recorded provider roots, not an empty claim the guardian would refuse', async () => {
     const calls: unknown[] = [];
     const client: ControlClient = {
-      call: (_method, params) => {
+      exchange: (_method, params) => {
         calls.push(params);
-        return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
+        return Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+          }),
+        );
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -310,9 +332,14 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   it('names an empty set when this coordinator holds no live operations against the proxy', async () => {
     const calls: unknown[] = [];
     const client: ControlClient = {
-      call: (_method, params) => {
+      exchange: (_method, params) => {
         calls.push(params);
-        return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
+        return Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+          }),
+        );
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -336,7 +363,6 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
     buildSetId: GUARDIAN_IDENTITY.buildSetId,
   };
-  const INSTALL_ACK = { state: 'installed-dormant' as const, grantId: '77777777-7777-4777-8777-777777777777' };
   type InstallCall = { role: string; method: string; params: unknown };
 
   const tempRoots: string[] = [];
@@ -346,20 +372,74 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 
   /** Records every call made to a role's client and answers the named install method with the fixture above,
    *  or the configured failure for that one role. */
-  function recordingClient(role: 'guardian' | 'reaper' | 'proxy', calls: InstallCall[], fail?: string): ControlClient {
+  function recordingClient(
+    role: 'guardian' | 'reaper' | 'proxy',
+    calls: InstallCall[],
+    fail?: string,
+    ackGrantId?: string,
+    transientOnce = false,
+    installGate?: Promise<void>,
+    refuseOnce = false,
+  ): ControlClient {
+    let transientRemaining = transientOnce;
+    let refusalRemaining = refuseOnce;
     return {
-      call: (method: string, params: unknown) => {
+      exchange: async (method: string, params: unknown): Promise<ControlExchange> => {
         calls.push({ role, method, params });
-        if (fail !== undefined && method === fail) {
-          return Promise.reject(new Error(`${role} refused ${method}`));
-        }
+        await installGate;
         if (method.includes('succession.register') || method.includes('succession-register')) {
-          return Promise.resolve({
-            state: 'succession-registered',
-            operation: (params as { operation: unknown }).operation,
+          return controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                state: 'succession-registered',
+                operation: (params as { operation: unknown }).operation,
+              },
+            },
           });
         }
-        return Promise.resolve(INSTALL_ACK);
+        if (transientRemaining) {
+          transientRemaining = false;
+          return controlExchangeForTest({
+            kind: 'no-response',
+            cause: 'timeout',
+            error: new ControlClientError('control_call_failed', `${role} timed out`, 'timeout'),
+          });
+        }
+        if (fail !== undefined && method === fail && (!refuseOnce || refusalRemaining)) {
+          refusalRemaining = false;
+          const failure: ControlClientRemoteFailure = {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32_000,
+            protocolCode: null,
+            admissionReason: null,
+            heartbeatRefusal: null,
+          };
+          return controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'refusal',
+              failure,
+              error: new ControlClientError(
+                'control_call_failed',
+                `${role} refused ${method}`,
+                'remote-response',
+                failure,
+              ),
+            },
+          });
+        }
+        return controlExchangeForTest({
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: {
+              state: 'installed-dormant',
+              grantId: ackGrantId ?? (params as { grantId: string }).grantId,
+            },
+          },
+        });
       },
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
@@ -371,27 +451,44 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     calls: InstallCall[];
     fail?: 'guardian' | 'reaper' | 'proxy';
     failMethod?: string;
+    ackGrantId?: string;
+    transientOnce?: 'guardian' | 'reaper' | 'proxy';
+    refuseOnce?: 'guardian' | 'reaper' | 'proxy';
+    installGate?: Promise<void>;
+    recovery?: Readonly<{ capsule: HandoffCapsuleV3; operations: ReadonlyArray<typeof OPERATION> }>;
   }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
     const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-'));
     tempRoots.push(tempRoot);
     const handoffCapsulePath = join(tempRoot, 'proxy.handoff.json');
     const runtime = createRealRuntime('dev', { baseDir: tempRoot });
-    const deps: ProviderProxySetAuthorityDependencies = {
+    const common = {
       proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
       guardianClient: recordingClient(
         'guardian',
         options.calls,
         options.fail === 'guardian' ? (options.failMethod ?? 'guardian.handoff-install.v1') : undefined,
+        options.ackGrantId,
+        options.transientOnce === 'guardian',
+        options.installGate,
+        options.refuseOnce === 'guardian',
       ),
       reaperClient: recordingClient(
         'reaper',
         options.calls,
         options.fail === 'reaper' ? (options.failMethod ?? 'reaper.handoff-install.v1') : undefined,
+        options.ackGrantId,
+        options.transientOnce === 'reaper',
+        options.installGate,
+        options.refuseOnce === 'reaper',
       ),
       proxyClient: recordingClient(
         'proxy',
         options.calls,
         options.fail === 'proxy' ? (options.failMethod ?? 'handoff.install.v1') : undefined,
+        options.ackGrantId,
+        options.transientOnce === 'proxy',
+        options.installGate,
+        options.refuseOnce === 'proxy',
       ),
       guardianIdentity: GUARDIAN_IDENTITY,
       reaperIdentity: REAPER_IDENTITY,
@@ -402,6 +499,14 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       runtime,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
+    const deps: ProviderProxySetAuthorityDependencies =
+      options.recovery === undefined
+        ? common
+        : {
+            ...common,
+            recoveryCapsule: options.recovery.capsule,
+            recoveryOperations: options.recovery.operations,
+          };
     return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath };
   }
 
@@ -409,8 +514,14 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     const calls: InstallCall[] = [];
     const { authority, handoffCapsulePath } = authorityForInstall({ calls });
 
-    await authority.installRecoveryCredential(new AbortController().signal);
-    await authority.registerSuccessionOperation(OPERATION);
+    const installation = await authority.installRecoveryCredential(new AbortController().signal);
+    const registration = await authority.registerSuccessionOperation(OPERATION);
+
+    expect(installation).toMatchObject({
+      kind: 'installed',
+      receipt: { kind: 'installed-recovery-credential' },
+    });
+    expect(registration).toEqual({ kind: 'registered' });
 
     expect(calls.map((call) => call.method)).toEqual(
       expect.arrayContaining([
@@ -460,12 +571,198 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     expect((statSync(handoffCapsulePath).mode & 0o777).toString(8)).toBe('600');
   });
 
-  it('writes no capsule when one authority refuses its install call', async () => {
+  it('returns to idle after a refusal so the next attempt can install', async () => {
     const calls: InstallCall[] = [];
-    const { authority, handoffCapsulePath } = authorityForInstall({ calls, fail: 'reaper' });
+    const { authority, handoffCapsulePath } = authorityForInstall({
+      calls,
+      fail: 'reaper',
+      refuseOnce: 'reaper',
+    });
 
-    await expect(authority.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(/reaper refused/u);
+    const outcome = await authority.installRecoveryCredential(new AbortController().signal);
     expect(() => statSync(handoffCapsulePath)).toThrow();
+    const retry = await authority.installRecoveryCredential(new AbortController().signal);
+
+    expect(outcome).toMatchObject({
+      kind: 'refused',
+      incident: { role: 'reaper', method: 'reaper.handoff-install.v1', exchange: { kind: 'response' } },
+    });
+    expect(retry).toMatchObject({ kind: 'installed' });
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(6);
+    expect(statSync(handoffCapsulePath).isFile()).toBe(true);
+  });
+
+  it('returns an idle cancellation without starting an exchange', async () => {
+    const calls: InstallCall[] = [];
+    const { authority } = authorityForInstall({ calls });
+    const cancelled = new AbortController();
+    cancelled.abort();
+
+    const outcome = await authority.installRecoveryCredential(cancelled.signal);
+    const retry = await authority.installRecoveryCredential(new AbortController().signal);
+
+    expect(outcome).toEqual({ kind: 'cancelled' });
+    expect(retry).toMatchObject({ kind: 'installed' });
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(3);
+  });
+
+  it('returns cancellation to an already-aborted caller after installation completed', async () => {
+    const calls: InstallCall[] = [];
+    const { authority } = authorityForInstall({ calls });
+    await authority.installRecoveryCredential(new AbortController().signal);
+    const cancelled = new AbortController();
+    cancelled.abort();
+
+    const outcome = await authority.installRecoveryCredential(cancelled.signal);
+
+    expect(outcome).toEqual({ kind: 'cancelled' });
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(3);
+  });
+
+  it('lets succession registration retry a transient install instead of retaining the failed attempt', async () => {
+    const calls: InstallCall[] = [];
+    const { authority } = authorityForInstall({ calls, transientOnce: 'guardian' });
+
+    const first = await authority.registerSuccessionOperation(OPERATION);
+    const second = await authority.registerSuccessionOperation(OPERATION);
+    const installed = await authority.installRecoveryCredential(new AbortController().signal);
+
+    expect(first).toMatchObject({ kind: 'retryable', incident: { role: 'guardian' } });
+    expect(second).toEqual({ kind: 'registered' });
+    expect(installed).toMatchObject({ kind: 'installed' });
+    expect(
+      calls.filter(({ role, method }) => role === 'guardian' && method === 'guardian.handoff-install.v1'),
+    ).toHaveLength(2);
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(6);
+    expect(calls.filter(({ method }) => method.includes('succession-register'))).toHaveLength(2);
+    expect(calls.filter(({ method }) => method === 'succession.register-operation.v1')).toHaveLength(1);
+  });
+
+  it('shares one in-flight install attempt between concurrent callers', async () => {
+    const calls: InstallCall[] = [];
+    let releaseInstall!: () => void;
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    const { authority } = authorityForInstall({ calls, installGate });
+
+    const first = authority.installRecoveryCredential(new AbortController().signal);
+    const second = authority.installRecoveryCredential(new AbortController().signal);
+
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(3);
+    releaseInstall();
+    const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+
+    expect(firstOutcome).toMatchObject({ kind: 'installed' });
+    expect(secondOutcome).toEqual(firstOutcome);
+  });
+
+  it('cancels only a joining caller while retaining the shared installed outcome', async () => {
+    const calls: InstallCall[] = [];
+    let releaseInstall!: () => void;
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    const { authority } = authorityForInstall({ calls, installGate });
+    const joiningCaller = new AbortController();
+
+    const first = authority.installRecoveryCredential(new AbortController().signal);
+    const joining = authority.installRecoveryCredential(joiningCaller.signal);
+    joiningCaller.abort();
+    releaseInstall();
+    const [firstOutcome, joiningOutcome] = await Promise.all([first, joining]);
+    const laterOutcome = await authority.installRecoveryCredential(new AbortController().signal);
+
+    expect(firstOutcome).toMatchObject({ kind: 'installed' });
+    expect(joiningOutcome).toEqual({ kind: 'cancelled' });
+    expect(laterOutcome).toEqual(firstOutcome);
+    expect(
+      calls.filter(({ method }) => method.includes('handoff-install') || method === 'handoff.install.v1'),
+    ).toHaveLength(3);
+  });
+
+  it('accepts a shipped-v0.10.9-shaped acknowledgement only as proof that the grant was stored', async () => {
+    const freshCalls: InstallCall[] = [];
+    const fresh = authorityForInstall({ calls: freshCalls });
+    await fresh.authority.installRecoveryCredential(new AbortController().signal);
+    const capsule = JSON.parse(readFileSync(fresh.handoffCapsulePath, 'utf-8')) as HandoffCapsuleV3;
+    const recoveredCalls: InstallCall[] = [];
+    const recovered = authorityForInstall({
+      calls: recoveredCalls,
+      recovery: { capsule, operations: [OPERATION] },
+    }).authority;
+
+    const outcome = await recovered.installRecoveryCredential(new AbortController().signal);
+
+    expect(outcome).toMatchObject({
+      kind: 'installed',
+      receipt: { kind: 'installed-recovery-credential', grantId: capsule.grantId },
+    });
+    expect(recovered.autonomousDeadline).toEqual({
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+      adoptionWindowMs: capsule.orphanTimeoutMs - capsule.teardownReserveMs,
+      heartbeatHoldBound: expect.any(Object),
+    });
+    expect(recovered.autonomousDeadline).not.toHaveProperty('owner');
+    expect(outcome).not.toHaveProperty('discharge');
+    expect(recoveredCalls.map(({ role, method }) => `${role}:${method}`)).toEqual([
+      'guardian:guardian.handoff-install.v1',
+      'reaper:reaper.handoff-install.v1',
+      'proxy:handoff.install.v1',
+    ]);
+    expect(recoveredCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ params: expect.objectContaining({ operations: [OPERATION] }) }),
+      ]),
+    );
+  });
+
+  it('returns an explicit refusal and does not contact the proxy when an enforcer refuses installation', async () => {
+    const freshCalls: InstallCall[] = [];
+    const fresh = authorityForInstall({ calls: freshCalls });
+    await fresh.authority.installRecoveryCredential(new AbortController().signal);
+    const capsule = JSON.parse(readFileSync(fresh.handoffCapsulePath, 'utf-8')) as HandoffCapsuleV3;
+    const recoveredCalls: InstallCall[] = [];
+    const recovered = authorityForInstall({
+      calls: recoveredCalls,
+      fail: 'guardian',
+      recovery: { capsule, operations: [OPERATION] },
+    }).authority;
+
+    const outcome = await recovered.installRecoveryCredential(new AbortController().signal);
+
+    expect(outcome).toMatchObject({ kind: 'refused', incident: { role: 'guardian' } });
+    expect(recoveredCalls.some(({ role }) => role === 'proxy')).toBe(false);
+  });
+
+  it('does not accept an acknowledgement for a different recovered grant', async () => {
+    const fresh = authorityForInstall({ calls: [] });
+    await fresh.authority.installRecoveryCredential(new AbortController().signal);
+    const capsule = JSON.parse(readFileSync(fresh.handoffCapsulePath, 'utf-8')) as HandoffCapsuleV3;
+    const recoveredCalls: InstallCall[] = [];
+    const recovered = authorityForInstall({
+      calls: recoveredCalls,
+      ackGrantId: '77777777-7777-4777-8777-777777777777',
+      recovery: { capsule, operations: [OPERATION] },
+    }).authority;
+
+    await expect(recovered.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(
+      /provider_proxy_handoff_install_ack_grant_mismatch/u,
+    );
+    await expect(recovered.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(
+      /provider_proxy_handoff_install_ack_grant_mismatch/u,
+    );
+    expect(recoveredCalls.filter(({ method }) => method === 'guardian.handoff-install.v1')).toHaveLength(2);
   });
 
   it('registers a non-executing journal operation in standing succession membership', async () => {
@@ -478,8 +775,9 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     };
     const { authority } = authorityForInstall({ calls });
 
-    await authority.registerSuccessionOperation(pendingOperation);
+    const registration = await authority.registerSuccessionOperation(pendingOperation);
 
+    expect(registration).toEqual({ kind: 'registered' });
     const proxyRegistration = calls.find((call) => call.method === 'succession.register-operation.v1');
     expect(proxyRegistration?.params).toEqual({
       operation: pendingOperation,

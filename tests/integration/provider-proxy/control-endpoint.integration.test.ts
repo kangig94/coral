@@ -24,14 +24,17 @@ import {
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
 
+type EndpointReply = {
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: { code?: string; reason?: string; heartbeatRefusal?: string; nextHeartbeatChallenge?: string };
+  };
+};
+
 type Client = Readonly<{
-  call(
-    method: string,
-    params: unknown,
-  ): Promise<{
-    result?: unknown;
-    error?: { code: number; message: string; data?: { code?: string; reason?: string } };
-  }>;
+  call(method: string, params: unknown): Promise<EndpointReply>;
   socket: Socket;
   close(): void;
 }>;
@@ -120,8 +123,12 @@ async function startEndpoint(
     },
     reattachControl: () => (teardownLatched ? { accepted: false, reason: 'teardown-latched' } : { accepted: true }),
     echoChallenge: (challenge) => {
-      if (outstanding === null || challenge !== outstanding) return { accepted: false, reason: 'challenge-mismatch' };
+      if (teardownLatched) return { accepted: false, reason: 'teardown-latched' };
       const nextChallenge = mint();
+      if (outstanding === null || challenge !== outstanding) {
+        outstanding = nextChallenge;
+        return { accepted: false, reason: 'challenge-mismatch', nextChallenge };
+      }
       outstanding = nextChallenge;
       // Round-trip evidence pushes control loss into the future, so an echo revives a lapsed lease.
       controlLive = true;
@@ -231,10 +238,7 @@ async function startEndpoint(
 function connect(socketPath: string): Promise<Client> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
-    const pending = new Map<
-      number,
-      (value: { result?: unknown; error?: { code: number; message: string; data?: { code?: string } } }) => void
-    >();
+    const pending = new Map<number, (value: EndpointReply) => void>();
     let buffer = '';
     let nextId = 1;
 
@@ -313,8 +317,80 @@ describe('provider-proxy control endpoint', () => {
     const replay = await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
     expect(replay.error?.message).toContain('challenge-mismatch');
     expect(replay.error?.data?.code).toBe('invalid_request');
+    expect(replay.error?.data?.heartbeatRefusal).toBe('challenge-mismatch');
+    expect(replay.error?.data?.nextHeartbeatChallenge).toBe('challenge-3');
     expect(set.accepted).toEqual(['challenge-1']);
     expect(set.observer.onControlActive).toHaveBeenCalledOnce();
+
+    const resynchronized = await client.call('role.heartbeat.v1', {
+      controlEpoch: 1,
+      heartbeatChallenge: 'challenge-3',
+    });
+    expect(resynchronized.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-4' });
+  });
+
+  it('round-trips the endpoint heartbeat refusal through the production client discriminator', async () => {
+    const set = await startEndpoint();
+    const client = await connectControlClient(set.socketPath, realTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const openedExchange = await client.exchange('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE }, 5_000);
+    if (openedExchange.kind !== 'response' || openedExchange.response.kind !== 'result') {
+      throw new Error('production client did not open the test endpoint');
+    }
+    const opened = openedExchange.response.value as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+    const heartbeat = {
+      controlEpoch: opened.controlEpoch,
+      heartbeatChallenge: opened.heartbeatChallenge,
+    };
+    const accepted = await client.exchange('role.heartbeat.v1', heartbeat, 5_000);
+    if (accepted.kind !== 'response' || accepted.response.kind !== 'result') {
+      throw new Error('production client opening heartbeat was not accepted');
+    }
+
+    await expect(client.exchange('role.heartbeat.v1', heartbeat, 5_000)).resolves.toMatchObject({
+      kind: 'response',
+      response: {
+        kind: 'refusal',
+        failure: {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32_600,
+          protocolCode: 'invalid_request',
+          admissionReason: null,
+          heartbeatRefusal: { reason: 'challenge-mismatch', nextHeartbeatChallenge: 'challenge-3' },
+        },
+      },
+    });
+  });
+
+  it('does not disclose a replacement challenge to a heartbeat arriving off the tenancy socket', async () => {
+    const { socketPath } = await startEndpoint({ observation: () => ({ seen: true }) });
+    const holder = await connect(socketPath);
+    await holder.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    const other = await connect(socketPath);
+
+    const refused = await other.call('role.heartbeat.v1', {
+      controlEpoch: 1,
+      heartbeatChallenge: 'challenge-1',
+    });
+
+    expect(refused.error?.data).toEqual({ code: 'invalid_request' });
+  });
+
+  it('names a latched teardown as a structured heartbeat refusal without disclosing a challenge', async () => {
+    const set = await startEndpoint();
+    const client = await connect(set.socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.latchTeardown();
+
+    const refused = await client.call('role.heartbeat.v1', {
+      controlEpoch: 1,
+      heartbeatChallenge: 'challenge-1',
+    });
+
+    expect(refused.error?.data).toEqual({ code: 'invalid_request', heartbeatRefusal: 'teardown-latched' });
   });
 
   it('rejects a heartbeat carrying a foreign epoch', async () => {

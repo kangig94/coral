@@ -1,5 +1,6 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -151,16 +152,14 @@ beforeEach(async () => {
     flavor: 'prod',
     buildSetId,
   };
-  const openedControl = (await control.call(
-    'control.open.v1',
-    { bootstrapNonce: capsule.bootstrapNonce, coordinator: coordinatorIdentity },
-    5_000,
-  )) as { controlEpoch: number; heartbeatChallenge: string };
-  await control.call(
-    'control.heartbeat.v1',
-    { controlEpoch: openedControl.controlEpoch, heartbeatChallenge: openedControl.heartbeatChallenge },
-    5_000,
-  );
+  const openedControl = (await strictTestExchange(control, 'control.open.v1', {
+    bootstrapNonce: capsule.bootstrapNonce,
+    coordinator: coordinatorIdentity,
+  })) as { controlEpoch: number; heartbeatChallenge: string };
+  await strictTestExchange(control, 'control.heartbeat.v1', {
+    controlEpoch: openedControl.controlEpoch,
+    heartbeatChallenge: openedControl.heartbeatChallenge,
+  });
 
   authority = createProviderProxySetAuthority({
     proxyInstanceId,
@@ -179,6 +178,7 @@ beforeEach(async () => {
     handoffCapsulePath: join(directory, 'unused.json'),
     runtime: unusedRuntimePorts(),
     recoveryCapsule: {} as never,
+    recoveryOperations: [],
     operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
   });
   cleanup = async () => {
@@ -322,8 +322,8 @@ function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact 
 
 function unreachableClient(): ControlClient {
   return {
-    call: async () => {
-      throw new Error('unexpected control call');
+    exchange: () => {
+      throw new Error('unexpected control exchange');
     },
     faulted: new Promise<never>(() => {}),
     onFault: () => () => {},
@@ -359,7 +359,7 @@ function reaperIdentity(): ReaperIdentity {
   };
 }
 
-function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
+function unusedRuntimePorts(): Runtime {
   const fail = (): never => {
     throw new Error('unexpected runtime port call');
   };
@@ -367,5 +367,5 @@ function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
     ids: { uuid: fail, randomBytes: fail } as never,
     env: { get: fail } as never,
     storage: new Proxy({}, { get: fail }) as never,
-  };
+  } as unknown as Runtime;
 }

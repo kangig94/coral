@@ -116,11 +116,10 @@ describe('CoralSetupError', () => {
       "Run this build's own 'coral-cli backend shutdown'. Wait for 'install:kiwi (pid 42)' to exit and release its lease or lock, then retry 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
     ],
     [
-      'legacy_source_not_quiescent',
+      'legacy_source_writer_observation_unknown',
       {
         operation: 'store-reset',
         holder: 'routing-status:handoff-routing-status (pid 42), process identity unobservable',
-        writerObservation: 'unknown',
         flavor: 'prod',
       },
       'The generation-boundary operation cannot determine whether routing-status:handoff-routing-status (pid 42), process identity unobservable is still active.',
@@ -185,6 +184,12 @@ describe('CoralSetupError', () => {
       {},
       'That recovery boundary is not available for operator retry.',
       'Run `coral-cli backend recovery-quarantine list` and copy the boundary from a retained row. If the listed boundary is still rejected, update Coral and retry.',
+    ],
+    [
+      'recovery_quarantine_subject_not_found',
+      {},
+      'That recovery quarantine key does not name a retained row.',
+      'Run `coral-cli backend recovery-quarantine list`, copy one row’s current boundary, key, and revision, then retry clear with that exact coordinate.',
     ],
     [
       'recovery_quarantine_revision_changed',
@@ -372,7 +377,7 @@ describe('CoralSetupError', () => {
       const invalidUid = documentedCoralSetupError({
         code: 'coordinator_socket_dir_unverified',
         directory: '/tmp/coral-NaN',
-        cause: 'the owner uid named by the socket address is not usable',
+        cause: 'the required socket-directory owner uid is not usable',
       });
       const missingOwner = documentedCoralSetupError({
         code: 'coordinator_socket_dir_unverified',
@@ -413,7 +418,7 @@ describe('CoralSetupError', () => {
         );
       }
       expect(invalidUid.remediation).toBe(
-        'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.',
+        'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback directory. Coral will not bind its singleton socket without a usable owner identity.',
       );
       expect(missingOwner.remediation).toBe(
         'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.',

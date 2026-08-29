@@ -1,9 +1,9 @@
 import { createConnection, type Socket } from 'node:net';
+import { z } from 'zod';
 
 import {
   PROVIDER_EVENT_METHOD,
   PROXY_CONTROL_PROTOCOL_ERROR_CODES,
-  ProxyControlProtocolError,
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
@@ -14,6 +14,7 @@ import {
   type ProxyControlJsonRpcMessage,
   type ProxyControlProtocolErrorCode,
 } from './protocol.js';
+import { heartbeatRefusalFrom, type HeartbeatRefusal } from './heartbeat-observation.js';
 
 /**
  * Answers the one inbound method this client ever serves: `provider.event.v1`, the proxy's own push of one
@@ -31,7 +32,7 @@ export interface ControlClientTimer {
 
 export type ControlClientErrorCode = 'control_client_connect_failed' | 'control_client_closed' | 'control_call_failed';
 
-export type ControlClientErrorOrigin = 'timeout' | 'write' | 'closed' | 'remote-response';
+export type ControlClientErrorOrigin = 'timeout' | 'closed' | 'remote-response';
 
 export type ControlClientRemoteFailure =
   | Readonly<{
@@ -39,15 +40,72 @@ export type ControlClientRemoteFailure =
       jsonRpcCode: number;
       protocolCode: ProxyControlProtocolErrorCode | null;
       admissionReason: 'control-active' | 'invalid-state' | 'teardown-latched' | null;
+      heartbeatRefusal: HeartbeatRefusal | null;
     }>
   | Readonly<{ kind: 'invalid-frame' }>;
+
+declare const controlExchangeBrand: unique symbol;
+/** Exported so a generic factory's return type can be named; the symbol stays private, so this alias
+ *  still cannot be satisfied by construction. */
+export type ControlExchangeBrand = Readonly<{ [controlExchangeBrand]: true }>;
+
+type ControlExchangeShape =
+  | Readonly<{
+      kind: 'response';
+      response:
+        | Readonly<{ kind: 'result'; value: unknown }>
+        | Readonly<{
+            kind: 'refusal';
+            failure: ControlClientRemoteFailure;
+            error: ControlClientError;
+          }>;
+    }>
+  | Readonly<{
+      kind: 'no-response';
+      cause: 'timeout' | 'connection-closed-after-write';
+      error: ControlClientError;
+    }>
+  | Readonly<{
+      kind: 'delivery-unconfirmed';
+      cause: 'socket-error-after-write';
+      error: Error;
+    }>
+  | Readonly<{
+      kind: 'not-sent';
+      cause: 'connection-already-closed' | 'encode-failed' | 'write-threw';
+      error: unknown;
+    }>
+  | Readonly<{
+      kind: 'channel-fault';
+      cause: 'invalid-unattributable-frame';
+      error: ControlClientError;
+    }>;
+
+/** The transport owner's closed classification of one attempted request/reply exchange. */
+export type ControlExchange = ControlExchangeShape & ControlExchangeBrand;
+
+function observedExchange<T extends ControlExchangeShape>(exchange: T): T & ControlExchangeBrand {
+  return exchange as T & ControlExchangeBrand;
+}
+
+/** Lets a test double produce transport-owned exchange evidence without publishing the brand or raw shape. */
+export function controlExchangeForTest<T extends ControlExchangeShape>(exchange: T): T & ControlExchangeBrand {
+  return observedExchange(exchange);
+}
+
+const JSON_RPC_INVALID_REQUEST = -32_600;
+
+const admissionRefusalDataSchema = z
+  .object({
+    code: z.literal('invalid_state'),
+    reason: z.enum(['control-active', 'invalid-state', 'teardown-latched']),
+  })
+  .strict();
 
 export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;
   readonly origin: ControlClientErrorOrigin;
   readonly remoteFailure: ControlClientRemoteFailure | null;
-  /** Compatibility projection for operation-control policy while it migrates to `remoteFailure`. */
-  readonly protocolCode?: ProxyControlProtocolErrorCode;
 
   constructor(
     code: ControlClientErrorCode,
@@ -74,9 +132,6 @@ export class ControlClientError extends Error {
     this.code = code;
     this.origin = origin;
     this.remoteFailure = remoteFailure;
-    if (remoteFailure?.kind === 'json-rpc-error' && remoteFailure.protocolCode !== null) {
-      this.protocolCode = remoteFailure.protocolCode;
-    }
     Object.setPrototypeOf(this, ControlClientError.prototype);
   }
 }
@@ -94,22 +149,24 @@ function protocolCodeFrom(data: unknown): ProxyControlProtocolErrorCode | null {
     : null;
 }
 
-function admissionReasonFrom(data: unknown): 'control-active' | 'invalid-state' | 'teardown-latched' | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const reason = (data as { reason?: unknown }).reason;
-  return reason === 'control-active' || reason === 'invalid-state' || reason === 'teardown-latched' ? reason : null;
+function admissionReasonFrom(
+  jsonRpcCode: number,
+  data: unknown,
+): 'control-active' | 'invalid-state' | 'teardown-latched' | null {
+  if (jsonRpcCode !== JSON_RPC_INVALID_REQUEST) return null;
+  const parsed = admissionRefusalDataSchema.safeParse(data);
+  return parsed.success ? parsed.data.reason : null;
 }
 
 export interface ControlClient {
-  call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
+  exchange(method: string, params: unknown, timeoutMs: number): Promise<ControlExchange>;
   readonly faulted: Promise<ControlClientError>;
   onFault(listener: (error: ControlClientError) => void): () => void;
   close(): void;
 }
 
 type Pending = Readonly<{
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
+  resolve: (exchange: ControlExchange) => void;
   budget: { unref?: () => void };
 }>;
 
@@ -169,11 +226,11 @@ export async function connectControlClient(
     for (const listener of faultListeners) listener(error);
   };
 
-  const failAll = (error: Error): void => {
+  const settleAll = (exchange: ControlExchange): void => {
     for (const [id, waiter] of pending) {
       pending.delete(id);
       timer.clearTimeout(waiter.budget);
-      waiter.reject(error);
+      waiter.resolve(exchange);
     }
   };
 
@@ -185,14 +242,13 @@ export async function connectControlClient(
       { kind: 'invalid-frame' },
     );
     latchFault(error);
-    failAll(error);
+    settleAll(observedExchange({ kind: 'channel-fault', cause: 'invalid-unattributable-frame', error }));
     socket.destroy();
   };
 
   // JSON-RPC's own reserved "invalid request"/"internal error" codes. `control-endpoint.ts` uses the same
   // values for its equivalent refusals; redeclared here rather than imported because those constants are
   // private to that module, and this client owns no reach into it.
-  const JSON_RPC_INVALID_REQUEST = -32_600;
   const JSON_RPC_INTERNAL_ERROR = -32_603;
 
   const refuseInboundRequest = (id: string | number, code: ProxyControlProtocolErrorCode, message: string): void => {
@@ -263,28 +319,85 @@ export async function connectControlClient(
     pending.delete(Number(message.id));
     timer.clearTimeout(waiter.budget);
     if ('error' in message) {
-      waiter.reject(
-        new ControlClientError('control_call_failed', message.error.message, 'remote-response', {
-          kind: 'json-rpc-error',
-          jsonRpcCode: message.error.code,
-          protocolCode: protocolCodeFrom(message.error.data),
-          admissionReason: admissionReasonFrom(message.error.data),
-        }),
-      );
+      const failure: ControlClientRemoteFailure = {
+        kind: 'json-rpc-error',
+        jsonRpcCode: message.error.code,
+        protocolCode: protocolCodeFrom(message.error.data),
+        admissionReason: admissionReasonFrom(message.error.code, message.error.data),
+        heartbeatRefusal: heartbeatRefusalFrom(message.error.code, message.error.data),
+      };
+      const error = new ControlClientError('control_call_failed', message.error.message, 'remote-response', failure);
+      waiter.resolve(observedExchange({ kind: 'response', response: { kind: 'refusal', failure, error } }));
     } else {
-      waiter.resolve(message.result);
+      waiter.resolve(observedExchange({ kind: 'response', response: { kind: 'result', value: message.result } }));
     }
   }, faultInvalidFrame);
   socket.on('data', read);
-  socket.on('error', () => socket.destroy());
+  let socketError: Error | null = null;
+  socket.on('error', (error) => {
+    socketError ??= error;
+    socket.destroy();
+  });
   socket.on('close', () => {
     closed = true;
     const error = new ControlClientError('control_client_closed', 'The control channel closed.', 'closed');
     latchFault(error);
-    failAll(error);
+    settleAll(
+      socketError === null
+        ? observedExchange({ kind: 'no-response', cause: 'connection-closed-after-write', error })
+        : observedExchange({ kind: 'delivery-unconfirmed', cause: 'socket-error-after-write', error: socketError }),
+    );
   });
 
+  const exchange = (method: string, params: unknown, timeoutMs: number): Promise<ControlExchange> => {
+    if (closed) {
+      return Promise.resolve(
+        observedExchange({
+          kind: 'not-sent',
+          cause: 'connection-already-closed',
+          error: new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'),
+        }),
+      );
+    }
+
+    const id = nextId;
+    nextId += 1;
+    let frame: string;
+    try {
+      frame = encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params });
+    } catch (error: unknown) {
+      return Promise.resolve(observedExchange({ kind: 'not-sent', cause: 'encode-failed', error }));
+    }
+
+    return new Promise<ControlExchange>((resolve) => {
+      const budget = timer.setTimeout(() => {
+        pending.delete(id);
+        resolve(
+          observedExchange({
+            kind: 'no-response',
+            cause: 'timeout',
+            error: new ControlClientError(
+              'control_call_failed',
+              `${method} exceeded its ${timeoutMs}ms budget.`,
+              'timeout',
+            ),
+          }),
+        );
+      }, timeoutMs);
+      budget.unref?.();
+      pending.set(id, { resolve, budget });
+      try {
+        socket.write(frame);
+      } catch (error: unknown) {
+        pending.delete(id);
+        timer.clearTimeout(budget);
+        resolve(observedExchange({ kind: 'not-sent', cause: 'write-threw', error }));
+      }
+    });
+  };
+
   return {
+    exchange,
     faulted,
     onFault(listener) {
       if (latchedFault !== null) {
@@ -294,34 +407,6 @@ export async function connectControlClient(
 
       faultListeners.add(listener);
       return () => faultListeners.delete(listener);
-    },
-    call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-      if (closed) {
-        return Promise.reject(new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'));
-      }
-      const id = nextId;
-      nextId += 1;
-      return new Promise<unknown>((resolve, reject) => {
-        const budget = timer.setTimeout(() => {
-          pending.delete(id);
-          reject(
-            new ControlClientError('control_call_failed', `${method} exceeded its ${timeoutMs}ms budget.`, 'timeout'),
-          );
-        }, timeoutMs);
-        budget.unref?.();
-        pending.set(id, { resolve, reject, budget });
-        try {
-          socket.write(encodeProxyControlFrame({ jsonrpc: '2.0', id, method, params }));
-        } catch (error: unknown) {
-          pending.delete(id);
-          timer.clearTimeout(budget);
-          reject(
-            error instanceof ProxyControlProtocolError
-              ? error
-              : new ControlClientError('control_call_failed', `${method} could not be sent.`, 'write'),
-          );
-        }
-      });
     },
     close(): void {
       closed = true;

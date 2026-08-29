@@ -1,6 +1,11 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
+  decodeProviderProxySetAddress,
+  encodeProviderProxySetAddress,
+  type ProviderProxySetAddress,
+} from '../../provider-proxy/set-address.js';
+import {
   HandoffRunError,
   liveHandoffResultObligation,
   consumeHandoffRunResult,
@@ -31,10 +36,21 @@ import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.j
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { isRecord } from '../../infra/json.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
-import { RecoveryQuarantineStore, type RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
-import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import {
+  decodeRecoveryQuarantineKey,
+  encodeRecoveryQuarantineKey,
+  RecoveryQuarantineStore,
+  type RecoveryQuarantineListEntry,
+} from '../../recovery/quarantine.js';
+import { unreadableProviderOperationSubject } from '../../recovery/unreadable-provider-operation.js';
+import {
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+  type RecoveryQuarantineClearRequest,
+  type RecoveryQuarantineClearResult,
+} from '../../recovery/source-registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import {
@@ -45,6 +61,10 @@ import {
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
+import {
+  attributeUnreadableProviderOperations,
+  readProviderOperations,
+} from '../../store/provider-operation-journal.js';
 import {
   handoffRoutingStatusGeneration,
   listHandoffRoutingStoreQuarantines,
@@ -67,11 +87,21 @@ import {
   providerHostListRequestSchema,
   providerHostListResponseSchema,
   providerHostSelectorRequestSchema,
+  providerProxySetContainRequestSchema,
+  providerProxySetContainResponseSchema,
+  unreadableProviderOperationDiscardRequestSchema,
+  unreadableProviderOperationDiscardResultSchema,
   type ProviderHostEvictResponse,
   type ProviderHostInspectResponse,
   type ProviderHostListResponse,
   type ProviderHostSelectorRequest,
+  type ProviderProxySetContainRequest,
+  type ProviderProxySetContainResponse,
 } from '../../transport/rpc/catalog.js';
+import type {
+  UnreadableProviderOperationDiscardRequest,
+  UnreadableProviderOperationDiscardResult,
+} from '../../recovery/unreadable-provider-operation.js';
 import { decodeHostRef, encodeHostRef } from '../../providers/host-ref-codec.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
@@ -82,6 +112,8 @@ import {
   formatHandoffRoutingResolveResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
+  formatUnreadableProviderOperationDiscard,
+  formatProviderProxySetContainResult,
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
@@ -94,32 +126,28 @@ import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from
  *
  * `docs/configuration.md` tells operators to run `backend shutdown` before `store-reset discard` and
  * `kb-commit quarantine`, so the question this code answers is "may I proceed to destroy state?" — and there
- * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a refusal this run *observed*: the
- * daemon was seen to be absent, or seen to be alive and unwilling. Exit `75` is the third — this run could not
- * tell, so a caller must neither proceed nor read the outcome as failure.
+ * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a settled refusal: the coordinator
+ * answered and declined, or this nested child is not permitted to ask. Exit `75` is the third — this run has
+ * no shutdown verdict, so a caller must neither proceed nor read the outcome as failure.
  *
  * `75` rather than `2`: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
  * script could not tell "you called this wrong" from "I could not observe the daemon". `75` is already this
- * CLI's "not concluded, resume or retry" across `wait jobs` and every transient code, which is what both
- * members below are.
+ * CLI's "not concluded" code across `wait jobs` and transient errors. The reason-specific remediation decides
+ * whether retrying can change the evidence.
  *
  * A `Record` rather than a set of the undetermined ones. A set answers only for its members and defaults the
- * rest, so a new `ShutdownReason` silently inherits "observed" — the exact shape of the collapse this table
+ * rest, so a new `ShutdownReason` silently inherits "settled" — the exact shape of the collapse this table
  * exists to prevent. Here it fails to compile until someone decides, which is the same mechanism
  * `formatShutdown`'s `assertNever` provides for the message.
  */
 export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75>> = {
-  // Observed: nothing recorded itself, or the recorded process is decisively gone.
-  no_record: 1,
-  recorded_process_absent: 1,
   // Observed: the coordinator answered and declined. It is running, and this run knows it.
   capability_rejected: 1,
   // Observed: this process refused to act, before asking anything. Retrying from the same child repeats it.
   nested_child: 1,
   // Not observed: a refused connection proves nothing was listening on that exact socket at that moment, but
   // the recorded pid was never established absent before this request was sent (an absent pid short-circuits
-  // to `recorded_process_absent` first) — so this is not the same "observed absence" as the two rows above.
-  // The deterministic window it must not claim: a coordinator's HTTP listener closes at the top of its drain
+  // to `recorded_process_absent` first). A coordinator's HTTP listener also closes at the top of its drain
   // while its process, confirmed alive, keeps running.
   socket_refused: 75,
   // Not observed: the record could not be read, the request never completed, or a response arrived but did not
@@ -127,6 +155,12 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
   unreadable_record: 75,
   refused_by_response: 75,
   no_response: 75,
+  // Not observed: no record and no current socket do not exclude a v0.10.9 coordinator at an unenumerated
+  // fallback that has not published its record yet.
+  no_record: 75,
+  // Not observed: an absent recorded pid establishes only that record's process is gone. The record may be
+  // stale while a different coordinator has bound its socket but not published its own record yet.
+  recorded_process_absent: 75,
   // Not observed: the coordinator's own IPC socket file exists with no record written yet, which a coordinator
   // mid-boot and a stale socket a killed one left behind both produce, indistinguishably.
   no_record_socket_present: 75,
@@ -179,6 +213,131 @@ export const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRo
   'coordination-unavailable': 75,
 };
 
+export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
+  Record<ProviderProxySetContainResponse['kind'], 0 | 1 | 75>
+> = {
+  contained: 0,
+  abandoned: 0,
+  'unattributable-group-abandoned': 0,
+  'set-not-found': 1,
+  'not-held': 1,
+  'deadline-pending': 75,
+  'authorization-stale': 75,
+  'enforcer-alive': 75,
+  'enforcer-unobservable': 75,
+  'recorded-group-unattributable': 75,
+  'store-unreadable': 75,
+};
+
+export const UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES: Readonly<
+  Record<UnreadableProviderOperationDiscardResult['kind'], 0 | 1 | 75>
+> = {
+  discarded: 0,
+  absent: 1,
+  readable: 1,
+  'revision-mismatch': 75,
+  'quarantine-not-found': 75,
+  owned: 75,
+};
+
+function providerProxySetContainExitCode(result: ProviderProxySetContainResponse): 0 | 1 | 75 {
+  if (
+    (result.kind === 'contained' || result.kind === 'abandoned' || result.kind === 'unattributable-group-abandoned') &&
+    result.claimDischarge.kind !== 'completed'
+  ) {
+    return 75;
+  }
+  return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];
+}
+
+function formatProviderProxySetContainNoVerdict(
+  result: Exclude<ProviderProxySetContainCommandResult, ProviderProxySetContainResponse>,
+): string {
+  const token = encodeProviderProxySetAddress(result.setIdentity);
+  const kind = result.kind;
+  switch (kind) {
+    case 'unsupported-coordinator':
+      return [
+        `No containment verdict for ${token}: this coordinator does not support coordinator.provider_proxy_set.contain.`,
+        'Observed: the coordinator rejected the method before accepting a containment operation.',
+        'Not observed: enforcer state or recorded-target state.',
+        'Effect: no process signal was sent and no representation release was started.',
+        'Next step: upgrade or restart into this Coral build, then run coral-cli backend status before retrying the exact token.',
+      ].join('\n');
+    case 'coordinator-draining':
+      return [
+        `No containment verdict for ${token}: the coordinator is shutting down.`,
+        'Observed: the coordinator refused the request before dispatch while draining.',
+        'Not observed: enforcer state or recorded-target state.',
+        'Effect: no process signal was sent and no representation release was started.',
+        'Next step: wait for the successor coordinator, then run coral-cli backend status before retrying the exact token.',
+      ].join('\n');
+    case 'unsupported-coordinator-result':
+      return [
+        `No containment verdict for ${token}: this build does not understand the coordinator's containment result.`,
+        'Observed: the coordinator returned a response that this CLI could not decode.',
+        'Not observed: whether recorded targets were signalled or Coral started representation release.',
+        'Effect: unknown; a process signal or representation release may already have happened.',
+        'Next step: upgrade this CLI or converge on one Coral build, then run coral-cli backend status before any retry.',
+      ].join('\n');
+    case 'timeout':
+      return [
+        `No containment verdict for ${token}: the coordinator did not answer before the deadline.`,
+        'Observed: the bounded request deadline expired without a response.',
+        'Not observed: whether recorded targets were signalled or Coral started representation release.',
+        'Effect: unknown; a process signal or representation release may already have happened.',
+        'Next step: run coral-cli backend status before deciding whether to retry the exact token.',
+      ].join('\n');
+    default:
+      return assertNever(kind);
+  }
+}
+
+function formatUnreadableProviderOperationDiscardNoVerdict(
+  result: Exclude<UnreadableProviderOperationDiscardCommandResult, UnreadableProviderOperationDiscardResult>,
+): string {
+  const coordinate =
+    `key=${encodeRecoveryQuarantineKey(result.key)} ` +
+    `revision=${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}`;
+  const kind = result.kind;
+  switch (kind) {
+    case 'unsupported-coordinator':
+      return [
+        `No discard verdict for ${coordinate}: this coordinator does not support coordinator.recovery_quarantine.discard_provider_operation.`,
+        'Observed: the coordinator rejected the method before accepting a discard operation.',
+        'Not observed: raw-row contents or quarantine state.',
+        'Effect: no raw row, due pointer, or quarantine evidence was removed.',
+        'Next step: upgrade or restart into this Coral build, then run coral-cli backend recovery-quarantine list before retrying only a currently printed command.',
+      ].join('\n');
+    case 'coordinator-draining':
+      return [
+        `No discard verdict for ${coordinate}: the coordinator is shutting down.`,
+        'Observed: the coordinator refused the request before dispatch while draining.',
+        'Not observed: raw-row contents or quarantine state.',
+        'Effect: no raw row, due pointer, or quarantine evidence was removed.',
+        'Next step: wait for the successor coordinator, then run coral-cli backend recovery-quarantine list before deciding whether to retry.',
+      ].join('\n');
+    case 'unsupported-coordinator-result':
+      return [
+        `No discard verdict for ${coordinate}: this CLI does not understand the coordinator's discard response.`,
+        'Observed: the coordinator returned a response that this CLI could not decode.',
+        'Not observed: whether the exact raw row, due pointers, and quarantine evidence still exist.',
+        'Effect: unknown; the destructive discard may already have completed.',
+        'Next step: upgrade this CLI or converge on one Coral build, then run coral-cli backend recovery-quarantine list and coral-cli backend status before any retry.',
+      ].join('\n');
+    case 'timeout':
+      return [
+        `No discard verdict for ${coordinate}: the coordinator did not answer before the deadline.`,
+        'Observed: the bounded request deadline expired without a response.',
+        'Not observed: whether the exact raw row, due pointers, and quarantine evidence still exist.',
+        'Effect: unknown; the destructive discard may already have completed.',
+        'Next step: run coral-cli backend recovery-quarantine list and coral-cli backend status before deciding whether to retry.',
+      ].join('\n');
+    default:
+      return assertNever(kind);
+  }
+}
+
 function handoffPublicationIncidentExitContribution(incident: HandoffPublicationIncident): 70 | 75 {
   switch (incident.kind) {
     case 'not-published':
@@ -224,6 +383,7 @@ export function handoffPublicationIncidentsExitContribution(
   ];
   return combineBackendStatusLocalExitContributions(contributions);
 }
+
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -232,6 +392,14 @@ import {
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
 } from '../store-reset.js';
+
+function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0 | 75 {
+  if (status.status !== 'ok') return 0;
+  return status.health.skippedProviderProxySetRows > 0 ||
+    (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0
+    ? 75
+    : 0;
+}
 
 const OFFLINE_OPERATOR_FLAVOR_HELP =
   'State flavor (prod or dev); required because the daemon that normally supplies it is down';
@@ -269,14 +437,54 @@ export interface HandoffRoutingStatusQuarantineCommandOperations {
 }
 
 export interface RecoveryQuarantineCommandOperations {
-  list(): readonly RecoveryQuarantineEntry[];
+  list(): readonly RecoveryQuarantineListEntry[];
   clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
+  discardProviderOperation?(
+    request: UnreadableProviderOperationDiscardRequest,
+  ): Promise<UnreadableProviderOperationDiscardCommandResult>;
 }
+
+/** A discard verdict or a requested-coordinate no-verdict from the coordinator boundary. */
+export type UnreadableProviderOperationDiscardCommandResult =
+  | UnreadableProviderOperationDiscardResult
+  | (UnreadableProviderOperationDiscardRequest &
+      Readonly<{
+        kind: 'unsupported-coordinator' | 'coordinator-draining' | 'unsupported-coordinator-result' | 'timeout';
+      }>);
 
 export interface ProviderHostCommandOperations {
   list(): Promise<ProviderHostListResponse>;
   inspect(request: ProviderHostSelectorRequest): Promise<ProviderHostInspectResponse>;
   evict(request: ProviderHostSelectorRequest): Promise<ProviderHostEvictResponse>;
+}
+
+type ProviderProxySetContainNoVerdictKind =
+  | 'unsupported-coordinator'
+  | 'unsupported-coordinator-result'
+  | 'coordinator-draining'
+  | 'timeout';
+
+const PROVIDER_PROXY_SET_CONTAIN_NO_VERDICT_KINDS: ReadonlySet<string> = new Set([
+  'unsupported-coordinator',
+  'unsupported-coordinator-result',
+  'coordinator-draining',
+  'timeout',
+] satisfies readonly ProviderProxySetContainNoVerdictKind[]);
+
+/** A decoded containment verdict or a named reason this CLI cannot establish one. */
+export type ProviderProxySetContainCommandResult =
+  | ProviderProxySetContainResponse
+  | Readonly<{ kind: ProviderProxySetContainNoVerdictKind; setIdentity: ProviderProxySetAddress }>;
+
+/** Narrows the CLI-only outcomes, whose shared union discriminant the compiler cannot exclude member-wise. */
+function isProviderProxySetContainNoVerdict(
+  result: ProviderProxySetContainCommandResult,
+): result is Readonly<{ kind: ProviderProxySetContainNoVerdictKind; setIdentity: ProviderProxySetAddress }> {
+  return PROVIDER_PROXY_SET_CONTAIN_NO_VERDICT_KINDS.has(result.kind);
+}
+
+export interface ProviderProxySetCommandOperations {
+  contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
 }
 
 export type BackendCommandOperations = Readonly<{
@@ -287,6 +495,7 @@ export type BackendCommandOperations = Readonly<{
   routingStatusQuarantine?: HandoffRoutingStatusQuarantineCommandOperations;
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
+  providerProxySets?: ProviderProxySetCommandOperations;
 }>;
 
 function routingStatusPath(runtime: Runtime): string {
@@ -454,9 +663,49 @@ function formatRoutingStatusQuarantineClearStorageFailure(
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
 
+function sameRecoveryQuarantineCoordinate(
+  entry: RecoveryQuarantineListEntry,
+  boundary: string,
+  subject: RecoveryQuarantineListEntry['subject'],
+): boolean {
+  if (entry.boundary !== boundary || entry.subject.key !== subject.key) return false;
+  if (entry.subject.revision.kind === 'until-cleared') return subject.revision.kind === 'until-cleared';
+  return subject.revision.kind === 'fingerprint' && entry.subject.revision.value === subject.revision.value;
+}
+
+function unreadableProviderOperationEntries(
+  db: Database,
+  stored: readonly RecoveryQuarantineListEntry[],
+): RecoveryQuarantineListEntry[] {
+  const scan = readProviderOperations(db);
+  return attributeUnreadableProviderOperations(db, scan.unreadableKeys).flatMap((row) => {
+    const subject = unreadableProviderOperationSubject(row.key, row.revision);
+    if (
+      stored.some((entry) => sameRecoveryQuarantineCoordinate(entry, UNREADABLE_PROVIDER_OPERATION_BOUNDARY, subject))
+    ) {
+      return [];
+    }
+    return [
+      {
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject,
+        state: 'active' as const,
+        stage: 'hydrate' as const,
+        retry: null,
+        continuation: null,
+        errorMessage: 'Provider operation quarantine status could not be materialized.',
+        detail:
+          'This coordinate was derived from the durable unreadable provider operation row, but no persisted quarantine subject currently grants operator-discard authority. Repair the row externally, or start or repair the canonical coordinator and rerun this list until it publishes an eligible discard command.',
+        detectedAt: null,
+        updatedAt: null,
+      },
+    ];
+  });
+}
+
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
-): readonly RecoveryQuarantineEntry[] {
+): readonly RecoveryQuarantineListEntry[] {
   const dbPath = runtime.paths.coral.store.dbFile;
   const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat());
   if (
@@ -476,7 +725,11 @@ export function listRecoveryQuarantineLocal(
     storeFormat: currentCoralStoreFormat(),
   }) as unknown as Database;
   try {
-    return RecoveryQuarantineStore.readOnly(db).list();
+    const stored = RecoveryQuarantineStore.readOnly(db).list();
+    return [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
+      const boundary = left.boundary.localeCompare(right.boundary);
+      return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
+    });
   } finally {
     db.close();
   }
@@ -486,6 +739,7 @@ export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal):
   return {
     list: () => listRecoveryQuarantineLocal(),
     clear: (request) => clearRecoveryQuarantineWithCoordinator(request, signal),
+    discardProviderOperation: (request) => discardUnreadableProviderOperationWithCoordinator(request, signal),
   };
 }
 
@@ -515,6 +769,47 @@ export function createProviderHostCommandOperations(
   };
 }
 
+export function createProviderProxySetCommandOperations(
+  options: {
+    getClient?: () => Promise<Pick<IpcClient, 'request'>>;
+  } = {},
+): ProviderProxySetCommandOperations {
+  const getClient = options.getClient ?? (async () => ensure(getPluginRoot()));
+  return {
+    contain: async (input) => {
+      const request = providerProxySetContainRequestSchema.parse(input);
+      try {
+        const client = await getClient();
+        const response = await client.request('coordinator.provider_proxy_set.contain', request, {
+          timeoutMs: TOOL_TIMEOUT_MS,
+          ...childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
+        });
+        if (isRecord(response) && response.code === 'backend_shutting_down') {
+          return { kind: 'coordinator-draining', setIdentity: request.setIdentity };
+        }
+        const parsed = providerProxySetContainResponseSchema.safeParse(response);
+        if (
+          parsed.success &&
+          parsed.data.setIdentity.buildSetId === request.setIdentity.buildSetId &&
+          parsed.data.setIdentity.hostFingerprint === request.setIdentity.hostFingerprint &&
+          parsed.data.setIdentity.proxyInstanceId === request.setIdentity.proxyInstanceId
+        ) {
+          return parsed.data;
+        }
+        return { kind: 'unsupported-coordinator-result', setIdentity: request.setIdentity };
+      } catch (error: unknown) {
+        if (error instanceof IpcRpcError && error.rpcCode === -32601) {
+          return { kind: 'unsupported-coordinator', setIdentity: request.setIdentity };
+        }
+        if (isIpcRequestTimeout(error)) {
+          return { kind: 'timeout', setIdentity: request.setIdentity };
+        }
+        throw error;
+      }
+    },
+  };
+}
+
 export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
   const {
     storeReset = {
@@ -530,6 +825,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     routingStatusQuarantine = createRoutingStatusQuarantineCommandOperations(),
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
+    providerProxySets = createProviderProxySetCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
@@ -559,6 +855,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         liveHandoffObligation.exitContribution,
         handoffRoutingStatusExitContribution(routingStatusRead),
         handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
+        providerProxySetNoVerdictExitContribution(status),
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
@@ -671,11 +968,48 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
+      let preservedSetRead: Readonly<{ tokens: readonly string[]; skippedRows: number }> | null = null;
+      try {
+        const statusBeforeShutdown = await backendStatus.getStatus();
+        if (statusBeforeShutdown.status === 'ok') {
+          preservedSetRead = {
+            tokens: [
+              ...new Set([
+                ...(statusBeforeShutdown.health.diagnostics?.providerProxySets ?? []).map((set) => set.setToken),
+                ...(statusBeforeShutdown.health.skippedProviderProxySetTokens ?? []),
+              ]),
+            ],
+            skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
+          };
+        }
+      } catch {
+        // Shutdown remains authoritative for its own result; this read contributes output only.
+      }
       const result = await shutdownBackend(getPluginRoot());
       const text = formatShutdown(result);
 
       if (result.ok) {
-        process.stdout.write(text + '\n');
+        const preserved = (() => {
+          if (preservedSetRead === null) {
+            return 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.';
+          }
+          if (preservedSetRead.tokens.length === 0 && preservedSetRead.skippedRows === 0) {
+            return 'No held provider proxy sets were reported before shutdown.';
+          }
+          const lines = preservedSetRead.tokens.length
+            ? [
+                'Provider proxy set tokens reported before shutdown:',
+                ...preservedSetRead.tokens.map((token) => `  coral-cli backend provider-proxy-set contain ${token}`),
+              ]
+            : [];
+          if (preservedSetRead.skippedRows > 0) {
+            lines.push(
+              `The pre-shutdown status read could not interpret ${preservedSetRead.skippedRows} provider proxy set row(s), so it could not confirm that every preserved set was named.`,
+            );
+          }
+          return lines.join('\n');
+        })();
+        process.stdout.write(`${text}\n${preserved}\n`);
         return;
       }
 
@@ -738,6 +1072,54 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+  const providerProxySetCommand = backend
+    .command('provider-proxy-set')
+    .description('Contain or abandon one exact held provider-proxy set');
+  const containProviderProxySetCommand = providerProxySetCommand
+    .command('contain')
+    .description('Resolve one exact held provider-proxy set after its state-specific operator-exit gate')
+    .argument('<set-token>', 'Canonical pps1 token copied from `coral-cli backend status`', parseProviderProxySetToken)
+    .option(
+      '--abandon-without-absence',
+      'After external verification, release Coral representation for a live/unobservable enforcer or unattributable recorded group',
+    )
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Default mode requires guardian and reaper absence, then reaps the recorded proxy process group and every recorded provider root.',
+        '--abandon-without-absence signals no process and releases Coral representation despite observed life, unknown observation, or an unattributable recorded group.',
+        'Neither mode signals the guardian or reaper.',
+        'A reattachment hold is gated by its control-adoption deadline; containing and containment-wait are gated by their current containment-attempt deadline.',
+      ].join('\n'),
+    );
+  let abandonWithoutAbsenceSeen = false;
+  containProviderProxySetCommand.on('option:abandon-without-absence', () => {
+    if (abandonWithoutAbsenceSeen) {
+      throw new InvalidArgumentError('Option --abandon-without-absence may only be specified once.');
+    }
+    abandonWithoutAbsenceSeen = true;
+  });
+  containProviderProxySetCommand.action(
+    async (setIdentity: ProviderProxySetAddress, options: { abandonWithoutAbsence?: boolean }) => {
+      try {
+        const result = await providerProxySets.contain({
+          setIdentity,
+          abandonWithoutAbsence: options.abandonWithoutAbsence ?? false,
+        });
+        if (isProviderProxySetContainNoVerdict(result)) {
+          process.stderr.write(`${formatProviderProxySetContainNoVerdict(result)}\n`);
+          process.exitCode = 75;
+          return;
+        }
+        const exitCode = providerProxySetContainExitCode(result);
+        (exitCode === 0 ? process.stdout : process.stderr).write(`${formatProviderProxySetContainResult(result)}\n`);
+        process.exitCode = exitCode;
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    },
+  );
   recoveryQuarantineCommand
     .command('clear')
     .description('Retry one exact retained recovery failure through the canonical coordinator')
@@ -746,9 +1128,45 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .requiredOption('--revision <revision>', "Exact revision shown by list, including 'until-cleared'")
     .action(async (options: { boundary: string; key: string; revision: string }) => {
       try {
-        const request = parseRecoveryQuarantineClearOptions(options);
+        const request = parseRecoveryQuarantineClearOptions(options, recoveryQuarantine.list());
         const result = await recoveryQuarantine.clear(request);
         process.stdout.write(`${formatRecoveryQuarantineClear(result)}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  recoveryQuarantineCommand
+    .command('discard-provider-operation')
+    .description('Permanently discard one exact still-unreadable raw provider-operation row')
+    .requiredOption('--key <key>', 'Exact unreadable provider-operation key shown by recovery-quarantine list')
+    .requiredOption('--revision <revision>', 'Exact fingerprint revision shown by recovery-quarantine list')
+    .addHelpText(
+      'after',
+      '\nThis permanently removes the raw operation record, its due pointers, and its exact persisted quarantine evidence without settling or signalling its work. The command refuses if recovery owns the evidence or the row is readable, absent, or at a different revision.',
+    )
+    .action(async (options: { key: string; revision: string }) => {
+      try {
+        if (recoveryQuarantine.discardProviderOperation === undefined) {
+          throw new Error('This Coral build does not provide unreadable provider-operation discard.');
+        }
+        const request = parseUnreadableProviderOperationDiscardOptions(options, recoveryQuarantine.list());
+        const result = await recoveryQuarantine.discardProviderOperation(request);
+        switch (result.kind) {
+          case 'unsupported-coordinator':
+          case 'coordinator-draining':
+          case 'unsupported-coordinator-result':
+          case 'timeout':
+            process.stderr.write(`${formatUnreadableProviderOperationDiscardNoVerdict(result)}\n`);
+            process.exitCode = 75;
+            return;
+          default: {
+            const exitCode = UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES[result.kind];
+            (exitCode === 0 ? process.stdout : process.stderr).write(
+              `${formatUnreadableProviderOperationDiscard(result)}\n`,
+            );
+            process.exitCode = exitCode;
+          }
+        }
       } catch (error: unknown) {
         emitError(error);
       }
@@ -874,6 +1292,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
 }
 
+export function parseProviderProxySetToken(token: string): ProviderProxySetAddress {
+  try {
+    return decodeProviderProxySetAddress(token);
+  } catch (error: unknown) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : 'Invalid provider-proxy set token.');
+  }
+}
+
 export function parseProviderHostSelector(
   hostRef: string | undefined,
   workDir: string | undefined,
@@ -920,21 +1346,6 @@ function parseKbCommitId(value: string): string {
   throw new InvalidArgumentError('KB commit ID must be one safe filesystem path segment.');
 }
 
-/**
- * Accepts a coordinate exactly as `recovery-quarantine list` prints it, which is what this command's
- * own error message tells the operator to copy.
- *
- * `list` renders each field with `JSON.stringify`, so a subject key containing a character JSON escapes
- * reaches the terminal as an escape sequence — and `session-retention-work` joins its two identifiers
- * with a NUL (see `workKey` in `src/sessions/retention-work-item-recovery-source.ts`), which argv cannot
- * carry at all. Passing the
- * printed text through verbatim therefore never matched the stored key, and no other input could:
- * copying gave a literal backslash-u, and the real byte cannot survive a command line. Those rows were
- * unreachable by the one command documented to reach them.
- *
- * Unquoting here rather than changing the stored key keeps existing durable rows addressable; the key's
- * shape is the recovery source's business, not the CLI's.
- */
 function unquoteRecoveryCoordinate(value: string): string {
   if (!value.startsWith('"') || !value.endsWith('"') || value.length < 2) {
     return value;
@@ -947,15 +1358,27 @@ function unquoteRecoveryCoordinate(value: string): string {
   }
 }
 
-function parseRecoveryQuarantineClearOptions(options: {
-  readonly boundary: string;
-  readonly key: string;
-  readonly revision: string;
-}): RecoveryQuarantineClearRequest {
+function parseRecoveryQuarantineClearOptions(
+  options: {
+    readonly boundary: string;
+    readonly key: string;
+    readonly revision: string;
+  },
+  storedEntries: readonly RecoveryQuarantineListEntry[],
+): RecoveryQuarantineClearRequest {
   const revision = unquoteRecoveryCoordinate(options.revision);
+  const plainKey = unquoteRecoveryCoordinate(options.key);
+  if (plainKey.includes('\u0000')) {
+    throw new InvalidArgumentError(
+      'Recovery subject keys containing NUL must use the encoded key printed by recovery-quarantine list.',
+    );
+  }
+  const storedKey = storedEntries.find((entry) => entry.subject.key === plainKey)?.subject.key;
+  const decodedKey = decodeRecoveryQuarantineKey(options.key);
+  const key = storedKey ?? (decodedKey.kind === 'decoded' ? decodedKey.key : plainKey);
   const parsed = recoveryQuarantineClearRequestSchema.safeParse({
     boundary: unquoteRecoveryCoordinate(options.boundary),
-    key: unquoteRecoveryCoordinate(options.key),
+    key,
     revision:
       revision === RECOVERY_REVISION_UNTIL_CLEARED
         ? null
@@ -971,6 +1394,27 @@ function parseRecoveryQuarantineClearOptions(options: {
   const message = issue?.message ?? 'Invalid recovery quarantine coordinate';
   throw new InvalidArgumentError(
     `${message}. Run coral-cli backend recovery-quarantine list and copy the exact boundary, key, and revision.`,
+  );
+}
+
+function parseUnreadableProviderOperationDiscardOptions(
+  options: Readonly<{ key: string; revision: string }>,
+  storedEntries: readonly RecoveryQuarantineListEntry[],
+): UnreadableProviderOperationDiscardRequest {
+  const plainKey = unquoteRecoveryCoordinate(options.key);
+  const storedKey = storedEntries.find(
+    (entry) => entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY && entry.subject.key === plainKey,
+  )?.subject.key;
+  const decodedKey = decodeRecoveryQuarantineKey(options.key);
+  const key = storedKey ?? (decodedKey.kind === 'decoded' ? decodedKey.key : plainKey);
+  const shownRevision = unquoteRecoveryCoordinate(options.revision);
+  const revision = shownRevision.startsWith(RECOVERY_REVISION_FINGERPRINT_PREFIX)
+    ? shownRevision.slice(RECOVERY_REVISION_FINGERPRINT_PREFIX.length)
+    : shownRevision;
+  const parsed = unreadableProviderOperationDiscardRequestSchema.safeParse({ key, revision });
+  if (parsed.success) return parsed.data;
+  throw new InvalidArgumentError(
+    'Invalid unreadable provider-operation coordinate. Run coral-cli backend recovery-quarantine list and copy the exact key and fingerprint revision.',
   );
 }
 
@@ -1005,12 +1449,47 @@ async function clearRecoveryQuarantineWithCoordinator(
     if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) {
       throw error;
     }
-    if (isRecoveryQuarantineTimeout(error)) {
+    if (isIpcRequestTimeout(error)) {
       throw new Error(
         'Recovery quarantine clear timed out before the coordinator returned a result. Run coral-cli backend status, then retry the exact clear.',
         { cause: error },
       );
     }
+    throw recoveryCoordinatorRequiredError();
+  }
+}
+
+async function discardUnreadableProviderOperationWithCoordinator(
+  request: UnreadableProviderOperationDiscardRequest,
+  signal?: AbortSignal,
+): Promise<UnreadableProviderOperationDiscardCommandResult> {
+  const parsedRequest = unreadableProviderOperationDiscardRequestSchema.parse(request);
+  signal?.throwIfAborted();
+  try {
+    const auth = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
+    const client = await ensure(getPluginRoot());
+    const response = await client.request<unknown>(
+      'coordinator.recovery_quarantine.discard_provider_operation',
+      parsedRequest,
+      { timeoutMs: TOOL_TIMEOUT_MS, ...auth },
+    );
+    if (isRecord(response) && response.code === 'backend_shutting_down') {
+      return { ...parsedRequest, kind: 'coordinator-draining' };
+    }
+    const result = unreadableProviderOperationDiscardResultSchema.safeParse(response);
+    if (result.success && result.data.key === parsedRequest.key && result.data.revision === parsedRequest.revision) {
+      return result.data;
+    }
+    return { ...parsedRequest, kind: 'unsupported-coordinator-result' };
+  } catch (error: unknown) {
+    if (signal?.aborted === true) throw signal.reason;
+    if (error instanceof IpcRpcError && error.rpcCode === -32601) {
+      return { ...parsedRequest, kind: 'unsupported-coordinator' };
+    }
+    if (isIpcRequestTimeout(error)) {
+      return { ...parsedRequest, kind: 'timeout' };
+    }
+    if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) throw error;
     throw recoveryCoordinatorRequiredError();
   }
 }
@@ -1022,12 +1501,19 @@ class RecoveryQuarantineContractError extends Error {
   }
 }
 
-function isRecoveryQuarantineTimeout(error: unknown): boolean {
-  return error instanceof Error && /timed out|deadline (?:already )?exceeded/iu.test(error.message);
+function isIpcRequestTimeout(error: unknown): boolean {
+  const timeoutPattern = /timed out|deadline (?:already )?exceeded/iu;
+  if (error instanceof Error && timeoutPattern.test(error.message)) return true;
+  return (
+    isRecord(error) &&
+    isRecord(error.context) &&
+    typeof error.context.cause === 'string' &&
+    timeoutPattern.test(error.context.cause)
+  );
 }
 
 function recoveryCoordinatorRequiredError(): BackendUnreachableError {
   return new BackendUnreachableError(
-    'Recovery quarantine clear requires the canonical coordinator, but it is not reachable. Run coral-cli backend status, start or repair the coordinator, then retry the exact clear.',
+    'Recovery quarantine mutation requires the canonical coordinator, but it is not reachable. Run coral-cli backend status, start or repair the coordinator, then retry the exact command.',
   );
 }

@@ -61,7 +61,6 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
     controlLossAt: start,
     adoptionDeadline: clock.shiftMilliseconds(start, options.adoptionInMs),
     exitDeadline: clock.shiftMilliseconds(start, options.adoptionInMs + 14_000),
-    firstChallengeExpiresAt: null,
   };
   const latchTeardown = vi.fn();
   const markContainmentAbsent = vi.fn();

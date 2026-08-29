@@ -31,7 +31,10 @@ import {
 import { currentHandoffCapsulePath } from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
-import { PROXY_CONTROL_ESTABLISH_READY_MS } from '../../../provider-proxy/orphan-deadline.js';
+import {
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
+  resolveProviderProxyDeadlineConfiguration,
+} from '../../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   guardianIdentitySchema,
@@ -46,7 +49,12 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from './heartbeat.js';
-import { establishRoleControl } from './role-control.js';
+import {
+  establishRoleControl,
+  ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
+  ESTABLISH_CONTROL_READY_DEADLINE_MS,
+  ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
+} from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
 import { createProviderProxyOperationAuthority, type ProviderProxyOperationAuthority } from './operation-route.js';
@@ -65,13 +73,6 @@ import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-
  * request (see `establishRoleControl`, `role-control.ts`) or report a malformed teardown as success (see
  * `createProviderProxySetAuthority`'s `stopAndReap`, `set-authority.ts`).
  */
-
-// Exported for `services/provider-proxy-set/inheritance.ts`: redemption dials the same three role endpoints this
-// file's own `establishControl` does, on the identical connect-retry budget, so a redeemed tenancy and a
-// freshly spawned one time out the same way rather than silently drifting apart.
-export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
-export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
-export const ESTABLISH_CONTROL_READY_DEADLINE_MS = PROXY_CONTROL_ESTABLISH_READY_MS;
 
 // Prepare can consume a full app-server cold start plus guardian staging. A shorter caller deadline would turn
 // an ordinary cold start into an ambiguous mutation and delay the reconciler until inspection or replay proves it.
@@ -151,6 +152,7 @@ export function createProviderProxyAcquisitionSteps(
   const { runtime, coordinatorIdentity } = options;
   const { generation, flavor, buildSetId } = coordinatorIdentity;
   const hostFingerprint = options.hostFingerprint;
+  const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(runtime.env);
   const mintSecret = (): string => runtime.ids.randomBytes(32).toString('hex');
 
   let minted: MintedSet | null = null;
@@ -275,9 +277,10 @@ export function createProviderProxyAcquisitionSteps(
       const spawned = spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
         pluginRoot: options.pluginRoot,
         detached: true,
-        // The child strips all inherited CORAL_*, so the flavor that selects which artifact identity the
-        // guardian (and, transitively, the reaper and proxy it spawns) expects is re-asserted explicitly.
-        envAdditions: { [BUILD_FLAVOR_ENV_KEY]: flavor },
+        envAdditions: {
+          [BUILD_FLAVOR_ENV_KEY]: flavor,
+          [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
+        },
       });
       guardianSpawn = spawned;
       return {
@@ -434,8 +437,12 @@ export function createProviderProxyAcquisitionSteps(
           handoffCapsulePath,
           runtime,
           operationRegistry: options.operationRegistry,
+          ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
         });
-        await base.installRecoveryCredential(new AbortController().signal);
+        const installation = await base.installRecoveryCredential(new AbortController().signal);
+        if (installation.kind !== 'installed') {
+          throw new Error(`provider_proxy_recovery_credential_${installation.kind}`);
+        }
         // The set-level identity `operation.prepare.v1`'s coordinator meta commit needs (W2.3): fixed for
         // this set's whole lifetime, built from the exact same verified fields `base`'s identity checks just
         // confirmed rather than re-derived, so the two can never disagree.

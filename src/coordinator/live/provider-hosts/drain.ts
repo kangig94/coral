@@ -42,15 +42,28 @@ function containmentReaperWithClock<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): ProviderHostContainmentReaper {
-  return (containment, signal) =>
-    reapRecordedContainment(containment, [], clock.shiftMilliseconds(clock.now(), PROVIDER_HOST_REAP_DEADLINE_MS), {
-      maxRecordedRoots: 0,
-      clock,
-      process: runtime.process,
-      platform: runtime.env.platform() as NodeJS.Platform,
-      readProcessIncarnation,
-      ...(signal === undefined ? {} : { signal }),
-    });
+  return async (containment, signal) => {
+    const outcome = await reapRecordedContainment(
+      containment,
+      [],
+      clock.shiftMilliseconds(clock.now(), PROVIDER_HOST_REAP_DEADLINE_MS),
+      {
+        maxRecordedRoots: 0,
+        clock,
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation,
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    if (outcome.kind === 'recorded-group-unattributable') {
+      throw new ProcessContainmentError(
+        'process_identity_unverified',
+        'The recorded provider-host leader identity is gone, but the surviving process group cannot be attributed.',
+        { pid: containment.pid, processGroupId: containment.processGroupId },
+      );
+    }
+  };
 }
 
 /** Creates the coordinator-local adapter around the shared recorded-containment primitive. */

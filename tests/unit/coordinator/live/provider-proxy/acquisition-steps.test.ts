@@ -1,6 +1,8 @@
+import type * as RoleControlModule from '#src/coordinator/live/provider-proxy/role-control.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('#src/provider-proxy/bootstrap-capsule.js', async (importOriginal) => {
   const original = await importOriginal<object>();
@@ -15,7 +17,8 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   };
 });
 
-vi.mock('#src/coordinator/live/provider-proxy/role-control.js', () => ({
+vi.mock('#src/coordinator/live/provider-proxy/role-control.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof RoleControlModule>()),
   establishRoleControl: vi.fn(),
 }));
 
@@ -34,25 +37,47 @@ import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  connectControlClient,
+  ControlClientError,
+  controlExchangeForTest,
+} from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import {
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
+  PROXY_CONTROL_HEARTBEAT_MS,
+  PROXY_CONTROL_LEASE_MS,
+} from '#src/provider-proxy/orphan-deadline.js';
+import { spawnRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
 const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
+const containmentProofDb = newRawDatabase(':memory:');
+applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+afterAll(() => containmentProofDb.close());
 
 function passiveClient(): ControlClient {
   return {
-    call: async () => ({ state: 'active', nextHeartbeatChallenge: 'next' }),
+    exchange: async () =>
+      controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
+      }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,
@@ -63,14 +88,14 @@ async function proxyLeaseSession(time: VirtualTime) {
   const socketPath = `/tmp/coral-acquisition-heartbeat-${randomUUID()}.sock`;
   const scope = Symbol('acquisition-heartbeat');
   const clock = createMonotonicClock(scope, { readMilliseconds: () => BigInt(time.now()) });
-  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now());
   let challengeNumber = 0;
   let acceptedEchoes = 0;
   const mintChallenge = () => `acquisition-challenge-${challengeNumber++}`;
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
+      return lease.issueFirstChallenge(challenge)
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -103,15 +128,14 @@ async function proxyLeaseSession(time: VirtualTime) {
   });
   await endpoint.listen();
   const client = await connectControlClient(socketPath, time, 5_000);
-  const opened = (await client.call('role.open.v1', {}, 5_000)) as {
+  const opened = (await strictTestExchange(client, 'role.open.v1', {})) as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
-  const first = (await client.call(
-    'control.heartbeat.v1',
-    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
-    5_000,
-  )) as { nextHeartbeatChallenge: string };
+  const first = (await strictTestExchange(client, 'control.heartbeat.v1', {
+    controlEpoch: opened.controlEpoch,
+    heartbeatChallenge: opened.heartbeatChallenge,
+  })) as { nextHeartbeatChallenge: string };
   const watchdog = time.setInterval(() => {
     if (!lease.isControlLive(clock.now())) void endpoint.close();
   }, 1_000);
@@ -150,7 +174,15 @@ async function advanceEndpointClock(
 describe('createProviderProxyAcquisitionSteps', () => {
   it('keeps proxy control live while guardian and reaper each consume 8500ms', async () => {
     const time = new VirtualTime();
-    const runtime = { ...createRealRuntime('prod'), time };
+    const realRuntime = createRealRuntime('prod');
+    const runtime = {
+      ...realRuntime,
+      time,
+      env: {
+        ...realRuntime.env,
+        get: (key: string) => (key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV ? '74000' : realRuntime.env.get(key)),
+      },
+    };
     const proxy = await proxyLeaseSession(time);
     const guardian = passiveClient();
     const reaper = passiveClient();
@@ -179,6 +211,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
+      autonomousDeadline: {
+        orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+        heartbeatHoldBound: {
+          spanMs: Number.MAX_SAFE_INTEGER,
+          materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+        },
+      },
       stopHeartbeats: () => {
         options.heartbeats.proxy.stop();
         options.heartbeats.guardian.stop();
@@ -186,8 +226,13 @@ describe('createProviderProxyAcquisitionSteps', () => {
       },
       stopAndReap: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
-      installRecoveryCredential: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      controlReattachment: {} as never,
+      installRecoveryCredential: async () =>
+        ({
+          kind: 'installed',
+          receipt: { kind: 'installed-recovery-credential', grantId: randomUUID() },
+        }) as never,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     }));
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
@@ -207,6 +252,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     await steps.createCapsules();
     await steps.spawnGuardian();
+    expect(vi.mocked(spawnRoleProcess).mock.calls.at(-1)?.[3].envAdditions).toMatchObject({
+      [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
+    });
     const established = await steps.establishControl();
 
     const observation = { recurringEchoes: proxy.acceptedEchoes() - 1, controlIsLive: proxy.controlIsLive() };
@@ -228,9 +276,25 @@ describe('createProviderProxyAcquisitionSteps', () => {
       reaper: passiveClient(),
     };
     let reaperHeartbeats = 0;
-    clients.reaper.call = async () => {
+    clients.reaper.exchange = async () => {
       reaperHeartbeats += 1;
-      throw new Error('reaper heartbeat rejected');
+      const error = new ControlClientError(
+        'control_call_failed',
+        'Heartbeat echo was not accepted (teardown-latched).',
+        'remote-response',
+        {
+          kind: 'json-rpc-error',
+          jsonRpcCode: -32600,
+          protocolCode: 'invalid_request',
+          admissionReason: null,
+          heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
+        },
+      );
+      if (error.remoteFailure === null) throw new Error('test refusal lacks remote failure');
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'refusal', failure: error.remoteFailure, error },
+      });
     };
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
       const role = plan.role;
@@ -254,6 +318,14 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     mockedCreateSetAuthority.mockImplementation((options) => ({
       proxyInstanceId: options.proxyInstanceId,
+      autonomousDeadline: {
+        orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+        heartbeatHoldBound: {
+          spanMs: Number.MAX_SAFE_INTEGER,
+          materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+        },
+      },
       stopHeartbeats: () => {
         options.heartbeats.proxy.stop();
         options.heartbeats.guardian.stop();
@@ -261,8 +333,13 @@ describe('createProviderProxyAcquisitionSteps', () => {
       },
       stopAndReap: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
-      installRecoveryCredential: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      controlReattachment: {} as never,
+      installRecoveryCredential: async () =>
+        ({
+          kind: 'installed',
+          receipt: { kind: 'installed-recovery-credential', grantId: randomUUID() },
+        }) as never,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     }));
     const coordinatorIdentity: CoordinatorIdentity = {
       instanceId: randomUUID(),
@@ -303,12 +380,15 @@ describe('createProviderProxyAcquisitionSteps', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       }),
+      reapRecordedContainment: () => {
+        throw new Error('provider proxy acquisition fixture unexpectedly requested recorded containment reaping');
+      },
       reportLifecycle: () => undefined,
     });
     lifecycle.initializeClaimSlots();

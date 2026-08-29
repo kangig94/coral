@@ -30,6 +30,7 @@ export interface RecoveryRevisionDependency {
 export interface RecoverySourceDefinition<Raw> {
   readonly boundary: string;
   readonly scanSubject: RecoverySubject;
+  readonly retryRevision?: 'exact' | 'same-key-current-fingerprint';
   scan(): readonly Raw[] | Promise<readonly Raw[]>;
   subject(raw: Raw): RecoverySubject;
 }
@@ -139,7 +140,11 @@ export type RecoveryQuarantineWrite = {
   readonly errorMessage: string;
   readonly detail: string;
   readonly continuation?: { readonly kind: string; readonly key: string };
-  readonly expectedRetry?: { readonly owner: string; readonly token: string };
+  readonly expectedRetry?: {
+    readonly owner: string;
+    readonly token: string;
+    readonly subject: RecoverySubject;
+  };
 };
 
 export type RecoveryQuarantineDelete = {
@@ -184,6 +189,7 @@ export interface RecoveryContainmentBoundary {
 type RegisteredSource<Raw> = {
   readonly boundary: string;
   readonly scanSubject: RecoverySubject;
+  readonly retryRevision: 'exact' | 'same-key-current-fingerprint';
   readonly scan: () => readonly Raw[] | Promise<readonly Raw[]>;
   readonly subject: (raw: Raw) => RecoverySubject;
 };
@@ -242,6 +248,7 @@ export function defineRecoverySource<Raw>(definition: RecoverySourceDefinition<R
   return registerSource({
     boundary: definition.boundary,
     scanSubject: copySubject(definition.scanSubject),
+    retryRevision: definition.retryRevision ?? 'exact',
     scan: definition.scan,
     subject: definition.subject,
   });
@@ -257,6 +264,7 @@ export function defineCompositeRecoverySource<T, Raw>(
   return registerSource({
     boundary: definition.boundary,
     scanSubject: copySubject(definition.scanSubject),
+    retryRevision: 'exact',
     scan: () => definition.scan(values),
     subject: definition.subject,
   });
@@ -508,7 +516,9 @@ async function applyDisposition<Raw, Item>(
     return;
   }
 
-  const expectedRetry = retryClaim(context.subject, policy.retry);
+  const expectedRetry: RecoveryQuarantineWrite['expectedRetry'] | undefined = policy.retry
+    ? { owner: policy.retry.owner, token: policy.retry.token, subject: policy.retry.subject }
+    : undefined;
   const write: RecoveryQuarantineWrite = {
     boundary: context.boundary,
     subject: context.subject,
@@ -755,7 +765,15 @@ function assertExactRetryScan<Raw>(
   if (!sameSubject(definition.scanSubject, retry.subject)) {
     throw new Error('Recovery retry source is not scoped to the exact subject');
   }
-  if (scanned.length > 1 || scanned.some(({ subject }) => !sameSubject(subject, retry.subject))) {
+  const outsideScope = scanned.some(({ subject }) => {
+    if (definition.retryRevision === 'exact') return !sameSubject(subject, retry.subject);
+    return (
+      subject.key !== retry.subject.key ||
+      subject.revision.kind !== 'fingerprint' ||
+      retry.subject.revision.kind !== 'fingerprint'
+    );
+  });
+  if (scanned.length > 1 || outsideScope) {
     throw new Error('Recovery retry scan returned a subject outside its exact scope');
   }
 }

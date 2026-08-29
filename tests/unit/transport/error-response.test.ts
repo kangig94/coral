@@ -11,6 +11,11 @@ describe('transport error response', () => {
       'That recovery boundary is not available for operator retry.',
     ],
     [
+      'subject-not-found',
+      'recovery_quarantine_subject_not_found',
+      'That recovery quarantine key does not name a retained row.',
+    ],
+    [
       'revision-mismatch',
       'recovery_quarantine_revision_changed',
       'That recovery quarantine coordinate is stale because its revision changed.',

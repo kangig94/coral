@@ -7,12 +7,16 @@ import { ProviderOperationReconciler } from '#src/coordinator/services/provider-
 import {
   createProviderProxyAuthorityFaultLatch,
   type ProviderProxyAuthorityFault,
-  type ProviderProxyOperationIncident,
+  type ProviderProxyAuthorityIncident,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -78,21 +82,23 @@ function statefulRetryEndpoint(method: RetryMethod, ordering: RetryOrdering) {
   };
 
   const client = {
-    call: vi.fn(async (controlMethod: string, params: unknown) => {
+    exchange: vi.fn(async (controlMethod: string, params: unknown): Promise<ControlExchange> => {
+      let value: unknown;
       if (controlMethod === 'operation.attach.v1') {
         const watermark = (params as { committedThroughProviderSeq: number }).committedThroughProviderSeq;
         attachmentWatermarks.push(watermark);
         if (method === 'attach') applyTargetEffect(() => applyAttachment(watermark));
         else applyAttachment(watermark);
-        return { state: 'attached', replayFromProviderSeq: watermark + 1 };
-      }
-      if (controlMethod === 'operation.stop.v1' && method === 'stop') {
+        value = { state: 'attached', replayFromProviderSeq: watermark + 1 };
+      } else if (controlMethod === 'operation.stop.v1' && method === 'stop') {
         const cause = (params as { cause: string }).cause;
         stopIntents.push(cause);
         applyTargetEffect(() => applyStop(cause));
-        return { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: attachedWatermark };
+        value = { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: attachedWatermark };
+      } else {
+        throw new Error(`unexpected control exchange: ${controlMethod}`);
       }
-      throw new Error(`unexpected control call: ${controlMethod}`);
+      return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
     }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
@@ -154,14 +160,14 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   claims.initialize([record]);
   const unsubscribeClaims = subscribeProviderOperationMutations(db, (mutation) => claims.applyMutation(mutation));
   const faults = createProviderProxyAuthorityFaultLatch();
-  const incidents: ProviderProxyOperationIncident[] = [];
+  const incidents: ProviderProxyAuthorityIncident[] = [];
   const terminalFaults: ProviderProxyAuthorityFault[] = [];
-  faults.onIncident((incident) => incidents.push(incident));
+  faults.onIncident((observation) => incidents.push(observation));
   faults.onFault((fault) => terminalFaults.push(fault));
   const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not requested' }) as const);
   const idleClient = {
-    call: async (controlMethod: string) => {
-      throw new Error(`unexpected role control call: ${controlMethod}`);
+    exchange: async (controlMethod: string): Promise<never> => {
+      throw new Error(`unexpected role control exchange: ${controlMethod}`);
     },
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
@@ -170,10 +176,16 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   const authority = createProviderProxyOperationAuthority({
     base: {
       proxyInstanceId: record.operation.proxyInstanceId,
+      autonomousDeadline: {
+        orphanTimeoutMs: 37_000,
+        adoptionWindowMs: 23_000,
+        heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+      },
       stopAndReap,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
-      registerSuccessionOperation: async () => undefined,
+      controlReattachment: {} as never,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     },
     setIdentity: providerProxySetIdentityFromRecord(record),
     clients: { proxy: endpoint.client, guardian: idleClient, reaper: idleClient },

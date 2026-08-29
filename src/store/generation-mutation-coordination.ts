@@ -183,13 +183,13 @@ function directoryLockDeps(runtime: Runtime) {
 export function generationNotQuiescentError(
   runtime: Pick<Runtime, 'flavor'>,
   holder: string,
-  writerObservation?: 'unknown',
+  writerObservation: 'writer-live' | 'writer-unobservable',
 ): Error {
   return documentedCoralSetupError({
-    code: 'legacy_source_not_quiescent',
+    code:
+      writerObservation === 'writer-live' ? 'legacy_source_not_quiescent' : 'legacy_source_writer_observation_unknown',
     flavor: runtime.flavor,
     holder,
-    ...(writerObservation === undefined ? {} : { writerObservation }),
   });
 }
 
@@ -209,7 +209,7 @@ export async function acquireGenerationAdoptionLock(
     return lease as GenerationAdoptionLockLease;
   } catch (error: unknown) {
     if (isDirectoryLockTimeoutError(error)) {
-      throw generationNotQuiescentError(runtime, `adoption lock at ${paths.adoptionLock}`);
+      throw generationNotQuiescentError(runtime, `adoption lock at ${paths.adoptionLock}`, 'writer-live');
     }
     throw error;
   }
@@ -251,7 +251,7 @@ function writerIdentity(runtime: Runtime): RecordedProcessIdentity {
   const pid = runtime.env.pid();
   const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
   if (incarnation === null) {
-    throw generationNotQuiescentError(runtime, `writer process identity for pid ${pid}`, 'unknown');
+    throw generationNotQuiescentError(runtime, `writer process identity for pid ${pid}`, 'writer-unobservable');
   }
   return { pid, incarnation };
 }
@@ -287,7 +287,11 @@ function writerEntries(runtime: Runtime, paths: GenerationBoundaryPaths): string
     return runtime.storage.readdirSync(paths.writersRoot).filter((entry) => entry.endsWith('.lock'));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return [];
-    throw generationNotQuiescentError(runtime, `unreadable writer lease directory at ${paths.writersRoot}`);
+    throw generationNotQuiescentError(
+      runtime,
+      `unreadable writer lease directory at ${paths.writersRoot}`,
+      'writer-unobservable',
+    );
   }
 }
 
@@ -445,7 +449,7 @@ export const generationMutationCoordinationSeam: GenerationMutationCoordination 
       await runtime.time.sleep(GENERATION_COORDINATION_RETRY_MS);
     }
 
-    throw generationNotQuiescentError(runtime, 'generation maintenance');
+    throw generationNotQuiescentError(runtime, 'generation maintenance', 'writer-live');
   },
 };
 
@@ -472,7 +476,7 @@ export async function acquireGenerationMaintenanceLease(
         throw generationNotQuiescentError(
           runtime,
           blockers.map((blocker) => blocker.description).join(', '),
-          blockers.some((blocker) => blocker.observation === 'unknown') ? 'unknown' : undefined,
+          blockers.some((blocker) => blocker.observation === 'unknown') ? 'writer-unobservable' : 'writer-live',
         );
       }
       await runtime.time.sleep(GENERATION_COORDINATION_RETRY_MS);

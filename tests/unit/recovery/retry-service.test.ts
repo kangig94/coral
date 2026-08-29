@@ -1,3 +1,4 @@
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { defineRecoverySource, type RecoveryDisposition, type RecoverySubject } from '#src/recovery/containment.js';
@@ -13,6 +14,7 @@ import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuati
 import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
+import { createUnreadableProviderOperationRetryPlan } from '#src/coordinator/services/recovery/index.js';
 import {
   assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
@@ -172,6 +174,7 @@ describe('recovery quarantine retry service', () => {
       'workflow-recovery',
       'stale-job-cleanup',
       'crashed-job-terminalization',
+      'provider-operation-unreadable',
     ]);
     const registeredSourceBoundaries = [
       coordinatorJobRecoverySource(db).boundary,
@@ -185,6 +188,14 @@ describe('recovery quarantine retry service', () => {
       workflowRecoverySource(db).boundary,
       staleJobCleanupSource(db).boundary,
       crashedJobTerminalizationSource(db).boundary,
+      createUnreadableProviderOperationRetryPlan(
+        db,
+        {
+          key: 'provider-operation-row',
+          revision: { kind: 'fingerprint', value: 'revision-1' },
+        },
+        () => ({ kind: 'refused', reason: 'not exercised by the boundary manifest test' }),
+      ).source.boundary,
     ];
 
     expect(new Set(registeredSourceBoundaries)).toEqual(new Set(repeatableRecoveryBoundaryIds));
@@ -235,6 +246,12 @@ describe('recovery quarantine retry service', () => {
       source: crashedJobTerminalizationSource(db, retrySubject),
       policy: passThroughPolicy(),
     }));
+    runtimeRegistry.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (retrySubject) =>
+      createUnreadableProviderOperationRetryPlan(db, retrySubject, () => ({
+        kind: 'refused',
+        reason: 'not exercised by the registry completeness test',
+      })),
+    );
 
     expect(() => assertRecoverySourceRegistryComplete(runtimeRegistry)).not.toThrow();
     expect(runtimeRegistry.boundaries()).toEqual(repeatableRecoveryBoundaryIds);

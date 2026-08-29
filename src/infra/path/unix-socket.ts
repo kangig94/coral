@@ -1,5 +1,7 @@
 import { join } from 'node:path';
 
+import { hashToken } from '../hash.js';
+
 const SOCKET_LIMIT_CONSERVATIVE = 104;
 const SOCKET_LIMIT_LINUX = 108;
 
@@ -15,25 +17,21 @@ export function socketPathByteLimit(platformName: string): number {
   }
 }
 
-/**
- * Where a socket path that overflows `sun_path` relocates to. It may not be read from the environment:
- * moving a socket moves ownership, and two processes over one state root that disagree about the address
- * both find their own unbound and both bind.
- */
+/** The fallback root may not be read from the environment: moving a socket moves ownership, and two
+ * processes over one state root that disagree about the address both find their own unbound and both bind. */
 const SOCKET_FALLBACK_ROOT = '/tmp';
-const SOCKET_FALLBACK_PREFIX = join(SOCKET_FALLBACK_ROOT, 'coral-');
+const SOCKET_FALLBACK_NAMESPACE_HASH_LENGTH = 16;
+const SOCKET_FALLBACK_DIRECTORY_PATTERN = /^coral-[0-9a-f]{16}$/u;
 
-export function socketFallbackDir(uid: number): string {
-  return join(SOCKET_FALLBACK_ROOT, `coral-${uid}`);
-}
-
-export function socketFallbackUid(socketDirectory: string): number | undefined {
-  if (!socketDirectory.startsWith(SOCKET_FALLBACK_PREFIX)) return undefined;
-
-  const uid = Number(socketDirectory.slice(SOCKET_FALLBACK_PREFIX.length));
-  return socketDirectory === socketFallbackDir(uid) ? uid : undefined;
+export function socketFallbackDir(stateRoot: string): string {
+  return join(SOCKET_FALLBACK_ROOT, `coral-${hashToken(stateRoot, SOCKET_FALLBACK_NAMESPACE_HASH_LENGTH)}`);
 }
 
 export function isRelocatedSocket(socketDirectory: string): boolean {
-  return socketFallbackUid(socketDirectory) !== undefined;
+  const prefix = `${SOCKET_FALLBACK_ROOT}/`;
+  return (
+    socketDirectory.startsWith(prefix) &&
+    !socketDirectory.slice(prefix.length).includes('/') &&
+    SOCKET_FALLBACK_DIRECTORY_PATTERN.test(socketDirectory.slice(prefix.length))
+  );
 }

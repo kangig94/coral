@@ -755,6 +755,7 @@ export function createSimulationBackend(
         return { host: listenHost, port: listenPort };
       },
       listenIpcFn: async () => ({
+        kind: 'bound',
         socketPath: coordinatorPaths('dev', { baseDir: join(runtime.env.homedir(), '.coral') }).socketPath,
       }),
       writeBackendInfoFn: (info) => {

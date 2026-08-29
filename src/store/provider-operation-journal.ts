@@ -129,6 +129,11 @@ const RECORD_KEY_PATTERNS: readonly RegExp[] = [
 function matchRecordKey(key: string): RegExpExecArray | null {
   return RECORD_KEY_PATTERNS.map((pattern) => pattern.exec(key)).find((result) => result !== null) ?? null;
 }
+
+/** Whether this build recognizes the complete canonical key shape for any retained operation generation. */
+export function isProviderOperationRecordKey(key: string): boolean {
+  return matchRecordKey(key) !== null;
+}
 const PROVIDER_OPERATION_DUE_KEY_PATTERN = new RegExp(
   `^${escapeKeyPrefix(PROVIDER_OPERATION_DUE_PREFIX)}[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}:` +
     `${IDENTITY_KEY_SOURCE}:[0-9]{${FIXED_WIDTH_INTEGER_DIGITS}}$`,
@@ -482,6 +487,38 @@ export type UnreadableProviderOperationAttribution = Readonly<{
   jobs: ProviderOperationAttribution<string>;
 }>;
 
+export type ProviderOperationRecordObservation =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable'; attribution: UnreadableProviderOperationAttribution }>
+  | Readonly<{ kind: 'readable'; record: ProviderOperationRecord }>;
+
+/** Raw-row outcomes before the recovery owner adds its exact coordinate. */
+export type RawUnreadableProviderOperationDiscardResult =
+  | Readonly<{ kind: 'discarded' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'revision-mismatch'; currentRevision: string }>
+  | Readonly<{ kind: 'readable' }>;
+
+/** Transaction-local owner handshake surrounding one raw unreadable-row discard. */
+export type UnreadableProviderOperationDiscardAuthority<Refusal> = Readonly<{
+  claim():
+    | Readonly<{
+        kind: 'claimed';
+        settle(result: RawUnreadableProviderOperationDiscardResult): boolean;
+      }>
+    | Readonly<{ kind: 'refused'; result: Refusal }>;
+}>;
+
+function unreadableProviderOperationAttribution(key: string, value: string): UnreadableProviderOperationAttribution {
+  const claims = claimedOperationIdentities(value);
+  return {
+    key,
+    revision: `sha256:${sha256Hex(value)}`,
+    sets: attribute(providerOperationSetAddressFromRecordKey(key), claims.set, sameSetAddress),
+    jobs: attribute(providerOperationJobIdFromRecordKey(key), claims.job, (left, right) => left === right),
+  };
+}
+
 export function attributeUnreadableProviderOperations(
   db: Database,
   unreadableKeys: readonly string[],
@@ -489,15 +526,79 @@ export function attributeUnreadableProviderOperations(
   return unreadableKeys.flatMap((key) => {
     const value = readCanonicalValue(db, key);
     if (value === undefined) return [];
-    const claims = claimedOperationIdentities(value);
-    return [
-      {
-        key,
-        revision: `sha256:${sha256Hex(value)}`,
-        sets: attribute(providerOperationSetAddressFromRecordKey(key), claims.set, sameSetAddress),
-        jobs: attribute(providerOperationJobIdFromRecordKey(key), claims.job, (left, right) => left === right),
-      },
-    ];
+    return [unreadableProviderOperationAttribution(key, value)];
+  });
+}
+
+export function observeProviderOperationRecord(db: Database, key: string): ProviderOperationRecordObservation {
+  const value = readCanonicalValue(db, key);
+  if (value === undefined) return { kind: 'absent' };
+
+  try {
+    return { kind: 'readable', record: decodeCanonicalValue(key, value) };
+  } catch {
+    return { kind: 'unreadable', attribution: unreadableProviderOperationAttribution(key, value) };
+  }
+}
+
+/**
+ * Discards one still-unreadable raw row only while its exact SHA-256 revision matches, and removes every known
+ * generation's due pointer to that row in the same transaction. This deliberately does not reinterpret or
+ * settle the abandoned operation.
+ */
+function discardUnreadableProviderOperationWithinTransaction(
+  db: Database,
+  key: string,
+  expectedRevision: string,
+): RawUnreadableProviderOperationDiscardResult {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(expectedRevision)) {
+    throw new ProviderOperationJournalError('Unreadable provider operation revision must be a SHA-256 fingerprint.');
+  }
+  if (key.length === 0 || !isProviderOperationRecordKey(key)) {
+    throw new ProviderOperationJournalError('Unreadable provider operation key is not a provider-operation row.');
+  }
+
+  const value = readCanonicalValue(db, key);
+  if (value === undefined) return { kind: 'absent' as const };
+  const currentRevision = `sha256:${sha256Hex(value)}`;
+  if (currentRevision !== expectedRevision) return { kind: 'revision-mismatch' as const, currentRevision };
+  try {
+    decodeCanonicalValue(key, value);
+    return { kind: 'readable' as const };
+  } catch {
+    // Exact revision still exists and remains unreadable, which is the only state this operation may discard.
+  }
+  const deleted = db.prepare<[string, string]>('DELETE FROM meta WHERE key = ? AND value = ?').run(key, value);
+  if (deleted.changes !== 1) {
+    const current = readCanonicalValue(db, key);
+    return current === undefined
+      ? { kind: 'absent' as const }
+      : { kind: 'revision-mismatch' as const, currentRevision: `sha256:${sha256Hex(current)}` };
+  }
+  for (const prefix of [PROVIDER_OPERATION_RECORD_PREFIX, ...SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES]) {
+    const duePrefix = `${prefix.slice(0, prefix.length - 'record:'.length)}due:`;
+    db.prepare<[string, string, string]>('DELETE FROM meta WHERE key >= ? AND key < ? AND value = ?').run(
+      duePrefix,
+      keyPrefixUpperBound(duePrefix),
+      key,
+    );
+  }
+  return { kind: 'discarded' as const };
+}
+
+/** Runs recovery ownership claim, raw deletion, due-pointer deletion, and owner settlement atomically. */
+export function discardUnreadableProviderOperationWithRecoveryAuthority<Refusal>(
+  db: Database,
+  key: string,
+  expectedRevision: string,
+  authority: UnreadableProviderOperationDiscardAuthority<Refusal>,
+): RawUnreadableProviderOperationDiscardResult | Refusal {
+  return withImmediate(db, () => {
+    const claim = authority.claim();
+    if (claim.kind === 'refused') return claim.result;
+    const result = discardUnreadableProviderOperationWithinTransaction(db, key, expectedRevision);
+    if (!claim.settle(result)) throw new Error('provider_operation_discard_recovery_authority_lost');
+    return result;
   });
 }
 

@@ -65,8 +65,20 @@ function authority(): DurableProviderProxyOperationAuthority {
   return {
     proxyInstanceId,
     faulted: new Promise<never>(() => {}),
+    autonomousDeadline: {
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
     onFault: () => () => undefined,
     onIncident: () => () => undefined,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     setIdentity: {
       buildSetId,
       hostFingerprint: 'a'.repeat(64),
@@ -85,7 +97,7 @@ function authority(): DurableProviderProxyOperationAuthority {
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },
-    registerSuccessionOperation: async () => undefined,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,

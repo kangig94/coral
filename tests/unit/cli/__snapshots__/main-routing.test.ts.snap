@@ -14,6 +14,7 @@ Commands:
   shutdown             Gracefully shut down backend daemon
   recovery-quarantine  Inspect or retry retained recovery failures
   provider-host        Inspect and evict provider hosts
+  provider-proxy-set   Contain or abandon one exact held provider-proxy set
   store-reset          Inspect retained store-reset incidents
   kb-commit            Operate on retained blocking KB commit evidence
   help [command]       display help for command

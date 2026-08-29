@@ -13,12 +13,18 @@ import {
   type ProviderProxySetRedemptionOutcome,
 } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import {
+  authorizeProviderProxySetContainmentProof,
+  createProviderProxySetContainmentProver,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
+import {
   ProviderOperationReconciler,
   StartupSetRecoveryProducer,
   type StartupSetRecoveryPort,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { createProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type { DisappearanceDeliveryAttemptOutcome } from '#src/coordinator/services/provider-containment-disappearance.js';
 import {
   isProviderProxyRecoveryFatalError,
@@ -183,7 +189,7 @@ function lifecycleFor(
     proveContainmentAbsent?: (
       identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
       signal: AbortSignal,
-    ) => Promise<string | null>;
+    ) => Promise<ProviderProxySetContainmentEvidence>;
     redeemCapsule?: (
       capsule: HandoffCapsuleV3,
       path: string,
@@ -194,13 +200,56 @@ function lifecycleFor(
 ): ProviderProxySetLifecycle {
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize(records);
-  const proveContainmentAbsent = options.proveContainmentAbsent ?? (async () => null);
+  const proveContainmentAbsent =
+    options.proveContainmentAbsent ??
+    (async (): Promise<ProviderProxySetContainmentEvidence> => ({
+      kind: 'enforcers-observed',
+      observations: [
+        { role: 'guardian', observation: 'unknown' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    }));
   const retireCapsule = () => options.retireCapsule?.() ?? { kind: 'retired' as const };
   const onFatal = options.onFatal ?? (() => undefined);
   const redeemCapsule = options.redeemCapsule;
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
-      'containment-proof': ({ identity, signal }) => proveContainmentAbsent(identity, signal),
+      'containment-proof': async ({ identity, signal }) => {
+        const evidence = await proveContainmentAbsent(identity, signal);
+        const db = newRawDatabase(':memory:');
+        applyBundledStoreSchema(db, currentCoralStoreFormat());
+        const observations =
+          evidence.kind === 'enforcers-observed'
+            ? {
+                guardian: evidence.observations.find(({ role }) => role === 'guardian')?.observation ?? 'unknown',
+                reaper: evidence.observations.find(({ role }) => role === 'reaper')?.observation ?? 'unknown',
+              }
+            : { guardian: 'absent' as const, reaper: 'absent' as const };
+        if (evidence.kind === 'store-unreadable') {
+          db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+            `provider_operation_saga.v1:record:${randomUUID()}:${randomUUID()}:${identity.proxyInstanceId}:${identity.buildSetId}`,
+            'not-json',
+          );
+        }
+        const proofRuntime = {
+          ...createRealRuntime('prod'),
+          process: {
+            ...createRealRuntime('prod').process,
+            readProcessIncarnation: () => null,
+            observeLiveness: (pid: number) =>
+              pid === identity.guardianPid ? observations.guardian : observations.reaper,
+          },
+        };
+        try {
+          return await createProviderProxySetContainmentProver(proofRuntime).collectContainmentProof(
+            authorizeProviderProxySetContainmentProof(identity),
+            db,
+            signal,
+          );
+        } finally {
+          db.close();
+        }
+      },
       'capsule-retirement': retireCapsule,
       ...(redeemCapsule === undefined
         ? {}
@@ -215,6 +264,10 @@ function lifecycleFor(
     controlEstablished: () => undefined,
     time: options.time,
     recoveryDispatcher,
+    reapRecordedContainment: async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'exact-v3-proof',
+    }),
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
@@ -375,6 +428,10 @@ function composeProductionStartup(
     providerProxyClaims: new ProviderProxySetClaimMirror(),
     providerProxyLifecycleRef: lifecycleRef,
     providerProxyInheritance: inheritance,
+    providerProxySetContainmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: () => {
+      throw new Error('provider proxy startup fixture unexpectedly requested recorded containment reaping');
+    },
     providerHostManager: {},
   } as never;
   const services = createExecutionServices({
@@ -630,6 +687,14 @@ async function roleRecoveryStartupCase(
     }),
   ]);
   const operationRegistry = new LocalOperationRegistry();
+  const containmentProver = createProviderProxySetContainmentProver({
+    ...runtime,
+    process: {
+      ...runtime.process,
+      readProcessIncarnation: () => null,
+      observeLiveness: () => 'unknown',
+    },
+  });
   const inheritance = {
     inheritProviderProxySet: (locator: ProviderOperationRecord, db: Database, signal: AbortSignal) =>
       attemptProviderProxySetInheritance(
@@ -647,14 +712,16 @@ async function roleRecoveryStartupCase(
             buildSetId: record.operation.buildSetId,
           },
           operationRegistry,
-          proveContainmentAbsent: async () => null,
+          collectContainmentProof: containmentProver.collectContainmentProof,
+          reapRecordedContainment: () => {
+            throw new Error('startup fixture unexpectedly requested recorded containment reaping');
+          },
         },
         signal,
       ),
     redeemDiscoveredCapsule: async () => {
       throw new Error('capsule discovery redemption was not expected');
     },
-    proveContainmentAbsent: async () => null,
   };
   const harness = composeProductionStartup(record, inheritance, { runtime });
   const startup = productionStartupOutcome(harness);
@@ -723,6 +790,8 @@ async function inheritanceDeadlinePrecedenceStartupCase(mode: 'disagreement' | '
   const operationRegistry = new LocalOperationRegistry();
   const inheritance = createProviderProxySetInheritance({
     runtime,
+    containmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(runtime),
     identity: {
       instanceId: randomUUID(),
       buildSetId: record.operation.buildSetId,
@@ -790,6 +859,8 @@ async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'd
   ]);
   const inheritance = createProviderProxySetInheritance({
     runtime,
+    containmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(runtime),
     identity: {
       instanceId: randomUUID(),
       buildSetId: record.operation.buildSetId,
@@ -853,7 +924,6 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
       disappearanceReceipt: 'retirement-absence-proof',
     }),
     redeemDiscoveredCapsule: async () => new Promise<never>(() => undefined),
-    proveContainmentAbsent: async () => new Promise<never>(() => undefined),
   };
   const harness = composeProductionStartup(record, inheritance, { runtime });
   const outcome = await productionStartupOutcome(harness);
@@ -883,7 +953,6 @@ async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'u
     redeemDiscoveredCapsule: async () => {
       throw new Error('capsule redemption was not expected');
     },
-    proveContainmentAbsent: async () => null,
   };
   const validMetadata = {
     readStatus: () => ({
@@ -982,7 +1051,13 @@ describe('provider proxy startup set recovery', () => {
     const record = providerOperationRecord('executing');
     const time = new VirtualTime();
     const scheduled = vi.spyOn(time, 'setTimeout');
-    const proof = vi.fn(async () => 'exact-v3-proof');
+    const proof = vi.fn(
+      async (): Promise<ProviderProxySetContainmentEvidence> => ({
+        kind: 'reap-required',
+        containment: { pid: 200, incarnation: testIncarnation(3), processGroupId: 200 },
+        recordedRoots: [],
+      }),
+    );
     const retirementStarted = deferred<void>();
     const retirementOutcome = deferred<Readonly<{ kind: 'retired' }>>();
     const retirement = vi.fn(() => {
@@ -1388,7 +1463,6 @@ describe('production provider proxy startup classification', () => {
       redeemDiscoveredCapsule: async () => {
         throw new Error('capsule redemption was not expected');
       },
-      proveContainmentAbsent: async () => null,
     };
     const harness = composeProductionStartup(record, inheritance);
     const outcome = await productionStartupOutcome(harness);

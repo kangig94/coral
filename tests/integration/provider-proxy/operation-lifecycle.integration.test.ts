@@ -1,4 +1,5 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -35,7 +36,10 @@ import type { HostRef } from '#src/providers/contract.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
   connectControlClient,
+  controlExchangeForTest,
   ControlClientError,
+  type ControlClient,
+  type ControlExchange,
   type ProviderEventHandler,
 } from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
@@ -62,7 +66,7 @@ import {
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
-import { proxyHandoffRedeemResultSchema } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import { proxyHandoffRedeemResultSchema } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import {
   decodeProxyControlFrame,
@@ -105,6 +109,22 @@ const timer: ControlEndpointTimer = {
   setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
+
+function resultExchange(value: unknown): ControlExchange {
+  return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } });
+}
+
+function noResponse(error: ControlClientError): ControlExchange {
+  return controlExchangeForTest({ kind: 'no-response', cause: 'connection-closed-after-write', error });
+}
+
+function refusedExchange(error: ControlClientError): ControlExchange {
+  if (error.remoteFailure === null) return noResponse(error);
+  return controlExchangeForTest({
+    kind: 'response',
+    response: { kind: 'refusal', failure: error.remoteFailure, error },
+  });
+}
 
 type Started = { jobId: string; operationId: string };
 
@@ -257,22 +277,22 @@ async function startProxy(
       : createProxyGuardianContainment({
           identity,
           guardianChannel: {
-            call: async (method, params) => {
+            exchange: async (method, params) => {
               if (options.failProviderCreation === true) {
                 throw new Error('provider creation refusal must not register guardian membership');
               }
               if (method === 'guardian.register-provider-root.v1') {
                 const root = params as { providerPid: number; providerIncarnation: ProcessIncarnation };
-                return {
+                return resultExchange({
                   state: 'staged-contained',
                   providerRoot: {
                     pid: root.providerPid,
                     incarnation: root.providerIncarnation,
                   },
                   jointContainmentReceipt: 'joint-1',
-                };
+                });
               }
-              return { state: 'membership-released' };
+              return resultExchange({ state: 'membership-released' });
             },
           },
           stageProviderRoot: semantic.stage,
@@ -335,15 +355,27 @@ async function startProxy(
   elapsed += BigInt(options.openingDelayMs ?? 0);
   const control = await connectControlClient(endpoint, timer, 5_000, options.onProviderEvent);
   cleanups.push(() => control.close());
-  const opened = (await control.call('control.open.v1', { bootstrapNonce: NONCE, coordinator }, 5_000)) as {
+  const opened = (await strictTestExchange(
+    control,
+    'control.open.v1',
+    { bootstrapNonce: NONCE, coordinator },
+    5_000,
+  )) as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
   let heartbeatChallenge = opened.heartbeatChallenge;
   if (options.skipInitialHeartbeat !== true) {
-    heartbeatChallenge = (
-      await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge)
-    ).nextHeartbeatChallenge;
+    const observation = await heartbeatOnce(
+      control,
+      'control.heartbeat.v1',
+      opened.controlEpoch,
+      opened.heartbeatChallenge,
+    );
+    if (observation.kind !== 'reply' || observation.reply.kind !== 'accepted') {
+      throw new Error(`opening heartbeat was not accepted: ${observation.kind}`);
+    }
+    heartbeatChallenge = observation.reply.nextChallenge;
   }
 
   const advanceWithHeartbeat = async (ms: number): Promise<void> => {
@@ -353,9 +385,16 @@ async function startProxy(
       elapsed += BigInt(stepMs);
       remainingMs -= stepMs;
       if (stepMs === PROXY_CONTROL_HEARTBEAT_MS) {
-        heartbeatChallenge = (
-          await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, heartbeatChallenge)
-        ).nextHeartbeatChallenge;
+        const observation = await heartbeatOnce(
+          control,
+          'control.heartbeat.v1',
+          opened.controlEpoch,
+          heartbeatChallenge,
+        );
+        if (observation.kind !== 'reply' || observation.reply.kind !== 'accepted') {
+          throw new Error(`periodic heartbeat was not accepted: ${observation.kind}`);
+        }
+        heartbeatChallenge = observation.reply.nextChallenge;
       }
     }
   };
@@ -450,21 +489,25 @@ async function launchThroughRoute(
         })
       : null;
   const proxyClient = {
-    call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
+    exchange: async (method: string, params: unknown, timeoutMs: number): Promise<ControlExchange> => {
       if (method === 'operation.prepare.v1') prepareCalls += 1;
       if (method === 'operation.inspect.v1') {
         prepareInspectCalls += 1;
         if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0)) {
-          throw new ControlClientError('control_call_failed', 'The prepare inspect reply was dropped.', 'closed');
+          return noResponse(
+            new ControlClientError('control_call_failed', 'The prepare inspect reply was dropped.', 'closed'),
+          );
         }
         if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0) + (options.preparingInspectReplies ?? 0)) {
-          const inspected = (await set.control.call(method, params, timeoutMs)) as { reservation?: string };
-          if (inspected.reservation === undefined) return inspected;
-          return {
+          const inspected = (await strictTestExchange(set.control, method, params, timeoutMs)) as {
+            reservation?: string;
+          };
+          if (inspected.reservation === undefined) return resultExchange(inspected);
+          return resultExchange({
             state: 'preparing',
             reservation: inspected.reservation,
             leaseExpiresInMs: 15_000,
-          };
+          });
         }
       }
       if (method === 'operation.activate.v1') activationCalls += 1;
@@ -474,38 +517,43 @@ async function launchThroughRoute(
       }
       let result: unknown;
       try {
-        result = await set.control.call(method, params, timeoutMs);
+        result = await strictTestExchange(set.control, method, params, timeoutMs);
       } catch (error: unknown) {
         if (method === 'operation.prepare.v1' && options.ambiguatePrepareRejections === true) {
-          throw new ControlClientError(
-            'control_call_failed',
-            'The rejected prepare reply was transport-ambiguous.',
-            'closed',
+          return noResponse(
+            new ControlClientError(
+              'control_call_failed',
+              'The rejected prepare reply was transport-ambiguous.',
+              'closed',
+            ),
           );
         }
+        if (error instanceof ControlClientError) return refusedExchange(error);
         throw error;
       }
       if (method === 'operation.prepare.v1' && prepareCalls <= (options.dropPrepareReplies ?? 0)) {
-        throw new ControlClientError('control_call_failed', 'The prepare reply was dropped.', 'closed');
+        return noResponse(new ControlClientError('control_call_failed', 'The prepare reply was dropped.', 'closed'));
       }
       if (method === 'operation.activate.v1' && activationCalls <= (options.dropActivationReplies ?? 0)) {
-        throw new ControlClientError('control_call_failed', 'The activation reply was dropped.', 'closed');
+        return noResponse(new ControlClientError('control_call_failed', 'The activation reply was dropped.', 'closed'));
       }
-      return result;
+      return resultExchange(result);
     },
   };
   const guardianCalls: Array<{ method: string; params: unknown }> = [];
   const guardianClient = {
-    call: async (method: string, params: unknown): Promise<unknown> => {
+    exchange: async (method: string, params: unknown): Promise<ControlExchange> => {
       guardianCalls.push({ method, params });
       if (method === 'guardian.operation-activate.v1') {
         guardianActivationCalls += 1;
         if (guardianActivationCalls <= (options.dropGuardianActivationReplies ?? 0)) {
-          throw new ControlClientError('control_call_failed', 'The guardian activation reply was dropped.', 'closed');
+          return noResponse(
+            new ControlClientError('control_call_failed', 'The guardian activation reply was dropped.', 'closed'),
+          );
         }
-        return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
+        return resultExchange({ state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' });
       }
-      return { state: 'membership-released' };
+      return resultExchange({ state: 'membership-released' });
     },
   };
   const setIdentity = {
@@ -528,16 +576,20 @@ async function launchThroughRoute(
   } as const;
   const base = {
     proxyInstanceId: set.shared.proxyInstanceId,
-    registerSuccessionOperation: async () => undefined,
+    autonomousDeadline: {
+      orphanTimeoutMs: 37_000,
+      adoptionWindowMs: 23_000,
+      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+    },
+    controlReattachment: {} as never,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
   } as const;
-  const authorityForClient = (client: {
-    call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
-  }) => {
+  const authorityForClient = (client: Pick<ControlClient, 'exchange'>) => {
     const proxy = {
-      call: client.call.bind(client),
+      exchange: client.exchange.bind(client),
       faulted: new Promise<never>(() => undefined),
       onFault: () => () => undefined,
       close: () => undefined,
@@ -707,7 +759,7 @@ async function launchThroughRoute(
     db,
     reconciler,
     authority,
-    replaceAuthority: (client: { call(method: string, params: unknown, timeoutMs: number): Promise<unknown> }) => {
+    replaceAuthority: (client: Pick<ControlClient, 'exchange'>) => {
       activeAuthority = authorityForClient(client);
       return activeAuthority;
     },
@@ -748,7 +800,8 @@ async function prepare(
   set: ProxyUnderTest,
   operation = set.operationFor(),
 ): Promise<{ operation: ReturnType<ProxyUnderTest['operationFor']>; reserved: Record<string, string> }> {
-  const reserved = (await set.control.call(
+  const reserved = (await strictTestExchange(
+    set.control,
     'operation.prepare.v1',
     { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
     5_000,
@@ -757,7 +810,8 @@ async function prepare(
 }
 
 async function activate(set: ProxyUnderTest, operation: unknown, reserved: Record<string, string>): Promise<unknown> {
-  const result = await set.control.call(
+  const result = await strictTestExchange(
+    set.control,
     'operation.activate.v1',
     {
       operation,
@@ -767,7 +821,7 @@ async function activate(set: ProxyUnderTest, operation: unknown, reserved: Recor
     },
     5_000,
   );
-  await set.control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+  await strictTestExchange(set.control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
   return result;
 }
 
@@ -783,7 +837,8 @@ async function installGrantForOperations(
     buildSetId: set.shared.buildSetId,
     proxyInstanceId: set.shared.proxyInstanceId,
   };
-  await set.control.call(
+  await strictTestExchange(
+    set.control,
     'handoff.install.v1',
     {
       ...set_,
@@ -803,7 +858,8 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy({ blockFirstProviderCreation: true });
     if (set.semantic === null) throw new Error('expected the semantic runtime');
     const first = set.operationFor();
-    const firstPrepare = set.control.call(
+    const firstPrepare = strictTestExchange(
+      set.control,
       'operation.prepare.v1',
       { operation: first, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
@@ -815,7 +871,8 @@ describe('provider-proxy operation lifecycle', () => {
     let postGateResult: unknown;
     let postGateError: unknown;
     try {
-      postGateResult = await set.control.call(
+      postGateResult = await strictTestExchange(
+        set.control,
         'operation.prepare.v1',
         { operation: postGate, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
         5_000,
@@ -898,7 +955,7 @@ describe('provider-proxy operation lifecycle', () => {
       buildSetId: set.shared.buildSetId,
     };
     const grant = await installGrantForOperations(set, [operation]);
-    await set.control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
+    await strictTestExchange(set.control, 'operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
     await vi.waitFor(() => expect(set.proxy.ledger().get(operation)?.state).toBe('terminal-awaiting-settlement'));
 
     set.control.close();
@@ -925,12 +982,13 @@ describe('provider-proxy operation lifecycle', () => {
 
     const successor = await connectControlClient(set.endpoint, timer, 5_000);
     cleanups.push(() => successor.close());
-    const redeemed = (await successor.call('handoff.redeem.v1', grant, 5_000)) as {
+    const redeemed = (await strictTestExchange(successor, 'handoff.redeem.v1', grant, 5_000)) as {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
     expect(proxyHandoffRedeemResultSchema.parse(redeemed).proxy).toEqual(set.identity);
-    await successor.call(
+    await strictTestExchange(
+      successor,
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
       5_000,
@@ -1047,7 +1105,8 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'operation.prepare.v1',
         {
           operation: set.operationFor(),
@@ -1129,8 +1188,8 @@ describe('provider-proxy operation lifecycle', () => {
     const operation = set.operationFor();
     const request = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
 
-    const first = await set.control.call('operation.prepare.v1', request, 5_000);
-    const retry = await set.control.call('operation.prepare.v1', request, 5_000);
+    const first = await strictTestExchange(set.control, 'operation.prepare.v1', request, 5_000);
+    const retry = await strictTestExchange(set.control, 'operation.prepare.v1', request, 5_000);
 
     expect(retry).toEqual(first);
     expect(set.stageAttempts()).toBe(1);
@@ -1159,7 +1218,8 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
     await set.advanceWithHeartbeat(1_000);
 
-    const renewed = (await set.control.call(
+    const renewed = (await strictTestExchange(
+      set.control,
       'operation.renew-activation.v1',
       { operation, reservation: reserved.reservation },
       5_000,
@@ -1181,7 +1241,12 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
 
     await expect(
-      set.control.call('operation.renew-activation.v1', { operation, reservation: asReservation(randomUUID()) }, 5_000),
+      strictTestExchange(
+        set.control,
+        'operation.renew-activation.v1',
+        { operation, reservation: asReservation(randomUUID()) },
+        5_000,
+      ),
     ).rejects.toThrow(/different reservation/u);
 
     // The same call with the reservation this operation actually holds still renews, so the refusal above is
@@ -1189,7 +1254,12 @@ describe('provider-proxy operation lifecycle', () => {
     // while its schema demanded both, so a wrong second half renewed successfully; with one value there is
     // no half to get wrong.
     expect(
-      await set.control.call('operation.renew-activation.v1', { operation, reservation: reserved.reservation }, 5_000),
+      await strictTestExchange(
+        set.control,
+        'operation.renew-activation.v1',
+        { operation, reservation: reserved.reservation },
+        5_000,
+      ),
     ).toMatchObject({ state: 'pending-activation' });
   });
 
@@ -1204,7 +1274,9 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
 
-    const stopped = (await set.control.call('operation.stop.v1', { operation, cause }, 5_000)) as { state: string };
+    const stopped = (await strictTestExchange(set.control, 'operation.stop.v1', { operation, cause }, 5_000)) as {
+      state: string;
+    };
 
     // Only a recorded restart or handoff suspends. Claiming the abort causes interrupted the operation
     // would write an interruption the user never suffered.
@@ -1216,7 +1288,12 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy();
     const { operation } = await prepare(set);
 
-    const stopped = (await set.control.call('operation.stop.v1', { operation, cause: 'user_abort' }, 5_000)) as {
+    const stopped = (await strictTestExchange(
+      set.control,
+      'operation.stop.v1',
+      { operation, cause: 'user_abort' },
+      5_000,
+    )) as {
       state: string;
     };
 
@@ -1237,21 +1314,23 @@ describe('provider-proxy operation lifecycle', () => {
 
     const successor = await connectControlClient(set.endpoint, timer, 5_000);
     cleanups.push(() => successor.close());
-    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+    const redeemed = (await strictTestExchange(successor, 'handoff.redeem.v1', redeem, 5_000)) as {
       state: string;
       operations: Record<string, string>[];
       controlEpoch: number;
       heartbeatChallenge: string;
     };
     expect(redeemed.state).toBe('redeemed-provisional');
-    await successor.call(
+    await strictTestExchange(
+      successor,
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
       5_000,
     );
 
     expect(
-      await successor.call(
+      await strictTestExchange(
+        successor,
         'operation.attach.v1',
         { operation: inside.operation, committedThroughProviderSeq: 0 },
         5_000,
@@ -1260,7 +1339,12 @@ describe('provider-proxy operation lifecycle', () => {
     // An otherwise valid, executing operation outside the redeemed set is one this successor never earned,
     // however good its control tenancy is.
     await expect(
-      successor.call('operation.attach.v1', { operation: outside.operation, committedThroughProviderSeq: 0 }, 5_000),
+      strictTestExchange(
+        successor,
+        'operation.attach.v1',
+        { operation: outside.operation, committedThroughProviderSeq: 0 },
+        5_000,
+      ),
     ).rejects.toThrow(/outside the redeemed set/u);
   });
 
@@ -1268,7 +1352,8 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy();
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'handoff.install.v1',
         {
           grantId: randomUUID(),
@@ -1291,7 +1376,8 @@ describe('provider-proxy operation lifecycle', () => {
     const opB = set.operationFor();
     const [first, second] = opA.operationId < opB.operationId ? [opB, opA] : [opA, opB];
     const install = (operations: ReturnType<typeof set.operationFor>[]): Promise<unknown> =>
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'handoff.install.v1',
         {
           grantId: randomUUID(),
@@ -1308,17 +1394,22 @@ describe('provider-proxy operation lifecycle', () => {
 
     // The wire schema this method parses carries the byte-sort refinement, so an unsorted or duplicated set
     // is refused right here, at ingress.
-    await expect(install([first, second])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    await expect(install([first, second])).rejects.toMatchObject({
+      remoteFailure: { protocolCode: 'protocol_violation' },
+    });
     // Duplicated is refused for the same reason, not merely unsorted.
-    await expect(install([first, first])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    await expect(install([first, first])).rejects.toMatchObject({
+      remoteFailure: { protocolCode: 'protocol_violation' },
+    });
   });
 
-  it('keeps the standalone proxy first challenge subject to ordinary construction-anchored live control', async () => {
+  it('accepts the standalone proxy first challenge after ordinary construction-anchored control loss', async () => {
     const set = await startProxy({ openingDelayMs: 1_000, skipInitialHeartbeat: true });
     set.advanceSilently(PROXY_CONTROL_LEASE_MS - 500);
 
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'control.heartbeat.v1',
         {
           controlEpoch: set.opened.controlEpoch,
@@ -1326,10 +1417,10 @@ describe('provider-proxy operation lifecycle', () => {
         },
         5_000,
       ),
-    ).rejects.toThrow('control-lost');
+    ).resolves.toMatchObject({ state: 'active' });
   });
 
-  it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {
+  it("keeps a redeemed successor's matching challenge answerable after the lease", async () => {
     const set = await startProxy();
     // A grant that names no operations is enough: only the tenancy this redemption opens is under test.
     const redeem = await installGrantForOperations(set, []);
@@ -1338,16 +1429,14 @@ describe('provider-proxy operation lifecycle', () => {
 
     const successor = await connectControlClient(set.endpoint, timer, 5_000);
     cleanups.push(() => successor.close());
-    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+    const redeemed = (await strictTestExchange(successor, 'handoff.redeem.v1', redeem, 5_000)) as {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
 
-    // Right up to — but not reaching — the bare lease boundary measured from redemption itself: operational
-    // control carries no recovery ceiling to clamp this any earlier, unlike the enforcer's own first
-    // challenge, which cannot outlive the containment-recovery window.
-    set.advanceSilently(PROXY_CONTROL_LEASE_MS - 1);
-    const stillLive = (await successor.call(
+    set.advanceSilently(PROXY_CONTROL_LEASE_MS + 1);
+    const stillLive = (await strictTestExchange(
+      successor,
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
       5_000,
@@ -1406,7 +1495,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
 
     await vi.waitFor(() => expect(receivedSeqs).toEqual([1]));
-    await set.control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+    await strictTestExchange(set.control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     // The same event, sent twice — a `replay` reply does not advance providerSeq allocation.
     expect(receivedSeqs).toEqual([1, 1]);
@@ -1498,17 +1587,19 @@ describe('provider-proxy provider.event.v1 emission', () => {
       return successorAck;
     });
     cleanups.push(() => successor.close());
-    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+    const redeemed = (await strictTestExchange(successor, 'handoff.redeem.v1', redeem, 5_000)) as {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
-    await successor.call(
+    await strictTestExchange(
+      successor,
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
       5_000,
     );
 
-    const attached = (await successor.call(
+    const attached = (await strictTestExchange(
+      successor,
       'operation.attach.v1',
       { operation, committedThroughProviderSeq: 0 },
       5_000,
@@ -1544,11 +1635,12 @@ describe('provider-proxy provider.event.v1 emission', () => {
       return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
     });
     cleanups.push(() => successor.close());
-    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+    const redeemed = (await strictTestExchange(successor, 'handoff.redeem.v1', redeem, 5_000)) as {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
-    await successor.call(
+    await strictTestExchange(
+      successor,
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
       5_000,
@@ -1557,7 +1649,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     // A retry of the identical redeem, on the same connection — the only branch that ever reaches
     // `reattachControl` for this proxy: `control.open.v1`'s own bootstrap nonce is single-use, so the
     // original coordinator's own tenancy can never re-enter it this way.
-    await successor.call('handoff.redeem.v1', redeem, 5_000);
+    await strictTestExchange(successor, 'handoff.redeem.v1', redeem, 5_000);
 
     await vi.waitFor(() => expect(received).toHaveLength(1));
   });

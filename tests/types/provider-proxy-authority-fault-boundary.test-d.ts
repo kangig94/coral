@@ -1,17 +1,71 @@
 import type {
   ContainmentRequiredControlCallPolicy,
   ControlCallPolicy,
+  ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
-  ProviderProxyOperationIncident,
+  ProviderProxyAuthorityIncident,
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import type { ProviderProxySetDecision } from '#src/coordinator/services/provider-proxy-set/decisions.js';
+import type {
+  ProviderProxySetDecision,
+  ProviderProxySetOperatorAbandonmentDecision,
+  ProviderProxySetOperatorContainmentDecision,
+} from '#src/coordinator/services/provider-proxy-set/decisions.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import type {
+  ProcessContainmentEvidence,
+  ProviderProxySetDischarge,
+  ProviderProxySetOperatorExitCapability,
+} from '#src/coordinator/services/provider-proxy-set/index.js';
+import type { ControlClientError, ControlExchange } from '#src/provider-proxy/control-client.js';
+import {
+  applyNoResponse,
+  heartbeatObservationFromExchange,
+  type HeartbeatObservation,
+  type HeartbeatReplyObservation,
+} from '#src/provider-proxy/heartbeat-observation.js';
+import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 
 declare const setIdentity: ProviderProxySetIdentity;
 declare const retrySafePolicy: RetrySafeControlCallPolicy;
 declare const containmentPolicy: ContainmentRequiredControlCallPolicy;
 declare const latch: ProviderProxyAuthorityFaultLatch;
+declare const channelIncident: Extract<ProviderProxyAuthorityIncident, { kind: 'control-channel-fault' }>;
+
+declare const operatorContainment: ProviderProxySetOperatorContainmentDecision;
+declare const operatorAbandonment: ProviderProxySetOperatorAbandonmentDecision;
+
+// @ts-expect-error exact-set containment is a faultless operator action, never a stop-and-reap decision.
+const operatorContainmentCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> =
+  operatorContainment;
+void operatorContainmentCannotStop;
+
+// @ts-expect-error abandonment is outside the destructive stop-and-reap action set.
+const abandonmentCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = operatorAbandonment;
+void abandonmentCannotStop;
+
+// @ts-expect-error the deadline and held-state checks are the only mint for this opaque capability.
+const forgedOperatorExitCapability: ProviderProxySetOperatorExitCapability = { setIdentity };
+void forgedOperatorExitCapability;
+
+// @ts-expect-error a channel ending is an incident and cannot enter the terminal authority latch.
+const channelIncidentCannotBeTerminal: ProviderProxyAuthorityFault = channelIncident;
+void channelIncidentCannotBeTerminal;
+
+// @ts-expect-error the latch accepts only terminal authority faults, never channel-loss observations.
+latch.latch(channelIncident);
+
+const channelIncidentCannotStopAndReap: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = {
+  action: 'stop-and-reap',
+  reason: 'provider_authority_lost',
+  // @ts-expect-error no destructive provider-proxy set decision admits control-channel-fault as its evidence.
+  fault: 'control-channel-fault',
+  role: 'proxy',
+  error: 'closed',
+  liveClaims: 1,
+  setIdentity,
+};
+void channelIncidentCannotStopAndReap;
 
 declare const mutationWithoutDisposition: Readonly<{
   method: string;
@@ -103,8 +157,127 @@ declare const containmentOperationIncident: Readonly<{
 }>;
 
 // @ts-expect-error the non-consuming incident channel accepts only retry-safe mutations.
-const invalidIncident: ProviderProxyOperationIncident = containmentOperationIncident;
+const invalidIncident: ProviderProxyAuthorityIncident = containmentOperationIncident;
 void invalidIncident;
+
+declare const forgedHeartbeatObservation: Readonly<{
+  kind: 'no-response-before-deadline';
+  error: ControlClientError;
+}>;
+
+// @ts-expect-error only the heartbeat owner can mint the provenance brand; matching fields are insufficient.
+const invalidForgedHeartbeatObservation: HeartbeatObservation = forgedHeartbeatObservation;
+void invalidForgedHeartbeatObservation;
+
+declare const forgedControlExchange: Readonly<{
+  kind: 'no-response';
+  cause: 'timeout';
+  error: ControlClientError;
+}>;
+
+// @ts-expect-error only the transport owner can mint the exchange brand; matching fields are insufficient.
+const invalidForgedControlExchange: ControlExchange = forgedControlExchange;
+void invalidForgedControlExchange;
+
+// @ts-expect-error the heartbeat mint accepts only transport-minted exchanges, not a matching object literal.
+heartbeatObservationFromExchange({
+  kind: 'no-response',
+  cause: 'timeout',
+  error: {} as ControlClientError,
+});
+
+declare const forgedSetDischarge: Readonly<{
+  process: Readonly<{ kind: 'containment-absent'; receipt: string }>;
+  claims: Readonly<{ kind: 'claims-discharged'; operations: readonly [] }>;
+}>;
+
+// @ts-expect-error slot removal requires both owner-minted discharge brands; matching literals carry no authority.
+const invalidForgedSetDischarge: ProviderProxySetDischarge = forgedSetDischarge;
+void invalidForgedSetDischarge;
+
+declare const roleAcknowledgement: Readonly<{ disappearanceReceipt: string }>;
+
+// @ts-expect-error a role acknowledgement cannot mint the containment owner's discharge capability.
+const invalidAcknowledgementDischarge: ProcessContainmentEvidence = {
+  kind: 'containment-absent',
+  receipt: roleAcknowledgement.disappearanceReceipt,
+};
+void invalidAcknowledgementDischarge;
+
+declare const controlExchange: ControlExchange;
+const ownerClassifiedObservation = heartbeatObservationFromExchange(controlExchange);
+const heartbeatAuthorityObservation = {
+  kind: 'heartbeat-observation' as const,
+  role: 'guardian' as const,
+  method: 'guardian.heartbeat.v1' as const,
+  observation: ownerClassifiedObservation,
+  schedulerLatenessMs: 0,
+};
+
+// @ts-expect-error heartbeat observations cannot consume the terminal authority-fault latch.
+latch.latch(heartbeatAuthorityObservation);
+
+declare const replyObservation: HeartbeatReplyObservation;
+declare const heartbeatHoldBound: ProviderProxyHeartbeatHoldBound;
+const heartbeatTiming = { nowMonotonicMs: 0n, schedulerLatenessMs: 0, bound: heartbeatHoldBound };
+// @ts-expect-error a reply observation cannot enter the no-response reducer.
+applyNoResponse({ kind: 'clear' }, replyObservation, heartbeatTiming);
+
+declare const nonDecisiveHeartbeatFault: Readonly<{
+  kind: 'heartbeat-failed';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  terminalReason: 'unanswered';
+  error: 'retry later';
+}>;
+
+// @ts-expect-error terminal heartbeat faults accept only decisive refusal reasons.
+latch.latch(nonDecisiveHeartbeatFault);
+
+declare const unqualifiedHeartbeatReap: Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'heartbeat-failed';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+// @ts-expect-error heartbeat containment must name the decisive refusal that authorized it.
+const invalidHeartbeatReap: ProviderProxySetDecision = unqualifiedHeartbeatReap;
+void invalidHeartbeatReap;
+
+declare const unqualifiedHeartbeatHoldReap: Readonly<{
+  action: 'stop-and-reap';
+  reason: 'heartbeat_hold_exhausted';
+  fault: 'heartbeat-hold-exhausted';
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+// @ts-expect-error the coordinator's own bounded escalation must name what it observed: attempts, elapsed span, and the last incident reason — not a bare "exhausted".
+const invalidHeartbeatHoldReap: ProviderProxySetDecision = unqualifiedHeartbeatHoldReap;
+void invalidHeartbeatHoldReap;
+
+const validHeartbeatHoldReap: ProviderProxySetDecision = {
+  action: 'stop-and-reap',
+  reason: 'heartbeat_hold_exhausted',
+  fault: 'heartbeat-hold-exhausted',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  lastIncidentReason: 'unanswered',
+  attempts: 3,
+  elapsedMs: 23_000,
+  schedulerLatenessMs: 0,
+  error: 'heartbeat timed out',
+  liveClaims: 1,
+  setIdentity,
+};
 
 const validRetirementDecision: ProviderProxySetDecision = {
   action: 'stop-and-reap',
@@ -112,9 +285,32 @@ const validRetirementDecision: ProviderProxySetDecision = {
   liveClaims: 0,
   setIdentity,
 };
-const validIncident: ProviderProxyOperationIncident = {
+const validIncident: ProviderProxyAuthorityIncident = {
   kind: 'operation-control-failed',
   policy: retrySafePolicy,
   error: 'retry later',
 };
-void [validRetirementDecision, validIncident, containmentPolicy];
+const validHeartbeatIncident: ProviderProxyAuthorityIncident = {
+  kind: 'heartbeat-observation',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  observation: ownerClassifiedObservation,
+  schedulerLatenessMs: 0,
+};
+// A local failure (this process could not construct or send the call at all) is a second decisive
+// terminal reason alongside `teardown-latched` — not a disposition about the peer, but still terminal.
+const validLocalFailureHeartbeatFault: ProviderProxyAuthorityFault = {
+  kind: 'heartbeat-failed',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  terminalReason: 'local-failure',
+  error: 'cannot encode heartbeat',
+};
+void [
+  validRetirementDecision,
+  validIncident,
+  validHeartbeatIncident,
+  containmentPolicy,
+  validLocalFailureHeartbeatFault,
+  validHeartbeatHoldReap,
+];

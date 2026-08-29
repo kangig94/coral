@@ -255,12 +255,14 @@ describe('real recorded process containment', () => {
     };
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
-    await reapRecordedContainment(
-      containmentFor(recycledIdentity),
-      [],
-      clock.shiftMilliseconds(clock.now(), 2_000),
-      environment(signals),
-    );
+    await expect(
+      reapRecordedContainment(
+        containmentFor(recycledIdentity),
+        [],
+        clock.shiftMilliseconds(clock.now(), 2_000),
+        environment(signals),
+      ),
+    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
 
     expect(signals).toEqual([]);
     expect(observeProcessLiveness(actualIdentity.pid)).toBe('alive');

@@ -28,17 +28,24 @@ import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-st
 import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
-import type { RecoveryCoordinator } from '../services/recovery/index.js';
 import {
+  quarantineUnreadableProviderOperations,
+  type RepairedProviderOperationAdoption,
+  type RecoveryCoordinator,
+} from '../services/recovery/index.js';
+import {
+  attributeUnreadableProviderOperations,
   readProviderOperation,
   readProviderOperations,
   subscribeProviderOperationMutations,
 } from '../../store/provider-operation-journal.js';
+import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromRecord,
 } from '../services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
+import { authorizeProviderProxySetContainmentProof } from '../services/provider-proxy-set/containment-proof.js';
 import type { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-recovery-policy.js';
 import {
   discoverProviderHandoffCapsules,
@@ -81,6 +88,7 @@ export function createExecutionServices({
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
+  adoptRepairedProviderOperation: (record: ProviderOperationRecord) => Promise<RepairedProviderOperationAdoption>;
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
@@ -115,11 +123,15 @@ export function createExecutionServices({
         return providerProxyInheritance.redeemDiscoveredCapsule(capsule, capsulePath, signal);
       },
       'containment-proof': ({ identity, signal }) =>
-        providerProxyInheritance === undefined
-          ? Promise.resolve(null)
-          : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
+        world.providerProxySetContainmentProver.collectContainmentProof(
+          authorizeProviderProxySetContainmentProof(identity),
+          getProgressStore().getDb(),
+          signal,
+        ),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
       'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
+      'representation-abandonment-consumer': ({ notice }) =>
+        providerOperationReconciler.representationAbandoned(notice),
     },
     fatalSink: { fatal: onProviderProxyLifecycleFatal },
   });
@@ -158,6 +170,12 @@ export function createExecutionServices({
           kind: 'absence-accepted',
           acceptance: providerProxyLifecycle.containmentAbsent(work.identity, outcome.disappearanceReceipt),
         };
+      case 'recorded-group-unattributable':
+        return {
+          kind: 'retry-scheduled',
+          reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
+          nextAttemptAtMs: runtime.time.now() + 25,
+        };
       case 'not-bequeathed':
         return {
           kind: 'retry-scheduled',
@@ -195,6 +213,11 @@ export function createExecutionServices({
           return {
             kind: 'temporarily-unavailable',
             reason: providerProxySetAvailabilityReason(outcome.incident),
+          };
+        case 'recorded-group-unattributable':
+          return {
+            kind: 'temporarily-unavailable',
+            reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
           };
         case 'containment-disappeared':
           providerProxyLifecycle.containmentAbsent(
@@ -244,6 +267,7 @@ export function createExecutionServices({
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
+    reapRecordedContainment: world.reapRecordedContainment,
     onProgressPremiseViolation: (violation) =>
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,
@@ -260,24 +284,47 @@ export function createExecutionServices({
   let providerProxyClaimsInitialized = false;
   let providerProxyLifecycleInitialized = false;
 
-  const initializeProviderProxyClaims = (): void => {
+  const adoptRepairedProviderOperation = async (
+    record: ProviderOperationRecord,
+  ): Promise<RepairedProviderOperationAdoption> => {
+    if (!providerProxyClaimsInitialized || !providerProxyLifecycleInitialized) {
+      return { kind: 'refused', reason: 'the provider operation ownership path is not initialized' };
+    }
+
+    world.providerProxyClaims.applyMutation({ kind: 'upserted', record });
+    const setIdentity = providerProxySetIdentityFromRecord(record);
+    const accepted = world.providerProxyClaims.claimFor(record.operation);
+    if (accepted === null || !providerProxySetIdentitiesEqual(accepted.setIdentity, setIdentity)) {
+      return { kind: 'refused', reason: 'the provider operation claim mirror did not retain the decoded record' };
+    }
+    providerProxyLifecycle.claimsChanged(setIdentity);
+    await providerOperationReconciler.reconcile(record);
+    return { kind: 'accepted', owner: 'provider-operation-reconciler' };
+  };
+
+  const initializeProviderProxyClaims = async (): Promise<void> => {
     if (providerProxyClaimsInitialized) return;
     const db = getProgressStore().getDb();
     const scan = readProviderOperations(db);
-    if (scan.unreadableKeys.length > 0) {
-      // The first scan on the boot path, so this is where an operator learns. Reported once and by key: the
-      // rows stay in the store, this build simply cannot act on them, and refusing to boot over them would
-      // trade a stalled operation for no daemon at all.
-      backendLog.warn(
-        `Skipped ${scan.unreadableKeys.length} provider operation record(s) this build cannot read: ${scan.unreadableKeys.join(', ')}`,
-      );
-    }
     world.providerProxyClaims.initialize(scan.records);
     providerProxyClaimsInitialized = true;
     unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
       world.providerProxyClaims.applyMutation(mutation);
       providerProxyLifecycle.claimsChanged(providerProxySetIdentityFromRecord(mutation.record));
     });
+
+    if (scan.unreadableKeys.length > 0) {
+      const quarantineReport = await quarantineUnreadableProviderOperations(
+        new RecoveryQuarantineStore(db, runtime.time),
+        attributeUnreadableProviderOperations(db, scan.unreadableKeys),
+      );
+      backendLog.warn(
+        `Quarantined ${quarantineReport.materialized} provider operation record(s) this build cannot read; ` +
+          `retained ${quarantineReport.retained} existing durable quarantine status(es); ` +
+          `${quarantineReport.failed.length} materialization failure(s): ` +
+          `${quarantineReport.failed.map(({ key }) => key).join(', ') || 'none'}`,
+      );
+    }
   };
 
   const initializeProviderProxyLifecycle = (): void => {
@@ -375,11 +422,12 @@ export function createExecutionServices({
     getExecutionService,
     getRecoveryService,
     listExecutionServices,
+    adoptRepairedProviderOperation,
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       providerOperationRecovery = recoveryCoordinator;
     },
-    reconcileProviderOperationsAtStartup: (signal) => {
-      initializeProviderProxyClaims();
+    reconcileProviderOperationsAtStartup: async (signal) => {
+      await initializeProviderProxyClaims();
       initializeProviderProxyLifecycle();
       return providerOperationReconciler.reconcileAtStartup(signal);
     },

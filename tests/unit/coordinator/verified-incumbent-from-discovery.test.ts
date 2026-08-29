@@ -179,7 +179,7 @@ describe('verifiedIncumbentFromProbe', () => {
   it('has no incumbent to contend with when the record could not be decoded', () => {
     // Not the same statement as the case above, and this call cannot say so — there is no record to agree
     // with, so `null` is the only value available. What keeps it from reading as "nobody is there" is outside
-    // this function: `probeCoordinator` warns, and the exclusive bind arbitrates.
+    // this function: `probeCoordinator` warns, and startup refuses the undecodable pre-bind disposition.
     expect(verifiedIncumbentFromProbe({ kind: 'unobservable', reason: 'unreadable-record' }, evidence())).toBeNull();
   });
 
@@ -224,6 +224,8 @@ describe('verifiedIncumbentFromRuntimeProbe', () => {
   });
 
   it('has no incumbent to contend with when the discovery record cannot be decoded', () => {
+    // Lifecycle startup calls the disposition reader before reaching this probe and refuses this state. This
+    // direct helper test pins only the probe's narrower contract for its other callers.
     const runtime = makeRuntime();
     const infoFile = runtime.paths.coral.coordinator.infoFile;
     mkdirSync(dirname(infoFile), { recursive: true });

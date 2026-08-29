@@ -40,6 +40,8 @@ import {
  * raised once a build carrying the lower one has shipped.
  */
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
+// Reflecting a peer-supplied challenge in the larger outbound params frame must stay far below the frame cap.
+export const MAX_HEARTBEAT_CHALLENGE_CHARACTERS = 1_024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
 export const PROXY_STATUS_RPC_TIMEOUT_MS = 500;
@@ -57,14 +59,10 @@ export const PROXY_STATUS_RPC_TIMEOUT_MS = 500;
 export const PROXY_OPERATION_STATUS_MAX_OPERATIONS = 128;
 
 export const controlEpochSchema = z.number().int().nonnegative().safe();
-export const heartbeatChallengeSchema = z.string().min(1);
+export const heartbeatChallengeSchema = z.string().min(1).max(MAX_HEARTBEAT_CHALLENGE_CHARACTERS);
 
 export const controlHeartbeatParamsSchema = z
   .object({ controlEpoch: controlEpochSchema, heartbeatChallenge: heartbeatChallengeSchema })
-  .strict();
-
-export const controlHeartbeatResultSchema = z
-  .object({ state: z.literal('active'), nextHeartbeatChallenge: heartbeatChallengeSchema })
   .strict();
 
 export const controlPairParamsSchema = z.object({ pairingSecret: z.string().min(1) }).strict();
@@ -484,6 +482,16 @@ export function assertNamedTeardownReserve(claimedMs: number, expectedMs: number
     throw new ProxyControlProtocolError(
       'identity_mismatch',
       `The named teardown reserve is not this build's ${expectedMs}ms.`,
+    );
+  }
+}
+
+/** A recovery grant cannot revise the deadline its role was bootstrapped to enforce. */
+export function assertNamedOrphanTimeout(claimedMs: number, expectedMs: number): void {
+  if (claimedMs !== expectedMs) {
+    throw new ProxyControlProtocolError(
+      'identity_mismatch',
+      `The named orphan timeout is not this role's ${expectedMs}ms.`,
     );
   }
 }

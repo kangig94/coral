@@ -31,6 +31,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_source_not_quiescent'
+  | 'legacy_source_writer_observation_unknown'
   | 'active_store_coordination_invalid'
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
@@ -52,6 +53,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_reset_interrupted_non_resettable'
   | 'store_reset_quarantine_failed'
   | 'recovery_quarantine_boundary_not_registered'
+  | 'recovery_quarantine_subject_not_found'
   | 'recovery_quarantine_revision_changed'
   | 'recovery_quarantine_continuation_pending'
   | 'recovery_quarantine_retry_in_progress'
@@ -217,8 +219,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     },
     remediation: (context) => {
       const cause = stringContextValue(context, 'cause', 'cause unavailable');
-      if (cause === 'the owner uid named by the socket address is not usable') {
-        return 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback socket address. Coral will not bind its singleton socket without a usable owner identity.';
+      if (cause === 'the required socket-directory owner uid is not usable') {
+        return 'Start Coral in an environment that provides an owner uid the filesystem can represent for the fallback directory. Coral will not bind its singleton socket without a usable owner identity.';
       }
       if (cause.includes('reported no owner')) {
         return 'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.';
@@ -250,9 +252,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   legacy_source_not_quiescent: {
     userMessage: (context) =>
-      context?.writerObservation === 'unknown'
-        ? `The generation-boundary operation cannot determine whether ${stringContextValue(context, 'holder', '<writer-lease-holder>')} is still active.`
-        : `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
+      `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
     remediation: (context) => {
       const retry = stringContextValue(
         context,
@@ -261,11 +261,24 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
           ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
           : 'the operator command you ran',
       );
-      if (context?.writerObservation === 'unknown') {
-        return `Restore process-identity and liveness observation for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}', then retry '${retry}'. If that writer has exited, its lease becomes reclaimable after ten minutes without a heartbeat; retry after that bound instead of deleting the lease.`;
-      }
       return `Run this build's own 'coral-cli backend shutdown'. Wait for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease or lock, then retry '${retry}'.`;
     },
+  },
+  legacy_source_writer_observation_unknown: {
+    userMessage: (context) =>
+      `The generation-boundary operation cannot determine whether ${stringContextValue(context, 'holder', '<writer-lease-holder>')} is still active.`,
+    remediation: (context) => {
+      const retry = stringContextValue(
+        context,
+        'retryCommand',
+        context?.operation === 'store-reset'
+          ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
+          : 'the operator command you ran',
+      );
+      return `Restore process-identity and liveness observation for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}', then retry '${retry}'. If that writer has exited, its lease becomes reclaimable after ten minutes without a heartbeat; retry after that bound instead of deleting the lease.`;
+    },
+    exitCode: 75,
+    observation: 'not_observed',
   },
   active_store_coordination_invalid: {
     userMessage: (context) =>
@@ -405,6 +418,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'That recovery boundary is not available for operator retry.',
     remediation:
       'Run `coral-cli backend recovery-quarantine list` and copy the boundary from a retained row. If the listed boundary is still rejected, update Coral and retry.',
+  },
+  recovery_quarantine_subject_not_found: {
+    userMessage: 'That recovery quarantine key does not name a retained row.',
+    remediation:
+      'Run `coral-cli backend recovery-quarantine list`, copy one row’s current boundary, key, and revision, then retry clear with that exact coordinate.',
   },
   recovery_quarantine_revision_changed: {
     userMessage: 'That recovery quarantine coordinate is stale because its revision changed.',

@@ -12,7 +12,12 @@ import {
   type ProxyBootstrapCapsule,
   type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  controlExchangeForTest,
+  type ControlClient,
+  type ControlExchange,
+} from '#src/provider-proxy/control-client.js';
+import { CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV } from '#src/provider-proxy/orphan-deadline.js';
 import {
   buildEnforcementOutcomeHandlers,
   runProviderRoleMain,
@@ -209,9 +214,20 @@ function pairingCapsule(role: 'guardian' | 'proxy', directory: string, pairingSe
   };
 }
 
-function roleSenderPorts(directory: string): ProviderRoleMainPorts {
+function roleSenderPorts(directory: string, orphanTimeoutMs?: string): ProviderRoleMainPorts {
+  const runtime = createRealRuntime('prod');
   return {
-    runtime: createRealRuntime('prod'),
+    runtime:
+      orphanTimeoutMs === undefined
+        ? runtime
+        : {
+            ...runtime,
+            env: {
+              ...runtime.env,
+              get: (key: string) =>
+                key === CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV ? orphanTimeoutMs : runtime.env.get(key),
+            },
+          },
     pluginRoot: directory,
     baseDir: directory,
     readProcessIncarnation: (pid) => (pid === process.pid ? testIncarnation(1) : null),
@@ -229,7 +245,7 @@ function fakeSpawnedRole(): unknown {
 
 function enableRoleSender(
   capsule: unknown,
-  channel: Pick<ControlClient, 'call' | 'close'>,
+  channel: Pick<ControlClient, 'exchange' | 'close'>,
   spawnRoleProcess = vi.fn(fakeSpawnedRole),
 ): void {
   roleSenderHarness.enabled = true;
@@ -245,33 +261,39 @@ function enableRoleSender(
 describe('role pairing sender schemas', () => {
   it('refuses malformed guardian-to-reaper pairing params before consulting the reaper', async () => {
     const directory = scopedTempDir('coral-guardian-pair-sender-');
-    const call = vi.fn(async (): Promise<never> => {
+    const exchange = vi.fn(async (): Promise<never> => {
       throw new Error('receiver was consulted');
     });
-    enableRoleSender(pairingCapsule('guardian', directory, { unexpected: true }), { call, close: vi.fn() });
+    enableRoleSender(pairingCapsule('guardian', directory, { unexpected: true }), { exchange, close: vi.fn() });
 
     await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'invalid_type', path: ['pairingSecret'] })],
     });
-    expect(call).not.toHaveBeenCalled();
+    expect(exchange).not.toHaveBeenCalled();
   });
 
   it('refuses malformed proxy-to-guardian pairing params before consulting the guardian', async () => {
     const directory = scopedTempDir('coral-proxy-pair-sender-');
-    const call = vi.fn(async (): Promise<never> => {
+    const exchange = vi.fn(async (): Promise<never> => {
       throw new Error('receiver was consulted');
     });
-    enableRoleSender(pairingCapsule('proxy', directory, { unexpected: true }), { call, close: vi.fn() });
+    enableRoleSender(pairingCapsule('proxy', directory, { unexpected: true }), { exchange, close: vi.fn() });
 
     await expect(startProviderProxyRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'invalid_type', path: ['pairingSecret'] })],
     });
-    expect(call).not.toHaveBeenCalled();
+    expect(exchange).not.toHaveBeenCalled();
   });
 
   it('refuses a malformed reaper pairing reply before spawning or constructing the proxy', async () => {
     const directory = scopedTempDir('coral-reaper-pair-reply-');
-    const call = vi.fn(async () => ({ state: 'paired', unexpected: true }));
+    const exchange = vi.fn(
+      async (): Promise<ControlExchange> =>
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'paired', unexpected: true } },
+        }),
+    );
     const spawnRoleProcess = vi
       .fn()
       .mockImplementationOnce(fakeSpawnedRole)
@@ -280,15 +302,18 @@ describe('role pairing sender schemas', () => {
       });
     enableRoleSender(
       pairingCapsule('guardian', directory, randomBytes(32).toString('hex')),
-      { call, close: vi.fn() },
+      { exchange, close: vi.fn() },
       spawnRoleProcess,
     );
 
-    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
+    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory, '74000'))).rejects.toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],
     });
-    expect(call).toHaveBeenCalledOnce();
+    expect(exchange).toHaveBeenCalledOnce();
     expect(spawnRoleProcess).toHaveBeenCalledOnce();
+    expect(spawnRoleProcess.mock.calls[0]?.[3].envAdditions).toMatchObject({
+      [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
+    });
   });
 });
 
@@ -361,13 +386,16 @@ describe('runProviderRoleMain', () => {
     const directory = scopedTempDir('coral-proxy-role-close-');
     let guardianArmed = false;
     const pairingClose = vi.fn();
-    const pairingCall = vi.fn(async (method: string) => {
+    const pairingExchange = vi.fn(async (method: string): Promise<ControlExchange> => {
       if (method !== 'guardian.pair.v1') throw new Error(`unexpected guardian method: ${method}`);
       guardianArmed = true;
-      return { state: 'paired' };
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'paired' } },
+      });
     });
     enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
-      call: pairingCall,
+      exchange: pairingExchange,
       close: pairingClose,
     });
     proxyRoleCloseHarness.enabled = true;
@@ -410,7 +438,13 @@ describe('runProviderRoleMain', () => {
     const directory = scopedTempDir('coral-proxy-role-relinquish-');
     const pairingClose = vi.fn();
     enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
-      call: vi.fn(async () => ({ state: 'paired' })),
+      exchange: vi.fn(
+        async (): Promise<ControlExchange> =>
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'paired' } },
+          }),
+      ),
       close: pairingClose,
     });
     proxyRoleCloseHarness.enabled = true;

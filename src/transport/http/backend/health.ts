@@ -1,6 +1,11 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
+import {
+  providerProxySetEnforcerObservationsSchema,
+  type ProviderProxySetEnforcerObservations,
+} from '../../../provider-proxy/containment-proof-contract.js';
+import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.
@@ -124,8 +129,37 @@ export interface BackendHealth {
       contentSeq?: number;
       metadataSeq?: number;
     }>;
+    providerProxySets?: Array<{
+      setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
+      setToken: string;
+      disposition: 'held' | 'awaiting-containment-absence' | 'operator-exit-refused';
+      role?: string;
+      method?: string;
+      cause?: 'closed' | 'invalid-unattributable-frame';
+      attempts?: number;
+      elapsedMs?: number;
+      boundMs?: number;
+      liveClaims?: number;
+      enforcerObservations?: ProviderProxySetEnforcerObservations;
+      incidentReason: string;
+      waitingFor:
+        | 'heartbeat-evidence-window'
+        | 'control-reattachment'
+        | 'independent-containment-absence'
+        | 'ordinary-drain'
+        | 'set-adoption-deadline'
+        | 'operator-abandonment'
+        | 'store-repair';
+    }>;
   };
 }
+
+/** A decoded health payload plus any provider-proxy rows omitted because this build cannot interpret them. */
+export type BackendHealthParseResult = Readonly<{
+  health: BackendHealth;
+  skippedProviderProxySetRows: number;
+  skippedProviderProxySetTokens: readonly string[];
+}>;
 
 export type BackendPing = {
   status: BackendHealth['status'];
@@ -169,6 +203,117 @@ function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['di
     }
     return entry.metadataSeq === undefined || Number.isFinite(entry.metadataSeq);
   });
+}
+
+type ProviderProxySet = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
+
+type ProviderProxySetsParseResult = Readonly<{
+  understoodRows: ProviderProxySet[];
+  skippedRows: number;
+  skippedSetTokens: string[];
+}>;
+
+function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const understoodRows: ProviderProxySet[] = [];
+  let skippedRows = 0;
+  const skippedSetTokens: string[] = [];
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isRecord(entry.setIdentity) ||
+      typeof entry.setIdentity.buildSetId !== 'string' ||
+      typeof entry.setIdentity.hostFingerprint !== 'string' ||
+      typeof entry.setIdentity.proxyInstanceId !== 'string' ||
+      typeof entry.setToken !== 'string'
+    ) {
+      skippedRows += 1;
+      continue;
+    }
+
+    let tokenAddress: ReturnType<typeof decodeProviderProxySetAddress>;
+    try {
+      tokenAddress = decodeProviderProxySetAddress(entry.setToken);
+    } catch {
+      skippedRows += 1;
+      continue;
+    }
+    if (
+      tokenAddress.buildSetId !== entry.setIdentity.buildSetId ||
+      tokenAddress.hostFingerprint !== entry.setIdentity.hostFingerprint ||
+      tokenAddress.proxyInstanceId !== entry.setIdentity.proxyInstanceId
+    ) {
+      skippedRows += 1;
+      continue;
+    }
+
+    if (
+      typeof entry.disposition !== 'string' ||
+      (entry.cause !== undefined && typeof entry.cause !== 'string') ||
+      typeof entry.incidentReason !== 'string' ||
+      typeof entry.waitingFor !== 'string'
+    ) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
+    }
+
+    const understandsEnums =
+      (entry.disposition === 'held' ||
+        entry.disposition === 'awaiting-containment-absence' ||
+        entry.disposition === 'operator-exit-refused') &&
+      (entry.cause === undefined || entry.cause === 'closed' || entry.cause === 'invalid-unattributable-frame') &&
+      (entry.waitingFor === 'heartbeat-evidence-window' ||
+        entry.waitingFor === 'control-reattachment' ||
+        entry.waitingFor === 'independent-containment-absence' ||
+        entry.waitingFor === 'ordinary-drain' ||
+        entry.waitingFor === 'set-adoption-deadline' ||
+        entry.waitingFor === 'operator-abandonment' ||
+        entry.waitingFor === 'store-repair');
+    if (!understandsEnums) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
+    }
+
+    if (
+      (entry.role !== undefined && typeof entry.role !== 'string') ||
+      (entry.method !== undefined && typeof entry.method !== 'string') ||
+      (entry.attempts !== undefined && !isNonNegativeInteger(entry.attempts)) ||
+      (entry.elapsedMs !== undefined && !isNonNegativeFiniteNumber(entry.elapsedMs)) ||
+      (entry.boundMs !== undefined && !isNonNegativeFiniteNumber(entry.boundMs)) ||
+      (entry.liveClaims !== undefined && !isNonNegativeInteger(entry.liveClaims)) ||
+      (entry.cause !== undefined &&
+        (entry.attempts === undefined ||
+          entry.elapsedMs === undefined ||
+          entry.boundMs === undefined ||
+          entry.liveClaims === undefined))
+    ) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
+    }
+
+    const enforcerObservations =
+      entry.enforcerObservations === undefined
+        ? undefined
+        : providerProxySetEnforcerObservationsSchema.safeParse(entry.enforcerObservations);
+    if (enforcerObservations !== undefined && !enforcerObservations.success) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
+    }
+
+    understoodRows.push({
+      ...entry,
+      ...(enforcerObservations === undefined ? {} : { enforcerObservations: enforcerObservations.data }),
+    } as ProviderProxySet);
+  }
+
+  return { understoodRows, skippedRows, skippedSetTokens };
 }
 
 function isDegradedReason(
@@ -323,15 +468,26 @@ function isKernel(value: unknown): value is BackendHealth['kernel'] {
   return value.readyAt === null || Number.isFinite(value.readyAt);
 }
 
-function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diagnostics']> {
+type DiagnosticsParseResult = Readonly<{
+  diagnostics: NonNullable<BackendHealth['diagnostics']>;
+  skippedProviderProxySetRows: number;
+  skippedProviderProxySetTokens: readonly string[];
+}>;
+
+function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   if (!isRecord(value)) {
-    return false;
+    return null;
   }
   if (value.mutationBlocked !== undefined && !isMutationBlocked(value.mutationBlocked)) {
-    return false;
+    return null;
   }
   if (value.consumerStuck !== undefined && !isConsumerStuck(value.consumerStuck)) {
-    return false;
+    return null;
+  }
+  const providerProxySets =
+    value.providerProxySets === undefined ? null : parseProviderProxySets(value.providerProxySets);
+  if (value.providerProxySets !== undefined && providerProxySets === null) {
+    return null;
   }
   if (
     value.carriers !== undefined &&
@@ -341,9 +497,16 @@ function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diag
       !isNonNegativeInteger(value.carriers.unknownJobs) ||
       !isNonNegativeInteger(value.carriers.recoveryDefectJobs))
   ) {
-    return false;
+    return null;
   }
-  return true;
+  return {
+    diagnostics: {
+      ...value,
+      ...(providerProxySets === null ? {} : { providerProxySets: providerProxySets.understoodRows }),
+    },
+    skippedProviderProxySetRows: providerProxySets?.skippedRows ?? 0,
+    skippedProviderProxySetTokens: providerProxySets?.skippedSetTokens ?? [],
+  } as DiagnosticsParseResult;
 }
 
 function isResources(value: unknown): value is NonNullable<BackendHealth['resources']> {
@@ -372,30 +535,45 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
   );
 }
 
-export function isBackendHealth(value: unknown): value is BackendHealth {
-  return (
-    isRecord(value) &&
-    (value.status === 'starting' || value.status === 'ok' || value.status === 'draining') &&
-    isKernel(value.kernel) &&
-    typeof value.version === 'string' &&
-    typeof value.bundleHash === 'string' &&
-    (value.flavor === 'prod' || value.flavor === 'dev') &&
-    typeof value.instanceId === 'string' &&
-    typeof value.namespace === 'string' &&
-    value.namespace.length > 0 &&
-    Number.isFinite(value.uptimeMs) &&
-    Number.isInteger(value.active) &&
-    Number.isInteger(value.activeJobs) &&
-    Number.isInteger(value.inflightRequests) &&
-    Number.isInteger(value.queueDepth) &&
-    isTextProjectionState(value.textProjectionState) &&
-    (value.resources === undefined || isResources(value.resources)) &&
-    Array.isArray(value.components) &&
-    value.components.every(isRuntimeComponentStatus) &&
-    (value.systemProviderScope === undefined || isSystemProviderScope(value.systemProviderScope)) &&
-    (value.kbDaemon === undefined || isKbDaemonHealth(value.kbDaemon)) &&
-    (value.diagnostics === undefined || isDiagnostics(value.diagnostics))
-  );
+export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
+  if (
+    !isRecord(value) ||
+    (value.status !== 'starting' && value.status !== 'ok' && value.status !== 'draining') ||
+    !isKernel(value.kernel) ||
+    typeof value.version !== 'string' ||
+    typeof value.bundleHash !== 'string' ||
+    (value.flavor !== 'prod' && value.flavor !== 'dev') ||
+    typeof value.instanceId !== 'string' ||
+    typeof value.namespace !== 'string' ||
+    value.namespace.length === 0 ||
+    !Number.isFinite(value.uptimeMs) ||
+    !Number.isInteger(value.active) ||
+    !Number.isInteger(value.activeJobs) ||
+    !Number.isInteger(value.inflightRequests) ||
+    !Number.isInteger(value.queueDepth) ||
+    !isTextProjectionState(value.textProjectionState) ||
+    (value.resources !== undefined && !isResources(value.resources)) ||
+    !Array.isArray(value.components) ||
+    !value.components.every(isRuntimeComponentStatus) ||
+    (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
+    (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
+  ) {
+    return null;
+  }
+
+  const diagnostics = value.diagnostics === undefined ? null : parseDiagnostics(value.diagnostics);
+  if (value.diagnostics !== undefined && diagnostics === null) {
+    return null;
+  }
+
+  return {
+    health: {
+      ...value,
+      ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
+    } as BackendHealth,
+    skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
+    skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],
+  };
 }
 
 export function isBackendPing(value: unknown): value is BackendPing {

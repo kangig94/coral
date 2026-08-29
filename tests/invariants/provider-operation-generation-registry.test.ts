@@ -68,6 +68,7 @@ describe('other durable and wire generations', () => {
     expect(launchRoute).toContain('version: PROXY_PREPARED_APP_SERVER_OPERATION_VERSION');
     expect(reprepare).toContain('version: PROXY_PREPARED_APP_SERVER_OPERATION_VERSION');
     expect(handoff).toContain('version: typeof HANDOFF_SIGNAL_RECORD_VERSION');
+    expect(handoff).toContain('`handoff-signal.v${HANDOFF_SIGNAL_RECORD_VERSION}.json`');
     expect(handoff).toContain('record.version === HANDOFF_SIGNAL_RECORD_VERSION');
     expect(handoff).toContain('version: HANDOFF_SIGNAL_RECORD_VERSION');
   });

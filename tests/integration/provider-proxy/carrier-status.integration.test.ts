@@ -1,4 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -148,12 +149,19 @@ async function startStatusProxy(): Promise<
 
   const control = await connectControlClient(controlEndpoint, timer, PROXY_CONTROL_RPC_TIMEOUT_MS);
   cleanups.push(() => control.close());
-  const opened = (await control.call(
-    'control.open.v1',
-    { bootstrapNonce: BOOTSTRAP_NONCE, coordinator },
-    PROXY_CONTROL_RPC_TIMEOUT_MS,
-  )) as { controlEpoch: number; heartbeatChallenge: string };
-  await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge);
+  const opened = (await strictTestExchange(control, 'control.open.v1', {
+    bootstrapNonce: BOOTSTRAP_NONCE,
+    coordinator,
+  })) as { controlEpoch: number; heartbeatChallenge: string };
+  const heartbeat = await heartbeatOnce(
+    control,
+    'control.heartbeat.v1',
+    opened.controlEpoch,
+    opened.heartbeatChallenge,
+  );
+  if (heartbeat.kind !== 'reply' || heartbeat.reply.kind !== 'accepted') {
+    throw new Error(`opening heartbeat was not accepted: ${heartbeat.kind}`);
+  }
 
   const held = operationIdentitySchema.parse({
     jobId: randomUUID(),
@@ -167,16 +175,12 @@ async function startStatusProxy(): Promise<
     proxyInstanceId,
     buildSetId,
   });
-  await control.call(
-    'operation.prepare.v1',
-    {
-      operation: held,
-      hostFingerprint: HOST_FINGERPRINT,
-      prepareAttemptNumber: 1,
-      prepared: PREPARED,
-    },
-    PROXY_CONTROL_RPC_TIMEOUT_MS,
-  );
+  await strictTestExchange(control, 'operation.prepare.v1', {
+    operation: held,
+    hostFingerprint: HOST_FINGERPRINT,
+    prepareAttemptNumber: 1,
+    prepared: PREPARED,
+  });
   expect(proxy.ledger().get(held), 'integration setup must create the live ledger row').not.toBeNull();
 
   const locator = {
@@ -233,11 +237,14 @@ describe('carrier status observer wire seam', () => {
     const receiverProbe = await connectControlClient(set.controlEndpoint, timer, PROXY_CONTROL_RPC_TIMEOUT_MS);
     cleanups.push(() => receiverProbe.close());
     await expect(
-      receiverProbe.call(
+      receiverProbe.exchange(
         'operation.status.v1',
         { operations: [set.held, set.missing], nonce: 'malformed-nonce' },
         PROXY_CONTROL_RPC_TIMEOUT_MS,
       ),
-    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    ).resolves.toMatchObject({
+      kind: 'response',
+      response: { kind: 'refusal', failure: { kind: 'json-rpc-error', protocolCode: 'protocol_violation' } },
+    });
   });
 });

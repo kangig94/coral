@@ -1,5 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -11,7 +11,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
+import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -22,6 +22,8 @@ import type {
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
@@ -35,10 +37,17 @@ import {
   createSpawnProviderServerMock,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const containmentProofDb = newRawDatabase(':memory:');
+applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+afterAll(() => containmentProofDb.close());
 
 const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
@@ -57,7 +66,15 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
   const base = fakeProxySet(proxyInstanceId);
   return {
     ...base,
-    registerSuccessionOperation: async () => {},
+    autonomousDeadline: {
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     setIdentity: {
       buildSetId: randomUUID(),
       hostFingerprint: 'a'.repeat(64),
@@ -94,6 +111,10 @@ function fakeDurableProxySet(
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
     onIncident: () => () => undefined,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     prepareOperation:
       options.prepareOperation ??
       (async () => {
@@ -141,8 +162,11 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     controlEstablished: () => undefined,
     time: runtime.time,
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-      'containment-proof': async () => null,
+      'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
     }),
+    reapRecordedContainment: () => {
+      throw new Error('provider host pool fixture unexpectedly requested recorded containment reaping');
+    },
     reportLifecycle: () => undefined,
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });

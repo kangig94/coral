@@ -41,6 +41,8 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainResponseSchema,
+  unreadableProviderOperationDiscardResultSchema,
 } from '../../transport/rpc/catalog.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -63,6 +65,7 @@ import {
   type LifecycleDeps,
   type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
+import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
@@ -106,9 +109,13 @@ import {
   assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
-import { createCoordinatorJobRecoveryRetryPlan } from '../services/recovery/index.js';
+import {
+  createCoordinatorJobRecoveryRetryPlan,
+  createUnreadableProviderOperationRetryPlan,
+} from '../services/recovery/index.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
 import {
   createRetentionReleasePairRetryPlan,
@@ -468,6 +475,12 @@ export function createCoordinatorCore(
   };
   const recoverySources = createRecoverySourceRegistry();
   const recoveryDb = () => getProgressStore().getDb();
+  let adoptRepairedProviderOperation: ReturnType<
+    typeof createExecutionServices
+  >['adoptRepairedProviderOperation'] = async () => ({
+    kind: 'refused',
+    reason: 'the coordinator execution services are not composed',
+  });
   const createSystemInvocationContext = (
     projectRoot: CanonicalWorkDir,
     credentialId: string,
@@ -531,13 +544,28 @@ export function createCoordinatorCore(
   recoverySources.register('crashed-job-terminalization', (subject) =>
     createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
   );
+  recoverySources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
+    createUnreadableProviderOperationRetryPlan(recoveryDb(), subject, adoptRepairedProviderOperation),
+  );
   assertRecoverySourceRegistryComplete(recoverySources);
-  const recoveryQuarantine = createRecoveryQuarantineRetryService({
+  const recoveryQuarantineRetry = createRecoveryQuarantineRetryService({
     instanceId: world.identity.instanceId,
     ids: runtime.ids,
     quarantine: recoveryQuarantineStore,
     sources: recoverySources,
   });
+  const recoveryQuarantine: RpcPorts['recoveryQuarantine'] = {
+    clear: (request, signal) => recoveryQuarantineRetry.clear(request, signal),
+    discardProviderOperation: (request) => {
+      const discard = createUnreadableProviderOperationDiscardService({
+        instanceId: world.identity.instanceId,
+        ids: runtime.ids,
+        db: recoveryDb(),
+        time: runtime.time,
+      });
+      return unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
+    },
+  };
 
   // Eager defaults resolve from `runtime` alone.
   const defaults = defaultsPlan.finalizeWithWorld({
@@ -569,6 +597,7 @@ export function createCoordinatorCore(
       void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
     },
   });
+  adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
 
   const discuss = createDiscussRuntime({
     world,
@@ -972,6 +1001,28 @@ export function createCoordinatorCore(
       evict: async (selector) =>
         providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector)),
     },
+    providerProxySets: {
+      contain: async (request, signal) => {
+        const lifecycle = world.providerProxyLifecycleRef.get();
+        if (lifecycle === null) throw new Error('provider_proxy_set_operator_exit_unavailable');
+        const authorization = lifecycle.authorizeOperatorExit(request.setIdentity);
+        if (authorization.kind !== 'authorized') {
+          return providerProxySetContainResponseSchema.parse({
+            ...authorization,
+            setIdentity: request.setIdentity,
+            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+          });
+        }
+        const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
+          authorization.capability.containmentProofAuthorization,
+          getProgressStore().getDb(),
+          signal ?? new AbortController().signal,
+        );
+        return providerProxySetContainResponseSchema.parse(
+          await lifecycle.completeOperatorExit(authorization.capability, proof, request.abandonWithoutAbsence, signal),
+        );
+      },
+    },
     kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,
@@ -1122,6 +1173,7 @@ export function createCoordinatorCore(
           carriers?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
+          providerProxySets?: NonNullable<HealthSnapshot['diagnostics']>['providerProxySets'];
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
@@ -1129,10 +1181,15 @@ export function createCoordinatorCore(
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
+        const providerProxySets = world.providerProxyLifecycleRef.get()?.snapshot().operatorDispositions ?? [];
+        if (providerProxySets.length > 0) {
+          diagnostics.providerProxySets = [...providerProxySets];
+        }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||
           diagnostics.mutationBlocked !== undefined ||
-          diagnostics.consumerStuck !== undefined;
+          diagnostics.consumerStuck !== undefined ||
+          diagnostics.providerProxySets !== undefined;
 
         return {
           status: coarseStatus,
@@ -1294,7 +1351,14 @@ export function createCoordinatorCore(
     ipcServer,
     closeIpcServerFn: closeIpcServer,
     listenIpcFn:
-      options.listenIpcFn ?? ((listener) => listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath)),
+      options.listenIpcFn ??
+      ((listener, additionalCompatibilitySocketPaths = [], publishedCompatibilitySocketAddresses = []) =>
+        listenIpcServer(
+          listener,
+          runtime.paths.coral.coordinator.socketPath,
+          additionalCompatibilitySocketPaths,
+          publishedCompatibilitySocketAddresses,
+        )),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

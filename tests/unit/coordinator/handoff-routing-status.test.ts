@@ -371,8 +371,7 @@ describe('handoff routing status', () => {
     writeFileSync(`${path}-shm`, 'retained shm');
 
     const socket = await acquireOperatorSocketGuard({
-      socketPath: discardRuntime.paths.coral.coordinator.socketPath,
-      flavor: discardRuntime.flavor,
+      runtime: discardRuntime,
       operation: 'routing-status discard test',
       retryCommand: 'coral-cli backend routing-status discard',
     });

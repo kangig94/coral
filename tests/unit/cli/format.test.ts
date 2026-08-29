@@ -662,7 +662,7 @@ describe('cli format', () => {
         /coordinator responded but did not accept/u,
       ],
       [{ ok: false, reason: 'no_response', detail: 'ETIMEDOUT' }, /did not complete/u],
-      [{ ok: false, reason: 'no_record' }, /no coordinator has recorded itself/u],
+      [{ ok: false, reason: 'no_record' }, /no coordinator discovery record was found/u],
       [{ ok: false, reason: 'no_record_socket_present' }, /no discovery record has been written yet/u],
       [{ ok: false, reason: 'recorded_process_absent', detail: '4242' }, /recorded coordinator process/u],
       [
@@ -684,6 +684,30 @@ describe('cli format', () => {
         expect(formatShutdown(result)).toMatch(expected);
       },
     );
+
+    it('reports no_record as a discovery result, not a verdict that the backend stopped', () => {
+      const text = formatShutdown({ ok: false, reason: 'no_record' });
+
+      expect(text).toMatch(/^Shutdown not attempted: no coordinator discovery record was found\./u);
+      expect(text, 'the missing record cannot exclude an unpublished coordinator').toMatch(/may still be serving/u);
+      expect(text).toMatch(/not a report that it stopped/u);
+      expect(text).toMatch(/retry shortly/u);
+      expect(text).toMatch(/verify that no other Coral coordinator process is running/u);
+      expect(text).not.toMatch(/^Backend not running/mu);
+    });
+
+    it('limits recorded_process_absent to the process named by a possibly stale record', () => {
+      const text = formatShutdown({ ok: false, reason: 'recorded_process_absent', detail: '4242' });
+
+      expect(text).toMatch(/^Shutdown not attempted: the recorded coordinator process \(pid 4242\) is gone\./u);
+      expect(text, 'the absent recorded pid cannot exclude a different unpublished coordinator').toMatch(
+        /different coordinator may still be starting/u,
+      );
+      expect(text).toMatch(/not a report that the backend stopped/u);
+      expect(text).toMatch(/retry shortly/u);
+      expect(text).toMatch(/verify that no other Coral coordinator process is running/u);
+      expect(text).not.toMatch(/^Backend not running/mu);
+    });
 
     // `capability_rejected` is deliberately not a row above — its own tests further down assert the pid-hedging
     // language directly — so this drives completeness off the production exit-code table rather than off
@@ -780,6 +804,8 @@ describe('cli format', () => {
       active: 2,
       activeJobs: 1,
       inflightRequests: 0,
+      skippedProviderProxySetRows: 0,
+      skippedProviderProxySetTokens: [],
       textProjectionState: 'idle' as const,
       kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
     };

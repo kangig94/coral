@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
   assertRecordedSetAgreement,
   controlHeartbeatParamsSchema,
-  controlHeartbeatResultSchema,
   controlPairParamsSchema,
   controlPairResultSchema,
   coordinatorIdentitySchema,
@@ -275,7 +274,6 @@ describe('shared heartbeat, pairing, and guardian-to-reaper schemas', () => {
       readonly [{ safeParse(value: unknown): { success: boolean } }, Record<string, unknown>]
     > = [
       [controlHeartbeatParamsSchema, { controlEpoch: 1, heartbeatChallenge: 'challenge-1' }],
-      [controlHeartbeatResultSchema, { state: 'active', nextHeartbeatChallenge: 'challenge-2' }],
       [controlPairParamsSchema, { pairingSecret: 'shared-secret' }],
       [controlPairResultSchema, { state: 'paired' }],
       [recordedContainmentSchema, containment],

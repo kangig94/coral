@@ -1,31 +1,32 @@
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '../../../provider-proxy/orphan-deadline.js';
-import {
-  PROXY_CONTROL_RPC_TIMEOUT_MS,
-  controlHeartbeatParamsSchema,
-  controlHeartbeatResultSchema,
-} from '../../../provider-proxy/protocol.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS, controlHeartbeatParamsSchema } from '../../../provider-proxy/protocol.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
-import type {
-  ProviderProxyAuthorityFaultLatch,
-  ProviderProxyHeartbeatMethod,
-  ProviderProxyRole,
+import {
+  applyLocalFailure,
+  heartbeatObservationFromExchange,
+  type HeartbeatObservation,
+} from '../../../provider-proxy/heartbeat-observation.js';
+import {
+  providerProxyControlChannelIncident,
+  type ProviderProxyAuthorityFaultLatch,
+  type ProviderProxyHeartbeatMethod,
+  type ProviderProxyHeartbeatTerminalReason,
+  type ProviderProxyRole,
 } from '../../services/provider-proxy-authority-fault.js';
 
-/** Sends one heartbeat and returns the next challenge. Exported so `role-control.ts`'s `establishRoleControl`
- *  can send the first heartbeat immediately after a role opens, on the identical call `startHeartbeatLoop`
- *  below uses on every later tick. */
+/** Sends one heartbeat through the transport's provenance-preserving exchange surface. */
 export async function heartbeatOnce(
   client: ControlClient,
   method: string,
   controlEpoch: number,
   heartbeatChallenge: string,
-): Promise<{ nextHeartbeatChallenge: string }> {
+): Promise<HeartbeatObservation> {
   const params = controlHeartbeatParamsSchema.parse({ controlEpoch, heartbeatChallenge });
-  const raw = await client.call(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-  return controlHeartbeatResultSchema.parse(raw);
+  const exchange = await client.exchange(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  return heartbeatObservationFromExchange(exchange);
 }
 
 export type HeartbeatLoop = Readonly<{ stop(): void }>;
@@ -57,39 +58,81 @@ const HEARTBEAT_METHOD_BY_ROLE = {
 
 type HeartbeatLoopState =
   | Readonly<{ kind: 'idle'; challenge: string }>
-  | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol }>
+  | Readonly<{ kind: 'in-flight'; challenge: string; attempt: symbol; schedulerLatenessMs: number }>
   | Readonly<{ kind: 'stopped' }>;
 
-/** Keeps one established tenancy alive past its lease by echoing the challenge on the endpoint's own
- *  heartbeat interval. A failed echo is handed to `onError` and not retried early — every production caller
- *  logs it, so a degrading tenancy is visible before its deadline fires, and the enforcer's own deadline,
- *  not this loop, is what bounds the fallout of one that cannot be refreshed. Exported so
- *  `services/provider-proxy-set/inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
- *  established one is kept alive here — one heartbeat mechanism, not two. */
 function startHeartbeatLoop(
   client: ControlClient,
   method: string,
   runtime: Runtime,
   controlEpoch: number,
   firstNextChallenge: string,
-  onError: (error: unknown) => void,
+  onObservation: (observation: HeartbeatObservation, schedulerLatenessMs: number) => void,
+  onChannelFault: (error: Extract<HeartbeatObservation, { kind: 'channel-fault' }>['error']) => void,
+  onTerminal: (error: unknown, reason: ProviderProxyHeartbeatTerminalReason) => void,
 ): HeartbeatLoop {
   let state: HeartbeatLoopState = { kind: 'idle', challenge: firstNextChallenge };
+  let requestedWakeMs = runtime.time.monotonicNow() + BigInt(PROXY_CONTROL_HEARTBEAT_MS);
+  let pendingSchedulerLatenessMs = 0;
   const tick = (): void => {
+    const observedWakeMs = runtime.time.monotonicNow();
+    if (observedWakeMs > requestedWakeMs) {
+      pendingSchedulerLatenessMs += Number(observedWakeMs - requestedWakeMs);
+    }
+    requestedWakeMs = observedWakeMs + BigInt(PROXY_CONTROL_HEARTBEAT_MS);
     if (state.kind !== 'idle') return;
     const { challenge } = state;
     const attempt = Symbol('provider-proxy-heartbeat');
-    state = { kind: 'in-flight', challenge, attempt };
+    const schedulerLatenessMs = pendingSchedulerLatenessMs;
+    pendingSchedulerLatenessMs = 0;
+    state = { kind: 'in-flight', challenge, attempt, schedulerLatenessMs };
     void heartbeatOnce(client, method, controlEpoch, challenge).then(
-      (beat) => {
+      (observation) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
-        state = { kind: 'idle', challenge: beat.nextHeartbeatChallenge };
+        const observedSchedulerLatenessMs = state.schedulerLatenessMs + pendingSchedulerLatenessMs;
+        pendingSchedulerLatenessMs = 0;
+        if (observation.kind === 'reply') {
+          if (observation.reply.kind === 'teardown-latched') {
+            state = { kind: 'stopped' };
+            runtime.time.clearInterval(handle);
+            onObservation(observation, observedSchedulerLatenessMs);
+            onTerminal(observation.reply.error, 'teardown-latched');
+            return;
+          }
+          if (observation.reply.kind === 'method-not-found') {
+            state = { kind: 'stopped' };
+            runtime.time.clearInterval(handle);
+            onObservation(observation, observedSchedulerLatenessMs);
+            return;
+          }
+          const nextChallenge =
+            observation.reply.kind === 'accepted' || observation.reply.kind === 'challenge-mismatch'
+              ? observation.reply.nextChallenge
+              : challenge;
+          state = { kind: 'idle', challenge: nextChallenge };
+          onObservation(observation, observedSchedulerLatenessMs);
+          return;
+        }
+        if (observation.kind === 'no-response-before-deadline') {
+          state = { kind: 'idle', challenge };
+          onObservation(observation, observedSchedulerLatenessMs);
+          return;
+        }
+        state = { kind: 'stopped' };
+        runtime.time.clearInterval(handle);
+        const localFailure = applyLocalFailure(observation);
+        onObservation(observation, observedSchedulerLatenessMs);
+        if (localFailure.effect === 'channel-fault') {
+          onChannelFault(localFailure.error);
+          return;
+        }
+        onTerminal(localFailure.error, 'local-failure');
       },
       (error: unknown) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
         state = { kind: 'stopped' };
         runtime.time.clearInterval(handle);
-        onError(error);
+        onTerminal(error, 'local-failure');
       },
     );
   };
@@ -122,11 +165,21 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
         runtime,
         session.controlEpoch,
         session.nextHeartbeatChallenge,
-        (error) => {
-          faults.latch({ kind: 'heartbeat-failed', role, method, error });
-          backendLog.warn(
-            `provider-proxy ${role} heartbeat echo failed for ${session.instanceId}: ${errorMessage(error)}`,
-          );
+        (observation, schedulerLatenessMs) => {
+          faults.reportIncident({
+            kind: 'heartbeat-observation',
+            role,
+            method,
+            observation,
+            schedulerLatenessMs,
+          });
+        },
+        (error) => faults.reportIncident(providerProxyControlChannelIncident(role, error)),
+        (error, terminalReason) => {
+          faults.latch({ kind: 'heartbeat-failed', role, method, terminalReason, error });
+          const observed =
+            terminalReason === 'teardown-latched' ? 'heartbeat echo was refused' : 'heartbeat call failed locally';
+          backendLog.warn(`provider-proxy ${role} ${observed} for ${session.instanceId}: ${errorMessage(error)}`);
         },
       ),
     );

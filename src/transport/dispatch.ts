@@ -15,6 +15,7 @@ import { authorizeCapability, authorizeResourceBinding, type Decision } from '..
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { isRecord } from '../infra/json.js';
 import type { RecoveryQuarantineClearRequest } from '../recovery/source-registry.js';
+import type { UnreadableProviderOperationDiscardRequest } from '../recovery/unreadable-provider-operation.js';
 import { domainError, type ToolDomainResult } from './tool-result.js';
 import { domainResultToHttp, launchToHttp } from './response.js';
 import type { HttpHandlerPorts } from './server-ports.js';
@@ -23,6 +24,9 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainResponseSchema,
+  unreadableProviderOperationDiscardResultSchema,
+  type ProviderProxySetContainRequest,
   type ProviderHostSelectorRequest,
 } from './rpc/catalog.js';
 import type { WorkflowPortInput } from './rpc/ports.js';
@@ -569,10 +573,13 @@ function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<Cata
 function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const route = context.spec.name;
   if (route.startsWith('coordinator.provider_host.')) return executeProviderHostCatalogRequest(context);
+  if (route === 'coordinator.provider_proxy_set.contain') return executeProviderProxySetContainCatalogRequest(context);
 
   switch (route) {
     case 'coordinator.recovery_quarantine.clear':
       return executeRecoveryQuarantineCatalogRequest(context);
+    case 'coordinator.recovery_quarantine.discard_provider_operation':
+      return executeUnreadableProviderOperationDiscardCatalogRequest(context);
     case 'sessions.create':
       return executeCreateSessionCatalogRequest(context);
     case 'workflow.run':
@@ -582,12 +589,41 @@ function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Pr
   }
 }
 
+async function executeProviderProxySetContainCatalogRequest({
+  request,
+  rpcPorts,
+  abortSignal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  if (rpcPorts.providerProxySets === undefined) {
+    throw new Error('provider_proxy_set_operator_exit_unavailable');
+  }
+  return unary(
+    providerProxySetContainResponseSchema.parse(
+      await rpcPorts.providerProxySets.contain(request as ProviderProxySetContainRequest, abortSignal),
+    ),
+  );
+}
+
 async function executeRecoveryQuarantineCatalogRequest({
   request,
   rpcPorts,
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
+}
+
+async function executeUnreadableProviderOperationDiscardCatalogRequest({
+  request,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  if (rpcPorts.recoveryQuarantine.discardProviderOperation === undefined) {
+    throw new Error('unreadable_provider_operation_discard_unavailable');
+  }
+  return unary(
+    unreadableProviderOperationDiscardResultSchema.parse(
+      await rpcPorts.recoveryQuarantine.discardProviderOperation(request as UnreadableProviderOperationDiscardRequest),
+    ),
+  );
 }
 
 async function executeProviderHostListCatalogRequest({

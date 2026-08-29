@@ -14,6 +14,7 @@ import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-ca
 import { createControlEndpoint, type ControlMethod } from '#src/provider-proxy/control-endpoint.js';
 import {
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   PROXY_CONTROL_LEASE_MS,
   createEnforcerDeadlineStateMachine,
@@ -486,8 +487,9 @@ describe('successor control reaches the deadline machine through production esta
   it('keeps the predecessor-lease-omitting 35-second policy from reaching a late successor echo', async () => {
     const parsed = providerProxyDeadlineConfigurationSchema.safeParse({ orphanTimeoutMs: '35000' });
     if (!parsed.success) {
+      // Names the variable and the effective floor, so an operator who trips it can act without reading source.
       expect(parsed.error.issues.map((issue) => issue.message)).toContain(
-        'must satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy',
+        `${CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV} must be at least ${MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS}ms to satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy`,
       );
       return;
     }

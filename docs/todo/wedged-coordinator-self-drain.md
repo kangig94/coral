@@ -108,6 +108,12 @@ A coordinator frozen past a deadline loses provider authority, and the reaper th
 on the whole proxy set, terminating every live claim on it. The jobs themselves were healthy; they were
 deliberately killed by a policy acting on the wedge.
 
+**Corrected on the unreleased branch:** channel close is now a non-terminal incident, not an authority fault.
+It removes routing and opens a bounded authenticated-reattachment hold while keeping durable claims attached;
+refusal or expiry waits for independent containment absence and cannot start `stop-and-reap`. Once both
+enforcers are proven absent, the independent proof still reaps the orphaned proxy group. The log above
+records the shipped defect rather than current branch behavior.
+
 **Corrected 2026-08-24: the deadline that fires is not the lease.** This entry first named
 `PROXY_CONTROL_LEASE_MS`, 12,000 ms. The log says otherwise — what breaks first is the heartbeat RPC's own
 budget:
@@ -124,6 +130,13 @@ so the rpc budget is what
 sets it, not the reverse.
 
 One reaped set carried `liveClaims=7` — seven jobs ended together because one heartbeat missed its budget.
+
+**Corrected 2026-08-26:** an unanswered heartbeat no longer consumes the terminal fault latch. It is a
+non-consuming, retrying incident recorded in lifecycle logs, and a matching one-use echo remains admissible after the 12-second lease. The
+remaining destructive boundary is the enforcer's adoption deadline: at defaults, starvation must persist
+for 23 seconds before that authority latches teardown. This fixes the immediate 5-second/12-second verdicts;
+it does not solve this entry's broader external-supervision problem or save work through a multi-minute
+coordinator stall.
 
 **The strongest evidence is Coral measuring its own stall.** The same window records:
 
@@ -144,14 +157,30 @@ What is inferred rather than measured: no single death was proven by overlapping
 that channel-close timestamp. The simultaneity establishes a common cause on the coordinator side, and the
 freeze is the only mechanism observed, but the 1:1 attribution for a specific death is not proven.
 
-**What this adds to the record, beyond satisfying the start condition.** Lease expiry cannot distinguish a
-coordinator that died from one that stalled. What was observed is "no renewal arrived within 12,000 ms"; what
-was concluded is that authority was lost. Those are not the same, and the third answer — the question could
-not be answered — has no representation at that site. Raising the constant does not reach it: a three-minute
-stall exceeds any lease value, and the timing constants are a solved inequality system
+**What this added to the record, beyond satisfying the start condition.** Lease expiry cannot distinguish a
+coordinator that died from one that stalled. The old path observed "no renewal arrived within 12,000 ms" and
+concluded that authority was lost. The 2026-08-26 correction above gives that third answer an incident
+disposition and concentrates the destructive silence boundary in the enforcer's adoption deadline. Merely
+raising the lease constant would not have reached it: a three-minute stall exceeds any lease value, and the
+timing constants are a solved inequality system
 (`providerProxyDeadlineTimingIsValid` in `src/provider-proxy/orphan-deadline.ts`) in which 12,000 ms is 1,000 ms
 above the floor set by `2 × PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_CONTROL_HEARTBEAT_MS`, so moving it alone breaks
 `leaseMs + successorTail < adoptionWindow`.
+
+**Corrected 2026-08-27:** the previous correction's "remaining destructive boundary" claim does not hold for
+the proxy's own `control.heartbeat.v1` at all. `buildDeadlines` (`src/provider-proxy/role-main.ts`) is
+constructed only inside `startProviderGuardianRole`/`startProviderReaperRole`, never `startProviderProxyRole`,
+so no enforcer exists to answer `teardown-latched` for that hold. Where an enforcer does exist (the guardian's
+and reaper's own heartbeat methods), its `adoptionDeadline()` is anchored on that role's own round-trip
+evidence — the coordinator's heartbeat *to the guardian*, not the coordinator's separate heartbeat *to the
+proxy* — so a coordinator starved specifically toward the proxy, while the guardian and reaper keep answering
+normally, never reaches that deadline either. The actual boundary for this scenario is now the coordinator's
+own bounded silence exit (`heartbeatHoldBound`, `#silenceHoldExhaustedDecision` in
+`provider-proxy-set/index.ts`), derived from the identical `providerProxyAdoptionWindowMs` formula carried by
+that established set so it does not drift from the enforcer's own tolerance, and reported as
+`reason=heartbeat_hold_exhausted` with what it observed rather than a claim that silence proved the peer dead.
+Answered-but-unusable evidence cannot advance this clock and has a separate independent-absence release. It
+sends no destructive control RPC, but after both enforcers are proven absent it reaps the orphaned proxy group.
 
 ## Start condition
 

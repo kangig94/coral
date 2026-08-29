@@ -31,10 +31,11 @@ import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
-import { isBackendHealth } from '#src/transport/http/backend/health.js';
+import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -45,6 +46,21 @@ function liveHandoffResult(
   publicationIncidents: readonly HandoffPublicationIncident[] = [],
 ): LiveHandoffResult {
   return { continuation, publicationIncidents };
+}
+
+function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatusFull, { status: 'ok' }> {
+  const parsed = parseBackendHealth(payload);
+  if (parsed === null) throw new Error('expected the produced health snapshot to validate');
+  const { namespace: _namespace, status: _status, ...health } = parsed.health;
+  return {
+    status: 'ok',
+    health: {
+      ...health,
+      status: 'ok',
+      skippedProviderProxySetRows: parsed.skippedProviderProxySetRows,
+      skippedProviderProxySetTokens: parsed.skippedProviderProxySetTokens,
+    },
+  };
 }
 
 const storeReset: StoreResetCommandOperations = {
@@ -1138,10 +1154,7 @@ describe('backend status recovery quarantine propagation', () => {
         components: [recovery.status],
       } satisfies HealthSnapshot;
 
-      expect(isBackendHealth(produced)).toBe(true);
-      if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
-      const { namespace: _namespace, status: _status, ...health } = produced;
-      const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+      const status = runningStatusFromHealthPayload(produced);
 
       expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
         [
@@ -1183,14 +1196,235 @@ describe('backend status recovery quarantine propagation', () => {
       components: [...registry.list()],
     } satisfies HealthSnapshot;
 
-    expect(isBackendHealth(produced)).toBe(true);
-    if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
-    const { namespace: _namespace, status: _status, ...health } = produced;
-    const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+    const status = runningStatusFromHealthPayload(produced);
 
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       '  recovery: offline\n    reason: Status unavailable:',
     );
+  });
+});
+
+describe('backend status provider proxy dispositions', () => {
+  it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {
+    const tokens = {
+      first: encodeProviderProxySetAddress({
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      }),
+      second: encodeProviderProxySetAddress({
+        buildSetId: '33333333-3333-4333-8333-333333333333',
+        hostFingerprint: 'b'.repeat(64),
+        proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+      }),
+      third: encodeProviderProxySetAddress({
+        buildSetId: '55555555-5555-4555-8555-555555555555',
+        hostFingerprint: 'c'.repeat(64),
+        proxyInstanceId: '66666666-6666-4666-8666-666666666666',
+      }),
+      fourth: encodeProviderProxySetAddress({
+        buildSetId: '77777777-7777-4777-8777-777777777777',
+        hostFingerprint: 'd'.repeat(64),
+        proxyInstanceId: '88888888-8888-4888-8888-888888888888',
+      }),
+    };
+    const produced = {
+      status: 'ok',
+      kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+      version: '0.10.4',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      instanceId: 'instance-1',
+      pid: 4242,
+      uptimeMs: 1_000,
+      active: 0,
+      activeJobs: 0,
+      liveDiscuss: 0,
+      queueDepth: 0,
+      inflightRequests: 0,
+      textProjectionState: 'idle',
+      env: {},
+      components: [],
+      diagnostics: {
+        providerProxySets: [
+          {
+            setIdentity: {
+              buildSetId: '11111111-1111-4111-8111-111111111111',
+              hostFingerprint: 'a'.repeat(64),
+              proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+            },
+            setToken: tokens.first,
+            disposition: 'awaiting-containment-absence',
+            role: 'guardian',
+            method: 'guardian.heartbeat.v1',
+            incidentReason: 'method-not-found',
+            waitingFor: 'independent-containment-absence',
+            enforcerObservations: [
+              { role: 'guardian', observation: 'alive' },
+              { role: 'reaper', observation: 'unknown' },
+            ],
+          },
+          {
+            setIdentity: {
+              buildSetId: '33333333-3333-4333-8333-333333333333',
+              hostFingerprint: 'b'.repeat(64),
+              proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+            },
+            setToken: tokens.second,
+            disposition: 'held',
+            role: 'proxy',
+            cause: 'invalid-unattributable-frame',
+            attempts: 3,
+            elapsedMs: 1250,
+            boundMs: 23000,
+            liveClaims: 2,
+            incidentReason: 'control_channel_reattaching',
+            waitingFor: 'control-reattachment',
+          },
+          {
+            setIdentity: {
+              buildSetId: '33333333-3333-4333-8333-333333333333',
+              hostFingerprint: 'b'.repeat(64),
+              proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+            },
+            setToken: tokens.second,
+            disposition: 'operator-exit-refused',
+            liveClaims: 2,
+            incidentReason: 'operator_exit_deadline_pending',
+            waitingFor: 'set-adoption-deadline',
+          },
+          {
+            setIdentity: {
+              buildSetId: '55555555-5555-4555-8555-555555555555',
+              hostFingerprint: 'c'.repeat(64),
+              proxyInstanceId: '66666666-6666-4666-8666-666666666666',
+            },
+            setToken: tokens.third,
+            disposition: 'released-by-successor',
+            incidentReason: 'successor-adopted',
+            waitingFor: 'successor-acknowledgement',
+          },
+          {
+            setIdentity: {
+              buildSetId: '77777777-7777-4777-8777-777777777777',
+              hostFingerprint: 'd'.repeat(64),
+              proxyInstanceId: '88888888-8888-4888-8888-888888888888',
+            },
+            setToken: tokens.fourth,
+            disposition: 'held',
+            incidentReason: 'successor-adopted',
+            waitingFor: 'successor-acknowledgement',
+          },
+        ],
+      },
+    };
+    const status = runningStatusFromHealthPayload(produced);
+
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      [
+        'Provider proxy sets:',
+        `  set=${tokens.first} liveClaims=unknown`,
+        '    identity buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
+          'a'.repeat(64),
+        '    - disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence enforcers=guardian:alive,reaper:unknown',
+        `    action=coral-cli backend provider-proxy-set contain ${tokens.first}`,
+      ].join('\n'),
+    );
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      [
+        `  set=${tokens.second} liveClaims=2`,
+        '    identity buildSetId=33333333-3333-4333-8333-333333333333 proxyInstanceId=44444444-4444-4444-8444-444444444444 hostFingerprint=' +
+          'b'.repeat(64),
+        '    - disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
+        '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
+        `    action=coral-cli backend provider-proxy-set contain ${tokens.second}`,
+      ].join('\n'),
+    );
+    expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      'Provider proxy set rows this build could not read: 2; backend status is not showing their dispositions, causes, or waiting conditions.',
+    );
+    const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
+    expect(rendered.split(`  set=${tokens.second}`).length - 1).toBe(1);
+    expect(rendered.split(`    action=coral-cli backend provider-proxy-set contain ${tokens.second}`).length - 1).toBe(
+      1,
+    );
+    expect(rendered).toContain(
+      '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
+    );
+    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.third}`);
+    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.fourth}`);
+    expect(rendered.split(tokens.third).length - 1).toBe(1);
+    expect(rendered.split(tokens.fourth).length - 1).toBe(1);
+    expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
+    expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
+
+    const operations: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => status,
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: operations });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(process.exitCode).toBe(75);
+    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${tokens.third}`);
+  });
+
+  it('exits 75 for a fully understood held set even when no row was skipped', async () => {
+    const setIdentity = {
+      buildSetId: '99999999-9999-4999-8999-999999999999',
+      hostFingerprint: 'e'.repeat(64),
+      proxyInstanceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    };
+    const setToken = encodeProviderProxySetAddress(setIdentity);
+    const status = runningStatusFromHealthPayload({
+      status: 'ok',
+      kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+      version: '0.10.4',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      instanceId: 'instance-1',
+      uptimeMs: 1_000,
+      active: 0,
+      activeJobs: 0,
+      queueDepth: 0,
+      inflightRequests: 0,
+      textProjectionState: 'idle',
+      components: [],
+      diagnostics: {
+        providerProxySets: [
+          {
+            setIdentity,
+            setToken,
+            disposition: 'held',
+            incidentReason: 'control_channel_reattaching',
+            waitingFor: 'control-reattachment',
+          },
+        ],
+      },
+    });
+    expect(status.health.skippedProviderProxySetRows).toBe(0);
+
+    const operations: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => status,
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: operations });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
+    expect(process.exitCode).toBe(75);
   });
 });
 

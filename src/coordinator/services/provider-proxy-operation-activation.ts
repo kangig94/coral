@@ -1,7 +1,7 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { z } from 'zod';
 
-import type { ControlClientError } from '../../provider-proxy/control-client.js';
+import type { ControlClientError, ControlExchange } from '../../provider-proxy/control-client.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
   guardianOperationActivateParamsSchema,
@@ -28,16 +28,17 @@ import {
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
 import type { OperationStopControl } from './operation-registry.js';
-import type {
-  ControlCallPolicy,
-  ProviderProxyAuthorityFault,
-  ProviderProxyOperationIncident,
-  ProviderProxyRole,
+import {
+  providerProxyControlChannelIncident,
+  type ControlCallPolicy,
+  type ProviderProxyAuthorityFault,
+  type ProviderProxyAuthorityIncident,
+  type ProviderProxyRole,
 } from './provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-set/identity.js';
 
 export interface OperationControlClient {
-  call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
+  exchange(method: string, params: unknown, timeoutMs: number): Promise<ControlExchange>;
 }
 
 export interface ProviderProxyOperationActivationDeps {
@@ -46,7 +47,7 @@ export interface ProviderProxyOperationActivationDeps {
   readonly setIdentity: ProviderProxySetIdentity;
   readonly mutationRpcTimeoutMs: number;
   readonly faultAuthority: (fault: ProviderProxyAuthorityFault) => void;
-  readonly reportIncident: (incident: ProviderProxyOperationIncident) => void;
+  readonly reportIncident: (incident: ProviderProxyAuthorityIncident) => void;
 }
 
 export type PrepareProviderOperationResult = z.output<typeof proxyOperationPrepareResultSchema>;
@@ -65,36 +66,64 @@ async function callStrict<TResult>(
   timeoutMs: number,
   resultSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
-  reportIncident: (incident: ProviderProxyOperationIncident) => void,
+  reportIncident: (incident: ProviderProxyAuthorityIncident) => void,
 ): Promise<TResult> {
-  let raw: unknown;
+  let exchange: ControlExchange;
   try {
-    raw = await client.call(policy.method, params, timeoutMs);
+    exchange = await client.exchange(policy.method, params, timeoutMs);
   } catch (error: unknown) {
-    routeControlCallFailure(role, policy, error, faultAuthority, reportIncident);
+    routeControlCallFailure(role, policy, error, null, faultAuthority, reportIncident);
+    throw error;
+  }
+  if (!(exchange.kind === 'response' && exchange.response.kind === 'result')) {
+    const error = exchangeError(exchange);
+    routeControlExchangeFailure(role, policy, exchange, faultAuthority, reportIncident);
     throw error;
   }
   try {
-    return resultSchema.parse(raw);
+    return resultSchema.parse(exchange.response.value);
   } catch (error: unknown) {
-    routeControlCallFailure(role, policy, error, faultAuthority, reportIncident);
+    routeControlCallFailure(role, policy, error, null, faultAuthority, reportIncident);
     throw error;
   }
+}
+
+function exchangeError(exchange: ControlExchange): unknown {
+  if (exchange.kind !== 'response') return exchange.error;
+  if (exchange.response.kind === 'refusal') return exchange.response.error;
+  throw new Error('A successful control exchange has no failure error.');
+}
+
+function routeControlExchangeFailure(
+  role: ProviderProxyRole,
+  policy: ControlCallPolicy,
+  exchange: ControlExchange,
+  faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
+  reportIncident: (incident: ProviderProxyAuthorityIncident) => void,
+): void {
+  const error = exchangeError(exchange);
+  const protocolCode =
+    exchange.kind === 'response' &&
+    exchange.response.kind === 'refusal' &&
+    exchange.response.failure.kind === 'json-rpc-error'
+      ? exchange.response.failure.protocolCode
+      : null;
+  routeControlCallFailure(role, policy, error, protocolCode, faultAuthority, reportIncident);
 }
 
 function routeControlCallFailure(
   role: ProviderProxyRole,
   policy: ControlCallPolicy,
   error: unknown,
+  protocolCode: ProxyControlProtocolErrorCode | null,
   faultAuthority: (fault: ProviderProxyAuthorityFault) => void,
-  reportIncident: (incident: ProviderProxyOperationIncident) => void,
+  reportIncident: (incident: ProviderProxyAuthorityIncident) => void,
 ): void {
   if (controlClientErrorCode(error) === 'control_client_closed') {
-    faultAuthority({ kind: 'control-channel-fault', role, error: error as ControlClientError });
+    reportIncident(providerProxyControlChannelIncident(role, error as ControlClientError));
     return;
   }
   if (policy.effect === 'observation') return;
-  const protocolCode = controlProtocolErrorCode(error);
   if (protocolCode !== null && policy.preEffectProtocolCodes.has(protocolCode)) return;
   if (policy.indeterminate === 'retry-safe') {
     reportIncident({ kind: 'operation-control-failed', policy, error });
@@ -107,12 +136,6 @@ function controlClientErrorCode(error: unknown): string | null {
   if (typeof error !== 'object' || error === null) return null;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' ? code : null;
-}
-
-function controlProtocolErrorCode(error: unknown): ProxyControlProtocolErrorCode | null {
-  if (typeof error !== 'object' || error === null) return null;
-  const code = (error as { protocolCode?: unknown }).protocolCode;
-  return typeof code === 'string' ? (code as ProxyControlProtocolErrorCode) : null;
 }
 
 const NO_PRE_EFFECT_PROTOCOL_CODES: ReadonlySet<ProxyControlProtocolErrorCode> = new Set();
@@ -129,20 +152,27 @@ function policy(definition: ControlCallPolicy): ControlCallPolicy {
 
 export function providerOperationErrorIsAmbiguous(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  const failure = error as { code?: unknown; protocolCode?: unknown };
+  const failure = error as { code?: unknown; remoteFailure?: unknown };
   return (
     (failure.code === 'control_call_failed' || failure.code === 'control_client_closed') &&
-    failure.protocolCode === undefined
+    protocolCodeFromRemoteFailure(failure.remoteFailure) === null
   );
 }
 
 export function providerOperationErrorCode(error: unknown): string {
   if (typeof error === 'object' && error !== null) {
-    const failure = error as { code?: unknown; protocolCode?: unknown };
-    if (typeof failure.protocolCode === 'string') return failure.protocolCode;
+    const failure = error as { code?: unknown; remoteFailure?: unknown };
+    const protocolCode = protocolCodeFromRemoteFailure(failure.remoteFailure);
+    if (protocolCode !== null) return protocolCode;
     if (typeof failure.code === 'string') return failure.code;
   }
   return 'provider_operation_failed';
+}
+
+function protocolCodeFromRemoteFailure(remoteFailure: unknown): string | null {
+  if (typeof remoteFailure !== 'object' || remoteFailure === null) return null;
+  const protocolCode = (remoteFailure as { protocolCode?: unknown }).protocolCode;
+  return typeof protocolCode === 'string' ? protocolCode : null;
 }
 
 export function providerOperationErrorReason(error: unknown): string {

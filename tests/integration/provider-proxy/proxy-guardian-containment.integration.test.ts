@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -10,6 +11,7 @@ import type * as AppServerTransportModule from '#src/providers/app-server-transp
 import type * as ProviderBootstrapModule from '#src/providers/bootstrap.js';
 import type * as NodeProcessModule from '#src/infra/node-process.js';
 import type * as ProxySetAcquisitionModule from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import { DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const rotationDoubles = vi.hoisted(() => ({
@@ -127,7 +129,10 @@ import {
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { createFakeProviderServerHandle } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
@@ -276,7 +281,6 @@ async function startGuardianAndReaper() {
       controlLossAt: now,
       adoptionDeadline: clock.shiftMilliseconds(now, 60_000),
       exitDeadline: clock.shiftMilliseconds(now, 74_000),
-      firstChallengeExpiresAt: null,
     };
   };
   let challengeCount = 0;
@@ -286,6 +290,7 @@ async function startGuardianAndReaper() {
   };
   const deadlines = {
     controlIsLive: () => true,
+    orphanTimeoutMs: () => DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintChallenge() }) as const,
     reattachControl: () => ({ accepted: true }) as const,
@@ -331,8 +336,8 @@ async function startGuardianAndReaper() {
   // `startProviderGuardianRole` does in production.
   const reaperChannel = await connectControlClient(reaperEndpoint, timer, 5_000);
   cleanups.push(() => reaperChannel.close());
-  await reaperChannel.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
-  await reaperChannel.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+  await strictTestExchange(reaperChannel, 'reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  await strictTestExchange(reaperChannel, 'reaper.record-containment.v1', CONTAINMENT, 5_000);
 
   const guardian = createGuardian({
     capsule: {
@@ -364,12 +369,14 @@ async function startGuardianAndReaper() {
   // over, exactly as `provider-proxy-operation-activation.ts` issues it in production.
   const control = await connectControlClient(guardianEndpoint, timer, 5_000);
   cleanups.push(() => control.close());
-  const opened = (await control.call(
+  const opened = (await strictTestExchange(
+    control,
     'guardian.open.v1',
     { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  const guardianHeartbeat = (await control.call(
+  const guardianHeartbeat = (await strictTestExchange(
+    control,
     'guardian.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -377,7 +384,8 @@ async function startGuardianAndReaper() {
 
   const reaperControl = await connectControlClient(reaperEndpoint, timer, 5_000);
   cleanups.push(() => reaperControl.close());
-  const reaperOpened = (await reaperControl.call(
+  const reaperOpened = (await strictTestExchange(
+    reaperControl,
     'reaper.open.v1',
     {
       bootstrapNonce: NONCE,
@@ -397,7 +405,8 @@ async function startGuardianAndReaper() {
     },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await reaperControl.call(
+  await strictTestExchange(
+    reaperControl,
     'reaper.heartbeat.v1',
     { controlEpoch: reaperOpened.controlEpoch, heartbeatChallenge: reaperOpened.heartbeatChallenge },
     5_000,
@@ -407,7 +416,7 @@ async function startGuardianAndReaper() {
   // `guardianChannel` `startProviderProxyRole` hands to `createProxyGuardianContainment`.
   const guardianChannel = await connectControlClient(guardianEndpoint, timer, 5_000);
   cleanups.push(() => guardianChannel.close());
-  await guardianChannel.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  await strictTestExchange(guardianChannel, 'guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
   return {
     control,
@@ -474,12 +483,14 @@ async function startCoordinatorActivationSet() {
 
   const proxyControl = await connectControlClient(set.proxyEndpoint, timer, 5_000);
   cleanups.push(() => proxyControl.close());
-  const opened = (await proxyControl.call(
+  const opened = (await strictTestExchange(
+    proxyControl,
     'control.open.v1',
     { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await proxyControl.call(
+  await strictTestExchange(
+    proxyControl,
     'control.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -518,20 +529,37 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
-    time: { ...timer, now: () => 0 },
+    time: { ...timer, now: () => 0, monotonicNow: () => 0n },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': () => new Promise<never>(() => undefined),
     }),
+    reapRecordedContainment: () => {
+      throw new Error(
+        'proxy guardian containment fixture unexpectedly requested lifecycle recorded containment reaping',
+      );
+    },
     reportLifecycle: () => undefined,
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
   const authority = {
     proxyInstanceId: setIdentity.proxyInstanceId,
+    autonomousDeadline: {
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
     setIdentity,
     faulted: authorityFaults.faulted,
     onFault: authorityFaults.onFault,
     onIncident: authorityFaults.onIncident,
+    redeemControl: () => new Promise<never>(() => undefined),
+    promoteControl: async () => {
+      throw new Error('unused');
+    },
     stopHeartbeats: () => undefined,
     stopAndReap: () => new Promise<never>(() => undefined),
     initiateControlClose: async () => undefined,
@@ -640,12 +668,14 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
 
   const proxyControl = await connectControlClient(set.proxyEndpoint, timer, 5_000);
   cleanups.push(() => proxyControl.close());
-  const opened = (await proxyControl.call(
+  const opened = (await strictTestExchange(
+    proxyControl,
     'control.open.v1',
     { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
-  await proxyControl.call(
+  await strictTestExchange(
+    proxyControl,
     'control.heartbeat.v1',
     { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
     5_000,
@@ -739,7 +769,7 @@ async function completeCapacityLocalHandoff(
     // The driving proxy call above already proved this exact no-ledger capacity answer. Replaying it through
     // the durable local-handoff constructor must not try to install succession after rotation has already
     // closed the old controls: a capacity answer owns no remote operation to succeed.
-    registerSuccessionOperation: async () => undefined,
+    registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     prepareOperation: async () => capacity,
   };
   const commit: JobProgressStore['commit'] = (callback) => {
@@ -873,7 +903,7 @@ describe('provider proxy activation against a real guardian', () => {
       prepareAttemptNumber: 1,
       prepared: PREPARED,
     });
-    const prepared = (await set.proxyControl.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+    const prepared = (await strictTestExchange(set.proxyControl, 'operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: string;
       jointContainmentReceipt: string;
       providerRoot: typeof ROOT;
@@ -886,7 +916,7 @@ describe('provider proxy activation against a real guardian', () => {
     });
 
     const cancelResult = proxyOperationCancelResultSchema.parse(
-      await set.proxyControl.call('operation.cancel.v1', cancelRequest, 5_000),
+      await strictTestExchange(set.proxyControl, 'operation.cancel.v1', cancelRequest, 5_000),
     );
     expect(cancelResult).toEqual({
       state: 'released-never-started',
@@ -900,7 +930,8 @@ describe('provider proxy activation against a real guardian', () => {
     expect(guardianReleaseParses).toHaveBeenCalledTimes(2);
     expect(guardianReleaseResultParses).toHaveBeenCalledTimes(2);
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.operation-activate.v1',
         {
           operation,
@@ -1108,7 +1139,8 @@ describe('provider proxy activation against a real guardian', () => {
     // this same ledger entry — not one this test invents separately. Before the fix, `stageProviderRoot`
     // forwarded a freshly minted value to the guardian instead of this one, so the guardian's stored
     // membership could never agree with what is presented here.
-    const activated = (await control.call(
+    const activated = (await strictTestExchange(
+      control,
       'guardian.operation-activate.v1',
       {
         operation: {
@@ -1229,7 +1261,8 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
     const started = semantic.host.start({ key, prepared: PREPARED });
     await started.result;
 
-    const liveHeartbeat = (await set.control.call(
+    const liveHeartbeat = (await strictTestExchange(
+      set.control,
       'guardian.heartbeat.v1',
       {
         controlEpoch: set.guardianControlEpoch,
@@ -1244,7 +1277,8 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
 
     await pairingClosed;
     await expect(
-      set.control.call(
+      strictTestExchange(
+        set.control,
         'guardian.heartbeat.v1',
         {
           controlEpoch: set.guardianControlEpoch,
@@ -1253,7 +1287,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
         5_000,
       ),
     ).resolves.toMatchObject({ state: 'active' });
-    await expect(set.guardianChannel.call('guardian.operation-release.v1', {}, 5_000)).rejects.toThrow(
+    await expect(strictTestExchange(set.guardianChannel, 'guardian.operation-release.v1', {}, 5_000)).rejects.toThrow(
       /closed|write|socket/u,
     );
   });
@@ -1328,6 +1362,9 @@ describe('provider proxy cumulative root rotation', () => {
       },
     );
 
+    const containmentProofDb = newRawDatabase(':memory:');
+    applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+    cleanups.push(() => containmentProofDb.close());
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
@@ -1336,8 +1373,13 @@ describe('provider proxy cumulative root rotation', () => {
       controlEstablished: () => undefined,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async () => null,
+        'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
       }),
+      reapRecordedContainment: () => {
+        throw new Error(
+          'proxy guardian containment fixture unexpectedly requested lifecycle recorded containment reaping',
+        );
+      },
       reportLifecycle: () => undefined,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });

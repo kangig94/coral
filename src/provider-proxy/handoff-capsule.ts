@@ -66,6 +66,15 @@ export const handoffOperationSetSchema = z
   });
 
 /**
+ * The wire form of a set a role reported in its own order. Sorting is the canonicalization
+ * `handoffOperationSetSchema` requires, not a repair: a duplicate still fails there, because two entries for
+ * one operation is an anomaly rather than a spelling.
+ */
+export function canonicalHandoffOperationSet(operations: readonly OperationIdentity[]): readonly OperationIdentity[] {
+  return [...operations].sort((left, right) => (left.operationId < right.operationId ? -1 : 1));
+}
+
+/**
  * `guardian.handoff-install.v1` and `reaper.handoff-install.v1`'s shared request: the guardian and reaper
  * are paired peers of the same set, so a coordinator installs the identical grant on both by the identical
  * message. Deliberately not `proxy.ts`'s own `handoff.install.v1` schema: the proxy binds its own exact set

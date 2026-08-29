@@ -1,3 +1,4 @@
+import type { ListenIpcServerResult } from '#src/transport/ipc/server.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -70,7 +71,7 @@ function seedQueuedProviderJob(progressStore: JobStore, jobId: string, sessionId
 
 describe('provider-operation startup recovery ownership', () => {
   it('computes ownership after provider reconciliation and then runs generic recovery exactly once', async () => {
-    const runtime = createRealRuntime('prod');
+    const runtime = createRealRuntime('prod', { baseDir: join(PROJECT_ROOT, '.coral') });
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     const progressStore = new JobStore(NAMESPACE, runtime, createEventBodyCodec(), {
@@ -242,7 +243,12 @@ describe('provider-operation startup recovery ownership', () => {
         listenFn: vi.fn(async () => ({ port: 0, host: '127.0.0.1' })),
         ipcServer: {} as never,
         closeIpcServerFn: vi.fn(async () => {}),
-        listenIpcFn: vi.fn(async () => ({ socketPath: runtime.paths.coral.coordinator.socketPath })),
+        listenIpcFn: vi.fn(
+          async (): Promise<ListenIpcServerResult> => ({
+            kind: 'bound',
+            socketPath: runtime.paths.coral.coordinator.socketPath,
+          }),
+        ),
       },
       async (inputs, runJobsStartup) => {
         await runJobsStartup({

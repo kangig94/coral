@@ -25,10 +25,11 @@ wall time                 148.1 s
 So the cap trades 1.9x wall time for less than half the stall depth, and does not change how often a stall
 happens at all. That is why this is a cap and not a fix.
 
-**Why it matters beyond test latency.** A live coordinator sharing that filesystem loses its provider control
-lease when the event loop stalls past the heartbeat RPC's 5,000 ms budget, and the reaper then terminates every
-job on the proxy set — see [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md). Twelve
-delegated jobs died that way in one day while this suite was running beside them.
+**Why it matters beyond test latency.** A live coordinator sharing that filesystem can miss its provider
+heartbeats. An unanswered 5,000 ms RPC is now retained and retried, but a stall extending beyond the
+enforcer's adoption deadline still makes that enforcer terminate every job on the proxy set — see
+[`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md). Twelve delegated jobs died through
+the earlier immediate-fault policy in one day while this suite was running beside them.
 
 ## What the cause is, and what it is not
 
@@ -47,6 +48,13 @@ An earlier attempt to move test temp files to tmpfs was measured and abandoned: 
 suite at 77.96 s against 77.85 s on ext4, because the run is CPU-bound on `transform` and `import` rather than
 I/O-bound. A single fsync there is 950x cheaper — 1 ms against 954 ms for 200 commits — and it changed nothing,
 which is the evidence that the aggregate is not what hurts.
+
+**Corrected 2026-08-27: that conclusion was conditional on the device's then-current fsync cost.** The
+77.96 s/77.85 s comparison above was taken when one fsync cost about 1 ms, so moving the suite's temp root
+could not remove a material bottleneck. The later tmpfs routing was measured after the same filesystem had
+degraded to roughly 300 ms per fsync; under that condition the temp root changed the dominant cost. Both
+measurements stand, but “changed nothing” does not generalize across those device states and is not a reason
+to remove the tmpfs root.
 
 ## What to investigate
 
