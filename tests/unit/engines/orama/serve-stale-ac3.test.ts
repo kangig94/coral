@@ -23,7 +23,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
 const NOTE_SLUG = 'orama-serve-stale-ac3';

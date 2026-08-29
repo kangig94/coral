@@ -22,7 +22,7 @@ import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const managers: KiwiAnalyzerManager[] = [];
 const tempRoots: string[] = [];

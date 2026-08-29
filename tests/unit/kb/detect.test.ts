@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Backed, FtsRetrieval } from '#src/kb/contract.js';

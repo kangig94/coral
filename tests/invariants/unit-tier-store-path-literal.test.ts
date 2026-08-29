@@ -1,7 +1,6 @@
-// Unit-tier store opens must name `':memory:'` directly. A test that requires a filesystem-backed store must
-// move to tests/integration; this ledger is migration work, never permission to keep unit-tier I/O.
-// The scanner must not infer variables, aliases, or consequences: only syntax at the opening call decides.
-// Ledger and site-census ratchets may only fall.
+// Store-opening calls in the unit-tier roots must name `':memory:'` directly, with no exceptions.
+// The scanner must not infer variables, imports, aliases, or consequences: only opening-call syntax decides.
+// Both the exception ledger and the non-literal site census must remain empty.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -23,80 +22,7 @@ type StoreCall = Readonly<{
 
 const STORE_DOORS = new Set<StoreDoor>(['newRawDatabase', 'openStoreDatabase', 'openTestStoreDb']);
 
-const REAL_STORE_MIGRATION_LEDGER = new Map<string, string>([
-  [
-    'tests/unit/cli/backend-recovery-quarantine.test.ts',
-    'openStoreDatabase: daemon-down readers reopen the seeded runtime store, while older and unsupported cases classify that file',
-  ],
-  [
-    'tests/unit/cli/coral-store-read-parity.test.ts',
-    'openStoreDatabase: CLI readers resolve the production store path internally and reopen rows seeded into that file',
-  ],
-  [
-    'tests/unit/cli/follow.test.ts',
-    'openStoreDatabase: follow cause rendering resolves the production store path internally and reopens seeded events',
-  ],
-  [
-    'tests/unit/cli/kb-diagnose.test.ts',
-    'openStoreDatabase: the diagnose command resolves the production store path internally and reopens seeded retry rows',
-  ],
-  [
-    'tests/unit/cli/main-routing.test.ts',
-    'openStoreDatabase: CLI wait cause rendering resolves the production store path internally and reopens seeded events',
-  ],
-  [
-    'tests/unit/cli/store-reset.test.ts',
-    'openTestStoreDb: discard refusal requires a compatible store file and an unchanged filesystem tree',
-  ],
-  [
-    'tests/unit/coordinator/corpus-notify-crash.test.ts',
-    'newRawDatabase: crash replay requires another connection to the same persisted snapshot and cursor state',
-  ],
-  [
-    'tests/unit/coordinator/service-composition.test.ts',
-    'openTestStoreDb: progress and session services require independent handles to the same production-resolved store file',
-  ],
-  [
-    'tests/unit/discuss/cross-connection-launch.test.ts',
-    'newRawDatabase: competing-launch serialization requires two connections to the same database file',
-  ],
-  [
-    'tests/unit/expansion/activate.test.ts',
-    'openStoreDatabase: activation reads the catalog through an internally resolved production store path',
-  ],
-  [
-    'tests/unit/kb-daemon/runtime-host.test.ts',
-    'openTestStoreDb: the owned runtime host internally reopens the seeded production store while dispose waits on its handle',
-  ],
-  [
-    'tests/unit/kb/runtime-test-helpers.ts',
-    'openStoreDatabase: runtime-directory callers use a second connection to reopen the same store file',
-  ],
-  [
-    'tests/unit/sessions/shell.test.ts',
-    'openStoreDatabase: continuity CAS ordering requires two concurrent handles to the same store file',
-  ],
-  [
-    'tests/unit/store/db-pragma.test.ts',
-    "newRawDatabase: WAL and synchronous pragma behavior cannot be observed on ':memory:'",
-  ],
-  [
-    'tests/unit/store/format-classification.test.ts',
-    'openStoreDatabase: assertions cover absent paths, byte identity, readonly reopening, classification, and on-disk metadata',
-  ],
-  [
-    'tests/unit/store/generation-readiness.test.ts',
-    'openStoreDatabase: path assertions require readable legacy history to remain on disk while a new generation opens beside it',
-  ],
-  [
-    'tests/unit/store/open-or-reset.test.ts',
-    'openStoreDatabase: reset and readonly cases assert creation, absence, replacement, and preservation by path',
-  ],
-  [
-    'tests/unit/testing/persistence-readers.test.ts',
-    'openStoreDatabase: the readers resolve the production store path internally and reopen data seeded into that file',
-  ],
-]);
+const REAL_STORE_MIGRATION_LEDGER = new Map<string, string>();
 
 function sourceFilesUnder(root: string): string[] {
   const files: string[] = [];
@@ -176,23 +102,12 @@ const UNIT_TIER_STORE_CALLS = unitTierStoreCalls();
 const REAL_STORE_SITES = UNIT_TIER_STORE_CALLS.filter((call) => !call.pathIsMemoryLiteral);
 
 describe('unit-tier store paths are explicit memory literals', () => {
-  it('opens no unrecorded filesystem-backed store', () => {
-    expect(REAL_STORE_SITES.filter((site) => !REAL_STORE_MIGRATION_LEDGER.has(site.file))).toEqual([]);
+  it('contains no non-literal store-opening call', () => {
+    expect(REAL_STORE_SITES).toEqual([]);
   });
 
-  it('every ledger file still has a non-literal store path', () => {
-    const filesWithRealStoreSites = new Set(REAL_STORE_SITES.map((site) => site.file));
-    expect([...REAL_STORE_MIGRATION_LEDGER.keys()].filter((file) => !filesWithRealStoreSites.has(file))).toEqual([]);
-  });
-
-  it('keeps the migration ledger and site census on a shrinking ratchet', () => {
-    expect({
-      ledgerFiles: REAL_STORE_MIGRATION_LEDGER.size,
-      realStoreSites: REAL_STORE_SITES.length,
-    }).toEqual({
-      ledgerFiles: 18,
-      realStoreSites: 36,
-    });
+  it('keeps the migration ledger empty', () => {
+    expect([...REAL_STORE_MIGRATION_LEDGER]).toEqual([]);
   });
 
   it('finds store-opening calls in the scanned roots', () => {

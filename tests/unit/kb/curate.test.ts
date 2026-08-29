@@ -17,7 +17,7 @@ import { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposal
 import type { ClassificationAssignment, CurateClaimedEntry, DiscoveryProposal } from '#src/kb/curate/pipeline-types.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { parseCommunityFrontmatter, parseFrontmatter } from '#src/kb/corpus/frontmatter.js';

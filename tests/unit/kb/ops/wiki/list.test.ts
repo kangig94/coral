@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({ tmpHome: '' }));

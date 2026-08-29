@@ -12,7 +12,7 @@ import { runPendingKbMigrations } from '#src/kb/migrations/index.js';
 import { noteEntryId, sourceEntryId } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const CURRENT_TEST_MIGRATION_VERSION = 1;
 

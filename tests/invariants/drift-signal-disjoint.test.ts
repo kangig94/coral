@@ -10,7 +10,7 @@ import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
 import { createCorpusMarkdownFileScan, createCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import { createEmptyGeneratedCommunityProjectionStore } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
 

@@ -18,7 +18,7 @@ import { noteEntryId } from '#src/kb/entry-types.js';
 import type { PendingRepair } from '#src/kb/curate/state/model.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { curateDb } from '../../../../../src/kb/curate/db-access.js';
 

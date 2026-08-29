@@ -7,7 +7,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import * as rescanModule from '#src/kb/corpus/rescan/index.js';
 import type { RescanCounts } from '#src/kb/corpus/projection-lifecycle.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 // Spec §12.3 lazy non-blocking rescan: KB read paths return immediately with
 // the current index and dispatch a single shared background rebuild;

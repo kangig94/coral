@@ -17,7 +17,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { RuntimeExecOptions } from '#src/runtime/ports.js';
 import type { ExecResult } from '#src/infra/port-types.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import { createKbTestDb } from './runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '../../fixtures/test-runtime.js';
 
 const CREATED_AT = '2026-06-17T00:00:00.000Z';

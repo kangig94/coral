@@ -11,7 +11,7 @@ import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
 import { listStaleCommunities } from '#src/kb/curate/community/summary-surface.js';
 import { writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { curateDb } from '#src/kb/curate/db-access.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';

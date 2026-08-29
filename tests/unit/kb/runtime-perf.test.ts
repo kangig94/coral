@@ -38,7 +38,7 @@ import type * as PrinciplesModule from '#src/kb/curate/principles.js';
 import type * as GitSyncModule from '#src/kb/curate/git-sync.js';
 import type * as ReindexModule from '#src/kb/ops/reindex.js';
 import { cursorTimestampFromStorageSeq, noteCursor } from '#src/kb/curate/state/index.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 type LoadedPerfModules = {

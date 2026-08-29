@@ -10,7 +10,7 @@ import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type EntityG
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import { cursorTimestampFromStorageSeq, noteCursor } from '#src/kb/curate/state/index.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 

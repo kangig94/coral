@@ -18,7 +18,7 @@ import { createCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
 import { communityEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { readEntryByKind } from '#src/kb/read.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Database[] = [];

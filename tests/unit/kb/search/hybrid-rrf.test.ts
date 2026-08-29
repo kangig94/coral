@@ -23,7 +23,7 @@ import {
   bindVectorBacked,
   seedVectorRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
 const mockState = vi.hoisted(() => ({

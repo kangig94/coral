@@ -16,7 +16,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
 
 const tempRoots: string[] = [];

@@ -32,7 +32,7 @@ import type { CorpusAuthoritativeFreshnessTarget, CorpusConsumerApplyContext } f
 import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
 

@@ -26,7 +26,7 @@ import {
 } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const REPO_ROOT = process.cwd();
 const CORPUS_GRAPH_FIXTURE = join(

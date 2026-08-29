@@ -16,7 +16,7 @@ import {
   type PromoteRecoveryPhase,
 } from '#src/kb/ops/promote-marker.js';
 import { runPromoteRecovery } from '#src/kb/ops/promote-recovery.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const mockState = vi.hoisted(() => ({ tmpHome: '' }));

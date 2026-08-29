@@ -10,7 +10,7 @@ import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } 
 import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createOramaBaseProjection } from '#src/engines/orama/base-projection.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { curateDb } from '../../../../src/kb/curate/db-access.js';
 

@@ -30,7 +30,7 @@ import {
   type DetectedIncident,
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 const tempRoots: string[] = [];

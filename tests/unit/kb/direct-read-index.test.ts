@@ -9,7 +9,7 @@ import { INDEX_FILE, INDEX_STATE_FILE } from '#src/kb/corpus/index/store.js';
 import type { KbIndex } from '#src/kb/entry-types.js';
 import { listPrinciples } from '#src/kb/ops/principles-list.js';
 import { listSources } from '#src/kb/ops/source/store.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const tempRoots: string[] = [];

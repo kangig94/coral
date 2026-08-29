@@ -11,7 +11,7 @@ import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/hel
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { bindEmbedding, bindOramaFtsForTest, type OramaFtsBinding } from '#tests/unit/kb/expansion-test-helpers.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 type StoredOramaDocument = {
   title: string;

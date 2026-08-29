@@ -11,7 +11,7 @@ import { createWiki } from '#src/kb/ops/wiki/create.js';
 import { linkWikiKnowledge } from '#src/kb/ops/wiki/link.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { createKbTestDb } from '#tests/helpers/kb/runtime-test-helpers.js';
 
 const STATIC_NOW = (): number => new Date('2026-05-04T00:00:00.000Z').getTime();
 
