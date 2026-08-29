@@ -120,7 +120,7 @@ function createHarness(): Readonly<{
       progressStore: { getDb: () => db } as JobStore,
       consumerDriver: null,
     } satisfies CoordinatorStoreServices,
-    { storeDbPath: ':memory:' },
+    { storeDbPath: ':memory:', tier: 'unit' },
   );
 
   const world = captured.world;

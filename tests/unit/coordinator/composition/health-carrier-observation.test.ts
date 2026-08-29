@@ -167,7 +167,7 @@ function installProgressStore(
   setStoreServicesForTest(
     core.storeServicesRef,
     { storeDb: db, progressStore: progressStore as JobStore, consumerDriver: null } satisfies CoordinatorStoreServices,
-    { storeDbPath: ':memory:' },
+    { storeDbPath: ':memory:', tier: 'unit' },
   );
 }
 

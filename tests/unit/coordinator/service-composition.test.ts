@@ -129,7 +129,7 @@ let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
   return new JobStore(namespace, runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime),
+    db: openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
     eventBus,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
@@ -142,7 +142,7 @@ function createSessionManager(projectRoot: string): SessionManager {
     runtime,
     undefined,
     undefined,
-    openTestStoreDb(runtime),
+    openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
     permissiveProviderLookupPort,
   );
 }

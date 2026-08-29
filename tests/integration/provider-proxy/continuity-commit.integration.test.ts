@@ -381,7 +381,7 @@ async function createHarness(
   const baseDir = mkdtempSync(join(tmpdir(), 'coral-continuity-commit-'));
   const runtime = createRealRuntime('dev', { baseDir });
   const progressStore = new JobStore('continuity-commit-integration', runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime),
+    db: openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
     eventBus: new TypedEventBus(),
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),

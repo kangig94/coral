@@ -61,7 +61,7 @@ describe('provider host idle close/acquire race', () => {
     setStoreServicesForTest(
       storeServicesRef,
       { storeDb: db, progressStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
+      { storeDbPath: ':memory:', tier: 'integration' },
     );
     const operationRegistry = new LocalOperationRegistry();
     const productionCarrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, {

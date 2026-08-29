@@ -208,7 +208,10 @@ describe('server discuss API', () => {
         },
         async () => [],
       );
-      setStoreServicesForTest(core.storeServicesRef, createStoreServices(progressStore), { storeDbPath: ':memory:' });
+      setStoreServicesForTest(core.storeServicesRef, createStoreServices(progressStore), {
+        storeDbPath: ':memory:',
+        tier: 'unit',
+      });
       const liveSessions = [...registry.contexts.entries()].flatMap(([projectRoot, context]) =>
         [...context.sessions.values()].map((session) => ({
           projectRoot,

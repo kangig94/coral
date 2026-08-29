@@ -152,7 +152,7 @@ beforeEach(() => {
   runtime = createRealRuntime('dev');
   const eventBus = new TypedEventBus();
   progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime),
+    db: openTestStoreDb(runtime, ':memory:'),
     eventBus,
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),

@@ -150,7 +150,7 @@ function composeProductionPredicate(rows: ReadonlyMap<string, JobProjectionDetai
         progressStore: progressStore as JobStore,
         consumerDriver: null,
       } satisfies CoordinatorStoreServices,
-      { storeDbPath: ':memory:' },
+      { storeDbPath: ':memory:', tier: 'unit' },
     );
   }
 
@@ -198,7 +198,7 @@ describe('provider host idle properties', () => {
     setStoreServicesForTest(
       world.storeServicesRef,
       { storeDb: db, progressStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
+      { storeDbPath: ':memory:', tier: 'unit' },
     );
     const jobId = '00000000-0000-4000-8000-000000000602';
     const sessionId = 'idle-production-connection-session';
@@ -251,7 +251,7 @@ describe('provider host idle properties', () => {
     setStoreServicesForTest(
       storeServicesRef,
       { storeDb: {} as Database, progressStore: progressStore as unknown as JobStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
+      { storeDbPath: ':memory:', tier: 'unit' },
     );
     connectProviderHostRetirementReevaluation({
       eventBus,
@@ -285,7 +285,7 @@ describe('provider host idle properties', () => {
     setStoreServicesForTest(
       storeServicesRef,
       { storeDb: {} as Database, progressStore: progressStore as unknown as JobStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
+      { storeDbPath: ':memory:', tier: 'unit' },
     );
     const retirementWake = vi.fn(() => {
       throw new Error('fixture persistent retirement wake failure');
@@ -325,7 +325,7 @@ describe('provider host idle properties', () => {
     setStoreServicesForTest(
       storeServicesRef,
       { storeDb: db, progressStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
+      { storeDbPath: ':memory:', tier: 'unit' },
     );
     const operationRegistry = new LocalOperationRegistry();
     const carrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, {

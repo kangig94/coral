@@ -159,7 +159,7 @@ function createProgressStore(
   runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'> = runtime,
 ): JobStore {
   return new JobStore(namespace, runtimeArg, createEventBodyCodec(), {
-    db: openTestStoreDb(runtimeArg),
+    db: openTestStoreDb(runtimeArg, runtimeArg.paths.coral.store.dbFile),
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
   });
@@ -180,7 +180,7 @@ function createSessionManager(projectRoot: string): SessionManager {
     runtime,
     undefined,
     undefined,
-    openTestStoreDb(runtime),
+    openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
     permissiveProviderLookupPort,
   );
 }
@@ -6044,6 +6044,7 @@ describe('execution backend server', () => {
       const storeServicesRef = createStoreServicesRef();
       setStoreServicesForTest(storeServicesRef, createStoreServicesForProgressStore(progressStore), {
         storeDbPath: runtime.paths.coral.store.dbFile,
+        tier: 'integration',
       });
       runtimeState.setLifecycle('running');
 
