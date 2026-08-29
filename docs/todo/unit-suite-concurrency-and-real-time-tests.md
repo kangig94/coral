@@ -1,6 +1,6 @@
 # The unit suite starves the machine it runs on, and some of it waits on real time
 
-**Status**: half closed. The store fixtures are done — see "Closed: the store opens". What remains is the
+**Status**: open. The store-fixture half is done and its record has been removed; what remains is the
 real-time half, whose measured size is much smaller than this entry originally implied, and the cap itself:
 `vitest/default.ts` limits local workers to 8, which halves the depth of the stall without removing it.
 
@@ -56,31 +56,6 @@ degraded to roughly 300 ms per fsync; under that condition the temp root changed
 measurements stand, but “changed nothing” does not generalize across those device states and is not a reason
 to remove the tmpfs root.
 
-## Closed: the store opens
-
-The half of this entry about badly-shaped fixtures is done. Test database opening was spread across three
-helper homes: the runtime-aware formatted-store door, a KB-named duplicate of that operation, and the raw
-SQLite handle helper. The duplicated formatted door let the unit-tier rule forget one path. The formatted
-variants now live together in `tests/helpers/store-db.ts`; the raw helper remains separate because it
-deliberately applies neither the Coral schema nor its pragmas. Every door requires an explicit path.
-
-The rule no longer trusts the path expression a caller presents. Each opened handle reports its own location:
-unit and simulation reject file-backed databases, while integration and e2e reject files outside the run's
-temporary root. `tests/invariants/test-support-store-door-bypass.test.ts` scans all TypeScript under `tests/`
-and `tools/testing/` and rejects runtime forms that can acquire `node:sqlite` or hand out the production store
-module: imports and exports, dynamic imports, imports of `createRequire`, and protected bare `require(...)`
-calls. Default and namespace imports are checked fail-closed when their module specifier cannot be understood,
-while supported non-TypeScript assets are outside the store capability. The exact acquisition exemptions
-belong to `tests/helpers/test-db.ts`, `tests/helpers/store-db.ts`, and `tests/helpers/store-db-spies.ts`; the
-invariant requires each owner to exist and retain its witnessed acquisition. `tests/integration/` and
-`tests/e2e/` are the deliberate exclusions because opening and classifying databases directly is often the
-behavior under test there; integration runs with one worker.
-
-What the entry proposed for this half — "those can take the in-memory storage port instead" — assumed a seam
-that does not exist. `openStoreDatabase` and `classifyStoreFile` construct `DatabaseSync` directly rather than
-going through `storage.openSqliteDatabaseSync`, and the port's return type has none of the surface a store
-handle needs. `':memory:'` was already first class; no port detour was required.
-
 ## Still open: tests that wait on real time
 
 Measured 2026-08-29, and the entry's own framing overstated it. The concurrent tier holds **22 raw sleeps
@@ -93,8 +68,8 @@ than a swap. `vi.waitFor` appears 232 times but polls and returns on the conditi
 
 So this half is not a load problem. Its justification is flake: on a loaded host a 25 ms wait is not 25 ms,
 and a test racing a 300 ms timeout against real work inverts. That justification is now weaker than when it
-was written, because the load that produced the flakes is smaller — file-backed store opens are rejected in
-this tier and the e2e backend leak that accumulated a set per run is fixed.
+was written, because the load that produced the flakes is smaller — the concurrent tier no longer opens
+file-backed stores at all, and the e2e backend leak that accumulated a set per run is fixed.
 
 Start condition: a flake observed under current conditions, naming which of the 22 sites produced it. Starting
 from the list rather than from an observation would be converting sleeps that no longer hurt.
@@ -150,9 +125,10 @@ The dominant cost is **`journal_mode=WAL`, not `synchronous=FULL`**. Relaxing on
 conclude the theory was wrong.
 
 So the work this entry asks for is narrower than "audit the tests": production keeps WAL and `synchronous=FULL`,
-and a test that is not asserting durability physics must be able to open its database with an in-memory journal.
-That is a runtime/port-level choice, not a per-test pragma, or the next database opened through the real store
-path silently pays the 33 ms again.
+and a test that is not asserting durability physics must not pay for them. The concurrent tier reaches that by
+opening `':memory:'` and nothing else, which is cheaper than an in-memory journal and is enforced rather than
+asked for. It stays open for `tests/integration` and `tests/e2e`, where a file is often the subject and the
+33 ms is still paid per lifecycle.
 
 ## The suite has no margin, which is a finding of its own
 
