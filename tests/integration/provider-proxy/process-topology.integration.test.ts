@@ -1,8 +1,4 @@
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
-import {
-  authorizeProviderProxySetContainmentProof,
-  providerProxySetContainmentProofForTest,
-} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
@@ -14,7 +10,10 @@ import { z } from 'zod';
 
 import type { createEnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
 import { runtimeControlTimer, type connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 type CreateEnforcerDeadlineStateMachine = typeof createEnforcerDeadlineStateMachine;
 type ConnectRoleControlWithRetry = typeof connectRoleControlWithRetry;
@@ -1109,6 +1108,9 @@ describe('provider-proxy process topology: acquisition', () => {
       resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
     });
     cleanups.push(() => closeHandles(environment));
+    const containmentProofDb = newRawDatabase(':memory:');
+    applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+    cleanups.push(() => containmentProofDb.close());
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
@@ -1117,14 +1119,10 @@ describe('provider-proxy process topology: acquisition', () => {
       controlEstablished: () => undefined,
       time: environment.outerRuntime().time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async ({ identity }) =>
-          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+        'containment-proof': createTestProviderProxyContainmentProofProducer(
+          environment.outerRuntime(),
+          containmentProofDb,
+        ),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },

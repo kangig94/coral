@@ -4,10 +4,32 @@ import {
   type ProviderProxyRecoveryProducerPorts,
   type ProviderProxySetLifecycleFatalError,
 } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  createProviderProxySetContainmentProver,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import type { Database } from '#src/store/db.js';
 
 const unconfigured = (producer: string): never => {
   throw new Error(`Test provider proxy recovery producer '${producer}' is not configured.`);
 };
+
+export function createTestProviderProxyContainmentProofProducer(
+  runtime: Runtime,
+  db: Database,
+): ProviderProxyRecoveryProducerPorts['containment-proof'] {
+  const prover = createProviderProxySetContainmentProver({
+    ...runtime,
+    process: {
+      ...runtime.process,
+      readProcessIncarnation: () => null,
+      observeLiveness: () => 'unknown',
+    },
+  });
+  return ({ identity, signal }) =>
+    prover.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+}
 
 export function createTestProviderProxyRecoveryDispatcher(
   producers: Partial<ProviderProxyRecoveryProducerPorts>,

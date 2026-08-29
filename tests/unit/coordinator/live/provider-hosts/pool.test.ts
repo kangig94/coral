@@ -1,9 +1,5 @@
-import {
-  authorizeProviderProxySetContainmentProof,
-  providerProxySetContainmentProofForTest,
-} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -26,6 +22,8 @@ import type {
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
@@ -39,10 +37,17 @@ import {
   createSpawnProviderServerMock,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const containmentProofDb = newRawDatabase(':memory:');
+applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+afterAll(() => containmentProofDb.close());
 
 const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
@@ -157,14 +162,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     controlEstablished: () => undefined,
     time: runtime.time,
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-      'containment-proof': async ({ identity }) =>
-        providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-          kind: 'enforcers-observed' as const,
-          observations: [
-            { role: 'guardian', observation: 'unknown' },
-            { role: 'reaper', observation: 'unknown' },
-          ] as const,
-        }),
+      'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
     }),
     reapRecordedContainment: () => {
       throw new Error('provider host pool fixture unexpectedly requested recorded containment reaping');

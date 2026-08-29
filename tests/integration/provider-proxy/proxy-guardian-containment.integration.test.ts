@@ -1,7 +1,3 @@
-import {
-  authorizeProviderProxySetContainmentProof,
-  providerProxySetContainmentProofForTest,
-} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -133,7 +129,10 @@ import {
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { createFakeProviderServerHandle } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
@@ -1363,6 +1362,9 @@ describe('provider proxy cumulative root rotation', () => {
       },
     );
 
+    const containmentProofDb = newRawDatabase(':memory:');
+    applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+    cleanups.push(() => containmentProofDb.close());
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
@@ -1371,14 +1373,7 @@ describe('provider proxy cumulative root rotation', () => {
       controlEstablished: () => undefined,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async ({ identity }) =>
-          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+        'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
       }),
       reapRecordedContainment: () => {
         throw new Error(

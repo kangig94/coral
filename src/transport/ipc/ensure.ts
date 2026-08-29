@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { CoordinatorPaths } from '../../infra/path/index.js';
+import { v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
 import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -109,6 +111,11 @@ type BackendReadyWaitContext =
 type ReadyCoordinatorEvidence = Readonly<{
   info: VerifiedBackendInfo;
   health: RawCoordinatorHealth;
+}>;
+
+type CoordinatorObservation = Readonly<{
+  socketPath: string;
+  health: RawCoordinatorHealth | null;
 }>;
 
 type StartupErrorSentinel = {
@@ -360,20 +367,20 @@ function identityMatchesExistingIncumbent(
 
 function discoveryMatchesExistingIncumbent(
   info: VerifiedBackendInfo,
-  paths: CoordinatorPaths,
+  expectedSocketPath: string,
   incumbent: ExistingIncumbentIdentity,
 ): boolean {
-  return info.socketPath === paths.socketPath && identityMatchesExistingIncumbent(info, incumbent);
+  return info.socketPath === expectedSocketPath && identityMatchesExistingIncumbent(info, incumbent);
 }
 
 async function readIdentityCheckedAuthenticatedHealth(
   info: VerifiedBackendInfo,
-  paths: CoordinatorPaths,
+  expectedSocketPath: string,
   observedHealth: RawCoordinatorHealth,
   timePort: TimePort,
 ): Promise<RawCoordinatorHealth | null> {
   const observedIdentity = existingIncumbentIdentity(observedHealth);
-  if (!discoveryMatchesExistingIncumbent(info, paths, observedIdentity)) {
+  if (!discoveryMatchesExistingIncumbent(info, expectedSocketPath, observedIdentity)) {
     return null;
   }
 
@@ -382,7 +389,7 @@ async function readIdentityCheckedAuthenticatedHealth(
   if (
     authenticatedHealth === null ||
     !identityMatchesExistingIncumbent(authenticatedHealth, observedIdentity) ||
-    !discoveryMatchesExistingIncumbent(info, paths, existingIncumbentIdentity(authenticatedHealth))
+    !discoveryMatchesExistingIncumbent(info, expectedSocketPath, existingIncumbentIdentity(authenticatedHealth))
   ) {
     return null;
   }
@@ -568,6 +575,7 @@ async function waitForBackendReady(
   timeoutMs: number,
   timePort: TimePort,
   waitContext: BackendReadyWaitContext,
+  expectedSocketPath: string = paths.socketPath,
 ): Promise<ReadyCoordinatorEvidence> {
   const currentAttempt = waitContext.kind === 'current-attempt';
   const bindDeadline = timePort.now() + KERNEL_BIND_DEADLINE_MS;
@@ -590,13 +598,18 @@ async function waitForBackendReady(
       noteHealth(health);
       observedPid = health?.pid ?? observedPid;
       if (mayInvocationBeServedByIncumbent(health) && isReadyStatus(health.status)) {
-        const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(info, paths, health, timePort);
+        const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
+          info,
+          expectedSocketPath,
+          health,
+          timePort,
+        );
         if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
           return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
         }
       }
     } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
-      const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+      const health = await readRawCoordinatorHealth(createIpcClient(expectedSocketPath, timePort));
       noteHealth(health);
       observedPid = health?.pid;
     }
@@ -622,6 +635,7 @@ async function waitForBackendReady(
  */
 async function waitForExistingIncumbentReady(
   paths: CoordinatorPaths,
+  socketPath: string,
   initialHealth: RawCoordinatorHealth,
   timeoutMs: number,
   timePort: TimePort,
@@ -642,7 +656,7 @@ async function waitForExistingIncumbentReady(
     }
 
     const info = readDiscoverySnapshot(paths);
-    if (info !== null && !discoveryMatchesExistingIncumbent(info, paths, incumbent)) {
+    if (info !== null && !discoveryMatchesExistingIncumbent(info, socketPath, incumbent)) {
       throw childCoordinatorUnavailable('coordinator discovery does not match the observed parent');
     }
     if (info !== null && isReadyStatus(health.status)) {
@@ -650,7 +664,7 @@ async function waitForExistingIncumbentReady(
     }
 
     await timePort.sleep(STARTUP_POLL_MS);
-    health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+    health = await readRawCoordinatorHealth(createIpcClient(socketPath, timePort));
   }
 
   throw childCoordinatorUnavailable('timed out waiting for the observed parent coordinator to become ready');
@@ -678,25 +692,27 @@ function resolveBackendBin(root: string): string {
 
 async function ensureChildIncumbent(
   paths: CoordinatorPaths,
+  socketPath: string,
   health: RawCoordinatorHealth | null,
   timePort: TimePort,
 ): Promise<EnsuredIpcClient> {
   if (health === null) {
     throw childCoordinatorUnavailable('its parent coordinator is unreachable');
   }
-  const info = await waitForExistingIncumbentReady(paths, health, KERNEL_READY_DEADLINE_MS, timePort);
+  const info = await waitForExistingIncumbentReady(paths, socketPath, health, KERNEL_READY_DEADLINE_MS, timePort);
   return summarizeBackend(info, timePort, 'none');
 }
 
 async function reuseServingIncumbent(
   paths: CoordinatorPaths,
+  socketPath: string,
   desired: DesiredCoordinator,
   health: RawCoordinatorHealth,
   timePort: TimePort,
 ): Promise<EnsuredIpcClient | null> {
   const info = readDiscoverySnapshot(paths);
   if (info !== null) {
-    const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(info, paths, health, timePort);
+    const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(info, socketPath, health, timePort);
     if (authenticatedHealth === null) {
       return null;
     }
@@ -705,19 +721,24 @@ async function reuseServingIncumbent(
     }
   }
 
-  const ready = await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, timePort, {
-    kind: 'existing-starting',
-  });
+  const ready = await waitForBackendReady(
+    paths,
+    desired,
+    KERNEL_READY_DEADLINE_MS,
+    timePort,
+    { kind: 'existing-starting' },
+    socketPath,
+  );
   return summarizeBackend(ready.info, timePort, 'boot');
 }
 
 async function prepareTopLevelSpawn(
-  paths: CoordinatorPaths,
+  socketPath: string,
   health: RawCoordinatorHealth | null,
   timePort: TimePort,
 ): Promise<void> {
   if (health?.status === 'draining') {
-    await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, timePort);
+    await waitForSocketRelease(socketPath, HANDOFF_DRAIN_TIMEOUT_MS, timePort);
   }
 }
 
@@ -740,6 +761,7 @@ async function ensureTopLevelCoordinator(
   root: string,
   flavor: 'prod' | 'dev',
   paths: CoordinatorPaths,
+  socketPath: string,
   health: RawCoordinatorHealth | null,
   timePort: TimePort,
 ): Promise<EnsuredIpcClient> {
@@ -755,7 +777,7 @@ async function ensureTopLevelCoordinator(
   };
   let replacementEvidence = health;
   if (mayInvocationBeServedByIncumbent(health)) {
-    const incumbent = await reuseServingIncumbent(paths, desired, health, timePort);
+    const incumbent = await reuseServingIncumbent(paths, socketPath, desired, health, timePort);
     if (incumbent !== null) {
       return incumbent;
     }
@@ -767,9 +789,9 @@ async function ensureTopLevelCoordinator(
     // racing `bindWithHandoff` for the same socket. `mayProcessReplaceIncumbent`
     // is the same predicate `mayInvocationBeServedByIncumbent` complements —
     // it is the explicit gate for "is spawning even on the table here".
-    replacementEvidence = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+    replacementEvidence = await readRawCoordinatorHealth(createIpcClient(socketPath, timePort));
     if (mayInvocationBeServedByIncumbent(replacementEvidence)) {
-      const retried = await reuseServingIncumbent(paths, desired, replacementEvidence, timePort);
+      const retried = await reuseServingIncumbent(paths, socketPath, desired, replacementEvidence, timePort);
       if (retried !== null) {
         return retried;
       }
@@ -781,9 +803,38 @@ async function ensureTopLevelCoordinator(
       );
     }
   }
-  await prepareTopLevelSpawn(paths, replacementEvidence, timePort);
+  await prepareTopLevelSpawn(socketPath, replacementEvidence, timePort);
 
   return spawnTopLevelCoordinator(resolveBackendBin(root), paths, desired, timePort);
+}
+
+async function observeCoordinator(
+  runtime: Runtime,
+  paths: CoordinatorPaths,
+  timePort: TimePort,
+): Promise<CoordinatorObservation> {
+  const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+  if (health !== null) return { socketPath: paths.socketPath, health };
+
+  const info = readDiscoverySnapshot(paths);
+  if (info === null) return { socketPath: paths.socketPath, health: null };
+  const compatibilityAddresses = v0109CoordinatorSocketGuardSetForRunDir(paths.runDir, runtime.flavor, {
+    platform: runtime.env.platform(),
+    configuredTempDirectory: runtime.env.get('TMPDIR'),
+    systemTempDirectory: runtime.env.tmpdir(),
+  });
+  if (
+    compatibilityAddresses.kind !== 'guarded-addresses' ||
+    !compatibilityAddresses.paths.includes(info.socketPath) ||
+    info.socketPath === paths.socketPath
+  ) {
+    return { socketPath: paths.socketPath, health: null };
+  }
+
+  return {
+    socketPath: info.socketPath,
+    health: await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort)),
+  };
 }
 
 /**
@@ -797,10 +848,10 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
   const runtime = createRealRuntime(flavor);
   const ipcTime = timePort ?? runtime.time;
   const paths = runtime.paths.coral.coordinator;
-  const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, ipcTime));
+  const observation = await observeCoordinator(runtime, paths, ipcTime);
 
   if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
-    return ensureChildIncumbent(paths, health, ipcTime);
+    return ensureChildIncumbent(paths, observation.socketPath, observation.health, ipcTime);
   }
-  return ensureTopLevelCoordinator(root, flavor, paths, health, ipcTime);
+  return ensureTopLevelCoordinator(root, flavor, paths, observation.socketPath, observation.health, ipcTime);
 }

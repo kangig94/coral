@@ -157,21 +157,6 @@ async function collectProviderProxySetContainmentEvidence(
   return providerProxySetContainmentEvidenceSchema.parse({ kind: 'reap-required', containment, recordedRoots });
 }
 
-/**
- * Preserves the production identity/authorization binding when tests must supply evidence for the
- * module-private proof brand.
- */
-export function providerProxySetContainmentProofForTest(
-  authorization: ProviderProxySetContainmentProofAuthorization,
-  evidence: ProviderProxySetContainmentEvidence,
-): ProviderProxySetContainmentProof {
-  const identity = authorizedIdentities.get(authorization);
-  if (identity === undefined) throw new Error('provider_proxy_set_containment_proof_authorization_invalid');
-  const proof = Object.freeze({}) as ProviderProxySetContainmentProof;
-  containmentProofRecords.set(proof, { authorization, identity, evidence });
-  return proof;
-}
-
 /** Collects read-only evidence and seals it only for a minted exact-set authorization. */
 export function createProviderProxySetContainmentProver(runtime: Runtime): ProviderProxySetContainmentProver {
   return {

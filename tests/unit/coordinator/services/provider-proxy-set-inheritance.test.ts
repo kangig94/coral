@@ -65,7 +65,6 @@ import {
   createProviderProxySetContainmentProver,
   inspectProviderProxySetContainmentProof,
   providerProxySetContainmentEvidenceFor,
-  providerProxySetContainmentProofForTest,
 } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { ProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import {
@@ -80,7 +79,10 @@ import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-pr
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -1768,14 +1770,7 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async ({ identity }) =>
-          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+        'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, unusedDb),
       }),
       reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
@@ -1844,14 +1839,7 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: established,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async ({ identity }) =>
-          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+        'containment-proof': createTestProviderProxyContainmentProofProducer({ ...runtime, time }, unusedDb),
       }),
       reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
@@ -1925,14 +1913,7 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: () => undefined,
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
-        'containment-proof': async ({ identity }) =>
-          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+        'containment-proof': createTestProviderProxyContainmentProofProducer(inheritedRuntime, unusedDb),
         'disappearance-consumer': async ({ notice }) => ({
           kind: 'accepted',
           acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },

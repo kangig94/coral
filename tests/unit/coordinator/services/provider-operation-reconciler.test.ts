@@ -1,11 +1,7 @@
-import {
-  authorizeProviderProxySetContainmentProof,
-  providerProxySetContainmentProofForTest,
-} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { SuccessionOperationRegistrationOutcome } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { TimePort } from '#src/infra/port-types.js';
@@ -41,6 +37,7 @@ import {
   type ProviderOperationRecord,
 } from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import {
   providerOperationPreparePermanentRefusalSchema,
   proxyOperationAttachResultSchema,
@@ -54,7 +51,10 @@ import {
   type ProviderOperationTerminalizationPort,
 } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -75,6 +75,10 @@ import { providerOperationRecord } from '../../store/provider-operation-fixtures
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const containmentProofRuntime = createRealRuntime('prod');
+const containmentProofDb = newRawDatabase(':memory:');
+applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
+afterAll(() => containmentProofDb.close());
 
 const activationAck = {
   state: 'executing',
@@ -162,14 +166,10 @@ function lifecycleForSchedule(
     },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
       {
-        'containment-proof': async ({ identity }) =>
-          providerProxySetContainmentProofForTest(authorizeProviderProxySetContainmentProof(identity), {
-            kind: 'enforcers-observed' as const,
-            observations: [
-              { role: 'guardian', observation: 'unknown' },
-              { role: 'reaper', observation: 'unknown' },
-            ] as const,
-          }),
+        'containment-proof': createTestProviderProxyContainmentProofProducer(
+          containmentProofRuntime,
+          containmentProofDb,
+        ),
         'disappearance-consumer': ({ notice }) => reconciler.containmentDisappeared(notice),
       },
       (error) => {
