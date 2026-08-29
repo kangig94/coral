@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 import { rawSqlPlugin } from './raw-sql-plugin.js';
-import { testTempEnv } from './temp-root.js';
+import { testEnv } from './tiers.js';
 
 const alias = {
   '#src': fileURLToPath(new URL('../src', import.meta.url)),
@@ -19,13 +19,13 @@ export default defineConfig({
   plugins: [rawSqlPlugin()],
   resolve: { alias },
   test: {
-    env: testTempEnv(),
+    env: testEnv('e2e'),
     include: ['tests/e2e/**/*.test.ts'],
     exclude: ['tests/e2e/lifecycle/**', 'tests/e2e/**/lifecycle/**'],
     testTimeout: 120_000,
     hookTimeout: 30_000,
     pool: 'forks',
-    forks: { singleFork: true },
+    maxWorkers: 1,
     globalSetup: ['vitest/no-real-coral-leak.ts'],
   },
 });

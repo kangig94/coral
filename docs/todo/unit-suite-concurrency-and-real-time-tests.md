@@ -70,7 +70,7 @@ doors in the concurrent tier. It refuses to guess rather than inferring: a varia
 what keeps it from becoming the kind of scanner
 [`liveness-is-never-a-boolean.test.ts`](../../tests/invariants/liveness-is-never-a-boolean.test.ts) records as
 written and deleted. Seventeen tests that genuinely need a store file moved to `tests/integration`, which is
-single-fork and therefore cannot saturate anything.
+limited to one worker and therefore cannot saturate anything.
 
 What the entry proposed for this half — "those can take the in-memory storage port instead" — assumed a seam
 that does not exist. `openStoreDatabase` and `classifyStoreFile` construct `DatabaseSync` directly rather than
