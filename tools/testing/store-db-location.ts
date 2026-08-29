@@ -5,8 +5,10 @@ import type { Database } from '../../src/store/db.js';
 export type TestTier = 'unit' | 'integration' | 'simulation' | 'e2e';
 
 const TEST_TIERS = new Set<TestTier>(['unit', 'integration', 'simulation', 'e2e']);
-const ENFORCED_TEST_TIER = process.env.CORAL_TEST_TIER;
-const ENFORCED_TEST_TEMP_ROOT = resolve(process.env.TMPDIR ?? tmpdir());
+
+type EnforcedTestLocationPolicy = Readonly<{ tier: string | undefined; tempRoot: string }>;
+
+let enforcedTestLocationPolicy: EnforcedTestLocationPolicy | undefined;
 
 export type TestDatabaseLocationDisposition =
   | Readonly<{ kind: 'allowed' }>
@@ -16,6 +18,14 @@ export type TestDatabaseLocationDisposition =
 
 function isTestTier(tier: string | undefined): tier is TestTier {
   return TEST_TIERS.has(tier as TestTier);
+}
+
+function enforcedLocationPolicy(): EnforcedTestLocationPolicy {
+  enforcedTestLocationPolicy ??= {
+    tier: process.env.CORAL_TEST_TIER,
+    tempRoot: resolve(process.env.TMPDIR ?? tmpdir()),
+  };
+  return enforcedTestLocationPolicy;
 }
 
 export function classifyTestDatabaseLocation(
@@ -54,13 +64,14 @@ export function classifyTestDatabaseLocation(
  * An unrecognized tier is refused rather than treated as the permissive one.
  */
 export function assertTestDatabaseLocation(db: Database): void {
+  const policy = enforcedLocationPolicy();
   const location = db.location();
-  const disposition = classifyTestDatabaseLocation(ENFORCED_TEST_TIER, ENFORCED_TEST_TEMP_ROOT, location);
+  const disposition = classifyTestDatabaseLocation(policy.tier, policy.tempRoot, location);
 
   if (disposition.kind === 'unrecognized-tier') {
     db.close();
     throw new Error(
-      `Test database opened with CORAL_TEST_TIER=${ENFORCED_TEST_TIER ?? '<unset>'}; set it through testEnv(tier) or the standalone simulation entry point before opening ${location ?? ':memory:'}`,
+      `Test database opened with CORAL_TEST_TIER=${policy.tier ?? '<unset>'}; set it through testEnv(tier) or the standalone simulation entry point before opening ${location ?? ':memory:'}`,
     );
   }
 

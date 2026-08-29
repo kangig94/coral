@@ -1,4 +1,4 @@
-// Every TypeScript test path named by a package script must resolve to an existing file.
+// Package scripts must not name missing TypeScript test files.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';

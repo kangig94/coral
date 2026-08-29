@@ -5,7 +5,7 @@ import type { ScenarioResult, StepResult } from './runner.js';
 import { simulationDocumentSchema } from './scenario-schema.js';
 import type { SimulationWorld } from './adversarial.js';
 
-process.env.CORAL_TEST_TIER ??= 'simulation';
+process.env.CORAL_TEST_TIER = 'simulation';
 
 function summarizeStep(step: StepResult): string | null {
   if (step.type === 'launch' && step.detail && typeof step.detail === 'object') {

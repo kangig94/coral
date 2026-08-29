@@ -90,9 +90,7 @@ The GitHub release body is generated automatically (`gh release create --generat
 - No trailing whitespace
 - Single blank line between top-level declarations
 - JSDoc on exported functions and complex internal functions
-- Comments state a constraint, never a description. "Is it WHY?" is the wrong test — a WHY that
-  describes the current implementation rots exactly as fast as a WHAT. The test is **could an edit
-  someone would plausibly make to this code in the normal course of work make this sentence false?**
+- Comments state constraints, never descriptions.
   An arbitrary redesign does not count. If a legitimate edit can falsify it, delete the comment
   rather than write it, because the edit that invalidates it will not be the edit that notices.
   - A **constraint** survives rewriting, and breaking it is a bug: "a non-zero exit here must not
