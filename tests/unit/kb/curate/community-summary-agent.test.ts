@@ -11,7 +11,7 @@ import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
 import { listStaleCommunities } from '#src/kb/curate/community/summary-surface.js';
 import { writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { curateDb } from '#src/kb/curate/db-access.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
@@ -50,7 +50,7 @@ describe('runCommunitySummaryAgent', () => {
     originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude-config');
     gitSyncRuntime = createRealRuntime('prod');
-    const db = createKbTestDb(tempDir);
+    const db = openKbTestStoreDb(':memory:');
     ({ kb: runtime } = createKbTestRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,

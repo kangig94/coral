@@ -17,6 +17,7 @@ import {
   toCanonicalSrcPath,
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
+import { UNIT_TIER_ROOTS } from '../../vitest/tiers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '..', '..');
@@ -197,8 +198,9 @@ function collectTestQuarantineResidue(): string[] {
   const marker = ['@', 'fla', 'ky'].join('');
   const retryConfig = /\b(?:describe|it|test)\s*\([^)]*,\s*\{\s*retry\s*:/s;
   const scannedFiles = [
-    ...listFilesRecursive(resolve(REPO_ROOT, 'tests/unit'), (filePath) => filePath.endsWith('.test.ts')),
-    ...listFilesRecursive(resolve(REPO_ROOT, 'tests/invariants'), (filePath) => filePath.endsWith('.test.ts')),
+    ...UNIT_TIER_ROOTS.flatMap((root) =>
+      listFilesRecursive(resolve(REPO_ROOT, root), (filePath) => filePath.endsWith('.test.ts')),
+    ),
     resolve(REPO_ROOT, 'scripts/test.mjs'),
   ];
 

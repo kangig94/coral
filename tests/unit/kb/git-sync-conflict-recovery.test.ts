@@ -17,7 +17,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { RuntimeExecOptions } from '#src/runtime/ports.js';
 import type { ExecResult } from '#src/infra/port-types.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import { createKbTestDb } from './runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '../../fixtures/test-runtime.js';
 
 const CREATED_AT = '2026-06-17T00:00:00.000Z';
@@ -119,7 +119,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
     const runtime = createRealRuntime('prod');
     initRepo(root);
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -150,7 +150,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
     const runtime = createRealRuntime('prod');
     initRepo(root);
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -190,7 +190,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
     const runtime = createRealRuntime('prod');
     initRepo(root);
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -313,7 +313,7 @@ describe('git sync conflict recovery', () => {
     git(local, ['commit', '-m', 'curate local output']);
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: local,
       runtimeDir: root,
@@ -372,7 +372,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -531,7 +531,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -679,7 +679,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -825,7 +825,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -974,7 +974,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -1098,7 +1098,7 @@ describe('git sync conflict recovery', () => {
     process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
 
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -1269,7 +1269,7 @@ describe('git sync conflict recovery', () => {
 
     const complete = vi.fn(async () => '');
     const runtime = createRealRuntime('prod');
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: local,
       runtimeDir: root,
@@ -1378,7 +1378,7 @@ describe('git sync conflict recovery', () => {
     writeFileSync(join(root, 'notes', 'auto.md'), renderConflictNote('Promoted body.'), 'utf-8');
     mkdirSync(join(root, '.git', 'rebase-merge'), { recursive: true });
 
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -1425,7 +1425,7 @@ describe('git sync conflict recovery', () => {
     const merge = spawnSync('git', ['merge', 'feature'], { cwd: root, encoding: 'utf-8' });
     expect(merge.status).not.toBe(0);
 
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
@@ -1461,7 +1461,7 @@ describe('git sync conflict recovery', () => {
     git(root, ['commit', '-m', 'seed']);
     writeFileSync(join(root, 'notes', 'seed.md'), renderConflictNote('Updated body.'), 'utf-8');
 
-    const db = createKbTestDb(root);
+    const db = openKbTestStoreDb(':memory:');
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,

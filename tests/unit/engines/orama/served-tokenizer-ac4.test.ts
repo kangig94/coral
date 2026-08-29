@@ -20,7 +20,7 @@ import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const tempRoots: string[] = [];
 const KOREAN_SLUG = 'served-tokenizer-korean';
@@ -57,7 +57,7 @@ function createKbFixture(): { kb: KbRuntime; runtime: Runtime } {
   const kb = createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: openKbTestStoreDb(':memory:'),
     runtime,
   });
 

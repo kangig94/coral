@@ -32,7 +32,6 @@ import {
 } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
-import * as dbModule from '#src/store/db.js';
 import type { Database } from '#src/store/db.js';
 import {
   resolveGenerationBoundaryPaths,
@@ -42,6 +41,7 @@ import {
 import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { spyOnClassifyStoreFile, spyOnOpenStoreDatabase } from '#tests/helpers/store-db-spies.js';
 
 const roots: string[] = [];
 const backendBundle = 'backend fixture';
@@ -120,16 +120,13 @@ function fakeDatabase(): Database {
   } as unknown as Database;
 }
 
-// `classifyStoreFile`/`openStoreDatabase` have no production-supplied override, so tests reach them the same
-// way production does — by spying on the real module — rather than widening the operator dependency type
-// with test-only injection seams.
 function stubStoreOpen(
   classification: StoreFormatClassification = { kind: 'fresh' },
   database: Database = fakeDatabase(),
 ): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
   return {
-    classifyStore: vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue(classification),
-    openStore: vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => database),
+    classifyStore: spyOnClassifyStoreFile().mockReturnValue(classification),
+    openStore: spyOnOpenStoreDatabase().mockImplementation(() => database),
   };
 }
 
@@ -217,13 +214,13 @@ describe('active-store-selection locking', () => {
       return durableWrite(path, bytes, options);
     });
     const db = fakeDatabase();
-    vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
+    spyOnClassifyStoreFile().mockImplementation(() => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
       expect(existsSync(resetLock)).toBe(true);
       events.push('classify');
       return { kind: 'fresh' };
     });
-    vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => {
+    spyOnOpenStoreDatabase().mockImplementation(() => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
       expect(existsSync(resetLock)).toBe(true);
       events.push('open');
@@ -300,8 +297,8 @@ describe('active-store-selection locking', () => {
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(selected));
     const boundary = resolveGenerationBoundaryPaths(runtime);
     const selectedBytes = readFileSync(resolveActiveStoreRecordPaths(runtime).selectionFile);
-    const classifyStore = vi.spyOn(dbModule, 'classifyStoreFile');
-    const openStore = vi.spyOn(dbModule, 'openStoreDatabase');
+    const classifyStore = spyOnClassifyStoreFile();
+    const openStore = spyOnOpenStoreDatabase();
     const validate = createForeignTargetValidator();
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
@@ -438,8 +435,8 @@ describe('active-store-selection locking', () => {
     const paths = resolveActiveStoreRecordPaths(runtime);
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     mkdirSync(paths.transitionFile, { mode: 0o700 });
-    const classifyStore = vi.spyOn(dbModule, 'classifyStoreFile');
-    const openStore = vi.spyOn(dbModule, 'openStoreDatabase');
+    const classifyStore = spyOnClassifyStoreFile();
+    const openStore = spyOnOpenStoreDatabase();
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
@@ -684,7 +681,7 @@ describe('active-store-selection locking', () => {
       adoption.assertOwned();
       return db;
     });
-    vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue({ kind: 'fresh' });
+    spyOnClassifyStoreFile().mockReturnValue({ kind: 'fresh' });
 
     const coordinating = coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),

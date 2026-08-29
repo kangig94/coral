@@ -42,7 +42,7 @@ import { cloneKbIndex } from '#src/kb/corpus/index/records.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import type { ReadonlyDatabase } from '#src/store/read-port.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
@@ -217,7 +217,7 @@ beforeEach(() => {
   ({ kb: runtime, readDb } = createKbTestRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
-    db: createKbTestDb(tempDir),
+    db: openKbTestStoreDb(':memory:'),
     runtime: gitSyncRuntime,
     curateAssistant: noopCurateAssistant,
   }));

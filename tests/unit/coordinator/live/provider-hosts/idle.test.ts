@@ -143,15 +143,11 @@ function composeProductionPredicate(rows: ReadonlyMap<string, JobProjectionDetai
       loadJobProjectionDetail: (jobId: string) =>
         rows.get(jobId) ?? { status: null, launch: null, runtime: null, exit: null },
     } as Pick<JobStore, 'getDb' | 'listStoredNonterminalJobIds' | 'loadJobProjectionDetail'>;
-    setStoreServicesForTest(
-      world.storeServicesRef,
-      {
-        storeDb: db,
-        progressStore: progressStore as JobStore,
-        consumerDriver: null,
-      } satisfies CoordinatorStoreServices,
-      { storeDbPath: ':memory:' },
-    );
+    setStoreServicesForTest(world.storeServicesRef, {
+      storeDb: db,
+      progressStore: progressStore as JobStore,
+      consumerDriver: null,
+    } satisfies CoordinatorStoreServices);
   }
 
   const predicate = productionWiring.carrierBlocksRetirement;
@@ -195,11 +191,7 @@ describe('provider host idle properties', () => {
       eventBus: world.eventBus,
       providers: permissiveProviderLookupPort,
     });
-    setStoreServicesForTest(
-      world.storeServicesRef,
-      { storeDb: db, progressStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
-    );
+    setStoreServicesForTest(world.storeServicesRef, { storeDb: db, progressStore, consumerDriver: null });
     const jobId = '00000000-0000-4000-8000-000000000602';
     const sessionId = 'idle-production-connection-session';
     const exactRef: HostRef = {
@@ -240,6 +232,7 @@ describe('provider host idle properties', () => {
   it('connects operation settlement to targeted retirement re-evaluation', () => {
     const eventBus = new TypedEventBus();
     const storeServicesRef = createStoreServicesRef();
+    const storeDb = newRawDatabase(':memory:');
     const operationRegistry = new LocalOperationRegistry();
     const retirement = { reevaluateIdleRetirement: vi.fn() };
     const record = providerOperationRecord('executing');
@@ -248,33 +241,38 @@ describe('provider host idle properties', () => {
     const progressStore = {
       loadJobProjectionDetail: () => acquiredDetail(record.operation.jobId, exactRef),
     };
-    setStoreServicesForTest(
-      storeServicesRef,
-      { storeDb: {} as Database, progressStore: progressStore as unknown as JobStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
-    );
-    connectProviderHostRetirementReevaluation({
-      eventBus,
-      storeServicesRef,
-      operationRegistry,
-      retirement,
-      time: runtime.time,
+    setStoreServicesForTest(storeServicesRef, {
+      storeDb,
+      progressStore: progressStore as unknown as JobStore,
+      consumerDriver: null,
     });
-    operationRegistry.activate(
-      record,
-      { stop: async () => undefined },
-      { jobId: record.operation.jobId, pool: 'default' },
-    );
+    try {
+      connectProviderHostRetirementReevaluation({
+        eventBus,
+        storeServicesRef,
+        operationRegistry,
+        retirement,
+        time: runtime.time,
+      });
+      operationRegistry.activate(
+        record,
+        { stop: async () => undefined },
+        { jobId: record.operation.jobId, pool: 'default' },
+      );
 
-    operationRegistry.settled(record.operation);
+      operationRegistry.settled(record.operation);
 
-    expect(retirement.reevaluateIdleRetirement).toHaveBeenCalledExactlyOnceWith(exactRef);
+      expect(retirement.reevaluateIdleRetirement).toHaveBeenCalledExactlyOnceWith(exactRef);
+    } finally {
+      storeDb.close();
+    }
   });
 
   it('bounds retries when every retirement wake fails', async () => {
     vi.useFakeTimers();
     const eventBus = new TypedEventBus();
     const storeServicesRef = createStoreServicesRef();
+    const storeDb = newRawDatabase(':memory:');
     const operationRegistry = new LocalOperationRegistry();
     const record = providerOperationRecord('executing');
     if (record.phase !== 'executing') throw new Error('expected executing operation fixture');
@@ -282,11 +280,11 @@ describe('provider host idle properties', () => {
     const progressStore = {
       loadJobProjectionDetail: () => acquiredDetail(record.operation.jobId, exactRef),
     };
-    setStoreServicesForTest(
-      storeServicesRef,
-      { storeDb: {} as Database, progressStore: progressStore as unknown as JobStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
-    );
+    setStoreServicesForTest(storeServicesRef, {
+      storeDb,
+      progressStore: progressStore as unknown as JobStore,
+      consumerDriver: null,
+    });
     const retirementWake = vi.fn(() => {
       throw new Error('fixture persistent retirement wake failure');
     });
@@ -309,6 +307,7 @@ describe('provider host idle properties', () => {
 
     expect(retirementWake).toHaveBeenCalledTimes(3);
     expect(retirementWake).toHaveBeenCalledWith(exactRef);
+    storeDb.close();
   });
 
   it('re-evaluates the real carrier guard after stream close, pin release, and terminal commit', async () => {
@@ -322,11 +321,7 @@ describe('provider host idle properties', () => {
       providers: permissiveProviderLookupPort,
     });
     const storeServicesRef = createStoreServicesRef();
-    setStoreServicesForTest(
-      storeServicesRef,
-      { storeDb: db, progressStore, consumerDriver: null },
-      { storeDbPath: ':memory:' },
-    );
+    setStoreServicesForTest(storeServicesRef, { storeDb: db, progressStore, consumerDriver: null });
     const operationRegistry = new LocalOperationRegistry();
     const carrierBlocksRetirement = createCarrierBlocksRetirement(storeServicesRef, {
       getDb: () => db,

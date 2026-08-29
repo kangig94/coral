@@ -40,7 +40,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
@@ -76,7 +76,7 @@ function makeWorld(): ServiceWorld {
   mkdirSync(markdownRoot, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
 
-  const storeDb = createKbTestDb(runtimeDir);
+  const storeDb = openKbTestStoreDb(':memory:');
   openDbs.push(storeDb);
   const kb = createTestKbRuntime({ markdownRoot, runtimeDir, db: storeDb });
 

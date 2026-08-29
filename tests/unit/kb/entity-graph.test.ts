@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
 import { parseEntityMetaMap } from '#src/kb/corpus/index/store.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 function createGraph(): EntityGraph {
@@ -43,7 +43,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: openKbTestStoreDb(':memory:'),
     });
     const warnSpy = vi.spyOn(backendLog, 'warn');
 
@@ -63,7 +63,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: openKbTestStoreDb(':memory:'),
     });
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
@@ -113,7 +113,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: openKbTestStoreDb(':memory:'),
     });
 
     kb.writeIndex({
@@ -148,7 +148,7 @@ describe('entity-graph', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: root,
-      db: createKbTestDb(root),
+      db: openKbTestStoreDb(':memory:'),
     });
 
     writeFileSync(

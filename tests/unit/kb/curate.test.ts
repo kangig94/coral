@@ -17,7 +17,7 @@ import { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposal
 import type { ClassificationAssignment, CurateClaimedEntry, DiscoveryProposal } from '#src/kb/curate/pipeline-types.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { parseCommunityFrontmatter, parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
@@ -57,7 +57,7 @@ vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
-const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof createKbTestDb>>();
+const writableDbByRuntime = new WeakMap<KbRuntime, ReturnType<typeof openKbTestStoreDb>>();
 
 type NoteCurateClaimedEntry = Extract<CurateClaimedEntry, { kind: 'note' }>;
 
@@ -361,7 +361,7 @@ beforeEach(() => {
   originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude-config');
   gitSyncRuntime = createRealRuntime('prod');
-  const db = createKbTestDb(tempDir);
+  const db = openKbTestStoreDb(':memory:');
   ({ kb: runtime } = createKbTestRuntime({
     markdownRoot: tempDir,
     runtimeDir: tempDir,
@@ -2285,41 +2285,6 @@ describe('curate', () => {
 
       expect(runCommunitySummaryJob).toHaveBeenCalled();
       expect(runCommunitySummaryJob.mock.calls[0]?.[0]).toBeInstanceOf(AbortSignal);
-    });
-
-    it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
-      const gitignorePath = join(tempDir, '.gitignore');
-      writeFileSync(gitignorePath, 'notes/\n', 'utf-8');
-
-      await scheduler.start();
-      await settleCurateRuntime(scheduler);
-
-      const afterFirstStart = readFileSync(gitignorePath, 'utf-8');
-      expect(afterFirstStart).toContain('notes/\n');
-      expect(afterFirstStart).toContain('# Coral KB runtime (device-local, auto-managed)\ndata/\n');
-
-      const secondDb = createKbTestDb(tempDir);
-      const { kb: secondRuntime } = createKbTestRuntime({
-        markdownRoot: tempDir,
-        runtimeDir: tempDir,
-        db: secondDb,
-        runtime: gitSyncRuntime,
-        curateAssistant: noopCurateAssistant,
-      });
-      writableDbByRuntime.set(secondRuntime, secondDb);
-      const secondScheduler = createCurateScheduler({
-        kb: secondRuntime,
-        curateAssistant: noopCurateAssistant,
-        processPort: gitSyncRuntime.process,
-        storagePort: gitSyncRuntime.storage,
-        envPort: gitSyncRuntime.env,
-        usageBudget: { isExhausted: async () => false },
-        scheduleDebounceMs: 0,
-      });
-      await secondScheduler.start();
-      await settleCurateRuntime(secondScheduler);
-
-      expect(readFileSync(gitignorePath, 'utf-8')).toBe(afterFirstStart);
     });
 
     it('runs successfully in a non-git KB root without rewriting tags when classification returns no assignments', async () => {

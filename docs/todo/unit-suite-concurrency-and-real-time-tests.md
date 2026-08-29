@@ -1,8 +1,8 @@
 # The unit suite starves the machine it runs on, and some of it waits on real time
 
-**Status**: open, measured. Capped rather than fixed — `vitest/default.ts` limits local workers to 8, which
-halves the depth of the stall without removing it. The investigation this entry asks for was deliberately kept
-out of the branch that found it.
+**Status**: open. The store-fixture half is done and its record has been removed; what remains is the
+real-time half, whose measured size is much smaller than this entry originally implied, and the cap itself:
+`vitest/default.ts` limits local workers to 8, which halves the depth of the stall without removing it.
 
 ## What was measured
 
@@ -56,26 +56,28 @@ degraded to roughly 300 ms per fsync; under that condition the temp root changed
 measurements stand, but “changed nothing” does not generalize across those device states and is not a reason
 to remove the tmpfs root.
 
-## What to investigate
+## Still open: tests that wait on real time
 
-**Tests that wait on real time.** 92 of these files spawn child processes, and some coordinate with them by
-sleeping. Every such wait is wall-clock time this host does not reliably deliver, and it is also why the same
-files are the ones that flake under load. Find them, and replace real sleeps with an injected clock wherever
-the thing under test already takes a time port — this codebase has `TimePort` for exactly that.
+Measured 2026-08-29, and the entry's own framing overstated it. The concurrent tier holds **22 raw sleeps
+totalling 1,420 ms** — under 1% of the capped suite's wall time. Four of them are `setTimeout(resolve, 0)`,
+which are event-loop yields rather than waits. Four more are race forms
+(`new Promise<'timeout'>(…)`) that assert something does *not* resolve within a window; those are inherently
+time-based and converting one means virtualising the subject's timers too, which is a design change rather
+than a swap. `vi.waitFor` appears 232 times but polls and returns on the condition, and 36 files already use
+`useFakeTimers`.
 
-**Tests that are badly shaped rather than slow.** The `synchronous=FULL` SQLite opens are the expensive part
-of the durable-status tests; only seven unit files actually assert durability physics (`fdatasync`,
-`syncDirectoryDurable`, `writeAtomicDurableSync`, `integrity_check`). The rest open a real database because it
-was the easy way to get a fixture, not because the test is about durability. Those can take the in-memory
-storage port instead.
+So this half is not a load problem. Its justification is flake: on a loaded host a 25 ms wait is not 25 ms,
+and a test racing a 300 ms timeout against real work inverts. That justification is now weaker than when it
+was written, because the load that produced the flakes is smaller — the concurrent tier no longer opens
+file-backed stores at all, and the e2e backend leak that accumulated a set per run is fixed.
 
-Both are per-file judgements, which is why this is an entry rather than a patch: deciding that a given sleep
-is inessential means reading what the test is for.
+Start condition: a flake observed under current conditions, naming which of the 22 sites produced it. Starting
+from the list rather than from an observation would be converting sleeps that no longer hurt.
 
 ## Start condition
 
-None — it can start now, and should not be folded into a feature branch. Removing a real sleep or swapping a
-fixture changes what a test proves, so each one wants its own reasoning and its own diff.
+The remaining half is above. It should not be folded into a feature branch: removing a real sleep changes what
+a test proves, so each one wants its own reasoning and its own diff.
 
 ## Measured 2026-08-25: the cost is fsync, and the lever is the journal mode
 
@@ -123,9 +125,10 @@ The dominant cost is **`journal_mode=WAL`, not `synchronous=FULL`**. Relaxing on
 conclude the theory was wrong.
 
 So the work this entry asks for is narrower than "audit the tests": production keeps WAL and `synchronous=FULL`,
-and a test that is not asserting durability physics must be able to open its database with an in-memory journal.
-That is a runtime/port-level choice, not a per-test pragma, or the next database opened through the real store
-path silently pays the 33 ms again.
+and a test that is not asserting durability physics must not pay for them. The concurrent tier reaches that by
+opening `':memory:'` and nothing else, which is cheaper than an in-memory journal and is enforced rather than
+asked for. It stays open for `tests/integration` and `tests/e2e`, where a file is often the subject and the
+33 ms is still paid per lifecycle.
 
 ## The suite has no margin, which is a finding of its own
 

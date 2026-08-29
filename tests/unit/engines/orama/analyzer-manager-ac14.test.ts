@@ -25,7 +25,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { missingKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const tempRoots: string[] = [];
 
@@ -129,7 +129,7 @@ describe('Orama AC14 analyzer manager integration', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(join(root, '.runtime')),
+      db: openKbTestStoreDb(':memory:'),
       runtime,
     });
     seedNote(kb);
@@ -202,7 +202,7 @@ describe('Orama AC14 analyzer manager integration', () => {
     const kb = createTestKbRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
-      db: createKbTestDb(join(root, '.runtime')),
+      db: openKbTestStoreDb(':memory:'),
       runtime,
     });
     seedNote(kb);

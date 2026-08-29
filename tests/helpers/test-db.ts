@@ -1,15 +1,17 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { Database } from '#src/store/db.js';
+import { assertTestDatabaseLocation } from '#tools/testing/store-db-location.js';
 
 /**
  * Open a raw SQLite handle for tests. No schemas, no pragmas — callers that
  * need them apply the matching helpers explicitly.
  */
-export function newRawDatabase(path: string = ':memory:', options?: { readonly?: boolean }): Database {
-  if (options?.readonly === true) {
-    return new DatabaseSync(path, { readOnly: true }) as unknown as Database;
-  }
-  return new DatabaseSync(path) as unknown as Database;
+export function newRawDatabase(path: string, options?: { readonly?: boolean }): Database {
+  const db = (options?.readonly === true
+    ? new DatabaseSync(path, { readOnly: true })
+    : new DatabaseSync(path)) as unknown as Database;
+  assertTestDatabaseLocation(db);
+  return db;
 }
 
 /**

@@ -8,7 +8,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import { generateWakeUpPacket } from '#src/kb/ops/wake-up.js';
 // @ts-expect-error — hooks lib is .mjs without TypeScript types; direct import for parity test.
 import { readProjectScopedWakeUp } from '../../../../clients/hooks/lib/wake-up-read.mjs';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import type { Database } from '#src/store/db.js';
 
@@ -22,7 +22,7 @@ function createRuntime(): { kb: KbRuntime; db: Database; root: string; vault: st
   mkdirSync(vault, { recursive: true });
   mkdirSync(join(vault, 'wiki'), { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
-  const db = createKbTestDb(runtimeDir);
+  const db = openKbTestStoreDb(':memory:');
   const kb = createTestKbRuntime({
     markdownRoot: vault,
     runtimeDir,

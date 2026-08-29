@@ -1,7 +1,4 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase, totalChanges } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -17,8 +14,7 @@ function rowCount(db: Database, table: string): { count: number } {
 
 describe('store schema idempotency', () => {
   it('second run performs zero write activity', () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'coral-store-schemas-'));
-    const db = newRawDatabase(join(tempDir, 'store.db'));
+    const db = newRawDatabase(':memory:');
 
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -37,7 +33,6 @@ describe('store schema idempotency', () => {
       expect(secondFingerprint).toBe(firstFingerprint);
     } finally {
       db.close();
-      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

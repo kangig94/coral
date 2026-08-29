@@ -76,7 +76,7 @@ The GitHub release body is generated automatically (`gh release create --generat
 - One test file per source module
 - Test naming: `describe('<module>')` with `it('should <behavior>')`
 - Mock external dependencies (Codex CLI, filesystem) — never call real Codex in tests
-- Flaky tests: add `// @flaky — <reason>` comment at file/describe top, then `{ retry: 2 }` on the `describe` options. Timing-sensitive or shared-state tests go in `vitest/integration.ts` (pool: forks, singleFork) for process-level isolation.
+- Flaky tests: add `// @flaky — <reason>` comment at file/describe top, then `{ retry: 2 }` on the `describe` options. Timing-sensitive or shared-state tests go under `tests/integration/`; `vitest/integration.ts` runs them with process-level isolation.
 
 ## Error Handling
 
@@ -90,9 +90,7 @@ The GitHub release body is generated automatically (`gh release create --generat
 - No trailing whitespace
 - Single blank line between top-level declarations
 - JSDoc on exported functions and complex internal functions
-- Comments state a constraint, never a description. "Is it WHY?" is the wrong test — a WHY that
-  describes the current implementation rots exactly as fast as a WHAT. The test is **could an edit
-  someone would plausibly make to this code in the normal course of work make this sentence false?**
+- Comments state constraints, never descriptions.
   An arbitrary redesign does not count. If a legitimate edit can falsify it, delete the comment
   rather than write it, because the edit that invalidates it will not be the edit that notices.
   - A **constraint** survives rewriting, and breaking it is a bug: "a non-zero exit here must not

@@ -14,7 +14,7 @@ import {
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 
@@ -39,7 +39,7 @@ describe('curate scheduler failure cap (S2)', () => {
     runtime = createTestKbRuntime({
       markdownRoot: tempDir,
       runtimeDir: tempDir,
-      db: createKbTestDb(tempDir),
+      db: openKbTestStoreDb(':memory:'),
       runtime: gitSyncRuntime,
       curateAssistant: noopCurateAssistant,
     });

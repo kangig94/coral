@@ -12,7 +12,7 @@ import { runPendingKbMigrations } from '#src/kb/migrations/index.js';
 import { noteEntryId, sourceEntryId } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const CURRENT_TEST_MIGRATION_VERSION = 1;
 
@@ -87,7 +87,7 @@ describe('KB migrations', () => {
   let markdownRoot: string;
   let runtimeDir: string;
   let kb: KbRuntime;
-  let db: ReturnType<typeof createKbTestDb>;
+  let db: ReturnType<typeof openKbTestStoreDb>;
   let originalClaudeConfigDir: string | undefined;
 
   beforeEach(() => {
@@ -99,7 +99,7 @@ describe('KB migrations', () => {
 
     const runtime = createRealRuntime('prod');
     mkdirSync(runtimeDir, { recursive: true });
-    db = createKbTestDb(runtimeDir);
+    db = openKbTestStoreDb(':memory:');
     kb = createTestKbRuntime({
       markdownRoot,
       runtimeDir,

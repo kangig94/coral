@@ -7,7 +7,7 @@ import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { noteEntryId, wikiEntryId } from '#src/kb/entry-types.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
 const realRuntimeForReads = createRealRuntime('prod');
@@ -57,7 +57,7 @@ function createRuntime(
   return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: kbRuntimePaths('prod').root,
-    db: createKbTestDb(kbRuntimePaths('prod').root),
+    db: openKbTestStoreDb(':memory:'),
   });
 }
 

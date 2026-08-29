@@ -102,7 +102,7 @@ All the same shape: optional chaining makes a missing subject satisfy a negative
 rebound; `getSession(...)?.snapshot.state.status` "not bidding" passes when the session is gone. Sites:
 `tests/unit/jobs/reconcile/lifecycle-recovery.test.ts` (`:3742`, `:4019`, `:4291`),
 `tests/e2e/cli/main.test.ts` (`:177`, `:216`), `tests/unit/discuss/shell/discuss-manager.test.ts`,
-`tests/unit/coordinator/service-composition.test.ts`, `tests/unit/jobs/provider-event.test.ts`,
+`tests/integration/coordinator/service-composition.test.ts`, `tests/unit/jobs/provider-event.test.ts`,
 `tests/unit/kb/curate.test.ts`, `tests/integration/coordinator/pre-pr-running-incumbent.test.ts`.
 
 Each needs a positive witness rather than a stronger negative — assert the subject exists and names the

@@ -1,7 +1,7 @@
 /*
 The unit tier must stay runnable under a filesystem sandbox, which denies `bind()` on unix domain sockets.
-A test that binds one is an integration test by nature, so it belongs under tests/integration (vitest/integration.ts,
-pool: forks / singleFork) — where the whole tier is now gated in CI — not in tests/unit or tests/invariants.
+A test that binds one is an integration test by nature, so it belongs under tests/integration — not in tests/unit
+or tests/invariants.
 
 Binding an ephemeral TCP port (`listen(0, '127.0.0.1', …)`) is allowed: a sandbox permits it, and several unit
 tests legitimately use it to exercise an HTTP surface. The distinction this guard draws is therefore the first
@@ -17,9 +17,9 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { UNIT_TIER_ROOTS } from '../../vitest/tiers.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const UNIT_TIER_ROOTS = ['tests/unit', 'tests/invariants'];
 
 function testFilesUnder(root: string): string[] {
   const absolute = resolve(REPO_ROOT, root);

@@ -1,4 +1,3 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '../../src/store/db.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,8 +11,8 @@ import { GeneratedCommunityProjectionStore } from '#src/kb/curate/community/gene
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime, Disposable } from '#src/runtime/ports.js';
-import { openStoreDatabase } from '#src/store/db.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '#src/store/consumer-contract.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '../../tools/simulation/runtime.js';
 
 /**
@@ -150,11 +149,7 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
   const kb =
     options.kb ??
     (() => {
-      const db = openStoreDatabase({
-        storeFormat: currentCoralStoreFormat(),
-        path: ':memory:',
-        storage: runtime.storage,
-      });
+      const db = openTestStoreDb(runtime, ':memory:');
       return createTestKbRuntime({
         markdownRoot: runtime.paths.coral.corpus.kbRoot,
         runtimeDir: join(root, 'kb-runtime'),

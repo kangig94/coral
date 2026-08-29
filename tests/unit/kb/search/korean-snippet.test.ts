@@ -12,7 +12,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { installedKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
 
@@ -123,7 +123,7 @@ function resultFor(results: readonly KbResult[], note: string): KbResult {
 describe('Korean body-only snippets', () => {
   it('returns matchedBy content and a non-empty snippet for a Korean body-only hit', async () => {
     const root = allocateRoot();
-    const db = createKbTestDb(join(root, '.runtime'));
+    const db = openKbTestStoreDb(':memory:');
     const { kb } = createKbTestRuntime({
       markdownRoot: root,
       runtimeDir: join(root, '.runtime'),
@@ -144,7 +144,7 @@ describe('Korean body-only snippets', () => {
 
   it('uses leased Kiwi tokens for Korean matchedBy and snippet anchoring', async () => {
     const root = allocateRoot();
-    const db = createKbTestDb(join(root, '.runtime'));
+    const db = openKbTestStoreDb(':memory:');
     const kiwiRuntime = withKoEnv(createRealRuntime('prod'));
     const { kb } = createKbTestRuntime({
       markdownRoot: root,

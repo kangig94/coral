@@ -35,7 +35,7 @@ import { createScope } from '#src/infra/disposable-scope.js';
 import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { installedKiwiArtifactState, missingKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const tempRoots: string[] = [];
 const CONVERGENCE_SLUG = 'orama-degrade-convergence';
@@ -149,7 +149,7 @@ function createKiwiAnalyzerManagerPort(manager: KiwiAnalyzerManager): OramaAnaly
 function createKbFixture(): { readonly db: Database; readonly kb: KbRuntime; readonly runtime: Runtime } {
   const root = allocateRoot();
   const runtime = withKoEnv(createRealRuntime('prod'));
-  const db = createKbTestDb(join(root, '.runtime'));
+  const db = openKbTestStoreDb(':memory:');
   return {
     db,
     runtime,

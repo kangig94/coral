@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { rawSqlPlugin } from './raw-sql-plugin.js';
-import { testTempEnv } from './temp-root.js';
+import { testEnv } from './tiers.js';
 
 const packageVersion = (
   JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf-8')) as { version: string }
@@ -24,12 +24,12 @@ export default defineConfig({
   define: { __VERSION__: JSON.stringify(packageVersion) },
   resolve: { alias },
   test: {
-    env: testTempEnv(),
+    env: testEnv('e2e'),
     include: ['tests/e2e/lifecycle/**/*.test.ts', 'tests/e2e/**/lifecycle/**/*.test.ts'],
     testTimeout: 120_000,
     hookTimeout: 30_000,
     pool: 'forks',
-    forks: { singleFork: true },
+    maxWorkers: 1,
     globalSetup: ['vitest/no-real-coral-leak.ts'],
   },
 });

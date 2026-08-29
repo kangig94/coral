@@ -164,11 +164,11 @@ function installProgressStore(
     'getDb' | 'listStoredNonterminalJobIds' | 'loadJobProjectionDetail' | 'liveJobCount' | 'listJobIds'
   >,
 ): void {
-  setStoreServicesForTest(
-    core.storeServicesRef,
-    { storeDb: db, progressStore: progressStore as JobStore, consumerDriver: null } satisfies CoordinatorStoreServices,
-    { storeDbPath: ':memory:' },
-  );
+  setStoreServicesForTest(core.storeServicesRef, {
+    storeDb: db,
+    progressStore: progressStore as JobStore,
+    consumerDriver: null,
+  } satisfies CoordinatorStoreServices);
 }
 
 function readHealth() {

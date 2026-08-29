@@ -6,6 +6,6 @@
     "incremental": true,
     "tsBuildInfoFile": "../node_modules/.cache/coral-typecheck.tsbuildinfo"
   },
-  "include": ["../src/**/*.ts", "../tests/**/*.ts", "../tools/**/*.ts"],
+  "include": ["../src/**/*.ts", "../tests/**/*.ts", "../tools/**/*.ts", "../vitest/**/*.ts"],
   "exclude": ["../node_modules", "../dist", "../bridge", "../build"]
 }

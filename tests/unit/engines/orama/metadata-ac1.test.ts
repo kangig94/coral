@@ -32,7 +32,7 @@ import type { CorpusAuthoritativeFreshnessTarget, CorpusConsumerApplyContext } f
 import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const tempRoots: string[] = [];
 
@@ -52,7 +52,7 @@ function createRuntime(root: string): KbRuntime {
   return createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: openKbTestStoreDb(':memory:'),
   });
 }
 

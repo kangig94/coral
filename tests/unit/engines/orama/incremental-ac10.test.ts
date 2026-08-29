@@ -14,7 +14,7 @@ import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import type { KbProjectionInput, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import type { Runtime } from '#src/runtime/ports.js';
 
 // Each case builds full Orama indexes (full-rebuild + incremental + compare);
@@ -83,7 +83,7 @@ function createRuntime(root: string, runtime?: Runtime): KbRuntime {
   return createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: openKbTestStoreDb(':memory:'),
     ...(runtime === undefined ? {} : { runtime }),
   });
 }

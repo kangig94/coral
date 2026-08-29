@@ -668,7 +668,7 @@ branch in this repository's test tree (the worker grepped `tests/unit/store/open
 `inspectGenerationReadiness`/`legacy-ignored` and found nothing). Direct verification shows
 `openOrResetBackendStoreDb` calls the shared `inspectGenerationReadiness` function directly (not a duplicated
 copy of the readiness computation), and its `legacy-ignored` branch — including the `backendLog.warn` call —
-is exercised by three tests in the sibling file `tests/unit/store/generation-readiness.test.ts` (`'boots
+is exercised by three tests in `tests/integration/store/generation-readiness.test.ts` (`'boots
 beside readable legacy history without importing it'`, `'boots beside a foreign legacy generation...'`,
 `'boots beside an unreadable legacy store...'`), each of which calls `openOrResetBackendStoreDb` through the
 `openGeneratedStore` helper after spying on `backendLog.warn`. The worker's coverage check simply grepped the

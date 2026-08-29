@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
 import yaml from 'yaml';
 import { ZodError } from 'zod';
-import { runScenario, type ScenarioResult, type StepResult } from './runner.js';
+import type { ScenarioResult, StepResult } from './runner.js';
 import { simulationDocumentSchema } from './scenario-schema.js';
 import type { SimulationWorld } from './adversarial.js';
+
+process.env.CORAL_TEST_TIER = 'simulation';
 
 function summarizeStep(step: StepResult): string | null {
   if (step.type === 'launch' && step.detail && typeof step.detail === 'object') {
@@ -103,6 +105,7 @@ export async function runSimulationCli(argv = process.argv.slice(2)): Promise<vo
   try {
     const raw = readFileSync(file, 'utf8');
     const doc = simulationDocumentSchema.parse(yaml.parse(raw));
+    const { runScenario } = await import('./runner.js');
     const run = await runScenario(doc);
     world = run.world;
 

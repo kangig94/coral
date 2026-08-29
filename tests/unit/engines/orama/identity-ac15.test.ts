@@ -22,7 +22,7 @@ import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const managers: KiwiAnalyzerManager[] = [];
 const tempRoots: string[] = [];
@@ -60,7 +60,7 @@ function createRuntime(root: string, runtime: Runtime): KbRuntime {
   return createTestKbRuntime({
     markdownRoot: root,
     runtimeDir: join(root, '.runtime'),
-    db: createKbTestDb(join(root, '.runtime')),
+    db: openKbTestStoreDb(':memory:'),
     runtime,
   });
 }

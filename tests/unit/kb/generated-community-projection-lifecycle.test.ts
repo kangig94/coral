@@ -12,44 +12,23 @@ import {
 } from '#src/kb/curate/community/summary-surface.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
 import { corpusStructuralCacheKey } from '#src/kb/corpus/structural-key.js';
-import { detectRescanInfo } from '#src/kb/corpus/rescan/drift.js';
 import { performRescan } from '#src/kb/corpus/rescan/index.js';
-import { createCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
 import { communityEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { readEntryByKind } from '#src/kb/read.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
-import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Database[] = [];
 
-function createHarness(): { root: string; runtimeDir: string; db: Database; kb: KbRuntime } {
+function createHarness(): { kb: KbRuntime } {
   const root = mkdtempSync(join(tmpdir(), 'coral-generated-community-lifecycle-'));
   const markdownRoot = join(root, 'vault');
   const runtimeDir = join(root, 'runtime');
-  const db = createKbTestDb(runtimeDir);
+  const db = openKbTestStoreDb(':memory:');
   tempRoots.push(root);
   openDatabases.push(db);
-  return {
-    root: markdownRoot,
-    runtimeDir,
-    db,
-    kb: createTestKbRuntime({ markdownRoot, runtimeDir, db }),
-  };
-}
-
-function reopenHarness(input: { root: string; runtimeDir: string; db: Database }): { db: Database; kb: KbRuntime } {
-  input.db.close();
-  const index = openDatabases.indexOf(input.db);
-  if (index >= 0) {
-    openDatabases.splice(index, 1);
-  }
-  const db = createKbTestDb(input.runtimeDir);
-  openDatabases.push(db);
-  return {
-    db,
-    kb: createTestKbRuntime({ markdownRoot: input.root, runtimeDir: input.runtimeDir, db }),
-  };
+  return { kb: createTestKbRuntime({ markdownRoot, runtimeDir, db }) };
 }
 
 function writeNote(kb: KbRuntime): void {
@@ -284,36 +263,5 @@ describe('generated community projection lifecycle', () => {
     expect(afterKey?.communityDocsHash).not.toBe(beforeKey?.communityDocsHash);
     expect(afterKey).toEqual(kb.readCorpusStructuralKey(afterIndex!));
     expect(corpusStructuralCacheKey(afterKey!)).not.toBe(corpusStructuralCacheKey(beforeKey!));
-  });
-
-  it('detects generated-doc drift after restart and rebuilds from durable PULL state', async () => {
-    const harness = createHarness();
-    await adoptGeneratedCommunity(harness.kb);
-    await expect(
-      performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState())),
-    ).resolves.toMatchObject({
-      status: 'committed',
-    });
-
-    const second = await adoptGeneratedCommunity(harness.kb, generatedCommunityRaw('Restart-fresh summary.'));
-    const reopened = reopenHarness(harness);
-    harness.db = reopened.db;
-    harness.kb = reopened.kb;
-
-    const drift = await detectRescanInfo(harness.kb, createCorpusScanView({ markdownFiles: [], entityGraph: null }));
-    expect(drift).toMatchObject({
-      needsRebuild: true,
-      externalMutation: 'metadata',
-    });
-
-    await expect(
-      performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState())),
-    ).resolves.toMatchObject({
-      status: 'committed',
-    });
-    expect(harness.kb.readIndex()).toMatchObject({
-      generatedCommunityGeneration: second.generation,
-      generatedCommunityDocsHash: second.generatedCommunityDocsHash,
-    });
   });
 });
