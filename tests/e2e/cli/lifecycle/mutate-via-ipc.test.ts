@@ -16,11 +16,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
-import { createIpcClient } from '#src/transport/ipc/client.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -29,6 +26,8 @@ import { storePaths } from '#src/infra/path/store.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
+import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 
 const REPO_ROOT = process.cwd();
@@ -39,10 +38,11 @@ const SOURCE_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 
 const tempRoots: string[] = [];
+const temporaryHomes = createTemporaryHomeOwner();
 
 type Fixture = {
   root: string;
-  home: string;
+  home: TemporaryHome;
   projectRoot: string;
   binDir: string;
   fakeStateDir: string;
@@ -201,24 +201,25 @@ rl.on('line', (line) => {
 
 function createFixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'coral-ipc-mut-plugin-'));
-  const home = mkdtempSync(join(tmpdir(), 'coral-ipc-mutate-home-'));
   const projectRoot = join(root, 'project');
   const binDir = join(root, 'bin');
-  const fakeStateDir = join(home, '.fake-codex-state');
 
-  tempRoots.push(root, home);
+  tempRoots.push(root);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
-  mkdirSync(fakeStateDir, { recursive: true });
-  mkdirSync(join(home, '.codex'), { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
   // The coordinator validates its whole adjacent build set at startup, so the
   // Claude appserver bundle must be present or boot aborts on build identity.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
+  const flavor = readBuildFlavor(root);
+  const home = temporaryHomes.create('coral-ipc-mutate-home-', flavor);
+  const fakeStateDir = join(home, '.fake-codex-state');
+  mkdirSync(fakeStateDir, { recursive: true });
+  mkdirSync(join(home, '.codex'), { recursive: true });
   writeFileSync(join(binDir, 'codex'), FAKE_CODEX_APP_SERVER, 'utf-8');
   chmodSync(join(binDir, 'codex'), 0o755);
   // `account_id` is what makes this a bindable ChatGPT-mode profile: Codex
@@ -239,36 +240,13 @@ function createFixture(): Fixture {
     projectRoot,
     binDir,
     fakeStateDir,
-    flavor: readBuildFlavor(root),
+    flavor,
   };
-}
-
-function discoveryFilePath(home: string, flavor: 'prod' | 'dev'): string {
-  return coordinatorPaths(flavor, { baseDir: join(home, '.coral') }).infoFile;
 }
 
 function resultArtifactPath(home: string, flavor: 'prod' | 'dev', jobId: string): string {
   const exportsDir = flavor === 'dev' ? 'exports-dev' : 'exports';
   return join(home, '.coral', exportsDir, 'jobs', jobId, 'result.md');
-}
-
-function readDiscoveryRecord(home: string, flavor: 'prod' | 'dev'): CoordinatorDiscoveryRecord | null {
-  const filePath = discoveryFilePath(home, flavor);
-  if (!existsSync(filePath)) {
-    return null;
-  }
-  return JSON.parse(readFileSync(filePath, 'utf-8')) as CoordinatorDiscoveryRecord;
-}
-
-async function waitForCondition(check: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`Timed out waiting for condition after ${timeoutMs}ms`);
 }
 
 type CliRun = Readonly<{
@@ -289,7 +267,7 @@ function startCliCommand(fixture: Fixture, args: readonly string[]): CliRun {
     cwd: fixture.projectRoot,
     env: {
       ...topLevelEnv,
-      HOME: fixture.home,
+      ...temporaryHomes.environment(fixture.home),
       TMPDIR: fixture.home,
       PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
     },
@@ -404,43 +382,8 @@ function providerSocketCount(fixture: Fixture): number {
   ).length;
 }
 
-async function shutdownBackend(record: CoordinatorDiscoveryRecord | null): Promise<void> {
-  // Observed life, not 'not proven gone'. This helper signals a bare pid, so it acts only on the one
-  // answer that says the recorded process is there.
-  if (!record || observeProcessLiveness(record.pid) !== 'alive') {
-    return;
-  }
-
-  try {
-    await createIpcClient(record.socketPath, undefined, { kind: 'boot', token: record.bootToken }).shutdown({
-      timeoutMs: 5_000,
-    });
-  } catch {
-    try {
-      process.kill(record.pid, 'SIGTERM');
-    } catch (error: unknown) {
-      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-      if (code !== 'ESRCH') {
-        throw error;
-      }
-    }
-  }
-
-  await waitForCondition(() => observeProcessLiveness(record.pid) === 'absent', 10_000).catch(() => {
-    if (observeProcessLiveness(record.pid) === 'alive') {
-      try {
-        process.kill(record.pid, 'SIGKILL');
-      } catch (error: unknown) {
-        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-        if (code !== 'ESRCH') {
-          throw error;
-        }
-      }
-    }
-  });
-}
-
 afterEach(async () => {
+  await temporaryHomes.cleanup();
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -455,59 +398,53 @@ describe('mutating commands via IPC', () => {
     writeFileSync(promptPath, 'exercise the poisoned provider host', 'utf-8');
     writeFileSync(join(fixture.fakeStateDir, 'fail-config-read'), 'armed');
 
-    let discoveryRecord: CoordinatorDiscoveryRecord | null = null;
+    const launch = startCli(fixture, promptPath);
+    expect(await launch.completed).toBe(1);
+    expect(launch.stderr()).toBe('');
+    const jobId = launchedJobId(launch.stdout());
+    if (jobId === null) throw new Error('failed CLI never reported its provider job id');
+
+    await waitForCondition(() => temporaryHomes.readDiscovery(fixture.home).kind === 'record', 10_000);
+    const wait = startCliCommand(fixture, ['wait', 'jobs', jobId]);
+    expect(await wait.completed).toBe(1);
+    expect(wait.stderr()).toBe('');
+
+    const visibleTerminal = wait.stdout();
+    const placements = readFakeRecords<{ hostId: string }>(fixture, 'provider-host-placements');
+    const configReadAttempts = readFakeRecords<{ hostId: string; requestId: number; attemptId: string }>(
+      fixture,
+      'config-read-attempts',
+    );
+    expect(placements).toHaveLength(1);
+    expect(configReadAttempts).toHaveLength(1);
+    expect(configReadAttempts[0]?.hostId).toBe(placements[0]?.hostId);
+    const initialAttempt = configReadAttempts[0];
+    if (initialAttempt === undefined) throw new Error('fake Codex recorded no initial config/read attempt');
+    expect(visibleTerminal).toContain(
+      `config/read failed [code=-32603]: configuration refused; data=${JSON.stringify({
+        reason: 'poisoned cwd',
+        attemptId: initialAttempt.attemptId,
+      })}`,
+    );
+    const encodedHostRef = visibleTerminal.match(/ph1\.[A-Za-z0-9_-]+/)?.[0];
+    expect(encodedHostRef).toBeDefined();
+    expect(visibleTerminal).toContain(`coral-cli backend provider-host inspect ${encodedHostRef}`);
+    expect(visibleTerminal).toContain(`coral-cli backend provider-host evict ${encodedHostRef}`);
+    expect(visibleTerminal.indexOf('config/read failed')).toBeLessThan(
+      visibleTerminal.indexOf(`provider-host inspect ${encodedHostRef}`),
+    );
+
+    const runtime = createRealRuntime('prod');
+    const db = openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
+      path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+      storage: runtime.storage,
+      readonly: true,
+    });
     try {
-      const launch = startCli(fixture, promptPath);
-      expect(await launch.completed).toBe(1);
-      expect(launch.stderr()).toBe('');
-      const jobId = launchedJobId(launch.stdout());
-      if (jobId === null) throw new Error('failed CLI never reported its provider job id');
-
-      await waitForCondition(() => readDiscoveryRecord(fixture.home, fixture.flavor) !== null, 10_000);
-      discoveryRecord = readDiscoveryRecord(fixture.home, fixture.flavor);
-      const wait = startCliCommand(fixture, ['wait', 'jobs', jobId]);
-      expect(await wait.completed).toBe(1);
-      expect(wait.stderr()).toBe('');
-
-      const visibleTerminal = wait.stdout();
-      const placements = readFakeRecords<{ hostId: string }>(fixture, 'provider-host-placements');
-      const configReadAttempts = readFakeRecords<{ hostId: string; requestId: number; attemptId: string }>(
-        fixture,
-        'config-read-attempts',
-      );
-      expect(placements).toHaveLength(1);
-      expect(configReadAttempts).toHaveLength(1);
-      expect(configReadAttempts[0]?.hostId).toBe(placements[0]?.hostId);
-      const initialAttempt = configReadAttempts[0];
-      if (initialAttempt === undefined) throw new Error('fake Codex recorded no initial config/read attempt');
-      expect(visibleTerminal).toContain(
-        `config/read failed [code=-32603]: configuration refused; data=${JSON.stringify({
-          reason: 'poisoned cwd',
-          attemptId: initialAttempt.attemptId,
-        })}`,
-      );
-      const encodedHostRef = visibleTerminal.match(/ph1\.[A-Za-z0-9_-]+/)?.[0];
-      expect(encodedHostRef).toBeDefined();
-      expect(visibleTerminal).toContain(`coral-cli backend provider-host inspect ${encodedHostRef}`);
-      expect(visibleTerminal).toContain(`coral-cli backend provider-host evict ${encodedHostRef}`);
-      expect(visibleTerminal.indexOf('config/read failed')).toBeLessThan(
-        visibleTerminal.indexOf(`provider-host inspect ${encodedHostRef}`),
-      );
-
-      const runtime = createRealRuntime('prod');
-      const db = openStoreDatabase({
-        storeFormat: currentCoralStoreFormat(),
-        path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
-        storage: runtime.storage,
-        readonly: true,
-      });
-      try {
-        expect(new CoralStore(db, createDefaultStoreReadContext()).jobs.list({ all: true })).toHaveLength(1);
-      } finally {
-        db.close();
-      }
+      expect(new CoralStore(db, createDefaultStoreReadContext()).jobs.list({ all: true })).toHaveLength(1);
     } finally {
-      await shutdownBackend(discoveryRecord ?? readDiscoveryRecord(fixture.home, fixture.flavor));
+      db.close();
     }
   }, 120_000);
 
@@ -529,135 +466,127 @@ describe('mutating commands via IPC', () => {
     writeFileSync(firstPromptPath, 'first hello over ipc', 'utf-8');
     writeFileSync(secondPromptPath, 'second hello over ipc', 'utf-8');
 
-    expect(readDiscoveryRecord(fixture.home, fixture.flavor)).toBeNull();
+    expect(temporaryHomes.readDiscovery(fixture.home)).toEqual({ kind: 'missing' });
 
-    let discoveryRecord: CoordinatorDiscoveryRecord | null = null;
+    const first = startCli(fixture, firstPromptPath);
+    await waitForCliGate(
+      first,
+      () => existsSync(join(fixture.fakeStateDir, 'thread-start-pending-1')) && launchedJobId(first.stdout()) !== null,
+      'first thread/start gate',
+    );
+    const firstJobId = launchedJobId(first.stdout());
+    if (firstJobId === null) throw new Error('first CLI never reported its provider job id');
+    writeFileSync(join(fixture.fakeStateDir, 'thread-start-gate-1'), 'continue');
+
+    const firstStatus = await first.completed;
+    if (firstStatus !== 0) {
+      throw new Error(
+        `first coral-cli exited with status ${String(firstStatus)}\nstdout:\n${first.stdout()}\nstderr:\n${first.stderr()}`,
+      );
+    }
+    expect(first.stderr()).toBe('');
+    expect(first.stdout()).toContain('Thread ready (scripted-codex-session).');
+    expect(first.stdout()).toMatch(new RegExp(`^Job ${firstJobId} completed$`, 'm'));
+
+    await waitForCondition(() => providerSocketCount(fixture) >= 3, 10_000);
+    writeFileSync(join(fixture.fakeStateDir, 'second-operation-armed'), 'armed');
+    const second = startCli(fixture, secondPromptPath);
+    await waitForCliGate(
+      second,
+      () => existsSync(join(fixture.fakeStateDir, 'thread-start-pending-2')) && launchedJobId(second.stdout()) !== null,
+      'second thread/start gate',
+    );
+    const secondJobId = launchedJobId(second.stdout());
+    if (secondJobId === null) throw new Error('second CLI never reported its provider job id');
+    await waitForCondition(() => readDurableOperation(fixture, secondJobId) !== null, 10_000);
+    const secondOperationBeforeThread = requireDurableOperation(fixture, secondJobId);
+    expect(secondOperationBeforeThread.operation).toMatchObject({
+      jobId: secondJobId,
+      proxyInstanceId: secondOperationBeforeThread.locator.proxy.instanceId,
+    });
+    expect(Object.keys(secondOperationBeforeThread.locator).sort()).toEqual([
+      'containment',
+      'guardian',
+      'hostFingerprint',
+      'proxy',
+      'reaper',
+    ]);
+    expect(observeProcessLiveness(secondOperationBeforeThread.locator.proxy.pid)).toBe('alive');
+    expect(observeProcessLiveness(secondOperationBeforeThread.locator.guardian.pid)).toBe('alive');
+    expect(observeProcessLiveness(secondOperationBeforeThread.locator.reaper.pid)).toBe('alive');
+    expect(secondOperationBeforeThread.locator.containment).toMatchObject({
+      pid: secondOperationBeforeThread.locator.proxy.pid,
+      incarnation: secondOperationBeforeThread.locator.proxy.incarnation,
+    });
+    appendOrderedTrace(fixture, 'second operation durable proxy locator');
+    const durableContinuityAck = waitForExactProviderWatermark(fixture, secondJobId, 1);
+    writeFileSync(join(fixture.fakeStateDir, 'thread-start-gate-2'), 'continue');
+
+    await durableContinuityAck;
+    appendOrderedTrace(fixture, 'durable provider watermark 1 / ACK');
+    await waitForCliGate(
+      second,
+      () => existsSync(join(fixture.fakeStateDir, 'turn-start-pending-2')),
+      'second turn/start gate',
+    );
+    const secondOperationAtTurn = requireDurableOperation(fixture, secondJobId);
+    if (secondOperationAtTurn.phase !== 'executing') {
+      throw new Error(`second operation reached turn/start from phase ${secondOperationAtTurn.phase}`);
+    }
+    expect(secondOperationAtTurn.committedThroughProviderSeq).toBeGreaterThanOrEqual(1);
+    writeFileSync(join(fixture.fakeStateDir, 'turn-start-gate-2'), 'continue');
+
+    const secondStatus = await second.completed;
+    if (secondStatus !== 0) {
+      throw new Error(
+        `second coral-cli exited with status ${String(secondStatus)}\nstdout:\n${second.stdout()}\nstderr:\n${second.stderr()}`,
+      );
+    }
+    expect(second.stderr()).toBe('');
+    expect(second.stdout()).toContain('Thread ready (scripted-codex-session).');
+    expect(second.stdout()).toMatch(new RegExp(`^Job ${secondJobId} completed$`, 'm'));
+    await waitForCondition(() => readDurableOperation(fixture, secondJobId) === null, 10_000);
+
+    const terminalEvents = readFileSync(join(fixture.fakeStateDir, 'terminal-events'), 'utf8').trim().split('\n');
+    expect(terminalEvents).toEqual(['terminal']);
+    appendOrderedTrace(fixture, 'one terminal and settled row');
+    expect(readFileSync(join(fixture.fakeStateDir, 'ordered-trace'), 'utf8').trim().split('\n')).toEqual([
+      'second operation durable proxy locator',
+      'fake thread/start',
+      'durable provider watermark 1 / ACK',
+      'fake turn/start',
+      'one terminal and settled row',
+    ]);
+
+    await waitForCondition(() => temporaryHomes.readDiscovery(fixture.home).kind === 'record', 10_000);
+    const discovery = temporaryHomes.readDiscovery(fixture.home);
+    if (discovery.kind !== 'record') throw new Error('Expected a coordinator discovery record');
+    expect(observeProcessLiveness(discovery.record.pid)).toBe('alive');
+    expect(discovery.record.socketPath).toContain('.sock');
+
+    const runtime = createRealRuntime('prod');
+    const db = openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
+      path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+      storage: runtime.storage,
+      readonly: true,
+    });
+
     try {
-      const first = startCli(fixture, firstPromptPath);
-      await waitForCliGate(
-        first,
-        () =>
-          existsSync(join(fixture.fakeStateDir, 'thread-start-pending-1')) && launchedJobId(first.stdout()) !== null,
-        'first thread/start gate',
-      );
-      const firstJobId = launchedJobId(first.stdout());
-      if (firstJobId === null) throw new Error('first CLI never reported its provider job id');
-      writeFileSync(join(fixture.fakeStateDir, 'thread-start-gate-1'), 'continue');
+      const store = new CoralStore(db, createDefaultStoreReadContext());
+      const jobs = store.jobs.list({ projectRoot: fixtureCanonicalWorkDir(fixture.projectRoot), all: true });
+      expect(jobs).toHaveLength(2);
 
-      const firstStatus = await first.completed;
-      if (firstStatus !== 0) {
-        throw new Error(
-          `first coral-cli exited with status ${String(firstStatus)}\nstdout:\n${first.stdout()}\nstderr:\n${first.stderr()}`,
-        );
-      }
-      expect(first.stderr()).toBe('');
-      expect(first.stdout()).toContain('Thread ready (scripted-codex-session).');
-      expect(first.stdout()).toMatch(new RegExp(`^Job ${firstJobId} completed$`, 'm'));
-
-      await waitForCondition(() => providerSocketCount(fixture) >= 3, 10_000);
-      writeFileSync(join(fixture.fakeStateDir, 'second-operation-armed'), 'armed');
-      const second = startCli(fixture, secondPromptPath);
-      await waitForCliGate(
-        second,
-        () =>
-          existsSync(join(fixture.fakeStateDir, 'thread-start-pending-2')) && launchedJobId(second.stdout()) !== null,
-        'second thread/start gate',
-      );
-      const secondJobId = launchedJobId(second.stdout());
-      if (secondJobId === null) throw new Error('second CLI never reported its provider job id');
-      await waitForCondition(() => readDurableOperation(fixture, secondJobId) !== null, 10_000);
-      const secondOperationBeforeThread = requireDurableOperation(fixture, secondJobId);
-      expect(secondOperationBeforeThread.operation).toMatchObject({
-        jobId: secondJobId,
-        proxyInstanceId: secondOperationBeforeThread.locator.proxy.instanceId,
-      });
-      expect(Object.keys(secondOperationBeforeThread.locator).sort()).toEqual([
-        'containment',
-        'guardian',
-        'hostFingerprint',
-        'proxy',
-        'reaper',
-      ]);
-      expect(observeProcessLiveness(secondOperationBeforeThread.locator.proxy.pid)).toBe('alive');
-      expect(observeProcessLiveness(secondOperationBeforeThread.locator.guardian.pid)).toBe('alive');
-      expect(observeProcessLiveness(secondOperationBeforeThread.locator.reaper.pid)).toBe('alive');
-      expect(secondOperationBeforeThread.locator.containment).toMatchObject({
-        pid: secondOperationBeforeThread.locator.proxy.pid,
-        incarnation: secondOperationBeforeThread.locator.proxy.incarnation,
-      });
-      appendOrderedTrace(fixture, 'second operation durable proxy locator');
-      const durableContinuityAck = waitForExactProviderWatermark(fixture, secondJobId, 1);
-      writeFileSync(join(fixture.fakeStateDir, 'thread-start-gate-2'), 'continue');
-
-      await durableContinuityAck;
-      appendOrderedTrace(fixture, 'durable provider watermark 1 / ACK');
-      await waitForCliGate(
-        second,
-        () => existsSync(join(fixture.fakeStateDir, 'turn-start-pending-2')),
-        'second turn/start gate',
-      );
-      const secondOperationAtTurn = requireDurableOperation(fixture, secondJobId);
-      if (secondOperationAtTurn.phase !== 'executing') {
-        throw new Error(`second operation reached turn/start from phase ${secondOperationAtTurn.phase}`);
-      }
-      expect(secondOperationAtTurn.committedThroughProviderSeq).toBeGreaterThanOrEqual(1);
-      writeFileSync(join(fixture.fakeStateDir, 'turn-start-gate-2'), 'continue');
-
-      const secondStatus = await second.completed;
-      if (secondStatus !== 0) {
-        throw new Error(
-          `second coral-cli exited with status ${String(secondStatus)}\nstdout:\n${second.stdout()}\nstderr:\n${second.stderr()}`,
-        );
-      }
-      expect(second.stderr()).toBe('');
-      expect(second.stdout()).toContain('Thread ready (scripted-codex-session).');
-      expect(second.stdout()).toMatch(new RegExp(`^Job ${secondJobId} completed$`, 'm'));
-      await waitForCondition(() => readDurableOperation(fixture, secondJobId) === null, 10_000);
-
-      const terminalEvents = readFileSync(join(fixture.fakeStateDir, 'terminal-events'), 'utf8').trim().split('\n');
-      expect(terminalEvents).toEqual(['terminal']);
-      appendOrderedTrace(fixture, 'one terminal and settled row');
-      expect(readFileSync(join(fixture.fakeStateDir, 'ordered-trace'), 'utf8').trim().split('\n')).toEqual([
-        'second operation durable proxy locator',
-        'fake thread/start',
-        'durable provider watermark 1 / ACK',
-        'fake turn/start',
-        'one terminal and settled row',
-      ]);
-
-      await waitForCondition(() => readDiscoveryRecord(fixture.home, fixture.flavor) !== null, 10_000);
-      discoveryRecord = readDiscoveryRecord(fixture.home, fixture.flavor);
-
-      expect(discoveryRecord).not.toBeNull();
-      expect(discoveryRecord !== null && observeProcessLiveness(discoveryRecord.pid) === 'alive').toBe(true);
-      expect(discoveryRecord?.socketPath).toContain('.sock');
-
-      const runtime = createRealRuntime('prod');
-      const db = openStoreDatabase({
-        storeFormat: currentCoralStoreFormat(),
-        path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
-        storage: runtime.storage,
-        readonly: true,
-      });
-
-      try {
-        const store = new CoralStore(db, createDefaultStoreReadContext());
-        const jobs = store.jobs.list({ projectRoot: fixtureCanonicalWorkDir(fixture.projectRoot), all: true });
-        expect(jobs).toHaveLength(2);
-
-        for (const jobId of [firstJobId, secondJobId]) {
-          const detail = store.jobs.detail(jobId);
-          const resultPath = resultArtifactPath(fixture.home, fixture.flavor, jobId);
-          expect(detail?.status.phase).toBe('completed');
-          expect(detail?.status.result?.content).toBe('scripted terminal output');
-          expect(existsSync(resultPath)).toBe(true);
-          expect(readFileSync(resultPath, 'utf-8').trimEnd()).toBe('scripted terminal output');
-        }
-      } finally {
-        db.close();
+      for (const jobId of [firstJobId, secondJobId]) {
+        const detail = store.jobs.detail(jobId);
+        const resultPath = resultArtifactPath(fixture.home, fixture.flavor, jobId);
+        expect(detail?.status.phase).toBe('completed');
+        expect(detail?.status.result?.content).toBe('scripted terminal output');
+        expect(existsSync(resultPath)).toBe(true);
+        expect(readFileSync(resultPath, 'utf-8').trimEnd()).toBe('scripted terminal output');
       }
     } finally {
-      await shutdownBackend(discoveryRecord ?? readDiscoveryRecord(fixture.home, fixture.flavor));
+      db.close();
     }
   }, 120_000);
 });

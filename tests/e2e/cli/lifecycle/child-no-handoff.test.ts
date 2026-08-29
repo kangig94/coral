@@ -1,11 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
+import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,
@@ -14,12 +14,11 @@ import {
   spawnCoordinator,
   stopCoordinator,
   waitForDiscoveryRecord,
-  type SpawnedCoordinator,
 } from '../../../integration/coordinator/helpers.js';
 
 const SOURCE_MANIFEST = join(process.cwd(), 'clients', 'build', 'manifest.json');
 const tempRoots: string[] = [];
-const coordinators: SpawnedCoordinator[] = [];
+const temporaryHomes = createTemporaryHomeOwner();
 
 function sourceFlavor(): BuildFlavor {
   const parsed = JSON.parse(readFileSync(SOURCE_MANIFEST, 'utf-8')) as { flavor?: unknown };
@@ -29,10 +28,10 @@ function sourceFlavor(): BuildFlavor {
   return parsed.flavor;
 }
 
-function unregisteredChildCliEnvironment(home: string): NodeJS.ProcessEnv {
+function unregisteredChildCliEnvironment(home: TemporaryHome): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    HOME: home,
+    ...temporaryHomes.environment(home),
     TMPDIR: home,
     CORAL_CHILD: '1',
     CORAL_CHILD_PRINCIPAL_HANDLE: 'fixture-child-handle',
@@ -43,7 +42,7 @@ function unregisteredChildCliEnvironment(home: string): NodeJS.ProcessEnv {
   return env;
 }
 
-function runUnregisteredChildCli(cliPath: string, home: string) {
+function runUnregisteredChildCli(cliPath: string, home: TemporaryHome) {
   return spawnSync(process.execPath, [cliPath, 'jobs', 'detail', 'fixture-job'], {
     cwd: home,
     env: unregisteredChildCliEnvironment(home),
@@ -53,9 +52,7 @@ function runUnregisteredChildCli(cliPath: string, home: string) {
 }
 
 afterEach(async () => {
-  for (const coordinator of coordinators.splice(0).reverse()) {
-    await stopCoordinator(coordinator);
-  }
+  await temporaryHomes.cleanup();
   for (const root of tempRoots.splice(0).reverse()) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -68,8 +65,7 @@ describe('bundled child coordinator confinement', () => {
     }
 
     const flavor = sourceFlavor();
-    const home = mkdtempSync(join(tmpdir(), 'coral-child-noparent-'));
-    tempRoots.push(home);
+    const home = temporaryHomes.create('coral-child-noparent-', flavor);
     const fixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'child-no-parent' });
     const paths = coordinatorFilesForHome(home, flavor);
 
@@ -90,8 +86,7 @@ describe('bundled child coordinator confinement', () => {
     }
 
     const flavor = sourceFlavor();
-    const home = mkdtempSync(join(tmpdir(), 'coral-child-mismatch-'));
-    tempRoots.push(home);
+    const home = temporaryHomes.create('coral-child-mismatch-', flavor);
     const parentFixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'parent-bundle-a' });
     const childFixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'child-bundle-b' });
     expect(childFixture.bundleHash).not.toBe(parentFixture.bundleHash);
@@ -102,7 +97,7 @@ describe('bundled child coordinator confinement', () => {
       tempRoots,
       env: { CLAUDE_CONFIG_DIR: '', CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' },
     });
-    coordinators.push(parent);
+    temporaryHomes.registerCoordinator(home, parent, stopCoordinator);
     const before = await waitForDiscoveryRecord(home, flavor, 15_000);
     const paths = coordinatorFilesForHome(home, flavor);
     const discoveryBefore = readFileSync(paths.infoFile, 'utf-8');

@@ -26,6 +26,7 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
 import { formatKbMemoList, formatKbPrinciples, formatKbRead, formatKbSourceList } from '#src/cli/format/kb.js';
 import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
+import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BUNDLE_DIR = e2eBundleDir();
@@ -35,10 +36,11 @@ const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 const FIXED_NOW = new Date('2026-03-22T00:00:00.000Z');
 
 const tempRoots: string[] = [];
+const temporaryHomes = createTemporaryHomeOwner();
 
 type Fixture = {
   root: string;
-  home: string;
+  home: TemporaryHome;
   projectRoot: string;
   kbRoot: string;
   flavor: 'prod' | 'dev';
@@ -61,13 +63,13 @@ const READ_COMMANDS: ReadonlyArray<ReadCommandCase> = [
 
 function createFixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'coral-library-direct-plugin-'));
-  const home = mkdtempSync(join(tmpdir(), 'coral-library-direct-home-'));
+  const home = temporaryHomes.create('coral-library-direct-home-', 'prod');
   const projectRoot = join(root, 'project');
   const kbRoot = join(home, 'vault');
   const probeScriptPath = join(root, 'probe.cjs');
   const probeLogPath = join(root, 'probe.log');
 
-  tempRoots.push(root, home);
+  tempRoots.push(root);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
@@ -264,7 +266,7 @@ function runCliSubprocess(
     cwd: fixture.projectRoot,
     env: {
       ...process.env,
-      HOME: fixture.home,
+      ...temporaryHomes.environment(fixture.home),
       TMPDIR: fixture.home,
       // Keep plugin discovery inside the fixture instead of inheriting the
       // runner's Claude installation.
@@ -323,28 +325,20 @@ async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Prom
 }
 
 async function withFixtureEnvironment<T>(fixture: Fixture, run: () => Promise<T> | T): Promise<T> {
-  const originalHome = process.env.HOME;
   const originalTmpdir = process.env.TMPDIR;
   const originalKbPath = process.env.CORAL_KB_PATH;
   const originalPluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   const originalCwd = process.cwd();
 
-  process.env.HOME = fixture.home;
   process.env.TMPDIR = fixture.home;
   process.env.CORAL_KB_PATH = fixture.kbRoot;
   process.env.CLAUDE_PLUGIN_ROOT = fixture.root;
   process.chdir(fixture.projectRoot);
 
   try {
-    return await run();
+    return await temporaryHomes.withHome(fixture.home, run);
   } finally {
     process.chdir(originalCwd);
-
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
-    }
 
     if (originalTmpdir === undefined) {
       delete process.env.TMPDIR;
@@ -371,9 +365,10 @@ beforeEach(() => {
   vi.setSystemTime(FIXED_NOW);
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  await temporaryHomes.cleanup();
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }

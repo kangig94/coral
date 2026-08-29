@@ -12,10 +12,10 @@ import {
   spawnCoordinator,
   stopCoordinator,
   storeDbPathForHome,
-  waitForCondition,
   waitForDiscoveryRecord,
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
