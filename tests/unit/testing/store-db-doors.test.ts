@@ -50,6 +50,7 @@ function expectUnitDoorToRejectAndClose(open: () => Database): void {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   for (const directory of scratchDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -80,6 +81,26 @@ describe('checked test database doors', () => {
     const path = storePath('raw.db');
 
     expectUnitDoorToRejectAndClose(() => newRawDatabase(path));
+  });
+
+  it('closes a real handle when the test tier is unrecognized', () => {
+    const path = storePath('unknown-tier.db');
+    vi.stubGlobal(Symbol.for('coral.testing.enforced-test-location-policy'), {
+      tier: 'unexpected',
+      tempRoot: resolve(process.env.TMPDIR ?? tmpdir()),
+    });
+    const guard = vi.spyOn(storeDbLocation, 'assertTestDatabaseLocation');
+
+    let db: Database | undefined;
+    try {
+      expect(() => newRawDatabase(path)).toThrow(/CORAL_TEST_TIER=unexpected/u);
+      db = guard.mock.calls.at(-1)?.[0];
+      expect(db).toBeDefined();
+      expect(db?.isOpen).toBe(false);
+      expect(() => db?.prepare('SELECT 1')).toThrow();
+    } finally {
+      if (db?.isOpen === true) db.close();
+    }
   });
 
   it('closes and refuses store services backed by a file under the unit tier', () => {

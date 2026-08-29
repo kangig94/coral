@@ -67,10 +67,14 @@ deliberately applies neither the Coral schema nor its pragmas. Every door requir
 The rule no longer trusts the path expression a caller presents. Each opened handle reports its own location:
 unit and simulation reject file-backed databases, while integration and e2e reject files outside the run's
 temporary root. `tests/invariants/test-support-store-door-bypass.test.ts` scans all TypeScript under `tests/`
-and `tools/testing/` and forbids named imports and direct namespace-property access that acquire
-`DatabaseSync` or the production store opener from their defining modules outside the two checked door
-modules. `tests/integration/` and `tests/e2e/` are the deliberate exclusions because opening and classifying
-databases directly is often the behavior under test there; integration runs with one worker.
+and `tools/testing/` and rejects runtime forms that can acquire `node:sqlite` or hand out the production store
+module: imports and exports, dynamic imports, imports of `createRequire`, and protected bare `require(...)`
+calls. Default and namespace imports are checked fail-closed when their module specifier cannot be understood,
+while supported non-TypeScript assets are outside the store capability. The exact acquisition exemptions
+belong to `tests/helpers/test-db.ts`, `tests/helpers/store-db.ts`, and `tests/helpers/store-db-spies.ts`; the
+invariant requires each owner to exist and retain its witnessed acquisition. `tests/integration/` and
+`tests/e2e/` are the deliberate exclusions because opening and classifying databases directly is often the
+behavior under test there; integration runs with one worker.
 
 What the entry proposed for this half — "those can take the in-memory storage port instead" — assumed a seam
 that does not exist. `openStoreDatabase` and `classifyStoreFile` construct `DatabaseSync` directly rather than

@@ -7,6 +7,48 @@ import ts from 'typescript';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SIMULATION_CLI = resolve(REPO_ROOT, 'tools/simulation/cli.ts');
 
+function couldExecuteAtTopLevel(statement: ts.Statement): boolean {
+  return !(
+    ts.isImportDeclaration(statement) ||
+    ts.isExportDeclaration(statement) ||
+    ts.isEmptyStatement(statement) ||
+    ts.isInterfaceDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement) ||
+    ts.isFunctionDeclaration(statement)
+  );
+}
+
+function isSimulationTierStamp(statement: ts.Statement | undefined): boolean {
+  if (statement === undefined || !ts.isExpressionStatement(statement)) return false;
+  let assignment: ts.Expression = statement.expression;
+  while (ts.isParenthesizedExpression(assignment)) assignment = assignment.expression;
+  if (!ts.isBinaryExpression(assignment) || assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    return false;
+  }
+  if (!ts.isStringLiteralLike(assignment.right) || assignment.right.text !== 'simulation') return false;
+
+  const tier = assignment.left;
+  if (!ts.isPropertyAccessExpression(tier) || tier.name.text !== 'CORAL_TEST_TIER') return false;
+  const env = tier.expression;
+  return (
+    ts.isPropertyAccessExpression(env) &&
+    env.name.text === 'env' &&
+    ts.isIdentifier(env.expression) &&
+    env.expression.text === 'process'
+  );
+}
+
+function invokesSimulationCli(statement: ts.Statement): boolean {
+  if (!ts.isExpressionStatement(statement) || !ts.isVoidExpression(statement.expression)) return false;
+  const invocation = statement.expression.expression;
+  return (
+    ts.isCallExpression(invocation) &&
+    ts.isIdentifier(invocation.expression) &&
+    invocation.expression.text === 'runSimulationCli' &&
+    invocation.arguments.length === 0
+  );
+}
+
 describe('standalone simulation tier', () => {
   it('establishes the simulation tier before entry-point work', () => {
     const source = ts.createSourceFile(
@@ -15,11 +57,9 @@ describe('standalone simulation tier', () => {
       ts.ScriptTarget.Latest,
       true,
     );
-    const statements = source.statements.map((statement) => statement.getText(source));
-    const tierStamp = statements.indexOf("process.env.CORAL_TEST_TIER = 'simulation';");
-    const entryPointRun = statements.indexOf('void runSimulationCli();');
+    const firstExecutableStatement = source.statements.find(couldExecuteAtTopLevel);
 
-    expect(tierStamp).toBeGreaterThan(-1);
-    expect(entryPointRun).toBeGreaterThan(tierStamp);
+    expect(isSimulationTierStamp(firstExecutableStatement)).toBe(true);
+    expect(source.statements.some(invokesSimulationCli)).toBe(true);
   });
 });

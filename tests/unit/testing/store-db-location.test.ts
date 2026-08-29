@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +13,7 @@ const scratchDirectories: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.doUnmock('node:fs');
   vi.resetModules();
   for (const directory of scratchDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
@@ -111,6 +113,64 @@ describe('test database location', () => {
   it('refuses an unrecognized tier explicitly', () => {
     expect(classifyTestDatabaseLocation(undefined, TEMP_ROOT, null)).toEqual({ kind: 'unrecognized-tier' });
     expect(classifyTestDatabaseLocation('other', TEMP_ROOT, null)).toEqual({ kind: 'unrecognized-tier' });
+  });
+
+  it('closes the handle and preserves the cause when path resolution fails', async () => {
+    const resolutionError = Object.assign(new Error('path changed during resolution'), { code: 'EACCES' });
+    const location = join(TEMP_ROOT, 'case', 'store.db');
+    let failingPath = TEMP_ROOT;
+    vi.resetModules();
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof NodeFs>('node:fs');
+      return {
+        ...actual,
+        existsSync: () => true,
+        realpathSync: (path: string) => {
+          if (path === failingPath) throw resolutionError;
+          return path;
+        },
+      };
+    });
+    vi.stubGlobal(Symbol.for('coral.testing.enforced-test-location-policy'), {
+      tier: 'integration',
+      tempRoot: TEMP_ROOT,
+    });
+    const policy = await import('#tools/testing/store-db-location.js');
+    expect(policy.classifyTestDatabaseLocation('integration', TEMP_ROOT, location)).toEqual({
+      kind: 'resolution-failed',
+      tier: 'integration',
+      location,
+      tempRoot: TEMP_ROOT,
+      path: TEMP_ROOT,
+      cause: resolutionError,
+    });
+
+    failingPath = location;
+    expect(policy.classifyTestDatabaseLocation('integration', TEMP_ROOT, location)).toEqual({
+      kind: 'resolution-failed',
+      tier: 'integration',
+      location,
+      tempRoot: TEMP_ROOT,
+      path: location,
+      cause: resolutionError,
+    });
+    const close = vi.fn();
+    const db = {
+      location: () => location,
+      close,
+    } as unknown as Database;
+
+    let caught: unknown;
+    try {
+      policy.assertTestDatabaseLocation(db);
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/could not be resolved safely/u);
+    expect((caught as Error & { cause?: unknown }).cause).toBe(resolutionError);
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it('keeps the original e2e tier and temp root after a module reset', async () => {

@@ -47,6 +47,7 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import type { Database } from '#src/store/db.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import {
   defineFakeProvider,
@@ -126,10 +127,24 @@ let launchCoordinator: LaunchCoordinator;
 let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
+const openedStoreDatabases = new Set<Database>();
+
+function openServiceStoreDatabase(): Database {
+  const db = openTestStoreDb(runtime, runtime.paths.coral.store.dbFile);
+  openedStoreDatabases.add(db);
+  return db;
+}
+
+function closeServiceStoreDatabases(): void {
+  for (const db of openedStoreDatabases) {
+    if (db.isOpen) db.close();
+  }
+  openedStoreDatabases.clear();
+}
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
   return new JobStore(namespace, runtime, createEventBodyCodec(), {
-    db: openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
+    db: openServiceStoreDatabase(),
     eventBus,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
@@ -142,7 +157,7 @@ function createSessionManager(projectRoot: string): SessionManager {
     runtime,
     undefined,
     undefined,
-    openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
+    openServiceStoreDatabase(),
     permissiveProviderLookupPort,
   );
 }
@@ -747,6 +762,7 @@ describe('ExecutionService', () => {
       releaseLaunch(jobId);
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
+    closeServiceStoreDatabases();
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
@@ -3176,6 +3192,7 @@ describe('ExecutionService adversarial', () => {
       releaseLaunch(jobId);
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
+    closeServiceStoreDatabases();
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
