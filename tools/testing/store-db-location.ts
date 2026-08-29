@@ -113,8 +113,8 @@ export function classifyTestDatabaseLocation(
 }
 
 /**
- * Decides from the opened handle, not from the argument that opened it: `location()` returns `null` for
- * `':memory:'` and the file otherwise, so an alias, a variable, or a wrapper cannot present a file as memory.
+ * Decides from the opened handle, not from the argument that opened it. Measured on Node v26.3.1:
+ * `DatabaseSync.prototype.location()` answers `null` for `':memory:'` and the file path otherwise.
  * An unrecognized tier is refused rather than treated as the permissive one.
  */
 export function assertTestDatabaseLocation(db: Database): void {
