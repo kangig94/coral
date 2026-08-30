@@ -333,12 +333,19 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
       [...produced].filter((outcome) => outcome !== 'ok' && outcome !== 'no-project-dir' && !noticed.has(outcome)),
       'every outcome other than ok and no-project-dir must have a notice the session can read',
     ).toEqual([]);
-    // Both interpolations must reach the rendered head, but not in a fixed order or adjacency — pinning
-    // that would fail on a reformat that changed nothing about what the session is told.
-    const head = source.match(/const head = `[\s\S]*?`;/u)?.[0] ?? '';
-    expect(head, 'the head template must be readable from source').not.toBe('');
-    for (const interpolation of ['${migrationNotice}', '${ignoreNotice}']) {
-      expect(head, `${interpolation} must reach additionalContext, not just be computed`).toContain(interpolation);
+    // Do not pin this assertion to notice variable names, order, or adjacency.
+    const migrationNotice = source.match(/const\s+(\w+)\s*=\s*[^\n]+\n\s+\? 'Coral migration:/u)?.[1] ?? '';
+    const ignoreNotice =
+      source.match(/const\s+(\w+)\s*=\s*[^\n]+\n\s+\? `Coral project-ignore maintenance/u)?.[1] ?? '';
+    // Matched on the composition that collects the notices, not on the separator it joins them with: the
+    // separator is presentation and pinning it has already broken this assertion twice for reasons that
+    // changed nothing about whether a notice reaches the payload.
+    const renderedNotices = source.match(/\[([^\]]*Notice[^\]]*)\]\.filter\(Boolean\)/u)?.[1] ?? '';
+    expect(migrationNotice, 'the migration notice must be readable from source').not.toBe('');
+    expect(ignoreNotice, 'the maintenance notice must be readable from source').not.toBe('');
+    expect(renderedNotices, 'the rendered notices must be readable from source').not.toBe('');
+    for (const notice of [migrationNotice, ignoreNotice]) {
+      expect(renderedNotices, 'every maintenance notice must reach additionalContext').toContain(notice);
     }
   });
 

@@ -11,6 +11,11 @@
           },
           {
             "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-start.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/hud-auto-update.mjs\"",
             "timeout": 3
           }
@@ -39,6 +44,11 @@
           {
             "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.mjs\"",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/kb-start.mjs\"",
             "timeout": 3
           },
           {

@@ -1,11 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { KB_START_HOOK, expectHookOutput, runHook } from '#tests/unit/hooks/_helpers.js';
+
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { renderInject } from '../../../clients/hooks/lib/inject-render.mjs';
+import { MAX_ADDITIONAL_CONTEXT_BYTES } from '../../../clients/hooks/lib/additional-context.mjs';
+// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+import { EQUIP_AGENT_TOOLS } from '../../../clients/hooks/lib/equip-tools.mjs';
+// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+import { INJECT_FRAGMENT_GROUPS, renderInject } from '../../../clients/hooks/lib/inject-render.mjs';
 
 const TEMPLATE = '# Tools\n\nCLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\n\ndone';
 const createdRoots: string[] = [];
@@ -42,57 +48,178 @@ function pluginRootWith(input: string | InjectFragments): string {
   return root;
 }
 
+function wakeUpFixture(understanding: string): { kbRoot: string; projectDir: string; wikiPath: string } {
+  const root = mkdtempSync(join(tmpdir(), 'coral-inject-wake-up-'));
+  createdRoots.push(root);
+  const projectDir = join(root, 'project');
+  const kbRoot = join(root, 'kb');
+  const wikiDir = join(kbRoot, 'wiki');
+  const wikiPath = join(wikiDir, `local-${basename(projectDir)}.md`);
+  mkdirSync(projectDir, { recursive: true });
+  mkdirSync(wikiDir, { recursive: true });
+  writeFileSync(
+    wikiPath,
+    [
+      '---',
+      'updatedAt: 2026-08-30T00:00:00.000Z',
+      '---',
+      '# Project',
+      '',
+      '## Understanding',
+      '',
+      understanding,
+      '',
+      '## Knowledge',
+    ].join('\n'),
+    'utf-8',
+  );
+  return { kbRoot, projectDir, wikiPath };
+}
+
+function emitKbStart(
+  hookEventName: 'SessionStart' | 'SubagentStart',
+  fixture: ReturnType<typeof wakeUpFixture>,
+): string {
+  const result = runHook(
+    KB_START_HOOK,
+    { hook_event_name: hookEventName, session_id: 'size-gate-session' },
+    {
+      CLAUDE_PLUGIN_ROOT: join(process.cwd(), 'clients'),
+      CLAUDE_PROJECT_DIR: fixture.projectDir,
+      CORAL_KB_ENABLE: '1',
+      CORAL_KB_PATH: fixture.kbRoot,
+      CORAL_FLAVOR: 'prod',
+      HOME: fixture.projectDir,
+    },
+  );
+  expect(result.status).toBe(0);
+  return expectHookOutput(result).hookSpecificOutput.additionalContext;
+}
+
 describe('renderInject fragment composition', () => {
   it.each([
     {
       name: 'owner session',
       asOwner: true,
       kbEnabled: true,
-      expected: ['core', 'tools', 'kb common', 'orchestrator', 'session'],
+      expectedKb: ['kb common', 'orchestrator', 'session'],
     },
     {
       name: 'subagent session',
       asOwner: false,
       kbEnabled: true,
-      expected: ['core', 'tools', 'kb common', 'session'],
+      expectedKb: ['kb common', 'session'],
     },
-    { name: 'KB-disabled session', asOwner: true, kbEnabled: false, expected: ['core', 'tools'] },
-  ])('composes the $name fragment set in order', ({ asOwner, kbEnabled, expected }) => {
-    const out = renderInject({
-      pluginRoot: pluginRootWith({
-        core: 'core',
-        tools: 'tools',
-        kbCommon: 'kb common',
-        kbOrchestrator: 'orchestrator',
-        kbSession: 'session',
-      }),
+    { name: 'KB-disabled session', asOwner: true, kbEnabled: false, expectedKb: [] },
+  ])('composes the $name fragment groups in order', ({ asOwner, kbEnabled, expectedKb }) => {
+    const pluginRoot = pluginRootWith({
+      core: 'core',
+      tools: 'tools',
+      kbCommon: 'kb common',
+      kbOrchestrator: 'orchestrator',
+      kbSession: 'session',
+    });
+    const base = renderInject({
+      pluginRoot,
       projectDir: undefined,
       sessionId: 's',
       asOwner,
+      group: 'base',
+      kbEnabled,
+    });
+    const kb = renderInject({
+      pluginRoot,
+      projectDir: undefined,
+      sessionId: 's',
+      asOwner,
+      group: 'kb',
       kbEnabled,
     });
 
-    expect(out).toBe(expected.join('\n\n'));
+    expect(base).toBe('core\n\ntools');
+    expect(kb).toBe(expectedKb.join('\n\n'));
   });
 
-  it('renders the shipped fragment bundle without legacy control markers', () => {
-    const out = renderInject({
+  it('renders the shipped fragment groups without legacy control markers', () => {
+    const input = {
       pluginRoot: join(process.cwd(), 'clients'),
       projectDir: undefined,
       sessionId: 's',
       asOwner: true,
       kbEnabled: true,
-    });
+    };
+    const base = renderInject({ ...input, group: 'base' });
+    const kb = renderInject({ ...input, group: 'kb' });
 
-    expect(out).toContain('# Coral Guidelines');
-    expect(out).toContain('# Tools');
-    expect(out).toContain('invoke this CLI with sandbox bypass/escalation');
-    expect(out).toContain("Invoking a skill that uses Coral expresses the user's intent to run Coral");
-    expect(out).toContain('automatically use sandbox bypass/escalation');
-    expect(out).toContain('# Knowledge Base');
-    expect(out).toContain('## Wiki');
-    expect(out).toContain('## Memo');
-    expect(out).not.toMatch(/<!-- (?:KB|OWNER|SESSION_ID)_ONLY:/u);
+    expect(base).toContain('# Coral Guidelines');
+    expect(base).toContain('# Tools');
+    expect(base).toContain('invoke this CLI with sandbox bypass/escalation');
+    expect(base).toContain("Invoking a skill that uses Coral expresses the user's intent to run Coral");
+    expect(base).toContain('automatically use sandbox bypass/escalation');
+    expect(kb).toContain('# Knowledge Base');
+    expect(kb).toContain('## Wiki');
+    expect(kb).toContain('## Memo');
+    expect(`${base}\n${kb}`).not.toMatch(/<!-- (?:KB|OWNER|SESSION_ID)_ONLY:/u);
+  });
+
+  it('assigns every shipped inject fragment to exactly one payload', () => {
+    const injectRoot = join(process.cwd(), 'clients', 'inject');
+    const shipped: string[] = [];
+    const visit = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else shipped.push(relative(injectRoot, path).split(sep).join('/'));
+      }
+    };
+    visit(injectRoot);
+
+    const assigned = Object.values(INJECT_FRAGMENT_GROUPS).flat() as string[];
+    expect(new Set(assigned).size).toBe(assigned.length);
+    expect([...assigned].sort()).toEqual([...shipped].sort());
+  });
+
+  it.each([
+    { name: 'owner without equipped tools', asOwner: true, equippedTools: undefined },
+    { name: 'owner with equipped tools', asOwner: true, equippedTools: EQUIP_AGENT_TOOLS },
+    { name: 'subagent without equipped tools', asOwner: false, equippedTools: undefined },
+    { name: 'subagent with equipped tools', asOwner: false, equippedTools: EQUIP_AGENT_TOOLS },
+  ])('keeps every rendered payload at or below 8,000 bytes for $name', ({ asOwner, equippedTools }) => {
+    const input = {
+      pluginRoot: join(process.cwd(), 'clients'),
+      projectDir: undefined,
+      sessionId: 'size-gate-session',
+      asOwner,
+      kbEnabled: true,
+      equippedTools,
+    };
+    const base = renderInject({ ...input, group: 'base' });
+    const kb = renderInject({ ...input, group: 'kb' });
+    const basePayload = asOwner
+      ? `SessionStart:session_id=size-gate-session\nCurrent host: claude\nClaude config dir: /tmp/claude\n\n${base}`
+      : base;
+
+    expect(Buffer.byteLength(basePayload, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
+    expect(Buffer.byteLength(kb, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
+  });
+
+  it('fits the real KB hooks when the project wiki wake-up exceeds the payload budget', () => {
+    const normalFixture = wakeUpFixture('Normal project understanding.');
+    const oversizedFixture = wakeUpFixture(`${'🪸'.repeat(10_000)}\nOVERSIZED-END`);
+
+    const normalOwner = emitKbStart('SessionStart', normalFixture);
+    const oversizedOwner = emitKbStart('SessionStart', oversizedFixture);
+    const normalSubagent = emitKbStart('SubagentStart', normalFixture);
+    const oversizedSubagent = emitKbStart('SubagentStart', oversizedFixture);
+
+    expect(Buffer.byteLength(normalOwner, 'utf-8')).toBeLessThan(MAX_ADDITIONAL_CONTEXT_BYTES);
+    expect(Buffer.byteLength(oversizedOwner, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
+    expect(oversizedOwner).toContain('project wiki wake-up was trimmed to fit this hook payload');
+    expect(oversizedOwner).toContain(oversizedFixture.wikiPath);
+    expect(oversizedOwner).not.toContain('OVERSIZED-END');
+    expect(oversizedOwner).not.toContain('\uFFFD');
+    expect(Buffer.byteLength(normalSubagent, 'utf-8')).toBeLessThan(MAX_ADDITIONAL_CONTEXT_BYTES);
+    expect(oversizedSubagent).toBe(normalSubagent);
   });
 });
 
@@ -103,6 +230,7 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       projectDir: undefined,
       sessionId: 's',
       asOwner: true,
+      group: 'base',
       kbEnabled: true,
       equippedTools: [
         {
@@ -127,6 +255,7 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       projectDir: undefined,
       sessionId: 's',
       asOwner: false,
+      group: 'base',
       kbEnabled: true,
     });
 
@@ -149,6 +278,7 @@ describe('renderInject path aliases', () => {
       projectDir,
       sessionId: 's',
       asOwner: true,
+      group: 'base',
       kbEnabled: true,
     });
 
@@ -174,6 +304,7 @@ describe('renderInject path aliases', () => {
       projectDir: undefined,
       sessionId: 's',
       asOwner: true,
+      group: 'base',
       kbEnabled: true,
     });
     expect(out).toContain('project: {{CORAL_PROJECT}}');

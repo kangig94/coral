@@ -13,14 +13,11 @@ import {
   hostKind,
   isValidSessionId,
   readStdin,
-  resolveKbRoot,
-  resolveProjectSource,
   writeHookOutput,
 } from './lib/hook-utils.mjs';
+import { fitAdditionalContext } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
-import { readProjectScopedWakeUp } from './lib/wake-up-read.mjs';
-import { isKbEnabled } from './lib/kb-toggle.mjs';
 
 // Unconditionally spawn coral-backend on session start. The daemon's own
 // socket-as-lock contention is the single source of truth for staleness:
@@ -190,23 +187,20 @@ try {
     ? runProjectIgnoreMaintenance(projectDir, process.env.CORAL_AUTO_SYMLINK === '1')
     : { outcome: 'no-project-dir', maintenance: null };
 
-  const kbEnabled = isKbEnabled();
   const injectContent = renderInject({
     pluginRoot: PLUGIN_ROOT,
     projectDir,
     sessionId,
     asOwner: true,
-    kbEnabled,
+    group: 'base',
     equippedTools: resolveEquippedTools(),
   });
 
   const host = hostKind();
 
-  const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
-  const wakeUpPayload = kbEnabled && projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
   const migrationNotice = ignoreOutcome.maintenance?.migrated
-    ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
-    : '';
+    ? 'Coral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
+    : null;
   const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
   // The reason travels when the child got far enough to have one. Without it a notice that repeats every
   // session says only that maintenance failed, which is the same sentence for a project directory that could
@@ -214,12 +208,17 @@ try {
   const ignoreReason =
     typeof ignoreOutcome.maintenance?.reason === 'string' ? ` (${ignoreOutcome.maintenance.reason})` : '';
   const ignoreNotice = ignoreFailure
-    ? `\n\nCoral project-ignore maintenance ${ignoreFailure}${ignoreReason}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
-    : '';
+    ? `Coral project-ignore maintenance ${ignoreFailure}${ignoreReason}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
+    : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
-  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}${ignoreNotice}`;
-  const body = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
-  const additionalContext = startupFailureNotice === null ? body : `${startupFailureNotice}\n\n${body}`;
+  const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
+  const variableContent = [startupFailureNotice, migrationNotice, ignoreNotice].filter(Boolean).join('\n\n');
+  const additionalContext = fitAdditionalContext({
+    fixedContent,
+    variableContent,
+    trimNotice:
+      'Coral startup notices were trimmed to fit this hook payload; inspect the coordinator startup diagnostic and project ignore state for full details.',
+  });
 
   writeHookOutput({
     hookSpecificOutput: {

@@ -6,6 +6,7 @@ import {
   readFileSync,
   readlinkSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -18,6 +19,7 @@ import {
   COPILOT_HOOKS_JSON_PATH,
   CORAL_SKILL_VARS_HOOK,
   HUD_AUTO_UPDATE_HOOK,
+  KB_START_HOOK,
   KB_LOOKUP_REMINDER_HOOK,
   KB_MEMO_REMINDER_HOOK,
   KB_PROMOTE_GATE_HOOK,
@@ -384,15 +386,17 @@ describe('session-start.mjs', () => {
     expect(result.status).toBe(0);
     expect(parseHookOutput(result.stdout)).toBeNull();
   });
+});
 
+describe('kb-start.mjs', () => {
   it('includes the orchestrator fragment for top-level sessions', () => {
     const fixture = createFixture();
     writeInjectBundle(fixture.pluginRoot, { core: 'base\nrest', kbOrchestrator: 'owner instruction' });
 
     const result = runHook(
-      SESSION_START_HOOK,
-      { session_id: 'sess-owner' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+      KB_START_HOOK,
+      { hook_event_name: 'SessionStart', session_id: 'sess-owner' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
     );
 
     const output = expectHookOutput(result);
@@ -435,8 +439,8 @@ describe('session-start.mjs', () => {
       seedKbWiki(kbRoot, 'other-repo', '2026-05-04T02:00:00.000Z', 'Other understanding.');
 
       const result = runHook(
-        SESSION_START_HOOK,
-        { session_id: 'sess-wake' },
+        KB_START_HOOK,
+        { hook_event_name: 'SessionStart', session_id: 'sess-wake' },
         {
           CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
           CLAUDE_PROJECT_DIR: fixture.projectRoot,
@@ -462,8 +466,8 @@ describe('session-start.mjs', () => {
       seedKbWiki(kbRoot, 'foreign', '2026-05-04T01:00:00.000Z', 'Foreign understanding.');
 
       const result = runHook(
-        SESSION_START_HOOK,
-        { session_id: 'sess-wake' },
+        KB_START_HOOK,
+        { hook_event_name: 'SessionStart', session_id: 'sess-wake' },
         {
           CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
           CLAUDE_PROJECT_DIR: fixture.projectRoot,
@@ -492,8 +496,8 @@ describe('session-start.mjs', () => {
       );
 
       const result = runHook(
-        SESSION_START_HOOK,
-        { session_id: 'sess-wake' },
+        KB_START_HOOK,
+        { hook_event_name: 'SessionStart', session_id: 'sess-wake' },
         {
           CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
           CLAUDE_PROJECT_DIR: fixture.projectRoot,
@@ -504,8 +508,50 @@ describe('session-start.mjs', () => {
 
       expect(result.status).toBe(0);
       const output = expectHookOutput(result);
-      expect(output.hookSpecificOutput.additionalContext).not.toMatch(/inject content[\s\S]*\n## /u);
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('## project wiki:');
     });
+  });
+
+  it('emits nothing when KB is disabled and keeps the fixed contract without a project directory', () => {
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, { kbCommon: 'KB contract' });
+
+    const disabled = runHook(
+      KB_START_HOOK,
+      { hook_event_name: 'SessionStart', session_id: 'sess-disabled' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_KB_ENABLE: '0',
+      },
+    );
+    const noProject = runHook(
+      KB_START_HOOK,
+      { hook_event_name: 'SubagentStart', session_id: 'sess-no-project' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: undefined },
+    );
+
+    expect(disabled.status).toBe(0);
+    expect(noProject.status).toBe(0);
+    expect(parseHookOutput(disabled.stdout)).toBeNull();
+    expect(expectHookOutput(noProject).hookSpecificOutput.additionalContext).toContain('KB contract');
+  });
+
+  it('fails open with a visible recovery instruction when the KB contract cannot be rendered', () => {
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, { kbCommon: 'KB contract' });
+    rmSync(join(fixture.pluginRoot, 'inject', 'kb', 'common.md'));
+
+    const result = runHook(
+      KB_START_HOOK,
+      { hook_event_name: 'SessionStart', session_id: 'sess-render-failure' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
+    );
+
+    expect(result.status).toBe(0);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toBe(
+      `Coral KB contract could not be rendered; read \`${fixture.pluginRoot}/inject/kb/*.md\` from the active Coral plugin.`,
+    );
   });
 });
 
@@ -531,26 +577,38 @@ describe('subagent-start.mjs', () => {
     const fixture = createFixture();
     writeInjectBundle(fixture.pluginRoot, { core: 'visible\nafter', kbSession: 'owner={{SESSION_ID}}' });
 
-    const result = runHook(
+    const baseResult = runHook(
       SUBAGENT_START_HOOK,
       { session_id: 'sess-parent' },
       { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
     );
+    const kbResult = runHook(
+      KB_START_HOOK,
+      { hook_event_name: 'SubagentStart', session_id: 'sess-parent' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
+    );
 
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('visible');
-    expect(output.hookSpecificOutput.additionalContext).toContain('owner=sess-parent');
-    expect(output.hookSpecificOutput.additionalContext).toContain('after');
+    const baseOutput = expectHookOutput(baseResult);
+    const kbOutput = expectHookOutput(kbResult);
+    expect(baseOutput.hookSpecificOutput.additionalContext).toContain('visible');
+    expect(baseOutput.hookSpecificOutput.additionalContext).toContain('after');
+    expect(baseOutput.hookSpecificOutput.additionalContext).not.toContain('owner=sess-parent');
+    expect(kbOutput.hookSpecificOutput.hookEventName).toBe('SubagentStart');
+    expect(kbOutput.hookSpecificOutput.additionalContext).toBe('owner=sess-parent');
   });
 
   it('omits the orchestrator fragment', () => {
     const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, { core: 'base\nrest', kbOrchestrator: 'propagate owner' });
+    writeInjectBundle(fixture.pluginRoot, {
+      kbCommon: 'base',
+      kbOrchestrator: 'propagate owner',
+      kbSession: 'rest',
+    });
 
     const result = runHook(
-      SUBAGENT_START_HOOK,
-      { session_id: 'sess-parent' },
-      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+      KB_START_HOOK,
+      { hook_event_name: 'SubagentStart', session_id: 'sess-parent' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, CLAUDE_PROJECT_DIR: fixture.projectRoot },
     );
 
     const output = expectHookOutput(result);
@@ -841,16 +899,31 @@ describe('hook registration files', () => {
 });
 
 describe('claude.json', () => {
-  it('SessionStart matcher "*" array has 2 entries: session-start (10s) then hud-auto-update (3s)', () => {
+  it('SessionStart matcher "*" array has base, KB, and HUD hooks in order', () => {
     const hooksJson = JSON.parse(readFileSync(CLAUDE_HOOKS_JSON_PATH, 'utf-8')) as HooksFile;
     const wildcardEntry = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
     expect(wildcardEntry).toBeDefined();
-    expect(wildcardEntry!.hooks).toHaveLength(2);
+    expect(wildcardEntry!.hooks).toHaveLength(3);
     expect(wildcardEntry!.hooks[0].command).toContain('session-start.mjs');
     expect(wildcardEntry!.hooks[0].timeout).toBe(10);
-    expect(wildcardEntry!.hooks[1].command).toContain('hud-auto-update.mjs');
-    expect(wildcardEntry!.hooks[1].timeout).toBe(3);
+    expect(wildcardEntry!.hooks[1].command).toContain('kb-start.mjs');
+    expect(wildcardEntry!.hooks[1].timeout).toBe(5);
+    expect(wildcardEntry!.hooks[2].command).toContain('hud-auto-update.mjs');
+    expect(wildcardEntry!.hooks[2].timeout).toBe(3);
     expect(JSON.stringify(wildcardEntry)).not.toContain('backend-warm-start.mjs');
+  });
+
+  it('SubagentStart matcher "*" array has base, KB, and tracking hooks in order', () => {
+    const hooksJson = JSON.parse(readFileSync(CLAUDE_HOOKS_JSON_PATH, 'utf-8')) as HooksFile;
+    const wildcardEntry = hooksJson.hooks.SubagentStart.find((entry) => entry.matcher === '*');
+    expect(wildcardEntry).toBeDefined();
+    expect(wildcardEntry!.hooks).toHaveLength(3);
+    expect(wildcardEntry!.hooks[0].command).toContain('subagent-start.mjs');
+    expect(wildcardEntry!.hooks[0].timeout).toBe(3);
+    expect(wildcardEntry!.hooks[1].command).toContain('kb-start.mjs');
+    expect(wildcardEntry!.hooks[1].timeout).toBe(3);
+    expect(wildcardEntry!.hooks[2].command).toContain('subagent-track.mjs');
+    expect(wildcardEntry!.hooks[2].timeout).toBe(3);
   });
 });
 
@@ -864,8 +937,10 @@ describe('codex.json', () => {
     expect(hooksJson.hooks.SubagentStart).toBeUndefined();
     expect(hooksJson.hooks.SubagentStop).toBeUndefined();
     const wildcard = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
-    expect(wildcard!.hooks).toHaveLength(1);
+    expect(wildcard!.hooks).toHaveLength(2);
     expect(wildcard!.hooks[0].command).toContain('session-start.mjs');
+    expect(wildcard!.hooks[1].command).toContain('kb-start.mjs');
+    expect(wildcard!.hooks[1].timeout).toBe(5);
     const preMatchers = hooksJson.hooks.PreToolUse.map((entry) => entry.matcher);
     expect(preMatchers).not.toContain('Monitor');
     expect(preMatchers).toEqual(expect.arrayContaining(['Skill', 'Bash']));
@@ -924,7 +999,10 @@ describe('copilot.json', () => {
     expect(sessionStart).toHaveLength(1);
     expect(sessionStart[0].matcher).toBeUndefined();
     const commands = sessionStart[0].hooks.map((hook) => hook.command);
-    expect(commands.some((command) => command.includes('session-start.mjs'))).toBe(true);
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain('session-start.mjs');
+    expect(commands[1]).toContain('kb-start.mjs');
+    expect(sessionStart[0].hooks[1].timeoutSec).toBe(5);
     // hud-auto-update drives Claude Code's statusline and has no Copilot surface.
     expect(commands.some((command) => command.includes('hud-auto-update.mjs'))).toBe(false);
   });
