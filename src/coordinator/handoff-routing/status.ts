@@ -1946,6 +1946,7 @@ export type HandoffRoutingStatusDiscardObservation =
   | Readonly<{
       kind: 'observed';
       status: HandoffRoutingStatusReadResult;
+      mainState: 'absent' | 'zero' | 'non-empty';
       walReceipt: HandoffRoutingWalObservationReceipt;
     }>
   | Readonly<{
@@ -2010,6 +2011,7 @@ export function readHandoffRoutingStatusForDiscard(
   return {
     kind: 'observed',
     status: projectHandoffRoutingStatus(statusSnapshotReadResult(observation.result), undefined),
+    mainState: observation.mainState,
     walReceipt: observation.walReceipt,
   };
 }

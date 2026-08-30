@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -71,6 +72,7 @@ import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
 import {
   handoffRoutingStatusGeneration,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+  quarantineHandoffRoutingStoreArtifact,
   SQLITE_FULL,
   listHandoffRoutingStoreQuarantines,
 } from '#src/store/handoff-routing-status-store.js';
@@ -134,6 +136,17 @@ async function committed(
   expect(outcome.kind).toBe('committed');
   if (outcome.kind !== 'committed') throw new Error(`Expected a commit, received ${outcome.kind}`);
   return outcome;
+}
+
+function unsupportedWalDatabase(path: string): void {
+  const database = new DatabaseSync(path);
+  try {
+    database.exec('PRAGMA journal_mode=WAL; PRAGMA user_version=1');
+  } finally {
+    database.close();
+  }
+  if (existsSync(`${path}-wal`)) unlinkSync(`${path}-wal`);
+  if (existsSync(`${path}-shm`)) unlinkSync(`${path}-shm`);
 }
 
 function publish(
@@ -456,11 +469,13 @@ describe('handoff-routing/status', () => {
     expect(firstObservation).toMatchObject({
       kind: 'observed',
       status: { kind: 'current' },
+      mainState: 'non-empty',
       walReceipt: { kind: 'absent' },
     });
     expect(guardedObservation).toMatchObject({
       kind: 'observed',
       status: { kind: 'current' },
+      mainState: 'non-empty',
       walReceipt: { kind: 'zero', stat: { size: 0n } },
     });
   });
@@ -486,11 +501,228 @@ describe('handoff-routing/status', () => {
 
     expect(discarded).toMatchObject({
       kind: 'discarded',
+      quarantineState: 'complete',
       previousStatus: { kind: 'unsupported-generation', generation: 0 },
     });
     if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
     expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(walBytes);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(false);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toMatchObject({
+      entries: [{ id: discarded.quarantineId, state: 'complete', artifacts: ['database', 'wal'] }],
+    });
     expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('retains a detached wal as an incomplete quarantine without attempting a missing-main rename', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000041';
+    const fixturePath = `${path}.wal-source`;
+    const fixture = new DatabaseSync(fixturePath);
+    fixture.exec("PRAGMA journal_mode=WAL; CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('wal')");
+    const walBytes = readFileSync(`${fixturePath}-wal`);
+    expect(walBytes.length).toBeGreaterThan(0);
+    fixture.close();
+    writeFileSync(`${path}-wal`, walBytes);
+    writeFileSync(`${path}-shm`, 'rewritten index');
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    let mainRenameAttempted = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        renameSync: (oldPath, newPath) => {
+          if (oldPath === path) {
+            mainRenameAttempted = true;
+            throw new Error('missing main must not be renamed');
+          }
+          baseRuntime.storage.renameSync(oldPath, newPath);
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    expect(discarded).toEqual({
+      kind: 'discarded',
+      artifactPath: path,
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      quarantineState: 'incomplete',
+      previousStatus: { kind: 'unsupported-generation', generation: 0 },
+    });
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(mainRenameAttempted).toBe(false);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}-wal`)).toBe(false);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(walBytes);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toEqual({
+      entries: [
+        {
+          id: quarantineId,
+          quarantinePath: discarded.quarantinePath,
+          state: 'incomplete',
+          artifacts: ['wal'],
+        },
+      ],
+      overflow: false,
+    });
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path))).resolves.toEqual({
+      kind: 'refused',
+      status: { kind: 'absent' },
+    });
+    writeFileSync(path, 'different unreadable database', { mode: 0o600 });
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path))).resolves.toEqual({
+      kind: 'incomplete-quarantine',
+      quarantineId,
+    });
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), quarantineId),
+    ).resolves.toMatchObject({ kind: 'cleared', entry: { state: 'incomplete', artifacts: ['wal'] } });
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path))).resolves.toMatchObject({
+      kind: 'discarded',
+      quarantineState: 'complete',
+    });
+  });
+
+  it('returns the exact wal-only store result when both observations found no main', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000042';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(`${path}-wal`, 'detached wal evidence');
+    const wal = statSync(`${path}-wal`, { bigint: true });
+    const walReceipt = {
+      kind: 'non-empty' as const,
+      stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        baseRuntime.storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'absent',
+          firstWalReceipt: walReceipt,
+          guardedMainState: 'absent',
+          guardedWalReceipt: walReceipt,
+        },
+        () => undefined,
+      ),
+    ).toEqual({
+      kind: 'quarantined-incomplete',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      movedArtifacts: ['wal'],
+    });
+  });
+
+  it('removes only an unchanged classifier-created zero wal from the retained set', async () => {
+    const path = databasePath();
+    unsupportedWalDatabase(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    let movedWalSize: bigint | undefined;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      storage: {
+        ...baseRuntime.storage,
+        renameSync: (oldPath, newPath) => {
+          if (oldPath === `${path}-wal`) movedWalSize = statSync(oldPath, { bigint: true }).size;
+          baseRuntime.storage.renameSync(oldPath, newPath);
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(discarded.quarantineState).toBe('complete');
+    expect(movedWalSize).toBe(0n);
+    expect(existsSync(`${discarded.quarantinePath}-wal`)).toBe(false);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toMatchObject({
+      entries: [{ id: discarded.quarantineId, state: 'complete', artifacts: ['database'] }],
+    });
+  });
+
+  it('retains a pre-existing zero wal with its original file identity', async () => {
+    const path = databasePath();
+    unsupportedWalDatabase(path);
+    writeFileSync(`${path}-wal`, Buffer.alloc(0));
+    const before = statSync(`${path}-wal`, { bigint: true });
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    const after = statSync(`${discarded.quarantinePath}-wal`, { bigint: true });
+    expect({ dev: after.dev, ino: after.ino, size: after.size }).toEqual({
+      dev: before.dev,
+      ino: before.ino,
+      size: 0n,
+    });
+  });
+
+  it('retains a classifier-created wal that grows after the guarded receipt', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000043';
+    const racingBytes = Buffer.from('racing wal evidence');
+    unsupportedWalDatabase(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: {
+        ...baseRuntime.ids,
+        uuid: () => {
+          expect(statSync(`${path}-wal`, { bigint: true }).size).toBe(0n);
+          writeFileSync(`${path}-wal`, racingBytes);
+          return quarantineId;
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(racingBytes);
+  });
+
+  it('retains a zero wal replaced after the guarded receipt by comparing file identity', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000044';
+    const replacementPath = `${path}.replacement-wal`;
+    unsupportedWalDatabase(path);
+    writeFileSync(replacementPath, Buffer.alloc(0));
+    const replacement = statSync(replacementPath, { bigint: true });
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: {
+        ...baseRuntime.ids,
+        uuid: () => {
+          const classifierWal = statSync(`${path}-wal`, { bigint: true });
+          expect(classifierWal.size).toBe(0n);
+          expect({ dev: classifierWal.dev, ino: classifierWal.ino }).not.toEqual({
+            dev: replacement.dev,
+            ino: replacement.ino,
+          });
+          renameSync(replacementPath, `${path}-wal`);
+          return quarantineId;
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    const retained = statSync(`${discarded.quarantinePath}-wal`, { bigint: true });
+    expect({ dev: retained.dev, ino: retained.ino, size: retained.size }).toEqual({
+      dev: replacement.dev,
+      ino: replacement.ino,
+      size: 0n,
+    });
   });
 
   it('quarantines an unreadable artifact, permits a clean publication, and refuses a current journal', async () => {
@@ -573,7 +805,8 @@ describe('handoff-routing/status', () => {
     expect(existsSync(path)).toBe(false);
     expect(readFileSync(discarded.quarantinePath, 'utf-8')).toBe('not a sqlite database');
     expect(readFileSync(`${discarded.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
-    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(true);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(false);
 
     await expect(publish(path, [selection('clean-generation', 1)])).resolves.toMatchObject({ kind: 'committed' });
     chmodSync(path, 0o000);
@@ -644,7 +877,7 @@ describe('handoff-routing/status', () => {
     }
   });
 
-  it('keeps an interrupted sidecar move discoverable and refuses to combine it with the current database', async () => {
+  it('keeps an interrupted wal move discoverable when source shm removal fails', async () => {
     const path = databasePath();
     const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
@@ -655,9 +888,9 @@ describe('handoff-routing/status', () => {
       ...discardRuntime,
       storage: {
         ...discardRuntime.storage,
-        renameSync: (oldPath, newPath) => {
-          if (oldPath === `${path}-shm`) throw new Error('injected sidecar move failure');
-          discardRuntime.storage.renameSync(oldPath, newPath);
+        unlinkSync: (candidate) => {
+          if (candidate === `${path}-shm`) throw new Error('injected shm removal failure');
+          discardRuntime.storage.unlinkSync(candidate);
         },
       },
     };
@@ -773,7 +1006,7 @@ describe('handoff-routing/status', () => {
       cause: 'directory-sync-failed',
     });
     expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
-      entries: [{ id: retained.id, state: 'complete', artifacts: ['database', 'shm'] }],
+      entries: [{ id: retained.id, state: 'complete', artifacts: ['database'] }],
     });
 
     await expect(
@@ -800,6 +1033,44 @@ describe('handoff-routing/status', () => {
     const retained = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
     expect(retained.overflow).toBe(false);
     expect(retained.entries).toHaveLength(MAX_HANDOFF_ROUTING_STATUS_QUARANTINES);
+  });
+
+  it('bounds quarantine scans for two retained artifacts per entry plus overflow detection', () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantineRoot = join(dirname(path), 'handoff-routing-quarantine');
+    mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+    const readDirectoryBoundedSync = vi.fn(() => ({ entries: [], overflow: false }));
+
+    listHandoffRoutingStoreQuarantines({ ...baseRuntime.storage, readDirectoryBoundedSync }, path);
+
+    expect(readDirectoryBoundedSync).toHaveBeenCalledWith(quarantineRoot, 33);
+  });
+
+  it('does not recognize or clear unsupported legacy retained shm files', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000045';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
+    writeFileSync(quarantinePath, 'database');
+    writeFileSync(`${quarantinePath}-wal`, 'wal');
+    writeFileSync(`${quarantinePath}-shm`, 'unsupported legacy shm');
+
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: quarantineId, state: 'complete', artifacts: ['database', 'wal'] }],
+    });
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), quarantineId),
+    ).resolves.toMatchObject({
+      kind: 'cleared',
+      entry: { artifacts: ['database', 'wal'] },
+    });
+    expect(existsSync(`${quarantinePath}-shm`)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toEqual({
+      entries: [],
+      overflow: false,
+    });
   });
 
   it('revalidates maintenance ownership after the guarded journal read', async () => {

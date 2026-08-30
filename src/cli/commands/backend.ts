@@ -581,10 +581,40 @@ function formatRoutingStatusDiscardRefusal(
   }
 }
 
+function formatRoutingStatusDiscardSuccess(
+  result: Extract<HandoffRoutingStatusDiscardResult, { kind: 'discarded' }>,
+): string {
+  const state = result.quarantineState;
+  switch (state) {
+    case 'complete':
+      return `Quarantined routing status from ${result.artifactPath} at ${result.quarantinePath}.`;
+    case 'incomplete':
+      return (
+        `Discarded routing status: the main database was absent and its detached WAL is retained in incomplete quarantine ${result.quarantineId} at ${result.quarantinePath}.\n` +
+        `Next step: inspect it with coral-cli backend routing-status quarantine list; when the evidence is no longer needed, run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}. Another routing-status discard remains blocked until it is cleared.`
+      );
+    default:
+      return assertNever(state);
+  }
+}
+
 function handoffRoutingStatusDiscardExitContribution(result: HandoffRoutingStatusDiscardResult): 0 | 75 {
-  if (result.kind === 'discarded') return 0;
-  if (result.kind === 'refused' && result.status.kind === 'absent') return 0;
-  return 75;
+  switch (result.kind) {
+    case 'discarded':
+      return 0;
+    case 'refused':
+      return result.status.kind === 'absent' ? 0 : 75;
+    case 'coordinator-running':
+    case 'coordinator-socket-unobservable':
+    case 'coordinator-socket-insecure':
+    case 'generation-maintenance-unavailable':
+    case 'quarantine-capacity-exhausted':
+    case 'incomplete-quarantine':
+    case 'quarantine-storage-failed':
+      return 75;
+    default:
+      return assertNever(result);
+  }
 }
 
 function commanderInvocationId(value: string, previous: string | undefined): string {
@@ -909,7 +939,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           process.exitCode = exitCode;
           return;
         }
-        process.stdout.write(`Quarantined routing status from ${result.artifactPath} at ${result.quarantinePath}.\n`);
+        process.stdout.write(`${formatRoutingStatusDiscardSuccess(result)}\n`);
         process.exitCode = 0;
       } catch (error: unknown) {
         emitError(error);

@@ -357,7 +357,9 @@ describe('backend routing-status resolve grammar', () => {
       discard: () => ({
         kind: 'discarded',
         artifactPath: `/state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+        quarantineId: INVOCATION_ID,
         quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.event-id`,
+        quarantineState: 'complete',
         previousStatus: { kind: 'unreadable', reason: 'invalid-shape' },
       }),
     };
@@ -369,6 +371,36 @@ describe('backend routing-status resolve grammar', () => {
 
     expect(stdout).toHaveBeenCalledWith(
       `Quarantined routing status from /state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db at /state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.event-id.\n`,
+    );
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('renders the exact successful incomplete-quarantine discard result', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const quarantinePath = `/state/run/handoff-routing-quarantine/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db.${INVOCATION_ID}`;
+    const routingStatus: HandoffRoutingStatusCommandOperations = {
+      resolve: async () => {
+        throw new Error('not used');
+      },
+      discard: () => ({
+        kind: 'discarded',
+        artifactPath: `/state/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+        quarantineId: INVOCATION_ID,
+        quarantinePath,
+        quarantineState: 'incomplete',
+        previousStatus: { kind: 'unsupported-generation', generation: 0 },
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatus });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
+
+    expect(stdout).toHaveBeenCalledWith(
+      `Discarded routing status: the main database was absent and its detached WAL is retained in incomplete quarantine ${INVOCATION_ID} at ${quarantinePath}.\n` +
+        `Next step: inspect it with coral-cli backend routing-status quarantine list; when the evidence is no longer needed, run coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}. Another routing-status discard remains blocked until it is cleared.\n`,
     );
     expect(process.exitCode).toBe(0);
   });

@@ -19,10 +19,10 @@ export const HANDOFF_ROUTING_STATUS_GENERATION_BAND = {
 } as const;
 const HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY = 'handoff-routing-quarantine';
 export const MAX_HANDOFF_ROUTING_STATUS_QUARANTINES = 16;
-const MAX_HANDOFF_ROUTING_STATUS_QUARANTINE_FILES = MAX_HANDOFF_ROUTING_STATUS_QUARANTINES * 3 + 1;
+const MAX_HANDOFF_ROUTING_STATUS_QUARANTINE_FILES = MAX_HANDOFF_ROUTING_STATUS_QUARANTINES * 2 + 1;
 const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export type HandoffRoutingStatusQuarantineArtifact = 'database' | 'wal' | 'shm';
+export type HandoffRoutingStatusQuarantineArtifact = 'database' | 'wal';
 
 export type HandoffRoutingStatusQuarantineEntry = Readonly<{
   id: string;
@@ -37,7 +37,17 @@ export type HandoffRoutingStatusQuarantineList = Readonly<{
 }>;
 
 export type HandoffRoutingStatusQuarantineResult =
-  | Readonly<{ kind: 'quarantined'; quarantinePath: string }>
+  | Readonly<{
+      kind: 'quarantined';
+      quarantineId: string;
+      quarantinePath: string;
+    }>
+  | Readonly<{
+      kind: 'quarantined-incomplete';
+      quarantineId: string;
+      quarantinePath: string;
+      movedArtifacts: readonly ['wal'];
+    }>
   | Readonly<{ kind: 'incomplete-quarantine'; quarantineId: string }>
   | Readonly<{
       kind: 'quarantine-storage-failed';
@@ -513,6 +523,7 @@ type HandoffRoutingStorePathObservation =
   | Readonly<{
       kind: 'observed';
       disposition: 'absent' | 'vacant' | 'detached-wal' | 'sqlite';
+      mainState: 'absent' | 'zero' | 'non-empty';
       walReceipt: HandoffRoutingWalObservationReceipt;
     }>
   | Readonly<{ kind: 'undeterminable'; error: unknown }>;
@@ -545,11 +556,11 @@ function observeHandoffRoutingStorePath(storage: StoragePort, path: string): Han
   }
 
   if (main !== 'non-empty' && walReceipt.kind === 'non-empty') {
-    return { kind: 'observed', disposition: 'detached-wal', walReceipt };
+    return { kind: 'observed', disposition: 'detached-wal', mainState: main, walReceipt };
   }
-  if (main === 'absent') return { kind: 'observed', disposition: 'absent', walReceipt };
-  if (main === 'zero') return { kind: 'observed', disposition: 'vacant', walReceipt };
-  return { kind: 'observed', disposition: 'sqlite', walReceipt };
+  if (main === 'absent') return { kind: 'observed', disposition: 'absent', mainState: main, walReceipt };
+  if (main === 'zero') return { kind: 'observed', disposition: 'vacant', mainState: main, walReceipt };
+  return { kind: 'observed', disposition: 'sqlite', mainState: main, walReceipt };
 }
 
 function quarantineRoot(path: string): string {
@@ -563,10 +574,10 @@ function quarantineArtifact(
   const prefix = `${databaseName}.`;
   if (!fileName.startsWith(prefix)) return null;
   const remainder = fileName.slice(prefix.length);
-  const suffix = remainder.endsWith('-wal') ? '-wal' : remainder.endsWith('-shm') ? '-shm' : '';
+  const suffix = remainder.endsWith('-wal') ? '-wal' : '';
   const id = suffix === '' ? remainder : remainder.slice(0, -suffix.length);
   if (!CANONICAL_UUID_PATTERN.test(id)) return null;
-  return { id, artifact: suffix === '-wal' ? 'wal' : suffix === '-shm' ? 'shm' : 'database' };
+  return { id, artifact: suffix === '-wal' ? 'wal' : 'database' };
 }
 
 export function listHandoffRoutingStoreQuarantines(
@@ -584,7 +595,7 @@ export function listHandoffRoutingStoreQuarantines(
     artifacts.add(parsed.artifact);
     artifactsById.set(parsed.id, artifacts);
   }
-  const artifactOrder: readonly HandoffRoutingStatusQuarantineArtifact[] = ['database', 'wal', 'shm'];
+  const artifactOrder: readonly HandoffRoutingStatusQuarantineArtifact[] = ['database', 'wal'];
   const entries = [...artifactsById.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(
@@ -618,10 +629,32 @@ function syncQuarantineMove(storage: StoragePort, sourceDirectory: string, root:
   return sourceSynced && quarantineSynced;
 }
 
+function sameWalStat(left: HandoffRoutingWalStatReceipt, right: HandoffRoutingWalStatReceipt): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs;
+}
+
+function movedWalStat(storage: StoragePort, path: string): HandoffRoutingWalStatReceipt {
+  const fd = storage.openSync(path, 'r');
+  try {
+    const stat = storage.fstatSync(fd, { bigint: true });
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs };
+  } finally {
+    storage.closeSync(fd);
+  }
+}
+
+export type HandoffRoutingStatusQuarantineObservations = Readonly<{
+  firstMainState: 'absent' | 'zero' | 'non-empty';
+  firstWalReceipt: HandoffRoutingWalObservationReceipt;
+  guardedMainState: 'absent' | 'zero' | 'non-empty';
+  guardedWalReceipt: HandoffRoutingWalObservationReceipt;
+}>;
+
 export function quarantineHandoffRoutingStoreArtifact(
   storage: StoragePort,
   path: string,
   quarantineId: string,
+  observations: HandoffRoutingStatusQuarantineObservations,
   assertOwned: () => void,
 ): HandoffRoutingStatusQuarantineResult {
   const sourceDirectory = dirname(path);
@@ -653,33 +686,73 @@ export function quarantineHandoffRoutingStoreArtifact(
     cause,
   });
   assertOwned();
-  for (const [suffix, artifact] of [
-    ['-wal', 'wal'],
-    ['-shm', 'shm'],
-  ] as const) {
-    let moved: boolean;
+  const walMoved = moveQuarantineArtifact(storage, `${path}-wal`, `${quarantinePath}-wal`);
+  if (walMoved) {
+    movedArtifacts.push('wal');
+    assertOwned();
     try {
-      moved = moveQuarantineArtifact(storage, `${path}${suffix}`, `${quarantinePath}${suffix}`);
-    } catch (error: unknown) {
-      if (movedArtifacts.length === 0) throw error;
+      const movedStat = movedWalStat(storage, `${quarantinePath}-wal`);
+      const guardedReceipt = observations.guardedWalReceipt;
+      if (
+        observations.firstWalReceipt.kind === 'absent' &&
+        guardedReceipt.kind === 'zero' &&
+        movedStat.size === 0n &&
+        sameWalStat(guardedReceipt.stat, movedStat)
+      ) {
+        storage.unlinkSync(`${quarantinePath}-wal`);
+      }
+    } catch {
       return storageFailure('artifact-move-failed');
     }
-    if (moved) {
-      movedArtifacts.push(artifact);
-      try {
-        if (!syncQuarantineMove(storage, sourceDirectory, root)) {
-          return storageFailure('directory-sync-failed');
-        }
-      } catch {
+    try {
+      if (!syncQuarantineMove(storage, sourceDirectory, root)) {
         return storageFailure('directory-sync-failed');
       }
+    } catch {
+      return storageFailure('directory-sync-failed');
     }
-    assertOwned();
   }
+
+  assertOwned();
+  let sourceChanged = walMoved;
+  let shmRemoved: boolean;
+  try {
+    // Node 24 `node:sqlite` rewrote `-shm` on a read-only open whenever `-wal` was present, so it cannot
+    // preserve evidence from before classification.
+    shmRemoved = unlinkIfPresent(storage, `${path}-shm`);
+  } catch (error: unknown) {
+    if (!sourceChanged) throw error;
+    return storageFailure('artifact-move-failed');
+  }
+  if (shmRemoved) {
+    sourceChanged = true;
+    try {
+      if (!storage.syncDirectoryDurableSync(sourceDirectory)) return storageFailure('directory-sync-failed');
+    } catch {
+      return storageFailure('directory-sync-failed');
+    }
+  }
+  assertOwned();
+
+  const detachedWalHadNoMain =
+    observations.firstMainState === 'absent' &&
+    observations.firstWalReceipt.kind === 'non-empty' &&
+    observations.guardedMainState === 'absent' &&
+    observations.guardedWalReceipt.kind === 'non-empty';
+  if (detachedWalHadNoMain) {
+    if (!walMoved) return storageFailure('artifact-move-failed');
+    return {
+      kind: 'quarantined-incomplete',
+      quarantineId,
+      quarantinePath,
+      movedArtifacts: ['wal'],
+    };
+  }
+
   try {
     storage.renameSync(path, quarantinePath);
   } catch (error: unknown) {
-    if (movedArtifacts.length === 0) throw error;
+    if (!sourceChanged) throw error;
     return storageFailure('artifact-move-failed');
   }
   movedArtifacts.push('database');
@@ -690,7 +763,7 @@ export function quarantineHandoffRoutingStoreArtifact(
   } catch {
     return storageFailure('directory-sync-failed');
   }
-  return { kind: 'quarantined', quarantinePath };
+  return { kind: 'quarantined', quarantineId, quarantinePath };
 }
 
 function unlinkIfPresent(storage: StoragePort, path: string): boolean {
@@ -718,7 +791,6 @@ export function clearHandoffRoutingStoreQuarantine(
   const artifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
   if (storage.existsSync(quarantinePath)) artifacts.push('database');
   if (storage.existsSync(`${quarantinePath}-wal`)) artifacts.push('wal');
-  if (storage.existsSync(`${quarantinePath}-shm`)) artifacts.push('shm');
   if (artifacts.length === 0) return { kind: 'quarantine-not-found', quarantineId };
   const entry: HandoffRoutingStatusQuarantineEntry = {
     id: quarantineId,
@@ -740,10 +812,7 @@ export function clearHandoffRoutingStoreQuarantine(
     cause,
   });
   assertOwned();
-  for (const [suffix, artifact] of [
-    ['-wal', 'wal'],
-    ['-shm', 'shm'],
-  ] as const) {
+  for (const [suffix, artifact] of [['-wal', 'wal']] as const) {
     let removed: boolean;
     try {
       removed = unlinkIfPresent(storage, `${entry.quarantinePath}${suffix}`);
@@ -830,6 +899,7 @@ export type HandoffRoutingStoreSnapshotObservation =
   | Readonly<{
       kind: 'observed';
       result: HandoffRoutingStoreSnapshotRead;
+      mainState: 'absent' | 'zero' | 'non-empty';
       walReceipt: HandoffRoutingWalObservationReceipt;
     }>
   | Readonly<{
@@ -847,12 +917,18 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
     return { kind: 'undeterminable', result: { kind: 'failed', error: observation.error } };
   }
   if (observation.disposition === 'absent') {
-    return { kind: 'observed', result: { kind: 'absent' }, walReceipt: observation.walReceipt };
+    return {
+      kind: 'observed',
+      result: { kind: 'absent' },
+      mainState: observation.mainState,
+      walReceipt: observation.walReceipt,
+    };
   }
   if (observation.disposition === 'vacant' || observation.disposition === 'detached-wal') {
     return {
       kind: 'observed',
       result: { kind: 'unsupported-generation', generation: 0 },
+      mainState: observation.mainState,
       walReceipt: observation.walReceipt,
     };
   }
@@ -860,7 +936,12 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
   try {
     storage.assertReadableSync(path);
   } catch (error) {
-    return { kind: 'observed', result: { kind: 'failed', error }, walReceipt: observation.walReceipt };
+    return {
+      kind: 'observed',
+      result: { kind: 'failed', error },
+      mainState: observation.mainState,
+      walReceipt: observation.walReceipt,
+    };
   }
 
   let database: SqliteDatabasePort | undefined;
@@ -879,6 +960,7 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
       return {
         kind: 'observed',
         result: { kind: 'unsupported-generation', generation: storedGeneration },
+        mainState: observation.mainState,
         walReceipt: observation.walReceipt,
       };
     }
@@ -889,6 +971,7 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
       return {
         kind: 'observed',
         result: { kind: 'unsupported-generation', generation: storedGeneration },
+        mainState: observation.mainState,
         walReceipt: observation.walReceipt,
       };
     }
@@ -926,11 +1009,17 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
     return {
       kind: 'observed',
       result: { kind: 'snapshot', rows, reserves, retirement },
+      mainState: observation.mainState,
       walReceipt: observation.walReceipt,
     };
   } catch (error) {
     rollback(database, transactionOpen, false);
-    return { kind: 'observed', result: { kind: 'failed', error }, walReceipt: observation.walReceipt };
+    return {
+      kind: 'observed',
+      result: { kind: 'failed', error },
+      mainState: observation.mainState,
+      walReceipt: observation.walReceipt,
+    };
   } finally {
     close(database);
   }

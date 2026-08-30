@@ -479,7 +479,10 @@ describe('handoff routing store path preflight', () => {
       expect(observation.kind).toBe(observationKind);
       expect(observation.result.kind).toBe(resultKind);
       expect(instrumented.openSqliteDatabaseSync).toHaveBeenCalledTimes(expectedOpens);
-      if (observation.kind === 'observed') expect(observation.walReceipt.kind).toBe(receiptKind);
+      if (observation.kind === 'observed') {
+        expect(observation.mainState).toBe(main);
+        expect(observation.walReceipt.kind).toBe(receiptKind);
+      }
       if (main === 'failed') {
         expect(instrumented.statSync).toHaveBeenCalledTimes(1);
         expect(instrumented.statSync).not.toHaveBeenCalledWith(`${path}-wal`, expect.anything());
@@ -532,6 +535,7 @@ describe('handoff routing store path preflight', () => {
     expect(observation).toEqual({
       kind: 'observed',
       result: { kind: 'unsupported-generation', generation: 0 },
+      mainState: 'zero',
       walReceipt: {
         kind: 'non-empty',
         stat: { dev: 11n, ino: 12n, size: 4096n, mtimeNs: 13n },
