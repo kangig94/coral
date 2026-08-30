@@ -1,13 +1,14 @@
 import { assertNever } from '../../infra/error-format.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
-import type {
-  HandoffRoutingInvocationStatus,
-  HandoffRoutingResolveResult,
-  HandoffRoutingStatusReadResult,
-  OwnerLiveness,
-  RetirementHistoryTruncated,
-  SelectedHandoffDisposition,
-  StoredTerminalDisposition,
+import {
+  HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  type HandoffRoutingInvocationStatus,
+  type HandoffRoutingResolveResult,
+  type HandoffRoutingStatusReadResult,
+  type OwnerLiveness,
+  type RetirementHistoryTruncated,
+  type SelectedHandoffDisposition,
+  type StoredTerminalDisposition,
 } from '../../coordinator/handoff-routing/status.js';
 import {
   liveHandoffResultObligation,
@@ -549,32 +550,61 @@ function formatRetirementHistoryTruncated(history: RetirementHistoryTruncated): 
 }
 
 export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResult): string | null {
-  switch (result.kind) {
-    case 'absent':
+  const renderKey = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.kind].renderKey;
+  switch (renderKey) {
+    case 'no-journal':
       return null;
-    case 'unreadable':
+    case 'empty-file':
+      return 'Routing status journal is empty; this is consistent with interrupted creation or truncation.';
+    case 'initialization-incomplete':
+      return 'Routing status initialization is incomplete; the journal contains no application objects.';
+    case 'detached-wal':
+      return [
+        'Routing status has a detached non-empty WAL beside an absent or empty main database.',
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'no-generation':
+      return [
+        'Routing status contains application objects but no generation address.',
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'other-generation':
+      if (result.kind !== 'foreign-generation') throw new Error('Foreign-generation render policy is invalid.');
+      return [
+        `Routing status generation ${result.generation} belongs to another address.`,
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'other-format':
+      return [
+        'Routing status has this generation address but a different durable format fingerprint.',
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'divergent-schema':
+      return [
+        'Routing status has this generation address but a divergent schema.',
+        'Next step: run coral-cli backend routing-status discard.',
+      ].join('\n');
+    case 'damaged':
+      if (result.kind !== 'unreadable') throw new Error('Unreadable render policy is invalid.');
       return [
         `Routing status is unreadable (${result.reason}).`,
         'Next step: run coral-cli backend routing-status discard.',
       ].join('\n');
-    case 'unsupported-generation':
-      return [
-        `Routing status generation ${result.generation} is not supported by this build.`,
-        'Next step: run coral-cli backend routing-status discard.',
-      ].join('\n');
-    case 'undeterminable':
+    case 'could-not-observe':
+      if (result.kind !== 'undeterminable') throw new Error('Undeterminable render policy is invalid.');
       return [
         `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
-        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish that the journal is unreadable or unsupported.',
+        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
       ].join('\n');
-    case 'current': {
+    case 'content-dependent': {
+      if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
       const sections = result.statuses.map(formatRoutingInvocationStatus);
       const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
       if (truncatedHistory !== null) sections.push(truncatedHistory);
       return sections.length === 0 ? null : sections.join('\n');
     }
     default:
-      return assertNever(result);
+      return assertNever(renderKey);
   }
 }
 
@@ -582,8 +612,12 @@ function formatUnavailableRoutingResolution(
   status: Extract<HandoffRoutingResolveResult, { kind: 'status-unavailable' }>['status'],
 ): string {
   switch (status.kind) {
+    case 'detached-wal':
+    case 'generation-missing':
+    case 'foreign-generation':
+    case 'format-mismatch':
+    case 'schema-divergent':
     case 'unreadable':
-    case 'unsupported-generation':
       return 'Next step: run coral-cli backend status, then run the routing-status discard command it reports before attempting another resolution.';
     case 'undeterminable':
       return 'Next step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; resolution requires a current journal.';
@@ -593,7 +627,10 @@ function formatUnavailableRoutingResolution(
 }
 
 function formatRoutingResolutionPublicationSuccessor(
-  result: Extract<HandoffRoutingResolveResult, { kind: 'not-published' | 'undeterminable' }>,
+  result: Extract<
+    HandoffRoutingResolveResult,
+    { kind: 'artifact-refused' | 'not-published' | 'commit-outcome-unknown' }
+  >,
 ): string {
   return formatHandoffPublicationFailureSuccessor({
     kind: 'resolution',
@@ -625,7 +662,12 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
         `Routing resolution was not published (${result.kind}:${result.cause}).\n` +
         formatRoutingResolutionPublicationSuccessor(result)
       );
-    case 'undeterminable':
+    case 'artifact-refused':
+      return (
+        `Routing resolution publication refused the ${result.classification.kind} journal.\n` +
+        formatRoutingResolutionPublicationSuccessor(result)
+      );
+    case 'commit-outcome-unknown':
       return (
         `Routing resolution publication could not be determined (${result.cause}, errcode ${result.errcode}).\n` +
         formatRoutingResolutionPublicationSuccessor(result)

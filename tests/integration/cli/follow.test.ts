@@ -411,7 +411,7 @@ describe('cli follow', () => {
               kind: 'continued-current',
               reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
             },
-            kind: 'undeterminable',
+            kind: 'commit-outcome-unknown',
             cause: 'io-failed',
             errcode: 5,
           },

@@ -1,9 +1,7 @@
 // The token's admission test, which is platform-neutral and therefore lives beside neither probe.
 //
-// `isProcessIncarnation` exists so the bound cannot drift: the Zod schema and the hand-written guards on the
-// health and signal-ledger paths all ask this one function rather than restating `length > 0 && length <= 256`
-// three times. That makes the bound itself load-bearing, and it was pinned only by a single "not a number"
-// case — both length conditions could be deleted with the suite green.
+// The structural schema and hand-written admission test must accept the same inclusive length range. The
+// boundary cases keep either reader from silently dropping one side of that shared constraint.
 //
 // Neither bound is decoration. The lower one is what stops `''` — the value an absent or truncated field
 // decodes to — from being admitted as an identity and then comparing equal to another absent field, which is
@@ -28,8 +26,7 @@ describe('process incarnation token admission', () => {
     ];
 
     expect(cases.map(({ value }) => isProcessIncarnation(value))).toEqual(cases.map(({ admitted }) => admitted));
-    // The schema is the wire and durable face of the same rule. If these ever disagree, a value refused by one
-    // path is admitted by the other, which is the drift the shared guard exists to prevent.
+    // The wire schema and hand-written admission path must not disagree at either shared boundary.
     expect(cases.map(({ value }) => processIncarnationSchema.safeParse(value).success)).toEqual(
       cases.map(({ admitted }) => admitted),
     );

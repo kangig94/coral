@@ -898,7 +898,7 @@ describe('backend store-reset commands', () => {
             phase: 'terminal',
             invocationId: PUBLICATION_INVOCATION_ID,
             terminalDisposition: { kind: 'delegated-exit', version: '2.0.0', exitCode: 23 },
-            kind: 'undeterminable',
+            kind: 'commit-outcome-unknown',
             cause: 'io-failed',
             errcode: 5,
           },

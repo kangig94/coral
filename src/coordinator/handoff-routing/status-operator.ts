@@ -8,16 +8,28 @@ import {
   quarantineHandoffRoutingStoreArtifact,
   type HandoffRoutingStatusQuarantineClearStoreResult,
   type HandoffRoutingStatusQuarantineResult,
-} from '../../store/handoff-routing-status-store.js';
+} from '../../store/handoff-routing-status-store/index.js';
 import { acquireGenerationMaintenanceLease } from '../../store/generation-mutation-coordination.js';
-import { readHandoffRoutingStatus, type HandoffRoutingStatusReadResult } from './status.js';
+import {
+  HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  readHandoffRoutingStatusForDiscard,
+  type HandoffRoutingStatusReadResult,
+} from './status.js';
 
-type DiscardableRoutingStatus = Extract<
-  HandoffRoutingStatusReadResult,
-  { readonly kind: 'unreadable' | 'unsupported-generation' }
->;
+type HandoffRoutingStatusClassificationPolicy = typeof HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY;
+type DiscardableRoutingStatusKind = {
+  [Kind in keyof HandoffRoutingStatusClassificationPolicy]: HandoffRoutingStatusClassificationPolicy[Kind]['discard'] extends 'allow'
+    ? Kind
+    : never;
+}[keyof HandoffRoutingStatusClassificationPolicy];
+
+type DiscardableRoutingStatus = Extract<HandoffRoutingStatusReadResult, { kind: DiscardableRoutingStatusKind }>;
 
 type RefusedRoutingStatus = Exclude<HandoffRoutingStatusReadResult, DiscardableRoutingStatus>;
+
+function isDiscardableRoutingStatus(status: HandoffRoutingStatusReadResult): status is DiscardableRoutingStatus {
+  return HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[status.kind].discard === 'allow';
+}
 
 export type HandoffRoutingStatusMaintenanceRefusal =
   | Readonly<{ kind: 'coordinator-running'; socketPath: string }>
@@ -41,11 +53,23 @@ export type HandoffRoutingStatusDiscardResult =
   | Readonly<{
       kind: 'discarded';
       artifactPath: string;
+      quarantineId: string;
       quarantinePath: string;
+      quarantineState: 'complete' | 'incomplete';
       previousStatus: DiscardableRoutingStatus;
     }>
   | Readonly<{ kind: 'refused'; status: RefusedRoutingStatus }>
-  | Extract<HandoffRoutingStatusQuarantineResult, { kind: 'incomplete-quarantine' | 'quarantine-storage-failed' }>
+  | Extract<
+      HandoffRoutingStatusQuarantineResult,
+      {
+        kind:
+          | 'incomplete-quarantine'
+          | 'quarantine-coordinate-occupied'
+          | 'quarantine-retention-undeterminable'
+          | 'quarantine-storage-failed'
+          | 'undeterminable';
+      }
+    >
   | Readonly<{ kind: 'quarantine-capacity-exhausted'; maximum: number }>
   | HandoffRoutingStatusMaintenanceRefusal;
 
@@ -163,8 +187,12 @@ export async function discardHandoffRoutingStatus(
   options: HandoffRoutingStatusOperatorOptions,
 ): Promise<HandoffRoutingStatusDiscardResult> {
   const { runtime, path } = options;
-  const observedStatus = readHandoffRoutingStatus(runtime, path);
-  if (observedStatus.kind !== 'unreadable' && observedStatus.kind !== 'unsupported-generation') {
+  const firstObservation = readHandoffRoutingStatusForDiscard(runtime, path);
+  if (firstObservation.kind === 'undeterminable') {
+    return { kind: 'refused', status: firstObservation.status };
+  }
+  const observedStatus = firstObservation.status;
+  if (!isDiscardableRoutingStatus(observedStatus)) {
     return { kind: 'refused', status: observedStatus };
   }
 
@@ -173,15 +201,28 @@ export async function discardHandoffRoutingStatus(
     { operation: 'routing-status discard', retryCommand: 'coral-cli backend routing-status discard' },
     (maintenance): HandoffRoutingStatusDiscardResult => {
       maintenance.assertOwned();
-      const currentStatus = readHandoffRoutingStatus(runtime, path);
-      if (currentStatus.kind !== 'unreadable' && currentStatus.kind !== 'unsupported-generation') {
+      const guardedObservation = readHandoffRoutingStatusForDiscard(runtime, path);
+      if (guardedObservation.kind === 'undeterminable') {
+        return { kind: 'refused', status: guardedObservation.status };
+      }
+      const currentStatus = guardedObservation.status;
+      if (!isDiscardableRoutingStatus(currentStatus)) {
         return { kind: 'refused', status: currentStatus };
       }
       maintenance.assertOwned();
       let quarantine: HandoffRoutingStatusQuarantineResult;
       try {
-        quarantine = quarantineHandoffRoutingStoreArtifact(runtime.storage, path, runtime.ids.uuid(), () =>
-          maintenance.assertOwned(),
+        quarantine = quarantineHandoffRoutingStoreArtifact(
+          runtime.storage,
+          path,
+          runtime.ids.uuid(),
+          {
+            firstMainState: firstObservation.mainState,
+            firstWalReceipt: firstObservation.walReceipt,
+            guardedMainState: guardedObservation.mainState,
+            guardedWalReceipt: guardedObservation.walReceipt,
+          },
+          () => maintenance.assertOwned(),
         );
       } catch (error: unknown) {
         if (error instanceof HandoffRoutingStatusQuarantineCapacityError) {
@@ -189,11 +230,13 @@ export async function discardHandoffRoutingStatus(
         }
         throw error;
       }
-      if (quarantine.kind !== 'quarantined') return quarantine;
+      if (quarantine.kind !== 'quarantined' && quarantine.kind !== 'quarantined-incomplete') return quarantine;
       return {
         kind: 'discarded',
         artifactPath: path,
+        quarantineId: quarantine.quarantineId,
         quarantinePath: quarantine.quarantinePath,
+        quarantineState: quarantine.kind === 'quarantined' ? 'complete' : 'incomplete',
         previousStatus: currentStatus,
       };
     },

@@ -54,6 +54,7 @@ type RegisteredProcess = {
 
 type MockProcessSpawnerOptions = {
   buildDurableEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
+  runtimePid: number;
 };
 
 function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputChunk[] {
@@ -200,6 +201,7 @@ export class MockProcessSpawner {
     this.storage = storage;
     this.options = options;
     this.durable = new MockDurableTransport(this);
+    this.registerProcess(options.runtimePid, null, null, [], null);
   }
 
   enqueueSpawn(script: MockSpawnScript): void {

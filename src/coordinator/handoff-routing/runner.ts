@@ -26,7 +26,7 @@ import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
-import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-status-store/index.js';
 import { createIpcClient } from '../../transport/ipc/client.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
@@ -182,7 +182,7 @@ export type HandoffRecordingRefusal =
       attemptedPhase: 'selection';
     }>
   | Readonly<{
-      reason: 'selection-publication-undeterminable';
+      reason: 'selection-publication-outcome-unknown';
       remediation: 'inspect-routing-status-before-repair';
       attemptedPhase: 'terminal';
     }>;
@@ -844,11 +844,11 @@ async function recordTerminal(
   disposition: DirectTerminalDisposition,
   signal?: AbortSignal,
 ): Promise<TerminalPublication> {
-  if (selection.kind === 'undeterminable') {
+  if (selection.kind === 'commit-outcome-unknown') {
     return {
       kind: 'refused',
       refusal: {
-        reason: 'selection-publication-undeterminable',
+        reason: 'selection-publication-outcome-unknown',
         remediation: 'inspect-routing-status-before-repair',
         attemptedPhase: 'terminal',
       },

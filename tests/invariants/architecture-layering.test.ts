@@ -44,6 +44,7 @@ const PROVIDERS_ROOT = 'src/providers/';
 const PROVIDER_HOST_OWNER_ROOTS = ['src/coordinator/', PROVIDER_PROXY_ROOT] as const;
 const PROVIDER_SOURCE_FILES = [...PRODUCTION_FILES].filter((file) => file.startsWith(PROVIDERS_ROOT)).sort();
 const STORE_ROOT = 'src/store/';
+const HANDOFF_ROUTING_STATUS_STORE_ROOT = 'src/store/handoff-routing-status-store';
 const PROVIDER_PROXY_FORBIDDEN = [
   STORE_ROOT,
   'src/coordinator/',
@@ -389,10 +390,11 @@ describe('architecture layering invariants', () => {
     const forbiddenTargets = new Set([
       'src/coordinator/handoff-routing/status.ts',
       'src/store/generation-mutation-coordination.ts',
-      'src/store/handoff-routing-status-store.ts',
     ]);
     const violations = IMPORT_EDGES.filter(
-      ({ source, target }) => source === 'src/cli/routing-status-discard.ts' && forbiddenTargets.has(target),
+      ({ source, target }) =>
+        source === 'src/cli/routing-status-discard.ts' &&
+        (forbiddenTargets.has(target) || target.startsWith(`${HANDOFF_ROUTING_STATUS_STORE_ROOT}/`)),
     ).map(({ source, target }) => `${source} -> ${target}`);
 
     expect(violations).toEqual([]);

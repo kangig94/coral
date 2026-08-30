@@ -75,18 +75,19 @@ export function observeProcessLiveness(pid: number): ProcessLiveness {
  */
 export type ProcessIncarnation = string & { readonly __processIncarnation: 'process-incarnation' };
 
-/**
- * The one admission test for the token, so the bound cannot drift between the schema and the hand-written
- * guards on the health and signal-ledger paths that validate the same field without Zod.
- */
+/** Accepted-token and maximum-encoding bounds must share this value. */
+export const MAX_PROCESS_INCARNATION_LENGTH = 256;
+
 export function isProcessIncarnation(value: unknown): value is ProcessIncarnation {
-  return typeof value === 'string' && value.length > 0 && value.length <= 256;
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_PROCESS_INCARNATION_LENGTH;
 }
 
 /** The wire and durable form. Opaque on purpose: readers compare, they never parse. */
-export const processIncarnationSchema = z.custom<ProcessIncarnation>(isProcessIncarnation, {
-  message: 'must be a process incarnation token',
-});
+export const processIncarnationSchema = z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<
+  ProcessIncarnation,
+  z.ZodStringDef,
+  ProcessIncarnation
+>;
 
 function readLinuxBootId(): string | null {
   try {

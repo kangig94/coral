@@ -1,4 +1,7 @@
-import type { PublicationOutcome } from '../../coordinator/handoff-routing/status.js';
+import {
+  HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  type PublicationOutcome,
+} from '../../coordinator/handoff-routing/status.js';
 import type { HandoffPublicationIncident } from '../../coordinator/handoff-routing/runner.js';
 import { assertNever } from '../../infra/error-format.js';
 
@@ -18,7 +21,7 @@ type HandoffPublicationFailure =
       kind: 'incident';
       incident:
         | Extract<HandoffPublicationIncident, { kind: 'not-published' }>
-        | Extract<HandoffPublicationIncident, { kind: 'undeterminable' }>;
+        | Extract<HandoffPublicationIncident, { kind: 'artifact-refused' | 'commit-outcome-unknown' }>;
     }>
   | Readonly<{
       kind: 'resolution';
@@ -40,7 +43,12 @@ export function formatHandoffPublicationIncident(incident: HandoffPublicationInc
           : `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} was not published (${incident.cause}).`,
         formatHandoffPublicationFailureSuccessor({ kind: 'incident', incident }),
       ].join('\n');
-    case 'undeterminable':
+    case 'artifact-refused':
+      return [
+        `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} was refused by artifact classification ${incident.classification.kind}.`,
+        formatHandoffPublicationFailureSuccessor({ kind: 'incident', incident }),
+      ].join('\n');
+    case 'commit-outcome-unknown':
       return [
         `Handoff routing-status ${incident.phase} publication for invocation ${incident.invocationId} could not be determined ` +
           `(${incident.cause}, errcode ${incident.errcode}).`,
@@ -59,7 +67,7 @@ function formatHandoffRecordingRefusalDiagnostic(
       return 'this process identity could not be read';
     case 'invalid-target-authority':
       return 'live target authority was unavailable';
-    case 'selection-publication-undeterminable':
+    case 'selection-publication-outcome-unknown':
       return 'selection publication could not be determined';
     default:
       return assertNever(refusal);
@@ -75,7 +83,7 @@ function formatHandoffRecordingRefusalSuccessor(
       return 'Next step: wait until this process identity is readable, then rerun coral-cli backend status before retrying the operation.';
     case 'invalid-target-authority':
       return 'Next step: wait until live target authority is available, then rerun coral-cli backend status before retrying the operation.';
-    case 'selection-publication-undeterminable':
+    case 'selection-publication-outcome-unknown':
       return `Next step: ${formatPublicationNextAction({ kind: 'incident', incident })}`;
     default:
       return assertNever(refusal);
@@ -127,6 +135,17 @@ export function formatHandoffPublicationFailureSuccessor(input: HandoffPublicati
   const outcome = input.kind === 'incident' ? input.incident : input.outcome;
   const nextAction = formatPublicationNextAction(input);
   switch (outcome.kind) {
+    case 'artifact-refused': {
+      const successor = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[outcome.classification.kind].successorAction;
+      switch (successor) {
+        case 'routing-status-discard':
+          return `Next step: run coral-cli backend status and follow its routing-status discard successor, then ${nextAction}`;
+        case 'retry':
+          return `Next step: retry coral-cli backend status without discarding, then ${nextAction}`;
+        default:
+          return assertNever(successor);
+      }
+    }
     case 'not-published': {
       const cause = outcome.cause;
       switch (cause) {
@@ -138,9 +157,8 @@ export function formatHandoffPublicationFailureSuccessor(input: HandoffPublicati
           return `Next step: repair the reported storage-capacity condition, then ${nextAction}`;
         case 'io-failed':
           return `Next step: repair the reported storage condition, then ${nextAction}`;
-        case 'unreadable':
-        case 'unsupported-generation':
-          return `Next step: run coral-cli backend status and follow its routing-status discard successor, then ${nextAction}`;
+        case 'storage-corrupt':
+          return `Next step: run coral-cli backend status and follow its routing-status discard successor if corruption is confirmed, then ${nextAction}`;
         case 'invalid-record':
           return (
             `Next step: report the invalid routing-status record (${outcome.validation.kind}) as a Coral defect; ` +
@@ -160,7 +178,7 @@ export function formatHandoffPublicationFailureSuccessor(input: HandoffPublicati
           return assertNever(cause);
       }
     }
-    case 'undeterminable': {
+    case 'commit-outcome-unknown': {
       const cause = outcome.cause;
       switch (cause) {
         case 'contended':
@@ -169,7 +187,7 @@ export function formatHandoffPublicationFailureSuccessor(input: HandoffPublicati
           return `Next step: repair the storage-capacity condition, then ${nextAction} This attempt could not determine whether it committed.`;
         case 'io-failed':
           return `Next step: repair the reported storage condition if it persists, then ${nextAction} This attempt could not determine whether it committed.`;
-        case 'unreadable':
+        case 'storage-corrupt':
           return `Next step: run coral-cli backend status and follow its routing-status discard successor if the journal is unreadable, then ${nextAction} This attempt could not determine whether it committed.`;
         default:
           return assertNever(cause);

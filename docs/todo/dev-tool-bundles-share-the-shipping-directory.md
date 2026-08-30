@@ -26,6 +26,15 @@ Observed 2026-08-30 while verifying an unrelated branch: a build failed with
 coral-claude-appserver.cjs, coral-cli.cjs, coral-simulation.cjs, discuss-golden-helpers.mjs, manifest.json,
 simulation-core.mjs`. Deleting the three extra files made the same build pass unchanged.
 
+Observed 2026-08-31 through a second consumer of the directory: after `npm run simulate` wrote its bundle into
+`clients/build/` and that staged artifact was deleted again, `npm run test:e2e:lifecycle` failed two tests
+with `Error: clients/build is stale; run npm run build:dev`. Re-running `npm run build` cleared the failure,
+and all five lifecycle tests passed. The suite's
+`assertLifecycleBundleSetFresh` (`tests/support/bundle-build-freshness.ts`) checks the receipt and shipping
+outputs in that same directory, so the blast radius is not limited to the Kiwi exact-set contract. Anyone
+running the full gate by hand must run `npm run simulate` after `test:e2e:lifecycle`; otherwise the lifecycle
+suite can fail for staging state rather than for the code under test.
+
 ## Why the contract is not the thing to loosen
 
 The exact-set check is the point. It exists so a staged Kiwi WASM artifact beside the bundles cannot ship, and

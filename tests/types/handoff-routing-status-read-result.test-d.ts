@@ -1,10 +1,18 @@
 import {
   handoffRoutingStatusStoreSchema,
+  type DirectTerminalDisposition,
   type HandoffRoutingInvocationStatus,
   type HandoffRoutingStatusReadResult,
   type RetirementHistoryTruncated,
 } from '../../src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '../../src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '../../src/store/handoff-routing-status-store/index.js';
+
+type Equals<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
+type Assert<Condition extends true> = Condition;
+
+export type DirectTerminalSignalIsExact = Assert<
+  Equals<Extract<DirectTerminalDisposition, { kind: 'delegated-signal' }>['signal'], NodeJS.Signals>
+>;
 
 declare const statuses: readonly HandoffRoutingInvocationStatus[];
 declare const retirementHistoryTruncated: RetirementHistoryTruncated;
@@ -12,6 +20,13 @@ const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoff
 
 [
   { kind: 'absent' },
+  { kind: 'vacant' },
+  { kind: 'uninitialized' },
+  { kind: 'detached-wal' },
+  { kind: 'generation-missing' },
+  { kind: 'foreign-generation', generation: HANDOFF_ROUTING_STATUS_GENERATION + 1 },
+  { kind: 'format-mismatch' },
+  { kind: 'schema-divergent' },
   {
     kind: 'current',
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -21,7 +36,6 @@ const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoff
   { kind: 'unreadable', reason: 'invalid-json' },
   { kind: 'unreadable', reason: 'invalid-shape' },
   { kind: 'unreadable', reason: 'too-large' },
-  { kind: 'unsupported-generation', generation: HANDOFF_ROUTING_STATUS_GENERATION + 1 },
   { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
 ] satisfies readonly HandoffRoutingStatusReadResult[];
 

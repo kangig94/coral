@@ -11,6 +11,7 @@ import {
   fstatSync,
   fsyncSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   opendirSync,
@@ -283,6 +284,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     readFileSync: (path, encoding) => readFileSync(path, encoding),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
     renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),
+    linkSync: (existingPath, newPath) => linkSync(existingPath, newPath),
     mkdirSync: (path, options) => mkdirSync(path, options),
     rmSync: (path, options) => rmSync(path, options),
     readdirSync: ((path: string, options?: { withFileTypes: true }) => {

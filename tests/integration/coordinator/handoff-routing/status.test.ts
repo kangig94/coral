@@ -1,5 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -9,6 +20,7 @@ import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
+  HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION,
   MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
@@ -19,18 +31,18 @@ import {
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  handoffRoutingRecordSchemaRegistry,
+  handoffRoutingSentinelRecordSchemaRegistry,
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   handoffRoutingTransitionSchema,
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishGenerationCoordinatedHandoffRoutingTransitions,
-  publishHandoffRoutingTransitions,
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
+  readHandoffRoutingStatusForDiscard,
   readHandoffRoutingStatusWithOwnerObservations,
   resolveHandoffRoutingStatus,
-  retirementTombstoneSchema,
-  terminalEventSchema,
   type DurableHandoffRoutingBasis,
   type HandoffRoutingTransition,
   type PublicationOutcome,
@@ -43,7 +55,8 @@ import {
 } from '#src/coordinator/handoff-routing/status-operator.js';
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
-import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
+import { zodPersistedContract } from '#src/infra/persisted-contract.js';
+import { DirectoryLockOwnershipLostError, tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
@@ -56,11 +69,16 @@ import { SimulationRuntime } from '../../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
 import {
+  HANDOFF_ROUTING_STATUS_GENERATION_BAND,
   handoffRoutingStatusGeneration,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
+  clearHandoffRoutingStoreQuarantine,
+  quarantineHandoffRoutingStoreArtifact,
+  SQLITE_CORRUPT,
   SQLITE_FULL,
   listHandoffRoutingStoreQuarantines,
-} from '#src/store/handoff-routing-status-store.js';
+  type HandoffRoutingStatusQuarantineList,
+} from '#src/store/handoff-routing-status-store/index.js';
 
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
@@ -82,6 +100,58 @@ function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-'));
   temporaryDirectories.push(directory);
   return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
+}
+
+function listedQuarantines(
+  storage: StoragePort,
+  path: string,
+): Extract<HandoffRoutingStatusQuarantineList, { kind: 'listed' }> {
+  const result = listHandoffRoutingStoreQuarantines(storage, path);
+  if (result.kind !== 'listed') throw new Error(`Expected quarantine listing, received ${result.kind}`);
+  return result;
+}
+
+function createDurabilityAwareStorage(
+  base: StoragePort,
+  initialEntries: ReadonlyMap<string, string>,
+): Readonly<{ storage: StoragePort; crash: () => ReadonlyMap<string, string> }> {
+  const pendingEntries = new Map(initialEntries);
+  const durableEntries = new Map(initialEntries);
+  const trackedPaths = new Set(initialEntries.keys());
+  const storage: StoragePort = {
+    ...base,
+    linkSync: (source, destination) => {
+      base.linkSync(source, destination);
+      const payloadIdentity = pendingEntries.get(source);
+      if (payloadIdentity !== undefined) {
+        trackedPaths.add(destination);
+        pendingEntries.set(destination, payloadIdentity);
+      }
+    },
+    unlinkSync: (path) => {
+      base.unlinkSync(path);
+      if (trackedPaths.has(path)) pendingEntries.delete(path);
+    },
+    syncDirectoryDurableSync: (directory) => {
+      const synced = base.syncDirectoryDurableSync(directory);
+      if (!synced) return false;
+      for (const path of trackedPaths) {
+        if (dirname(path) !== directory) continue;
+        const payloadIdentity = pendingEntries.get(path);
+        if (payloadIdentity === undefined) durableEntries.delete(path);
+        else durableEntries.set(path, payloadIdentity);
+      }
+      return true;
+    },
+  };
+  return {
+    storage,
+    crash: () => {
+      pendingEntries.clear();
+      for (const [path, payloadIdentity] of durableEntries) pendingEntries.set(path, payloadIdentity);
+      return new Map(pendingEntries);
+    },
+  };
 }
 
 function selection(
@@ -123,15 +193,30 @@ async function committed(
   return outcome;
 }
 
+function unsupportedWalDatabase(path: string): void {
+  const database = new DatabaseSync(path);
+  try {
+    database.exec('PRAGMA journal_mode=WAL; PRAGMA user_version=1');
+  } finally {
+    database.close();
+  }
+  if (existsSync(`${path}-wal`)) unlinkSync(`${path}-wal`);
+  if (existsSync(`${path}-shm`)) unlinkSync(`${path}-shm`);
+}
+
 function publish(
   path: string,
   transitions: readonly HandoffRoutingTransition[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
-  return publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+  return publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, transitions, signal);
 }
 
-function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement: string): StoragePort {
+function storageFailingOnSqliteStatement(
+  storage: StoragePort,
+  failingStatement: string,
+  errcode = SQLITE_FULL,
+): StoragePort {
   return new Proxy(storage, {
     get(target, property) {
       if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
@@ -143,12 +228,39 @@ function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement:
         return {
           exec(sql) {
             if (sql === failingStatement) {
-              throw Object.assign(new Error(`injected ${failingStatement} failure`), { errcode: SQLITE_FULL });
+              throw Object.assign(new Error(`injected ${failingStatement} failure`), { errcode });
             }
             database.exec(sql);
           },
           prepare: database.prepare.bind(database),
           close: database.close.bind(database),
+        };
+      };
+    },
+  });
+}
+
+function storageFailingOnSqliteRun(storage: StoragePort, sqlFragment: string, errcode: number): StoragePort {
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
+      return (path: string, options?: { readOnly?: boolean }): SqliteDatabasePort => {
+        const database = target.openSqliteDatabaseSync(path, options);
+        if (options?.readOnly === true) return database;
+        return {
+          exec: database.exec.bind(database),
+          close: database.close.bind(database),
+          prepare(sql) {
+            const statement = database.prepare(sql);
+            if (!sql.includes(sqlFragment)) return statement;
+            return {
+              all: statement.all.bind(statement),
+              get: statement.get.bind(statement),
+              run: () => {
+                throw Object.assign(new Error(`injected ${sqlFragment} failure`), { errcode });
+              },
+            };
+          },
         };
       };
     },
@@ -272,6 +384,32 @@ afterAll(() => {
 });
 
 describe('handoff-routing/status', () => {
+  it('should initialize from a fresh module registry with an address in the generation band', async () => {
+    vi.resetModules();
+    const statusModule = await import('#src/coordinator/handoff-routing/status.js');
+    const generation = handoffRoutingStatusGeneration(statusModule.handoffRoutingStatusStoreSchema());
+
+    expect(generation).toBeGreaterThanOrEqual(HANDOFF_ROUTING_STATUS_GENERATION_BAND.minimum);
+    expect(generation).toBeLessThanOrEqual(HANDOFF_ROUTING_STATUS_GENERATION_BAND.maximum);
+  });
+
+  it('should extract persisted contracts from every sentinel-generation record root', () => {
+    expect(() => {
+      for (const schema of Object.values(handoffRoutingSentinelRecordSchemaRegistry)) {
+        zodPersistedContract(schema);
+      }
+    }).not.toThrow();
+    expect(handoffRoutingStatusStoreSchema().durableFormat.recordContracts).toEqual({
+      selection: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.selection),
+      terminal: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.terminal),
+      retirement: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.retirement),
+    });
+    expect(Object.keys(handoffRoutingStatusStoreSchema().durableFormat.bodyVocabulary)).toEqual([
+      'completedPairStability',
+    ]);
+    expect(HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION).toBe(0);
+  });
+
   it('projects continuation and absent obligations without inventing persisted status for ephemeral bindings', () => {
     expect(HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS).toEqual({
       'handoff-not-applicable': {
@@ -308,10 +446,9 @@ describe('handoff-routing/status', () => {
     const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
 
     expect(existsSync(path)).toBe(false);
-    await expect(publishHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)])).resolves.toEqual({
-      kind: 'committed',
-      sequence: 1,
-    });
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)]),
+    ).resolves.toEqual({ kind: 'committed', sequence: 1 });
     expect(simulation.storage.existsSync(path)).toBe(true);
     expect(existsSync(path)).toBe(false);
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
@@ -324,13 +461,13 @@ describe('handoff-routing/status', () => {
     const simulation = new SimulationRuntime();
     const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
     await expect(
-      publishHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
     ).resolves.toMatchObject({
       kind: 'committed',
     });
     const snapshot = simulation.storage.snapshot();
     await expect(
-      publishHandoffRoutingTransitions(simulation, path, [selection('after-snapshot', 2)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('after-snapshot', 2)]),
     ).resolves.toMatchObject({
       kind: 'committed',
     });
@@ -353,13 +490,1098 @@ describe('handoff-routing/status', () => {
     simulation.storage.unlinkSync(path);
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
     await expect(
-      publishHandoffRoutingTransitions(simulation, path, [selection('after-unlink', 3)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('after-unlink', 3)]),
     ).resolves.toMatchObject({
       kind: 'committed',
     });
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
       kind: 'current',
       statuses: [{ selection: { invocationId: 'after-unlink' } }],
+    });
+  });
+
+  it.each(['absent', 'zero'] as const)('maps a %s main with a detached wal without opening SQLite', async (main) => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    if (main === 'zero') writeFileSync(path, Buffer.alloc(0), { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'detached wal');
+    const openSqliteDatabaseSync = vi.fn(baseRuntime.storage.openSqliteDatabaseSync.bind(baseRuntime.storage));
+    const observedRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, openSqliteDatabaseSync },
+    };
+
+    expect(readHandoffRoutingStatusWithRuntime(observedRuntime, path)).toEqual({
+      kind: 'detached-wal',
+    });
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(observedRuntime, path, [selection(`detached-${main}`, 1)]),
+    ).resolves.toEqual({ kind: 'artifact-refused', classification: { kind: 'detached-wal' } });
+    expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('maps an operational wal stat failure to I/O failure and blocks initialization', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const statSync = ((candidate: string, options?: { bigint: true }) => {
+      if (candidate === `${path}-wal`) {
+        const error = new Error('injected wal stat failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        error.errno = SQLITE_FULL;
+        throw error;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+    const openSqliteDatabaseSync = vi.fn(baseRuntime.storage.openSqliteDatabaseSync.bind(baseRuntime.storage));
+    const failingRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, statSync, openSqliteDatabaseSync },
+    };
+
+    expect(readHandoffRoutingStatusWithRuntime(failingRuntime, path)).toEqual({
+      kind: 'undeterminable',
+      cause: 'io-failed',
+      errcode: SQLITE_FULL,
+    });
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [selection('stat-failed', 1)]),
+    ).resolves.toEqual({
+      kind: 'artifact-refused',
+      classification: { kind: 'undeterminable', cause: 'io-failed', errcode: SQLITE_FULL },
+    });
+    expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('carries the first and guarded wal receipts through the discard adapter', async () => {
+    const path = databasePath();
+    await committed(path, [selection('receipt-seed', 1)]);
+    if (existsSync(`${path}-wal`)) unlinkSync(`${path}-wal`);
+    const receiptRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    const firstObservation = readHandoffRoutingStatusForDiscard(receiptRuntime, path);
+    const guardedObservation = readHandoffRoutingStatusForDiscard(receiptRuntime, path);
+
+    expect(firstObservation).toMatchObject({
+      kind: 'observed',
+      status: { kind: 'current' },
+      mainState: 'non-empty',
+      walReceipt: { kind: 'absent' },
+    });
+    expect(guardedObservation).toMatchObject({
+      kind: 'observed',
+      status: { kind: 'current' },
+      mainState: 'non-empty',
+      walReceipt: { kind: 'zero', stat: { size: 0n } },
+    });
+  });
+
+  it('quarantines a frames-bearing wal beside a zero-byte main without a pre-quarantine open', async () => {
+    const path = databasePath();
+    const fixturePath = `${path}.wal-source`;
+    const fixture = new DatabaseSync(fixturePath);
+    fixture.exec("PRAGMA journal_mode=WAL; CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('wal')");
+    const walBytes = readFileSync(`${fixturePath}-wal`);
+    expect(walBytes.length).toBeGreaterThan(0);
+    fixture.close();
+    writeFileSync(path, Buffer.alloc(0), { mode: 0o600 });
+    writeFileSync(`${path}-wal`, walBytes);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const openSqliteDatabaseSync = vi.fn(baseRuntime.storage.openSqliteDatabaseSync.bind(baseRuntime.storage));
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, openSqliteDatabaseSync },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    expect(discarded).toMatchObject({
+      kind: 'discarded',
+      quarantineState: 'complete',
+      previousStatus: { kind: 'detached-wal' },
+    });
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(walBytes);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(false);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toMatchObject({
+      entries: [{ id: discarded.quarantineId, state: 'complete', artifacts: ['database', 'wal'] }],
+    });
+    expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('retains a detached wal as an incomplete quarantine without attempting a missing-main link', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000041';
+    const fixturePath = `${path}.wal-source`;
+    const fixture = new DatabaseSync(fixturePath);
+    fixture.exec("PRAGMA journal_mode=WAL; CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('wal')");
+    const walBytes = readFileSync(`${fixturePath}-wal`);
+    expect(walBytes.length).toBeGreaterThan(0);
+    fixture.close();
+    writeFileSync(`${path}-wal`, walBytes);
+    writeFileSync(`${path}-shm`, 'rewritten index');
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    let mainLinkAttempted = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        linkSync: (oldPath, newPath) => {
+          if (oldPath === path) {
+            mainLinkAttempted = true;
+            throw new Error('missing main must not be linked');
+          }
+          baseRuntime.storage.linkSync(oldPath, newPath);
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    expect(discarded).toEqual({
+      kind: 'discarded',
+      artifactPath: path,
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      quarantineState: 'incomplete',
+      previousStatus: { kind: 'detached-wal' },
+    });
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(mainLinkAttempted).toBe(false);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}-wal`)).toBe(false);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(walBytes);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toEqual({
+      kind: 'listed',
+      entries: [
+        {
+          id: quarantineId,
+          quarantinePath: discarded.quarantinePath,
+          state: 'incomplete',
+          artifacts: ['wal'],
+        },
+      ],
+      overflow: false,
+    });
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path))).resolves.toEqual({
+      kind: 'refused',
+      status: { kind: 'absent' },
+    });
+    writeFileSync(path, 'different unreadable database', { mode: 0o600 });
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path))).resolves.toEqual({
+      kind: 'incomplete-quarantine',
+      quarantineId,
+    });
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), quarantineId),
+    ).resolves.toMatchObject({ kind: 'cleared', entry: { state: 'incomplete', artifacts: ['wal'] } });
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path))).resolves.toMatchObject({
+      kind: 'discarded',
+      quarantineState: 'complete',
+    });
+  });
+
+  it('returns the exact wal-only store result when both observations found no main', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000042';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(`${path}-wal`, 'detached wal evidence');
+    const wal = statSync(`${path}-wal`, { bigint: true });
+    const walReceipt = {
+      kind: 'non-empty' as const,
+      stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        baseRuntime.storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'absent',
+          firstWalReceipt: walReceipt,
+          guardedMainState: 'absent',
+          guardedWalReceipt: walReceipt,
+        },
+        () => undefined,
+      ),
+    ).toEqual({
+      kind: 'quarantined-incomplete',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      retainedArtifacts: ['wal'],
+    });
+  });
+
+  it('removes only an unchanged classifier-created zero wal from the retained set', async () => {
+    const path = databasePath();
+    unsupportedWalDatabase(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    let movedWalSize: bigint | undefined;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      storage: {
+        ...baseRuntime.storage,
+        linkSync: (oldPath, newPath) => {
+          if (oldPath === `${path}-wal`) movedWalSize = statSync(oldPath, { bigint: true }).size;
+          baseRuntime.storage.linkSync(oldPath, newPath);
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(discarded.quarantineState).toBe('complete');
+    expect(movedWalSize).toBe(0n);
+    expect(existsSync(`${discarded.quarantinePath}-wal`)).toBe(false);
+    expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toMatchObject({
+      entries: [{ id: discarded.quarantineId, state: 'complete', artifacts: ['database'] }],
+    });
+  });
+
+  it('does not unlink evidence that replaces the validated classifier-created wal', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000060';
+    unsupportedWalDatabase(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    const quarantineWalPath = `${quarantinePath}-wal`;
+    let movedWalValidated = false;
+    let replacementInjected = false;
+    const statSyncWithReplacement = ((candidate: string, options?: { bigint: true }) => {
+      if (candidate === quarantineWalPath && movedWalValidated && !replacementInjected) {
+        baseRuntime.storage.unlinkSync(candidate);
+        baseRuntime.storage.writeFileSync(candidate, 'replacement wal evidence', { mode: 0o600 });
+        replacementInjected = true;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        openSync: (candidate, flags, mode) => {
+          const fd = baseRuntime.storage.openSync(candidate, flags, mode);
+          if (candidate === quarantineWalPath) movedWalValidated = true;
+          return fd;
+        },
+        statSync: statSyncWithReplacement,
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-coordinate-occupied',
+      quarantineId,
+      quarantinePath,
+      artifact: 'wal',
+    });
+    expect(replacementInjected).toBe(true);
+    expect(readFileSync(quarantineWalPath, 'utf-8')).toBe('replacement wal evidence');
+  });
+
+  it('reports uncertain retention when sync fails after unlinking a classifier-created wal', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000046';
+    unsupportedWalDatabase(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    const quarantineWalPath = join(root, `${basename(path)}.${quarantineId}-wal`);
+    let walRemoved = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        unlinkSync: (candidate) => {
+          baseRuntime.storage.unlinkSync(candidate);
+          if (candidate === quarantineWalPath) walRemoved = true;
+        },
+        syncDirectoryDurableSync: (directory) => {
+          if (directory === root && walRemoved) return false;
+          return sync(directory);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-retention-undeterminable',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      observedRetainedArtifacts: ['wal'],
+      movedArtifacts: ['wal'],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: ['wal'],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'directory-sync-failed',
+    });
+    expect(existsSync(path)).toBe(true);
+    expect(listedQuarantines(baseRuntime.storage, path)).toEqual({
+      kind: 'listed',
+      entries: [],
+      overflow: false,
+    });
+  });
+
+  it('reports uncertain retention when ownership is lost after unlinking a classifier-created wal', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000056';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, '', { mode: 0o600 });
+    const wal = statSync(`${path}-wal`, { bigint: true });
+    const guardedWalReceipt = {
+      kind: 'zero' as const,
+      stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
+    };
+    let ownershipLost = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      unlinkSync: (candidate) => {
+        baseRuntime.storage.unlinkSync(candidate);
+        if (candidate === `${quarantinePath}-wal`) ownershipLost = true;
+      },
+    };
+
+    const result = quarantineHandoffRoutingStoreArtifact(
+      storage,
+      path,
+      quarantineId,
+      {
+        firstMainState: 'non-empty',
+        firstWalReceipt: { kind: 'absent' },
+        guardedMainState: 'non-empty',
+        guardedWalReceipt,
+      },
+      () => {
+        if (ownershipLost) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+      },
+    );
+
+    expect(result).toEqual({
+      kind: 'quarantine-retention-undeterminable',
+      quarantineId,
+      quarantinePath,
+      observedRetainedArtifacts: ['wal'],
+      movedArtifacts: ['wal'],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: ['wal'],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'ownership-lost',
+    });
+    expect(result).not.toHaveProperty('retainedArtifacts');
+    expect(ownershipLost).toBe(true);
+    expect(existsSync(`${quarantinePath}-wal`)).toBe(false);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('returns the quarantine coordinate and exact effects when ownership is lost after the wal link', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000047';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    const wal = statSync(`${path}-wal`, { bigint: true });
+    const walReceipt = {
+      kind: 'non-empty' as const,
+      stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
+    };
+    const quarantineWalPath = join(
+      dirname(path),
+      'handoff-routing-quarantine',
+      `${basename(path)}.${quarantineId}-wal`,
+    );
+    let walLinked = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      linkSync: (source, destination) => {
+        baseRuntime.storage.linkSync(source, destination);
+        if (source === `${path}-wal` && destination === quarantineWalPath) walLinked = true;
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: walReceipt,
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: walReceipt,
+        },
+        () => {
+          if (walLinked) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+        },
+      ),
+    ).toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      retainedArtifacts: ['wal'],
+      movedArtifacts: [],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'ownership-lost',
+    });
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(`${path}-wal`)).toBe(true);
+    expect(readFileSync(quarantineWalPath, 'utf-8')).toBe('retained wal');
+  });
+
+  it('reports a failed wal move when link ENOENT came from a vanished destination parent', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000049';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'source wal');
+    const wal = statSync(`${path}-wal`, { bigint: true });
+    const walReceipt = {
+      kind: 'non-empty' as const,
+      stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
+    };
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      linkSync: (source, destination) => {
+        if (source === `${path}-wal`) {
+          rmSync(root, { recursive: true, force: true });
+          const error = new Error('injected missing destination parent') as NodeJS.ErrnoException;
+          error.code = 'ENOENT';
+          throw error;
+        }
+        baseRuntime.storage.linkSync(source, destination);
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: walReceipt,
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: walReceipt,
+        },
+        () => undefined,
+      ),
+    ).toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath: join(root, `${basename(path)}.${quarantineId}`),
+      retainedArtifacts: [],
+      movedArtifacts: [],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source'],
+      cause: 'artifact-move-failed',
+    });
+    expect(readFileSync(`${path}-wal`, 'utf-8')).toBe('source wal');
+    expect(readFileSync(path, 'utf-8')).toBe('not a sqlite database');
+  });
+
+  it('reports unknown retention when a completed link is followed by an unobservable destination', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000050';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'source wal');
+    const wal = statSync(`${path}-wal`, { bigint: true });
+    const walReceipt = {
+      kind: 'non-empty' as const,
+      stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
+    };
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    let linkReportedFailure = false;
+    const statSyncWithFailedDestinationObservation = ((candidate: string, options?: { bigint: true }) => {
+      if (linkReportedFailure && candidate === `${quarantinePath}-wal`) {
+        const error = new Error('injected destination observation failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        error.errno = SQLITE_FULL;
+        throw error;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      statSync: statSyncWithFailedDestinationObservation,
+      linkSync: (source, destination) => {
+        if (source === `${path}-wal`) {
+          baseRuntime.storage.linkSync(source, destination);
+          linkReportedFailure = true;
+          const error = new Error('injected ambiguous link failure') as NodeJS.ErrnoException;
+          error.code = 'EIO';
+          throw error;
+        }
+        baseRuntime.storage.linkSync(source, destination);
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: walReceipt,
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: walReceipt,
+        },
+        () => undefined,
+      ),
+    ).toMatchObject({
+      kind: 'quarantine-retention-undeterminable',
+      quarantineId,
+      observedRetainedArtifacts: [],
+      movedArtifacts: [],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      cause: 'artifact-observation-failed',
+      errcode: SQLITE_FULL,
+    });
+    expect(readFileSync(`${path}-wal`, 'utf-8')).toBe('source wal');
+    expect(readFileSync(`${quarantinePath}-wal`, 'utf-8')).toBe('source wal');
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('refuses an unobservable quarantine coordinate before attempting mutation', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000055';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    const statSyncWithUnobservableCoordinate = ((candidate: string, options?: { bigint: true }) => {
+      if (candidate === quarantinePath) {
+        const error = new Error('injected coordinate observation failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        error.errno = SQLITE_FULL;
+        throw error;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        { ...baseRuntime.storage, statSync: statSyncWithUnobservableCoordinate },
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => undefined,
+      ),
+    ).toEqual({ kind: 'undeterminable', cause: 'artifact-observation-failed', errcode: SQLITE_FULL });
+    expect(existsSync(root)).toBe(false);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('treats root creation as operation mutation when ownership is lost before artifact moves', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000051';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    let rootCreated = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      mkdirSync: (directory, options) => {
+        baseRuntime.storage.mkdirSync(directory, options);
+        if (directory === root) rootCreated = true;
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => {
+          if (rootCreated) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+        },
+      ),
+    ).toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath: join(root, `${basename(path)}.${quarantineId}`),
+      retainedArtifacts: [],
+      movedArtifacts: [],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source'],
+      cause: 'ownership-lost',
+    });
+    expect(existsSync(root)).toBe(true);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('should report exact effects when ownership is lost after the main quarantine directory sync', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000063';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    let ownershipLost = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      syncDirectoryDurableSync: (directory) => {
+        const synced = baseRuntime.storage.syncDirectoryDurableSync(directory);
+        if (directory === root) ownershipLost = true;
+        return synced;
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => {
+          if (ownershipLost) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+        },
+      ),
+    ).toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath,
+      retainedArtifacts: ['database'],
+      movedArtifacts: [],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'ownership-lost',
+    });
+    expect(ownershipLost).toBe(true);
+    expect(readFileSync(path, 'utf-8')).toBe('not a sqlite database');
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('not a sqlite database');
+  });
+
+  it('does not return quarantine success when ownership is lost during the final directory sync', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000052';
+    const sourceDirectory = dirname(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: sourceDirectory });
+    const root = join(sourceDirectory, 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    let databaseRemoved = false;
+    let ownershipLost = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      unlinkSync: (candidate) => {
+        baseRuntime.storage.unlinkSync(candidate);
+        if (candidate === path) databaseRemoved = true;
+      },
+      syncDirectoryDurableSync: (directory) => {
+        const synced = baseRuntime.storage.syncDirectoryDurableSync(directory);
+        if (directory === sourceDirectory && databaseRemoved) ownershipLost = true;
+        return synced;
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => {
+          if (ownershipLost) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+        },
+      ),
+    ).toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath,
+      retainedArtifacts: ['database'],
+      movedArtifacts: ['database'],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'ownership-lost',
+    });
+    expect(databaseRemoved).toBe(true);
+    expect(ownershipLost).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('not a sqlite database');
+  });
+
+  it('does not replace a quarantine coordinate created at the atomic database-link boundary', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000053';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'new source database evidence', { mode: 0o600 });
+    let collisionInjected = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        linkSync: (source, destination) => {
+          if (source === path) {
+            writeFileSync(destination, 'racing retained database evidence');
+            collisionInjected = true;
+          }
+          baseRuntime.storage.linkSync(source, destination);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-coordinate-occupied',
+      quarantineId,
+      quarantinePath,
+      artifact: 'database',
+    });
+    expect(collisionInjected).toBe(true);
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('racing retained database evidence');
+    expect(readFileSync(path, 'utf-8')).toBe('new source database evidence');
+  });
+
+  it('resumes a database move when a previous attempt linked the same file identity', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000056';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
+    writeFileSync(path, 'database evidence', { mode: 0o600 });
+    baseRuntime.storage.linkSync(path, quarantinePath);
+    const linked = statSync(quarantinePath, { bigint: true });
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        baseRuntime.storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => undefined,
+      ),
+    ).toEqual({ kind: 'quarantined', quarantineId, quarantinePath, retainedArtifacts: ['database'] });
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('database evidence');
+    const resumed = statSync(quarantinePath, { bigint: true });
+    expect({ dev: resumed.dev, ino: resumed.ino }).toEqual({ dev: linked.dev, ino: linked.ino });
+  });
+
+  it('does not unlink a replacement source when EEXIST refers to the previously observed inode', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000057';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
+    writeFileSync(path, 'inode A', { mode: 0o600 });
+    baseRuntime.storage.linkSync(path, quarantinePath);
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      linkSync: (source, destination) => {
+        if (source === path) {
+          baseRuntime.storage.unlinkSync(source);
+          baseRuntime.storage.writeFileSync(source, 'inode B', { mode: 0o600 });
+        }
+        baseRuntime.storage.linkSync(source, destination);
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => undefined,
+      ),
+    ).toEqual({ kind: 'quarantine-coordinate-occupied', quarantineId, quarantinePath, artifact: 'database' });
+    expect(readFileSync(path, 'utf-8')).toBe('inode B');
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('inode A');
+  });
+
+  it('does not unlink a source replacement created during the quarantine durability barrier', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000061';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'inode A', { mode: 0o600 });
+    let replacementInjected = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      syncDirectoryDurableSync: (directory) => {
+        const synced = baseRuntime.storage.syncDirectoryDurableSync(directory);
+        if (directory === root && !replacementInjected) {
+          baseRuntime.storage.unlinkSync(path);
+          baseRuntime.storage.writeFileSync(path, 'inode B', { mode: 0o600 });
+          replacementInjected = true;
+        }
+        return synced;
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => undefined,
+      ),
+    ).toEqual({ kind: 'quarantine-coordinate-occupied', quarantineId, quarantinePath, artifact: 'database' });
+    expect(replacementInjected).toBe(true);
+    expect(readFileSync(path, 'utf-8')).toBe('inode B');
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('inode A');
+  });
+
+  it.each([
+    ['after link before quarantine sync', 'before-quarantine-sync', ['source']],
+    ['after quarantine sync before unlink', 'before-unlink', ['source', 'quarantine']],
+    ['after unlink before source sync', 'before-source-sync', ['source', 'quarantine']],
+  ] as const)('retains a durable payload name across a crash %s', (_label, crashPoint, expectedDurableNames) => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000058';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const sourceDirectory = dirname(path);
+    const root = join(sourceDirectory, 'handoff-routing-quarantine');
+    writeFileSync(path, 'durable payload', { mode: 0o600 });
+    const payloadIdentity = 'database-payload-A';
+    const durability = createDurabilityAwareStorage(baseRuntime.storage, new Map([[path, payloadIdentity]]));
+    let linked = false;
+    let sourceUnlinked = false;
+    const storage: StoragePort = {
+      ...durability.storage,
+      linkSync: (source, destination) => {
+        durability.storage.linkSync(source, destination);
+        if (source === path) linked = true;
+      },
+      unlinkSync: (candidate) => {
+        if (candidate === path && crashPoint === 'before-unlink') throw new Error('simulated crash before unlink');
+        durability.storage.unlinkSync(candidate);
+        if (candidate === path) sourceUnlinked = true;
+      },
+      syncDirectoryDurableSync: (directory) => {
+        if (directory === root && linked) {
+          if (crashPoint === 'before-quarantine-sync') {
+            throw new Error('simulated crash before quarantine sync');
+          }
+        }
+        if (directory === sourceDirectory && sourceUnlinked && crashPoint === 'before-source-sync') {
+          throw new Error('simulated crash before source sync');
+        }
+        return durability.storage.syncDirectoryDurableSync(directory);
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => undefined,
+      ),
+    ).toMatchObject({ kind: 'quarantine-storage-failed', retainedArtifacts: ['database'] });
+    const recoveredNames = [...durability.crash()].map(([recoveredPath, recoveredPayload]) => [
+      recoveredPath === path ? 'source' : 'quarantine',
+      recoveredPayload,
+    ]);
+    expect(recoveredNames).toEqual(expectedDurableNames.map((name) => [name, payloadIdentity]));
+  });
+
+  it('orders the quarantine durability barriers around source removal', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000059';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const sourceDirectory = dirname(path);
+    const root = join(sourceDirectory, 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'ordered payload', { mode: 0o600 });
+    const operations: string[] = [];
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      mkdirSync: (directory, options) => {
+        if (directory === root) operations.push('mkdir-quarantine');
+        baseRuntime.storage.mkdirSync(directory, options);
+      },
+      linkSync: (source, destination) => {
+        if (source === path && destination === quarantinePath) operations.push('link');
+        baseRuntime.storage.linkSync(source, destination);
+      },
+      unlinkSync: (candidate) => {
+        if (candidate === path) operations.push('unlink-source');
+        baseRuntime.storage.unlinkSync(candidate);
+      },
+      syncDirectoryDurableSync: (directory) => {
+        operations.push(directory === root ? 'sync-quarantine' : 'sync-source');
+        return baseRuntime.storage.syncDirectoryDurableSync(directory);
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => undefined,
+      ),
+    ).toEqual({ kind: 'quarantined', quarantineId, quarantinePath, retainedArtifacts: ['database'] });
+    expect(operations).toEqual([
+      'mkdir-quarantine',
+      'sync-source',
+      'link',
+      'sync-quarantine',
+      'unlink-source',
+      'sync-source',
+    ]);
+  });
+
+  it('retains a pre-existing zero wal with its original file identity', async () => {
+    const path = databasePath();
+    unsupportedWalDatabase(path);
+    writeFileSync(`${path}-wal`, Buffer.alloc(0));
+    const before = statSync(`${path}-wal`, { bigint: true });
+    const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    const after = statSync(`${discarded.quarantinePath}-wal`, { bigint: true });
+    expect({ dev: after.dev, ino: after.ino, size: after.size }).toEqual({
+      dev: before.dev,
+      ino: before.ino,
+      size: 0n,
+    });
+  });
+
+  it('retains a classifier-created wal that grows after the guarded receipt', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000043';
+    const racingBytes = Buffer.from('racing wal evidence');
+    unsupportedWalDatabase(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: {
+        ...baseRuntime.ids,
+        uuid: () => {
+          expect(statSync(`${path}-wal`, { bigint: true }).size).toBe(0n);
+          writeFileSync(`${path}-wal`, racingBytes);
+          return quarantineId;
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(racingBytes);
+  });
+
+  it('retains a zero wal replaced after the guarded receipt by comparing file identity', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000044';
+    const replacementPath = `${path}.replacement-wal`;
+    unsupportedWalDatabase(path);
+    writeFileSync(replacementPath, Buffer.alloc(0));
+    const replacement = statSync(replacementPath, { bigint: true });
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: {
+        ...baseRuntime.ids,
+        uuid: () => {
+          const classifierWal = statSync(`${path}-wal`, { bigint: true });
+          expect(classifierWal.size).toBe(0n);
+          expect({ dev: classifierWal.dev, ino: classifierWal.ino }).not.toEqual({
+            dev: replacement.dev,
+            ino: replacement.ino,
+          });
+          renameSync(replacementPath, `${path}-wal`);
+          return quarantineId;
+        },
+      },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    const retained = statSync(`${discarded.quarantinePath}-wal`, { bigint: true });
+    expect({ dev: retained.dev, ino: retained.ino, size: retained.size }).toEqual({
+      dev: replacement.dev,
+      ino: replacement.ino,
+      size: 0n,
     });
   });
 
@@ -443,7 +1665,8 @@ describe('handoff-routing/status', () => {
     expect(existsSync(path)).toBe(false);
     expect(readFileSync(discarded.quarantinePath, 'utf-8')).toBe('not a sqlite database');
     expect(readFileSync(`${discarded.quarantinePath}-wal`, 'utf-8')).toBe('retained wal');
-    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(true);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(existsSync(`${discarded.quarantinePath}-shm`)).toBe(false);
 
     await expect(publish(path, [selection('clean-generation', 1)])).resolves.toMatchObject({ kind: 'committed' });
     chmodSync(path, 0o000);
@@ -514,7 +1737,7 @@ describe('handoff-routing/status', () => {
     }
   });
 
-  it('keeps an interrupted sidecar move discoverable and refuses to combine it with the current database', async () => {
+  it('keeps an interrupted wal move discoverable when source shm removal fails', async () => {
     const path = databasePath();
     const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
@@ -525,9 +1748,9 @@ describe('handoff-routing/status', () => {
       ...discardRuntime,
       storage: {
         ...discardRuntime.storage,
-        renameSync: (oldPath, newPath) => {
-          if (oldPath === `${path}-shm`) throw new Error('injected sidecar move failure');
-          discardRuntime.storage.renameSync(oldPath, newPath);
+        unlinkSync: (candidate) => {
+          if (candidate === `${path}-shm`) throw new Error('injected shm removal failure');
+          discardRuntime.storage.unlinkSync(candidate);
         },
       },
     };
@@ -535,14 +1758,19 @@ describe('handoff-routing/status', () => {
     const interruptedResult = await discardHandoffRoutingStatus(routingStatusOperatorOptions(interruptedRuntime, path));
     expect(interruptedResult).toMatchObject({
       kind: 'quarantine-storage-failed',
+      retainedArtifacts: ['wal'],
       movedArtifacts: ['wal'],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source', 'quarantine'],
       cause: 'artifact-move-failed',
     });
     if (interruptedResult.kind !== 'quarantine-storage-failed') {
       throw new Error(`Expected partial quarantine, received ${interruptedResult.kind}`);
     }
     expect(existsSync(path)).toBe(true);
-    const interrupted = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
+    const interrupted = listedQuarantines(discardRuntime.storage, path);
     expect(interrupted).toMatchObject({
       overflow: false,
       entries: [{ id: interruptedResult.quarantineId, state: 'incomplete', artifacts: ['wal'] }],
@@ -564,12 +1792,13 @@ describe('handoff-routing/status', () => {
       entry: { id: incomplete.id },
     });
     expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
+      kind: 'listed',
       entries: [],
       overflow: false,
     });
   });
 
-  it('returns the exact partial quarantine when directory sync fails after the first move', async () => {
+  it('reports the first move as observed when its source directory barrier fails', async () => {
     const path = databasePath();
     const quarantineId = '00000000-0000-4000-8000-000000000042';
     const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
@@ -577,17 +1806,18 @@ describe('handoff-routing/status', () => {
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
     const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
-    let sourceSyncFailed = false;
+    let walRemoved = false;
     const discardRuntime: Runtime = {
       ...baseRuntime,
       ids: { ...baseRuntime.ids, uuid: () => quarantineId },
       storage: {
         ...baseRuntime.storage,
+        unlinkSync: (candidate) => {
+          baseRuntime.storage.unlinkSync(candidate);
+          if (candidate === `${path}-wal`) walRemoved = true;
+        },
         syncDirectoryDurableSync: (directory) => {
-          if (!sourceSyncFailed && directory === dirname(path)) {
-            sourceSyncFailed = true;
-            return false;
-          }
+          if (directory === dirname(path) && walRemoved) return false;
           return sync(directory);
         },
       },
@@ -597,17 +1827,66 @@ describe('handoff-routing/status', () => {
       kind: 'quarantine-storage-failed',
       quarantineId,
       quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
-      movedArtifacts: ['wal'],
+      retainedArtifacts: ['wal'],
+      movedArtifacts: [],
+      observedMovedArtifacts: ['wal'],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source', 'quarantine'],
       cause: 'directory-sync-failed',
     });
     expect(existsSync(path)).toBe(true);
+    expect(existsSync(`${path}-wal`)).toBe(false);
     expect(existsSync(`${path}-shm`)).toBe(true);
     expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
       entries: [{ id: quarantineId, state: 'incomplete', artifacts: ['wal'] }],
     });
   });
 
-  it('returns the exact partial clear when directory sync fails after the first removal', async () => {
+  it('reports source shm removal as observed when its directory barrier fails', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000043';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'retained wal');
+    writeFileSync(`${path}-shm`, 'retained shm');
+    const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
+    let shmRemoved = false;
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      ids: { ...baseRuntime.ids, uuid: () => quarantineId },
+      storage: {
+        ...baseRuntime.storage,
+        unlinkSync: (candidate) => {
+          baseRuntime.storage.unlinkSync(candidate);
+          if (candidate === `${path}-shm`) shmRemoved = true;
+        },
+        syncDirectoryDurableSync: (directory) => {
+          if (directory === dirname(path) && shmRemoved) return false;
+          return sync(directory);
+        },
+      },
+    };
+
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path))).resolves.toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
+      retainedArtifacts: ['wal'],
+      movedArtifacts: ['wal'],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: ['shm'],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'directory-sync-failed',
+    });
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: quarantineId, state: 'incomplete', artifacts: ['wal'] }],
+    });
+  });
+
+  it('reports the first clear removal as observed when its directory barrier fails', async () => {
     const path = databasePath();
     const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
@@ -615,7 +1894,7 @@ describe('handoff-routing/status', () => {
     writeFileSync(`${path}-shm`, 'retained shm');
     const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(baseRuntime, path));
     if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
-    const retained = listHandoffRoutingStoreQuarantines(baseRuntime.storage, path).entries[0];
+    const retained = listedQuarantines(baseRuntime.storage, path).entries[0];
     if (retained === undefined) throw new Error('Expected retained quarantine.');
     const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
     let quarantineSyncFailed = false;
@@ -639,16 +1918,58 @@ describe('handoff-routing/status', () => {
       kind: 'quarantine-clear-storage-failed',
       quarantineId: retained.id,
       quarantinePath: retained.quarantinePath,
-      removedArtifacts: ['wal'],
+      removedArtifacts: [],
+      observedRemovedArtifacts: ['wal'],
+      syncedDirectories: [],
       cause: 'directory-sync-failed',
     });
     expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
-      entries: [{ id: retained.id, state: 'complete', artifacts: ['database', 'shm'] }],
+      entries: [{ id: retained.id, state: 'complete', artifacts: ['database'] }],
     });
 
     await expect(
       clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), retained.id),
     ).resolves.toMatchObject({ kind: 'cleared', entry: { id: retained.id } });
+  });
+
+  it('does not return clear success when ownership is lost during the final directory sync', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000054';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
+    writeFileSync(quarantinePath, 'retained database');
+    writeFileSync(`${quarantinePath}-wal`, 'retained wal');
+    let databaseRemoved = false;
+    let ownershipLost = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      unlinkSync: (candidate) => {
+        baseRuntime.storage.unlinkSync(candidate);
+        if (candidate === quarantinePath) databaseRemoved = true;
+      },
+      syncDirectoryDurableSync: (directory) => {
+        const synced = baseRuntime.storage.syncDirectoryDurableSync(directory);
+        if (directory === dirname(quarantinePath) && databaseRemoved) ownershipLost = true;
+        return synced;
+      },
+    };
+
+    expect(
+      clearHandoffRoutingStoreQuarantine(storage, path, quarantineId, () => {
+        if (ownershipLost) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+      }),
+    ).toEqual({
+      kind: 'quarantine-clear-storage-failed',
+      quarantineId,
+      quarantinePath,
+      removedArtifacts: ['wal', 'database'],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['quarantine'],
+      cause: 'ownership-lost',
+    });
+    expect(existsSync(quarantinePath)).toBe(false);
+    expect(existsSync(`${quarantinePath}-wal`)).toBe(false);
   });
 
   it('refuses another discard when retained quarantine reaches its explicit ceiling', async () => {
@@ -667,9 +1988,126 @@ describe('handoff-routing/status', () => {
       maximum: MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
     });
     expect(existsSync(path)).toBe(true);
-    const retained = listHandoffRoutingStoreQuarantines(discardRuntime.storage, path);
+    const retained = listedQuarantines(discardRuntime.storage, path);
     expect(retained.overflow).toBe(false);
     expect(retained.entries).toHaveLength(MAX_HANDOFF_ROUTING_STATUS_QUARANTINES);
+  });
+
+  it('reports an unreadable quarantine root and refuses capacity admission on that unknown listing', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const root = join(dirname(path), 'handoff-routing-quarantine');
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    const statSyncWithUnreadableRoot = ((candidate: string, options?: { bigint: true }) => {
+      if (candidate === root) {
+        const error = new Error('injected quarantine root stat failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        error.errno = SQLITE_FULL;
+        throw error;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+    let artifactLinkAttempted = false;
+    const unreadableRuntime: Runtime = {
+      ...baseRuntime,
+      storage: {
+        ...baseRuntime.storage,
+        statSync: statSyncWithUnreadableRoot,
+        linkSync: (source, destination) => {
+          if (source === path || source === `${path}-wal`) artifactLinkAttempted = true;
+          baseRuntime.storage.linkSync(source, destination);
+        },
+      },
+    };
+    const undeterminable = {
+      kind: 'undeterminable' as const,
+      cause: 'root-observation-failed' as const,
+      errcode: SQLITE_FULL,
+    };
+
+    expect(listHandoffRoutingStoreQuarantines(unreadableRuntime.storage, path)).toEqual(undeterminable);
+    await expect(discardHandoffRoutingStatus(routingStatusOperatorOptions(unreadableRuntime, path))).resolves.toEqual(
+      undeterminable,
+    );
+    expect(artifactLinkAttempted).toBe(false);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('returns an undeterminable clear result when a retained artifact cannot be observed', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000048';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
+    writeFileSync(quarantinePath, 'retained database');
+    const statSyncWithUnreadableArtifact = ((candidate: string, options?: { bigint: true }) => {
+      if (candidate === quarantinePath) {
+        const error = new Error('injected quarantine artifact stat failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        error.errno = SQLITE_FULL;
+        throw error;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+    const unreadableRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, statSync: statSyncWithUnreadableArtifact },
+    };
+
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(unreadableRuntime, path), quarantineId),
+    ).resolves.toEqual({
+      kind: 'quarantine-clear-undeterminable',
+      quarantineId,
+      quarantinePath,
+      artifact: 'database',
+      errcode: SQLITE_FULL,
+    });
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('retained database');
+  });
+
+  it('bounds quarantine scans for two retained artifacts per entry plus overflow detection', () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantineRoot = join(dirname(path), 'handoff-routing-quarantine');
+    mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+    const readDirectoryBoundedSync = vi.fn(() => ({ entries: [], overflow: false }));
+
+    listHandoffRoutingStoreQuarantines({ ...baseRuntime.storage, readDirectoryBoundedSync }, path);
+
+    expect(readDirectoryBoundedSync).toHaveBeenCalledWith(quarantineRoot, 33);
+  });
+
+  it('does not recognize or clear unsupported legacy retained shm files', async () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000045';
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const quarantinePath = join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`);
+    mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
+    writeFileSync(quarantinePath, 'database');
+    writeFileSync(`${quarantinePath}-wal`, 'wal');
+    writeFileSync(`${quarantinePath}-shm`, 'unsupported legacy shm');
+
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toMatchObject({
+      entries: [{ id: quarantineId, state: 'complete', artifacts: ['database', 'wal'] }],
+    });
+    await expect(
+      clearHandoffRoutingStatusQuarantine(routingStatusOperatorOptions(baseRuntime, path), quarantineId),
+    ).resolves.toMatchObject({
+      kind: 'cleared',
+      entry: { artifacts: ['database', 'wal'] },
+    });
+    expect(existsSync(`${quarantinePath}-shm`)).toBe(true);
+    expect(listHandoffRoutingStoreQuarantines(baseRuntime.storage, path)).toEqual({
+      kind: 'listed',
+      entries: [],
+      overflow: false,
+    });
   });
 
   it('revalidates maintenance ownership after the guarded journal read', async () => {
@@ -677,17 +2115,25 @@ describe('handoff-routing/status', () => {
     const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     const boundary = resolveGenerationBoundaryPaths(discardRuntime);
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
-    let journalOpens = 0;
+    let guardedJournalReadCompleted = false;
+    const generateQuarantineId = vi.fn(() => '00000000-0000-4000-8000-000000000062');
     const ownershipLostRuntime: Runtime = {
       ...discardRuntime,
+      ids: { ...discardRuntime.ids, uuid: generateQuarantineId },
       storage: {
         ...discardRuntime.storage,
-        openSqliteDatabaseSync: (databasePath, options) => {
-          journalOpens += 1;
-          if (journalOpens === 2) {
-            discardRuntime.storage.rmSync(boundary.maintenanceLock, { recursive: true, force: true });
-          }
-          return discardRuntime.storage.openSqliteDatabaseSync(databasePath, options);
+        openSqliteDatabaseSync: (databasePath, options): SqliteDatabasePort => {
+          const database = discardRuntime.storage.openSqliteDatabaseSync(databasePath, options);
+          if (!existsSync(boundary.maintenanceLock)) return database;
+          return {
+            exec: database.exec.bind(database),
+            prepare: database.prepare.bind(database),
+            close: () => {
+              database.close();
+              guardedJournalReadCompleted = true;
+              discardRuntime.storage.rmSync(boundary.maintenanceLock, { recursive: true, force: true });
+            },
+          };
         },
       },
     };
@@ -699,7 +2145,10 @@ describe('handoff-routing/status', () => {
       cause: 'ownership-lost',
     });
     expect(existsSync(path)).toBe(true);
+    expect(guardedJournalReadCompleted).toBe(true);
+    expect(generateQuarantineId).not.toHaveBeenCalled();
     expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
+      kind: 'listed',
       entries: [],
       overflow: false,
     });
@@ -723,7 +2172,7 @@ describe('handoff-routing/status', () => {
       ).toEqual([{ invocation_id: 'active', bytes: MAX_LEGAL_CLOSING_RECORD_BYTES }]);
 
       const active = records(path)[0];
-      const forgedRetirement = retirementTombstoneSchema.parse({
+      const forgedRetirement = handoffRoutingRecordSchemaRegistry.retirement.parse({
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
         sequence: 2,
         eventId: 'retirement-for-active',
@@ -742,7 +2191,7 @@ describe('handoff-routing/status', () => {
 
       const activeSequence = active.sequence;
       if (typeof activeSequence !== 'number') throw new Error('Active fixture has no numeric sequence');
-      const contradictoryTerminal = terminalEventSchema.parse({
+      const contradictoryTerminal = handoffRoutingRecordSchemaRegistry.terminal.parse({
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
         sequence: 2,
         eventId: 'terminal-for-retained-selection',
@@ -989,7 +2438,7 @@ describe('handoff-routing/status', () => {
         }),
       ]);
 
-      const durable = terminalEventSchema.parse(
+      const durable = handoffRoutingRecordSchemaRegistry.terminal.parse(
         records(path).find((record) => record.eventKind === 'continuation-finalized'),
       );
       expect(durable.disposition).toEqual(durableDisposition);
@@ -1055,7 +2504,7 @@ describe('handoff-routing/status', () => {
     expect(handoffRoutingStatusExitContribution(result)).toBe(0);
   });
 
-  it('returns distinct absent, unsupported-generation, unreadable, and I/O-failure results', async () => {
+  it('returns distinct absent, foreign, schema-divergent, unreadable, and I/O-failure results', async () => {
     const absentPath = databasePath();
     expect(readHandoffRoutingStatus(absentPath)).toEqual({ kind: 'absent' });
 
@@ -1064,7 +2513,7 @@ describe('handoff-routing/status', () => {
     unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
     unsupported.close();
     expect(readHandoffRoutingStatus(unsupportedPath)).toEqual({
-      kind: 'unsupported-generation',
+      kind: 'foreign-generation',
       generation: HANDOFF_ROUTING_STATUS_GENERATION + 1,
     });
 
@@ -1076,12 +2525,11 @@ describe('handoff-routing/status', () => {
     `);
     unsupportedShape.close();
     expect(readHandoffRoutingStatus(unsupportedShapePath)).toEqual({
-      kind: 'unsupported-generation',
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      kind: 'schema-divergent',
     });
     await expect(publish(unsupportedShapePath, [selection('unsupported-shape', 1)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'schema-divergent' },
     });
 
     const invalidJsonPath = databasePath();
@@ -1126,8 +2574,8 @@ describe('handoff-routing/status', () => {
 
     expect(readHandoffRoutingStatus(path)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
     await expect(publish(path, [terminal('missing-reserve', 2, selected.sequence)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unreadable',
+      kind: 'artifact-refused',
+      classification: { kind: 'unreadable', reason: 'invalid-shape' },
     });
   });
 
@@ -1186,8 +2634,8 @@ describe('handoff-routing/status', () => {
       cause: 'invalid-record',
       validation: { kind: 'malformed-json' },
     });
-    expect(outcome.kind).not.toBe('undeterminable');
-    expect(outcome).not.toMatchObject({ cause: 'unreadable' });
+    expect(outcome.kind).not.toBe('commit-outcome-unknown');
+    expect(outcome).not.toMatchObject({ cause: 'storage-corrupt' });
     expect(records(path)).toEqual(before);
   });
 
@@ -1222,6 +2670,7 @@ describe('handoff-routing/status', () => {
     let elapsedMs = 0n;
     let wallClockReads = 0;
     const jumpingWallClock = {
+      ...runtime.time,
       now: (): number => {
         wallClockReads += 1;
         return wallClockReads * 10_000;
@@ -1233,7 +2682,7 @@ describe('handoff-routing/status', () => {
     };
     try {
       await expect(
-        publishHandoffRoutingTransitions({ ...runtime, time: jumpingWallClock }, path, [
+        publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, time: jumpingWallClock }, path, [
           selection('monotonic-contender', 2),
         ]),
       ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
@@ -1388,8 +2837,8 @@ describe('handoff-routing/status', () => {
     }
 
     await expect(publish(path, [selection('valid-transition', 3)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'schema-divergent' },
     });
   });
 
@@ -1404,12 +2853,12 @@ describe('handoff-routing/status', () => {
     }
 
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unreadable',
+      kind: 'artifact-refused',
+      classification: { kind: 'unreadable', reason: 'invalid-shape' },
     });
   });
 
-  it('treats a generation-matching artifact with a dropped table as unsupported-generation', async () => {
+  it('treats a generation-matching artifact with a dropped table as schema-divergent', async () => {
     const path = databasePath();
     await committed(path, [selection('seed', 1)]);
     const db = new DatabaseSync(path);
@@ -1420,12 +2869,11 @@ describe('handoff-routing/status', () => {
     }
 
     expect(readHandoffRoutingStatus(path)).toEqual({
-      kind: 'unsupported-generation',
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      kind: 'schema-divergent',
     });
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'schema-divergent' },
     });
   });
 
@@ -1565,7 +3013,7 @@ describe('handoff-routing/status', () => {
       for (let index = 0; index < MAX_RETIREMENT_TOMBSTONES; index += 1) {
         insertTombstoneFixture(
           db,
-          retirementTombstoneSchema.parse({
+          handoffRoutingRecordSchemaRegistry.retirement.parse({
             generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: index + 2,
             eventId: `seed-retirement-${index}`,
@@ -1655,22 +3103,22 @@ describe('handoff-routing/status', () => {
     ]);
   });
 
-  it('distinguishes unsupported, corrupt, and capacity-exhausted stores by outcome', async () => {
+  it('distinguishes foreign, corrupt, and capacity-exhausted stores by outcome', async () => {
     const unsupportedPath = databasePath();
     await committed(unsupportedPath, [selection('supported', 1)]);
     const unsupported = new DatabaseSync(unsupportedPath);
     unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
     unsupported.close();
     await expect(publish(unsupportedPath, [selection('next', 2)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'foreign-generation', generation: HANDOFF_ROUTING_STATUS_GENERATION + 1 },
     });
 
     const corruptPath = databasePath();
     writeFileSync(corruptPath, 'not a sqlite database');
     await expect(publish(corruptPath, [selection('corrupt', 3)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unreadable',
+      kind: 'artifact-refused',
+      classification: { kind: 'unreadable', reason: 'invalid-shape' },
     });
 
     const fullPath = databasePath();
@@ -1679,13 +3127,11 @@ describe('handoff-routing/status', () => {
     try {
       full.exec('PRAGMA synchronous=OFF');
       full.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
-      const pad = full.prepare(
-        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
-         VALUES (?, ?, ?, zeroblob(?))`,
-      );
+      const insert = full.prepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)');
+      const padding = 'x'.repeat(MAX_LEGAL_CLOSING_RECORD_BYTES);
       let index = 0;
       while (true) {
-        pad.run(`padding-${index}`, `padding-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
+        insert.run(`padding-${index}-${padding}`, index);
         index += 1;
       }
     } catch (error) {
@@ -1711,14 +3157,53 @@ describe('handoff-routing/status', () => {
 
   it.each([
     ['BEGIN IMMEDIATE', { kind: 'not-published', cause: 'capacity-exhausted' }],
-    ['COMMIT', { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL }],
+    ['COMMIT', { kind: 'commit-outcome-unknown', cause: 'capacity-exhausted', errcode: SQLITE_FULL }],
   ] as const)('uses the COMMIT attempt boundary when SQLITE_FULL is raised by %s', async (statement, expected) => {
     const path = databasePath();
     const failingRuntime = { ...runtime, storage: storageFailingOnSqliteStatement(runtime.storage, statement) };
 
     await expect(
-      publishHandoffRoutingTransitions(failingRuntime, path, [selection(`full-at-${statement}`, 1)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [
+        selection(`full-at-${statement}`, 1),
+      ]),
     ).resolves.toEqual(expected);
+  });
+
+  it('maps corruption raised after locked admission to storage-corrupt', async () => {
+    const path = databasePath();
+    await committed(path, [selection('corrupt-after-admission-seed', 1)]);
+    const failingRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteRun(
+        runtime.storage,
+        'INSERT INTO handoff_routing_closing_reserve',
+        SQLITE_CORRUPT,
+      ),
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [
+        selection('corrupt-after-admission', 2),
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'storage-corrupt' });
+  });
+
+  it('maps corruption raised after commit starts to an unknown commit outcome', async () => {
+    const path = databasePath();
+    const failingRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteStatement(runtime.storage, 'COMMIT', SQLITE_CORRUPT),
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [
+        selection('corrupt-commit-outcome', 1),
+      ]),
+    ).resolves.toEqual({
+      kind: 'commit-outcome-unknown',
+      cause: 'storage-corrupt',
+      errcode: SQLITE_CORRUPT,
+    });
   });
 
   it('assigns total policy to repair, gap, rollup, and lifecycle dispositions', () => {
@@ -1900,7 +3385,7 @@ describe('handoff-routing/status', () => {
     expect(handoffRoutingStatusExitContribution(status)).toBe(0);
   });
 
-  it('preserves an undeterminable operator-resolution publication at the resolve boundary', async () => {
+  it('preserves an unknown operator-resolution commit at the resolve boundary', async () => {
     const invocationId = '123e4567-e89b-42d3-a456-426614174009';
     const path = databasePath();
     await committed(path, [selection(invocationId, 1)]);
@@ -1920,14 +3405,14 @@ describe('handoff-routing/status', () => {
         forceUnobservable: false,
       }),
     ).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'commit-outcome-unknown',
       invocationId,
       cause: 'capacity-exhausted',
       errcode: SQLITE_FULL,
     });
   });
 
-  it('preserves an undeterminable capacity-acknowledgement publication at the resolve boundary', async () => {
+  it('preserves an unknown capacity-acknowledgement commit at the resolve boundary', async () => {
     const invocationId = 'capacity-opening-0';
     const path = databasePath();
     await committed(
@@ -1952,7 +3437,7 @@ describe('handoff-routing/status', () => {
         forceUnobservable: false,
       }),
     ).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'commit-outcome-unknown',
       invocationId,
       cause: 'capacity-exhausted',
       errcode: SQLITE_FULL,

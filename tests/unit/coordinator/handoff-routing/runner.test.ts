@@ -26,7 +26,7 @@ import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import { withValidatedHandoffTarget, type ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
@@ -48,7 +48,7 @@ const mockState = vi.hoisted(() => ({
   readBuildFlavor: vi.fn(),
   resolveStrictBundleIdentity: vi.fn(),
   spawn: vi.fn(),
-  publishHandoffRoutingTransitions: vi.fn(),
+  publishGenerationCoordinatedHandoffRoutingTransitions: vi.fn(),
 }));
 
 vi.mock('node:child_process', async () => {
@@ -78,7 +78,8 @@ vi.mock('#src/coordinator/handoff-routing/status.js', async (importOriginal) => 
   const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
   return {
     ...actual,
-    publishGenerationCoordinatedHandoffRoutingTransitions: mockState.publishHandoffRoutingTransitions,
+    publishGenerationCoordinatedHandoffRoutingTransitions:
+      mockState.publishGenerationCoordinatedHandoffRoutingTransitions,
   };
 });
 
@@ -250,7 +251,9 @@ beforeEach(() => {
   mockState.readBuildFlavor.mockReset().mockReturnValue('prod');
   mockState.resolveStrictBundleIdentity.mockReset().mockReturnValue({ ok: true, manifest: invokingManifest });
   mockState.spawn.mockReset();
-  mockState.publishHandoffRoutingTransitions.mockReset().mockResolvedValue({ kind: 'committed', sequence: 1 });
+  mockState.publishGenerationCoordinatedHandoffRoutingTransitions
+    .mockReset()
+    .mockResolvedValue({ kind: 'committed', sequence: 1 });
   readProcessIncarnation.mockReset().mockReturnValue(testIncarnation('handoff-runner'));
   runtimeUuid.mockReset();
   configureNewerIncumbent();
@@ -359,7 +362,7 @@ describe('handoff-routing/runner', () => {
 
   it('should commit selection before execution and finalize with its committed sequence', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.publishHandoffRoutingTransitions
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions
       .mockResolvedValueOnce({ kind: 'committed', sequence: 41 })
       .mockResolvedValueOnce({ kind: 'committed', sequence: 42 });
 
@@ -372,9 +375,9 @@ describe('handoff-routing/runner', () => {
       publicationIncidents: [],
     });
 
-    const selection = mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0];
-    const terminal = mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0];
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[1]).toBe(
+    const selection = mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0];
+    const terminal = mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0];
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[1]).toBe(
       `/handoff/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
     );
     expect(selection).toMatchObject({
@@ -400,7 +403,7 @@ describe('handoff-routing/runner', () => {
     mkdirSync(isolatedRuntime.paths.coral.coordinator.runDir, { recursive: true });
     mockState.createRealRuntime.mockReturnValue(isolatedRuntime);
     const status = await vi.importActual<typeof HandoffRoutingStatusMod>('#src/coordinator/handoff-routing/status.js');
-    mockState.publishHandoffRoutingTransitions.mockImplementation(
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mockImplementation(
       status.publishGenerationCoordinatedHandoffRoutingTransitions,
     );
 
@@ -455,15 +458,15 @@ describe('handoff-routing/runner', () => {
       },
       publicationIncidents: [],
     });
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
       kind: 'routing-selected',
       disposition: {
         kind: 'continue-current',
         basis: { kind: 'incumbent-identity-unavailable', incumbent: maximumIncumbent },
       },
     });
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'continuation-finalized',
       selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
     });
@@ -513,8 +516,8 @@ describe('handoff-routing/runner', () => {
       ],
     });
 
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledOnce();
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledOnce();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
       kind: 'continuation-finalized',
       selection: { kind: 'without-selection' },
     });
@@ -522,8 +525,8 @@ describe('handoff-routing/runner', () => {
 
   it('should retain selection uncertainty together with terminal refusal', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.publishHandoffRoutingTransitions.mockResolvedValueOnce({
-      kind: 'undeterminable',
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mockResolvedValueOnce({
+      kind: 'commit-outcome-unknown',
       cause: 'io-failed',
       errcode: 5,
     });
@@ -531,32 +534,32 @@ describe('handoff-routing/runner', () => {
     await expect(runHandoffResult(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
       kind: 'recording-incidents',
       publicationIncidents: [
-        { phase: 'selection', kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+        { phase: 'selection', kind: 'commit-outcome-unknown', cause: 'io-failed', errcode: 5 },
         {
           phase: 'terminal',
           kind: 'refused',
-          refusal: { reason: 'selection-publication-undeterminable', attemptedPhase: 'terminal' },
+          refusal: { reason: 'selection-publication-outcome-unknown', attemptedPhase: 'terminal' },
         },
       ],
     });
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledOnce();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledOnce();
   });
 
   it('should retain selection not-published together with terminal uncertainty', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.publishHandoffRoutingTransitions
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions
       .mockResolvedValueOnce({ kind: 'not-published', cause: 'contended' })
-      .mockResolvedValueOnce({ kind: 'undeterminable', cause: 'unreadable', errcode: 26 });
+      .mockResolvedValueOnce({ kind: 'commit-outcome-unknown', cause: 'storage-corrupt', errcode: 26 });
 
     await expect(runHandoffResult(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
       kind: 'recording-incidents',
       publicationIncidents: [
         { phase: 'selection', kind: 'not-published', cause: 'contended' },
-        { phase: 'terminal', kind: 'undeterminable', cause: 'unreadable', errcode: 26 },
+        { phase: 'terminal', kind: 'commit-outcome-unknown', cause: 'storage-corrupt', errcode: 26 },
       ],
     });
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'continuation-finalized',
       selection: { kind: 'without-selection' },
     });
@@ -564,7 +567,7 @@ describe('handoff-routing/runner', () => {
 
   it('should retain the invalid-record validation category on a publication incident', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.publishHandoffRoutingTransitions
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions
       .mockResolvedValueOnce({
         kind: 'not-published',
         cause: 'invalid-record',
@@ -587,7 +590,7 @@ describe('handoff-routing/runner', () => {
 
   it('should surface generation maintenance refusals for both lifecycle publications', async () => {
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.publishHandoffRoutingTransitions.mockResolvedValue({
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mockResolvedValue({
       kind: 'not-published',
       cause: 'generation-maintenance',
     });
@@ -600,12 +603,12 @@ describe('handoff-routing/runner', () => {
         { phase: 'terminal', kind: 'not-published', cause: 'generation-maintenance' },
       ],
     });
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
   });
 
   it('should report a selection incident before spawning delegated work', async () => {
     const order: string[] = [];
-    mockState.publishHandoffRoutingTransitions
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions
       .mockResolvedValueOnce({ kind: 'not-published', cause: 'contended' })
       .mockResolvedValueOnce({ kind: 'committed', sequence: 2 });
     mockState.spawn.mockImplementationOnce(() => {
@@ -630,13 +633,13 @@ describe('handoff-routing/runner', () => {
     );
 
     expect(thrown).toBe(originalError);
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
   });
 
   it('should identify a failed operation when its execution-failed terminal is not published', async () => {
     const originalError = new Error('spawn rejected');
     mockState.spawn.mockImplementationOnce(() => childThatErrors(originalError));
-    mockState.publishHandoffRoutingTransitions
+    mockState.publishGenerationCoordinatedHandoffRoutingTransitions
       .mockResolvedValueOnce({ kind: 'committed', sequence: 1 })
       .mockResolvedValueOnce({ kind: 'not-published', cause: 'capacity-exhausted' });
 
@@ -677,7 +680,7 @@ describe('handoff-routing/runner', () => {
     });
     expect(mockState.health).toHaveBeenCalledOnce();
     expect(mockState.spawn).toHaveBeenCalledOnce();
-    expect(mockState.publishHandoffRoutingTransitions).not.toHaveBeenCalled();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -698,7 +701,7 @@ describe('handoff-routing/runner', () => {
       }),
     ).resolves.toMatchObject({ kind: 'recording-not-applicable' });
 
-    expect(mockState.publishHandoffRoutingTransitions).not.toHaveBeenCalled();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
   });
 
   it.each(['forged', 'consumed'])('should persist no selection for a %s target', async (authority) => {
@@ -721,7 +724,9 @@ describe('handoff-routing/runner', () => {
         },
       ],
     });
-    const transitions = mockState.publishHandoffRoutingTransitions.mock.calls.map((call) => call[2][0]);
+    const transitions = mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls.map(
+      (call) => call[2][0],
+    );
     expect(transitions).not.toContainEqual(expect.objectContaining({ kind: 'routing-selected' }));
     expect(transitions).toContainEqual(
       expect.objectContaining({
@@ -757,7 +762,7 @@ describe('handoff-routing/runner', () => {
         stdio: 'inherit',
       },
     );
-    const selection = mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0];
+    const selection = mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0];
     expect(selection).toMatchObject({
       kind: 'routing-selected',
       disposition: {
@@ -814,7 +819,7 @@ describe('handoff-routing/runner', () => {
 
       expect(mockState.createRealRuntime).not.toHaveBeenCalled();
       expect(mockState.probeCoordinator).not.toHaveBeenCalled();
-      expect(mockState.publishHandoffRoutingTransitions).not.toHaveBeenCalled();
+      expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
     },
   );
 
@@ -827,7 +832,7 @@ describe('handoff-routing/runner', () => {
     await expect(runHandoff(cliOperation('run'))).rejects.toThrow(GUARD_ENV);
     expect(mockState.probeCoordinator).toHaveBeenCalledTimes(2);
     expect(mockState.spawn).not.toHaveBeenCalled();
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'execution-failed',
       disposition: { kind: 'execution-failed', throwPhase: 'double-delegation-guard' },
     });
@@ -840,7 +845,7 @@ describe('handoff-routing/runner', () => {
       /already delegated once/u,
     );
     expect(mockState.spawn).not.toHaveBeenCalled();
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'execution-failed',
       disposition: { kind: 'execution-failed', throwPhase: 'double-delegation-guard' },
     });
@@ -1166,8 +1171,8 @@ describe('handoff-routing/runner', () => {
         basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
       },
     });
-    expect(mockState.publishHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledTimes(2);
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
       disposition: {
         kind: 'continue-current',
         basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
@@ -1340,7 +1345,7 @@ describe('handoff-routing/runner', () => {
       'bytes changed before execution',
     );
     expect(mockState.spawn).not.toHaveBeenCalled();
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'execution-failed',
       disposition: { kind: 'execution-failed', throwPhase: 'executable-check' },
     });
@@ -1427,7 +1432,7 @@ describe('handoff-routing/runner', () => {
       (error: unknown) => error,
     );
     expect(thrown).toBe(failure);
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'execution-failed',
       disposition: { kind: 'execution-failed', throwPhase: 'child-spawn' },
     });
@@ -1448,7 +1453,7 @@ describe('handoff-routing/runner', () => {
       (error: unknown) => error,
     );
     expect(thrown).toBe(failure);
-    expect(mockState.publishHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'execution-failed',
       disposition: { kind: 'execution-failed', throwPhase: 'child-outcome-wait' },
     });
