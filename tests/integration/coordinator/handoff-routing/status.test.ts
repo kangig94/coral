@@ -9,6 +9,7 @@ import {
   ABSENT_HANDOFF_RESULT_POLICY_PROJECTION,
   HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS,
   HANDOFF_ROUTING_COMPLETED_RETENTION_MS,
+  HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION,
   MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
@@ -19,6 +20,8 @@ import {
   MAX_RETIREMENT_TOMBSTONE_BYTES,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  handoffRoutingRecordSchemaRegistry,
+  handoffRoutingSentinelRecordSchemaRegistry,
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   handoffRoutingTransitionSchema,
@@ -29,8 +32,6 @@ import {
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
   readHandoffRoutingStatusWithOwnerObservations,
   resolveHandoffRoutingStatus,
-  retirementTombstoneSchema,
-  terminalEventSchema,
   type DurableHandoffRoutingBasis,
   type HandoffRoutingTransition,
   type PublicationOutcome,
@@ -43,6 +44,7 @@ import {
 } from '#src/coordinator/handoff-routing/status-operator.js';
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
+import { zodPersistedContract } from '#src/infra/persisted-contract.js';
 import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -272,6 +274,22 @@ afterAll(() => {
 });
 
 describe('handoff-routing/status', () => {
+  it('should initialize from a fresh module registry with the pinned generation', async () => {
+    vi.resetModules();
+    const statusModule = await import('#src/coordinator/handoff-routing/status.js');
+
+    expect(handoffRoutingStatusGeneration(statusModule.handoffRoutingStatusStoreSchema())).toBe(1167786363);
+  });
+
+  it('should extract persisted contracts from every sentinel-generation record root', () => {
+    expect(() => {
+      for (const schema of Object.values(handoffRoutingSentinelRecordSchemaRegistry)) {
+        zodPersistedContract(schema);
+      }
+    }).not.toThrow();
+    expect(HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION).toBe(0);
+  });
+
   it('projects continuation and absent obligations without inventing persisted status for ephemeral bindings', () => {
     expect(HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS).toEqual({
       'handoff-not-applicable': {
@@ -723,7 +741,7 @@ describe('handoff-routing/status', () => {
       ).toEqual([{ invocation_id: 'active', bytes: MAX_LEGAL_CLOSING_RECORD_BYTES }]);
 
       const active = records(path)[0];
-      const forgedRetirement = retirementTombstoneSchema.parse({
+      const forgedRetirement = handoffRoutingRecordSchemaRegistry.retirement.parse({
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
         sequence: 2,
         eventId: 'retirement-for-active',
@@ -742,7 +760,7 @@ describe('handoff-routing/status', () => {
 
       const activeSequence = active.sequence;
       if (typeof activeSequence !== 'number') throw new Error('Active fixture has no numeric sequence');
-      const contradictoryTerminal = terminalEventSchema.parse({
+      const contradictoryTerminal = handoffRoutingRecordSchemaRegistry.terminal.parse({
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
         sequence: 2,
         eventId: 'terminal-for-retained-selection',
@@ -989,7 +1007,7 @@ describe('handoff-routing/status', () => {
         }),
       ]);
 
-      const durable = terminalEventSchema.parse(
+      const durable = handoffRoutingRecordSchemaRegistry.terminal.parse(
         records(path).find((record) => record.eventKind === 'continuation-finalized'),
       );
       expect(durable.disposition).toEqual(durableDisposition);
@@ -1565,7 +1583,7 @@ describe('handoff-routing/status', () => {
       for (let index = 0; index < MAX_RETIREMENT_TOMBSTONES; index += 1) {
         insertTombstoneFixture(
           db,
-          retirementTombstoneSchema.parse({
+          handoffRoutingRecordSchemaRegistry.retirement.parse({
             generation: HANDOFF_ROUTING_STATUS_GENERATION,
             sequence: index + 2,
             eventId: `seed-retirement-${index}`,

@@ -1,10 +1,18 @@
 import {
   handoffRoutingStatusStoreSchema,
+  type DirectTerminalDisposition,
   type HandoffRoutingInvocationStatus,
   type HandoffRoutingStatusReadResult,
   type RetirementHistoryTruncated,
 } from '../../src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '../../src/store/handoff-routing-status-store.js';
+
+type Equals<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
+type Assert<Condition extends true> = Condition;
+
+export type DirectTerminalSignalIsExact = Assert<
+  Equals<Extract<DirectTerminalDisposition, { kind: 'delegated-signal' }>['signal'], NodeJS.Signals>
+>;
 
 declare const statuses: readonly HandoffRoutingInvocationStatus[];
 declare const retirementHistoryTruncated: RetirementHistoryTruncated;

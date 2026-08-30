@@ -19,8 +19,8 @@ import type {
   LiveHandoffResult,
 } from '#src/coordinator/handoff-routing/runner.js';
 import {
+  handoffRoutingRecordSchemaRegistry,
   handoffRoutingStatusStoreSchema,
-  retirementTombstoneSchema,
   type HandoffRoutingStatusReadResult,
 } from '#src/coordinator/handoff-routing/status.js';
 import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
@@ -690,7 +690,7 @@ describe('backend routing status', () => {
         'Routing invocation retired-invocation: retired (operator-resolved; reason: operator-abandoned-unobservable). No action is needed.',
     },
   ] as const)('renders retained evidence for $name', ({ retirementCause, terminalExisted, ...testCase }) => {
-    const tombstone = retirementTombstoneSchema.parse({
+    const tombstone = handoffRoutingRecordSchemaRegistry.retirement.parse({
       generation: HANDOFF_ROUTING_STATUS_GENERATION,
       sequence: 1,
       eventId: 'retirement-event',

@@ -1051,15 +1051,19 @@ function assertDurableFormat(format: HandoffRoutingStatusStoreDurableFormat): vo
   }
 }
 
-export function handoffRoutingStatusGeneration(schema: HandoffRoutingStatusStoreSchema): number {
+export function handoffRoutingStatusFingerprint(schema: HandoffRoutingStatusStoreSchema): Buffer {
   assertDurableFormat(schema.durableFormat);
-  const fingerprint = createHash('sha256')
+  return createHash('sha256')
     .update(canonicalContractJson(schema.durableFormat), 'utf-8')
     .update('\0', 'utf-8')
     .update(renderedSchemaSql(schema.durableFormat, ''), 'utf-8')
     .update('\0', 'utf-8')
     .update(completedPairStableSql(schema.durableFormat.bodyVocabulary), 'utf-8')
     .digest();
+}
+
+export function handoffRoutingStatusGeneration(schema: HandoffRoutingStatusStoreSchema): number {
+  const fingerprint = handoffRoutingStatusFingerprint(schema);
   const { minimum, maximum } = HANDOFF_ROUTING_STATUS_GENERATION_BAND;
   const generationCount = maximum - minimum + 1;
   return (fingerprint.readUInt32BE(0) % generationCount) + minimum;
