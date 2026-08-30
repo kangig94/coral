@@ -2,16 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handoffStartupToSelectedBuild } from '#src/coordinator/bootstrap.js';
 import { StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
-import { HandoffRunError } from '#src/coordinator/handoff-runner.js';
+import { HandoffRunError } from '#src/coordinator/handoff-routing/runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
-import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
+import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 
 const mockState = vi.hoisted(() => ({
   runHandoff: vi.fn(),
 }));
 
-vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRunnerMod>();
   return { ...actual, runHandoff: mockState.runHandoff };
 });

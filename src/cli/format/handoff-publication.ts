@@ -1,5 +1,5 @@
-import type { PublicationOutcome } from '../../coordinator/handoff-routing-status.js';
-import type { HandoffPublicationIncident } from '../../coordinator/handoff-runner.js';
+import type { PublicationOutcome } from '../../coordinator/handoff-routing/status.js';
+import type { HandoffPublicationIncident } from '../../coordinator/handoff-routing/runner.js';
 import { assertNever } from '../../infra/error-format.js';
 
 type HandoffPublicationActionContext =

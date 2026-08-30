@@ -124,7 +124,7 @@ points could participate, but none starts the newer successor:
 | Entry point                                              | What it decides on                                                 |
 | -------------------------------------------------------- | ------------------------------------------------------------------ |
 | `clients/hooks/session-start.mjs` (`isCoordinatorAlive`) | pid liveness only — no version, no bundle hash                     |
-| `routeLiveIncumbent` (`src/coordinator/handoff-routing.ts`) | a newer invoking CLI continues with an `invoking-build-not-older` basis |
+| `routeLiveIncumbent` (`src/coordinator/handoff-routing/policy.ts`) | a newer invoking CLI continues with an `invoking-build-not-older` basis |
 | `src/transport/ipc/ensure.ts`                            | discovery-record ↔ health self-consistency, not "is this my build" |
 
 So the incumbent can only learn it has been replaced by seeing a successor's `instanceId`; a successor
@@ -194,9 +194,9 @@ the continuity defect — it is fixed, and this document is not its home.
 `runCliHandoffPreflight` runs on ordinary invocations except `--print-store-reset-build-identity`; help and
 version enter preflight but return before routing, and a build comparison is reached only when routing
 observes a usable live incumbent with both identities available. The decision is `routeLiveIncumbent`
-(`src/coordinator/handoff-routing.ts`), which distinguishes same build set,
+(`src/coordinator/handoff-routing/policy.ts`), which distinguishes same build set,
 newer-or-equal invoking build, invalid foreign target, and a validated handoff. The observation layer in
-`src/coordinator/handoff-runner.ts` separately distinguishes incumbent absence, three unresolved causes,
+`src/coordinator/handoff-routing/runner.ts` separately distinguishes incumbent absence, three unresolved causes,
 two live-but-unusable causes, and invoking or incumbent identity failure. `backend status` renders the
 memoized top-level continuation, including its basis, when the command continues in this process.
 

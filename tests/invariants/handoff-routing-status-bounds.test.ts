@@ -7,7 +7,7 @@ import {
   MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
   handoffRoutingStatusStoreSchema,
-} from '#src/coordinator/handoff-routing-status.js';
+} from '#src/coordinator/handoff-routing/status.js';
 import {
   HANDOFF_ROUTING_STATUS_GENERATION_BAND,
   handoffRoutingStatusGeneration,

@@ -1,17 +1,17 @@
-import { processIncarnationSchema } from '../infra/node-process.js';
+import { processIncarnationSchema } from '../../infra/node-process.js';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
-import { backendLog } from '../infra/backend-log.js';
-import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
-import { resolveBuildFlavor } from '../infra/build-flavor.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../../infra/backend-discovery.js';
+import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import {
   readBuildFlavor,
   resolveStrictBundleIdentity,
   strictBundleManifestSchema,
   type StrictBundleManifest,
-} from '../infra/bundle-manifest.js';
+} from '../../infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
   inspectValidatedHandoffTarget,
@@ -19,15 +19,15 @@ import {
   type ForeignTargetValidator,
   type ForeignTargetValidationResult,
   type ValidatedHandoffTarget,
-} from '../infra/handoff-target.js';
-import { handoffRoutingStatusPathForRunDir } from '../infra/path/index.js';
-import { assertNever } from '../infra/error-format.js';
-import type { TimePort, TimerHandle } from '../infra/port-types.js';
-import type { RecordedProcessIdentity } from '../infra/process-containment.js';
-import type { Runtime } from '../runtime/ports.js';
-import { createRealRuntime } from '../runtime/real.js';
-import { handoffRoutingStatusGeneration } from '../store/handoff-routing-status-store.js';
-import { createIpcClient } from '../transport/ipc/client.js';
+} from '../../infra/handoff-target.js';
+import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
+import { assertNever } from '../../infra/error-format.js';
+import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
+import type { Runtime } from '../../runtime/ports.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-status-store.js';
+import { createIpcClient } from '../../transport/ipc/client.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   buildSummarySchema,
@@ -39,15 +39,15 @@ import {
   type IncumbentIdentitySummary,
   type RoutingBasisObligation,
   type UnresolvedIncumbentCause,
-} from './handoff-routing.js';
-import { classifyHandoffRoutingStatusOperatorInvocation } from './handoff-repair-operation.js';
+} from './policy.js';
+import { classifyHandoffRoutingStatusOperatorInvocation } from './repair-operation.js';
 import type {
   DirectTerminalDisposition,
   DurableHandoffRoutingBasis,
   HandoffRoutingTransition,
   PublicationOutcome,
   SelectedHandoffDisposition,
-} from './handoff-routing-status.js';
+} from './status.js';
 
 // The pre-flight's own probe budget. Not `HEALTH_TIMEOUT_MS` from `transport/http/sse.ts`: the coordinator
 // topology invariant forbids a coordinator module depending on the HTTP transport, and this bound answers a
@@ -719,7 +719,7 @@ async function publishHandoffTransition(
   transition: HandoffRoutingTransition,
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
-  const status = await import('./handoff-routing-status.js');
+  const status = await import('./status.js');
   const generation = handoffRoutingStatusGeneration(status.handoffRoutingStatusStoreSchema());
   return status.publishGenerationCoordinatedHandoffRoutingTransitions(
     { ...runtime, time },

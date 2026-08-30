@@ -24,8 +24,8 @@ import {
   readHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
-} from '#src/coordinator/handoff-routing-status.js';
-import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing-status-operator.js';
+} from '#src/coordinator/handoff-routing/status.js';
+import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing/status-operator.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -425,7 +425,7 @@ beforeAll(async () => {
   temporaryDirectories.push(directory);
   workerBundlePath = join(directory, 'writer.mjs');
   await build({
-    entryPoints: [fileURLToPath(new URL('../../fixtures/handoff-routing-status-writer.ts', import.meta.url))],
+    entryPoints: [fileURLToPath(new URL('../../../fixtures/handoff-routing-status-writer.ts', import.meta.url))],
     outfile: workerBundlePath,
     bundle: true,
     format: 'esm',
@@ -442,7 +442,7 @@ afterAll(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-describe('handoff routing status transaction durability', () => {
+describe('handoff-routing/status', () => {
   it('refuses publication while generation maintenance is held', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-maintenance-'));
     temporaryDirectories.push(baseDir);

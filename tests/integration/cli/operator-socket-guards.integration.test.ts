@@ -8,7 +8,7 @@ import { socketFallbackDir } from '#src/infra/path/unix-socket.js';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
-import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';

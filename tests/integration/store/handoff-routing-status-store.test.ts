@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing/status.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   handoffRoutingStatusGeneration,

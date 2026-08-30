@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HANDOFF_ROUTING_BASIS_OBLIGATIONS, routeLiveIncumbent } from '#src/coordinator/handoff-routing.js';
+import { HANDOFF_ROUTING_BASIS_OBLIGATIONS, routeLiveIncumbent } from '#src/coordinator/handoff-routing/policy.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
@@ -62,7 +62,7 @@ afterEach(() => {
   }
 });
 
-describe('handoff routing', () => {
+describe('handoff-routing/policy', () => {
   it('binds every routing basis to its durability, retention, severity, and exit obligation', () => {
     expect(HANDOFF_ROUTING_BASIS_OBLIGATIONS).toEqual({
       'incumbent-absent': {

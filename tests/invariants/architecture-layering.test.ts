@@ -387,7 +387,7 @@ describe('architecture layering invariants', () => {
 
   it('the routing-status CLI adapter owns no authorization or raw mutation imports', () => {
     const forbiddenTargets = new Set([
-      'src/coordinator/handoff-routing-status.ts',
+      'src/coordinator/handoff-routing/status.ts',
       'src/store/generation-mutation-coordination.ts',
       'src/store/handoff-routing-status-store.ts',
     ]);

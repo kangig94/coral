@@ -1,5 +1,5 @@
 import { assertNever } from '../../infra/error-format.js';
-import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing.js';
+import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import type {
   HandoffRoutingInvocationStatus,
   HandoffRoutingResolveResult,
@@ -8,12 +8,12 @@ import type {
   RetirementHistoryTruncated,
   SelectedHandoffDisposition,
   StoredTerminalDisposition,
-} from '../../coordinator/handoff-routing-status.js';
+} from '../../coordinator/handoff-routing/status.js';
 import {
   liveHandoffResultObligation,
   type HandoffContinuationReason,
   type LiveHandoffResult,
-} from '../../coordinator/handoff-runner.js';
+} from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';

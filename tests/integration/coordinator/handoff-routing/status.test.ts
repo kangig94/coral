@@ -35,12 +35,12 @@ import {
   type HandoffRoutingTransition,
   type PublicationOutcome,
   type RetirementTombstone,
-} from '#src/coordinator/handoff-routing-status.js';
+} from '#src/coordinator/handoff-routing/status.js';
 import {
   clearHandoffRoutingStatusQuarantine,
   discardHandoffRoutingStatus,
   type HandoffRoutingStatusOperatorOptions,
-} from '#src/coordinator/handoff-routing-status-operator.js';
+} from '#src/coordinator/handoff-routing/status-operator.js';
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import type { ProcessIdentityObservation } from '#src/infra/port-types.js';
 import { tryAcquireDirectoryLock } from '#src/infra/fs-lock.js';
@@ -52,7 +52,7 @@ import {
   resolveGenerationBoundaryPaths,
   tryAcquireGenerationWriterLease,
 } from '#src/store/generation-mutation-coordination.js';
-import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
+import { SimulationRuntime } from '../../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
 import {
@@ -271,7 +271,7 @@ afterAll(() => {
   rmSync(runtimeBaseDir, { recursive: true, force: true });
 });
 
-describe('handoff routing status', () => {
+describe('handoff-routing/status', () => {
   it('projects continuation and absent obligations without inventing persisted status for ephemeral bindings', () => {
     expect(HANDOFF_CONTINUATION_REASON_POLICY_PROJECTIONS).toEqual({
       'handoff-not-applicable': {

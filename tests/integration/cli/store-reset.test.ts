@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerBackendCommands, type StoreResetCommandOperations } from '#src/cli/commands/backend.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
 import { formatStoreResetReport } from '#src/cli/format/store-reset.js';
-import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
+import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import {
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
@@ -51,7 +51,7 @@ const mockState = vi.hoisted(() => ({
   runHandoff: vi.fn(),
 }));
 
-vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRunnerMod>();
   return { ...actual, runHandoff: mockState.runHandoff };
 });

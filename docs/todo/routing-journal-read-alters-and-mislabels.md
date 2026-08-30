@@ -10,7 +10,7 @@ opens, and what it is able to say about it afterwards.
 
 `readHandoffRoutingStoreSnapshot` (`src/store/handoff-routing-status-store.ts`) answers
 `absent | unsupported-generation | snapshot | failed`, and `readHandoffRoutingStatus`
-(`src/coordinator/handoff-routing-status.ts`) turns that into the operator-facing
+(`src/coordinator/handoff-routing/status.ts`) turns that into the operator-facing
 `absent | current | unreadable | unsupported-generation | undeterminable`. A zero-byte file at the
 journal path takes the `unsupported-generation` arm in both: the file exists, so `assertReadableSync`
 passes; SQLite opens it read-only; `PRAGMA user_version` reads `0`; `0` is not this build's generation.

@@ -1,4 +1,4 @@
-import { canonicalUuidSchema } from '../provider-proxy/protocol.js';
+import { canonicalUuidSchema } from '../../provider-proxy/protocol.js';
 
 export type HandoffRepairOperation = Readonly<{
   kind: 'routing-status-resolve';

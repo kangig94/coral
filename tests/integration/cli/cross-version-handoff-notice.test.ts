@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHandoffNotice } from '#src/cli/handoff-notice.js';
-import { runHandoff, type HandoffOutcome } from '#src/coordinator/handoff-runner.js';
-import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing-status.js';
+import { runHandoff, type HandoffOutcome } from '#src/coordinator/handoff-routing/runner.js';
+import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as RealRuntimeMod from '#src/runtime/real.js';
@@ -42,7 +42,7 @@ vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: mockState.createRealRuntime,
 }));
 
-vi.mock('#src/coordinator/handoff-routing-status.js', async (importOriginal) => {
+vi.mock('#src/coordinator/handoff-routing/status.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
   return { ...actual, publishHandoffRoutingTransitions: mockState.publishHandoffRoutingTransitions };
 });

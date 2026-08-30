@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { emitError, isAcceptedLaunchResponse } from '#src/cli/emit.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
-import { HandoffRunError } from '#src/coordinator/handoff-runner.js';
+import { HandoffRunError } from '#src/coordinator/handoff-routing/runner.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';

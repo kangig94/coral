@@ -26,7 +26,7 @@ const EXEMPT_FILES = new Set([
 ]);
 const CHILD_PROCESS_EXEMPT_FILES = new Set([
   // The handoff execution boundary owns the delegated CLI process it launches.
-  'src/coordinator/handoff-runner.ts',
+  'src/coordinator/handoff-routing/runner.ts',
 ]);
 const SQLITE_EXEMPT_FILES = new Set([
   // The Journal store owns the SQLite engine used for its database.

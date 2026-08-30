@@ -68,7 +68,7 @@ import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
 import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from '../store/active-store-selection.js';
-import { validateForeignHandoffTarget } from './handoff-runner.js';
+import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';

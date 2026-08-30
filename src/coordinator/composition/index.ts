@@ -1050,7 +1050,7 @@ export function createCoordinatorCore(
    * Remembering a *failure* is a different thing entirely, and reading it exactly once got that wrong. The
    * discovery record runs its own probe (`infra/backend-discovery.ts`), so one transient failure here while
    * that one succeeded leaves discovery publishing an incarnation and health publishing none — and
-   * `discoveryMatchesHealth` (`coordinator/handoff-runner.ts`) compares the two for equality. A single
+   * `discoveryMatchesHealth` (`coordinator/handoff-routing/runner.ts`) compares the two for equality. A single
    * unlucky read at composition would have made every later takeover fail identity for the life of the
    * daemon, with no path back. So `null` is retried, and only success is kept.
    */

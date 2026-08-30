@@ -20,12 +20,12 @@ import {
   type HandoffOperation,
   type HandoffRunResult,
   type RunHandoffOptions,
-} from '#src/coordinator/handoff-runner.js';
+} from '#src/coordinator/handoff-routing/runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
-import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing-status.js';
-import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing-status.js';
+import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
+import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import type { TimePort } from '#src/infra/port-types.js';
@@ -74,7 +74,7 @@ vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: mockState.createRealRuntime,
 }));
 
-vi.mock('#src/coordinator/handoff-routing-status.js', async (importOriginal) => {
+vi.mock('#src/coordinator/handoff-routing/status.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
   return {
     ...actual,
@@ -276,7 +276,7 @@ afterEach(() => {
   }
 });
 
-describe('handoff-runner', () => {
+describe('handoff-routing/runner', () => {
   it('requires recording incidents to be handled before returning observed work', () => {
     const recordedContinuation = {
       kind: 'run-current',
@@ -399,7 +399,7 @@ describe('handoff-runner', () => {
     const isolatedRuntime = await createHandoffRuntime(baseDir);
     mkdirSync(isolatedRuntime.paths.coral.coordinator.runDir, { recursive: true });
     mockState.createRealRuntime.mockReturnValue(isolatedRuntime);
-    const status = await vi.importActual<typeof HandoffRoutingStatusMod>('#src/coordinator/handoff-routing-status.js');
+    const status = await vi.importActual<typeof HandoffRoutingStatusMod>('#src/coordinator/handoff-routing/status.js');
     mockState.publishHandoffRoutingTransitions.mockImplementation(
       status.publishGenerationCoordinatedHandoffRoutingTransitions,
     );

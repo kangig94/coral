@@ -4,7 +4,7 @@ import {
   discardHandoffRoutingStatus as discardHandoffRoutingStatusOwned,
   type HandoffRoutingStatusDiscardResult,
   type HandoffRoutingStatusQuarantineClearResult,
-} from '../coordinator/handoff-routing-status-operator.js';
+} from '../coordinator/handoff-routing/status-operator.js';
 import { acquireOperatorSocketGuard } from './operator-socket-guard.js';
 
 export function discardHandoffRoutingStatus(

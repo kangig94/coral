@@ -1,4 +1,4 @@
-import { consumeHandoffRunResult, type HandoffRunResult } from '#src/coordinator/handoff-runner.js';
+import { consumeHandoffRunResult, type HandoffRunResult } from '#src/coordinator/handoff-routing/runner.js';
 
 declare const result: HandoffRunResult;
 
