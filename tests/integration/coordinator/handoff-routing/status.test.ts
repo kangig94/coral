@@ -78,7 +78,7 @@ import {
   SQLITE_FULL,
   listHandoffRoutingStoreQuarantines,
   type HandoffRoutingStatusQuarantineList,
-} from '#src/store/handoff-routing-status-store.js';
+} from '#src/store/handoff-routing-status-store/index.js';
 
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
@@ -795,17 +795,19 @@ describe('handoff-routing/status', () => {
     const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
     const root = join(dirname(path), 'handoff-routing-quarantine');
-    let quarantineSyncs = 0;
+    const quarantineWalPath = join(root, `${basename(path)}.${quarantineId}-wal`);
+    let walRemoved = false;
     const discardRuntime: Runtime = {
       ...baseRuntime,
       ids: { ...baseRuntime.ids, uuid: () => quarantineId },
       storage: {
         ...baseRuntime.storage,
+        unlinkSync: (candidate) => {
+          baseRuntime.storage.unlinkSync(candidate);
+          if (candidate === quarantineWalPath) walRemoved = true;
+        },
         syncDirectoryDurableSync: (directory) => {
-          if (directory === root) {
-            quarantineSyncs += 1;
-            if (quarantineSyncs === 2) return false;
-          }
+          if (directory === root && walRemoved) return false;
           return sync(directory);
         },
       },
@@ -896,11 +898,23 @@ describe('handoff-routing/status', () => {
       kind: 'non-empty' as const,
       stat: { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs },
     };
-    let assertions = 0;
+    const quarantineWalPath = join(
+      dirname(path),
+      'handoff-routing-quarantine',
+      `${basename(path)}.${quarantineId}-wal`,
+    );
+    let walLinked = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      linkSync: (source, destination) => {
+        baseRuntime.storage.linkSync(source, destination);
+        if (source === `${path}-wal` && destination === quarantineWalPath) walLinked = true;
+      },
+    };
 
     expect(
       quarantineHandoffRoutingStoreArtifact(
-        baseRuntime.storage,
+        storage,
         path,
         quarantineId,
         {
@@ -910,8 +924,7 @@ describe('handoff-routing/status', () => {
           guardedWalReceipt: walReceipt,
         },
         () => {
-          assertions += 1;
-          if (assertions === 6) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+          if (walLinked) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
         },
       ),
     ).toEqual({
@@ -928,11 +941,6 @@ describe('handoff-routing/status', () => {
     });
     expect(existsSync(path)).toBe(true);
     expect(existsSync(`${path}-wal`)).toBe(true);
-    const quarantineWalPath = join(
-      dirname(path),
-      'handoff-routing-quarantine',
-      `${basename(path)}.${quarantineId}-wal`,
-    );
     expect(readFileSync(quarantineWalPath, 'utf-8')).toBe('retained wal');
   });
 
@@ -1101,11 +1109,18 @@ describe('handoff-routing/status', () => {
     const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     const root = join(dirname(path), 'handoff-routing-quarantine');
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
-    let assertions = 0;
+    let rootCreated = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      mkdirSync: (directory, options) => {
+        baseRuntime.storage.mkdirSync(directory, options);
+        if (directory === root) rootCreated = true;
+      },
+    };
 
     expect(
       quarantineHandoffRoutingStoreArtifact(
-        baseRuntime.storage,
+        storage,
         path,
         quarantineId,
         {
@@ -1115,8 +1130,7 @@ describe('handoff-routing/status', () => {
           guardedWalReceipt: { kind: 'absent' },
         },
         () => {
-          assertions += 1;
-          if (assertions === 5) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+          if (rootCreated) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
         },
       ),
     ).toEqual({
@@ -1135,11 +1149,12 @@ describe('handoff-routing/status', () => {
     expect(existsSync(path)).toBe(true);
   });
 
-  it('does not return quarantine success when ownership is lost during the final directory sync', () => {
+  it('should report exact effects when ownership is lost after the main quarantine directory sync', () => {
     const path = databasePath();
-    const quarantineId = '00000000-0000-4000-8000-000000000052';
+    const quarantineId = '00000000-0000-4000-8000-000000000063';
     const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     const root = join(dirname(path), 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
     let ownershipLost = false;
     const storage: StoragePort = {
@@ -1166,18 +1181,77 @@ describe('handoff-routing/status', () => {
           if (ownershipLost) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
         },
       ),
-    ).toMatchObject({
+    ).toEqual({
       kind: 'quarantine-storage-failed',
       quarantineId,
+      quarantinePath,
       retainedArtifacts: ['database'],
       movedArtifacts: [],
       observedMovedArtifacts: [],
+      removedArtifacts: [],
       observedRemovedArtifacts: [],
       syncedDirectories: ['source', 'quarantine'],
       cause: 'ownership-lost',
     });
+    expect(ownershipLost).toBe(true);
     expect(readFileSync(path, 'utf-8')).toBe('not a sqlite database');
-    expect(readFileSync(join(root, `${basename(path)}.${quarantineId}`), 'utf-8')).toBe('not a sqlite database');
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('not a sqlite database');
+  });
+
+  it('does not return quarantine success when ownership is lost during the final directory sync', () => {
+    const path = databasePath();
+    const quarantineId = '00000000-0000-4000-8000-000000000052';
+    const sourceDirectory = dirname(path);
+    const baseRuntime = createRealRuntime('prod', { baseDir: sourceDirectory });
+    const root = join(sourceDirectory, 'handoff-routing-quarantine');
+    const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
+    writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
+    let databaseRemoved = false;
+    let ownershipLost = false;
+    const storage: StoragePort = {
+      ...baseRuntime.storage,
+      unlinkSync: (candidate) => {
+        baseRuntime.storage.unlinkSync(candidate);
+        if (candidate === path) databaseRemoved = true;
+      },
+      syncDirectoryDurableSync: (directory) => {
+        const synced = baseRuntime.storage.syncDirectoryDurableSync(directory);
+        if (directory === sourceDirectory && databaseRemoved) ownershipLost = true;
+        return synced;
+      },
+    };
+
+    expect(
+      quarantineHandoffRoutingStoreArtifact(
+        storage,
+        path,
+        quarantineId,
+        {
+          firstMainState: 'non-empty',
+          firstWalReceipt: { kind: 'absent' },
+          guardedMainState: 'non-empty',
+          guardedWalReceipt: { kind: 'absent' },
+        },
+        () => {
+          if (ownershipLost) throw new DirectoryLockOwnershipLostError('/generation-maintenance');
+        },
+      ),
+    ).toEqual({
+      kind: 'quarantine-storage-failed',
+      quarantineId,
+      quarantinePath,
+      retainedArtifacts: ['database'],
+      movedArtifacts: ['database'],
+      observedMovedArtifacts: [],
+      removedArtifacts: [],
+      observedRemovedArtifacts: [],
+      syncedDirectories: ['source', 'quarantine'],
+      cause: 'ownership-lost',
+    });
+    expect(databaseRemoved).toBe(true);
+    expect(ownershipLost).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(quarantinePath, 'utf-8')).toBe('not a sqlite database');
   });
 
   it('does not replace a quarantine coordinate created at the atomic database-link boundary', async () => {
@@ -1732,17 +1806,18 @@ describe('handoff-routing/status', () => {
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
     const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
-    let sourceSyncs = 0;
+    let walRemoved = false;
     const discardRuntime: Runtime = {
       ...baseRuntime,
       ids: { ...baseRuntime.ids, uuid: () => quarantineId },
       storage: {
         ...baseRuntime.storage,
+        unlinkSync: (candidate) => {
+          baseRuntime.storage.unlinkSync(candidate);
+          if (candidate === `${path}-wal`) walRemoved = true;
+        },
         syncDirectoryDurableSync: (directory) => {
-          if (directory === dirname(path)) {
-            sourceSyncs += 1;
-            if (sourceSyncs === 2) return false;
-          }
+          if (directory === dirname(path) && walRemoved) return false;
           return sync(directory);
         },
       },
@@ -1776,17 +1851,18 @@ describe('handoff-routing/status', () => {
     writeFileSync(`${path}-wal`, 'retained wal');
     writeFileSync(`${path}-shm`, 'retained shm');
     const sync = baseRuntime.storage.syncDirectoryDurableSync.bind(baseRuntime.storage);
-    let sourceSyncs = 0;
+    let shmRemoved = false;
     const discardRuntime: Runtime = {
       ...baseRuntime,
       ids: { ...baseRuntime.ids, uuid: () => quarantineId },
       storage: {
         ...baseRuntime.storage,
+        unlinkSync: (candidate) => {
+          baseRuntime.storage.unlinkSync(candidate);
+          if (candidate === `${path}-shm`) shmRemoved = true;
+        },
         syncDirectoryDurableSync: (directory) => {
-          if (directory === dirname(path)) {
-            sourceSyncs += 1;
-            if (sourceSyncs === 3) return false;
-          }
+          if (directory === dirname(path) && shmRemoved) return false;
           return sync(directory);
         },
       },
@@ -1864,14 +1940,17 @@ describe('handoff-routing/status', () => {
     mkdirSync(dirname(quarantinePath), { recursive: true, mode: 0o700 });
     writeFileSync(quarantinePath, 'retained database');
     writeFileSync(`${quarantinePath}-wal`, 'retained wal');
-    let syncs = 0;
+    let databaseRemoved = false;
     let ownershipLost = false;
     const storage: StoragePort = {
       ...baseRuntime.storage,
+      unlinkSync: (candidate) => {
+        baseRuntime.storage.unlinkSync(candidate);
+        if (candidate === quarantinePath) databaseRemoved = true;
+      },
       syncDirectoryDurableSync: (directory) => {
         const synced = baseRuntime.storage.syncDirectoryDurableSync(directory);
-        syncs += 1;
-        if (syncs === 2) ownershipLost = true;
+        if (directory === dirname(quarantinePath) && databaseRemoved) ownershipLost = true;
         return synced;
       },
     };
@@ -2036,17 +2115,25 @@ describe('handoff-routing/status', () => {
     const discardRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     const boundary = resolveGenerationBoundaryPaths(discardRuntime);
     writeFileSync(path, 'not a sqlite database', { mode: 0o600 });
-    let journalOpens = 0;
+    let guardedJournalReadCompleted = false;
+    const generateQuarantineId = vi.fn(() => '00000000-0000-4000-8000-000000000062');
     const ownershipLostRuntime: Runtime = {
       ...discardRuntime,
+      ids: { ...discardRuntime.ids, uuid: generateQuarantineId },
       storage: {
         ...discardRuntime.storage,
-        openSqliteDatabaseSync: (databasePath, options) => {
-          journalOpens += 1;
-          if (journalOpens === 2) {
-            discardRuntime.storage.rmSync(boundary.maintenanceLock, { recursive: true, force: true });
-          }
-          return discardRuntime.storage.openSqliteDatabaseSync(databasePath, options);
+        openSqliteDatabaseSync: (databasePath, options): SqliteDatabasePort => {
+          const database = discardRuntime.storage.openSqliteDatabaseSync(databasePath, options);
+          if (!existsSync(boundary.maintenanceLock)) return database;
+          return {
+            exec: database.exec.bind(database),
+            prepare: database.prepare.bind(database),
+            close: () => {
+              database.close();
+              guardedJournalReadCompleted = true;
+              discardRuntime.storage.rmSync(boundary.maintenanceLock, { recursive: true, force: true });
+            },
+          };
         },
       },
     };
@@ -2058,6 +2145,8 @@ describe('handoff-routing/status', () => {
       cause: 'ownership-lost',
     });
     expect(existsSync(path)).toBe(true);
+    expect(guardedJournalReadCompleted).toBe(true);
+    expect(generateQuarantineId).not.toHaveBeenCalled();
     expect(listHandoffRoutingStoreQuarantines(discardRuntime.storage, path)).toEqual({
       kind: 'listed',
       entries: [],

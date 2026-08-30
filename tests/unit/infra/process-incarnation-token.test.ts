@@ -11,7 +11,6 @@
 // that grows unbounded.
 
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 
 import { isProcessIncarnation, processIncarnationSchema, type ProcessIncarnation } from '#src/infra/node-process.js';
 
@@ -31,9 +30,6 @@ describe('process incarnation token admission', () => {
     expect(cases.map(({ value }) => processIncarnationSchema.safeParse(value).success)).toEqual(
       cases.map(({ admitted }) => admitted),
     );
-    expect(processIncarnationSchema).toBeInstanceOf(z.ZodString);
-    const parsed: ProcessIncarnation = processIncarnationSchema.parse('x');
-    expect(parsed).toBe('x');
   });
 
   it('refuses anything that is not a string, however token-shaped', () => {

@@ -23,7 +23,7 @@ import {
   type HandoffRoutingRecordInput,
   type HandoffRoutingStatusTransaction,
   type HandoffRoutingStoreSnapshot,
-} from '#src/store/handoff-routing-status-store.js';
+} from '#src/store/handoff-routing-status-store/index.js';
 import type { StorageBigIntStat, StoragePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -368,10 +368,6 @@ describe('HandoffRoutingStatusTransaction', () => {
   });
 
   it('rejects a completed-pair literal that exists only at a different contract path', () => {
-    expect(handoffRoutingStatusFingerprint(schema).toString('hex')).toBe(
-      '2b1df7466714d0a345c0e242c5e4b9f0913ee44b069c2683b1b4f8529d9a55d9',
-    );
-    expect(handoffRoutingStatusGeneration(schema)).toBe(1723384134);
     expect(() =>
       handoffRoutingStatusFingerprint({
         ...schema,

@@ -71,7 +71,7 @@ import {
   listHandoffRoutingStoreQuarantines,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   type HandoffRoutingStatusQuarantineList,
-} from '../../store/handoff-routing-status-store.js';
+} from '../../store/handoff-routing-status-store/index.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
 
@@ -537,6 +537,22 @@ export function createRoutingStatusQuarantineCommandOperations(): HandoffRouting
   };
 }
 
+function formatRoutingStatusDiscardEffectSummary(
+  result: Extract<
+    HandoffRoutingStatusDiscardResult,
+    { kind: 'quarantine-storage-failed' | 'quarantine-retention-undeterminable' }
+  >,
+): string {
+  return [
+    `moved artifacts: ${result.movedArtifacts.join(', ') || 'none'}`,
+    `observed moved artifacts (not durable): ${result.observedMovedArtifacts.join(', ') || 'none'}`,
+    `removed artifacts: ${result.removedArtifacts.join(', ') || 'none'}`,
+    `observed removed artifacts (not durable): ${result.observedRemovedArtifacts.join(', ') || 'none'}`,
+    `synced directories: ${result.syncedDirectories.join(', ') || 'none'}`,
+    result.cause === 'artifact-observation-failed' ? `${result.cause} (errcode ${result.errcode})` : result.cause,
+  ].join('; ');
+}
+
 function formatRoutingStatusDiscardRefusal(
   result: Exclude<HandoffRoutingStatusDiscardResult, { kind: 'discarded' }>,
 ): string {
@@ -591,12 +607,7 @@ function formatRoutingStatusDiscardRefusal(
     case 'quarantine-storage-failed': {
       const effects = [
         `retained artifacts: ${result.retainedArtifacts.join(', ') || 'none'}`,
-        `moved artifacts: ${result.movedArtifacts.join(', ') || 'none'}`,
-        `observed moved artifacts (not durable): ${result.observedMovedArtifacts.join(', ') || 'none'}`,
-        `removed artifacts: ${result.removedArtifacts.join(', ') || 'none'}`,
-        `observed removed artifacts (not durable): ${result.observedRemovedArtifacts.join(', ') || 'none'}`,
-        `synced directories: ${result.syncedDirectories.join(', ') || 'none'}`,
-        result.cause === 'artifact-observation-failed' ? `${result.cause} (errcode ${result.errcode})` : result.cause,
+        formatRoutingStatusDiscardEffectSummary(result),
       ].join('; ');
       const hasObservedNamespaceEffect =
         result.observedMovedArtifacts.length > 0 || result.observedRemovedArtifacts.length > 0;
@@ -615,12 +626,7 @@ function formatRoutingStatusDiscardRefusal(
     case 'quarantine-retention-undeterminable': {
       const effects = [
         `observed retained artifacts: ${result.observedRetainedArtifacts.join(', ') || 'none'}`,
-        `moved artifacts: ${result.movedArtifacts.join(', ') || 'none'}`,
-        `observed moved artifacts (not durable): ${result.observedMovedArtifacts.join(', ') || 'none'}`,
-        `removed artifacts: ${result.removedArtifacts.join(', ') || 'none'}`,
-        `observed removed artifacts (not durable): ${result.observedRemovedArtifacts.join(', ') || 'none'}`,
-        `synced directories: ${result.syncedDirectories.join(', ') || 'none'}`,
-        result.cause === 'artifact-observation-failed' ? `${result.cause} (errcode ${result.errcode})` : result.cause,
+        formatRoutingStatusDiscardEffectSummary(result),
       ].join('; ');
       const repair =
         result.cause === 'ownership-lost'
@@ -657,20 +663,8 @@ function handoffRoutingStatusDiscardExitContribution(result: HandoffRoutingStatu
     case 'refused':
       if (result.status.kind === 'current') return 75;
       return HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.status.kind].statusExit;
-    case 'coordinator-running':
-    case 'coordinator-socket-unobservable':
-    case 'coordinator-socket-insecure':
-    case 'generation-maintenance-unavailable':
-    case 'quarantine-capacity-exhausted':
-    case 'undeterminable':
-    case 'incomplete-quarantine':
-    case 'quarantine-coordinate-occupied':
-    case 'quarantine-storage-failed':
-    case 'quarantine-retention-undeterminable':
-      return 75;
-    default:
-      return assertNever(result);
   }
+  return 75;
 }
 
 function commanderInvocationId(value: string, previous: string | undefined): string {

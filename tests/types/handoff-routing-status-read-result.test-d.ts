@@ -5,7 +5,7 @@ import {
   type HandoffRoutingStatusReadResult,
   type RetirementHistoryTruncated,
 } from '../../src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '../../src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '../../src/store/handoff-routing-status-store/index.js';
 
 type Equals<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
 type Assert<Condition extends true> = Condition;

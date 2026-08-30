@@ -12,7 +12,7 @@ import {
   handoffRoutingStatusStoreSchema,
   type HandoffRoutingResolveResult,
 } from '#src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());

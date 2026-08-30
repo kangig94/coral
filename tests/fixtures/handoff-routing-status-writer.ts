@@ -13,7 +13,7 @@ import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing/st
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SqliteDatabasePort } from '#src/infra/port-types.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 

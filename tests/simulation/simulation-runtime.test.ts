@@ -224,7 +224,7 @@ describe('simulation runtime', () => {
     storage.writeFileSync(alias, 'after');
     expect(storage.readFileSync(source, 'utf-8')).toBe('after');
 
-    const linkedDatabase = storage.openSqliteDatabaseSync(linkedDatabasePath, { readOnly: true });
+    const linkedDatabase = storage.openSqliteDatabaseSync(linkedDatabasePath);
     linkedDatabase.prepare('INSERT INTO evidence VALUES (?)').run('after');
     const sourceDatabase = storage.openSqliteDatabaseSync(databasePath, { readOnly: true });
     expect(sourceDatabase.prepare('SELECT COUNT(*) AS count FROM evidence').get()).toEqual({ count: 2 });

@@ -9,7 +9,7 @@ import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordin
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { discardHandoffRoutingStatus } from '#src/cli/routing-status-discard.js';
 import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';

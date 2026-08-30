@@ -29,7 +29,7 @@ import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const FORMER_DIRECTORY_LOCK_STALE_MS = 30_000;
@@ -494,18 +494,33 @@ describe('handoff-routing/status', () => {
 
       const writer = spawnWriter('paused-format-mismatch-publication', path, 'format-refusal', baseDir);
       expect(await nextLine(writer)).toBe('after-advisory-classification');
-      if (writer.child.pid === undefined) throw new Error('Expected writer pid');
-      await waitForStopped(writer.child.pid);
+      const writerPid = writer.child.pid;
+      if (writerPid === undefined) throw new Error('Expected writer pid');
+      await waitForStopped(writerPid);
 
+      let writerLeaseObserved!: () => void;
+      const writerLeaseObservation = new Promise<void>((resolve) => {
+        writerLeaseObserved = resolve;
+      });
       let maintenanceSettled = false;
       const discard = discardHandoffRoutingStatus({
-        runtime: isolatedRuntime,
+        runtime: {
+          ...isolatedRuntime,
+          process: {
+            ...isolatedRuntime.process,
+            observeLiveness: (pid) => {
+              const liveness = isolatedRuntime.process.observeLiveness(pid);
+              if (pid === writerPid && liveness === 'alive') writerLeaseObserved();
+              return liveness;
+            },
+          },
+        },
         path,
         acquireSocketGuard: acquireOperatorSocketGuard,
       }).finally(() => {
         maintenanceSettled = true;
       });
-      await time.sleep(LOCK_RELEASE_GATE_MS);
+      await writerLeaseObservation;
       expect(maintenanceSettled).toBe(false);
       expect(existsSync(path)).toBe(true);
       expect(existsSync(join(dirname(path), 'handoff-routing-quarantine'))).toBe(false);

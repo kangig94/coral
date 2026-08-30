@@ -8,7 +8,7 @@ import {
   type HandoffRoutingStatusClassification,
   type HandoffRoutingStatusClassificationPolicy,
 } from '#src/coordinator/handoff-routing/status.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 
 const generation = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const emptyRetirementHistory = {

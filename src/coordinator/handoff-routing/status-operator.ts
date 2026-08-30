@@ -8,7 +8,7 @@ import {
   quarantineHandoffRoutingStoreArtifact,
   type HandoffRoutingStatusQuarantineClearStoreResult,
   type HandoffRoutingStatusQuarantineResult,
-} from '../../store/handoff-routing-status-store.js';
+} from '../../store/handoff-routing-status-store/index.js';
 import { acquireGenerationMaintenanceLease } from '../../store/generation-mutation-coordination.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,

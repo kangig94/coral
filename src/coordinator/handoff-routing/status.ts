@@ -30,7 +30,7 @@ import {
   type HandoffRoutingStorePublicationPolicy,
   type HandoffRoutingStoreSnapshot,
   type HandoffRoutingWalObservationReceipt,
-} from '../../store/handoff-routing-status-store.js';
+} from '../../store/handoff-routing-status-store/index.js';
 import {
   tryAcquireGenerationWriterLease,
   type GenerationWriterLease,

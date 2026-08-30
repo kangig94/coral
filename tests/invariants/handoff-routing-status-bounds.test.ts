@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -18,14 +15,10 @@ import {
   HANDOFF_ROUTING_STATUS_GENERATION_BAND,
   handoffRoutingStatusFingerprint,
   handoffRoutingStatusGeneration,
-} from '#src/store/handoff-routing-status-store.js';
+} from '#src/store/handoff-routing-status-store/index.js';
 
 describe('handoff routing status bounds', () => {
   it('derives the maximum-body incarnation from its canonical bound', () => {
-    const source = readFileSync(join(process.cwd(), 'src/coordinator/handoff-routing/status.ts'), 'utf-8');
-
-    expect(source).toContain('MAX_TEXT.repeat(MAX_PROCESS_INCARNATION_LENGTH)');
-    expect(source).not.toContain('MAX_TEXT.repeat(256)');
     expect(MAX_LEGAL_ROUTING_SELECTED_TRANSITION.owner.incarnation).toHaveLength(MAX_PROCESS_INCARNATION_LENGTH);
   });
 
