@@ -1,9 +1,18 @@
 # TODO — observation cost sits outside every deadline that bounds containment
 
-**Status**: open, unobserved in the field. The arithmetic below is derived from constants, not from a
-reproduction, and the entry price for starting is a measured case rather than a bigger multiplication.
+**Status**: open, observed in the field. The orphan population is reproduced; the arithmetic below remains
+derived from constants, not from an instrumented teardown or an observed coordinator exit.
 
 ## What exists
+
+On 2026-08-30, three complete provider-proxy sets — guardian, reaper, and proxy — were alive on a developer
+machine with no coordinator running and no live jobs: `coral-cli jobs` reported no jobs in a live phase. Each
+guardian had been reparented to PPID 1. Their ages at observation were 8h42m, 8h28m, and 2h54m. Sending
+SIGTERM to each guardian terminated its complete set.
+
+That sighting establishes that the orphan population this entry reasons about occurs in practice and can
+persist for hours. It does not measure observation cost against a deadline or confirm the constant arithmetic
+below: nobody instrumented the teardown path, and the coordinator's exit was not observed.
 
 Containment teardown is budgeted. `PROXY_TEARDOWN_RESERVE_MS` (`src/provider-proxy/orphan-deadline.ts`)
 sums to 14,000ms, of which `PROXY_PROCESS_CONTROL_BUDGET_MS` allots `2 × CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS`
@@ -101,8 +110,8 @@ overshoot; the other two only reduce the multiplier:
 
 ## What would have to be true to start
 
-A measured case. The 516-second figure is a product of constants, and every term is a worst case that has
-never been observed together: a full 128-root set, on Darwin, with `sysctl` or `ps` wedged rather than merely
-slow. A reproduction that shows a teardown missing its deadline because of observation cost — even at two or
-three roots — would establish the shape is real and give the fix a failing test to close. Without one this is
-arithmetic, and this index already records two entries that were wrong about their own cause.
+Met on 2026-08-30 by the field sighting above. It is the measured case this entry required: complete orphaned
+sets existed after their coordinator and persisted for hours, so the population is not arithmetic alone. No
+further field sighting blocks starting. The 516-second figure is still only a product of worst-case constants,
+however; implementation still needs an instrumented reproduction or failing test that measures observation
+against its deadline rather than treating that product as a measured duration.
