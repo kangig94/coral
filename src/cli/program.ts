@@ -10,7 +10,7 @@ import {
   type HandoffPublicationIncident,
   type HandoffRunResult,
   type LiveHandoffResult,
-} from '../coordinator/handoff-runner.js';
+} from '../coordinator/handoff-routing/runner.js';
 import { assertNever } from '../infra/error-format.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';

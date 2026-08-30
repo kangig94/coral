@@ -5,7 +5,7 @@ import { BackendToolHttpError } from '../transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
-import { HandoffGuardError } from '../coordinator/handoff-runner.js';
+import { HandoffGuardError } from '../coordinator/handoff-routing/runner.js';
 import { documentedCoralSetupErrorExitCode, serializeCoralSetupError } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../transport/ipc/client.js';

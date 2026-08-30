@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
-import type * as HandoffRunnerModule from '#src/coordinator/handoff-runner.js';
+import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
@@ -18,7 +18,7 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRunnerModule>();
   return { ...actual, runHandoff: mockState.runHandoff };
 });

@@ -17,13 +17,13 @@ import type {
   HandoffPublicationIncident,
   LiveHandoffContinuationResult,
   LiveHandoffResult,
-} from '#src/coordinator/handoff-runner.js';
+} from '#src/coordinator/handoff-routing/runner.js';
 import {
   handoffRoutingStatusStoreSchema,
   retirementTombstoneSchema,
   type HandoffRoutingStatusReadResult,
-} from '#src/coordinator/handoff-routing-status.js';
-import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing.js';
+} from '#src/coordinator/handoff-routing/status.js';
+import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';

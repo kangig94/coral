@@ -8,7 +8,7 @@ import {
   consumeHandoffRunResult,
   runHandoff,
   type HandoffPublicationIncident,
-} from './handoff-runner.js';
+} from './handoff-routing/runner.js';
 import { createCoordinatorServer } from './index.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';

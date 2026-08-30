@@ -7,11 +7,11 @@ import {
   type HandoffRoutingStatusQuarantineCommandOperations,
 } from '#src/cli/commands/backend.js';
 import { formatHandoffRoutingResolveResult } from '#src/cli/format/backend.js';
-import { parseHandoffRepairOperation } from '#src/coordinator/handoff-repair-operation.js';
+import { parseHandoffRepairOperation } from '#src/coordinator/handoff-routing/repair-operation.js';
 import {
   handoffRoutingStatusStoreSchema,
   type HandoffRoutingResolveResult,
-} from '#src/coordinator/handoff-routing-status.js';
+} from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';

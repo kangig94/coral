@@ -1,7 +1,7 @@
 import { Option } from 'commander';
 import type { Command } from 'commander';
 
-import { HandoffRunError } from '../coordinator/handoff-runner.js';
+import { HandoffRunError } from '../coordinator/handoff-routing/runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import { buildErrorEnvelope } from './errors.js';

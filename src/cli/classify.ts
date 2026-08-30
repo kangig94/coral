@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-import { classifyHandoffRoutingStatusOperatorInvocation } from '../coordinator/handoff-repair-operation.js';
+import { classifyHandoffRoutingStatusOperatorInvocation } from '../coordinator/handoff-routing/repair-operation.js';
 
 export type CommandClass = 'directRead' | 'servedRead' | 'mutate' | 'subscribe';
 

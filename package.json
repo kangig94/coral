@@ -37,7 +37,7 @@
     "test": "node scripts/test.mjs",
     "test:integration": "vitest run --config vitest/integration.ts",
     "test:network": "CORAL_TEST_NETWORK=1 vitest run --config vitest/integration.ts tests/integration/engines/kiwi-runtime-download.integration.test.ts",
-    "test:capacity": "CORAL_TEST_CAPACITY=1 vitest run --config vitest/integration.ts tests/integration/coordinator/handoff-routing-status.integration.test.ts",
+    "test:capacity": "CORAL_TEST_CAPACITY=1 vitest run --config vitest/integration.ts tests/integration/coordinator/handoff-routing/status.integration.test.ts",
     "test:e2e:lifecycle": "vitest run --config vitest/e2e-lifecycle.ts",
     "test:store-reset": "vitest run --config vitest/default.ts tests/unit/store/reset-incident-parser.test.ts tests/unit/store/reset-incident-reader.test.ts tests/unit/store/reset-incident-diagnostic.test.ts tests/unit/store/reset-incident-report.test.ts tests/unit/coordinator/lifecycle-reset-authority-order.test.ts tests/unit/cli/store-reset-signal.test.ts tests/unit/cli/errors.test.ts tests/unit/cli/emit.test.ts tests/unit/support/store-reset-issue-template.test.ts tests/invariants/store-reset-discipline.test.ts tests/invariants/architecture-boundary.test.ts",
     "test:store-reset:integration": "vitest run --config vitest/integration.ts tests/integration/store/reset-incident-filesystem.integration.test.ts tests/integration/cli/store-reset.test.ts tests/integration/store/open-or-reset.test.ts",

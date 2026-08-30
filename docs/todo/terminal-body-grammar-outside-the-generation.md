@@ -8,7 +8,7 @@ mechanism was not.
 
 `handoffRoutingStatusGeneration` (`src/store/handoff-routing-status-store.ts`) hashes three things: the
 durable-format object the coordinator supplies through `handoffRoutingStatusStoreSchema`
-(`src/coordinator/handoff-routing-status.ts`), the fully rendered schema SQL, and the completed-pair
+(`src/coordinator/handoff-routing/status.ts`), the fully rendered schema SQL, and the completed-pair
 stability predicate. The durable-format object's body vocabulary is two sorted key lists, taken from
 the total records `PERSISTED_DISPOSITION_CLASSIFICATIONS` and `HANDOFF_ROUTING_BASIS_OBLIGATIONS`, so
 adding a disposition kind or a routing basis moves the address without anyone remembering to wire it.
@@ -60,7 +60,7 @@ removed from this mechanism, and it drifted from what it named while it existed.
 
 ## Start condition
 
-Startable now. It touches `src/coordinator/handoff-routing-status.ts` and
+Startable now. It touches `src/coordinator/handoff-routing/status.ts` and
 `src/store/handoff-routing-status-store.ts`, both of which the audit branch has finished with.
 
 ## Why deferring is not free

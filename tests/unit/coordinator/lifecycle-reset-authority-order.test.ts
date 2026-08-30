@@ -529,7 +529,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const { deps } = makeLifecycleDeps();
     mockState.currentBundleDir = '/tmp/plugin/bridge';
     const startupRouting = await import('#src/store/startup-store-routing.js');
-    const handoffRunner = await import('#src/coordinator/handoff-runner.js');
+    const handoffRunner = await import('#src/coordinator/handoff-routing/runner.js');
 
     await createLifecycle(deps, async () => []).start();
 

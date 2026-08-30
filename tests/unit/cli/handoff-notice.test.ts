@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { renderHandoffNotice } from '#src/cli/handoff-notice.js';
-import type { HandoffSuccess } from '#src/coordinator/handoff-runner.js';
+import type { HandoffSuccess } from '#src/coordinator/handoff-routing/runner.js';
 
 afterEach(() => {
   vi.restoreAllMocks();

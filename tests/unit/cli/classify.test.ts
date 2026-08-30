@@ -7,7 +7,7 @@ import {
   commandContainerPaths,
 } from '#src/cli/classify.js';
 import { buildProgram } from '#src/cli/program.js';
-import { classifyHandoffRoutingStatusOperatorInvocation } from '#src/coordinator/handoff-repair-operation.js';
+import { classifyHandoffRoutingStatusOperatorInvocation } from '#src/coordinator/handoff-routing/repair-operation.js';
 
 describe('command class coverage', () => {
   it('classifies every transport-routed leaf command directly or through provider-family resolution', () => {

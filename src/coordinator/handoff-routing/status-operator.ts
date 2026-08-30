@@ -1,6 +1,6 @@
-import { DirectoryLockOwnershipLostError, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
-import type { Runtime } from '../runtime/ports.js';
-import { CoralSetupError } from '../runtime/errors.js';
+import { DirectoryLockOwnershipLostError, isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
+import type { Runtime } from '../../runtime/ports.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import {
   clearHandoffRoutingStoreQuarantine,
   HandoffRoutingStatusQuarantineCapacityError,
@@ -8,9 +8,9 @@ import {
   quarantineHandoffRoutingStoreArtifact,
   type HandoffRoutingStatusQuarantineClearStoreResult,
   type HandoffRoutingStatusQuarantineResult,
-} from '../store/handoff-routing-status-store.js';
-import { acquireGenerationMaintenanceLease } from '../store/generation-mutation-coordination.js';
-import { readHandoffRoutingStatus, type HandoffRoutingStatusReadResult } from './handoff-routing-status.js';
+} from '../../store/handoff-routing-status-store.js';
+import { acquireGenerationMaintenanceLease } from '../../store/generation-mutation-coordination.js';
+import { readHandoffRoutingStatus, type HandoffRoutingStatusReadResult } from './status.js';
 
 type DiscardableRoutingStatus = Extract<
   HandoffRoutingStatusReadResult,

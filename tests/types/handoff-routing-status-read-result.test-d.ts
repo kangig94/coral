@@ -3,7 +3,7 @@ import {
   type HandoffRoutingInvocationStatus,
   type HandoffRoutingStatusReadResult,
   type RetirementHistoryTruncated,
-} from '../../src/coordinator/handoff-routing-status.js';
+} from '../../src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '../../src/store/handoff-routing-status-store.js';
 
 declare const statuses: readonly HandoffRoutingInvocationStatus[];

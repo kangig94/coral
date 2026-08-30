@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { ZodString } from 'zod';
 
-import { buildSummarySchema, incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing.js';
+import { buildSummarySchema, incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
 import {
   durableHandoffRoutingBasisSchema,
   handoffRoutingTransitionSchema,
   invalidTargetSummarySchema,
   validatedTargetSummarySchema,
-} from '#src/coordinator/handoff-routing-status.js';
-import { liveIncumbentHealthSchema } from '#src/coordinator/handoff-runner.js';
+} from '#src/coordinator/handoff-routing/status.js';
+import { liveIncumbentHealthSchema } from '#src/coordinator/handoff-routing/runner.js';
 import { strictBundleManifestSchema } from '#src/infra/bundle-manifest.js';
 
 function maximumLength(schema: ZodString): number {

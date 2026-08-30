@@ -18,7 +18,7 @@ import {
   consumeHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
-} from '../coordinator/handoff-runner.js';
+} from '../coordinator/handoff-routing/runner.js';
 import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { getSharedReadCoralStore } from './read-store.js';

@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
-import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../infra/bundle-manifest.js';
-import { assertNever } from '../infra/error-format.js';
-import { errorNumber } from '../infra/error-number.js';
-import { createMonotonicClock } from '../infra/monotonic-clock.js';
-import type { IdPort, Runtime } from '../runtime/ports.js';
-import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
+import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../../infra/bundle-manifest.js';
+import { assertNever } from '../../infra/error-format.js';
+import { errorNumber } from '../../infra/error-number.js';
+import { createMonotonicClock } from '../../infra/monotonic-clock.js';
+import type { IdPort, Runtime } from '../../runtime/ports.js';
+import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../../infra/process-containment.js';
 import {
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
@@ -23,11 +23,11 @@ import {
   type HandoffRoutingRecordValidationResult,
   type HandoffRoutingStatusTransaction,
   type HandoffRoutingStatusStoreSchema,
-} from '../store/handoff-routing-status-store.js';
+} from '../../store/handoff-routing-status-store.js';
 import {
   tryAcquireGenerationWriterLease,
   type GenerationWriterLease,
-} from '../store/generation-mutation-coordination.js';
+} from '../../store/generation-mutation-coordination.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   buildSummarySchema,
@@ -35,8 +35,8 @@ import {
   type BuildSummary,
   type HandoffRoutingBasis,
   type RoutingBasisObligation,
-} from './handoff-routing.js';
-import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './handoff-runner.js';
+} from './policy.js';
+import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './runner.js';
 
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;

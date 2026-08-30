@@ -13,11 +13,11 @@ import {
   type HandoffPublicationIncident,
   type LiveHandoffResult,
   type NonEmptyReadonlyArray,
-} from '../../coordinator/handoff-runner.js';
+} from '../../coordinator/handoff-routing/runner.js';
 import {
   parseHandoffRoutingInvocationId,
   type HandoffRepairOperation,
-} from '../../coordinator/handoff-repair-operation.js';
+} from '../../coordinator/handoff-routing/repair-operation.js';
 import {
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
@@ -26,12 +26,12 @@ import {
   type HandoffRoutingResolveRequest,
   type HandoffRoutingResolveResult,
   type HandoffRoutingStatusReadResult,
-} from '../../coordinator/handoff-routing-status.js';
+} from '../../coordinator/handoff-routing/status.js';
 import type {
   HandoffRoutingStatusDiscardResult,
   HandoffRoutingStatusMaintenanceRefusal,
   HandoffRoutingStatusQuarantineClearResult,
-} from '../../coordinator/handoff-routing-status-operator.js';
+} from '../../coordinator/handoff-routing/status-operator.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';

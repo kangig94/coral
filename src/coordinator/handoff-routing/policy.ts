@@ -4,14 +4,14 @@ import {
   strictBundleManifestSchema,
   type StrictBundleIdentityFailure,
   type StrictBundleManifest,
-} from '../infra/bundle-manifest.js';
+} from '../../infra/bundle-manifest.js';
 import type {
   ForeignTargetValidator,
   InvalidTargetEvidence,
   TargetCandidateEvidence,
   ValidatedHandoffTarget,
-} from '../infra/handoff-target.js';
-import { compareProductVersions } from '../infra/product-version.js';
+} from '../../infra/handoff-target.js';
+import { compareProductVersions } from '../../infra/product-version.js';
 
 export type UnresolvedIncumbentCause = 'unreadable-record' | 'health-request-failed' | 'health-shape-rejected';
 

@@ -4,7 +4,7 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
-import { validateForeignHandoffTarget } from '../coordinator/handoff-runner.js';
+import { validateForeignHandoffTarget } from '../coordinator/handoff-routing/runner.js';
 import { createRealRuntime } from '../runtime/real.js';
 import {
   discardStoreReset,

@@ -12,7 +12,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
-import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
+import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
 import { formatWaitProgress, formatWaitQueued, formatWaitTerminal } from '#src/cli/format/wait.js';
@@ -27,7 +27,7 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
 }));
 
-vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRunnerMod>();
   return { ...actual, runHandoff: mockState.runHandoff };
 });

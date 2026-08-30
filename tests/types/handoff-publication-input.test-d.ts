@@ -2,7 +2,7 @@ import {
   formatHandoffPublicationFailureSuccessor,
   formatHandoffPublicationIncident,
 } from '#src/cli/format/handoff-publication.js';
-import type { HandoffRoutingResolveResult } from '#src/coordinator/handoff-routing-status.js';
+import type { HandoffRoutingResolveResult } from '#src/coordinator/handoff-routing/status.js';
 
 formatHandoffPublicationFailureSuccessor({
   kind: 'incident',

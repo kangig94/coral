@@ -7,8 +7,8 @@ import {
   handoffRoutingStatusStoreSchema,
   type HandoffRoutingTransition,
   type PublicationOutcome,
-} from '#src/coordinator/handoff-routing-status.js';
-import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing-status-operator.js';
+} from '#src/coordinator/handoff-routing/status.js';
+import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing/status-operator.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
