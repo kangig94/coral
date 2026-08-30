@@ -107,17 +107,46 @@ describe('session-start.mjs', () => {
     expect(result.status).toBe(0);
     expect(result.stderr.trim()).toBe('');
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
-    expect(expectHookOutput(result)).toEqual({
+    const output = expectHookOutput(result);
+    expect(output).toEqual({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext:
           "Coral hooks are inert: CORAL_FLAVOR is set to 'staging', but only 'prod' and 'dev' are accepted. Every Coral hook will remain inert until CORAL_FLAVOR is corrected.",
       },
     });
+    expect(Buffer.byteLength(output.hookSpecificOutput.additionalContext, 'utf-8')).toBe(164);
+  });
+
+  it('bounds an oversized unrecognized flavor diagnostic without splitting UTF-8', () => {
+    const result = runHook(SESSION_START_HOOK, {}, { CORAL_FLAVOR: '🪸'.repeat(3_000) });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr.trim()).toBe('');
+    expect(result.stdout.trim().split('\n')).toHaveLength(1);
+
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext).toBe(
+      `Coral hooks are inert: CORAL_FLAVOR is set to '${'🪸'.repeat(36)}… [truncated]', but only 'prod' and 'dev' are accepted. Every Coral hook will remain inert until CORAL_FLAVOR is corrected.`,
+    );
+    expect(Buffer.byteLength(additionalContext, 'utf-8')).toBe(316);
+    expect(additionalContext).not.toContain('\uFFFD');
   });
 
   it('emits nothing for an ordinary flavor mismatch', () => {
-    const result = runHook(SESSION_START_HOOK, {}, { CORAL_FLAVOR: 'dev' });
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-flavor-mismatch' },
+      {
+        CORAL_FLAVOR: 'dev',
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');

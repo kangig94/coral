@@ -26,6 +26,8 @@ export function currentStoreFormatFingerprint() {
   }
 }
 
+export const ACCEPTED_FLAVORS = Object.freeze(['prod', 'dev']);
+
 let _cachedFlavor;
 
 function readBuildFlavorState() {
@@ -44,7 +46,7 @@ export function buildFlavor() {
 
 export function resolveFlavorDisposition() {
   const requested = process.env.CORAL_FLAVOR;
-  if (requested !== undefined && requested !== 'prod' && requested !== 'dev') {
+  if (requested !== undefined && !ACCEPTED_FLAVORS.includes(requested)) {
     return { kind: 'unrecognized', value: requested };
   }
 
