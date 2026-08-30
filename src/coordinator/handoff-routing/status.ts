@@ -4,6 +4,7 @@ import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '..
 import { assertNever } from '../../infra/error-format.js';
 import { errorNumber } from '../../infra/error-number.js';
 import { createMonotonicClock } from '../../infra/monotonic-clock.js';
+import { MAX_PROCESS_INCARNATION_LENGTH } from '../../infra/node-process.js';
 import { zodPersistedContract } from '../../infra/persisted-contract.js';
 import type { IdPort, Runtime } from '../../runtime/ports.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../../infra/process-containment.js';
@@ -423,10 +424,7 @@ const retirementCauseSchema = z.enum([
   'operator-resolved',
 ]);
 
-/**
- * The sentinel is outside [1000000000, 2147483647], so it collides with no real generation. Its fixed value
- * is a durable identity input and must move only with an intentional address change.
- */
+/** Its fixed value is a durable identity input and must move only with an intentional address change. */
 export const HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION = 0;
 
 function createHandoffRoutingRecordSchemaRegistry(generation: number) {
@@ -2283,7 +2281,7 @@ const MAX_VERSION_LENGTH = strictBundleManifestSchema.shape.version.maxLength;
 if (MAX_VERSION_LENGTH === null) throw new Error('The bundle manifest version must remain bounded.');
 const MAX_VERSION = `1.0.0-${'x'.repeat(MAX_VERSION_LENGTH - 6)}`;
 const MAX_ID = MAX_TEXT.repeat(MAX_IDENTIFIER_LENGTH);
-const MAX_INCARNATION = MAX_TEXT.repeat(256);
+const MAX_INCARNATION = MAX_TEXT.repeat(MAX_PROCESS_INCARNATION_LENGTH);
 const MAX_OBSERVED_AT = '9999-12-31T23:59:59.999Z';
 const MAX_BUILD: BuildSummary = {
   version: MAX_VERSION,

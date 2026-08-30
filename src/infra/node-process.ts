@@ -75,11 +75,9 @@ export function observeProcessLiveness(pid: number): ProcessLiveness {
  */
 export type ProcessIncarnation = string & { readonly __processIncarnation: 'process-incarnation' };
 
-const MAX_PROCESS_INCARNATION_LENGTH = 256;
+/** Accepted-token and maximum-encoding bounds must share this value. */
+export const MAX_PROCESS_INCARNATION_LENGTH = 256;
 
-/**
- * The schema and hand-written admission paths must read one bound so their accepted token lengths cannot drift.
- */
 export function isProcessIncarnation(value: unknown): value is ProcessIncarnation {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_PROCESS_INCARNATION_LENGTH;
 }

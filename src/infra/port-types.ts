@@ -77,6 +77,7 @@ export interface StoragePort {
     options?: { encoding?: BufferEncoding; mode?: number; flag?: string },
   ): void;
   renameSync(oldPath: string, newPath: string): void;
+  linkSync(existingPath: string, newPath: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void;
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
   readdirSync(path: string): string[];

@@ -163,6 +163,176 @@ describe('simulation runtime', () => {
     expect(storage.existsSync(join(workDir, 'renamed.json'))).toBe(false);
   });
 
+  it('links one in-memory file identity without replacing an occupied destination', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const source = '/tmp/sim/link-source';
+    const linked = '/tmp/sim/link-destination';
+    storage.writeFileSync(source, 'evidence');
+
+    storage.linkSync(source, linked);
+    const sourceStat = storage.statSync(source, { bigint: true });
+    const linkedStat = storage.statSync(linked, { bigint: true });
+    expect({ dev: linkedStat.dev, ino: linkedStat.ino }).toEqual({ dev: sourceStat.dev, ino: sourceStat.ino });
+    storage.appendFileSync(linked, '-retained');
+    expect(storage.readFileSync(source, 'utf-8')).toBe('evidence-retained');
+
+    expect(() => storage.linkSync(source, linked)).toThrowError(expect.objectContaining({ code: 'EEXIST' }));
+    expect(storage.readFileSync(linked, 'utf-8')).toBe('evidence-retained');
+  });
+
+  it('preserves hard-link aliasing across overwrite, truncation, rename, and unlink', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const source = '/tmp/sim/alias-source';
+    const alias = '/tmp/sim/alias';
+    const renamedAlias = '/tmp/sim/renamed-alias';
+    storage.writeFileSync(source, 'initial');
+    storage.linkSync(source, alias);
+
+    storage.writeFileSync(source, 'overwritten');
+    expect(storage.readFileSync(alias, 'utf-8')).toBe('overwritten');
+
+    const descriptor = storage.openSync(alias, 'w');
+    storage.closeSync(descriptor);
+    expect(storage.readFileSync(source, 'utf-8')).toBe('');
+
+    storage.writeFileSync(alias, 'retained');
+    storage.renameSync(alias, renamedAlias);
+    const sourceStat = storage.statSync(source, { bigint: true });
+    const renamedStat = storage.statSync(renamedAlias, { bigint: true });
+    expect({ dev: renamedStat.dev, ino: renamedStat.ino }).toEqual({ dev: sourceStat.dev, ino: sourceStat.ino });
+
+    storage.unlinkSync(source);
+    expect(storage.readFileSync(renamedAlias, 'utf-8')).toBe('retained');
+  });
+
+  it('preserves hard-link aliases and their SQLite inode state across snapshot restore', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const source = '/tmp/sim/snapshot-alias-source';
+    const alias = '/tmp/sim/snapshot-alias';
+    storage.writeFileSync(source, 'before');
+    storage.linkSync(source, alias);
+
+    const databasePath = '/tmp/sim/linked-database.db';
+    const linkedDatabasePath = '/tmp/sim/linked-database-alias.db';
+    const database = storage.openSqliteDatabaseSync(databasePath);
+    database.exec('CREATE TABLE evidence (value TEXT)');
+    database.prepare('INSERT INTO evidence VALUES (?)').run('before');
+    storage.linkSync(databasePath, linkedDatabasePath);
+    const snapshot = storage.snapshot();
+
+    storage.restore(snapshot);
+    storage.writeFileSync(alias, 'after');
+    expect(storage.readFileSync(source, 'utf-8')).toBe('after');
+
+    const linkedDatabase = storage.openSqliteDatabaseSync(linkedDatabasePath, { readOnly: true });
+    linkedDatabase.prepare('INSERT INTO evidence VALUES (?)').run('after');
+    const sourceDatabase = storage.openSqliteDatabaseSync(databasePath, { readOnly: true });
+    expect(sourceDatabase.prepare('SELECT COUNT(*) AS count FROM evidence').get()).toEqual({ count: 2 });
+  });
+
+  it('matches real descriptor behavior when the final pathname is unlinked', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-open-unlink-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const exercise = (storage: StoragePort, path: string) => {
+      storage.writeFileSync(path, 'alpha');
+      const pathStat = storage.statSync(path, { bigint: true });
+      const fd = storage.openSync(path, 'r+');
+      storage.unlinkSync(path);
+      const descriptorStat = storage.fstatSync(fd, { bigint: true });
+      const beforeWrite = Buffer.alloc(5);
+      storage.readSync(fd, beforeWrite, 0, beforeWrite.length, 0);
+      storage.writeSync(fd, Buffer.from('Z'), 0, 1, 0);
+      const afterWrite = Buffer.alloc(5);
+      storage.readSync(fd, afterWrite, 0, afterWrite.length, 0);
+      storage.closeSync(fd);
+      return {
+        pathExists: storage.existsSync(path),
+        identityPreserved: descriptorStat.dev === pathStat.dev && descriptorStat.ino === pathStat.ino,
+        beforeWrite: beforeWrite.toString('utf-8'),
+        afterWrite: afterWrite.toString('utf-8'),
+      };
+    };
+
+    try {
+      expect(exercise(simulatedStorage, '/tmp/sim/open-unlink')).toEqual(
+        exercise(realStorage, join(realRoot, 'open-unlink')),
+      );
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('matches real descriptor behavior when rename replaces its pathname', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-rename-overwrite-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const exercise = (storage: StoragePort, source: string, destination: string) => {
+      storage.writeFileSync(source, 'new');
+      storage.writeFileSync(destination, 'old');
+      const destinationStat = storage.statSync(destination, { bigint: true });
+      const fd = storage.openSync(destination, 'r+');
+      storage.renameSync(source, destination);
+      const descriptorStat = storage.fstatSync(fd, { bigint: true });
+      const descriptorContent = Buffer.alloc(3);
+      storage.readSync(fd, descriptorContent, 0, descriptorContent.length, 0);
+      storage.writeSync(fd, Buffer.from('X'), 0, 1, 0);
+      const replacementContent = storage.readFileSync(destination, 'utf-8');
+      storage.closeSync(fd);
+      return {
+        identityPreserved: descriptorStat.dev === destinationStat.dev && descriptorStat.ino === destinationStat.ino,
+        descriptorContent: descriptorContent.toString('utf-8'),
+        replacementContent,
+      };
+    };
+
+    try {
+      expect(exercise(simulatedStorage, '/tmp/sim/rename-source', '/tmp/sim/rename-destination')).toEqual(
+        exercise(realStorage, join(realRoot, 'source'), join(realRoot, 'destination')),
+      );
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('restores an unnamed inode that is still referenced by an open descriptor', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const path = '/tmp/sim/snapshot-open-unlink';
+    storage.writeFileSync(path, 'before');
+    const pathStat = storage.statSync(path, { bigint: true });
+    const fd = storage.openSync(path, 'r+');
+    storage.unlinkSync(path);
+
+    const snapshot = storage.snapshot();
+    storage.restore(snapshot);
+
+    const descriptorStat = storage.fstatSync(fd, { bigint: true });
+    const beforeWrite = Buffer.alloc(6);
+    storage.readSync(fd, beforeWrite, 0, beforeWrite.length, 0);
+    storage.writeSync(fd, Buffer.from('after!'), 0, 6, 0);
+    const afterWrite = Buffer.alloc(6);
+    storage.readSync(fd, afterWrite, 0, afterWrite.length, 0);
+    expect(storage.existsSync(path)).toBe(false);
+    expect({ dev: descriptorStat.dev, ino: descriptorStat.ino }).toEqual({ dev: pathStat.dev, ino: pathStat.ino });
+    expect(beforeWrite.toString('utf-8')).toBe('before');
+    expect(afterWrite.toString('utf-8')).toBe('after!');
+    storage.closeSync(fd);
+  });
+
+  it('keeps an open in-memory SQLite handle bound to file identity across rename', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const openedPath = '/tmp/sim/opened.db';
+    const renamedPath = '/tmp/sim/renamed.db';
+    const database = storage.openSqliteDatabaseSync(openedPath);
+
+    storage.renameSync(openedPath, renamedPath);
+    storage.writeFileSync(openedPath, 'replacement');
+    database.exec('PRAGMA journal_mode = WAL');
+
+    expect(storage.readFileSync(openedPath, 'utf-8')).toBe('replacement');
+    expect(storage.statSync(renamedPath).size).toBe(4096);
+  });
+
   it('refuses recursive directory creation beneath a regular file', () => {
     const storage = new InMemoryStorage(new VirtualTime(1_000));
     const file = '/tmp/sim/file-barrier';

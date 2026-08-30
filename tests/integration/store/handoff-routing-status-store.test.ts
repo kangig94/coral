@@ -271,7 +271,7 @@ describe('HandoffRoutingStatusTransaction', () => {
           ...schema.durableFormat,
           recordContracts: {
             ...schema.durableFormat.recordContracts,
-            selection: [schema.durableFormat.recordContracts.selection, 'future-disposition'],
+            retirement: [schema.durableFormat.recordContracts.retirement, 'future-disposition'],
           },
         },
       }),
@@ -365,6 +365,28 @@ describe('HandoffRoutingStatusTransaction', () => {
         },
       }),
     ).toThrow('unsafe identifier');
+  });
+
+  it('rejects a completed-pair literal that exists only at a different contract path', () => {
+    expect(handoffRoutingStatusFingerprint(schema).toString('hex')).toBe(
+      '2b1df7466714d0a345c0e242c5e4b9f0913ee44b069c2683b1b4f8529d9a55d9',
+    );
+    expect(handoffRoutingStatusGeneration(schema)).toBe(1723384134);
+    expect(() =>
+      handoffRoutingStatusFingerprint({
+        ...schema,
+        durableFormat: {
+          ...schema.durableFormat,
+          bodyVocabulary: {
+            completedPairStability: {
+              ...schema.durableFormat.bodyVocabulary.completedPairStability,
+              selectionDispositionKind:
+                schema.durableFormat.bodyVocabulary.completedPairStability.terminalDispositionKind,
+            },
+          },
+        },
+      }),
+    ).toThrow('completed-pair selection disposition is outside the durable vocabulary');
   });
 
   it('derives main-file and checkpoint bounds from the same byte budget', () => {

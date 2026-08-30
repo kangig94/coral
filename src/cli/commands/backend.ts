@@ -577,10 +577,57 @@ function formatRoutingStatusDiscardRefusal(
     }
     case 'quarantine-capacity-exhausted':
       return `Refusing to discard routing status: ${result.maximum} quarantine entries are already retained or the quarantine could not be fully enumerated.\nNext step: run coral-cli backend routing-status quarantine list, clear exact entries that are no longer needed, then rerun coral-cli backend routing-status discard.`;
+    case 'undeterminable': {
+      const observation =
+        result.cause === 'artifact-observation-failed'
+          ? 'the target quarantine coordinate could not be observed'
+          : 'the quarantine could not be enumerated';
+      return `Refusing to discard routing status: ${observation} (${result.cause}, errcode ${result.errcode}).\nNext step: repair the reported storage condition, then rerun coral-cli backend routing-status discard; undeterminable quarantine evidence cannot authorize another quarantine.`;
+    }
     case 'incomplete-quarantine':
       return `Refusing to discard routing status: quarantine ${result.quarantineId} is incomplete and cannot establish ownership of the current source database.\nNext step: run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
-    case 'quarantine-storage-failed':
-      return `Routing-status discard stopped after storage failed with evidence in quarantine ${result.quarantineId} (moved artifacts: ${result.movedArtifacts.join(', ')}; ${result.cause}).\nNext step: run coral-cli backend routing-status quarantine list, repair the reported storage condition, run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
+    case 'quarantine-coordinate-occupied':
+      return `Refusing to discard routing status: quarantine coordinate ${result.quarantineId} already retains a ${result.artifact} artifact at ${result.quarantinePath}.\nNext step: preserve the existing evidence and rerun coral-cli backend routing-status discard; if the coordinate repeats, repair the quarantine ID source before retrying.`;
+    case 'quarantine-storage-failed': {
+      const effects = [
+        `retained artifacts: ${result.retainedArtifacts.join(', ') || 'none'}`,
+        `moved artifacts: ${result.movedArtifacts.join(', ') || 'none'}`,
+        `observed moved artifacts (not durable): ${result.observedMovedArtifacts.join(', ') || 'none'}`,
+        `removed artifacts: ${result.removedArtifacts.join(', ') || 'none'}`,
+        `observed removed artifacts (not durable): ${result.observedRemovedArtifacts.join(', ') || 'none'}`,
+        `synced directories: ${result.syncedDirectories.join(', ') || 'none'}`,
+        result.cause === 'artifact-observation-failed' ? `${result.cause} (errcode ${result.errcode})` : result.cause,
+      ].join('; ');
+      const hasObservedNamespaceEffect =
+        result.observedMovedArtifacts.length > 0 || result.observedRemovedArtifacts.length > 0;
+      if (hasObservedNamespaceEffect) {
+        const retention =
+          result.retainedArtifacts.length === 0
+            ? `No durable quarantine artifact is known at ${result.quarantinePath}.`
+            : `Evidence is durably retained at ${result.quarantinePath}.`;
+        return `Routing-status discard stopped after an uncertain storage effect at quarantine ${result.quarantineId} (${effects}). ${retention}\nNext step: repair the reported storage condition, then run coral-cli backend routing-status quarantine list; if it lists ${result.quarantineId}, run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
+      }
+      if (result.retainedArtifacts.length === 0) {
+        return `Routing-status discard stopped after a partial storage effect at quarantine ${result.quarantineId} (${effects}). No artifact is retained at ${result.quarantinePath}.\nNext step: repair the reported storage condition, then rerun coral-cli backend routing-status discard.`;
+      }
+      return `Routing-status discard stopped after a partial storage effect with evidence retained in quarantine ${result.quarantineId} (${effects}).\nNext step: run coral-cli backend routing-status quarantine list, repair the reported storage condition, run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
+    }
+    case 'quarantine-retention-undeterminable': {
+      const effects = [
+        `observed retained artifacts: ${result.observedRetainedArtifacts.join(', ') || 'none'}`,
+        `moved artifacts: ${result.movedArtifacts.join(', ') || 'none'}`,
+        `observed moved artifacts (not durable): ${result.observedMovedArtifacts.join(', ') || 'none'}`,
+        `removed artifacts: ${result.removedArtifacts.join(', ') || 'none'}`,
+        `observed removed artifacts (not durable): ${result.observedRemovedArtifacts.join(', ') || 'none'}`,
+        `synced directories: ${result.syncedDirectories.join(', ') || 'none'}`,
+        result.cause === 'artifact-observation-failed' ? `${result.cause} (errcode ${result.errcode})` : result.cause,
+      ].join('; ');
+      const repair =
+        result.cause === 'ownership-lost'
+          ? 'repair the generation coordination root so maintenance ownership is stable'
+          : 'repair the reported storage condition';
+      return `Routing-status discard stopped after an ambiguous storage effect at quarantine ${result.quarantineId} (${effects}). Whether evidence was retained at ${result.quarantinePath} could not be determined.\nNext step: ${repair}, then run coral-cli backend routing-status quarantine list; if it lists ${result.quarantineId}, run coral-cli backend routing-status quarantine clear --id ${result.quarantineId}, then rerun coral-cli backend routing-status discard.`;
+    }
     default:
       return assertNever(result);
   }
@@ -615,8 +662,11 @@ function handoffRoutingStatusDiscardExitContribution(result: HandoffRoutingStatu
     case 'coordinator-socket-insecure':
     case 'generation-maintenance-unavailable':
     case 'quarantine-capacity-exhausted':
+    case 'undeterminable':
     case 'incomplete-quarantine':
+    case 'quarantine-coordinate-occupied':
     case 'quarantine-storage-failed':
+    case 'quarantine-retention-undeterminable':
       return 75;
     default:
       return assertNever(result);
@@ -638,6 +688,9 @@ function commanderRoutingStatusQuarantineId(value: string, previous: string | un
 }
 
 function formatRoutingStatusQuarantineList(result: HandoffRoutingStatusQuarantineList): string {
+  if (result.kind === 'undeterminable') {
+    return `Routing-status quarantine could not be enumerated (${result.cause}, errcode ${result.errcode}).\nNext step: repair the reported storage condition, then rerun coral-cli backend routing-status quarantine list.`;
+  }
   if (result.entries.length === 0 && !result.overflow) return 'Routing-status quarantine is empty.';
   const lines = [`Routing-status quarantine (${result.entries.length} visible):`];
   for (const entry of result.entries) {
@@ -694,7 +747,7 @@ function formatRoutingStatusQuarantineClearStorageFailure(
   result: Extract<HandoffRoutingStatusQuarantineClearResult, { kind: 'quarantine-clear-storage-failed' }>,
 ): string {
   const retry = `coral-cli backend routing-status quarantine clear --id ${result.quarantineId}`;
-  return `Routing-status quarantine clear stopped after storage failed for ${result.quarantineId} (removed artifacts: ${result.removedArtifacts.join(', ')}; ${result.cause}).\nNext step: run coral-cli backend routing-status quarantine list, repair the reported storage condition, then rerun ${retry}.`;
+  return `Routing-status quarantine clear stopped after an uncertain storage effect for ${result.quarantineId} (removed artifacts: ${result.removedArtifacts.join(', ') || 'none'}; observed removed artifacts (not durable): ${result.observedRemovedArtifacts.join(', ') || 'none'}; synced directories: ${result.syncedDirectories.join(', ') || 'none'}; ${result.cause}).\nNext step: run coral-cli backend routing-status quarantine list, repair the reported storage condition, then rerun ${retry}.`;
 }
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
@@ -960,6 +1013,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(() => {
       try {
         const result = routingStatusQuarantine.list();
+        if (result.kind === 'undeterminable') {
+          process.stderr.write(`${formatRoutingStatusQuarantineList(result)}\n`);
+          process.exitCode = 75;
+          return;
+        }
         process.stdout.write(`${formatRoutingStatusQuarantineList(result)}\n`);
         process.exitCode = result.overflow || result.entries.length > MAX_HANDOFF_ROUTING_STATUS_QUARANTINES ? 75 : 0;
       } catch (error: unknown) {
@@ -987,6 +1045,13 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         if (result.kind === 'quarantine-not-found') {
           process.stdout.write(`Routing-status quarantine ${result.quarantineId} is already absent.\n`);
           process.exitCode = 0;
+          return;
+        }
+        if (result.kind === 'quarantine-clear-undeterminable') {
+          process.stderr.write(
+            `Routing-status quarantine clear could not determine whether its ${result.artifact} artifact is present at ${result.quarantinePath} (errcode ${result.errcode}).\nNext step: repair the reported storage condition, then rerun coral-cli backend routing-status quarantine clear --id ${result.quarantineId}.\n`,
+          );
+          process.exitCode = 75;
           return;
         }
         if (result.kind === 'quarantine-clear-storage-failed') {

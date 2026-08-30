@@ -59,7 +59,17 @@ export type HandoffRoutingStatusDiscardResult =
       previousStatus: DiscardableRoutingStatus;
     }>
   | Readonly<{ kind: 'refused'; status: RefusedRoutingStatus }>
-  | Extract<HandoffRoutingStatusQuarantineResult, { kind: 'incomplete-quarantine' | 'quarantine-storage-failed' }>
+  | Extract<
+      HandoffRoutingStatusQuarantineResult,
+      {
+        kind:
+          | 'incomplete-quarantine'
+          | 'quarantine-coordinate-occupied'
+          | 'quarantine-retention-undeterminable'
+          | 'quarantine-storage-failed'
+          | 'undeterminable';
+      }
+    >
   | Readonly<{ kind: 'quarantine-capacity-exhausted'; maximum: number }>
   | HandoffRoutingStatusMaintenanceRefusal;
 

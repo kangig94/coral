@@ -52,7 +52,8 @@ type SerializableDatabaseSync = DatabaseSync & {
 };
 
 export type InMemoryStorageSnapshot = {
-  files: Array<[string, FileNode]>;
+  files: Array<[string, FileIdentity]>;
+  fileNodes: Array<[string, FileNode]>;
   directories: Array<[string, DirectoryNode]>;
   sqliteDatabases: Array<[string, Buffer]>;
   nextFd: number;
@@ -172,7 +173,8 @@ function defaultDirectoryMode(): number {
 }
 
 export class InMemoryStorage implements StoragePort {
-  private readonly files = new Map<string, FileNode>();
+  private readonly files = new Map<string, FileIdentity>();
+  private readonly fileNodes = new Map<string, FileNode>();
   private readonly directories = new Map<string, DirectoryNode>();
   private readonly childIndex = new Map<string, Set<string>>();
   private readonly openFiles = new Map<number, OpenFile>();
@@ -201,10 +203,11 @@ export class InMemoryStorage implements StoragePort {
 
   snapshot(): InMemoryStorageSnapshot {
     return {
-      files: [...this.files.entries()].map(([path, node]) => [path, cloneFileNode(node)]),
+      files: [...this.files.entries()].map(([path, identity]) => [path, { ...identity }]),
+      fileNodes: [...this.fileNodes.entries()].map(([identity, node]) => [identity, cloneFileNode(node)]),
       directories: [...this.directories.entries()].map(([path, node]) => [path, cloneDirectoryNode(node)]),
-      sqliteDatabases: [...this.sqliteDatabases.entries()].map(([path, database]) => [
-        path,
+      sqliteDatabases: [...this.sqliteDatabases.entries()].map(([identity, database]) => [
+        identity,
         Buffer.from(database.serialize()),
       ]),
       nextFd: this.nextFd,
@@ -217,14 +220,18 @@ export class InMemoryStorage implements StoragePort {
 
   restore(snapshot: InMemoryStorageSnapshot): void {
     this.files.clear();
+    this.fileNodes.clear();
     this.directories.clear();
     this.childIndex.clear();
     this.openFiles.clear();
     for (const database of this.sqliteDatabases.values()) database.close();
     this.sqliteDatabases.clear();
 
-    for (const [path, node] of snapshot.files) {
-      this.files.set(path, cloneFileNode(node));
+    for (const [path, identity] of snapshot.files) {
+      this.files.set(path, { ...identity });
+    }
+    for (const [identity, node] of snapshot.fileNodes) {
+      this.fileNodes.set(identity, cloneFileNode(node));
     }
     for (const [path, node] of snapshot.directories) {
       this.directories.set(path, cloneDirectoryNode(node));
@@ -232,10 +239,10 @@ export class InMemoryStorage implements StoragePort {
     for (const [fd, open] of snapshot.openFiles) {
       this.openFiles.set(fd, cloneOpenFile(open));
     }
-    for (const [path, bytes] of snapshot.sqliteDatabases) {
+    for (const [identity, bytes] of snapshot.sqliteDatabases) {
       const database = new DatabaseSync(':memory:') as SerializableDatabaseSync;
       database.deserialize(Buffer.from(bytes));
-      this.sqliteDatabases.set(path, database);
+      this.sqliteDatabases.set(identity, database);
     }
     this.nextFd = snapshot.nextFd;
     this.nextIno = snapshot.nextIno;
@@ -246,7 +253,7 @@ export class InMemoryStorage implements StoragePort {
 
   assertReadableSync(path: string): void {
     const normalized = normalizePathForStorage(path);
-    const node = this.files.get(normalized) ?? this.directories.get(normalized);
+    const node = this.fileNode(normalized) ?? this.directories.get(normalized);
     if (node === undefined) throw createErrnoError('ENOENT', normalized);
     if ((node.mode & 0o444) === 0) {
       const error = createErrnoError('EACCES', normalized);
@@ -261,7 +268,7 @@ export class InMemoryStorage implements StoragePort {
 
   readFileSync(path: string, encoding: 'utf-8'): string {
     const normalized = normalizePathForStorage(path);
-    const file = this.files.get(normalized);
+    const file = this.fileNode(normalized);
     if (!file) {
       if (this.directories.has(normalized)) {
         throw createErrnoError('EISDIR', normalized);
@@ -282,7 +289,7 @@ export class InMemoryStorage implements StoragePort {
     if (flag !== 'w' && flag !== 'w+' && flag !== 'wx' && flag !== 'a' && flag !== 'ax' && flag !== 'r+') {
       throw createUnsupportedFlagError('writeFileSync', flag, 'w, w+, wx, a, ax, r+');
     }
-    const current = this.files.get(normalized);
+    const current = this.fileNode(normalized);
     if ((flag === 'wx' || flag === 'ax') && (current !== undefined || this.directories.has(normalized))) {
       throw createErrnoError('EEXIST', normalized);
     }
@@ -292,7 +299,7 @@ export class InMemoryStorage implements StoragePort {
     if (flag === 'r+' && current === undefined) {
       throw createErrnoError('ENOENT', normalized);
     }
-    this.removeSqliteDatabase(normalized);
+    if (current !== undefined) this.removeSqliteDatabase(fileIdentityOf(current));
     this.requireDirectory(parent);
     const nextContent = bufferFromStorageData(data, options?.encoding);
     if (flag === 'a' && current !== undefined) {
@@ -314,14 +321,14 @@ export class InMemoryStorage implements StoragePort {
       this.touchAncestors(parent);
       return;
     }
-    const identity = current ? fileIdentityOf(current) : this.nextIdentity();
-    this.files.set(normalized, {
-      kind: 'file',
-      content: nextContent,
-      mode: current?.mode ?? createWithUmaskMode(options?.mode),
-      ...identity,
-      ...this.nextStamps(),
-    });
+    if (current !== undefined) {
+      current.content = nextContent;
+      const stamps = this.nextStamps();
+      current.mtimeMs = stamps.mtimeMs;
+      current.mtimeNs = stamps.mtimeNs;
+    } else {
+      this.createFile(normalized, nextContent, createWithUmaskMode(options?.mode));
+    }
     this.registerChild(normalized);
     this.touchAncestors(parent);
   }
@@ -340,19 +347,15 @@ export class InMemoryStorage implements StoragePort {
         throw createErrnoError('EISDIR', to);
       }
       const existing = this.files.get(from);
-      if (!existing) {
+      if (existing === undefined) {
         throw createErrnoError('ENOENT', from);
       }
+      const replaced = this.files.get(to);
+      if (replaced !== undefined && sameFileIdentity(existing, replaced)) return;
+      if (replaced !== undefined) this.removeFileEntry(to);
       this.files.delete(from);
       this.unregisterChildIfUnreferenced(from);
-      this.files.set(to, {
-        kind: 'file',
-        content: Buffer.from(existing.content),
-        mode: existing.mode,
-        dev: existing.dev,
-        ino: existing.ino,
-        ...this.nextStamps(),
-      });
+      this.files.set(to, existing);
       this.registerChild(to);
       this.touchAncestors(parentPath(from));
       this.touchAncestors(parent);
@@ -361,11 +364,6 @@ export class InMemoryStorage implements StoragePort {
           open.path = to;
         }
       }
-      const sqlite = this.sqliteDatabases.get(from);
-      const replacedSqlite = this.sqliteDatabases.get(to);
-      if (replacedSqlite !== undefined && replacedSqlite !== sqlite) replacedSqlite.close();
-      this.sqliteDatabases.delete(from);
-      if (sqlite !== undefined) this.sqliteDatabases.set(to, sqlite);
       return;
     }
 
@@ -379,19 +377,17 @@ export class InMemoryStorage implements StoragePort {
     const targetParent = parentPath(to);
     this.requireDirectory(targetParent);
     if (this.files.has(to)) {
-      this.files.delete(to);
-      this.unregisterChild(to);
+      this.removeFileEntry(to);
     }
     if (this.directories.has(to)) {
       this.rmSync(to, { recursive: true, force: true });
     }
 
     const subtree = this.collectSubtree(from);
-    const movedSqlite = this.takeSqliteSubtree(from);
     const movedDirectories = subtree.directories.map((path) => [path, this.requireDirectoryNode(path)] as const);
-    const movedFiles = subtree.files.map((path) => [path, this.requireFileNode(path)] as const);
+    const movedFiles = subtree.files.map((path) => [path, this.requireFileIdentity(path)] as const);
 
-    this.deleteSubtree(subtree.directories, subtree.files);
+    this.detachSubtreeEntries(subtree.directories, subtree.files);
 
     for (const [path, node] of movedDirectories) {
       const nextPath = replacePathPrefix(path, from, to) ?? to;
@@ -404,22 +400,10 @@ export class InMemoryStorage implements StoragePort {
       });
       this.registerDirectory(nextPath);
     }
-    for (const [path, node] of movedFiles) {
+    for (const [path, identity] of movedFiles) {
       const nextPath = replacePathPrefix(path, from, to) ?? to;
-      this.files.set(nextPath, {
-        kind: 'file',
-        content: Buffer.from(node.content),
-        mode: node.mode,
-        dev: node.dev,
-        ino: node.ino,
-        ...this.nextStamps(),
-      });
+      this.files.set(nextPath, identity);
       this.registerChild(nextPath);
-    }
-    for (const [path, database] of movedSqlite) {
-      const nextPath = replacePathPrefix(path, from, to) ?? to;
-      this.removeSqliteDatabase(nextPath);
-      this.sqliteDatabases.set(nextPath, database);
     }
 
     for (const open of this.openFiles.values()) {
@@ -430,6 +414,24 @@ export class InMemoryStorage implements StoragePort {
     }
     this.touchAncestors(parentPath(from));
     this.touchAncestors(targetParent);
+  }
+
+  linkSync(existingPath: string, newPath: string): void {
+    const existing = normalizePathForStorage(existingPath);
+    const linked = normalizePathForStorage(newPath);
+    const identity = this.files.get(existing);
+    if (identity === undefined) {
+      if (this.directories.has(existing)) throw createErrnoError('EPERM', existing);
+      throw createErrnoError('ENOENT', existing);
+    }
+    this.requireDirectory(parentPath(linked));
+    if (this.files.has(linked) || this.directories.has(linked)) {
+      throw createErrnoError('EEXIST', linked);
+    }
+
+    this.files.set(linked, { ...identity });
+    this.registerChild(linked);
+    this.touchAncestors(parentPath(linked));
   }
 
   mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void {
@@ -503,9 +505,7 @@ export class InMemoryStorage implements StoragePort {
     }
 
     if (isFile) {
-      this.removeSqliteDatabase(normalized);
-      this.files.delete(normalized);
-      this.unregisterChild(normalized);
+      this.removeFileEntry(normalized);
       this.touchAncestors(parentPath(normalized));
       return;
     }
@@ -600,7 +600,7 @@ export class InMemoryStorage implements StoragePort {
     options?: { bigint: true },
   ): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean } | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
-    const file = this.files.get(normalized);
+    const file = this.fileNode(normalized);
     if (file) {
       if (options?.bigint === true) {
         return {
@@ -681,7 +681,7 @@ export class InMemoryStorage implements StoragePort {
     ) {
       throw createUnsupportedFlagError('openSync', flags, 'r, r+, w, w+, a, wx, ax');
     }
-    let file = this.files.get(normalized);
+    let file = this.fileNode(normalized);
     if ((flags === 'wx' || flags === 'ax') && (file !== undefined || this.directories.has(normalized))) {
       throw createErrnoError('EEXIST', normalized);
     }
@@ -701,11 +701,12 @@ export class InMemoryStorage implements StoragePort {
         ...this.nextIdentity(),
         ...this.nextStamps(),
       };
-      this.files.set(normalized, file);
+      this.files.set(normalized, fileIdentityOf(file));
+      this.fileNodes.set(fileIdentityKey(file), file);
       this.registerChild(normalized);
       this.touchAncestors(parent);
     } else if (flags === 'w' || flags === 'w+') {
-      this.removeSqliteDatabase(normalized);
+      this.removeSqliteDatabase(fileIdentityOf(file));
       file.content = Buffer.alloc(0);
       const stamps = this.nextStamps();
       file.mtimeMs = stamps.mtimeMs;
@@ -776,9 +777,12 @@ export class InMemoryStorage implements StoragePort {
   }
 
   closeSync(fd: number): void {
-    if (!this.openFiles.delete(fd)) {
+    const open = this.openFiles.get(fd);
+    if (open === undefined) {
       throw createErrnoError('EBADF', String(fd));
     }
+    this.openFiles.delete(fd);
+    this.reclaimFileNodeIfUnreferenced(open.identity);
   }
 
   appendFileSync(path: string, data: string): void {
@@ -789,19 +793,14 @@ export class InMemoryStorage implements StoragePort {
     if (this.directories.has(normalized)) {
       throw createErrnoError('EISDIR', normalized);
     }
-    if (current) {
-      current.content = Buffer.concat([current.content, Buffer.from(data, 'utf-8')]);
+    const currentNode = current === undefined ? undefined : this.requireFileNode(normalized);
+    if (currentNode) {
+      currentNode.content = Buffer.concat([currentNode.content, Buffer.from(data, 'utf-8')]);
       const stamps = this.nextStamps();
-      current.mtimeMs = stamps.mtimeMs;
-      current.mtimeNs = stamps.mtimeNs;
+      currentNode.mtimeMs = stamps.mtimeMs;
+      currentNode.mtimeNs = stamps.mtimeNs;
     } else {
-      this.files.set(normalized, {
-        kind: 'file',
-        content: Buffer.from(data, 'utf-8'),
-        mode: createWithUmaskMode(),
-        ...this.nextIdentity(),
-        ...this.nextStamps(),
-      });
+      this.createFile(normalized, Buffer.from(data, 'utf-8'), createWithUmaskMode());
       this.registerChild(normalized);
     }
     this.touchAncestors(parent);
@@ -862,9 +861,7 @@ export class InMemoryStorage implements StoragePort {
       }
       throw createErrnoError('ENOENT', normalized);
     }
-    this.removeSqliteDatabase(normalized);
-    this.files.delete(normalized);
-    this.unregisterChildIfUnreferenced(normalized);
+    this.removeFileEntry(normalized);
     this.touchAncestors(parentPath(normalized));
   }
 
@@ -878,13 +875,7 @@ export class InMemoryStorage implements StoragePort {
     if (this.existsSync(normalized)) {
       return false;
     }
-    this.files.set(normalized, {
-      kind: 'file',
-      content: bufferFromStorageData(data, options?.encoding),
-      mode: exclusiveThenChmodMode(options?.mode),
-      ...this.nextIdentity(),
-      ...this.nextStamps(),
-    });
+    this.createFile(normalized, bufferFromStorageData(data, options?.encoding), exclusiveThenChmodMode(options?.mode));
     this.registerChild(normalized);
     this.touchAncestors(parentPath(normalized));
     return true;
@@ -925,15 +916,18 @@ export class InMemoryStorage implements StoragePort {
     if (this.directories.has(tempPath)) {
       throw createErrnoError('EISDIR', tempPath);
     }
-    const current = this.files.get(tempPath);
-    const identity = current ? fileIdentityOf(current) : this.nextIdentity();
-    this.files.set(tempPath, {
-      kind: 'file',
-      content: bufferFromStorageData(data, options?.encoding),
-      mode: options?.mode === undefined ? (current?.mode ?? durableAtomicMode()) : durableAtomicMode(options.mode),
-      ...identity,
-      ...this.nextStamps(),
-    });
+    const current = this.fileNode(tempPath);
+    const content = bufferFromStorageData(data, options?.encoding);
+    if (current !== undefined) {
+      this.removeSqliteDatabase(fileIdentityOf(current));
+      current.content = content;
+      current.mode = options?.mode === undefined ? current.mode : durableAtomicMode(options.mode);
+      const stamps = this.nextStamps();
+      current.mtimeMs = stamps.mtimeMs;
+      current.mtimeNs = stamps.mtimeNs;
+    } else {
+      this.createFile(tempPath, content, durableAtomicMode(options?.mode));
+    }
     this.registerChild(tempPath);
     this.touchAncestors(parent);
     this.renameSync(tempPath, normalized);
@@ -946,7 +940,7 @@ export class InMemoryStorage implements StoragePort {
 
   chmodSync(path: string, mode: number): void {
     const normalized = normalizePathForStorage(path);
-    const file = this.files.get(normalized);
+    const file = this.fileNode(normalized);
     if (file) {
       file.mode = posixMode(mode);
       const stamps = this.nextStamps();
@@ -967,23 +961,26 @@ export class InMemoryStorage implements StoragePort {
 
   openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort {
     const normalized = normalizePathForStorage(path);
-    const existing = this.sqliteDatabases.get(normalized);
-    if (existing !== undefined) return this.sqlitePort(normalized, existing);
+    const identity = this.files.get(normalized);
+    const existing = identity === undefined ? undefined : this.sqliteDatabases.get(fileIdentityKey(identity));
+    if (existing !== undefined && identity !== undefined) return this.sqlitePort(identity, existing);
     if (options?.readOnly === true) throw createErrnoError('ENOENT', normalized);
 
     this.writeFileSync(normalized, Buffer.alloc(0), { mode: 0o600, flag: 'wx' });
     const database = new DatabaseSync(':memory:') as SerializableDatabaseSync;
-    this.sqliteDatabases.set(normalized, database);
-    return this.sqlitePort(normalized, database);
+    const createdIdentity = this.requireFileIdentity(normalized);
+    this.sqliteDatabases.set(fileIdentityKey(createdIdentity), database);
+    return this.sqlitePort(createdIdentity, database);
   }
 
-  private sqlitePort(path: string, database: DatabaseSync): SqliteDatabasePort {
+  private sqlitePort(identity: FileIdentity, database: DatabaseSync): SqliteDatabasePort {
     return {
       exec: (sql) => {
         database.exec(sql);
         if (!/\bPRAGMA\s+journal_mode\s*=\s*WAL\b/i.test(sql)) return;
 
-        const file = this.requireFileNode(path);
+        const file = this.fileNodes.get(fileIdentityKey(identity));
+        if (file === undefined) throw createErrnoError('ENOENT', `${identity.dev}:${identity.ino}`);
         if (file.content.length !== 0) return;
         file.content = Buffer.alloc(SQLITE_WAL_MAIN_FILE_SIZE);
         const stamps = this.nextStamps();
@@ -1035,14 +1032,17 @@ export class InMemoryStorage implements StoragePort {
     if (!open || open.mode !== 'a') {
       throw createErrnoError('EBADF', String(fd));
     }
-    const [path, file] = this.requireOpenFileEntry(open);
+    const file = this.requireOpenFileNode(open);
     file.content = Buffer.concat([file.content, buffer]);
     const stamps = this.nextStamps();
     file.mtimeMs = stamps.mtimeMs;
     file.mtimeNs = stamps.mtimeNs;
-    open.path = path;
     open.position = file.content.length;
-    this.touchAncestors(parentPath(path));
+    const path = this.findPathByIdentity(open.identity);
+    if (path !== undefined) {
+      open.path = path;
+      this.touchAncestors(parentPath(path));
+    }
   }
 
   private openFileIdentity(fd: number): FileIdentity {
@@ -1055,9 +1055,9 @@ export class InMemoryStorage implements StoragePort {
 
   private statIdentityIfPresent(path: string): FileIdentity | null {
     const normalized = normalizePathForStorage(path);
-    const file = this.files.get(normalized);
-    if (file) {
-      return fileIdentityOf(file);
+    const identity = this.files.get(normalized);
+    if (identity) {
+      return { ...identity };
     }
     const directory = this.directories.get(normalized);
     if (directory) {
@@ -1067,16 +1067,11 @@ export class InMemoryStorage implements StoragePort {
   }
 
   private requireOpenFileNode(open: OpenFile): FileNode {
-    return this.requireOpenFileEntry(open)[1];
-  }
-
-  private requireOpenFileEntry(open: OpenFile): [string, FileNode] {
-    const entry = this.findFileEntryByIdentity(open.identity);
-    if (!entry) {
+    const node = this.fileNodes.get(fileIdentityKey(open.identity));
+    if (node === undefined) {
       throw createErrnoError('ENOENT', open.path);
     }
-    open.path = entry[0];
-    return entry;
+    return node;
   }
 
   private findPathByIdentity(identity: FileIdentity): string | undefined {
@@ -1084,10 +1079,10 @@ export class InMemoryStorage implements StoragePort {
   }
 
   private findFileEntryByIdentity(identity: FileIdentity): [string, FileNode] | undefined {
-    for (const entry of this.files.entries()) {
-      if (sameFileIdentity(fileIdentityOf(entry[1]), identity)) {
-        return entry;
-      }
+    for (const [path, candidate] of this.files.entries()) {
+      if (!sameFileIdentity(candidate, identity)) continue;
+      const node = this.fileNodes.get(fileIdentityKey(candidate));
+      if (node !== undefined) return [path, node];
     }
     return undefined;
   }
@@ -1132,11 +1127,37 @@ export class InMemoryStorage implements StoragePort {
 
   private requireFileNode(path: string): FileNode {
     const normalized = normalizePathForStorage(path);
-    const file = this.files.get(normalized);
-    if (!file) {
+    const file = this.fileNode(normalized);
+    if (file === undefined) {
       throw createErrnoError('ENOENT', normalized);
     }
     return file;
+  }
+
+  private requireFileIdentity(path: string): FileIdentity {
+    const normalized = normalizePathForStorage(path);
+    const identity = this.files.get(normalized);
+    if (identity === undefined) throw createErrnoError('ENOENT', normalized);
+    return identity;
+  }
+
+  private fileNode(path: string): FileNode | undefined {
+    const identity = this.files.get(normalizePathForStorage(path));
+    return identity === undefined ? undefined : this.fileNodes.get(fileIdentityKey(identity));
+  }
+
+  private createFile(path: string, content: Buffer, mode: number): FileNode {
+    const identity = this.nextIdentity();
+    const node = {
+      kind: 'file' as const,
+      content,
+      mode,
+      ...identity,
+      ...this.nextStamps(),
+    };
+    this.files.set(normalizePathForStorage(path), identity);
+    this.fileNodes.set(fileIdentityKey(identity), node);
+    return node;
   }
 
   private requireDirectoryNode(path: string): DirectoryNode {
@@ -1222,9 +1243,7 @@ export class InMemoryStorage implements StoragePort {
 
   private deleteSubtree(directories: string[], files: string[]): void {
     for (const path of files) {
-      this.removeSqliteDatabase(path);
-      this.files.delete(path);
-      this.unregisterChild(path);
+      this.removeFileEntry(path);
     }
     for (let index = directories.length - 1; index >= 0; index -= 1) {
       const path = directories[index];
@@ -1236,19 +1255,41 @@ export class InMemoryStorage implements StoragePort {
     }
   }
 
-  private removeSqliteDatabase(path: string): void {
-    const database = this.sqliteDatabases.get(path);
-    if (database === undefined) return;
-    database.close();
-    this.sqliteDatabases.delete(path);
+  private detachSubtreeEntries(directories: string[], files: string[]): void {
+    for (const path of files) {
+      this.files.delete(path);
+      this.unregisterChild(path);
+    }
+    for (let index = directories.length - 1; index >= 0; index -= 1) {
+      const path = directories[index];
+      if (path === undefined) continue;
+      this.directories.delete(path);
+      this.unregisterDirectory(path);
+    }
   }
 
-  private takeSqliteSubtree(root: string): Array<[string, SerializableDatabaseSync]> {
-    const entries = [...this.sqliteDatabases.entries()].filter(
-      ([path]) => path === root || path.startsWith(`${root}/`),
-    );
-    for (const [path] of entries) this.sqliteDatabases.delete(path);
-    return entries;
+  private removeFileEntry(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    const identity = this.files.get(normalized);
+    if (identity === undefined) return;
+    this.files.delete(normalized);
+    this.unregisterChildIfUnreferenced(normalized);
+    this.reclaimFileNodeIfUnreferenced(identity);
+  }
+
+  private reclaimFileNodeIfUnreferenced(identity: FileIdentity): void {
+    if ([...this.files.values()].some((candidate) => sameFileIdentity(candidate, identity))) return;
+    if ([...this.openFiles.values()].some((open) => sameFileIdentity(open.identity, identity))) return;
+    this.fileNodes.delete(fileIdentityKey(identity));
+    this.removeSqliteDatabase(identity);
+  }
+
+  private removeSqliteDatabase(identity: FileIdentity): void {
+    const key = fileIdentityKey(identity);
+    const database = this.sqliteDatabases.get(key);
+    if (database === undefined) return;
+    this.sqliteDatabases.delete(key);
+    database.close();
   }
 
   private rebuildChildIndex(): void {
@@ -1291,6 +1332,10 @@ function fileIdentityOf(node: FileIdentity): FileIdentity {
 
 function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function fileIdentityKey(identity: FileIdentity): string {
+  return `${identity.dev}:${identity.ino}`;
 }
 
 function normalizeMaxRetries(maxRetries: number | undefined): number {

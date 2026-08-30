@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 
 import { errorNumber } from '../infra/error-number.js';
-import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
+import { DirectoryLockOwnershipLostError } from '../infra/fs-lock.js';
+import type { SqliteDatabasePort, StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { canonicalContractJson, type CanonicalContractValue } from '../infra/persisted-contract.js';
 
 export const SQLITE_BUSY = 5;
@@ -31,41 +32,101 @@ export type HandoffRoutingStatusQuarantineEntry = Readonly<{
   artifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
 }>;
 
-export type HandoffRoutingStatusQuarantineList = Readonly<{
-  entries: readonly HandoffRoutingStatusQuarantineEntry[];
-  overflow: boolean;
+export type HandoffRoutingStatusQuarantineList =
+  | Readonly<{
+      kind: 'listed';
+      entries: readonly HandoffRoutingStatusQuarantineEntry[];
+      overflow: boolean;
+    }>
+  | Readonly<{
+      kind: 'undeterminable';
+      cause: 'root-observation-failed' | 'directory-read-failed';
+      errcode: number;
+    }>;
+
+export type HandoffRoutingStatusQuarantineAffectedArtifact = HandoffRoutingStatusQuarantineArtifact | 'shm';
+export type HandoffRoutingStatusQuarantineSyncedDirectory = 'source' | 'quarantine';
+
+type HandoffRoutingStatusQuarantineStorageEffects = Readonly<{
+  quarantineId: string;
+  quarantinePath: string;
+  movedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+  observedMovedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+  removedArtifacts: readonly HandoffRoutingStatusQuarantineAffectedArtifact[];
+  observedRemovedArtifacts: readonly HandoffRoutingStatusQuarantineAffectedArtifact[];
+  syncedDirectories: readonly HandoffRoutingStatusQuarantineSyncedDirectory[];
 }>;
+
+type HandoffRoutingStatusQuarantineStorageFailureCause =
+  | 'artifact-move-failed'
+  | 'directory-sync-failed'
+  | 'ownership-lost'
+  | 'root-create-failed';
 
 export type HandoffRoutingStatusQuarantineResult =
   | Readonly<{
       kind: 'quarantined';
       quarantineId: string;
       quarantinePath: string;
+      retainedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
     }>
   | Readonly<{
       kind: 'quarantined-incomplete';
       quarantineId: string;
       quarantinePath: string;
-      movedArtifacts: readonly ['wal'];
+      retainedArtifacts: readonly ['wal'];
     }>
   | Readonly<{ kind: 'incomplete-quarantine'; quarantineId: string }>
   | Readonly<{
-      kind: 'quarantine-storage-failed';
+      kind: 'quarantine-coordinate-occupied';
       quarantineId: string;
       quarantinePath: string;
-      movedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
-      cause: 'artifact-move-failed' | 'directory-sync-failed';
-    }>;
+      artifact: HandoffRoutingStatusQuarantineArtifact;
+    }>
+  | Extract<HandoffRoutingStatusQuarantineList, { kind: 'undeterminable' }>
+  | Readonly<{ kind: 'undeterminable'; cause: 'artifact-observation-failed'; errcode: number }>
+  | (HandoffRoutingStatusQuarantineStorageEffects &
+      Readonly<{
+        kind: 'quarantine-storage-failed';
+        retainedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+        cause: HandoffRoutingStatusQuarantineStorageFailureCause;
+      }>)
+  | (HandoffRoutingStatusQuarantineStorageEffects &
+      Readonly<{
+        kind: 'quarantine-storage-failed';
+        retainedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+        cause: 'artifact-observation-failed';
+        errcode: number;
+      }>)
+  | (HandoffRoutingStatusQuarantineStorageEffects &
+      Readonly<{
+        kind: 'quarantine-retention-undeterminable';
+        observedRetainedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+      }> &
+      (
+        | Readonly<{ cause: 'artifact-observation-failed'; errcode: number }>
+        | Readonly<{ cause: 'directory-sync-failed' }>
+        | Readonly<{ cause: 'ownership-lost' }>
+      ));
 
 export type HandoffRoutingStatusQuarantineClearStoreResult =
   | Readonly<{ kind: 'cleared'; entry: HandoffRoutingStatusQuarantineEntry }>
   | Readonly<{ kind: 'quarantine-not-found'; quarantineId: string }>
   | Readonly<{
+      kind: 'quarantine-clear-undeterminable';
+      quarantineId: string;
+      quarantinePath: string;
+      artifact: HandoffRoutingStatusQuarantineArtifact;
+      errcode: number;
+    }>
+  | Readonly<{
       kind: 'quarantine-clear-storage-failed';
       quarantineId: string;
       quarantinePath: string;
       removedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
-      cause: 'artifact-remove-failed' | 'directory-sync-failed';
+      observedRemovedArtifacts: readonly HandoffRoutingStatusQuarantineArtifact[];
+      syncedDirectories: readonly HandoffRoutingStatusQuarantineSyncedDirectory[];
+      cause: 'artifact-remove-failed' | 'directory-sync-failed' | 'ownership-lost';
     }>;
 
 export class HandoffRoutingStatusQuarantineCapacityError extends Error {}
@@ -574,31 +635,37 @@ type HandoffRoutingStorePathObservation =
     }>
   | Readonly<{ kind: 'undeterminable'; error: unknown }>;
 
+type HandoffRoutingPathObservation =
+  | Readonly<{ kind: 'present'; stat: StorageBigIntStat }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'undeterminable'; error: HandoffRoutingStorePathObservationError }>;
+
+function observeHandoffRoutingPath(storage: StoragePort, path: string): HandoffRoutingPathObservation {
+  try {
+    return { kind: 'present', stat: storage.statSync(path, { bigint: true }) };
+  } catch (error: unknown) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
+    return { kind: 'undeterminable', error: new HandoffRoutingStorePathObservationError(error) };
+  }
+}
+
 // Node 24 `node:sqlite` unlinked a frames-bearing wal beside a zero-byte main after a read-only open and
 // `PRAGMA user_version`, so the main/wal product must be decided before any SQLite open.
 function observeHandoffRoutingStorePath(storage: StoragePort, path: string): HandoffRoutingStorePathObservation {
-  let main: 'absent' | 'zero' | 'non-empty';
-  try {
-    main = storage.statSync(path, { bigint: true }).size === 0n ? 'zero' : 'non-empty';
-  } catch (error: unknown) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      return { kind: 'undeterminable', error: new HandoffRoutingStorePathObservationError(error) };
-    }
-    main = 'absent';
-  }
+  const mainObservation = observeHandoffRoutingPath(storage, path);
+  if (mainObservation.kind === 'undeterminable') return mainObservation;
+  const main = mainObservation.kind === 'absent' ? 'absent' : mainObservation.stat.size === 0n ? 'zero' : 'non-empty';
 
   let walReceipt: HandoffRoutingWalObservationReceipt;
-  try {
-    const wal = storage.statSync(`${path}-wal`, { bigint: true });
+  const walObservation = observeHandoffRoutingPath(storage, `${path}-wal`);
+  if (walObservation.kind === 'undeterminable') return walObservation;
+  if (walObservation.kind === 'absent') {
+    walReceipt = { kind: 'absent' };
+  } else {
+    const wal = walObservation.stat;
     const stat = { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs };
     walReceipt = wal.size === 0n ? { kind: 'zero', stat } : { kind: 'non-empty', stat };
-  } catch (error: unknown) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      return { kind: 'undeterminable', error: new HandoffRoutingStorePathObservationError(error) };
-    }
-    walReceipt = { kind: 'absent' };
   }
 
   if (main !== 'non-empty' && walReceipt.kind === 'non-empty') {
@@ -685,8 +752,30 @@ export function listHandoffRoutingStoreQuarantines(
   path: string,
 ): HandoffRoutingStatusQuarantineList {
   const root = quarantineRoot(path);
-  if (!storage.existsSync(root)) return { entries: [], overflow: false };
-  const bounded = storage.readDirectoryBoundedSync(root, MAX_HANDOFF_ROUTING_STATUS_QUARANTINE_FILES);
+  const rootObservation = observeHandoffRoutingPath(storage, root);
+  if (rootObservation.kind === 'absent') return { kind: 'listed', entries: [], overflow: false };
+  if (rootObservation.kind === 'undeterminable' || !rootObservation.stat.isDirectory()) {
+    return {
+      kind: 'undeterminable',
+      cause: 'root-observation-failed',
+      errcode: rootObservation.kind === 'undeterminable' ? rootObservation.error.errcode : SQLITE_ERROR,
+    };
+  }
+  let bounded: ReturnType<StoragePort['readDirectoryBoundedSync']>;
+  try {
+    bounded = storage.readDirectoryBoundedSync(root, MAX_HANDOFF_ROUTING_STATUS_QUARANTINE_FILES);
+  } catch (error: unknown) {
+    const repeatedObservation = observeHandoffRoutingPath(storage, root);
+    if (repeatedObservation.kind === 'absent') return { kind: 'listed', entries: [], overflow: false };
+    return {
+      kind: 'undeterminable',
+      cause: 'directory-read-failed',
+      errcode:
+        repeatedObservation.kind === 'undeterminable'
+          ? repeatedObservation.error.errcode
+          : errorNumber(error, SQLITE_ERROR),
+    };
+  }
   const artifactsById = new Map<string, Set<HandoffRoutingStatusQuarantineArtifact>>();
   for (const fileName of bounded.entries) {
     const parsed = quarantineArtifact(fileName, basename(path));
@@ -706,27 +795,234 @@ export function listHandoffRoutingStoreQuarantines(
         artifacts: artifactOrder.filter((artifact) => artifacts.has(artifact)),
       }),
     );
-  return { entries, overflow: bounded.overflow };
+  return { kind: 'listed', entries, overflow: bounded.overflow };
 }
 
-function moveQuarantineArtifact(storage: StoragePort, source: string, destination: string): boolean {
-  if (storage.existsSync(destination)) {
-    if (storage.existsSync(source)) throw new Error('Routing-status quarantine contains duplicate source evidence.');
-    return false;
+type HandoffRoutingStatusQuarantineMoveObservation =
+  | Readonly<{ kind: 'moved' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'occupied' }>
+  | Readonly<{
+      kind: 'failed';
+      cause: 'artifact-move-failed' | 'directory-sync-failed' | 'ownership-lost';
+      retention: 'retained' | 'not-retained';
+    }>
+  | Readonly<{
+      kind: 'undeterminable';
+      error: HandoffRoutingStorePathObservationError;
+      retention: 'retained' | 'not-retained' | 'unknown';
+    }>;
+
+type HandoffRoutingStatusMaintenanceState = { mutationAttempted: boolean };
+
+type HandoffRoutingStatusDurabilityBarrierResult<Cause> =
+  | Readonly<{ kind: 'durable' }>
+  | Readonly<{ kind: 'failed'; cause: Cause }>;
+
+type HandoffRoutingStatusArtifactEffects<Artifact> = Readonly<{
+  durableArtifacts: ReadonlySet<Artifact>;
+  observedArtifacts: ReadonlySet<Artifact>;
+  recordObserved: (artifact: Artifact) => void;
+  recordAfterBarrier: <Cause>(
+    artifact: Artifact,
+    barrier: () => HandoffRoutingStatusDurabilityBarrierResult<Cause>,
+  ) => HandoffRoutingStatusDurabilityBarrierResult<Cause>;
+}>;
+
+function createHandoffRoutingStatusArtifactEffects<Artifact>(): HandoffRoutingStatusArtifactEffects<Artifact> {
+  const durableArtifacts = new Set<Artifact>();
+  const observedArtifacts = new Set<Artifact>();
+  return {
+    durableArtifacts,
+    observedArtifacts,
+    recordObserved: (artifact) => {
+      observedArtifacts.add(artifact);
+    },
+    recordAfterBarrier: (artifact, barrier) => {
+      const result = barrier();
+      if (result.kind === 'durable') {
+        durableArtifacts.add(artifact);
+      } else {
+        observedArtifacts.add(artifact);
+      }
+      return result;
+    },
+  };
+}
+
+type HandoffRoutingIdentityObservation =
+  | Readonly<{ kind: 'present'; identity: Readonly<{ dev: bigint; ino: bigint }> }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'undeterminable'; error: HandoffRoutingStorePathObservationError }>;
+
+type HandoffRoutingUnlinkObservation =
+  | Readonly<{ kind: 'removed' }>
+  | Readonly<{ kind: 'candidate-absent' }>
+  | Readonly<{ kind: 'expected-absent' }>
+  | Readonly<{ kind: 'occupied' }>
+  | Readonly<{ kind: 'undeterminable'; error: HandoffRoutingStorePathObservationError }>;
+
+function attemptHandoffRoutingStatusMutation<T>(state: HandoffRoutingStatusMaintenanceState, mutate: () => T): T {
+  state.mutationAttempted = true;
+  return mutate();
+}
+
+function observeHandoffRoutingIdentity(storage: StoragePort, path: string): HandoffRoutingIdentityObservation {
+  const observation = observeHandoffRoutingPath(storage, path);
+  return observation.kind === 'present'
+    ? { kind: 'present', identity: { dev: observation.stat.dev, ino: observation.stat.ino } }
+    : observation;
+}
+
+function unlinkHandoffRoutingPathIfIdentityMatches(
+  storage: StoragePort,
+  path: string,
+  expectedIdentity: () => HandoffRoutingIdentityObservation,
+  assertOwned: () => void,
+  state: HandoffRoutingStatusMaintenanceState,
+): HandoffRoutingUnlinkObservation {
+  assertOwned();
+  const expectedObservation = expectedIdentity();
+  const candidateObservation = observeHandoffRoutingIdentity(storage, path);
+  if (expectedObservation.kind === 'undeterminable') return expectedObservation;
+  if (candidateObservation.kind === 'undeterminable') return candidateObservation;
+  if (candidateObservation.kind === 'absent') return { kind: 'candidate-absent' };
+  if (expectedObservation.kind === 'absent') return { kind: 'expected-absent' };
+  if (
+    expectedObservation.identity.dev !== candidateObservation.identity.dev ||
+    expectedObservation.identity.ino !== candidateObservation.identity.ino
+  ) {
+    return { kind: 'occupied' };
   }
   try {
-    storage.renameSync(source, destination);
-    return true;
+    // Constraint: the maintenance lease makes this operation the sole Coral mutator authorized to replace
+    // or delete source or quarantine pathnames. Observational SQLite opens outside the lease may still create
+    // or rewrite sidecars, so identity must be re-observed immediately before deletion.
+    attemptHandoffRoutingStatusMutation(state, () => storage.unlinkSync(path));
+    return { kind: 'removed' };
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'candidate-absent' };
+    throw error;
   }
 }
 
-function syncQuarantineMove(storage: StoragePort, sourceDirectory: string, root: string): boolean {
-  const sourceSynced = storage.syncDirectoryDurableSync(sourceDirectory);
-  const quarantineSynced = storage.syncDirectoryDurableSync(root);
-  return sourceSynced && quarantineSynced;
+function moveQuarantineArtifact(
+  storage: StoragePort,
+  source: string,
+  destination: string,
+  artifact: HandoffRoutingStatusQuarantineArtifact,
+  sourceDirectory: string,
+  root: string,
+  state: HandoffRoutingStatusMaintenanceState,
+  movedArtifactEffects: HandoffRoutingStatusArtifactEffects<HandoffRoutingStatusQuarantineArtifact>,
+  syncedDirectories: Set<HandoffRoutingStatusQuarantineSyncedDirectory>,
+  assertOwned: () => void,
+): HandoffRoutingStatusQuarantineMoveObservation {
+  const sourceObservation = observeHandoffRoutingPath(storage, source);
+  if (sourceObservation.kind === 'undeterminable') {
+    return { ...sourceObservation, retention: 'not-retained' };
+  }
+  if (sourceObservation.kind === 'absent') return sourceObservation;
+  try {
+    // POSIX link(2) fails with EEXIST instead of replacing the destination, so it can claim a quarantine
+    // coordinate atomically where rename(2) cannot.
+    attemptHandoffRoutingStatusMutation(state, () => storage.linkSync(source, destination));
+  } catch {
+    // A reported link failure does not decide whether the destination entry was created.
+  }
+
+  const repeatedSourceObservation = observeHandoffRoutingPath(storage, source);
+  const repeatedDestinationObservation = observeHandoffRoutingPath(storage, destination);
+  if (repeatedDestinationObservation.kind === 'undeterminable') {
+    return { ...repeatedDestinationObservation, retention: 'unknown' };
+  }
+  if (repeatedDestinationObservation.kind === 'absent') {
+    if (repeatedSourceObservation.kind === 'undeterminable') {
+      return { ...repeatedSourceObservation, retention: 'not-retained' };
+    }
+    return { kind: 'failed', cause: 'artifact-move-failed', retention: 'not-retained' };
+  }
+  if (repeatedSourceObservation.kind === 'undeterminable') {
+    return { ...repeatedSourceObservation, retention: 'unknown' };
+  }
+  const sourceAlreadyRemoved = repeatedSourceObservation.kind === 'absent';
+  if (
+    repeatedSourceObservation.kind === 'present' &&
+    (repeatedSourceObservation.stat.dev !== repeatedDestinationObservation.stat.dev ||
+      repeatedSourceObservation.stat.ino !== repeatedDestinationObservation.stat.ino)
+  ) {
+    return { kind: 'occupied' };
+  }
+
+  // The quarantine name must be durable before source removal so every crash point retains at least one
+  // durable name for the payload.
+  if (!syncQuarantineMoveDirectory(storage, root, 'quarantine', state, syncedDirectories)) {
+    if (sourceAlreadyRemoved) movedArtifactEffects.recordObserved(artifact);
+    return { kind: 'failed', cause: 'directory-sync-failed', retention: 'retained' };
+  }
+  if (sourceAlreadyRemoved) {
+    const durability = movedArtifactEffects.recordAfterBarrier(
+      artifact,
+      (): HandoffRoutingStatusDurabilityBarrierResult<'directory-sync-failed'> =>
+        syncQuarantineMoveDirectory(storage, sourceDirectory, 'source', state, syncedDirectories)
+          ? { kind: 'durable' }
+          : { kind: 'failed', cause: 'directory-sync-failed' },
+    );
+    if (durability.kind === 'failed') {
+      return { kind: 'failed', cause: durability.cause, retention: 'retained' };
+    }
+    return { kind: 'moved' };
+  }
+  let unlinkObservation: HandoffRoutingUnlinkObservation;
+  try {
+    unlinkObservation = unlinkHandoffRoutingPathIfIdentityMatches(
+      storage,
+      source,
+      () => observeHandoffRoutingIdentity(storage, destination),
+      assertOwned,
+      state,
+    );
+  } catch (error: unknown) {
+    if (error instanceof DirectoryLockOwnershipLostError) {
+      return { kind: 'failed', cause: 'ownership-lost', retention: 'retained' };
+    }
+    return { kind: 'failed', cause: 'artifact-move-failed', retention: 'retained' };
+  }
+  if (unlinkObservation.kind === 'undeterminable') {
+    return { ...unlinkObservation, retention: 'unknown' };
+  }
+  if (unlinkObservation.kind === 'occupied') return unlinkObservation;
+  if (unlinkObservation.kind === 'expected-absent') {
+    return { kind: 'failed', cause: 'artifact-move-failed', retention: 'not-retained' };
+  }
+  const durability = movedArtifactEffects.recordAfterBarrier(
+    artifact,
+    (): HandoffRoutingStatusDurabilityBarrierResult<'directory-sync-failed'> =>
+      syncQuarantineMoveDirectory(storage, sourceDirectory, 'source', state, syncedDirectories)
+        ? { kind: 'durable' }
+        : { kind: 'failed', cause: 'directory-sync-failed' },
+  );
+  if (durability.kind === 'failed') {
+    return { kind: 'failed', cause: durability.cause, retention: 'retained' };
+  }
+  return { kind: 'moved' };
+}
+
+function syncQuarantineMoveDirectory(
+  storage: StoragePort,
+  directory: string,
+  label: HandoffRoutingStatusQuarantineSyncedDirectory,
+  state: HandoffRoutingStatusMaintenanceState,
+  syncedDirectories: Set<HandoffRoutingStatusQuarantineSyncedDirectory>,
+): boolean {
+  try {
+    const synced = attemptHandoffRoutingStatusMutation(state, () => storage.syncDirectoryDurableSync(directory));
+    if (synced) syncedDirectories.add(label);
+    return synced;
+  } catch {
+    return false;
+  }
 }
 
 function sameWalStat(left: HandoffRoutingWalStatReceipt, right: HandoffRoutingWalStatReceipt): boolean {
@@ -759,37 +1055,161 @@ export function quarantineHandoffRoutingStoreArtifact(
 ): HandoffRoutingStatusQuarantineResult {
   const sourceDirectory = dirname(path);
   const root = quarantineRoot(path);
-  storage.mkdirSync(root, { recursive: true, mode: 0o700 });
+  assertOwned();
   const retained = listHandoffRoutingStoreQuarantines(storage, path);
-  const incomplete = retained.entries.filter((entry) => entry.state === 'incomplete');
+  assertOwned();
+  if (retained.kind === 'undeterminable') return retained;
+  const retainedCoordinate = retained.entries.find((entry) => entry.id === quarantineId);
+  const incomplete = retained.entries.filter((entry) => entry.state === 'incomplete' && entry.id !== quarantineId);
   if (incomplete.length > 1 || retained.overflow) throw new HandoffRoutingStatusQuarantineCapacityError();
   const incompleteEntry = incomplete[0];
   if (incompleteEntry !== undefined) {
     assertOwned();
     return { kind: 'incomplete-quarantine', quarantineId: incompleteEntry.id };
   }
-  if (retained.entries.length >= MAX_HANDOFF_ROUTING_STATUS_QUARANTINES) {
+  if (retained.entries.length >= MAX_HANDOFF_ROUTING_STATUS_QUARANTINES && retainedCoordinate === undefined) {
     throw new HandoffRoutingStatusQuarantineCapacityError();
   }
   if (!CANONICAL_UUID_PATTERN.test(quarantineId)) {
     throw new Error('Routing-status quarantine ID must be a canonical lowercase UUID.');
   }
   const quarantinePath = join(root, `${basename(path)}.${quarantineId}`);
-  const movedArtifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
-  const storageFailure = (
-    cause: Extract<HandoffRoutingStatusQuarantineResult, { kind: 'quarantine-storage-failed' }>['cause'],
-  ): HandoffRoutingStatusQuarantineResult => ({
-    kind: 'quarantine-storage-failed',
-    quarantineId,
-    quarantinePath,
-    movedArtifacts,
-    cause,
-  });
-  assertOwned();
-  const walMoved = moveQuarantineArtifact(storage, `${path}-wal`, `${quarantinePath}-wal`);
-  if (walMoved) {
-    movedArtifacts.push('wal');
+  for (const [sourcePath, artifactPath, artifact] of [
+    [path, quarantinePath, 'database'],
+    [`${path}-wal`, `${quarantinePath}-wal`, 'wal'],
+  ] as const) {
+    const observation = observeHandoffRoutingPath(storage, artifactPath);
     assertOwned();
+    if (observation.kind === 'undeterminable') {
+      return { kind: 'undeterminable', cause: 'artifact-observation-failed', errcode: observation.error.errcode };
+    }
+    if (observation.kind === 'present') {
+      const sourceObservation = observeHandoffRoutingPath(storage, sourcePath);
+      assertOwned();
+      if (sourceObservation.kind === 'undeterminable') {
+        return {
+          kind: 'undeterminable',
+          cause: 'artifact-observation-failed',
+          errcode: sourceObservation.error.errcode,
+        };
+      }
+      if (
+        sourceObservation.kind === 'present' &&
+        sourceObservation.stat.dev === observation.stat.dev &&
+        sourceObservation.stat.ino === observation.stat.ino
+      ) {
+        continue;
+      }
+      return { kind: 'quarantine-coordinate-occupied', quarantineId, quarantinePath, artifact };
+    }
+  }
+  const state: HandoffRoutingStatusMaintenanceState = { mutationAttempted: false };
+  const movedArtifactEffects = createHandoffRoutingStatusArtifactEffects<HandoffRoutingStatusQuarantineArtifact>();
+  const removedArtifactEffects =
+    createHandoffRoutingStatusArtifactEffects<HandoffRoutingStatusQuarantineAffectedArtifact>();
+  const retainedArtifacts = new Set<HandoffRoutingStatusQuarantineArtifact>();
+  const syncedDirectories = new Set<HandoffRoutingStatusQuarantineSyncedDirectory>();
+  const storageFailure = (
+    cause: HandoffRoutingStatusQuarantineStorageFailureCause | 'artifact-observation-failed',
+    errcode?: number,
+  ): HandoffRoutingStatusQuarantineResult => {
+    const effects = {
+      quarantineId,
+      quarantinePath,
+      movedArtifacts: [...movedArtifactEffects.durableArtifacts],
+      observedMovedArtifacts: [...movedArtifactEffects.observedArtifacts],
+      removedArtifacts: [...removedArtifactEffects.durableArtifacts],
+      observedRemovedArtifacts: [...removedArtifactEffects.observedArtifacts],
+      syncedDirectories: [...syncedDirectories],
+    };
+    const retainedEffects = {
+      ...effects,
+      kind: 'quarantine-storage-failed' as const,
+      retainedArtifacts: [...retainedArtifacts],
+    };
+    return cause === 'artifact-observation-failed'
+      ? { ...retainedEffects, cause, errcode: errcode ?? SQLITE_ERROR }
+      : { ...retainedEffects, cause };
+  };
+  const retentionUndeterminable = (
+    cause:
+      | Readonly<{ kind: 'artifact-observation-failed'; error: HandoffRoutingStorePathObservationError }>
+      | Readonly<{ kind: 'directory-sync-failed' | 'ownership-lost' }>,
+  ): Extract<HandoffRoutingStatusQuarantineResult, { kind: 'quarantine-retention-undeterminable' }> => {
+    const effects = {
+      kind: 'quarantine-retention-undeterminable' as const,
+      quarantineId,
+      quarantinePath,
+      observedRetainedArtifacts: [...retainedArtifacts],
+      movedArtifacts: [...movedArtifactEffects.durableArtifacts],
+      observedMovedArtifacts: [...movedArtifactEffects.observedArtifacts],
+      removedArtifacts: [...removedArtifactEffects.durableArtifacts],
+      observedRemovedArtifacts: [...removedArtifactEffects.observedArtifacts],
+      syncedDirectories: [...syncedDirectories],
+    };
+    return cause.kind === 'artifact-observation-failed'
+      ? { ...effects, cause: cause.kind, errcode: cause.error.errcode }
+      : { ...effects, cause: cause.kind };
+  };
+  const ownershipFailureCauseAfterMutation = (): 'ownership-lost' | null => {
+    try {
+      assertOwned();
+      return null;
+    } catch (error: unknown) {
+      if (!state.mutationAttempted) throw error;
+      if (error instanceof DirectoryLockOwnershipLostError) return 'ownership-lost';
+      throw error;
+    }
+  };
+  const assertOwnedAfterMutation = (): HandoffRoutingStatusQuarantineResult | null => {
+    const cause = ownershipFailureCauseAfterMutation();
+    return cause === null ? null : storageFailure(cause);
+  };
+  try {
+    attemptHandoffRoutingStatusMutation(state, () => storage.mkdirSync(root, { recursive: true, mode: 0o700 }));
+  } catch {
+    return storageFailure('root-create-failed');
+  }
+  if (!syncQuarantineMoveDirectory(storage, sourceDirectory, 'source', state, syncedDirectories)) {
+    return storageFailure('directory-sync-failed');
+  }
+  const ownershipFailureAfterRoot = assertOwnedAfterMutation();
+  if (ownershipFailureAfterRoot !== null) return ownershipFailureAfterRoot;
+  let walMove: HandoffRoutingStatusQuarantineMoveObservation;
+  try {
+    walMove = moveQuarantineArtifact(
+      storage,
+      `${path}-wal`,
+      `${quarantinePath}-wal`,
+      'wal',
+      sourceDirectory,
+      root,
+      state,
+      movedArtifactEffects,
+      syncedDirectories,
+      assertOwned,
+    );
+  } catch {
+    return storageFailure('artifact-move-failed');
+  }
+  if (walMove.kind === 'undeterminable') {
+    if (walMove.retention === 'retained') retainedArtifacts.add('wal');
+    return walMove.retention === 'unknown'
+      ? retentionUndeterminable({ kind: 'artifact-observation-failed', error: walMove.error })
+      : storageFailure('artifact-observation-failed', walMove.error.errcode);
+  }
+  if (walMove.kind === 'occupied') {
+    return { kind: 'quarantine-coordinate-occupied', quarantineId, quarantinePath, artifact: 'wal' };
+  }
+  if (walMove.kind === 'failed') {
+    if (walMove.retention === 'retained') retainedArtifacts.add('wal');
+    return storageFailure(walMove.cause);
+  }
+  const walMoved = walMove.kind === 'moved';
+  if (walMoved) {
+    retainedArtifacts.add('wal');
+    const ownershipFailure = assertOwnedAfterMutation();
+    if (ownershipFailure !== null) return ownershipFailure;
     try {
       const movedStat = movedWalStat(storage, `${quarantinePath}-wal`);
       const guardedReceipt = observations.guardedWalReceipt;
@@ -799,40 +1219,67 @@ export function quarantineHandoffRoutingStoreArtifact(
         movedStat.size === 0n &&
         sameWalStat(guardedReceipt.stat, movedStat)
       ) {
-        storage.unlinkSync(`${quarantinePath}-wal`);
+        const unlinkObservation = unlinkHandoffRoutingPathIfIdentityMatches(
+          storage,
+          `${quarantinePath}-wal`,
+          () => ({ kind: 'present', identity: movedStat }),
+          assertOwned,
+          state,
+        );
+        if (unlinkObservation.kind === 'undeterminable') {
+          return retentionUndeterminable({ kind: 'artifact-observation-failed', error: unlinkObservation.error });
+        }
+        if (unlinkObservation.kind === 'occupied' || unlinkObservation.kind === 'expected-absent') {
+          return { kind: 'quarantine-coordinate-occupied', quarantineId, quarantinePath, artifact: 'wal' };
+        }
+        const removalDurability = removedArtifactEffects.recordAfterBarrier(
+          'wal',
+          (): HandoffRoutingStatusDurabilityBarrierResult<'directory-sync-failed' | 'ownership-lost'> => {
+            const ownershipFailure = ownershipFailureCauseAfterMutation();
+            if (ownershipFailure !== null) return { kind: 'failed', cause: ownershipFailure };
+            return syncQuarantineMoveDirectory(storage, root, 'quarantine', state, syncedDirectories)
+              ? { kind: 'durable' }
+              : { kind: 'failed', cause: 'directory-sync-failed' };
+          },
+        );
+        if (removalDurability.kind === 'failed') {
+          return retentionUndeterminable({ kind: removalDurability.cause });
+        }
+        retainedArtifacts.delete('wal');
       }
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof DirectoryLockOwnershipLostError) return storageFailure('ownership-lost');
       return storageFailure('artifact-move-failed');
-    }
-    try {
-      if (!syncQuarantineMove(storage, sourceDirectory, root)) {
-        return storageFailure('directory-sync-failed');
-      }
-    } catch {
-      return storageFailure('directory-sync-failed');
     }
   }
 
-  assertOwned();
-  let sourceChanged = walMoved;
+  const ownershipFailureBeforeShm = assertOwnedAfterMutation();
+  if (ownershipFailureBeforeShm !== null) return ownershipFailureBeforeShm;
   let shmRemoved: boolean;
   try {
     // Node 24 `node:sqlite` rewrote `-shm` on a read-only open whenever `-wal` was present, so it cannot
     // preserve evidence from before classification.
-    shmRemoved = unlinkIfPresent(storage, `${path}-shm`);
-  } catch (error: unknown) {
-    if (!sourceChanged) throw error;
+    shmRemoved = attemptHandoffRoutingStatusMutation(state, () => unlinkIfPresent(storage, `${path}-shm`));
+  } catch {
     return storageFailure('artifact-move-failed');
   }
   if (shmRemoved) {
-    sourceChanged = true;
-    try {
-      if (!storage.syncDirectoryDurableSync(sourceDirectory)) return storageFailure('directory-sync-failed');
-    } catch {
-      return storageFailure('directory-sync-failed');
+    const removalDurability = removedArtifactEffects.recordAfterBarrier(
+      'shm',
+      (): HandoffRoutingStatusDurabilityBarrierResult<'directory-sync-failed' | 'ownership-lost'> => {
+        const ownershipFailure = ownershipFailureCauseAfterMutation();
+        if (ownershipFailure !== null) return { kind: 'failed', cause: ownershipFailure };
+        return syncQuarantineMoveDirectory(storage, sourceDirectory, 'source', state, syncedDirectories)
+          ? { kind: 'durable' }
+          : { kind: 'failed', cause: 'directory-sync-failed' };
+      },
+    );
+    if (removalDurability.kind === 'failed') {
+      return storageFailure(removalDurability.cause);
     }
   }
-  assertOwned();
+  const ownershipFailureBeforeDatabase = assertOwnedAfterMutation();
+  if (ownershipFailureBeforeDatabase !== null) return ownershipFailureBeforeDatabase;
 
   const detachedWalHadNoMain =
     observations.firstMainState === 'absent' &&
@@ -845,25 +1292,45 @@ export function quarantineHandoffRoutingStoreArtifact(
       kind: 'quarantined-incomplete',
       quarantineId,
       quarantinePath,
-      movedArtifacts: ['wal'],
+      retainedArtifacts: ['wal'],
     };
   }
 
+  let databaseMove: HandoffRoutingStatusQuarantineMoveObservation;
   try {
-    storage.renameSync(path, quarantinePath);
-  } catch (error: unknown) {
-    if (!sourceChanged) throw error;
+    databaseMove = moveQuarantineArtifact(
+      storage,
+      path,
+      quarantinePath,
+      'database',
+      sourceDirectory,
+      root,
+      state,
+      movedArtifactEffects,
+      syncedDirectories,
+      assertOwned,
+    );
+  } catch {
     return storageFailure('artifact-move-failed');
   }
-  movedArtifacts.push('database');
-  try {
-    if (!syncQuarantineMove(storage, sourceDirectory, root)) {
-      return storageFailure('directory-sync-failed');
-    }
-  } catch {
-    return storageFailure('directory-sync-failed');
+  if (databaseMove.kind === 'undeterminable') {
+    if (databaseMove.retention === 'retained') retainedArtifacts.add('database');
+    return databaseMove.retention === 'unknown'
+      ? retentionUndeterminable({ kind: 'artifact-observation-failed', error: databaseMove.error })
+      : storageFailure('artifact-observation-failed', databaseMove.error.errcode);
   }
-  return { kind: 'quarantined', quarantineId, quarantinePath };
+  if (databaseMove.kind === 'occupied') {
+    return { kind: 'quarantine-coordinate-occupied', quarantineId, quarantinePath, artifact: 'database' };
+  }
+  if (databaseMove.kind === 'failed') {
+    if (databaseMove.retention === 'retained') retainedArtifacts.add('database');
+    return storageFailure(databaseMove.cause);
+  }
+  if (databaseMove.kind === 'absent') return storageFailure('artifact-move-failed');
+  retainedArtifacts.add('database');
+  const ownershipFailure = assertOwnedAfterMutation();
+  if (ownershipFailure !== null) return ownershipFailure;
+  return { kind: 'quarantined', quarantineId, quarantinePath, retainedArtifacts: [...retainedArtifacts] };
 }
 
 function unlinkIfPresent(storage: StoragePort, path: string): boolean {
@@ -876,8 +1343,17 @@ function unlinkIfPresent(storage: StoragePort, path: string): boolean {
   }
 }
 
-function syncQuarantineClear(storage: StoragePort, path: string): boolean {
-  return storage.syncDirectoryDurableSync(quarantineRoot(path));
+function syncQuarantineClear(
+  storage: StoragePort,
+  path: string,
+  state: HandoffRoutingStatusMaintenanceState,
+  syncedDirectories: Set<HandoffRoutingStatusQuarantineSyncedDirectory>,
+): boolean {
+  const synced = attemptHandoffRoutingStatusMutation(state, () =>
+    storage.syncDirectoryDurableSync(quarantineRoot(path)),
+  );
+  if (synced) syncedDirectories.add('quarantine');
+  return synced;
 }
 
 export function clearHandoffRoutingStoreQuarantine(
@@ -888,9 +1364,25 @@ export function clearHandoffRoutingStoreQuarantine(
 ): HandoffRoutingStatusQuarantineClearStoreResult {
   if (!CANONICAL_UUID_PATTERN.test(quarantineId)) return { kind: 'quarantine-not-found', quarantineId };
   const quarantinePath = join(quarantineRoot(path), `${basename(path)}.${quarantineId}`);
+  assertOwned();
   const artifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
-  if (storage.existsSync(quarantinePath)) artifacts.push('database');
-  if (storage.existsSync(`${quarantinePath}-wal`)) artifacts.push('wal');
+  for (const [artifactPath, artifact] of [
+    [quarantinePath, 'database'],
+    [`${quarantinePath}-wal`, 'wal'],
+  ] as const) {
+    const observation = observeHandoffRoutingPath(storage, artifactPath);
+    assertOwned();
+    if (observation.kind === 'undeterminable') {
+      return {
+        kind: 'quarantine-clear-undeterminable',
+        quarantineId,
+        quarantinePath,
+        artifact,
+        errcode: observation.error.errcode,
+      };
+    }
+    if (observation.kind === 'present') artifacts.push(artifact);
+  }
   if (artifacts.length === 0) return { kind: 'quarantine-not-found', quarantineId };
   const entry: HandoffRoutingStatusQuarantineEntry = {
     id: quarantineId,
@@ -898,7 +1390,9 @@ export function clearHandoffRoutingStoreQuarantine(
     state: artifacts.includes('database') ? 'complete' : 'incomplete',
     artifacts,
   };
-  const removedArtifacts: HandoffRoutingStatusQuarantineArtifact[] = [];
+  const removedArtifactEffects = createHandoffRoutingStatusArtifactEffects<HandoffRoutingStatusQuarantineArtifact>();
+  const syncedDirectories = new Set<HandoffRoutingStatusQuarantineSyncedDirectory>();
+  const state: HandoffRoutingStatusMaintenanceState = { mutationAttempted: false };
   const storageFailure = (
     cause: Extract<
       HandoffRoutingStatusQuarantineClearStoreResult,
@@ -908,42 +1402,56 @@ export function clearHandoffRoutingStoreQuarantine(
     kind: 'quarantine-clear-storage-failed',
     quarantineId,
     quarantinePath,
-    removedArtifacts,
+    removedArtifacts: [...removedArtifactEffects.durableArtifacts],
+    observedRemovedArtifacts: [...removedArtifactEffects.observedArtifacts],
+    syncedDirectories: [...syncedDirectories],
     cause,
   });
-  assertOwned();
-  for (const [suffix, artifact] of [['-wal', 'wal']] as const) {
+  const ownershipFailureCauseAfterMutation = (): 'ownership-lost' | null => {
+    try {
+      assertOwned();
+      return null;
+    } catch (error: unknown) {
+      if (!state.mutationAttempted) throw error;
+      if (error instanceof DirectoryLockOwnershipLostError) return 'ownership-lost';
+      throw error;
+    }
+  };
+  const assertOwnedAfterMutation = (): HandoffRoutingStatusQuarantineClearStoreResult | null => {
+    const cause = ownershipFailureCauseAfterMutation();
+    return cause === null ? null : storageFailure(cause);
+  };
+  for (const [artifactPath, artifact] of [
+    [`${entry.quarantinePath}-wal`, 'wal'],
+    [entry.quarantinePath, 'database'],
+  ] as const) {
     let removed: boolean;
     try {
-      removed = unlinkIfPresent(storage, `${entry.quarantinePath}${suffix}`);
-    } catch (error: unknown) {
-      if (removedArtifacts.length === 0) throw error;
+      removed = attemptHandoffRoutingStatusMutation(state, () => unlinkIfPresent(storage, artifactPath));
+    } catch {
       return storageFailure('artifact-remove-failed');
     }
     if (removed) {
-      removedArtifacts.push(artifact);
-      try {
-        if (!syncQuarantineClear(storage, path)) return storageFailure('directory-sync-failed');
-      } catch {
-        return storageFailure('directory-sync-failed');
+      const removalDurability = removedArtifactEffects.recordAfterBarrier(
+        artifact,
+        (): HandoffRoutingStatusDurabilityBarrierResult<'directory-sync-failed' | 'ownership-lost'> => {
+          const ownershipFailure = ownershipFailureCauseAfterMutation();
+          if (ownershipFailure !== null) return { kind: 'failed', cause: ownershipFailure };
+          try {
+            return syncQuarantineClear(storage, path, state, syncedDirectories)
+              ? { kind: 'durable' }
+              : { kind: 'failed', cause: 'directory-sync-failed' };
+          } catch {
+            return { kind: 'failed', cause: 'directory-sync-failed' };
+          }
+        },
+      );
+      if (removalDurability.kind === 'failed') {
+        return storageFailure(removalDurability.cause);
       }
     }
-    assertOwned();
-  }
-  let databaseRemoved: boolean;
-  try {
-    databaseRemoved = unlinkIfPresent(storage, entry.quarantinePath);
-  } catch (error: unknown) {
-    if (removedArtifacts.length === 0) throw error;
-    return storageFailure('artifact-remove-failed');
-  }
-  if (databaseRemoved) {
-    removedArtifacts.push('database');
-    try {
-      if (!syncQuarantineClear(storage, path)) return storageFailure('directory-sync-failed');
-    } catch {
-      return storageFailure('directory-sync-failed');
-    }
+    const ownershipFailure = assertOwnedAfterMutation();
+    if (ownershipFailure !== null) return ownershipFailure;
   }
   return { kind: 'cleared', entry };
 }
@@ -1323,24 +1831,99 @@ function assertCanonicalVocabulary(name: string, values: readonly string[]): voi
   }
 }
 
-function persistedContractContainsStringLiteral(contract: CanonicalContractValue, expected: string): boolean {
-  if (contract === null || typeof contract !== 'object') return false;
-  if (Array.isArray(contract)) {
-    return contract.some((value) => persistedContractContainsStringLiteral(value, expected));
-  }
-  const node = contract as { readonly [key: string]: CanonicalContractValue };
-  if (node.type === 'ZodLiteral' && node.value === expected) return true;
-  if (node.type === 'ZodEnum' && Array.isArray(node.values) && node.values.some((value) => value === expected)) {
-    return true;
-  }
-  return Object.values(node).some((value) => persistedContractContainsStringLiteral(value, expected));
+type PersistedContractNode = Readonly<{ [key: string]: CanonicalContractValue }>;
+
+function persistedContractNode(value: CanonicalContractValue): PersistedContractNode | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as PersistedContractNode) : null;
 }
 
-function recordContractsContainStringLiteral(
-  contracts: HandoffRoutingStatusStoreDurableFormat['recordContracts'],
+function indexPersistedContractNodes(
+  value: CanonicalContractValue,
+  nodesById: Map<number, PersistedContractNode>,
+): void {
+  if (Array.isArray(value)) {
+    for (const item of value) indexPersistedContractNodes(item, nodesById);
+    return;
+  }
+  const node = persistedContractNode(value);
+  if (node === null) return;
+  if (typeof node.$id === 'number') nodesById.set(node.$id, node);
+  for (const child of Object.values(node)) indexPersistedContractNodes(child, nodesById);
+}
+
+function resolvePersistedContractNode(
+  value: CanonicalContractValue,
+  nodesById: ReadonlyMap<number, PersistedContractNode>,
+): PersistedContractNode | null {
+  const node = persistedContractNode(value);
+  if (node === null) return null;
+  return typeof node.$ref === 'number' ? (nodesById.get(node.$ref) ?? null) : node;
+}
+
+function persistedContractValuesAtFieldPath(
+  value: CanonicalContractValue,
+  fieldPath: readonly string[],
+  nodesById: ReadonlyMap<number, PersistedContractNode>,
+): readonly CanonicalContractValue[] {
+  const node = resolvePersistedContractNode(value, nodesById);
+  if (node === null) return [];
+  if (fieldPath.length === 0) return [node];
+  const [field, ...remainingPath] = fieldPath;
+  if (field === undefined) return [node];
+  if (node.type === 'ZodObject') {
+    const fields = persistedContractNode(node.fields);
+    const child = fields?.[field];
+    return child === undefined ? [] : persistedContractValuesAtFieldPath(child, remainingPath, nodesById);
+  }
+  if ((node.type === 'ZodUnion' || node.type === 'ZodDiscriminatedUnion') && Array.isArray(node.options)) {
+    return node.options.flatMap((option) => persistedContractValuesAtFieldPath(option, fieldPath, nodesById));
+  }
+  const wrapped =
+    node.type === 'ZodEffects' || node.type === 'ZodPipeline'
+      ? node.input
+      : node.type === 'ZodLazy'
+        ? node.value
+        : node.inner;
+  return wrapped === undefined ? [] : persistedContractValuesAtFieldPath(wrapped, fieldPath, nodesById);
+}
+
+function persistedContractValueAcceptsStringLiteral(
+  value: CanonicalContractValue,
+  expected: string,
+  nodesById: ReadonlyMap<number, PersistedContractNode>,
+  visitedIds: ReadonlySet<number> = new Set<number>(),
+): boolean {
+  const node = resolvePersistedContractNode(value, nodesById);
+  if (node === null) return false;
+  const id = typeof node.$id === 'number' ? node.$id : undefined;
+  if (id !== undefined && visitedIds.has(id)) return false;
+  const nextVisited = id === undefined ? visitedIds : new Set([...visitedIds, id]);
+  if (node.type === 'ZodLiteral') return node.value === expected;
+  if (node.type === 'ZodEnum') return Array.isArray(node.values) && node.values.some((item) => item === expected);
+  if ((node.type === 'ZodUnion' || node.type === 'ZodDiscriminatedUnion') && Array.isArray(node.options)) {
+    return node.options.some((option) =>
+      persistedContractValueAcceptsStringLiteral(option, expected, nodesById, nextVisited),
+    );
+  }
+  const wrapped =
+    node.type === 'ZodEffects' || node.type === 'ZodPipeline'
+      ? node.input
+      : node.type === 'ZodLazy'
+        ? node.value
+        : node.inner;
+  return wrapped !== undefined && persistedContractValueAcceptsStringLiteral(wrapped, expected, nodesById, nextVisited);
+}
+
+function persistedContractFieldAcceptsStringLiteral(
+  contract: CanonicalContractValue,
+  fieldPath: readonly string[],
   expected: string,
 ): boolean {
-  return Object.values(contracts).some((contract) => persistedContractContainsStringLiteral(contract, expected));
+  const nodesById = new Map<number, PersistedContractNode>();
+  indexPersistedContractNodes(contract, nodesById);
+  return persistedContractValuesAtFieldPath(contract, fieldPath, nodesById).some((value) =>
+    persistedContractValueAcceptsStringLiteral(value, expected, nodesById),
+  );
 }
 
 function assertDurableFormat(format: HandoffRoutingStatusStoreDurableFormat): void {
@@ -1348,14 +1931,33 @@ function assertDurableFormat(format: HandoffRoutingStatusStoreDurableFormat): vo
   sqlVocabularyLiteral(stability.selectionDispositionKind);
   sqlVocabularyLiteral(stability.terminalDispositionKind);
   assertCanonicalVocabulary('completed-pair routing-basis', stability.selectionBasisKinds);
-  if (!recordContractsContainStringLiteral(format.recordContracts, stability.selectionDispositionKind)) {
+  if (
+    !persistedContractFieldAcceptsStringLiteral(
+      format.recordContracts.selection,
+      ['disposition', 'kind'],
+      stability.selectionDispositionKind,
+    )
+  ) {
     throw new Error('Routing-status completed-pair selection disposition is outside the durable vocabulary.');
   }
-  if (!recordContractsContainStringLiteral(format.recordContracts, stability.terminalDispositionKind)) {
+  if (
+    !persistedContractFieldAcceptsStringLiteral(
+      format.recordContracts.terminal,
+      ['disposition', 'kind'],
+      stability.terminalDispositionKind,
+    )
+  ) {
     throw new Error('Routing-status completed-pair terminal disposition is outside the durable vocabulary.');
   }
   if (
-    stability.selectionBasisKinds.some((kind) => !recordContractsContainStringLiteral(format.recordContracts, kind))
+    stability.selectionBasisKinds.some(
+      (kind) =>
+        !persistedContractFieldAcceptsStringLiteral(
+          format.recordContracts.selection,
+          ['disposition', 'basis', 'kind'],
+          kind,
+        ),
+    )
   ) {
     throw new Error('Routing-status completed-pair basis is outside the durable vocabulary.');
   }

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,9 +9,11 @@ import {
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_LEGAL_CLOSING_RECORD_BYTES,
   MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES,
+  MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
   handoffRoutingStatusStoreSchema,
 } from '#src/coordinator/handoff-routing/status.js';
+import { MAX_PROCESS_INCARNATION_LENGTH } from '#src/infra/node-process.js';
 import {
   HANDOFF_ROUTING_STATUS_GENERATION_BAND,
   handoffRoutingStatusFingerprint,
@@ -16,6 +21,14 @@ import {
 } from '#src/store/handoff-routing-status-store.js';
 
 describe('handoff routing status bounds', () => {
+  it('derives the maximum-body incarnation from its canonical bound', () => {
+    const source = readFileSync(join(process.cwd(), 'src/coordinator/handoff-routing/status.ts'), 'utf-8');
+
+    expect(source).toContain('MAX_TEXT.repeat(MAX_PROCESS_INCARNATION_LENGTH)');
+    expect(source).not.toContain('MAX_TEXT.repeat(256)');
+    expect(MAX_LEGAL_ROUTING_SELECTED_TRANSITION.owner.incarnation).toHaveLength(MAX_PROCESS_INCARNATION_LENGTH);
+  });
+
   it('keeps handwritten DDL bounds fitted to the widest legal records', () => {
     const { minimum, maximum, decimalWidth } = HANDOFF_ROUTING_STATUS_GENERATION_BAND;
     expect(String(minimum).length).toBe(decimalWidth);

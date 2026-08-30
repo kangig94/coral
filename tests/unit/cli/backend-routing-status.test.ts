@@ -481,8 +481,23 @@ describe('backend routing-status resolve grammar', () => {
       75,
     ],
     [
+      {
+        kind: 'quarantine-coordinate-occupied',
+        quarantineId: '00000000-0000-4000-8000-000000000042',
+        quarantinePath: '/state/run/handoff-routing-quarantine/handoff-routing.db.00000000-0000-4000-8000-000000000042',
+        artifact: 'database',
+      } as const,
+      'preserve the existing evidence and rerun coral-cli backend routing-status discard',
+      75,
+    ],
+    [
       { kind: 'quarantine-capacity-exhausted', maximum: 16 } as const,
       'routing-status quarantine list, clear exact entries',
+      75,
+    ],
+    [
+      { kind: 'undeterminable', cause: 'root-observation-failed', errcode: 13 } as const,
+      'undeterminable quarantine evidence cannot authorize another quarantine',
       75,
     ],
     [
@@ -490,11 +505,17 @@ describe('backend routing-status resolve grammar', () => {
         kind: 'quarantine-storage-failed',
         quarantineId: '00000000-0000-4000-8000-000000000042',
         quarantinePath: '/state/run/handoff-routing-quarantine/handoff-routing.db.00000000-0000-4000-8000-000000000042',
-        movedArtifacts: ['wal'],
+        retainedArtifacts: ['wal'],
+        movedArtifacts: [],
+        observedMovedArtifacts: ['wal'],
+        removedArtifacts: [],
+        observedRemovedArtifacts: [],
+        syncedDirectories: [],
         cause: 'directory-sync-failed',
       } as const,
-      'routing-status quarantine list, repair the reported storage condition, run coral-cli backend ' +
-        'routing-status quarantine clear --id 00000000-0000-4000-8000-000000000042, then rerun ' +
+      'repair the reported storage condition, then run coral-cli backend routing-status quarantine list; if it ' +
+        'lists 00000000-0000-4000-8000-000000000042, run coral-cli backend routing-status quarantine clear ' +
+        '--id 00000000-0000-4000-8000-000000000042, then rerun ' +
         'coral-cli backend routing-status discard',
       75,
     ],
@@ -521,6 +542,7 @@ describe('backend routing-status resolve grammar', () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
       list: () => ({
+        kind: 'listed',
         entries: [
           {
             id: INVOCATION_ID,
@@ -558,7 +580,7 @@ describe('backend routing-status resolve grammar', () => {
       },
     }));
     const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({ entries: [], overflow: false }),
+      list: () => ({ kind: 'listed', entries: [], overflow: false }),
       clear,
     };
     const program = new Command();
@@ -585,12 +607,14 @@ describe('backend routing-status resolve grammar', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
-      list: () => ({ entries: [], overflow: false }),
+      list: () => ({ kind: 'listed', entries: [], overflow: false }),
       clear: async (quarantineId) => ({
         kind: 'quarantine-clear-storage-failed',
         quarantineId,
         quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${quarantineId}`,
-        removedArtifacts: ['wal'],
+        removedArtifacts: [],
+        observedRemovedArtifacts: ['wal'],
+        syncedDirectories: [],
         cause: 'directory-sync-failed',
       }),
     };
@@ -609,10 +633,201 @@ describe('backend routing-status resolve grammar', () => {
       INVOCATION_ID,
     ]);
 
+    const rendered = String(stderr.mock.calls[0]?.[0]);
+    expect(rendered).toContain('removed artifacts: none');
+    expect(rendered).toContain('observed removed artifacts (not durable): wal');
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining('coral-cli backend routing-status quarantine list'));
     expect(stderr).toHaveBeenCalledWith(
       expect.stringContaining(`coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}`),
     );
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('reports an undeterminable quarantine listing instead of an empty retained set', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+      list: () => ({ kind: 'undeterminable', cause: 'root-observation-failed', errcode: 13 }),
+      clear: async () => {
+        throw new Error('not used');
+      },
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatusQuarantine });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'quarantine', 'list']);
+
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('could not be enumerated'));
+    expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('quarantine is empty'));
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('does not report an unreadable quarantine artifact as already absent', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const routingStatusQuarantine: HandoffRoutingStatusQuarantineCommandOperations = {
+      list: () => ({ kind: 'listed', entries: [], overflow: false }),
+      clear: async (quarantineId) => ({
+        kind: 'quarantine-clear-undeterminable',
+        quarantineId,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${quarantineId}`,
+        artifact: 'database',
+        errcode: 13,
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatusQuarantine });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'routing-status',
+      'quarantine',
+      'clear',
+      '--id',
+      INVOCATION_ID,
+    ]);
+
+    expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('already absent'));
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(`quarantine clear --id ${INVOCATION_ID}`));
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('does not render an inspect-or-clear successor when a partial discard retained nothing', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const routingStatus: HandoffRoutingStatusCommandOperations = {
+      resolve: async () => {
+        throw new Error('not used');
+      },
+      discard: async () => ({
+        kind: 'quarantine-storage-failed',
+        quarantineId: INVOCATION_ID,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`,
+        retainedArtifacts: [],
+        movedArtifacts: ['wal'],
+        observedMovedArtifacts: [],
+        removedArtifacts: ['wal'],
+        observedRemovedArtifacts: [],
+        syncedDirectories: [],
+        cause: 'directory-sync-failed',
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatus });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
+
+    const rendered = String(stderr.mock.calls[0]?.[0]);
+    expect(rendered).toContain('No artifact is retained');
+    expect(rendered).not.toContain('quarantine list');
+    expect(rendered).not.toContain('quarantine clear');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('renders unknown retention as a hold resolved by quarantine list', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const routingStatus: HandoffRoutingStatusCommandOperations = {
+      resolve: async () => {
+        throw new Error('not used');
+      },
+      discard: async () => ({
+        kind: 'quarantine-retention-undeterminable',
+        quarantineId: INVOCATION_ID,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`,
+        observedRetainedArtifacts: ['wal'],
+        movedArtifacts: ['wal'],
+        observedMovedArtifacts: [],
+        removedArtifacts: [],
+        observedRemovedArtifacts: ['wal'],
+        syncedDirectories: ['source', 'quarantine'],
+        cause: 'directory-sync-failed',
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatus });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
+
+    const rendered = String(stderr.mock.calls[0]?.[0]);
+    expect(rendered).toContain('Whether evidence was retained');
+    expect(rendered).toContain('coral-cli backend routing-status quarantine list');
+    expect(rendered).toContain('coral-cli backend routing-status quarantine clear');
+    expect(rendered).toContain('directory-sync-failed');
+    expect(rendered).not.toContain('No artifact is retained');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('renders ownership-lost retention uncertainty with its exact recovery sequence', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const quarantinePath = `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`;
+    const routingStatus: HandoffRoutingStatusCommandOperations = {
+      resolve: async () => {
+        throw new Error('not used');
+      },
+      discard: async () => ({
+        kind: 'quarantine-retention-undeterminable',
+        quarantineId: INVOCATION_ID,
+        quarantinePath,
+        observedRetainedArtifacts: ['wal'],
+        movedArtifacts: ['wal'],
+        observedMovedArtifacts: [],
+        removedArtifacts: [],
+        observedRemovedArtifacts: ['wal'],
+        syncedDirectories: ['source', 'quarantine'],
+        cause: 'ownership-lost',
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatus });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
+
+    expect(String(stderr.mock.calls[0]?.[0])).toBe(
+      `Routing-status discard stopped after an ambiguous storage effect at quarantine ${INVOCATION_ID} (observed retained artifacts: wal; moved artifacts: wal; observed moved artifacts (not durable): none; removed artifacts: none; observed removed artifacts (not durable): wal; synced directories: source, quarantine; ownership-lost). Whether evidence was retained at ${quarantinePath} could not be determined.\nNext step: repair the generation coordination root so maintenance ownership is stable, then run coral-cli backend routing-status quarantine list; if it lists ${INVOCATION_ID}, run coral-cli backend routing-status quarantine clear --id ${INVOCATION_ID}, then rerun coral-cli backend routing-status discard.\n`,
+    );
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('renders the retained and unsynced state when ownership is lost after a wal move', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const routingStatus: HandoffRoutingStatusCommandOperations = {
+      resolve: async () => {
+        throw new Error('not used');
+      },
+      discard: async () => ({
+        kind: 'quarantine-storage-failed',
+        quarantineId: INVOCATION_ID,
+        quarantinePath: `/state/run/handoff-routing-quarantine/handoff-routing.db.${INVOCATION_ID}`,
+        retainedArtifacts: ['wal'],
+        movedArtifacts: ['wal'],
+        observedMovedArtifacts: [],
+        removedArtifacts: [],
+        observedRemovedArtifacts: [],
+        syncedDirectories: [],
+        cause: 'ownership-lost',
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatus });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'routing-status', 'discard']);
+
+    const rendered = String(stderr.mock.calls[0]?.[0]);
+    expect(rendered).toContain('retained artifacts: wal');
+    expect(rendered).toContain('moved artifacts: wal');
+    expect(rendered).toContain('synced directories: none');
+    expect(rendered).toContain('ownership-lost');
     expect(process.exitCode).toBe(75);
   });
 });
