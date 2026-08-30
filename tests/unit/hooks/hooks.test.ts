@@ -14,6 +14,7 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  BASH_REWRITE_HOOK,
   CLAUDE_HOOKS_JSON_PATH,
   CODEX_HOOKS_JSON_PATH,
   COPILOT_HOOKS_JSON_PATH,
@@ -23,6 +24,9 @@ import {
   KB_LOOKUP_REMINDER_HOOK,
   KB_MEMO_REMINDER_HOOK,
   KB_PROMOTE_GATE_HOOK,
+  MONITOR_TRACK_HOOK,
+  POST_COMPACT_HOOK,
+  PRE_COMPACT_HOOK,
   RALPH_LOOP_HOOK,
   SESSION_START_HOOK,
   SUBAGENT_START_HOOK,
@@ -58,7 +62,68 @@ function seedCodebaseMemoryBinary(homeDir: string): void {
   }
 }
 
+const HOOK_ENTRYPOINTS = [
+  BASH_REWRITE_HOOK,
+  CORAL_SKILL_VARS_HOOK,
+  HUD_AUTO_UPDATE_HOOK,
+  KB_LOOKUP_REMINDER_HOOK,
+  KB_MEMO_REMINDER_HOOK,
+  KB_PROMOTE_GATE_HOOK,
+  KB_START_HOOK,
+  MONITOR_TRACK_HOOK,
+  POST_COMPACT_HOOK,
+  PRE_COMPACT_HOOK,
+  RALPH_LOOP_HOOK,
+  SESSION_START_HOOK,
+  SUBAGENT_START_HOOK,
+  SUBAGENT_TRACK_HOOK,
+] as const;
+const HOOK_FLAVOR_CASES = HOOK_ENTRYPOINTS.flatMap((hookPath) =>
+  [undefined, 'prod', 'dev', 'staging'].map((coralFlavor) => ({ hookPath, coralFlavor })),
+);
+
+describe('hook flavor gating', () => {
+  it.each(HOOK_FLAVOR_CASES)('$hookPath exits zero when CORAL_FLAVOR=$coralFlavor', ({ hookPath, coralFlavor }) => {
+    const result = runHook(hookPath, {}, { CORAL_FLAVOR: coralFlavor });
+
+    expect(result.status).toBe(0);
+  });
+
+  it.each(HOOK_ENTRYPOINTS.filter((hookPath) => hookPath !== SESSION_START_HOOK))(
+    '%s exits silently for an unrecognized CORAL_FLAVOR',
+    (hookPath) => {
+      const result = runHook(hookPath, {}, { CORAL_FLAVOR: 'staging' });
+
+      expect(result.stdout.trim()).toBe('');
+      expect(result.stderr.trim()).toBe('');
+    },
+  );
+});
+
 describe('session-start.mjs', () => {
+  it('emits the unrecognized flavor diagnostic exactly once and nothing else', () => {
+    const result = runHook(SESSION_START_HOOK, {}, { CORAL_FLAVOR: 'staging' });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr.trim()).toBe('');
+    expect(result.stdout.trim().split('\n')).toHaveLength(1);
+    expect(expectHookOutput(result)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext:
+          "Coral hooks are inert: CORAL_FLAVOR is set to 'staging', but only 'prod' and 'dev' are accepted. Every Coral hook will remain inert until CORAL_FLAVOR is corrected.",
+      },
+    });
+  });
+
+  it('emits nothing for an ordinary flavor mismatch', () => {
+    const result = runHook(SESSION_START_HOOK, {}, { CORAL_FLAVOR: 'dev' });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+    expect(result.stderr.trim()).toBe('');
+  });
+
   it('outputs the inject bundle with session_id when both are provided', () => {
     const fixture = createFixture();
     const coreFragment = 'Project instructions\nSecond line';

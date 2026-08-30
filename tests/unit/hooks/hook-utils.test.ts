@@ -165,7 +165,39 @@ describe('hook-utils flavor gating', () => {
     expect(result.stdout.trim()).toBe('');
   });
 
-  it('rejects unrecognized CORAL_FLAVOR values', () => {
+  it.each([
+    {
+      name: 'allows the matching build to act',
+      manifestFlavor: 'prod' as const,
+      coralFlavor: 'prod',
+      expected: { kind: 'active' },
+    },
+    {
+      name: 'identifies the other build flavor',
+      manifestFlavor: 'dev' as const,
+      coralFlavor: 'prod',
+      expected: { kind: 'other-flavor' },
+    },
+    {
+      name: 'carries the unrecognized requested flavor',
+      manifestFlavor: 'prod' as const,
+      coralFlavor: 'staging',
+      expected: { kind: 'unrecognized', value: 'staging' },
+    },
+  ])('$name', ({ manifestFlavor, coralFlavor, expected }) => {
+    const fixture = createHookUtilsFixture(manifestFlavor);
+
+    const result = runHookUtilsModule(
+      fixture.modulePath,
+      'console.log(JSON.stringify(mod.resolveFlavorDisposition()));',
+      { CORAL_FLAVOR: coralFlavor },
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(expected);
+  });
+
+  it('exits cleanly and silently for unrecognized CORAL_FLAVOR values', () => {
     const fixture = createHookUtilsFixture('prod');
 
     const result = runHookUtilsModule(
@@ -174,12 +206,12 @@ describe('hook-utils flavor gating', () => {
       { CORAL_FLAVOR: 'staging' },
     );
 
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
-    expect(result.stderr).toContain("[coral] CORAL_FLAVOR='staging' is not recognized");
+    expect(result.stderr.trim()).toBe('');
   });
 
-  it('warns when CORAL_FLAVOR=dev falls back to prod because the manifest is missing', () => {
+  it('exits cleanly and silently when CORAL_FLAVOR=dev falls back to prod because the manifest is missing', () => {
     const fixture = createHookUtilsFixture('prod');
     rmSync(fixture.manifestPath, { force: true });
 
@@ -191,7 +223,7 @@ describe('hook-utils flavor gating', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
-    expect(result.stderr).toContain('falling back to prod flavor gating');
+    expect(result.stderr.trim()).toBe('');
   });
 });
 

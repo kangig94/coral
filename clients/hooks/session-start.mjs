@@ -9,10 +9,10 @@ import {
   claudeConfigDir,
   coralStateRoot,
   exitIfChildProcess,
-  exitIfWrongFlavor,
   hostKind,
   isValidSessionId,
   readStdin,
+  resolveFlavorDisposition,
   writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { fitAdditionalContext } from './lib/additional-context.mjs';
@@ -169,7 +169,17 @@ function readRecentStartupFailureNotice(runDir) {
 }
 
 exitIfChildProcess();
-exitIfWrongFlavor();
+const flavorDisposition = resolveFlavorDisposition();
+if (flavorDisposition.kind === 'unrecognized') {
+  writeHookOutput({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: `Coral hooks are inert: CORAL_FLAVOR is set to '${flavorDisposition.value}', but only 'prod' and 'dev' are accepted. Every Coral hook will remain inert until CORAL_FLAVOR is corrected.`,
+    },
+  });
+  process.exit(0);
+}
+if (flavorDisposition.kind === 'other-flavor') process.exit(0);
 
 try {
   const input = JSON.parse(await readStdin());
