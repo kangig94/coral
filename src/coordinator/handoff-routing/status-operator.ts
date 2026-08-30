@@ -10,7 +10,7 @@ import {
   type HandoffRoutingStatusQuarantineResult,
 } from '../../store/handoff-routing-status-store.js';
 import { acquireGenerationMaintenanceLease } from '../../store/generation-mutation-coordination.js';
-import { readHandoffRoutingStatus, type HandoffRoutingStatusReadResult } from './status.js';
+import { readHandoffRoutingStatusForDiscard, type HandoffRoutingStatusReadResult } from './status.js';
 
 type DiscardableRoutingStatus = Extract<
   HandoffRoutingStatusReadResult,
@@ -163,7 +163,11 @@ export async function discardHandoffRoutingStatus(
   options: HandoffRoutingStatusOperatorOptions,
 ): Promise<HandoffRoutingStatusDiscardResult> {
   const { runtime, path } = options;
-  const observedStatus = readHandoffRoutingStatus(runtime, path);
+  const firstObservation = readHandoffRoutingStatusForDiscard(runtime, path);
+  if (firstObservation.kind === 'undeterminable') {
+    return { kind: 'refused', status: firstObservation.status };
+  }
+  const observedStatus = firstObservation.status;
   if (observedStatus.kind !== 'unreadable' && observedStatus.kind !== 'unsupported-generation') {
     return { kind: 'refused', status: observedStatus };
   }
@@ -173,7 +177,11 @@ export async function discardHandoffRoutingStatus(
     { operation: 'routing-status discard', retryCommand: 'coral-cli backend routing-status discard' },
     (maintenance): HandoffRoutingStatusDiscardResult => {
       maintenance.assertOwned();
-      const currentStatus = readHandoffRoutingStatus(runtime, path);
+      const guardedObservation = readHandoffRoutingStatusForDiscard(runtime, path);
+      if (guardedObservation.kind === 'undeterminable') {
+        return { kind: 'refused', status: guardedObservation.status };
+      }
+      const currentStatus = guardedObservation.status;
       if (currentStatus.kind !== 'unreadable' && currentStatus.kind !== 'unsupported-generation') {
         return { kind: 'refused', status: currentStatus };
       }

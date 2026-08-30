@@ -16,6 +16,8 @@ const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
 const DIRECTORY_TYPE_BITS = 0o040000n;
 const REGULAR_FILE_TYPE_BITS = 0o100000n;
 const POSIX_MODE_BITS = 0o7777;
+// Measured constraint: Node 24 `node:sqlite` grows a 0-byte file to 4096 bytes at `PRAGMA journal_mode=WAL`.
+const SQLITE_WAL_MAIN_FILE_SIZE = 4096;
 
 type FileIdentity = {
   dev: number;
@@ -966,18 +968,28 @@ export class InMemoryStorage implements StoragePort {
   openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort {
     const normalized = normalizePathForStorage(path);
     const existing = this.sqliteDatabases.get(normalized);
-    if (existing !== undefined) return this.sqlitePort(existing);
+    if (existing !== undefined) return this.sqlitePort(normalized, existing);
     if (options?.readOnly === true) throw createErrnoError('ENOENT', normalized);
 
     this.writeFileSync(normalized, Buffer.alloc(0), { mode: 0o600, flag: 'wx' });
     const database = new DatabaseSync(':memory:') as SerializableDatabaseSync;
     this.sqliteDatabases.set(normalized, database);
-    return this.sqlitePort(database);
+    return this.sqlitePort(normalized, database);
   }
 
-  private sqlitePort(database: DatabaseSync): SqliteDatabasePort {
+  private sqlitePort(path: string, database: DatabaseSync): SqliteDatabasePort {
     return {
-      exec: (sql) => database.exec(sql),
+      exec: (sql) => {
+        database.exec(sql);
+        if (!/\bPRAGMA\s+journal_mode\s*=\s*WAL\b/i.test(sql)) return;
+
+        const file = this.requireFileNode(path);
+        if (file.content.length !== 0) return;
+        file.content = Buffer.alloc(SQLITE_WAL_MAIN_FILE_SIZE);
+        const stamps = this.nextStamps();
+        file.mtimeMs = stamps.mtimeMs;
+        file.mtimeNs = stamps.mtimeNs;
+      },
       prepare: (sql) => {
         const statement = database.prepare(sql);
         return {

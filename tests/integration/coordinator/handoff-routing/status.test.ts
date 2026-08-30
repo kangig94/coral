@@ -1,5 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -30,6 +40,7 @@ import {
   publishGenerationCoordinatedHandoffRoutingTransitions,
   publishHandoffRoutingTransitions,
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
+  readHandoffRoutingStatusForDiscard,
   readHandoffRoutingStatusWithOwnerObservations,
   resolveHandoffRoutingStatus,
   type DurableHandoffRoutingBasis,
@@ -379,6 +390,107 @@ describe('handoff-routing/status', () => {
       kind: 'current',
       statuses: [{ selection: { invocationId: 'after-unlink' } }],
     });
+  });
+
+  it.each(['absent', 'zero'] as const)('maps a %s main with a detached wal without opening SQLite', async (main) => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    if (main === 'zero') writeFileSync(path, Buffer.alloc(0), { mode: 0o600 });
+    writeFileSync(`${path}-wal`, 'detached wal');
+    const openSqliteDatabaseSync = vi.fn(baseRuntime.storage.openSqliteDatabaseSync.bind(baseRuntime.storage));
+    const observedRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, openSqliteDatabaseSync },
+    };
+
+    expect(readHandoffRoutingStatusWithRuntime(observedRuntime, path)).toEqual({
+      kind: 'unsupported-generation',
+      generation: 0,
+    });
+    await expect(
+      publishHandoffRoutingTransitions(observedRuntime, path, [selection(`detached-${main}`, 1)]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'unsupported-generation' });
+    expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('maps an operational wal stat failure to I/O failure and blocks initialization', async () => {
+    const path = databasePath();
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const statSync = ((candidate: string, options?: { bigint: true }) => {
+      if (candidate === `${path}-wal`) {
+        const error = new Error('injected wal stat failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        error.errno = SQLITE_FULL;
+        throw error;
+      }
+      return options === undefined
+        ? baseRuntime.storage.statSync(candidate)
+        : baseRuntime.storage.statSync(candidate, options);
+    }) as StoragePort['statSync'];
+    const openSqliteDatabaseSync = vi.fn(baseRuntime.storage.openSqliteDatabaseSync.bind(baseRuntime.storage));
+    const failingRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, statSync, openSqliteDatabaseSync },
+    };
+
+    expect(readHandoffRoutingStatusWithRuntime(failingRuntime, path)).toEqual({
+      kind: 'undeterminable',
+      cause: 'io-failed',
+      errcode: SQLITE_FULL,
+    });
+    await expect(
+      publishHandoffRoutingTransitions(failingRuntime, path, [selection('stat-failed', 1)]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'io-failed' });
+    expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('carries the first and guarded wal receipts through the discard adapter', async () => {
+    const path = databasePath();
+    await committed(path, [selection('receipt-seed', 1)]);
+    if (existsSync(`${path}-wal`)) unlinkSync(`${path}-wal`);
+    const receiptRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+
+    const firstObservation = readHandoffRoutingStatusForDiscard(receiptRuntime, path);
+    const guardedObservation = readHandoffRoutingStatusForDiscard(receiptRuntime, path);
+
+    expect(firstObservation).toMatchObject({
+      kind: 'observed',
+      status: { kind: 'current' },
+      walReceipt: { kind: 'absent' },
+    });
+    expect(guardedObservation).toMatchObject({
+      kind: 'observed',
+      status: { kind: 'current' },
+      walReceipt: { kind: 'zero', stat: { size: 0n } },
+    });
+  });
+
+  it('quarantines a frames-bearing wal beside a zero-byte main without a pre-quarantine open', async () => {
+    const path = databasePath();
+    const fixturePath = `${path}.wal-source`;
+    const fixture = new DatabaseSync(fixturePath);
+    fixture.exec("PRAGMA journal_mode=WAL; CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('wal')");
+    const walBytes = readFileSync(`${fixturePath}-wal`);
+    expect(walBytes.length).toBeGreaterThan(0);
+    fixture.close();
+    writeFileSync(path, Buffer.alloc(0), { mode: 0o600 });
+    writeFileSync(`${path}-wal`, walBytes);
+    const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
+    const openSqliteDatabaseSync = vi.fn(baseRuntime.storage.openSqliteDatabaseSync.bind(baseRuntime.storage));
+    const discardRuntime: Runtime = {
+      ...baseRuntime,
+      storage: { ...baseRuntime.storage, openSqliteDatabaseSync },
+    };
+
+    const discarded = await discardHandoffRoutingStatus(routingStatusOperatorOptions(discardRuntime, path));
+
+    expect(discarded).toMatchObject({
+      kind: 'discarded',
+      previousStatus: { kind: 'unsupported-generation', generation: 0 },
+    });
+    if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
+    expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(walBytes);
+    expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
   });
 
   it('quarantines an unreadable artifact, permits a clean publication, and refuses a current journal', async () => {

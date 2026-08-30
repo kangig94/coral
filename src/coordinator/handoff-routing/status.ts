@@ -9,11 +9,12 @@ import type { IdPort, Runtime } from '../../runtime/ports.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../../infra/process-containment.js';
 import {
   HandoffRoutingStoreInvalidRecordError,
+  HandoffRoutingStorePathObservationError,
   HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
   handoffRoutingStatusGeneration,
   publishHandoffRoutingStoreTransaction,
-  readHandoffRoutingStoreSnapshot,
+  readHandoffRoutingStoreSnapshotWithObservation,
   SQLITE_BUSY,
   SQLITE_CORRUPT,
   SQLITE_ERROR,
@@ -25,6 +26,8 @@ import {
   type HandoffRoutingRecordValidationResult,
   type HandoffRoutingStatusTransaction,
   type HandoffRoutingStatusStoreSchema,
+  type HandoffRoutingStoreSnapshotRead,
+  type HandoffRoutingWalObservationReceipt,
 } from '../../store/handoff-routing-status-store.js';
 import {
   tryAcquireGenerationWriterLease,
@@ -1269,6 +1272,9 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
   if (error instanceof UnsupportedGenerationError) {
     return { kind: 'not-published', cause: 'unsupported-generation' };
   }
+  if (error instanceof HandoffRoutingStorePathObservationError) {
+    return { kind: 'not-published', cause: 'io-failed' };
+  }
   const errcode =
     error instanceof HandoffRoutingStoreUnreadableError ? error.errcode : errorNumber(error, SQLITE_ERROR);
   const primaryErrcode = errcode & 0xff;
@@ -1910,8 +1916,7 @@ function classifyStatusSnapshotError(error: unknown): StatusSnapshotReadResult {
   return { kind: 'undeterminable', cause: 'io-failed', errcode };
 }
 
-function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSnapshotReadResult {
-  const result = readHandoffRoutingStoreSnapshot(storage, path, handoffRoutingStatusStoreSchema());
+function statusSnapshotReadResult(result: HandoffRoutingStoreSnapshotRead): StatusSnapshotReadResult {
   switch (result.kind) {
     case 'absent':
       return result;
@@ -1926,12 +1931,32 @@ function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSn
   }
 }
 
-export function readHandoffRoutingStatus(
-  runtime: Pick<Runtime, 'storage'>,
-  path: string,
-  probe?: HandoffRoutingOwnerLivenessProbe,
+function statFailureStatus(error: unknown): Extract<HandoffRoutingStatusReadResult, { kind: 'undeterminable' }> {
+  return { kind: 'undeterminable', cause: 'io-failed', errcode: errorNumber(error, SQLITE_ERROR) };
+}
+
+function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSnapshotReadResult {
+  const observation = readHandoffRoutingStoreSnapshotWithObservation(storage, path, handoffRoutingStatusStoreSchema());
+  return observation.kind === 'observed'
+    ? statusSnapshotReadResult(observation.result)
+    : statFailureStatus(observation.result.error);
+}
+
+export type HandoffRoutingStatusDiscardObservation =
+  | Readonly<{
+      kind: 'observed';
+      status: HandoffRoutingStatusReadResult;
+      walReceipt: HandoffRoutingWalObservationReceipt;
+    }>
+  | Readonly<{
+      kind: 'undeterminable';
+      status: Extract<HandoffRoutingStatusReadResult, { kind: 'undeterminable' }>;
+    }>;
+
+function projectHandoffRoutingStatus(
+  snapshot: StatusSnapshotReadResult,
+  probe: HandoffRoutingOwnerLivenessProbe | undefined,
 ): HandoffRoutingStatusReadResult {
-  const snapshot = readStatusSnapshot(runtime.storage, path);
   if (snapshot.kind === 'absent') return snapshot;
   if (snapshot.kind !== 'snapshot') return snapshot;
 
@@ -1959,6 +1984,33 @@ export function readHandoffRoutingStatus(
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
     statuses: projection.statuses,
     retirementHistoryTruncated: retirementHistory.data,
+  };
+}
+
+export function readHandoffRoutingStatus(
+  runtime: Pick<Runtime, 'storage'>,
+  path: string,
+  probe?: HandoffRoutingOwnerLivenessProbe,
+): HandoffRoutingStatusReadResult {
+  return projectHandoffRoutingStatus(readStatusSnapshot(runtime.storage, path), probe);
+}
+
+export function readHandoffRoutingStatusForDiscard(
+  runtime: Pick<Runtime, 'storage'>,
+  path: string,
+): HandoffRoutingStatusDiscardObservation {
+  const observation = readHandoffRoutingStoreSnapshotWithObservation(
+    runtime.storage,
+    path,
+    handoffRoutingStatusStoreSchema(),
+  );
+  if (observation.kind === 'undeterminable') {
+    return { kind: 'undeterminable', status: statFailureStatus(observation.result.error) };
+  }
+  return {
+    kind: 'observed',
+    status: projectHandoffRoutingStatus(statusSnapshotReadResult(observation.result), undefined),
+    walReceipt: observation.walReceipt,
   };
 }
 

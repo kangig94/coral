@@ -184,6 +184,17 @@ export class HandoffRoutingStoreUnreadableError extends Error {
 
 export class HandoffRoutingStoreUnsupportedGenerationError extends Error {}
 
+export class HandoffRoutingStorePathObservationError extends Error {
+  readonly cause: unknown;
+  readonly errcode: number;
+
+  constructor(cause: unknown) {
+    super();
+    this.cause = cause;
+    this.errcode = errorNumber(cause, SQLITE_ERROR);
+  }
+}
+
 export class HandoffRoutingStatusTransaction {
   readonly #database: SqliteDatabasePort;
   readonly #schema: HandoffRoutingStatusStoreSchema;
@@ -486,6 +497,61 @@ export type HandoffRoutingStorePublication<T> =
   | Readonly<{ kind: 'committed'; value: T }>
   | Readonly<{ kind: 'failed'; error: unknown; commitStarted: boolean }>;
 
+type HandoffRoutingWalStatReceipt = Readonly<{
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+}>;
+
+export type HandoffRoutingWalObservationReceipt =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'zero'; stat: HandoffRoutingWalStatReceipt }>
+  | Readonly<{ kind: 'non-empty'; stat: HandoffRoutingWalStatReceipt }>;
+
+type HandoffRoutingStorePathObservation =
+  | Readonly<{
+      kind: 'observed';
+      disposition: 'absent' | 'vacant' | 'detached-wal' | 'sqlite';
+      walReceipt: HandoffRoutingWalObservationReceipt;
+    }>
+  | Readonly<{ kind: 'undeterminable'; error: unknown }>;
+
+// Node 24 `node:sqlite` unlinked a frames-bearing wal beside a zero-byte main after a read-only open and
+// `PRAGMA user_version`, so the main/wal product must be decided before any SQLite open.
+function observeHandoffRoutingStorePath(storage: StoragePort, path: string): HandoffRoutingStorePathObservation {
+  let main: 'absent' | 'zero' | 'non-empty';
+  try {
+    main = storage.statSync(path, { bigint: true }).size === 0n ? 'zero' : 'non-empty';
+  } catch (error: unknown) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      return { kind: 'undeterminable', error: new HandoffRoutingStorePathObservationError(error) };
+    }
+    main = 'absent';
+  }
+
+  let walReceipt: HandoffRoutingWalObservationReceipt;
+  try {
+    const wal = storage.statSync(`${path}-wal`, { bigint: true });
+    const stat = { dev: wal.dev, ino: wal.ino, size: wal.size, mtimeNs: wal.mtimeNs };
+    walReceipt = wal.size === 0n ? { kind: 'zero', stat } : { kind: 'non-empty', stat };
+  } catch (error: unknown) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      return { kind: 'undeterminable', error: new HandoffRoutingStorePathObservationError(error) };
+    }
+    walReceipt = { kind: 'absent' };
+  }
+
+  if (main !== 'non-empty' && walReceipt.kind === 'non-empty') {
+    return { kind: 'observed', disposition: 'detached-wal', walReceipt };
+  }
+  if (main === 'absent') return { kind: 'observed', disposition: 'absent', walReceipt };
+  if (main === 'zero') return { kind: 'observed', disposition: 'vacant', walReceipt };
+  return { kind: 'observed', disposition: 'sqlite', walReceipt };
+}
+
 function quarantineRoot(path: string): string {
   return join(dirname(path), HANDOFF_ROUTING_STATUS_QUARANTINE_DIRECTORY);
 }
@@ -723,6 +789,11 @@ export function publishHandoffRoutingStoreTransaction<T>(
   let transactionOpen = false;
   let commitStarted = false;
   try {
+    const observation = observeHandoffRoutingStorePath(storage, path);
+    if (observation.kind === 'undeterminable') throw observation.error;
+    if (observation.disposition === 'detached-wal') {
+      throw new HandoffRoutingStoreUnsupportedGenerationError();
+    }
     storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     database = storage.openSqliteDatabaseSync(path);
     databaseOwnership(database, schema);
@@ -755,17 +826,41 @@ export type HandoffRoutingStoreSnapshotRead =
     }>
   | Readonly<{ kind: 'failed'; error: unknown }>;
 
-export function readHandoffRoutingStoreSnapshot(
+export type HandoffRoutingStoreSnapshotObservation =
+  | Readonly<{
+      kind: 'observed';
+      result: HandoffRoutingStoreSnapshotRead;
+      walReceipt: HandoffRoutingWalObservationReceipt;
+    }>
+  | Readonly<{
+      kind: 'undeterminable';
+      result: Extract<HandoffRoutingStoreSnapshotRead, { kind: 'failed' }>;
+    }>;
+
+export function readHandoffRoutingStoreSnapshotWithObservation(
   storage: StoragePort,
   path: string,
   schema: HandoffRoutingStatusStoreSchema,
-): HandoffRoutingStoreSnapshotRead {
+): HandoffRoutingStoreSnapshotObservation {
+  const observation = observeHandoffRoutingStorePath(storage, path);
+  if (observation.kind === 'undeterminable') {
+    return { kind: 'undeterminable', result: { kind: 'failed', error: observation.error } };
+  }
+  if (observation.disposition === 'absent') {
+    return { kind: 'observed', result: { kind: 'absent' }, walReceipt: observation.walReceipt };
+  }
+  if (observation.disposition === 'vacant' || observation.disposition === 'detached-wal') {
+    return {
+      kind: 'observed',
+      result: { kind: 'unsupported-generation', generation: 0 },
+      walReceipt: observation.walReceipt,
+    };
+  }
+
   try {
     storage.assertReadableSync(path);
   } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
-    return { kind: 'failed', error };
+    return { kind: 'observed', result: { kind: 'failed', error }, walReceipt: observation.walReceipt };
   }
 
   let database: SqliteDatabasePort | undefined;
@@ -781,13 +876,21 @@ export function readHandoffRoutingStoreSnapshot(
     if (storedGeneration !== generation) {
       database.exec('COMMIT');
       transactionOpen = false;
-      return { kind: 'unsupported-generation', generation: storedGeneration };
+      return {
+        kind: 'observed',
+        result: { kind: 'unsupported-generation', generation: storedGeneration },
+        walReceipt: observation.walReceipt,
+      };
     }
     const schemaMatches = databaseSchemaMatches(database, schema);
     if (!schemaMatches) {
       database.exec('COMMIT');
       transactionOpen = false;
-      return { kind: 'unsupported-generation', generation: storedGeneration };
+      return {
+        kind: 'observed',
+        result: { kind: 'unsupported-generation', generation: storedGeneration },
+        walReceipt: observation.walReceipt,
+      };
     }
     const retirement = readRetirementHistory(database);
     const rows = database
@@ -820,13 +923,25 @@ export function readHandoffRoutingStoreSnapshot(
       .all();
     database.exec('COMMIT');
     transactionOpen = false;
-    return { kind: 'snapshot', rows, reserves, retirement };
+    return {
+      kind: 'observed',
+      result: { kind: 'snapshot', rows, reserves, retirement },
+      walReceipt: observation.walReceipt,
+    };
   } catch (error) {
     rollback(database, transactionOpen, false);
-    return { kind: 'failed', error };
+    return { kind: 'observed', result: { kind: 'failed', error }, walReceipt: observation.walReceipt };
   } finally {
     close(database);
   }
+}
+
+export function readHandoffRoutingStoreSnapshot(
+  storage: StoragePort,
+  path: string,
+  schema: HandoffRoutingStatusStoreSchema,
+): HandoffRoutingStoreSnapshotRead {
+  return readHandoffRoutingStoreSnapshotWithObservation(storage, path, schema).result;
 }
 
 function configureDatabase(

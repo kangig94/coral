@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -10,12 +10,15 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import {
   handoffRoutingStatusGeneration,
   HandoffRoutingStoreInvalidRecordError,
+  HandoffRoutingStorePathObservationError,
   HandoffRoutingStoreUnreadableError,
   HandoffRoutingStoreUnsupportedGenerationError,
   publishHandoffRoutingStoreTransaction,
   readHandoffRoutingStoreSnapshot,
+  readHandoffRoutingStoreSnapshotWithObservation,
   type HandoffRoutingRecordInput,
 } from '#src/store/handoff-routing-status-store.js';
+import type { StorageBigIntStat, StoragePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const temporaryDirectories: string[] = [];
@@ -124,6 +127,59 @@ function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-store-'));
   temporaryDirectories.push(directory);
   return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
+}
+
+type PreflightPathState = 'absent' | 'zero' | 'non-empty' | 'failed';
+
+function preflightStat(size: bigint): StorageBigIntStat {
+  return {
+    dev: 11n,
+    ino: 12n,
+    mode: 0o600n,
+    size,
+    mtimeNs: 13n,
+    isDirectory: () => false,
+    isFile: () => true,
+  };
+}
+
+function preflightStorage(
+  path: string,
+  main: PreflightPathState,
+  wal: PreflightPathState,
+): Readonly<{
+  storage: StoragePort;
+  openSqliteDatabaseSync: ReturnType<typeof vi.fn>;
+  statSync: ReturnType<typeof vi.fn>;
+}> {
+  const runtime = createRealRuntime('prod', { baseDir: dirname(path) });
+  const openSqliteDatabaseSync = vi.fn(() => {
+    throw new Error('SQLite open reached');
+  });
+  const states = new Map([
+    [path, main],
+    [`${path}-wal`, wal],
+  ]);
+  const stat = vi.fn((candidate: string): StorageBigIntStat => {
+    const state = states.get(candidate);
+    if (state === 'zero') return preflightStat(0n);
+    if (state === 'non-empty') return preflightStat(4096n);
+    const error = new Error(state === 'failed' ? 'stat failed' : 'path absent') as NodeJS.ErrnoException;
+    error.code = state === 'failed' ? 'EACCES' : 'ENOENT';
+    error.errno = state === 'failed' ? -13 : -2;
+    throw error;
+  });
+  return {
+    storage: {
+      ...runtime.storage,
+      assertReadableSync: () => undefined,
+      mkdirSync: () => undefined,
+      statSync: stat as unknown as StoragePort['statSync'],
+      openSqliteDatabaseSync,
+    },
+    openSqliteDatabaseSync,
+    statSync: stat,
+  };
 }
 
 function initializeStore(path: string): void {
@@ -391,5 +447,130 @@ describe('HandoffRoutingStatusTransaction', () => {
   it.each(legalRecords)('accepts a legal $name record through the production validator', ({ record }) => {
     const path = databasePath();
     expect(publishRecord(path, record)).toEqual({ kind: 'committed', value: 1 });
+  });
+});
+
+describe('handoff routing store path preflight', () => {
+  it.each([
+    ['absent', 'absent', 'observed', 'absent', 'absent', 0],
+    ['absent', 'zero', 'observed', 'absent', 'zero', 0],
+    ['absent', 'non-empty', 'observed', 'unsupported-generation', 'non-empty', 0],
+    ['absent', 'failed', 'undeterminable', 'failed', undefined, 0],
+    ['zero', 'absent', 'observed', 'unsupported-generation', 'absent', 0],
+    ['zero', 'zero', 'observed', 'unsupported-generation', 'zero', 0],
+    ['zero', 'non-empty', 'observed', 'unsupported-generation', 'non-empty', 0],
+    ['zero', 'failed', 'undeterminable', 'failed', undefined, 0],
+    ['non-empty', 'absent', 'observed', 'failed', 'absent', 1],
+    ['non-empty', 'zero', 'observed', 'failed', 'zero', 1],
+    ['non-empty', 'non-empty', 'observed', 'failed', 'non-empty', 1],
+    ['non-empty', 'failed', 'undeterminable', 'failed', undefined, 0],
+    ['failed', 'absent', 'undeterminable', 'failed', undefined, 0],
+    ['failed', 'zero', 'undeterminable', 'failed', undefined, 0],
+    ['failed', 'non-empty', 'undeterminable', 'failed', undefined, 0],
+    ['failed', 'failed', 'undeterminable', 'failed', undefined, 0],
+  ] as const)(
+    'maps main %s and wal %s before opening SQLite',
+    (main, wal, observationKind, resultKind, receiptKind, expectedOpens) => {
+      const path = databasePath();
+      const instrumented = preflightStorage(path, main, wal);
+
+      const observation = readHandoffRoutingStoreSnapshotWithObservation(instrumented.storage, path, schema);
+
+      expect(observation.kind).toBe(observationKind);
+      expect(observation.result.kind).toBe(resultKind);
+      expect(instrumented.openSqliteDatabaseSync).toHaveBeenCalledTimes(expectedOpens);
+      if (observation.kind === 'observed') expect(observation.walReceipt.kind).toBe(receiptKind);
+      if (main === 'failed') {
+        expect(instrumented.statSync).toHaveBeenCalledTimes(1);
+        expect(instrumented.statSync).not.toHaveBeenCalledWith(`${path}-wal`, expect.anything());
+      }
+    },
+  );
+
+  it.each(['absent', 'zero'] as const)(
+    'refuses a %s main with a non-empty wal before read and publication opens',
+    (main) => {
+      const path = databasePath();
+      const instrumented = preflightStorage(path, main, 'non-empty');
+
+      expect(readHandoffRoutingStoreSnapshot(instrumented.storage, path, schema)).toEqual({
+        kind: 'unsupported-generation',
+        generation: 0,
+      });
+      expect(publishHandoffRoutingStoreTransaction(instrumented.storage, path, schema, () => undefined)).toMatchObject({
+        kind: 'failed',
+        error: expect.any(HandoffRoutingStoreUnsupportedGenerationError),
+        commitStarted: false,
+      });
+      expect(instrumented.openSqliteDatabaseSync).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['absent', 'absent'],
+    ['absent', 'zero'],
+    ['zero', 'absent'],
+    ['zero', 'zero'],
+  ] as const)('authorizes publication for main %s and wal %s', (main, wal) => {
+    const path = databasePath();
+    const instrumented = preflightStorage(path, main, wal);
+
+    expect(publishHandoffRoutingStoreTransaction(instrumented.storage, path, schema, () => undefined)).toMatchObject({
+      kind: 'failed',
+      error: { message: 'SQLite open reached' },
+      commitStarted: false,
+    });
+    expect(instrumented.openSqliteDatabaseSync).toHaveBeenCalledOnce();
+  });
+
+  it('records exactly the wal identity and equality metadata in an existing-wal receipt', () => {
+    const path = databasePath();
+    const instrumented = preflightStorage(path, 'zero', 'non-empty');
+
+    const observation = readHandoffRoutingStoreSnapshotWithObservation(instrumented.storage, path, schema);
+
+    expect(observation).toEqual({
+      kind: 'observed',
+      result: { kind: 'unsupported-generation', generation: 0 },
+      walReceipt: {
+        kind: 'non-empty',
+        stat: { dev: 11n, ino: 12n, size: 4096n, mtimeNs: 13n },
+      },
+    });
+  });
+
+  it('does not authorize initialization when the wal stat fails operationally', () => {
+    const path = databasePath();
+    const instrumented = preflightStorage(path, 'absent', 'failed');
+
+    const publication = publishHandoffRoutingStoreTransaction(instrumented.storage, path, schema, () => undefined);
+
+    expect(publication).toMatchObject({
+      kind: 'failed',
+      error: {
+        cause: { code: 'EACCES', errno: -13 },
+        errcode: -13,
+      },
+      commitStarted: false,
+    });
+    if (publication.kind !== 'failed') throw new Error('Expected publication to fail');
+    expect(publication.error).toBeInstanceOf(HandoffRoutingStorePathObservationError);
+    expect(instrumented.openSqliteDatabaseSync).not.toHaveBeenCalled();
+  });
+
+  it('retains an absent wal receipt when classification creates a zero-byte wal', () => {
+    const path = databasePath();
+    initializeStore(path);
+    if (existsSync(`${path}-wal`)) unlinkSync(`${path}-wal`);
+    const storage = createRealRuntime('prod', { baseDir: dirname(path) }).storage;
+
+    const observation = readHandoffRoutingStoreSnapshotWithObservation(storage, path, schema);
+
+    expect(observation).toMatchObject({
+      kind: 'observed',
+      result: { kind: 'snapshot' },
+      walReceipt: { kind: 'absent' },
+    });
+    expect(statSync(`${path}-wal`).size).toBe(0);
   });
 });
