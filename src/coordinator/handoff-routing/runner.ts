@@ -182,7 +182,7 @@ export type HandoffRecordingRefusal =
       attemptedPhase: 'selection';
     }>
   | Readonly<{
-      reason: 'selection-publication-undeterminable';
+      reason: 'selection-publication-outcome-unknown';
       remediation: 'inspect-routing-status-before-repair';
       attemptedPhase: 'terminal';
     }>;
@@ -844,11 +844,11 @@ async function recordTerminal(
   disposition: DirectTerminalDisposition,
   signal?: AbortSignal,
 ): Promise<TerminalPublication> {
-  if (selection.kind === 'undeterminable') {
+  if (selection.kind === 'commit-outcome-unknown') {
     return {
       kind: 'refused',
       refusal: {
-        reason: 'selection-publication-undeterminable',
+        reason: 'selection-publication-outcome-unknown',
         remediation: 'inspect-routing-status-before-repair',
         attemptedPhase: 'terminal',
       },

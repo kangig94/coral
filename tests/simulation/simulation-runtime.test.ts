@@ -936,6 +936,16 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
   });
 
+  it('observes the simulation runtime process with a stable incarnation', () => {
+    const runtime = new SimulationRuntime();
+    const pid = runtime.env.pid();
+    const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+
+    expect(runtime.process.observeLiveness(pid)).toBe('alive');
+    expect(incarnation).not.toBeNull();
+    expect(runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform)).toBe(incarnation);
+  });
+
   // Without advancing the clock, which is the whole point. A script can retire a pid and allocate the same
   // number again inside one virtual instant, and while incarnations were minted from the clock both spawns
   // got the same token — a false *match* on a reused pid, the one outcome containment must never produce.

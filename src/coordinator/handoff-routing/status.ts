@@ -9,9 +9,7 @@ import type { IdPort, Runtime } from '../../runtime/ports.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../../infra/process-containment.js';
 import {
   HandoffRoutingStoreInvalidRecordError,
-  HandoffRoutingStorePathObservationError,
   HandoffRoutingStoreUnreadableError,
-  HandoffRoutingStoreUnsupportedGenerationError as UnsupportedGenerationError,
   handoffRoutingStatusGeneration,
   publishHandoffRoutingStoreTransaction,
   readHandoffRoutingStoreSnapshotWithObservation,
@@ -26,7 +24,10 @@ import {
   type HandoffRoutingRecordValidationResult,
   type HandoffRoutingStatusTransaction,
   type HandoffRoutingStatusStoreSchema,
-  type HandoffRoutingStoreSnapshotRead,
+  type HandoffRoutingStoreBodyAdmission,
+  type HandoffRoutingStoreClassification,
+  type HandoffRoutingStorePublicationPolicy,
+  type HandoffRoutingStoreSnapshot,
   type HandoffRoutingWalObservationReceipt,
 } from '../../store/handoff-routing-status-store.js';
 import {
@@ -522,9 +523,11 @@ function createHandoffRoutingRecordSchemaRegistry(generation: number) {
 export const handoffRoutingSentinelRecordSchemaRegistry = createHandoffRoutingRecordSchemaRegistry(
   HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION,
 );
-for (const recordKind of Object.keys(handoffRoutingSentinelRecordSchemaRegistry) as HandoffRoutingRecordKind[]) {
-  zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry[recordKind]);
-}
+const HANDOFF_ROUTING_SENTINEL_RECORD_CONTRACTS = Object.freeze({
+  selection: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.selection),
+  terminal: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.terminal),
+  retirement: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.retirement),
+});
 
 export function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSchema {
   return {
@@ -536,9 +539,8 @@ export function handoffRoutingStatusStoreSchema(): HandoffRoutingStatusStoreSche
       maximumContinuationFinalizedBytes: MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
       maximumRetirementTombstoneBytes: MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
       closingRecordBytes: MAX_LEGAL_CLOSING_RECORD_BYTES,
+      recordContracts: HANDOFF_ROUTING_SENTINEL_RECORD_CONTRACTS,
       bodyVocabulary: {
-        dispositionKinds: Object.keys(PERSISTED_DISPOSITION_CLASSIFICATIONS).sort(),
-        routingBasisKinds: Object.keys(HANDOFF_ROUTING_BASIS_OBLIGATIONS).sort(),
         completedPairStability: {
           selectionDispositionKind: 'continue-current',
           selectionBasisKinds: ['incumbent-absent', 'same-build-set'],
@@ -741,31 +743,6 @@ const handoffRoutingMutationSchema = z.union([
 ]);
 
 type HandoffRoutingMutation = z.infer<typeof handoffRoutingMutationSchema>;
-
-export type PublicationOutcome =
-  | Readonly<{ kind: 'committed'; sequence: number }>
-  | Readonly<{
-      kind: 'not-published';
-      cause: 'invalid-record';
-      validation: HandoffRoutingRecordValidationFailure;
-    }>
-  | Readonly<{
-      kind: 'not-published';
-      cause:
-        | 'contended'
-        | 'generation-maintenance'
-        | 'capacity-exhausted'
-        | 'io-failed'
-        | 'unreadable'
-        | 'unsupported-generation'
-        | 'rejected-transition'
-        | 'coordination-unavailable';
-    }>
-  | Readonly<{
-      kind: 'undeterminable';
-      cause: 'contended' | 'capacity-exhausted' | 'io-failed' | 'unreadable';
-      errcode: number;
-    }>;
 
 type HandoffRoutingPublicationPorts = Readonly<{
   time: Pick<Runtime['time'], 'monotonicNow' | 'sleep'>;
@@ -1269,12 +1246,6 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
   if (error instanceof RejectedTransitionError) {
     return { kind: 'not-published', cause: 'rejected-transition' };
   }
-  if (error instanceof UnsupportedGenerationError) {
-    return { kind: 'not-published', cause: 'unsupported-generation' };
-  }
-  if (error instanceof HandoffRoutingStorePathObservationError) {
-    return { kind: 'not-published', cause: 'io-failed' };
-  }
   const errcode =
     error instanceof HandoffRoutingStoreUnreadableError ? error.errcode : errorNumber(error, SQLITE_ERROR);
   const primaryErrcode = errcode & 0xff;
@@ -1282,13 +1253,13 @@ function classifyPublicationError(error: unknown, commitStarted: boolean): Publi
     error instanceof HandoffRoutingStoreUnreadableError ||
     primaryErrcode === SQLITE_NOTADB ||
     primaryErrcode === SQLITE_CORRUPT
-      ? 'unreadable'
+      ? 'storage-corrupt'
       : primaryErrcode === SQLITE_FULL
         ? 'capacity-exhausted'
         : primaryErrcode === SQLITE_BUSY
           ? 'contended'
           : 'io-failed';
-  return commitStarted ? { kind: 'undeterminable', cause, errcode } : { kind: 'not-published', cause };
+  return commitStarted ? { kind: 'commit-outcome-unknown', cause, errcode } : { kind: 'not-published', cause };
 }
 
 function publishOnce(
@@ -1303,6 +1274,8 @@ function publishOnce(
     runtime.storage,
     path,
     handoffRoutingStatusStoreSchema(),
+    publicationActionForClassification,
+    admitStatusSnapshot,
     (transaction) => {
       const observedAt = mutationObservedAt(parsed.data);
       compactExpiredCompletedPairs(transaction, runtime.ids, observedAt);
@@ -1314,9 +1287,11 @@ function publishOnce(
       return publishedSequence;
     },
   );
-  return publication.kind === 'committed'
-    ? { kind: 'committed', sequence: publication.value }
-    : classifyPublicationError(publication.error, publication.commitStarted);
+  if (publication.kind === 'committed') return { kind: 'committed', sequence: publication.value };
+  if (publication.kind === 'artifact-refused') {
+    return { kind: 'artifact-refused', classification: publication.classification };
+  }
+  return classifyPublicationError(publication.error, publication.commitStarted);
 }
 
 function publicationContentionWindow(runtime: HandoffRoutingPublicationPorts) {
@@ -1346,21 +1321,6 @@ async function publishHandoffRoutingTransitionsWithinWindow(
       return outcome;
     }
   }
-}
-
-export function publishHandoffRoutingTransitions(
-  runtime: HandoffRoutingPublicationPorts,
-  path: string,
-  transitions: readonly HandoffRoutingMutation[],
-  signal?: AbortSignal,
-): Promise<PublicationOutcome> {
-  return publishHandoffRoutingTransitionsWithinWindow(
-    runtime,
-    path,
-    transitions,
-    publicationContentionWindow(runtime),
-    signal,
-  );
 }
 
 export async function publishGenerationCoordinatedHandoffRoutingTransitions(
@@ -1590,17 +1550,174 @@ export type HandoffRoutingInvocationStatus =
   | Readonly<{ kind: 'terminal'; selection: RoutingSelectedEvent | null; terminal: HandoffRoutingTerminalEvent }>
   | Readonly<{ kind: 'retired'; tombstone: RetirementTombstone }>;
 
-export type HandoffRoutingStatusReadResult =
-  | Readonly<{ kind: 'absent' }>
+export type HandoffRoutingStatusClassification =
+  | Exclude<HandoffRoutingStoreClassification<never>, { kind: 'current' }>
   | Readonly<{
       kind: 'current';
       generation: typeof HANDOFF_ROUTING_STATUS_GENERATION;
       statuses: readonly HandoffRoutingInvocationStatus[];
       retirementHistoryTruncated: RetirementHistoryTruncated;
+    }>;
+
+export type HandoffRoutingStatusReadResult = HandoffRoutingStatusClassification;
+
+export type HandoffRoutingStatusClassificationPolicy = Readonly<{
+  statusExit: 0 | 75 | 'content-dependent';
+  publication: 'initialize' | 'mutate' | 'refuse';
+  discard: 'allow' | 'refuse';
+  resolve: 'stale' | 'status-unavailable' | 'existing-domain-resolution';
+  renderKey:
+    | 'no-journal'
+    | 'empty-file'
+    | 'initialization-incomplete'
+    | 'detached-wal'
+    | 'no-generation'
+    | 'other-generation'
+    | 'other-format'
+    | 'divergent-schema'
+    | 'content-dependent'
+    | 'damaged'
+    | 'could-not-observe';
+  successorAction: 'none' | 'routing-status-discard' | 'retry' | 'content-dependent';
+}>;
+
+export const HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY = {
+  absent: {
+    statusExit: 0,
+    publication: 'initialize',
+    discard: 'refuse',
+    resolve: 'stale',
+    renderKey: 'no-journal',
+    successorAction: 'none',
+  },
+  vacant: {
+    statusExit: 0,
+    publication: 'initialize',
+    discard: 'refuse',
+    resolve: 'stale',
+    renderKey: 'empty-file',
+    successorAction: 'none',
+  },
+  uninitialized: {
+    statusExit: 0,
+    publication: 'initialize',
+    discard: 'refuse',
+    resolve: 'stale',
+    renderKey: 'initialization-incomplete',
+    successorAction: 'none',
+  },
+  'detached-wal': {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'allow',
+    resolve: 'status-unavailable',
+    renderKey: 'detached-wal',
+    successorAction: 'routing-status-discard',
+  },
+  'generation-missing': {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'allow',
+    resolve: 'status-unavailable',
+    renderKey: 'no-generation',
+    successorAction: 'routing-status-discard',
+  },
+  'foreign-generation': {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'allow',
+    resolve: 'status-unavailable',
+    renderKey: 'other-generation',
+    successorAction: 'routing-status-discard',
+  },
+  'format-mismatch': {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'allow',
+    resolve: 'status-unavailable',
+    renderKey: 'other-format',
+    successorAction: 'routing-status-discard',
+  },
+  'schema-divergent': {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'allow',
+    resolve: 'status-unavailable',
+    renderKey: 'divergent-schema',
+    successorAction: 'routing-status-discard',
+  },
+  current: {
+    statusExit: 'content-dependent',
+    publication: 'mutate',
+    discard: 'refuse',
+    resolve: 'existing-domain-resolution',
+    renderKey: 'content-dependent',
+    successorAction: 'content-dependent',
+  },
+  unreadable: {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'allow',
+    resolve: 'status-unavailable',
+    renderKey: 'damaged',
+    successorAction: 'routing-status-discard',
+  },
+  undeterminable: {
+    statusExit: 75,
+    publication: 'refuse',
+    discard: 'refuse',
+    resolve: 'status-unavailable',
+    renderKey: 'could-not-observe',
+    successorAction: 'retry',
+  },
+} as const satisfies Readonly<
+  Record<HandoffRoutingStatusClassification['kind'], HandoffRoutingStatusClassificationPolicy>
+>;
+
+function publicationActionForClassification(
+  classification: HandoffRoutingStoreClassification<unknown>,
+): ReturnType<HandoffRoutingStorePublicationPolicy> {
+  return HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[classification.kind].publication;
+}
+
+type PublicationArtifactRefusal = Extract<
+  HandoffRoutingStatusClassification,
+  {
+    kind:
+      | 'detached-wal'
+      | 'generation-missing'
+      | 'foreign-generation'
+      | 'format-mismatch'
+      | 'schema-divergent'
+      | 'unreadable'
+      | 'undeterminable';
+  }
+>;
+
+export type PublicationOutcome =
+  | Readonly<{ kind: 'committed'; sequence: number }>
+  | Readonly<{ kind: 'artifact-refused'; classification: PublicationArtifactRefusal }>
+  | Readonly<{
+      kind: 'not-published';
+      cause: 'invalid-record';
+      validation: HandoffRoutingRecordValidationFailure;
     }>
-  | Readonly<{ kind: 'unreadable'; reason: 'invalid-json' | 'invalid-shape' | 'too-large' }>
-  | Readonly<{ kind: 'unsupported-generation'; generation: number }>
-  | Readonly<{ kind: 'undeterminable'; cause: 'io-failed'; errcode: number }>;
+  | Readonly<{
+      kind: 'not-published';
+      cause:
+        | 'contended'
+        | 'generation-maintenance'
+        | 'capacity-exhausted'
+        | 'io-failed'
+        | 'storage-corrupt'
+        | 'rejected-transition'
+        | 'coordination-unavailable';
+    }>
+  | Readonly<{
+      kind: 'commit-outcome-unknown';
+      cause: 'contended' | 'capacity-exhausted' | 'io-failed' | 'storage-corrupt';
+      errcode: number;
+    }>;
 
 export type HandoffRoutingOwnerLivenessProbe = (owner: RecordedProcessIdentity) => OwnerLiveness;
 
@@ -1634,10 +1751,7 @@ export type HandoffRoutingResolveResult =
     }>
   | Readonly<{
       kind: 'status-unavailable';
-      status: Extract<
-        HandoffRoutingStatusReadResult,
-        { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }
-      >;
+      status: PublicationArtifactRefusal;
     }>
   | HandoffRoutingResolvePublicationFailure;
 
@@ -1673,29 +1787,13 @@ const closingReserveReadRowSchema = z
 
 type ClosingReserveReadRow = z.infer<typeof closingReserveReadRowSchema>;
 
-type RetirementHistoryRow = Readonly<{
-  generation: number;
-  expired_identity_count: number;
-  capacity_eviction_count: number;
-  completed_pair_compaction_count: number;
-  operator_resolved_count: number;
-  min_selection_sequence: number | null;
-  max_selection_sequence: number | null;
-  earliest_selected_at: string | null;
-  latest_selected_at: string | null;
-}>;
-
 type StatusSnapshot = Readonly<{
-  kind: 'snapshot';
-  rows: readonly unknown[];
-  reserves: readonly unknown[];
-  retirement: RetirementHistoryRow | undefined;
+  generation: typeof HANDOFF_ROUTING_STATUS_GENERATION;
+  statuses: readonly HandoffRoutingInvocationStatus[];
+  retirementHistoryTruncated: RetirementHistoryTruncated;
 }>;
 
-type StatusSnapshotReadResult =
-  | StatusSnapshot
-  | Extract<HandoffRoutingStatusReadResult, { kind: 'absent' }>
-  | Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' | 'unsupported-generation' | 'undeterminable' }>;
+type StatusSnapshotReadResult = HandoffRoutingStoreClassification<StatusSnapshot>;
 
 type InvocationRecords = {
   selection?: RoutingSelectedEvent;
@@ -1907,39 +2005,44 @@ function projectInvocationStatuses(
   return { kind: 'projected', statuses: Object.freeze(statuses) };
 }
 
-function classifyStatusSnapshotError(error: unknown): StatusSnapshotReadResult {
-  const errcode = errorNumber(error, SQLITE_ERROR);
-  const primaryErrcode = errcode & 0xff;
-  if (primaryErrcode === SQLITE_ERROR || primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT) {
+function admitStatusSnapshot(
+  snapshot: HandoffRoutingStoreSnapshot,
+): ReturnType<HandoffRoutingStoreBodyAdmission<StatusSnapshot>> {
+  const retirementHistory = retirementHistoryTruncatedSchema.safeParse({
+    kind: 'retirement-history-truncated',
+    expiredIdentityCount: snapshot.retirement?.expired_identity_count,
+    causes: {
+      'selection-evicted-at-capacity': snapshot.retirement?.capacity_eviction_count,
+      'completed-pair-compaction': snapshot.retirement?.completed_pair_compaction_count,
+      'operator-resolved': snapshot.retirement?.operator_resolved_count,
+    },
+    minSelectionSequence: snapshot.retirement?.min_selection_sequence,
+    maxSelectionSequence: snapshot.retirement?.max_selection_sequence,
+    earliestSelectedAt: snapshot.retirement?.earliest_selected_at,
+    latestSelectedAt: snapshot.retirement?.latest_selected_at,
+  });
+  if (snapshot.retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
-  return { kind: 'undeterminable', cause: 'io-failed', errcode };
-}
-
-function statusSnapshotReadResult(result: HandoffRoutingStoreSnapshotRead): StatusSnapshotReadResult {
-  switch (result.kind) {
-    case 'absent':
-      return result;
-    case 'unsupported-generation':
-      return result;
-    case 'snapshot':
-      return result;
-    case 'failed':
-      return classifyStatusSnapshotError(result.error);
-    default:
-      return assertNever(result);
-  }
-}
-
-function statFailureStatus(error: unknown): Extract<HandoffRoutingStatusReadResult, { kind: 'undeterminable' }> {
-  return { kind: 'undeterminable', cause: 'io-failed', errcode: errorNumber(error, SQLITE_ERROR) };
+  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves, undefined);
+  if (projection.kind === 'unreadable') return projection;
+  return {
+    kind: 'admitted',
+    snapshot: {
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      statuses: projection.statuses,
+      retirementHistoryTruncated: retirementHistory.data,
+    },
+  };
 }
 
 function readStatusSnapshot(storage: Runtime['storage'], path: string): StatusSnapshotReadResult {
-  const observation = readHandoffRoutingStoreSnapshotWithObservation(storage, path, handoffRoutingStatusStoreSchema());
-  return observation.kind === 'observed'
-    ? statusSnapshotReadResult(observation.result)
-    : statFailureStatus(observation.result.error);
+  return readHandoffRoutingStoreSnapshotWithObservation(
+    storage,
+    path,
+    handoffRoutingStatusStoreSchema(),
+    admitStatusSnapshot,
+  ).classification;
 }
 
 export type HandoffRoutingStatusDiscardObservation =
@@ -1958,33 +2061,18 @@ function projectHandoffRoutingStatus(
   snapshot: StatusSnapshotReadResult,
   probe: HandoffRoutingOwnerLivenessProbe | undefined,
 ): HandoffRoutingStatusReadResult {
-  if (snapshot.kind === 'absent') return snapshot;
-  if (snapshot.kind !== 'snapshot') return snapshot;
-
-  const retirementHistory = retirementHistoryTruncatedSchema.safeParse({
-    kind: 'retirement-history-truncated',
-    expiredIdentityCount: snapshot.retirement?.expired_identity_count,
-    causes: {
-      'selection-evicted-at-capacity': snapshot.retirement?.capacity_eviction_count,
-      'completed-pair-compaction': snapshot.retirement?.completed_pair_compaction_count,
-      'operator-resolved': snapshot.retirement?.operator_resolved_count,
-    },
-    minSelectionSequence: snapshot.retirement?.min_selection_sequence,
-    maxSelectionSequence: snapshot.retirement?.max_selection_sequence,
-    earliestSelectedAt: snapshot.retirement?.earliest_selected_at,
-    latestSelectedAt: snapshot.retirement?.latest_selected_at,
+  if (snapshot.kind !== 'current') return snapshot;
+  const statuses = snapshot.snapshot.statuses.map((status): HandoffRoutingInvocationStatus => {
+    if (status.kind !== 'unresolved') return status;
+    return {
+      ...status,
+      ownerLiveness: ownerLiveness(status.selection.owner, probe),
+    };
   });
-  if (snapshot.retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
-    return { kind: 'unreadable', reason: 'invalid-shape' };
-  }
-
-  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves, probe);
-  if (projection.kind === 'unreadable') return projection;
   return {
     kind: 'current',
-    generation: HANDOFF_ROUTING_STATUS_GENERATION,
-    statuses: projection.statuses,
-    retirementHistoryTruncated: retirementHistory.data,
+    ...snapshot.snapshot,
+    statuses: Object.freeze(statuses),
   };
 }
 
@@ -2004,13 +2092,14 @@ export function readHandoffRoutingStatusForDiscard(
     runtime.storage,
     path,
     handoffRoutingStatusStoreSchema(),
+    admitStatusSnapshot,
   );
   if (observation.kind === 'undeterminable') {
-    return { kind: 'undeterminable', status: statFailureStatus(observation.result.error) };
+    return { kind: 'undeterminable', status: observation.classification };
   }
   return {
     kind: 'observed',
-    status: projectHandoffRoutingStatus(statusSnapshotReadResult(observation.result), undefined),
+    status: projectHandoffRoutingStatus(observation.classification, undefined),
     mainState: observation.mainState,
     walReceipt: observation.walReceipt,
   };
@@ -2041,10 +2130,12 @@ export async function readHandoffRoutingStatusWithOwnerObservations(
   runtime: Pick<Runtime, 'storage' | 'process'>,
   path: string,
 ): Promise<HandoffRoutingStatusReadResult> {
-  const initial = readHandoffRoutingStatus(runtime, path);
-  if (initial.kind !== 'current') return initial;
-  const owners = initial.statuses.flatMap((status) => (status.kind === 'unresolved' ? [status.selection.owner] : []));
-  if (owners.length === 0) return initial;
+  const snapshot = readStatusSnapshot(runtime.storage, path);
+  if (snapshot.kind !== 'current') return snapshot;
+  const owners = snapshot.snapshot.statuses.flatMap((status) =>
+    status.kind === 'unresolved' ? [status.selection.owner] : [],
+  );
+  if (owners.length === 0) return projectHandoffRoutingStatus(snapshot, undefined);
   let observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
   try {
     observations = await runtime.process.observeProcessIdentities(
@@ -2057,7 +2148,7 @@ export async function readHandoffRoutingStatusWithOwnerObservations(
       evidence: { kind: 'unobservable', cause: 'probe-failed' },
     }));
   }
-  return readHandoffRoutingStatus(runtime, path, observationProbe(observations));
+  return projectHandoffRoutingStatus(snapshot, observationProbe(observations));
 }
 
 function statusInvocationId(status: HandoffRoutingInvocationStatus): string {
@@ -2081,9 +2172,9 @@ export async function resolveHandoffRoutingStatus(
 ): Promise<HandoffRoutingResolveResult> {
   const statusRead = await readHandoffRoutingStatusWithOwnerObservations(runtime, path);
   if (statusRead.kind !== 'current') {
-    return statusRead.kind === 'absent'
-      ? { kind: 'stale', invocationId: request.invocationId }
-      : { kind: 'status-unavailable', status: statusRead };
+    const policy = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[statusRead.kind];
+    if (policy.resolve === 'stale') return { kind: 'stale', invocationId: request.invocationId };
+    return { kind: 'status-unavailable', status: statusRead as PublicationArtifactRefusal };
   }
 
   const status = statusRead.statuses.find((candidate) => statusInvocationId(candidate) === request.invocationId);
@@ -2162,8 +2253,7 @@ export async function resolveHandoffRoutingStatus(
 }
 
 export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatusReadResult): 0 | 75 {
-  if (result.kind === 'absent') return 0;
-  if (result.kind !== 'current') return 75;
+  if (result.kind !== 'current') return HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.kind].statusExit;
   for (const status of result.statuses) {
     if (status.kind === 'unresolved') {
       if (status.ownerLiveness.kind === 'absent') return 75;

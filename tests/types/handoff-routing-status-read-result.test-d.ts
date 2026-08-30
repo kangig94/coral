@@ -20,6 +20,13 @@ const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoff
 
 [
   { kind: 'absent' },
+  { kind: 'vacant' },
+  { kind: 'uninitialized' },
+  { kind: 'detached-wal' },
+  { kind: 'generation-missing' },
+  { kind: 'foreign-generation', generation: HANDOFF_ROUTING_STATUS_GENERATION + 1 },
+  { kind: 'format-mismatch' },
+  { kind: 'schema-divergent' },
   {
     kind: 'current',
     generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -29,7 +36,6 @@ const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoff
   { kind: 'unreadable', reason: 'invalid-json' },
   { kind: 'unreadable', reason: 'invalid-shape' },
   { kind: 'unreadable', reason: 'too-large' },
-  { kind: 'unsupported-generation', generation: HANDOFF_ROUTING_STATUS_GENERATION + 1 },
   { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
 ] satisfies readonly HandoffRoutingStatusReadResult[];
 

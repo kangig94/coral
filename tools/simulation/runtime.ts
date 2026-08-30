@@ -41,6 +41,7 @@ export class SimulationRuntime implements Runtime {
     this.spawner = new MockProcessSpawner(this.time, this.storage, {
       buildDurableEnv: (envAdditions) =>
         composeChildEnv(inheritedEnv, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
+      runtimePid: this.env.pid(),
     });
     const simulationProcess = {} as ProcessPort;
     simulationProcess.spawn = (spawnOptions) => {

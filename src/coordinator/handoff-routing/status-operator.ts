@@ -10,14 +10,26 @@ import {
   type HandoffRoutingStatusQuarantineResult,
 } from '../../store/handoff-routing-status-store.js';
 import { acquireGenerationMaintenanceLease } from '../../store/generation-mutation-coordination.js';
-import { readHandoffRoutingStatusForDiscard, type HandoffRoutingStatusReadResult } from './status.js';
+import {
+  HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  readHandoffRoutingStatusForDiscard,
+  type HandoffRoutingStatusReadResult,
+} from './status.js';
 
-type DiscardableRoutingStatus = Extract<
-  HandoffRoutingStatusReadResult,
-  { readonly kind: 'unreadable' | 'unsupported-generation' }
->;
+type HandoffRoutingStatusClassificationPolicy = typeof HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY;
+type DiscardableRoutingStatusKind = {
+  [Kind in keyof HandoffRoutingStatusClassificationPolicy]: HandoffRoutingStatusClassificationPolicy[Kind]['discard'] extends 'allow'
+    ? Kind
+    : never;
+}[keyof HandoffRoutingStatusClassificationPolicy];
+
+type DiscardableRoutingStatus = Extract<HandoffRoutingStatusReadResult, { kind: DiscardableRoutingStatusKind }>;
 
 type RefusedRoutingStatus = Exclude<HandoffRoutingStatusReadResult, DiscardableRoutingStatus>;
+
+function isDiscardableRoutingStatus(status: HandoffRoutingStatusReadResult): status is DiscardableRoutingStatus {
+  return HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[status.kind].discard === 'allow';
+}
 
 export type HandoffRoutingStatusMaintenanceRefusal =
   | Readonly<{ kind: 'coordinator-running'; socketPath: string }>
@@ -170,7 +182,7 @@ export async function discardHandoffRoutingStatus(
     return { kind: 'refused', status: firstObservation.status };
   }
   const observedStatus = firstObservation.status;
-  if (observedStatus.kind !== 'unreadable' && observedStatus.kind !== 'unsupported-generation') {
+  if (!isDiscardableRoutingStatus(observedStatus)) {
     return { kind: 'refused', status: observedStatus };
   }
 
@@ -184,7 +196,7 @@ export async function discardHandoffRoutingStatus(
         return { kind: 'refused', status: guardedObservation.status };
       }
       const currentStatus = guardedObservation.status;
-      if (currentStatus.kind !== 'unreadable' && currentStatus.kind !== 'unsupported-generation') {
+      if (!isDiscardableRoutingStatus(currentStatus)) {
         return { kind: 'refused', status: currentStatus };
       }
       maintenance.assertOwned();

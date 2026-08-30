@@ -174,7 +174,7 @@ describe('backend routing-status resolve grammar', () => {
     },
     {
       result: {
-        kind: 'undeterminable',
+        kind: 'commit-outcome-unknown',
         invocationId: INVOCATION_ID,
         cause: 'io-failed',
         errcode: 5,
@@ -227,7 +227,7 @@ describe('backend routing-status resolve grammar', () => {
       'cannot override an expired observation budget',
     ],
     [{ kind: 'status-unavailable', status: { kind: 'unreadable', reason: 'invalid-json' } }, 'discard command'],
-    [{ kind: 'status-unavailable', status: { kind: 'unsupported-generation', generation: 2 } }, 'discard command'],
+    [{ kind: 'status-unavailable', status: { kind: 'foreign-generation', generation: 2 } }, 'discard command'],
     [
       { kind: 'status-unavailable', status: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } },
       'without discarding',
@@ -266,17 +266,17 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'not-published',
+        kind: 'artifact-refused',
         invocationId: INVOCATION_ID,
-        cause: 'unreadable',
+        classification: { kind: 'unreadable', reason: 'invalid-shape' },
       },
       'routing-status discard successor',
     ],
     [
       {
-        kind: 'not-published',
+        kind: 'artifact-refused',
         invocationId: INVOCATION_ID,
-        cause: 'unsupported-generation',
+        classification: { kind: 'foreign-generation', generation: 2 },
       },
       'routing-status discard successor',
     ],
@@ -307,7 +307,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'undeterminable',
+        kind: 'commit-outcome-unknown',
         invocationId: INVOCATION_ID,
         cause: 'io-failed',
         errcode: 5,
@@ -316,7 +316,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'undeterminable',
+        kind: 'commit-outcome-unknown',
         invocationId: INVOCATION_ID,
         cause: 'contended',
         errcode: 5,
@@ -325,7 +325,7 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'undeterminable',
+        kind: 'commit-outcome-unknown',
         invocationId: INVOCATION_ID,
         cause: 'capacity-exhausted',
         errcode: 13,
@@ -334,9 +334,9 @@ describe('backend routing-status resolve grammar', () => {
     ],
     [
       {
-        kind: 'undeterminable',
+        kind: 'commit-outcome-unknown',
         invocationId: INVOCATION_ID,
-        cause: 'unreadable',
+        cause: 'storage-corrupt',
         errcode: 26,
       },
       'if the journal is unreadable',
@@ -344,7 +344,7 @@ describe('backend routing-status resolve grammar', () => {
   ])('renders an outcome-specific successor for $0.kind', (result, expected) => {
     const rendered = formatHandoffRoutingResolveResult(result);
     expect(rendered).toContain(expected);
-    if (result.kind === 'undeterminable') expect(rendered).not.toContain('was not published');
+    if (result.kind === 'commit-outcome-unknown') expect(rendered).not.toContain('was not published');
   });
 
   it('dispatches operator discard and reports its retained address', async () => {
@@ -389,7 +389,7 @@ describe('backend routing-status resolve grammar', () => {
         quarantineId: INVOCATION_ID,
         quarantinePath,
         quarantineState: 'incomplete',
-        previousStatus: { kind: 'unsupported-generation', generation: 0 },
+        previousStatus: { kind: 'detached-wal' },
       }),
     };
     const program = new Command();

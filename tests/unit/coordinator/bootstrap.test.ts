@@ -133,7 +133,7 @@ describe('backend bootstrap store handoff', () => {
             phase: 'terminal',
             invocationId: PUBLICATION_INVOCATION_ID,
             terminalDisposition: { kind: 'delegated-success', version: '2.0.0' },
-            kind: 'undeterminable',
+            kind: 'commit-outcome-unknown',
             cause: 'io-failed',
             errcode: 5,
           },

@@ -19,7 +19,7 @@ const mockState = vi.hoisted(() => ({
   createRealRuntime: vi.fn<typeof RealRuntimeMod.createRealRuntime>(),
   health: vi.fn(),
   probeCoordinator: vi.fn(),
-  publishHandoffRoutingTransitions: vi.fn(),
+  publishGenerationCoordinatedHandoffRoutingTransitions: vi.fn(),
   readBuildFlavor: vi.fn(),
   resolveStrictBundleIdentity: vi.fn(),
 }));
@@ -44,7 +44,11 @@ vi.mock('#src/runtime/real.js', () => ({
 
 vi.mock('#src/coordinator/handoff-routing/status.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffRoutingStatusMod>();
-  return { ...actual, publishHandoffRoutingTransitions: mockState.publishHandoffRoutingTransitions };
+  return {
+    ...actual,
+    publishGenerationCoordinatedHandoffRoutingTransitions:
+      mockState.publishGenerationCoordinatedHandoffRoutingTransitions,
+  };
 });
 
 vi.mock('#src/transport/ipc/client.js', () => ({
@@ -142,7 +146,10 @@ async function runDelegatedOperation(tracePath: string, exitCode: number): Promi
     },
   });
   mockState.createRealRuntime.mockReturnValue(await createHandoffRuntime(socketPath));
-  mockState.publishHandoffRoutingTransitions.mockResolvedValue({ kind: 'committed', sequence: 1 });
+  mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mockResolvedValue({
+    kind: 'committed',
+    sequence: 1,
+  });
 
   const result = await runHandoff(
     { kind: 'cli-invocation', argv: ['node', 'coral-cli'] },
@@ -165,7 +172,7 @@ afterEach(() => {
   mockState.createRealRuntime.mockReset();
   mockState.health.mockReset();
   mockState.probeCoordinator.mockReset();
-  mockState.publishHandoffRoutingTransitions.mockReset();
+  mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mockReset();
   mockState.readBuildFlavor.mockReset();
   mockState.resolveStrictBundleIdentity.mockReset();
   vi.restoreAllMocks();

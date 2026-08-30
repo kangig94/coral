@@ -19,6 +19,7 @@ import {
   type HandoffRepairOperation,
 } from '../../coordinator/handoff-routing/repair-operation.js';
 import {
+  HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   readHandoffRoutingStatusWithOwnerObservations,
@@ -185,7 +186,7 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
 
 type HandoffRoutingResolveKindWithoutPublication = Exclude<
   HandoffRoutingResolveResult['kind'],
-  'not-published' | 'undeterminable'
+  'artifact-refused' | 'not-published' | 'commit-outcome-unknown'
 >;
 type HandoffRoutingNotPublishedCause = Extract<HandoffRoutingResolveResult, { kind: 'not-published' }>['cause'];
 
@@ -206,8 +207,7 @@ export const HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES: Readonly<Record<HandoffRo
   'generation-maintenance': 75,
   'capacity-exhausted': 75,
   'io-failed': 75,
-  unreadable: 75,
-  'unsupported-generation': 75,
+  'storage-corrupt': 75,
   'invalid-record': 70,
   'rejected-transition': 75,
   'coordination-unavailable': 75,
@@ -342,7 +342,8 @@ function handoffPublicationIncidentExitContribution(incident: HandoffPublication
   switch (incident.kind) {
     case 'not-published':
       return HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[incident.cause];
-    case 'undeterminable':
+    case 'artifact-refused':
+    case 'commit-outcome-unknown':
     case 'refused':
       return 75;
     default:
@@ -352,7 +353,7 @@ function handoffPublicationIncidentExitContribution(incident: HandoffPublication
 
 function handoffRoutingResolveExitCode(result: HandoffRoutingResolveResult): 0 | 1 | 70 | 75 {
   if (result.kind === 'not-published') return HANDOFF_ROUTING_NOT_PUBLISHED_EXIT_CODES[result.cause];
-  if (result.kind === 'undeterminable') return 75;
+  if (result.kind === 'artifact-refused' || result.kind === 'commit-outcome-unknown') return 75;
   return HANDOFF_ROUTING_RESOLVE_EXIT_CODES[result.kind];
 }
 
@@ -544,6 +545,10 @@ function formatRoutingStatusDiscardRefusal(
       switch (result.status.kind) {
         case 'absent':
           return 'Refusing to discard routing status: no journal exists at this address.\nNext step: no action is needed.';
+        case 'vacant':
+          return 'Refusing to discard routing status: the journal is an empty file consistent with interrupted creation or truncation.\nNext step: no action is needed.';
+        case 'uninitialized':
+          return 'Refusing to discard routing status: initialization is incomplete and no application objects exist.\nNext step: no action is needed.';
         case 'current':
           return 'Refusing to discard routing status: the journal is current.\nNext step: run coral-cli backend status and follow whatever successor it shows.';
         case 'undeterminable':
@@ -603,7 +608,8 @@ function handoffRoutingStatusDiscardExitContribution(result: HandoffRoutingStatu
     case 'discarded':
       return 0;
     case 'refused':
-      return result.status.kind === 'absent' ? 0 : 75;
+      if (result.status.kind === 'current') return 75;
+      return HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.status.kind].statusExit;
     case 'coordinator-running':
     case 'coordinator-socket-unobservable':
     case 'coordinator-socket-insecure':

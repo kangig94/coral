@@ -2,6 +2,7 @@ import { writeSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
 import {
+  HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
   publishGenerationCoordinatedHandoffRoutingTransitions,
   readHandoffRoutingStatus,
   handoffRoutingStatusStoreSchema,
@@ -11,6 +12,7 @@ import {
 import { discardHandoffRoutingStatus } from '#src/coordinator/handoff-routing/status-operator.js';
 import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { SqliteDatabasePort } from '#src/infra/port-types.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -208,7 +210,7 @@ async function runLifecycle(): Promise<void> {
 
 async function runStaleDiscard(): Promise<void> {
   const observed = readHandoffRoutingStatus(runtime, path);
-  if (observed.kind !== 'unreadable' && observed.kind !== 'unsupported-generation') {
+  if (HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[observed.kind].discard !== 'allow') {
     throw new Error(`Expected a discardable observation, received ${observed.kind}`);
   }
   stopAt('discardable-observed');
@@ -217,6 +219,34 @@ async function runStaleDiscard(): Promise<void> {
 
 async function runCoordinatedPublication(): Promise<void> {
   emit(await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [selection(identity, 1)]));
+}
+
+async function runPausedFormatMismatchPublication(): Promise<void> {
+  let paused = false;
+  const storage = {
+    ...runtime.storage,
+    openSqliteDatabaseSync: (
+      ...args: Parameters<typeof runtime.storage.openSqliteDatabaseSync>
+    ): SqliteDatabasePort => {
+      const database = runtime.storage.openSqliteDatabaseSync(...args);
+      return {
+        exec: database.exec.bind(database),
+        prepare: database.prepare.bind(database),
+        close: () => {
+          if (!paused) {
+            paused = true;
+            stopAt('after-advisory-classification');
+          }
+          database.close();
+        },
+      };
+    },
+  };
+  emit(
+    await publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, storage }, path, [
+      selection(identity, 1),
+    ]),
+  );
 }
 
 async function run(): Promise<void> {
@@ -244,6 +274,9 @@ async function run(): Promise<void> {
       return;
     case 'coordinated-publication':
       await runCoordinatedPublication();
+      return;
+    case 'paused-format-mismatch-publication':
+      await runPausedFormatMismatchPublication();
       return;
     default:
       throw new Error(`Unknown mode: ${mode}`);

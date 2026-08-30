@@ -3,7 +3,7 @@ import { basename, dirname, join } from 'node:path';
 
 import { errorNumber } from '../infra/error-number.js';
 import type { SqliteDatabasePort, StoragePort } from '../infra/port-types.js';
-import { canonicalContractJson } from '../infra/persisted-contract.js';
+import { canonicalContractJson, type CanonicalContractValue } from '../infra/persisted-contract.js';
 
 export const SQLITE_BUSY = 5;
 export const SQLITE_FULL = 13;
@@ -70,9 +70,9 @@ export type HandoffRoutingStatusQuarantineClearStoreResult =
 
 export class HandoffRoutingStatusQuarantineCapacityError extends Error {}
 
+export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
+
 export type HandoffRoutingStatusBodyVocabulary = Readonly<{
-  dispositionKinds: readonly string[];
-  routingBasisKinds: readonly string[];
   completedPairStability: Readonly<{
     selectionDispositionKind: string;
     selectionBasisKinds: readonly string[];
@@ -88,6 +88,7 @@ export type HandoffRoutingStatusStoreDurableFormat = Readonly<{
   maximumContinuationFinalizedBytes: number;
   maximumRetirementTombstoneBytes: number;
   closingRecordBytes: number;
+  recordContracts: Readonly<Record<HandoffRoutingRecordKind, CanonicalContractValue>>;
   bodyVocabulary: HandoffRoutingStatusBodyVocabulary;
 }>;
 
@@ -112,8 +113,6 @@ export type HandoffRoutingRecordValidationFailure = Exclude<
   HandoffRoutingRecordValidationResult,
   Readonly<{ kind: 'valid' }>
 >;
-
-export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
 
 export type HandoffRoutingRecordInput = Readonly<{
   generation: number;
@@ -192,9 +191,7 @@ export class HandoffRoutingStoreUnreadableError extends Error {
   }
 }
 
-export class HandoffRoutingStoreUnsupportedGenerationError extends Error {}
-
-export class HandoffRoutingStorePathObservationError extends Error {
+class HandoffRoutingStorePathObservationError extends Error {
   readonly cause: unknown;
   readonly errcode: number;
 
@@ -503,9 +500,58 @@ export class HandoffRoutingStatusTransaction {
   }
 }
 
+export type HandoffRoutingStoreUnreadableReason = 'invalid-json' | 'invalid-shape' | 'too-large';
+
+type HandoffRoutingStoreNonCurrentClassification =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'vacant' }>
+  | Readonly<{ kind: 'uninitialized' }>
+  | Readonly<{ kind: 'detached-wal' }>
+  | Readonly<{ kind: 'generation-missing' }>
+  | Readonly<{ kind: 'foreign-generation'; generation: number }>
+  | Readonly<{ kind: 'format-mismatch' }>
+  | Readonly<{ kind: 'schema-divergent' }>
+  | Readonly<{ kind: 'unreadable'; reason: HandoffRoutingStoreUnreadableReason }>
+  | Readonly<{ kind: 'undeterminable'; cause: 'io-failed'; errcode: number }>;
+
+export type HandoffRoutingStoreClassification<T> =
+  | HandoffRoutingStoreNonCurrentClassification
+  | Readonly<{ kind: 'current'; snapshot: T }>;
+
+export type HandoffRoutingStoreArtifactRefusal = Extract<
+  HandoffRoutingStoreClassification<never>,
+  {
+    kind:
+      | 'detached-wal'
+      | 'generation-missing'
+      | 'foreign-generation'
+      | 'format-mismatch'
+      | 'schema-divergent'
+      | 'unreadable'
+      | 'undeterminable';
+  }
+>;
+
 export type HandoffRoutingStorePublication<T> =
   | Readonly<{ kind: 'committed'; value: T }>
+  | Readonly<{ kind: 'artifact-refused'; classification: HandoffRoutingStoreArtifactRefusal }>
   | Readonly<{ kind: 'failed'; error: unknown; commitStarted: boolean }>;
+
+export type HandoffRoutingStoreSnapshot = Readonly<{
+  rows: readonly unknown[];
+  reserves: readonly unknown[];
+  retirement: HandoffRoutingRetirementHistoryRow | undefined;
+}>;
+
+export type HandoffRoutingStoreBodyAdmission<T> = (
+  snapshot: HandoffRoutingStoreSnapshot,
+) =>
+  | Readonly<{ kind: 'admitted'; snapshot: T }>
+  | Readonly<{ kind: 'unreadable'; reason: HandoffRoutingStoreUnreadableReason }>;
+
+export type HandoffRoutingStorePublicationPolicy = (
+  classification: HandoffRoutingStoreClassification<unknown>,
+) => 'initialize' | 'mutate' | 'refuse';
 
 type HandoffRoutingWalStatReceipt = Readonly<{
   dev: bigint;
@@ -561,6 +607,60 @@ function observeHandoffRoutingStorePath(storage: StoragePort, path: string): Han
   if (main === 'absent') return { kind: 'observed', disposition: 'absent', mainState: main, walReceipt };
   if (main === 'zero') return { kind: 'observed', disposition: 'vacant', mainState: main, walReceipt };
   return { kind: 'observed', disposition: 'sqlite', mainState: main, walReceipt };
+}
+
+function undeterminableClassification(
+  error: unknown,
+): Extract<HandoffRoutingStoreClassification<never>, { kind: 'undeterminable' }> {
+  return {
+    kind: 'undeterminable',
+    cause: 'io-failed',
+    errcode:
+      error instanceof HandoffRoutingStorePathObservationError ? error.errcode : errorNumber(error, SQLITE_ERROR),
+  };
+}
+
+function unreadableOrUndeterminableClassification(
+  error: unknown,
+): Extract<HandoffRoutingStoreClassification<never>, { kind: 'unreadable' | 'undeterminable' }> {
+  if (error instanceof HandoffRoutingStoreUnreadableError) {
+    return { kind: 'unreadable', reason: 'invalid-shape' };
+  }
+  const reportedError = error as { readonly errcode?: unknown; readonly errno?: unknown } | null;
+  const reportedErrcode =
+    typeof reportedError?.errcode === 'number' && Number.isInteger(reportedError.errcode)
+      ? reportedError.errcode
+      : typeof reportedError?.errno === 'number' && Number.isInteger(reportedError.errno)
+        ? reportedError.errno
+        : undefined;
+  if (reportedErrcode === undefined) {
+    const errcode = errorNumber(error, SQLITE_ERROR);
+    return { kind: 'undeterminable', cause: 'io-failed', errcode };
+  }
+  const errcode = reportedErrcode;
+  const primaryErrcode = errcode & 0xff;
+  return primaryErrcode === SQLITE_ERROR || primaryErrcode === SQLITE_NOTADB || primaryErrcode === SQLITE_CORRUPT
+    ? { kind: 'unreadable', reason: 'invalid-shape' }
+    : { kind: 'undeterminable', cause: 'io-failed', errcode };
+}
+
+function preflightClassification(
+  observation: HandoffRoutingStorePathObservation,
+): Extract<
+  HandoffRoutingStoreClassification<never>,
+  { kind: 'absent' | 'vacant' | 'detached-wal' | 'undeterminable' }
+> | null {
+  if (observation.kind === 'undeterminable') return undeterminableClassification(observation.error);
+  switch (observation.disposition) {
+    case 'absent':
+      return { kind: 'absent' };
+    case 'vacant':
+      return { kind: 'vacant' };
+    case 'detached-wal':
+      return { kind: 'detached-wal' };
+    case 'sqlite':
+      return null;
+  }
 }
 
 function quarantineRoot(path: string): string {
@@ -852,6 +952,8 @@ export function publishHandoffRoutingStoreTransaction<T>(
   storage: StoragePort,
   path: string,
   schema: HandoffRoutingStatusStoreSchema,
+  publicationPolicy: HandoffRoutingStorePublicationPolicy,
+  admitBody: HandoffRoutingStoreBodyAdmission<unknown>,
   mutate: (transaction: HandoffRoutingStatusTransaction) => T,
 ): HandoffRoutingStorePublication<T> {
   let database: SqliteDatabasePort | undefined;
@@ -859,18 +961,35 @@ export function publishHandoffRoutingStoreTransaction<T>(
   let commitStarted = false;
   try {
     const observation = observeHandoffRoutingStorePath(storage, path);
-    if (observation.kind === 'undeterminable') throw observation.error;
-    if (observation.disposition === 'detached-wal') {
-      throw new HandoffRoutingStoreUnsupportedGenerationError();
+    const preflight = preflightClassification(observation);
+    if (preflight !== null && publicationPolicy(preflight) === 'refuse') {
+      return { kind: 'artifact-refused', classification: preflight as HandoffRoutingStoreArtifactRefusal };
     }
     storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    database = storage.openSqliteDatabaseSync(path);
-    databaseOwnership(database, schema);
+    try {
+      database = storage.openSqliteDatabaseSync(path);
+    } catch (error: unknown) {
+      return {
+        kind: 'artifact-refused',
+        classification: unreadableOrUndeterminableClassification(error),
+      };
+    }
+    const advisory = classifyOpenHandoffRoutingStoreDatabase(database, schema, admitBody);
+    if (publicationPolicy(advisory) === 'refuse') {
+      return { kind: 'artifact-refused', classification: advisory as HandoffRoutingStoreArtifactRefusal };
+    }
     storage.chmodSync(path, 0o600);
     configureDatabase(database, schema.operational);
     database.exec('BEGIN IMMEDIATE');
     transactionOpen = true;
-    initializeOrValidateDatabase(database, schema);
+    const admission = classifyOpenHandoffRoutingStoreDatabase(database, schema, admitBody);
+    const admissionAction = publicationPolicy(admission);
+    if (admissionAction === 'refuse') {
+      rollback(database, transactionOpen, false);
+      transactionOpen = false;
+      return { kind: 'artifact-refused', classification: admission as HandoffRoutingStoreArtifactRefusal };
+    }
+    if (admissionAction === 'initialize') initializeDatabase(database, schema);
     const value = mutate(new HandoffRoutingStatusTransaction(database, schema));
     commitStarted = true;
     database.exec('COMMIT');
@@ -884,50 +1003,33 @@ export function publishHandoffRoutingStoreTransaction<T>(
   }
 }
 
-export type HandoffRoutingStoreSnapshotRead =
-  | Readonly<{ kind: 'absent' }>
-  | Readonly<{ kind: 'unsupported-generation'; generation: number }>
-  | Readonly<{
-      kind: 'snapshot';
-      rows: readonly unknown[];
-      reserves: readonly unknown[];
-      retirement: HandoffRoutingRetirementHistoryRow | undefined;
-    }>
-  | Readonly<{ kind: 'failed'; error: unknown }>;
-
-export type HandoffRoutingStoreSnapshotObservation =
+export type HandoffRoutingStoreSnapshotObservation<T> =
   | Readonly<{
       kind: 'observed';
-      result: HandoffRoutingStoreSnapshotRead;
+      classification: HandoffRoutingStoreClassification<T>;
       mainState: 'absent' | 'zero' | 'non-empty';
       walReceipt: HandoffRoutingWalObservationReceipt;
     }>
   | Readonly<{
       kind: 'undeterminable';
-      result: Extract<HandoffRoutingStoreSnapshotRead, { kind: 'failed' }>;
+      classification: Extract<HandoffRoutingStoreClassification<never>, { kind: 'undeterminable' }>;
     }>;
 
-export function readHandoffRoutingStoreSnapshotWithObservation(
+export function readHandoffRoutingStoreSnapshotWithObservation<T>(
   storage: StoragePort,
   path: string,
   schema: HandoffRoutingStatusStoreSchema,
-): HandoffRoutingStoreSnapshotObservation {
+  admitBody: HandoffRoutingStoreBodyAdmission<T>,
+): HandoffRoutingStoreSnapshotObservation<T> {
   const observation = observeHandoffRoutingStorePath(storage, path);
   if (observation.kind === 'undeterminable') {
-    return { kind: 'undeterminable', result: { kind: 'failed', error: observation.error } };
+    return { kind: 'undeterminable', classification: undeterminableClassification(observation.error) };
   }
-  if (observation.disposition === 'absent') {
+  const preflight = preflightClassification(observation);
+  if (preflight !== null) {
     return {
       kind: 'observed',
-      result: { kind: 'absent' },
-      mainState: observation.mainState,
-      walReceipt: observation.walReceipt,
-    };
-  }
-  if (observation.disposition === 'vacant' || observation.disposition === 'detached-wal') {
-    return {
-      kind: 'observed',
-      result: { kind: 'unsupported-generation', generation: 0 },
+      classification: preflight,
       mainState: observation.mainState,
       walReceipt: observation.walReceipt,
     };
@@ -938,7 +1040,7 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
   } catch (error) {
     return {
       kind: 'observed',
-      result: { kind: 'failed', error },
+      classification: undeterminableClassification(error),
       mainState: observation.mainState,
       walReceipt: observation.walReceipt,
     };
@@ -951,64 +1053,12 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
     database.exec('PRAGMA busy_timeout=0');
     database.exec('BEGIN');
     transactionOpen = true;
-    const generation = handoffRoutingStatusGeneration(schema);
-    const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
-      .user_version;
-    if (storedGeneration !== generation) {
-      database.exec('COMMIT');
-      transactionOpen = false;
-      return {
-        kind: 'observed',
-        result: { kind: 'unsupported-generation', generation: storedGeneration },
-        mainState: observation.mainState,
-        walReceipt: observation.walReceipt,
-      };
-    }
-    const schemaMatches = databaseSchemaMatches(database, schema);
-    if (!schemaMatches) {
-      database.exec('COMMIT');
-      transactionOpen = false;
-      return {
-        kind: 'observed',
-        result: { kind: 'unsupported-generation', generation: storedGeneration },
-        mainState: observation.mainState,
-        walReceipt: observation.walReceipt,
-      };
-    }
-    const retirement = readRetirementHistory(database);
-    const rows = database
-      .prepare(
-        `SELECT
-          sequence,
-          generation,
-          event_id,
-          invocation_id,
-          observed_at,
-          record_kind,
-          event_kind,
-          selection_sequence,
-          retirement_cause,
-          terminal_existed,
-          body_json,
-          encoded_bytes
-        FROM handoff_routing_records ORDER BY sequence`,
-      )
-      .all();
-    const reserves = database
-      .prepare(
-        `SELECT
-          invocation_id,
-          event_id,
-          observed_at,
-          length(allocation) AS allocation_bytes
-        FROM handoff_routing_closing_reserve ORDER BY invocation_id`,
-      )
-      .all();
+    const classification = classifyOpenHandoffRoutingStoreDatabase(database, schema, admitBody);
     database.exec('COMMIT');
     transactionOpen = false;
     return {
       kind: 'observed',
-      result: { kind: 'snapshot', rows, reserves, retirement },
+      classification,
       mainState: observation.mainState,
       walReceipt: observation.walReceipt,
     };
@@ -1016,21 +1066,13 @@ export function readHandoffRoutingStoreSnapshotWithObservation(
     rollback(database, transactionOpen, false);
     return {
       kind: 'observed',
-      result: { kind: 'failed', error },
+      classification: unreadableOrUndeterminableClassification(error),
       mainState: observation.mainState,
       walReceipt: observation.walReceipt,
     };
   } finally {
     close(database);
   }
-}
-
-export function readHandoffRoutingStoreSnapshot(
-  storage: StoragePort,
-  path: string,
-  schema: HandoffRoutingStatusStoreSchema,
-): HandoffRoutingStoreSnapshotRead {
-  return readHandoffRoutingStoreSnapshotWithObservation(storage, path, schema).result;
 }
 
 function configureDatabase(
@@ -1067,62 +1109,107 @@ function readRetirementHistory(database: SqliteDatabasePort): HandoffRoutingReti
     .get() as HandoffRoutingRetirementHistoryRow | undefined;
 }
 
-function initializeOrValidateDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
+function initializeDatabase(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): void {
   const expectedGeneration = handoffRoutingStatusGeneration(schema);
-  if (databaseOwnership(database, schema) === 'initialized') return;
+  const expectedFingerprint = handoffRoutingStatusFingerprint(schema);
   database.exec(schemaSql(schema));
   database
     .prepare(
       `INSERT INTO handoff_routing_metadata (
         singleton,
         generation,
+        fingerprint,
         expired_identity_count,
         capacity_eviction_count,
         completed_pair_compaction_count,
         operator_resolved_count
-      ) VALUES (1, ?, 0, 0, 0, 0)`,
+      ) VALUES (1, ?, ?, 0, 0, 0, 0)`,
     )
-    .run(expectedGeneration);
+    .run(expectedGeneration, expectedFingerprint);
   database.exec(`PRAGMA user_version=${expectedGeneration}`);
 }
 
-function databaseOwnership(
+function metadataFingerprintMatches(database: SqliteDatabasePort, schema: HandoffRoutingStatusStoreSchema): boolean {
+  const expectedGeneration = handoffRoutingStatusGeneration(schema);
+  const expectedFingerprint = handoffRoutingStatusFingerprint(schema);
+  const metadata = database
+    .prepare('SELECT generation, fingerprint FROM handoff_routing_metadata WHERE singleton = 1')
+    .get() as Readonly<{ generation: number; fingerprint: unknown }> | undefined;
+  if (
+    metadata?.generation !== expectedGeneration ||
+    !(metadata.fingerprint instanceof Uint8Array) ||
+    metadata.fingerprint.byteLength !== 32
+  ) {
+    throw new HandoffRoutingStoreUnreadableError();
+  }
+  return expectedFingerprint.equals(metadata.fingerprint);
+}
+
+function readOpenHandoffRoutingStoreSnapshot(database: SqliteDatabasePort): HandoffRoutingStoreSnapshot {
+  const retirement = readRetirementHistory(database);
+  const rows = database
+    .prepare(
+      `SELECT
+        sequence,
+        generation,
+        event_id,
+        invocation_id,
+        observed_at,
+        record_kind,
+        event_kind,
+        selection_sequence,
+        retirement_cause,
+        terminal_existed,
+        body_json,
+        encoded_bytes
+      FROM handoff_routing_records ORDER BY sequence`,
+    )
+    .all();
+  const reserves = database
+    .prepare(
+      `SELECT
+        invocation_id,
+        event_id,
+        observed_at,
+        length(allocation) AS allocation_bytes
+      FROM handoff_routing_closing_reserve ORDER BY invocation_id`,
+    )
+    .all();
+  return { rows, reserves, retirement };
+}
+
+export function classifyOpenHandoffRoutingStoreDatabase<T>(
   database: SqliteDatabasePort,
   schema: HandoffRoutingStatusStoreSchema,
-): 'empty' | 'initialized' {
-  const expectedGeneration = handoffRoutingStatusGeneration(schema);
-  const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
-    .user_version;
-  if (storedGeneration === 0) {
-    const existing = database
-      .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
-      .get() as Readonly<{ count: number }>;
-    if (existing.count !== 0) throw new HandoffRoutingStoreUnsupportedGenerationError();
-    return 'empty';
-  }
-  if (storedGeneration !== expectedGeneration) {
-    throw new HandoffRoutingStoreUnsupportedGenerationError();
-  }
-  const schemaMatches = databaseSchemaMatches(database, schema);
-  if (!schemaMatches) {
-    throw new HandoffRoutingStoreUnsupportedGenerationError();
-  }
+  admitBody: HandoffRoutingStoreBodyAdmission<T>,
+): HandoffRoutingStoreClassification<T> {
   try {
-    const metadata = database.prepare('SELECT generation FROM handoff_routing_metadata WHERE singleton = 1').get() as
-      | Readonly<{ generation: number }>
-      | undefined;
-    if (metadata?.generation !== expectedGeneration) throw new HandoffRoutingStoreUnreadableError();
-  } catch (error) {
-    if (error instanceof HandoffRoutingStoreUnreadableError) throw error;
-    throw new HandoffRoutingStoreUnreadableError(errorNumber(error, SQLITE_CORRUPT));
+    const expectedGeneration = handoffRoutingStatusGeneration(schema);
+    const storedGeneration = (database.prepare('PRAGMA user_version').get() as Readonly<{ user_version: number }>)
+      .user_version;
+    if (storedGeneration === 0) {
+      const existing = database
+        .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+        .get() as Readonly<{ count: number }>;
+      return existing.count === 0 ? { kind: 'uninitialized' } : { kind: 'generation-missing' };
+    }
+    if (storedGeneration !== expectedGeneration) {
+      return { kind: 'foreign-generation', generation: storedGeneration };
+    }
+    if (!databaseSchemaMatches(database, schema)) return { kind: 'schema-divergent' };
+    if (!metadataFingerprintMatches(database, schema)) return { kind: 'format-mismatch' };
+    const admitted = admitBody(readOpenHandoffRoutingStoreSnapshot(database));
+    return admitted.kind === 'admitted' ? { kind: 'current', snapshot: admitted.snapshot } : admitted;
+  } catch (error: unknown) {
+    return unreadableOrUndeterminableClassification(error);
   }
-  return 'initialized';
 }
 
 const HANDOFF_ROUTING_STATUS_SCHEMA_SQL = `
     CREATE TABLE handoff_routing_metadata (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       generation INTEGER NOT NULL CHECK (generation = __HANDOFF_ROUTING_STATUS_GENERATION__),
+      fingerprint BLOB NOT NULL CHECK(typeof(fingerprint) = 'blob' AND length(fingerprint) = 32),
       expired_identity_count INTEGER NOT NULL CHECK (expired_identity_count >= 0),
       capacity_eviction_count INTEGER NOT NULL CHECK (capacity_eviction_count >= 0),
       completed_pair_compaction_count INTEGER NOT NULL CHECK (completed_pair_compaction_count >= 0),
@@ -1236,21 +1323,40 @@ function assertCanonicalVocabulary(name: string, values: readonly string[]): voi
   }
 }
 
+function persistedContractContainsStringLiteral(contract: CanonicalContractValue, expected: string): boolean {
+  if (contract === null || typeof contract !== 'object') return false;
+  if (Array.isArray(contract)) {
+    return contract.some((value) => persistedContractContainsStringLiteral(value, expected));
+  }
+  const node = contract as { readonly [key: string]: CanonicalContractValue };
+  if (node.type === 'ZodLiteral' && node.value === expected) return true;
+  if (node.type === 'ZodEnum' && Array.isArray(node.values) && node.values.some((value) => value === expected)) {
+    return true;
+  }
+  return Object.values(node).some((value) => persistedContractContainsStringLiteral(value, expected));
+}
+
+function recordContractsContainStringLiteral(
+  contracts: HandoffRoutingStatusStoreDurableFormat['recordContracts'],
+  expected: string,
+): boolean {
+  return Object.values(contracts).some((contract) => persistedContractContainsStringLiteral(contract, expected));
+}
+
 function assertDurableFormat(format: HandoffRoutingStatusStoreDurableFormat): void {
-  const vocabulary = format.bodyVocabulary;
-  assertCanonicalVocabulary('disposition', vocabulary.dispositionKinds);
-  assertCanonicalVocabulary('routing-basis', vocabulary.routingBasisKinds);
-  const stability = vocabulary.completedPairStability;
+  const stability = format.bodyVocabulary.completedPairStability;
   sqlVocabularyLiteral(stability.selectionDispositionKind);
   sqlVocabularyLiteral(stability.terminalDispositionKind);
   assertCanonicalVocabulary('completed-pair routing-basis', stability.selectionBasisKinds);
-  if (!vocabulary.dispositionKinds.includes(stability.selectionDispositionKind)) {
+  if (!recordContractsContainStringLiteral(format.recordContracts, stability.selectionDispositionKind)) {
     throw new Error('Routing-status completed-pair selection disposition is outside the durable vocabulary.');
   }
-  if (!vocabulary.dispositionKinds.includes(stability.terminalDispositionKind)) {
+  if (!recordContractsContainStringLiteral(format.recordContracts, stability.terminalDispositionKind)) {
     throw new Error('Routing-status completed-pair terminal disposition is outside the durable vocabulary.');
   }
-  if (stability.selectionBasisKinds.some((kind) => !vocabulary.routingBasisKinds.includes(kind))) {
+  if (
+    stability.selectionBasisKinds.some((kind) => !recordContractsContainStringLiteral(format.recordContracts, kind))
+  ) {
     throw new Error('Routing-status completed-pair basis is outside the durable vocabulary.');
   }
 }

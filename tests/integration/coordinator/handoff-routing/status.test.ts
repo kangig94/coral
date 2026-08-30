@@ -39,7 +39,6 @@ import {
   invalidTargetSummarySchema,
   persistedHandoffDispositionPolicy,
   publishGenerationCoordinatedHandoffRoutingTransitions,
-  publishHandoffRoutingTransitions,
   readHandoffRoutingStatus as readHandoffRoutingStatusWithRuntime,
   readHandoffRoutingStatusForDiscard,
   readHandoffRoutingStatusWithOwnerObservations,
@@ -70,9 +69,11 @@ import { SimulationRuntime } from '../../../../tools/simulation/runtime.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { SqliteDatabasePort, StoragePort } from '#src/infra/port-types.js';
 import {
+  HANDOFF_ROUTING_STATUS_GENERATION_BAND,
   handoffRoutingStatusGeneration,
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   quarantineHandoffRoutingStoreArtifact,
+  SQLITE_CORRUPT,
   SQLITE_FULL,
   listHandoffRoutingStoreQuarantines,
 } from '#src/store/handoff-routing-status-store.js';
@@ -154,10 +155,14 @@ function publish(
   transitions: readonly HandoffRoutingTransition[],
   signal?: AbortSignal,
 ): Promise<PublicationOutcome> {
-  return publishHandoffRoutingTransitions(runtime, path, transitions, signal);
+  return publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, transitions, signal);
 }
 
-function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement: string): StoragePort {
+function storageFailingOnSqliteStatement(
+  storage: StoragePort,
+  failingStatement: string,
+  errcode = SQLITE_FULL,
+): StoragePort {
   return new Proxy(storage, {
     get(target, property) {
       if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
@@ -169,12 +174,39 @@ function storageFailingOnSqliteStatement(storage: StoragePort, failingStatement:
         return {
           exec(sql) {
             if (sql === failingStatement) {
-              throw Object.assign(new Error(`injected ${failingStatement} failure`), { errcode: SQLITE_FULL });
+              throw Object.assign(new Error(`injected ${failingStatement} failure`), { errcode });
             }
             database.exec(sql);
           },
           prepare: database.prepare.bind(database),
           close: database.close.bind(database),
+        };
+      };
+    },
+  });
+}
+
+function storageFailingOnSqliteRun(storage: StoragePort, sqlFragment: string, errcode: number): StoragePort {
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
+      return (path: string, options?: { readOnly?: boolean }): SqliteDatabasePort => {
+        const database = target.openSqliteDatabaseSync(path, options);
+        if (options?.readOnly === true) return database;
+        return {
+          exec: database.exec.bind(database),
+          close: database.close.bind(database),
+          prepare(sql) {
+            const statement = database.prepare(sql);
+            if (!sql.includes(sqlFragment)) return statement;
+            return {
+              all: statement.all.bind(statement),
+              get: statement.get.bind(statement),
+              run: () => {
+                throw Object.assign(new Error(`injected ${sqlFragment} failure`), { errcode });
+              },
+            };
+          },
         };
       };
     },
@@ -298,11 +330,13 @@ afterAll(() => {
 });
 
 describe('handoff-routing/status', () => {
-  it('should initialize from a fresh module registry with the pinned generation', async () => {
+  it('should initialize from a fresh module registry with an address in the generation band', async () => {
     vi.resetModules();
     const statusModule = await import('#src/coordinator/handoff-routing/status.js');
+    const generation = handoffRoutingStatusGeneration(statusModule.handoffRoutingStatusStoreSchema());
 
-    expect(handoffRoutingStatusGeneration(statusModule.handoffRoutingStatusStoreSchema())).toBe(1167786363);
+    expect(generation).toBeGreaterThanOrEqual(HANDOFF_ROUTING_STATUS_GENERATION_BAND.minimum);
+    expect(generation).toBeLessThanOrEqual(HANDOFF_ROUTING_STATUS_GENERATION_BAND.maximum);
   });
 
   it('should extract persisted contracts from every sentinel-generation record root', () => {
@@ -311,6 +345,14 @@ describe('handoff-routing/status', () => {
         zodPersistedContract(schema);
       }
     }).not.toThrow();
+    expect(handoffRoutingStatusStoreSchema().durableFormat.recordContracts).toEqual({
+      selection: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.selection),
+      terminal: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.terminal),
+      retirement: zodPersistedContract(handoffRoutingSentinelRecordSchemaRegistry.retirement),
+    });
+    expect(Object.keys(handoffRoutingStatusStoreSchema().durableFormat.bodyVocabulary)).toEqual([
+      'completedPairStability',
+    ]);
     expect(HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION).toBe(0);
   });
 
@@ -350,10 +392,9 @@ describe('handoff-routing/status', () => {
     const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
 
     expect(existsSync(path)).toBe(false);
-    await expect(publishHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)])).resolves.toEqual({
-      kind: 'committed',
-      sequence: 1,
-    });
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('simulated', 1)]),
+    ).resolves.toEqual({ kind: 'committed', sequence: 1 });
     expect(simulation.storage.existsSync(path)).toBe(true);
     expect(existsSync(path)).toBe(false);
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toMatchObject({
@@ -366,13 +407,13 @@ describe('handoff-routing/status', () => {
     const simulation = new SimulationRuntime();
     const path = `/simulation-only/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`;
     await expect(
-      publishHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('before-snapshot', 1)]),
     ).resolves.toMatchObject({
       kind: 'committed',
     });
     const snapshot = simulation.storage.snapshot();
     await expect(
-      publishHandoffRoutingTransitions(simulation, path, [selection('after-snapshot', 2)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('after-snapshot', 2)]),
     ).resolves.toMatchObject({
       kind: 'committed',
     });
@@ -395,7 +436,7 @@ describe('handoff-routing/status', () => {
     simulation.storage.unlinkSync(path);
     expect(readHandoffRoutingStatusWithRuntime(simulation, path)).toEqual({ kind: 'absent' });
     await expect(
-      publishHandoffRoutingTransitions(simulation, path, [selection('after-unlink', 3)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(simulation, path, [selection('after-unlink', 3)]),
     ).resolves.toMatchObject({
       kind: 'committed',
     });
@@ -417,12 +458,11 @@ describe('handoff-routing/status', () => {
     };
 
     expect(readHandoffRoutingStatusWithRuntime(observedRuntime, path)).toEqual({
-      kind: 'unsupported-generation',
-      generation: 0,
+      kind: 'detached-wal',
     });
     await expect(
-      publishHandoffRoutingTransitions(observedRuntime, path, [selection(`detached-${main}`, 1)]),
-    ).resolves.toEqual({ kind: 'not-published', cause: 'unsupported-generation' });
+      publishGenerationCoordinatedHandoffRoutingTransitions(observedRuntime, path, [selection(`detached-${main}`, 1)]),
+    ).resolves.toEqual({ kind: 'artifact-refused', classification: { kind: 'detached-wal' } });
     expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
   });
 
@@ -452,8 +492,11 @@ describe('handoff-routing/status', () => {
       errcode: SQLITE_FULL,
     });
     await expect(
-      publishHandoffRoutingTransitions(failingRuntime, path, [selection('stat-failed', 1)]),
-    ).resolves.toEqual({ kind: 'not-published', cause: 'io-failed' });
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [selection('stat-failed', 1)]),
+    ).resolves.toEqual({
+      kind: 'artifact-refused',
+      classification: { kind: 'undeterminable', cause: 'io-failed', errcode: SQLITE_FULL },
+    });
     expect(openSqliteDatabaseSync).not.toHaveBeenCalled();
   });
 
@@ -502,7 +545,7 @@ describe('handoff-routing/status', () => {
     expect(discarded).toMatchObject({
       kind: 'discarded',
       quarantineState: 'complete',
-      previousStatus: { kind: 'unsupported-generation', generation: 0 },
+      previousStatus: { kind: 'detached-wal' },
     });
     if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
     expect(readFileSync(`${discarded.quarantinePath}-wal`)).toEqual(walBytes);
@@ -550,7 +593,7 @@ describe('handoff-routing/status', () => {
       quarantineId,
       quarantinePath: join(dirname(path), 'handoff-routing-quarantine', `${basename(path)}.${quarantineId}`),
       quarantineState: 'incomplete',
-      previousStatus: { kind: 'unsupported-generation', generation: 0 },
+      previousStatus: { kind: 'detached-wal' },
     });
     if (discarded.kind !== 'discarded') throw new Error(`Expected discard, received ${discarded.kind}`);
     expect(mainRenameAttempted).toBe(false);
@@ -1456,7 +1499,7 @@ describe('handoff-routing/status', () => {
     expect(handoffRoutingStatusExitContribution(result)).toBe(0);
   });
 
-  it('returns distinct absent, unsupported-generation, unreadable, and I/O-failure results', async () => {
+  it('returns distinct absent, foreign, schema-divergent, unreadable, and I/O-failure results', async () => {
     const absentPath = databasePath();
     expect(readHandoffRoutingStatus(absentPath)).toEqual({ kind: 'absent' });
 
@@ -1465,7 +1508,7 @@ describe('handoff-routing/status', () => {
     unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
     unsupported.close();
     expect(readHandoffRoutingStatus(unsupportedPath)).toEqual({
-      kind: 'unsupported-generation',
+      kind: 'foreign-generation',
       generation: HANDOFF_ROUTING_STATUS_GENERATION + 1,
     });
 
@@ -1477,12 +1520,11 @@ describe('handoff-routing/status', () => {
     `);
     unsupportedShape.close();
     expect(readHandoffRoutingStatus(unsupportedShapePath)).toEqual({
-      kind: 'unsupported-generation',
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      kind: 'schema-divergent',
     });
     await expect(publish(unsupportedShapePath, [selection('unsupported-shape', 1)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'schema-divergent' },
     });
 
     const invalidJsonPath = databasePath();
@@ -1527,8 +1569,8 @@ describe('handoff-routing/status', () => {
 
     expect(readHandoffRoutingStatus(path)).toEqual({ kind: 'unreadable', reason: 'invalid-shape' });
     await expect(publish(path, [terminal('missing-reserve', 2, selected.sequence)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unreadable',
+      kind: 'artifact-refused',
+      classification: { kind: 'unreadable', reason: 'invalid-shape' },
     });
   });
 
@@ -1587,8 +1629,8 @@ describe('handoff-routing/status', () => {
       cause: 'invalid-record',
       validation: { kind: 'malformed-json' },
     });
-    expect(outcome.kind).not.toBe('undeterminable');
-    expect(outcome).not.toMatchObject({ cause: 'unreadable' });
+    expect(outcome.kind).not.toBe('commit-outcome-unknown');
+    expect(outcome).not.toMatchObject({ cause: 'storage-corrupt' });
     expect(records(path)).toEqual(before);
   });
 
@@ -1623,6 +1665,7 @@ describe('handoff-routing/status', () => {
     let elapsedMs = 0n;
     let wallClockReads = 0;
     const jumpingWallClock = {
+      ...runtime.time,
       now: (): number => {
         wallClockReads += 1;
         return wallClockReads * 10_000;
@@ -1634,7 +1677,7 @@ describe('handoff-routing/status', () => {
     };
     try {
       await expect(
-        publishHandoffRoutingTransitions({ ...runtime, time: jumpingWallClock }, path, [
+        publishGenerationCoordinatedHandoffRoutingTransitions({ ...runtime, time: jumpingWallClock }, path, [
           selection('monotonic-contender', 2),
         ]),
       ).resolves.toEqual({ kind: 'not-published', cause: 'contended' });
@@ -1789,8 +1832,8 @@ describe('handoff-routing/status', () => {
     }
 
     await expect(publish(path, [selection('valid-transition', 3)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'schema-divergent' },
     });
   });
 
@@ -1805,12 +1848,12 @@ describe('handoff-routing/status', () => {
     }
 
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unreadable',
+      kind: 'artifact-refused',
+      classification: { kind: 'unreadable', reason: 'invalid-shape' },
     });
   });
 
-  it('treats a generation-matching artifact with a dropped table as unsupported-generation', async () => {
+  it('treats a generation-matching artifact with a dropped table as schema-divergent', async () => {
     const path = databasePath();
     await committed(path, [selection('seed', 1)]);
     const db = new DatabaseSync(path);
@@ -1821,12 +1864,11 @@ describe('handoff-routing/status', () => {
     }
 
     expect(readHandoffRoutingStatus(path)).toEqual({
-      kind: 'unsupported-generation',
-      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      kind: 'schema-divergent',
     });
     await expect(publish(path, [selection('next', 2)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'schema-divergent' },
     });
   });
 
@@ -2056,22 +2098,22 @@ describe('handoff-routing/status', () => {
     ]);
   });
 
-  it('distinguishes unsupported, corrupt, and capacity-exhausted stores by outcome', async () => {
+  it('distinguishes foreign, corrupt, and capacity-exhausted stores by outcome', async () => {
     const unsupportedPath = databasePath();
     await committed(unsupportedPath, [selection('supported', 1)]);
     const unsupported = new DatabaseSync(unsupportedPath);
     unsupported.exec(`PRAGMA user_version=${HANDOFF_ROUTING_STATUS_GENERATION + 1}`);
     unsupported.close();
     await expect(publish(unsupportedPath, [selection('next', 2)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unsupported-generation',
+      kind: 'artifact-refused',
+      classification: { kind: 'foreign-generation', generation: HANDOFF_ROUTING_STATUS_GENERATION + 1 },
     });
 
     const corruptPath = databasePath();
     writeFileSync(corruptPath, 'not a sqlite database');
     await expect(publish(corruptPath, [selection('corrupt', 3)])).resolves.toEqual({
-      kind: 'not-published',
-      cause: 'unreadable',
+      kind: 'artifact-refused',
+      classification: { kind: 'unreadable', reason: 'invalid-shape' },
     });
 
     const fullPath = databasePath();
@@ -2080,13 +2122,11 @@ describe('handoff-routing/status', () => {
     try {
       full.exec('PRAGMA synchronous=OFF');
       full.exec(`PRAGMA max_page_count=${MAX_HANDOFF_ROUTING_STATUS_BYTES / 4096}`);
-      const pad = full.prepare(
-        `INSERT INTO handoff_routing_closing_reserve (invocation_id, event_id, observed_at, allocation)
-         VALUES (?, ?, ?, zeroblob(?))`,
-      );
+      const insert = full.prepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)');
+      const padding = 'x'.repeat(MAX_LEGAL_CLOSING_RECORD_BYTES);
       let index = 0;
       while (true) {
-        pad.run(`padding-${index}`, `padding-event-${index}`, at(index), MAX_LEGAL_CLOSING_RECORD_BYTES);
+        insert.run(`padding-${index}-${padding}`, index);
         index += 1;
       }
     } catch (error) {
@@ -2112,14 +2152,53 @@ describe('handoff-routing/status', () => {
 
   it.each([
     ['BEGIN IMMEDIATE', { kind: 'not-published', cause: 'capacity-exhausted' }],
-    ['COMMIT', { kind: 'undeterminable', cause: 'capacity-exhausted', errcode: SQLITE_FULL }],
+    ['COMMIT', { kind: 'commit-outcome-unknown', cause: 'capacity-exhausted', errcode: SQLITE_FULL }],
   ] as const)('uses the COMMIT attempt boundary when SQLITE_FULL is raised by %s', async (statement, expected) => {
     const path = databasePath();
     const failingRuntime = { ...runtime, storage: storageFailingOnSqliteStatement(runtime.storage, statement) };
 
     await expect(
-      publishHandoffRoutingTransitions(failingRuntime, path, [selection(`full-at-${statement}`, 1)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [
+        selection(`full-at-${statement}`, 1),
+      ]),
     ).resolves.toEqual(expected);
+  });
+
+  it('maps corruption raised after locked admission to storage-corrupt', async () => {
+    const path = databasePath();
+    await committed(path, [selection('corrupt-after-admission-seed', 1)]);
+    const failingRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteRun(
+        runtime.storage,
+        'INSERT INTO handoff_routing_closing_reserve',
+        SQLITE_CORRUPT,
+      ),
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [
+        selection('corrupt-after-admission', 2),
+      ]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'storage-corrupt' });
+  });
+
+  it('maps corruption raised after commit starts to an unknown commit outcome', async () => {
+    const path = databasePath();
+    const failingRuntime = {
+      ...runtime,
+      storage: storageFailingOnSqliteStatement(runtime.storage, 'COMMIT', SQLITE_CORRUPT),
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(failingRuntime, path, [
+        selection('corrupt-commit-outcome', 1),
+      ]),
+    ).resolves.toEqual({
+      kind: 'commit-outcome-unknown',
+      cause: 'storage-corrupt',
+      errcode: SQLITE_CORRUPT,
+    });
   });
 
   it('assigns total policy to repair, gap, rollup, and lifecycle dispositions', () => {
@@ -2301,7 +2380,7 @@ describe('handoff-routing/status', () => {
     expect(handoffRoutingStatusExitContribution(status)).toBe(0);
   });
 
-  it('preserves an undeterminable operator-resolution publication at the resolve boundary', async () => {
+  it('preserves an unknown operator-resolution commit at the resolve boundary', async () => {
     const invocationId = '123e4567-e89b-42d3-a456-426614174009';
     const path = databasePath();
     await committed(path, [selection(invocationId, 1)]);
@@ -2321,14 +2400,14 @@ describe('handoff-routing/status', () => {
         forceUnobservable: false,
       }),
     ).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'commit-outcome-unknown',
       invocationId,
       cause: 'capacity-exhausted',
       errcode: SQLITE_FULL,
     });
   });
 
-  it('preserves an undeterminable capacity-acknowledgement publication at the resolve boundary', async () => {
+  it('preserves an unknown capacity-acknowledgement commit at the resolve boundary', async () => {
     const invocationId = 'capacity-opening-0';
     const path = databasePath();
     await committed(
@@ -2353,7 +2432,7 @@ describe('handoff-routing/status', () => {
         forceUnobservable: false,
       }),
     ).resolves.toEqual({
-      kind: 'undeterminable',
+      kind: 'commit-outcome-unknown',
       invocationId,
       cause: 'capacity-exhausted',
       errcode: SQLITE_FULL,

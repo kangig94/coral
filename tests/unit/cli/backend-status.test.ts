@@ -97,10 +97,7 @@ afterEach(() => {
 describe('backend status generation readiness', () => {
   it.each([
     [{ kind: 'unreadable', reason: 'invalid-json' } as const, 'Routing status is unreadable (invalid-json).'],
-    [
-      { kind: 'unsupported-generation', generation: 2 } as const,
-      'Routing status generation 2 is not supported by this build.',
-    ],
+    [{ kind: 'foreign-generation', generation: 2 } as const, 'Routing status generation 2 belongs to another address.'],
   ])('names discard as the successor for a durable routing-status hold', (status, summary) => {
     expect(formatHandoffRoutingStatus(status)).toBe(
       `${summary}\nNext step: run coral-cli backend routing-status discard.`,
@@ -111,7 +108,7 @@ describe('backend status generation readiness', () => {
     expect(formatHandoffRoutingStatus({ kind: 'undeterminable', cause: 'io-failed', errcode: 5 })).toBe(
       [
         'Routing status could not be read (io-failed, errcode 5).',
-        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish that the journal is unreadable or unsupported.',
+        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
       ].join('\n'),
     );
   });
@@ -306,8 +303,7 @@ describe('backend status local exit combination', () => {
     ['generation-maintenance', 'maintenance lease has gone ten minutes without a heartbeat'],
     ['capacity-exhausted', 'repair the reported storage-capacity condition'],
     ['io-failed', 'repair the reported storage condition'],
-    ['unreadable', 'routing-status discard successor'],
-    ['unsupported-generation', 'routing-status discard successor'],
+    ['storage-corrupt', 'routing-status discard successor'],
     ['rejected-transition', 'do not assume publication occurred'],
     ['coordination-unavailable', 'make the generation coordination root writable again'],
   ] as const)('keeps the $0 prerequisite on a completed terminal publication incident', (cause, prerequisite) => {
@@ -331,7 +327,7 @@ describe('backend status local exit combination', () => {
     ['contended', 'contended commit completed'],
     ['capacity-exhausted', 'repair the storage-capacity condition'],
     ['io-failed', 'repair the reported storage condition'],
-    ['unreadable', 'routing-status discard successor'],
+    ['storage-corrupt', 'routing-status discard successor'],
   ] as const)('keeps the $0 uncertainty on a completed terminal publication incident', (cause, prerequisite) => {
     const rendered = formatHandoffPublicationIncident({
       phase: 'terminal',
@@ -340,7 +336,7 @@ describe('backend status local exit combination', () => {
         kind: 'continued-current',
         reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } },
       },
-      kind: 'undeterminable',
+      kind: 'commit-outcome-unknown',
       cause,
       errcode: 5,
     });
@@ -429,7 +425,7 @@ describe('backend status local exit combination', () => {
         },
         kind: 'refused',
         refusal: {
-          reason: 'selection-publication-undeterminable',
+          reason: 'selection-publication-outcome-unknown',
           remediation: 'inspect-routing-status-before-repair',
           attemptedPhase: 'terminal',
         },
