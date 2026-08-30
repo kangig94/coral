@@ -26,41 +26,37 @@ export function currentStoreFormatFingerprint() {
   }
 }
 
+export const ACCEPTED_FLAVORS = Object.freeze(['prod', 'dev']);
+
 let _cachedFlavor;
-let _cachedFlavorSource;
 
 function readBuildFlavorState() {
-  if (_cachedFlavor !== undefined && _cachedFlavorSource !== undefined) {
-    return { flavor: _cachedFlavor, source: _cachedFlavorSource };
-  }
+  if (_cachedFlavor !== undefined) return { flavor: _cachedFlavor };
 
   const here = fileURLToPath(import.meta.url);
   const manifest = resolve(dirname(here), '..', '..', 'bridge', 'manifest.json');
   const parsed = parseManifestFlavor(manifest);
   _cachedFlavor = parsed ?? 'prod';
-  _cachedFlavorSource = parsed === null ? 'fallback' : 'manifest';
-  return { flavor: _cachedFlavor, source: _cachedFlavorSource };
+  return { flavor: _cachedFlavor };
 }
 
 export function buildFlavor() {
   return readBuildFlavorState().flavor;
 }
 
-export function exitIfWrongFlavor() {
-  const want = process.env.CORAL_FLAVOR;
-  if (want !== undefined && want !== 'prod' && want !== 'dev') {
-    process.stderr.write(`[coral] CORAL_FLAVOR='${want}' is not recognized (expected 'prod' or 'dev')\n`);
-    process.exit(1);
+export function resolveFlavorDisposition() {
+  const requested = process.env.CORAL_FLAVOR;
+  if (requested !== undefined && !ACCEPTED_FLAVORS.includes(requested)) {
+    return { kind: 'unrecognized', value: requested };
   }
+
   const actual = readBuildFlavorState();
-  if (actual.flavor !== (want ?? 'prod')) {
-    if (want === 'dev' && actual.flavor === 'prod' && actual.source === 'fallback') {
-      process.stderr.write(
-        '[coral] CORAL_FLAVOR=dev requested, but bridge/manifest.json is missing or unreadable; falling back to prod flavor gating\n',
-      );
-    }
-    process.exit(0);
-  }
+  if (actual.flavor !== (requested ?? 'prod')) return { kind: 'other-flavor' };
+  return { kind: 'active' };
+}
+
+export function exitIfWrongFlavor() {
+  if (resolveFlavorDisposition().kind !== 'active') process.exit(0);
 }
 
 export function readStdin() {

@@ -5,17 +5,18 @@ import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, un
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
+  ACCEPTED_FLAVORS,
   buildFlavor,
   claudeConfigDir,
   coralStateRoot,
   exitIfChildProcess,
-  exitIfWrongFlavor,
   hostKind,
   isValidSessionId,
   readStdin,
+  resolveFlavorDisposition,
   writeHookOutput,
 } from './lib/hook-utils.mjs';
-import { fitAdditionalContext } from './lib/additional-context.mjs';
+import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
 
@@ -30,6 +31,7 @@ import { renderInject } from './lib/inject-render.mjs';
 // `requestIncumbentShutdown` decision.
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
+const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
 /**
  * What the child is allowed, and why it is not the sum of what the child spends.
@@ -169,7 +171,24 @@ function readRecentStartupFailureNotice(runDir) {
 }
 
 exitIfChildProcess();
-exitIfWrongFlavor();
+const flavorDisposition = resolveFlavorDisposition();
+if (flavorDisposition.kind === 'unrecognized') {
+  const acceptedFlavors = ACCEPTED_FLAVORS.map((flavor) => `'${flavor}'`).join(' and ');
+  const reportedFlavor = truncateUtf8(flavorDisposition.value, MAX_REPORTED_FLAVOR_BYTES, '… [truncated]');
+  const additionalContext = fitAdditionalContext({
+    fixedContent: `Coral hooks are inert: CORAL_FLAVOR is set to '${reportedFlavor}', but only ${acceptedFlavors} are accepted. Every Coral hook will remain inert until CORAL_FLAVOR is corrected.`,
+    variableContent: '',
+    trimNotice: '',
+  });
+  writeHookOutput({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext,
+    },
+  });
+  process.exit(0);
+}
+if (flavorDisposition.kind === 'other-flavor') process.exit(0);
 
 try {
   const input = JSON.parse(await readStdin());

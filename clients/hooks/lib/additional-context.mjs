@@ -2,13 +2,16 @@ import { Buffer } from 'node:buffer';
 
 export const MAX_ADDITIONAL_CONTEXT_BYTES = 8_000;
 
-function truncateUtf8(value, maxBytes) {
+export function truncateUtf8(value, maxBytes, truncationMarker = '') {
   const bytes = Buffer.from(value, 'utf-8');
   if (bytes.length <= maxBytes) return value;
 
-  let end = maxBytes;
+  const markerBytes = Buffer.byteLength(truncationMarker, 'utf-8');
+  if (markerBytes > maxBytes) throw new Error('Truncation marker exceeds the byte limit');
+
+  let end = maxBytes - markerBytes;
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
-  return bytes.subarray(0, end).toString('utf-8');
+  return `${bytes.subarray(0, end).toString('utf-8')}${truncationMarker}`;
 }
 
 export function fitAdditionalContext({ fixedContent, variableContent, trimNotice }) {

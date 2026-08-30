@@ -48,7 +48,7 @@ The subagent events are dropped for the same reason: Copilot fires `SubagentStop
 
 ## Hook Self-Gating
 
-All shipped hook entrypoints run `exitIfChildProcess()` first and `exitIfWrongFlavor()` second. `exitIfChildProcess()` suppresses Coral child-process reentry. `exitIfWrongFlavor()` compares `CORAL_FLAVOR` (unset => `prod`) with the hook bundle's own `bridge/manifest.json` flavor, exits `0` on mismatch, and exits `1` with stderr for unrecognized values. This is what allows marketplace prod hooks and locally registered dev hooks to coexist without cross-firing.
+All shipped hook entrypoints run `exitIfChildProcess()` first and then apply the flavor gate. `exitIfChildProcess()` suppresses Coral child-process reentry. The flavor gate compares `CORAL_FLAVOR` (unset => `prod`) with the hook bundle's own `bridge/manifest.json` flavor and exits `0` whenever the bundle should not act. This is what allows marketplace prod hooks and locally registered dev hooks to coexist without cross-firing. An unrecognized `CORAL_FLAVOR` also makes every hook inert. Centralizing its accepted-values-and-remedy diagnostic in `session-start.mjs` changes the cadence from once per hook invocation across the 14 registered entrypoints, including hooks fired by tool calls, to once per `SessionStart` event. `SessionStart` also fires on resume and compact, so the diagnostic deliberately repeats while the misconfiguration remains: every Coral hook is still disabled, and the live fault should stay visible.
 
 The HUD auto-update hook adds one more gate: it refreshes the HUD only when `buildFlavor() === 'prod'`, so dev registrations never overwrite the prod HUD.
 
