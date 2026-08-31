@@ -29,12 +29,14 @@ const manifest = vi.hoisted(() => ({ flavor: 'prod' as 'prod' | 'dev' }));
 const fixture = vi.hoisted(() => ({
   home: '',
   gitDir: '',
+  gitRoot: '',
   gitRepository: true,
   failSymlinkTarget: null as string | null,
   failRenameTo: null as string | null,
   failLinkTo: null as string | null,
   failUnlinkPath: null as string | null,
   failReplacementUnlink: false,
+  failSymlinkTempUnlink: false,
   failRmUnder: null as string | null,
 }));
 
@@ -79,7 +81,8 @@ vi.mock('node:fs', async (importOriginal) => {
     unlinkSync: (path: unknown) => {
       if (
         (fixture.failUnlinkPath !== null && String(path) === fixture.failUnlinkPath) ||
-        (fixture.failReplacementUnlink && String(path).endsWith('/replacement.tmp'))
+        (fixture.failReplacementUnlink && String(path).endsWith('/replacement.tmp')) ||
+        (fixture.failSymlinkTempUnlink && String(path).endsWith('/coral-test-token.tmp'))
       ) {
         throw Object.assign(new Error('simulated unlink failure'), { code: 'EACCES' });
       }
@@ -116,7 +119,7 @@ const execFileSyncMock = vi.hoisted(() =>
     }
 
     const cwd = String((options as { cwd?: unknown }).cwd);
-    return `${cwd}\n${fixture.gitDir}\n${fixture.gitDir}/info/exclude\n`;
+    return `${fixture.gitRoot || cwd}\n${fixture.gitDir}\n${fixture.gitDir}/info/exclude\n`;
   }),
 );
 vi.mock('node:child_process', () => ({
@@ -138,10 +141,12 @@ beforeEach(() => {
   fixture.failLinkTo = null;
   fixture.failUnlinkPath = null;
   fixture.failReplacementUnlink = false;
+  fixture.failSymlinkTempUnlink = false;
   fixture.failRmUnder = null;
   mkdirSync(fixture.home, { recursive: true });
   mkdirSync(join(fixture.gitDir, 'info'), { recursive: true });
   projectDir = join(root, 'project');
+  fixture.gitRoot = projectDir;
   mkdirSync(join(projectDir, '.claude'), { recursive: true });
   writeFileSync(join(projectDir, '.gitignore'), '', 'utf-8');
 });
@@ -157,6 +162,7 @@ async function maintain(flavor: 'prod' | 'dev'): Promise<{
     symlink: {
       state: 'not-requested' | 'unchanged' | 'created' | 'repointed' | 'refused' | 'skipped';
       reason?: string;
+      residue?: 'none' | 'owned-staging';
     };
     exclude: {
       state: 'unchanged' | 'published' | 'refused' | 'skipped';
@@ -183,6 +189,51 @@ const link = (): string => join(projectDir, '.claude', 'coral');
 const repositoryArena = (): string => join(fixture.gitDir, 'coral', 'staging', 'project-ignore');
 
 describe('project-ignore symlink maintenance', () => {
+  it.each([
+    ['root wildcard characters', '*?[]\\', '\\*\\?\\[\\]\\\\'],
+    ['nested wildcard characters', 'nested/*?[]\\/.claude/coral', 'nested/\\*\\?\\[\\]\\\\/.claude/coral'],
+  ])('literal-escapes %s for gitignore syntax', async (_name, input, expected) => {
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { escapeGitignoreLiteralPath } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+
+    expect(escapeGitignoreLiteralPath(input)).toBe(expected);
+  });
+
+  it.each([
+    ['root line feed', 'ev\nil'],
+    ['root carriage return', 'ev\ril'],
+    ['nested line feed', 'nested/ev\nil/.claude/coral'],
+    ['nested carriage return', 'nested/ev\ril/.claude/coral'],
+  ])('rejects an unrepresentable %s instead of returning a multiline pattern', async (_name, input) => {
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { escapeGitignoreLiteralPath } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+
+    expect(escapeGitignoreLiteralPath(input)).toBeNull();
+  });
+
+  it.each([
+    ['line feed', '\n'],
+    ['carriage return', '\r'],
+  ])('refuses a nested project path containing a %s before creating staging or artifacts', async (_name, separator) => {
+    const repositoryRoot = projectDir;
+    projectDir = join(repositoryRoot, `ev${separator}il`);
+    mkdirSync(join(projectDir, '.claude'), { recursive: true });
+    writeFileSync(join(projectDir, '.gitignore'), '', 'utf-8');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'project-path-unrepresentable',
+      residue: 'none',
+    });
+    expect(existsSync(join(fixture.home, '.coral'))).toBe(false);
+    expect(existsSync(join(fixture.gitDir, 'coral'))).toBe(false);
+    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
+  });
+
   it('creates it on first run', async () => {
     const result = await maintain('prod');
 
@@ -454,7 +505,7 @@ describe('project-ignore symlink maintenance', () => {
     const result = await maintain('dev');
 
     expect(result.status, 'a failed write is reported as a failure, not swallowed').toBe('refused');
-    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed', residue: 'none' });
     expect(
       readlinkSync(link()),
       'unlink-then-symlink would have deleted the working link before the write failed; the fix must not',
@@ -472,7 +523,7 @@ describe('project-ignore symlink maintenance', () => {
     const result = await maintain('dev');
 
     expect(result.status, 'a failed rename is reported as a failure, not swallowed').toBe('refused');
-    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed', residue: 'none' });
     expect(
       readlinkSync(link()),
       'the swap is renameSync onto the real link path; failing exactly that call must leave the working link untouched',
@@ -494,14 +545,32 @@ describe('project-ignore symlink maintenance', () => {
     ).toEqual([]);
   });
 
-  it('reports no residue when run-directory cleanup removes a staging file left by inline cleanup', async () => {
+  it('continues and completes when run-directory cleanup removes a staging file left by inline cleanup', async () => {
     fixture.failReplacementUnlink = true;
 
     const result = await maintain('prod');
 
-    expect(result.status).toBe('partial');
+    expect(result.status).toBe('complete');
     expect(result.artifacts.exclude).toEqual({ state: 'published', residue: 'none' });
+    expect(result.artifacts.symlink.state).toBe('created');
     expect(readdirSync(repositoryArena())).toEqual([]);
+  });
+
+  it('reports symlink staging residue when repoint publication and both cleanup attempts fail', async () => {
+    await maintain('prod');
+    fixture.failRenameTo = link();
+    fixture.failSymlinkTempUnlink = true;
+    fixture.failRmUnder = repositoryArena();
+
+    const result = await maintain('dev');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      residue: 'owned-staging',
+    });
+    expect(readdirSync(repositoryArena())).toHaveLength(1);
   });
 
   it('retains the publication refusal and reports residue when every staging cleanup fails', async () => {

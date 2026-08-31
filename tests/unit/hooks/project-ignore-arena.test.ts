@@ -205,16 +205,23 @@ describe('project-ignore maintenance ownership', () => {
     const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const sessionStart = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'session-start.mjs'), 'utf-8');
     const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+    const owner = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'project-ignore-owner.mjs'), 'utf-8');
     const child = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'project-ignore.mjs'), 'utf-8');
 
     for (const entryPoint of [sessionStart, initProject]) {
-      expect(entryPoint).toContain('--nonblock');
-      expect(entryPoint).toContain('--no-fork');
-      expect(entryPoint).toContain('--conflict-exit-code');
-      expect(entryPoint).toContain('--maintenance-locked');
+      expect(entryPoint).toContain('project-ignore-owner.mjs');
     }
+    expect(owner).toContain('--nonblock');
+    expect(owner).toContain('--no-fork');
+    expect(owner).toContain('--conflict-exit-code');
+    expect(owner).toContain('--maintenance-locked');
+    expect(owner).toContain('openProjectIgnoreMaintenanceLock()');
+    expect(owner).toContain("'/dev/fd/0'");
     expect(sessionStart).toContain("outcome: 'maintenance-busy'");
     expect(sessionStart).toContain("outcome: 'maintenance-lock-unavailable'");
-    expect(child).toContain('projectDir && maintenanceLocked');
+    expect(sessionStart).toContain('timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS');
+    expect(child).toContain('lockWrapperWithinBudget(request.lockWrapperStartedNs)');
+    expect(initProject).toContain('--validate-result');
+    expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');
   });
 });

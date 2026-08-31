@@ -2,7 +2,6 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  closeSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -22,10 +21,8 @@ import {
   exitIfChildProcess,
   hostKind,
   isValidSessionId,
-  openProjectIgnoreMaintenanceLock,
   PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
   PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
-  projectIgnoreMaintenanceLockPath,
   readStdin,
   resolveFlavorDisposition,
   writeHookOutput,
@@ -47,7 +44,7 @@ import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
-const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
+const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
   killed: 'ran out of its time budget and was terminated',
   'not-spawned': 'could not be started',
@@ -65,6 +62,11 @@ const PROJECT_IGNORE_REASON_NOTICES = {
     sentence:
       'Coral could not resolve the project and its Git context. Remedy: verify the project path is accessible and fix any error reported by `git status` in that directory.',
     retryable: true,
+  },
+  'project-path-unrepresentable': {
+    sentence:
+      'The project-relative path contains a carriage return or line feed, which .git/info/exclude cannot represent as one pattern. Remedy: rename the affected project directory to remove CR and LF characters.',
+    retryable: false,
   },
   'exclude-path-unresolvable': {
     sentence:
@@ -348,25 +350,16 @@ try {
 }
 
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
-  const lockFd = openProjectIgnoreMaintenanceLock();
-  if (lockFd === null) return { outcome: 'maintenance-lock-unavailable', maintenance: null };
-
   try {
     const args = [
-      '--exclusive',
-      '--nonblock',
-      '--no-fork',
-      '--conflict-exit-code',
-      String(PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE),
-      projectIgnoreMaintenanceLockPath(),
-      process.execPath,
-      PROJECT_IGNORE_SCRIPT,
-      '--maintenance-locked',
+      PROJECT_IGNORE_OWNER_SCRIPT,
+      '--started-ns',
+      process.hrtime.bigint().toString(),
       '--project-dir',
       projectDir,
     ];
     if (createSymlink) args.push('--create-symlink');
-    const result = spawnSync('flock', args, {
+    const result = spawnSync(process.execPath, args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
@@ -399,10 +392,6 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     return { outcome: 'ok', maintenance: parsed };
   } catch {
     return { outcome: 'unparseable-output', maintenance: null };
-  } finally {
-    try {
-      closeSync(lockFd);
-    } catch {}
   }
 }
 

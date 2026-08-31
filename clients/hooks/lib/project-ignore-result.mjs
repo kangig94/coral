@@ -17,6 +17,7 @@ const SELECTOR_KEYS = [
 ];
 const REASONS = new Set([
   'project-context-unresolvable',
+  'project-path-unrepresentable',
   'exclude-path-unresolvable',
   'artifact-unreadable',
   'artifact-too-large',
@@ -113,9 +114,25 @@ function validateSymlink(value) {
   ) {
     return false;
   }
+  if (value.residue !== undefined && !['none', 'owned-staging'].includes(value.residue)) return false;
+  if (value.residue === 'owned-staging') {
+    if (value.state === 'repointed') {
+      return hasExactKeys(value, ['state', 'reason', 'residue']) && hasReason(value, 'staging-cleanup-failed');
+    }
+    return (
+      value.state === 'refused' &&
+      hasExactKeys(value, ['state', 'reason', 'residue']) &&
+      hasReason(value) &&
+      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
+        value.reason,
+      )
+    );
+  }
+  if (value.state === 'repointed') return hasExactKeys(value, ['state', 'residue']);
   if (value.state === 'refused') {
     return (
-      hasExactKeys(value, ['state', 'reason']) &&
+      (hasExactKeys(value, ['state', 'reason']) || hasExactKeys(value, ['state', 'reason', 'residue'])) &&
+      (value.residue === undefined || value.residue === 'none') &&
       hasReason(value) &&
       !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
         value.reason,
