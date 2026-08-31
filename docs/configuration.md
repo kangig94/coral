@@ -44,11 +44,14 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 Project ignore migration is independent of `CORAL_AUTO_SYMLINK`. On a valid project
 SessionStart, Coral checks the Git-root `.gitignore` for the exact legacy entry that
 older Coral versions generated (`.claude/coral` at the root, or the project-relative
-equivalent for a nested project). When found, Coral first establishes its own entries in
-`.claude/.gitignore` — see [Hooks](./hooks.md) for which — then atomically removes only the
-legacy line.
-The one-time migration is reported in SessionStart context. Unsafe or concurrently
-changed paths retain the legacy entry and fail open without blocking the session.
+equivalent for a nested project), and checks an existing project `.claude/.gitignore` for
+the retired `coral` line. When `.claude/coral` exists or auto-symlink is requested, Coral
+first publishes a literal-escaped, project-anchored entry for it in `.git/info/exclude`,
+processes symlink placement next, then atomically retracts the exact legacy lines.
+Publishing either retraction produces the one-time migration notice. A refusal can retain
+an unprocessed legacy line, and a partial result can report both completed work and a
+later refusal without blocking the session. See [Hooks](./hooks.md) for precedence and
+the `.claude/` placement precondition.
 
 ### Multi-Account Provider Routing
 

@@ -248,7 +248,7 @@ describe('session-start.mjs', () => {
     );
   });
 
-  it('ignores a newly created coral symlink from .claude/.gitignore', () => {
+  it('ignores a newly created coral symlink from the anchored .git/info/exclude entry', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -269,7 +269,10 @@ describe('session-start.mjs', () => {
     const link = join(fixture.projectRoot, '.claude', 'coral');
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readlinkSync(link)).toBe(coralProjectDir(fixture.root, 'acme/repo'));
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
+    const excludeLines = readFileSync(join(fixture.projectRoot, '.git', 'info', 'exclude'), 'utf-8').split(/\r?\n/u);
+    expect(excludeLines).toContain('/.claude/coral');
+    expect(excludeLines).not.toContain('coral');
+    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.gitignore'))).toBe(false);
   });
 
@@ -293,12 +296,10 @@ describe('session-start.mjs', () => {
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe(
-      'settings.local.json\ncoral\n*.coral-*.tmp\n',
-    );
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('settings.local.json');
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
     expect(expectHookOutput(first).hookSpecificOutput.additionalContext).toContain(
-      'Coral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.',
+      'Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.',
     );
     expect(expectHookOutput(second).hookSpecificOutput.additionalContext).not.toContain('Coral migration:');
   });
@@ -326,10 +327,10 @@ describe('session-start.mjs', () => {
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe(expected);
-    expect(readFileSync(join(nestedProject, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
+    expect(existsSync(join(nestedProject, '.claude', '.gitignore'))).toBe(false);
   });
 
-  it('adds the scoped ignore for an existing symlink without replacing it', () => {
+  it('adds the anchored exclude entry for an existing symlink without replacing it', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -352,7 +353,10 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readlinkSync(join(claudeDir, 'coral'))).toBe(existingTarget);
-    expect(readFileSync(join(claudeDir, '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
+    const excludeLines = readFileSync(join(fixture.projectRoot, '.git', 'info', 'exclude'), 'utf-8').split(/\r?\n/u);
+    expect(excludeLines).toContain('/.claude/coral');
+    expect(excludeLines).not.toContain('coral');
+    expect(existsSync(join(claudeDir, '.gitignore'))).toBe(false);
   });
 
   it('preserves the legacy protection when the scoped ignore is a symlink', () => {
@@ -386,6 +390,7 @@ describe('session-start.mjs', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
     const externalIgnore = join(fixture.root, 'external-root-ignore');
     writeFileSync(externalIgnore, '.claude/coral\nkeep/\n');
     symlinkSync(externalIgnore, join(fixture.projectRoot, '.gitignore'));
@@ -403,14 +408,17 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readFileSync(externalIgnore, 'utf-8')).toBe('.claude/coral\nkeep/\n');
-    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
+      'An affected ignore file is not a readable regular file.',
+    );
   });
 
   it('rejects oversized root gitignore files before reading or mutating project ignores', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
     const oversized = Buffer.alloc(1024 * 1024 + 1, 0x61);
     writeFileSync(join(fixture.projectRoot, '.gitignore'), oversized);
 
@@ -427,18 +435,14 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'))).toEqual(oversized);
-    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
-    // The child ran, decided the root `.gitignore` was unsafe to touch, and reported `{ ok: false, ... }` — a
-    // real maintenance failure, not a transport one. Silently folding that into the bare `ok` outcome is exactly
-    // the defect this pins: the session must be told the same way it is told about a kill or a launch failure.
     expect(
       expectHookOutput(result).hookSpecificOutput.additionalContext,
-      'a maintenance pass that ran and reported ok:false must reach the session as a notice, not be dropped',
-    ).toContain('could not complete safely');
+      'a completed maintenance refusal must reach the session as a reason-specific notice',
+    ).toContain("An affected ignore file exceeds Coral's 1 MiB safety limit.");
   });
 
-  it('serializes concurrent migration outcomes without duplicate entries or temp residue', async () => {
+  it('serializes concurrent retractions without scoped entries or repository-arena residue', async () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -459,9 +463,8 @@ describe('session-start.mjs', () => {
 
     expect(results.every((result) => result.status === 0)).toBe(true);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
-    expect(readdirSync(fixture.projectRoot).filter((name) => name.includes('.coral-'))).toEqual([]);
-    expect(readdirSync(join(fixture.projectRoot, '.claude')).filter((name) => name.includes('.coral-'))).toEqual([]);
+    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
+    expect(readdirSync(join(fixture.projectRoot, '.git', 'coral', 'staging', 'project-ignore'))).toEqual([]);
   });
 
   it('exits silently when session_id is missing (CORAL_CHILD guard would also catch this)', () => {

@@ -1,55 +1,29 @@
-# TODO — the scoped ignore glob is broader than the files it was written for
+# Closed — repository ignore patterns are anchored to their intended scope
 
-**Status**: open, and this one is a decision rather than an investigation. The finding is small, the fix is
-known, and the reason it was left is a cost that only a person should weigh. Raised and deliberately declined
-during the PR-gate repairs on `fix/build-identity-per-boot`.
+**Status**: closed 2026-08-31. The rule recorded here is broader than the original
+`*.coral-*.tmp` example: a gitignore pattern with no `/` matches at any depth below the
+file in which it appears. Moving an unchanged pattern to a wider-scope ignore file can
+therefore widen what Git hides even when the literal itself does not change.
 
-## What exists
+## Decision
 
-`ensureScopedIgnore` (`clients/hooks/lib/project-ignore.mjs`) maintains two exact lines in the
-project's `.claude/.gitignore`:
+Coral no longer adds `*.coral-*.tmp` to a project `.claude/.gitignore`. New replacement
+staging belongs in a Git-metadata or Coral-state arena, and the unreleased working-tree
+staging pattern was deleted rather than migrated or re-anchored.
 
-```js
-const CORAL_IGNORE_ENTRY = 'coral';
-const CORAL_IGNORE_TEMP_ENTRY = '*.coral-*.tmp';
-```
+The surviving `.claude/coral` rule moved from the project `.claude/.gitignore` to
+`.git/info/exclude`. Its canonical form is the literal-escaped project-relative path with
+a leading `/`: `/.claude/coral` for a project at the repository root, or the corresponding
+anchored path for a nested project. The slash prevents the broader exclude file from
+matching another `coral` path elsewhere in the repository; escaping keeps literal `*`,
+`?`, `[` and `]` characters in project-directory names from becoming pattern syntax.
 
-The second exists for the temp files Coral's own atomic writes leave behind if interrupted. There are exactly
-two of them, and both sit directly in the directory the pattern is written into:
+## Precedence consequence
 
-- `${path}.coral-${token}.tmp` — `atomicTransform`'s staging file (`clients/hooks/lib/project-ignore.mjs`)
-- `${link}.coral-${token}.tmp` — the symlink swap's staging name (`clients/hooks/lib/project-ignore.mjs`)
+`.git/info/exclude` has lower precedence than a working-tree `.gitignore`. A deliberate
+`!coral` in `.claude/.gitignore` therefore wins and can expose `.claude/coral`. This is an
+accepted consequence of keeping Coral's generated rule out of the working tree.
 
-A gitignore pattern with no `/` matches at **any depth** below the file it is written in. So the line covers
-both writers and also any file anywhere under `.claude/` whose name happens to contain `.coral-` followed by
-`.tmp`. Anchoring it — `/*.coral-*.tmp` — would restrict it to the directory the two writers actually use.
-
-## Why it was left
-
-`.claude/.gitignore` is a user-owned file, checked into the user's repository, and this line has already
-shipped into it. `hasExactLine` and `appendExactLine` (both in `clients/hooks/lib/project-ignore.mjs`) match the literal string, so
-changing the literal does not update the old line — it adds a second one beside it and leaves the first there
-forever.
-
-A retirement mechanism for exactly this does exist in the same file: `maintainProjectIgnore` removes the
-retired root entry with `removeExactLines(content, context.legacyEntry)` (`clients/hooks/lib/project-ignore.mjs`), gated on
-`hasExactLine` finding it first. So the claim that anchoring has "no migration path" is wrong — the
-path is there and is the one this file already uses. The real cost is different and smaller: every existing
-installation pays one more read-modify-rename of `.claude/.gitignore` on the SessionStart that first sees the
-retired line, and the retirement branch stays in the code afterwards for as long as any un-migrated checkout
-might appear.
-
-## What has to be decided
-
-Whether an over-broad ignore under `.claude/` is worth that. The two sides:
-
-- **Leave it.** The pattern only over-matches a file whose name contains `.coral-…​.tmp`, under a directory
-  that holds tool configuration rather than a user's source. Nobody has reported one. The line is correct for
-  every file Coral actually writes.
-- **Anchor it.** A generated ignore rule that silently hides a file its author never wrote is the kind of
-  thing found long after it costs something, and the migration this file already performs for its own retired
-  entry is the precedent for doing it cleanly rather than accumulating.
-
-There is no correctness argument on either side — both behaviours are defensible, which is why this is
-recorded rather than fixed. If it is taken, take it with the `LEGACY_CORAL_IGNORE_ENTRY` mechanism rather
-than a new one, and add the retired literal to the same removal pass rather than a second.
+The close-out preserves the governing constraint: choose the pattern's anchor from the
+scope of the file that owns it, not from the scope of the file where the pattern used to
+live.

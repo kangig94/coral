@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -57,8 +58,7 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return (actual.symlinkSync as (t: unknown, p: unknown, ty: unknown) => void)(target, path, type);
     },
-    // Matched on `newPath` (the real link, never the temp name) so a forced failure lands on the swap step
-    // specifically, not on whichever rename `atomicTransform` performs for `.claude/.gitignore`.
+    // Only the final symlink path triggers this fixture; ignore-file publication must keep using the real rename.
     renameSync: (oldPath: unknown, newPath: unknown) => {
       if (fixture.failRenameTo !== null && String(newPath) === fixture.failRenameTo) {
         throw Object.assign(new Error('simulated rename failure'), { code: 'EIO' });
@@ -70,9 +70,8 @@ vi.mock('node:fs', async (importOriginal) => {
 
 // `execSync` is a spy, not a bare stub: it is the fork `coralProjectDir` pays to resolve the project source, and
 // several tests below measure how many times a single `maintain()` call pays it — F3 is specifically about not
-// paying it on paths that never need to know the target. `execFileSync` (`git rev-parse --show-toplevel`, the
-// ignore root) is a spy for the same reason: it is the *other* fork on that same budget, and the total the two
-// pay together is what F3 pins.
+// paying it on paths that never need to know the target. `execFileSync` resolves the project and Git metadata
+// context; it is a spy for the same reason, and the combined child-process budget is what F3 pins.
 const execSyncMock = vi.hoisted(() => vi.fn(() => 'https://github.com/owner/repo.git\n'));
 const execFileSyncMock = vi.hoisted(() =>
   vi.fn((command: unknown, args: unknown, options: unknown) => {
@@ -122,9 +121,15 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function maintain(
-  flavor: 'prod' | 'dev',
-): Promise<{ ok: boolean; symlinkCreated: boolean; symlinkRepointed: boolean }> {
+async function maintain(flavor: 'prod' | 'dev'): Promise<{
+  status: 'complete' | 'refused' | 'partial';
+  artifacts: {
+    symlink: {
+      state: 'not-requested' | 'unchanged' | 'created' | 'repointed' | 'refused' | 'skipped';
+      reason?: string;
+    };
+  };
+}> {
   manifest.flavor = flavor;
   // Re-imported per call: both the flavor and the project source are cached module-level on first read.
   vi.resetModules();
@@ -134,15 +139,16 @@ async function maintain(
 }
 
 const link = (): string => join(projectDir, '.claude', 'coral');
+const repositoryArena = (): string => join(fixture.gitDir, 'coral', 'staging', 'project-ignore');
 
-describe('ensureCoralSymlink keeps its own link pointing at the current flavor', () => {
+describe('project-ignore symlink maintenance', () => {
   it('creates it on first run', async () => {
     const result = await maintain('prod');
 
-    expect(result.ok).toBe(true);
-    expect(result.symlinkCreated).toBe(true);
-    expect(result.symlinkRepointed, 'a first-time creation is not a repoint').toBe(false);
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.symlink.state).toBe('created');
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
+    expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
   });
 
   it('repoints a link left behind by the other flavor', async () => {
@@ -151,9 +157,8 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('dev');
 
-    expect(result.ok).toBe(true);
-    expect(result.symlinkCreated, 'a repoint of an existing link is not a first-time creation').toBe(false);
-    expect(result.symlinkRepointed, 'replacing a stale-flavor link must be reported as a repoint').toBe(true);
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.symlink.state).toBe('repointed');
     expect(readlinkSync(link()), 'the link follows CORAL_PROJECT, which moved').toBe(
       join(fixture.home, '.coral', 'projects-dev', 'owner-repo'),
     );
@@ -171,8 +176,8 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('prod');
 
-    expect(result.ok).toBe(true);
-    expect(result.symlinkRepointed, 'a link left under projects-dev is still ours to repoint').toBe(true);
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.symlink.state).toBe('repointed');
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
     expect(readlinkSync(link())).not.toBe(stale);
   });
@@ -182,8 +187,8 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('prod');
 
-    expect(result.symlinkCreated, 'nothing to do is not a re-creation').toBe(false);
-    expect(result.symlinkRepointed, 'nothing to do is not a repoint').toBe(false);
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.symlink.state).toBe('unchanged');
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
   });
 
@@ -194,7 +199,8 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('dev');
 
-    expect(result.ok, 'a link that is not ours is still a working link').toBe(true);
+    expect(result.status, 'a link that is not ours is still a working link').toBe('complete');
+    expect(result.artifacts.symlink.state).toBe('unchanged');
     expect(readlinkSync(link()), 'recognising our own artifact is not licence to overwrite theirs').toBe(elsewhere);
   });
 
@@ -212,8 +218,10 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
       const result = await maintain('dev');
 
-      expect(result.ok).toBe(true);
-      expect(result.symlinkRepointed, 'a look-alike prefix is not one of the two legitimate roots').toBe(false);
+      expect(result.status).toBe('complete');
+      expect(result.artifacts.symlink.state, 'a look-alike prefix is not one of the two legitimate roots').toBe(
+        'unchanged',
+      );
       expect(readlinkSync(link()), 'character overlap with "projects" is not membership in it').toBe(elsewhere);
     },
   );
@@ -230,11 +238,11 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('dev');
 
-    expect(result.ok).toBe(true);
+    expect(result.status).toBe('complete');
     expect(
-      result.symlinkRepointed,
+      result.artifacts.symlink.state,
       'normalizing the target moves it out of the projects root entirely, same as the other look-alikes',
-    ).toBe(false);
+    ).toBe('unchanged');
     expect(readlinkSync(link())).toBe(escapee);
   });
 
@@ -244,7 +252,8 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('prod');
 
-    expect(result.ok, 'replacing a directory is a deletion nobody asked for').toBe(false);
+    expect(result.status, 'replacing a directory is a deletion nobody asked for').toBe('refused');
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'symlink-conflict' });
     expect(existsSync(link())).toBe(true);
     // Refusing because it is a directory needs no comparison against a target, so it must never fork git to
     // compute one — `coralProjectDir` moving above the `lstatSync` early-return once made every run pay this
@@ -279,19 +288,19 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     await maintain('prod');
 
-    expect(execFileSyncMock, 'git rev-parse --show-toplevel, for the ignore-scoped git root').toHaveBeenCalledTimes(1);
+    expect(execFileSyncMock, 'git rev-parse, for the project and Git metadata context').toHaveBeenCalledTimes(1);
     expect(
       execSyncMock,
       'git remote get-url origin, to confirm the existing link is not outgrown',
     ).toHaveBeenCalledTimes(1);
-    const findGitRootTimeout = (
+    const findGitContextTimeout = (
       (execFileSyncMock.mock.calls as unknown[][])[0]?.[2] as { timeout?: number } | undefined
     )?.timeout;
     const coralProjectDirTimeout = (
       (execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined
     )?.timeout;
     expect(
-      (findGitRootTimeout ?? 0) + (coralProjectDirTimeout ?? 0),
+      (findGitContextTimeout ?? 0) + (coralProjectDirTimeout ?? 0),
       "session-start.mjs must give this child more than the work the child itself bounds; these two forks alone are the whole of it, before this process's own Node startup",
     ).toBe(3500);
   });
@@ -307,11 +316,11 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     await maintain('prod');
 
-    const findGitRootTimeout =
+    const findGitContextTimeout =
       ((execFileSyncMock.mock.calls as unknown[][])[0]?.[2] as { timeout?: number } | undefined)?.timeout ?? 0;
     const coralProjectDirTimeout =
       ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
-    const childBoundSum = findGitRootTimeout + coralProjectDirTimeout;
+    const childBoundSum = findGitContextTimeout + coralProjectDirTimeout;
 
     const hookUtilsSource = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'lib', 'hook-utils.mjs'),
@@ -357,13 +366,22 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
       'every outcome other than ok and no-project-dir must have a notice the session can read',
     ).toEqual([]);
     // Do not pin this assertion to notice variable names, order, or adjacency.
-    const migrationNotice = source.match(/const\s+(\w+)\s*=\s*[^\n]+\n\s+\? 'Coral migration:/u)?.[1] ?? '';
+    const migrationDerivation = source.match(
+      /const\s+(\w+)\s*=\s*\[([^\]]+)\]\.some\(\(artifact\)\s*=>\s*artifact\?\.state\s*===\s*'published'\)/su,
+    );
+    const migrationNotice = source.match(/const\s+(\w+)\s*=\s*\w+\s*\?\s*'Coral migration:/su)?.[1] ?? '';
     const ignoreNotice =
       source.match(/const\s+(\w+)\s*=\s*[^\n]+\n\s+\? `Coral project-ignore maintenance/u)?.[1] ?? '';
     // Matched on the composition that collects the notices, not on the separator it joins them with: the
     // separator is presentation and pinning it has already broken this assertion twice for reasons that
     // changed nothing about whether a notice reaches the payload.
     const renderedNotices = source.match(/\[([^\]]*Notice[^\]]*)\]\.filter\(Boolean\)/u)?.[1] ?? '';
+    expect(migrationDerivation?.[2], 'migration progress must read both legacy retraction artifacts').toContain(
+      'scopedIgnoreRetraction',
+    );
+    expect(migrationDerivation?.[2], 'migration progress must read both legacy retraction artifacts').toContain(
+      'rootIgnoreRetraction',
+    );
     expect(migrationNotice, 'the migration notice must be readable from source').not.toBe('');
     expect(ignoreNotice, 'the maintenance notice must be readable from source').not.toBe('');
     expect(renderedNotices, 'the rendered notices must be readable from source').not.toBe('');
@@ -379,7 +397,8 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('dev');
 
-    expect(result.ok, 'a failed write is reported as a failure, not swallowed').toBe(false);
+    expect(result.status, 'a failed write is reported as a failure, not swallowed').toBe('refused');
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
     expect(
       readlinkSync(link()),
       'unlink-then-symlink would have deleted the working link before the write failed; the fix must not',
@@ -396,25 +415,26 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
 
     const result = await maintain('dev');
 
-    expect(result.ok, 'a failed rename is reported as a failure, not swallowed').toBe(false);
+    expect(result.status, 'a failed rename is reported as a failure, not swallowed').toBe('refused');
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
     expect(
       readlinkSync(link()),
       'the swap is renameSync onto the real link path; failing exactly that call must leave the working link untouched',
     ).toBe(original);
     expect(
-      existsSync(`${link()}.coral-test-token.tmp`),
-      'the temp file written before the failed rename must still be cleaned up',
-    ).toBe(false);
+      readdirSync(repositoryArena()),
+      'a failed repoint must not retain its run directory or staging symlink in the repository-owned arena',
+    ).toEqual([]);
   });
 
-  it('leaves no temp file behind after a successful repoint', async () => {
+  it('leaves no repository-arena residue after a successful repoint', async () => {
     await maintain('prod');
 
     await maintain('dev');
 
     expect(
-      existsSync(`${link()}.coral-test-token.tmp`),
-      'the temp file used for the atomic rename must not survive a successful replacement',
-    ).toBe(false);
+      readdirSync(repositoryArena()),
+      'a successful repoint must not retain its run directory or staging symlink in the repository-owned arena',
+    ).toEqual([]);
   });
 });
