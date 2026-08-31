@@ -46,7 +46,7 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'artifact-observation-failed': {
     sentence:
-      'Coral could not re-read an ignore file after preparing its staged update. Remedy: make the affected ignore file and its parent directories observable by the current user, or repair the filesystem error blocking inspection.',
+      'Coral could not inspect or re-read an affected ignore file. Remedy: make the file and its parent directories observable by the current user, or repair the filesystem error blocking inspection.',
     retryable: true,
   },
   'claude-directory-missing': {
@@ -61,8 +61,13 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'repository-arena-unavailable': {
     sentence:
-      'Coral could not prepare its staging arena in the authorized common Git directory. Remedy: replace any coral arena symlink or non-directory component and make the common Git directory writable.',
+      'Coral could not prepare its staging arena in the authorized common Git directory because an observation or filesystem operation failed. Remedy: make the common Git directory observable and writable and repair the reported filesystem failure.',
     retryable: true,
+  },
+  'repository-arena-conflict': {
+    sentence:
+      "The common Git directory's coral staging component is a symlink or non-directory. Remedy: replace <commonGitDir>/coral with a real directory before Coral maintenance runs again.",
+    retryable: false,
   },
   'staging-device-mismatch': {
     sentence:
@@ -111,7 +116,12 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'durability-sync-unsupported': {
     sentence:
-      'The platform does not support syncing an affected parent directory, so Coral could not confirm crash durability for this publication. When this was reported while reconciling a pending record, Coral discharged that record and will not retry it.',
+      'The platform does not support syncing an affected parent directory, so Coral retained the publication marker for reconciliation.',
+    retryable: true,
+  },
+  'durability-sync-unsupported-discharged': {
+    sentence:
+      'The platform does not support syncing the parent named by a pending durability record, so Coral discharged that record and will not retry it.',
     retryable: false,
   },
   'durability-sync-failed': {
@@ -143,6 +153,11 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
     sentence:
       "Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory's coral/staging/project-ignore path are writable real directories.",
     retryable: true,
+  },
+  'arena-structural-conflict': {
+    sentence:
+      "A Coral staging arena component is a symlink or non-directory. Remedy: replace the conflicting component under ~/.coral/staging/project-ignore or <commonGitDir>/coral/staging/project-ignore with a real directory.",
+    retryable: false,
   },
   'upstream-refusal': {
     sentence:

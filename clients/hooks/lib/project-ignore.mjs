@@ -28,6 +28,7 @@ import {
   coralStateRoot,
   prepareCoralProjectDir,
   prepareProjectIgnoreStagingDir,
+  projectIgnoreStagingDir,
   PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
   PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
   PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
@@ -44,6 +45,8 @@ const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 const LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS = 30_000;
 const DURABILITY_MARKER_NAME = /^\.durability-[0-9a-f]{64}\.pending$/u;
 const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP']);
+const ARTIFACT_ACCESS_CODES = new Set(['EACCES', 'EPERM']);
+const ARTIFACT_STRUCTURAL_CODES = new Set(['EISDIR', 'ELOOP', 'ENOTDIR']);
 
 function isMissing(error) {
   return error?.code === 'ENOENT';
@@ -58,47 +61,66 @@ function safeUnlink(path) {
   }
 }
 
-function readRegularSnapshot(path, { allowMissing = false } = {}) {
+function classifySnapshotError(error) {
+  if (isMissing(error)) return { kind: 'missing' };
+  return ARTIFACT_ACCESS_CODES.has(error?.code) || ARTIFACT_STRUCTURAL_CODES.has(error?.code)
+    ? { kind: 'structural', reason: 'artifact-unreadable' }
+    : { kind: 'observation-failed', reason: 'artifact-observation-failed' };
+}
+
+function readRegularSnapshot(path) {
   try {
     const pathStat = lstatSync(path);
     if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
-      return { ok: false, reason: 'artifact-unreadable', mismatch: true };
+      return { ok: false, kind: 'structural', reason: 'artifact-unreadable' };
     }
     if (pathStat.size > MAX_GITIGNORE_BYTES) {
-      return { ok: false, reason: 'artifact-too-large', mismatch: true };
+      return { ok: false, kind: 'structural', reason: 'artifact-too-large' };
     }
   } catch (error) {
-    if (allowMissing && isMissing(error)) {
-      return { ok: true, exists: false, content: Buffer.alloc(0), mode: 0o666 };
+    const failure = classifySnapshotError(error);
+    if (failure.kind === 'missing') {
+      return { ok: true, kind: 'missing', exists: false, content: Buffer.alloc(0), mode: 0o666 };
     }
-    return { ok: false, reason: 'artifact-unreadable' };
+    return { ok: false, ...failure };
   }
 
   let fd;
   try {
     fd = openSync(path, READ_FLAGS);
-  } catch {
-    return { ok: false, reason: 'artifact-unreadable' };
+  } catch (error) {
+    const failure = classifySnapshotError(error);
+    if (failure.kind === 'missing') {
+      return { ok: true, kind: 'missing', exists: false, content: Buffer.alloc(0), mode: 0o666 };
+    }
+    return { ok: false, ...failure };
   }
 
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) return { ok: false, reason: 'artifact-unreadable', mismatch: true };
+    if (!stat.isFile()) {
+      return { ok: false, kind: 'structural', reason: 'artifact-unreadable' };
+    }
     if (stat.size > MAX_GITIGNORE_BYTES) {
-      return { ok: false, reason: 'artifact-too-large', mismatch: true };
+      return { ok: false, kind: 'structural', reason: 'artifact-too-large' };
     }
     const content = readFileSync(fd);
     if (content.length > MAX_GITIGNORE_BYTES) {
-      return { ok: false, reason: 'artifact-too-large', mismatch: true };
+      return { ok: false, kind: 'structural', reason: 'artifact-too-large' };
     }
     return {
       ok: true,
+      kind: 'regular',
       exists: true,
       content,
       mode: stat.mode & 0o777,
     };
-  } catch {
-    return { ok: false, reason: 'artifact-unreadable' };
+  } catch (error) {
+    const failure = classifySnapshotError(error);
+    if (failure.kind === 'missing') {
+      return { ok: true, kind: 'missing', exists: false, content: Buffer.alloc(0), mode: 0o666 };
+    }
+    return { ok: false, ...failure };
   } finally {
     try {
       closeSync(fd);
@@ -167,8 +189,8 @@ function appendExactLine(content, entry) {
 }
 
 function compareSnapshot(path, snapshot) {
-  const current = readRegularSnapshot(path, { allowMissing: true });
-  if (!current.ok) return current.mismatch ? 'changed' : 'observation-failed';
+  const current = readRegularSnapshot(path);
+  if (!current.ok) return current.kind === 'observation-failed' ? 'observation-failed' : 'changed';
   return current.exists === snapshot.exists && current.content.equals(snapshot.content)
     ? 'unchanged'
     : 'changed';
@@ -398,7 +420,7 @@ function reconcileDurabilityMarkers(durabilityDir) {
     if (durability.state === 'unsupported') {
       const removed = safeUnlink(markerPath);
       if (removed) {
-        for (const reason of durability.reasons) reasons.add(reason);
+        reasons.add('durability-sync-unsupported-discharged');
       } else {
         reasons.add('durability-evidence-cleanup-failed');
       }
@@ -616,41 +638,51 @@ export function repositoryProjectIgnoreStagingDir(commonGitDir) {
 function ensureArenaComponent(path) {
   try {
     const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
-    chmodSync(path, 0o700);
-    return true;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      return { state: 'structural-conflict', path };
+    }
+    try {
+      chmodSync(path, 0o700);
+      return { state: 'ready', path };
+    } catch {
+      return { state: 'unavailable', path };
+    }
   } catch (error) {
-    if (!isMissing(error)) return false;
+    if (!isMissing(error)) return { state: 'unavailable', path };
   }
 
   try {
     mkdirSync(path, { mode: 0o700 });
   } catch (error) {
-    if (error?.code !== 'EEXIST') return false;
+    if (error?.code !== 'EEXIST') return { state: 'unavailable', path };
   }
 
   try {
     const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      return { state: 'structural-conflict', path };
+    }
     chmodSync(path, 0o700);
-    return true;
+    return { state: 'ready', path };
   } catch {
-    return false;
+    return { state: 'unavailable', path };
   }
 }
 
 export function prepareRepositoryProjectIgnoreStagingDir(commonGitDir) {
+  let current = commonGitDir;
   try {
     const canonicalCommonGitDir = realpathSync(commonGitDir);
     const expectedArena = repositoryProjectIgnoreStagingDir(canonicalCommonGitDir);
-    let current = canonicalCommonGitDir;
+    current = canonicalCommonGitDir;
     for (const component of ['coral', 'staging', 'project-ignore']) {
       current = join(current, component);
-      if (!ensureArenaComponent(current)) return null;
+      const preparation = ensureArenaComponent(current);
+      if (preparation.state !== 'ready') return preparation;
     }
 
     const canonicalArena = realpathSync(current);
-    if (current !== expectedArena) return null;
+    if (current !== expectedArena) return { state: 'structural-conflict', path: current };
     const containment = relative(canonicalCommonGitDir, canonicalArena);
     if (
       containment.length === 0 ||
@@ -658,11 +690,11 @@ export function prepareRepositoryProjectIgnoreStagingDir(commonGitDir) {
       containment === '..' ||
       containment.startsWith(`..${sep}`)
     ) {
-      return null;
+      return { state: 'structural-conflict', path: current };
     }
-    return canonicalArena;
+    return { state: 'prepared', path: canonicalArena };
   } catch {
-    return null;
+    return { state: 'unavailable', path: current };
   }
 }
 
@@ -703,13 +735,13 @@ export function sweepProjectIgnoreArenas(
 ) {
   const sweepStartedAt = monotonicNow();
   const candidates = [];
-  let failures = 0;
+  const failures = [];
 
   for (const arenaDir of new Set(arenaDirs)) {
     try {
       const arenaStat = lstatSync(arenaDir);
       if (arenaStat.isSymbolicLink() || !arenaStat.isDirectory()) {
-        failures += 1;
+        failures.push({ state: 'structural-conflict', path: arenaDir });
         continue;
       }
       chmodSync(arenaDir, 0o700);
@@ -719,7 +751,7 @@ export function sweepProjectIgnoreArenas(
         candidates.push({ arenaDir, name: entry.name, ...run });
       }
     } catch {
-      failures += 1;
+      failures.push({ state: 'operation-failed', path: arenaDir });
     }
   }
 
@@ -747,7 +779,7 @@ export function sweepProjectIgnoreArenas(
       rmSync(runDir, { recursive: true });
       removed += 1;
     } catch {
-      failures += 1;
+      failures.push({ state: 'operation-failed', path: runDir });
     }
   }
 
@@ -1087,6 +1119,20 @@ function isUsableExcludeDirectory(excludeDir) {
   }
 }
 
+function observeUsableExcludeDirectory(excludeDir) {
+  try {
+    const stat = lstatSync(excludeDir);
+    return !stat.isSymbolicLink() && stat.isDirectory() && (stat.mode & 0o700) === 0o700
+      ? 'usable'
+      : 'structural';
+  } catch (error) {
+    if (isMissing(error)) return 'missing';
+    return ARTIFACT_ACCESS_CODES.has(error?.code) || ARTIFACT_STRUCTURAL_CODES.has(error?.code)
+      ? 'structural'
+      : 'observation-failed';
+  }
+}
+
 function addOwnerAccessToCreatedExcludeDirectory(excludeDir) {
   try {
     const stat = lstatSync(excludeDir);
@@ -1140,13 +1186,14 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
   if (claudeDirectory === 'observation-failed') {
     return { ok: false, reason: 'symlink-observation-failed' };
   }
+  if (!createSymlink && claudeDirectory !== 'directory') {
+    return { ok: true, symlinkExists: false, action: 'not-requested', link, target: null };
+  }
   if (claudeDirectory === 'non-directory') {
     return { ok: false, reason: 'claude-directory-invalid' };
   }
   if (claudeDirectory === 'missing') {
-    return createSymlink
-      ? { ok: false, reason: 'claude-directory-missing' }
-      : { ok: true, symlinkExists: false, action: 'not-requested', link, target: null };
+    return { ok: false, reason: 'claude-directory-missing' };
   }
 
   const inspection = inspectCoralLink(link);
@@ -1336,15 +1383,23 @@ function preflightProjectIgnoreArtifacts({
   const symlink = prepareCoralSymlink(context.projectDir, createSymlink, stagingDir);
   if (!symlink.ok) return { ok: false, artifact: 'symlink', reason: symlink.reason };
 
-  const rootSnapshot = readRegularSnapshot(context.rootGitignore, { allowMissing: true });
+  const rootSnapshot = readRegularSnapshot(context.rootGitignore);
   if (!rootSnapshot.ok) {
     return { ok: false, artifact: 'rootIgnoreRetraction', reason: rootSnapshot.reason };
   }
 
   const claudeDir = join(context.projectDir, '.claude');
   let scopedSnapshot = null;
-  if (isRealDirectory(claudeDir)) {
-    scopedSnapshot = readRegularSnapshot(join(claudeDir, '.gitignore'), { allowMissing: true });
+  const scopedDirectory = observeDirectory(claudeDir);
+  if (scopedDirectory === 'observation-failed') {
+    return {
+      ok: false,
+      artifact: 'scopedIgnoreRetraction',
+      reason: 'artifact-observation-failed',
+    };
+  }
+  if (scopedDirectory === 'directory') {
+    scopedSnapshot = readRegularSnapshot(join(claudeDir, '.gitignore'));
     if (!scopedSnapshot.ok) {
       return { ok: false, artifact: 'scopedIgnoreRetraction', reason: scopedSnapshot.reason };
     }
@@ -1359,21 +1414,14 @@ function preflightProjectIgnoreArtifacts({
   let excludePathDevice = null;
   if (publishExclude) {
     const excludeDir = dirname(context.excludePath);
-    try {
-      const excludeDirStat = lstatSync(excludeDir);
-      if (
-        excludeDirStat.isSymbolicLink() ||
-        !excludeDirStat.isDirectory() ||
-        !isUsableExcludeDirectory(excludeDir)
-      ) {
-        return { ok: false, artifact: 'exclude', reason: 'artifact-unreadable' };
-      }
-    } catch (error) {
-      if (!isMissing(error)) {
-        return { ok: false, artifact: 'exclude', reason: 'artifact-unreadable' };
-      }
+    const excludeDirectory = observeUsableExcludeDirectory(excludeDir);
+    if (excludeDirectory === 'structural') {
+      return { ok: false, artifact: 'exclude', reason: 'artifact-unreadable' };
     }
-    excludeSnapshot = readRegularSnapshot(context.excludePath, { allowMissing: true });
+    if (excludeDirectory === 'observation-failed') {
+      return { ok: false, artifact: 'exclude', reason: 'artifact-observation-failed' };
+    }
+    excludeSnapshot = readRegularSnapshot(context.excludePath);
     if (!excludeSnapshot.ok) return { ok: false, artifact: 'exclude', reason: excludeSnapshot.reason };
     excludePathDevice = excludeDevicePath(context.excludePath);
     if (!excludePathDevice) return { ok: false, artifact: 'exclude', reason: 'publish-failed' };
@@ -1593,18 +1641,27 @@ export function maintainProjectIgnore({
 
   const startedAt = Date.now();
   const fallbackArena = prepareProjectIgnoreStagingDir();
+  const fallbackArenaPreparation = fallbackArena
+    ? { state: 'prepared', path: fallbackArena }
+    : observeDirectory(projectIgnoreStagingDir()) === 'non-directory'
+      ? { state: 'structural-conflict', path: projectIgnoreStagingDir() }
+      : { state: 'unavailable', path: projectIgnoreStagingDir() };
   const repositoryArenaAuthorized = Boolean(
     context?.commonGitDir && isRepositoryProjectIgnoreStagingAuthorized(context),
   );
-  const repositoryArena = repositoryArenaAuthorized
+  const repositoryArenaPreparation = repositoryArenaAuthorized
     ? prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir)
-    : null;
+    : { state: 'not-requested', path: null };
+  const repositoryArena =
+    repositoryArenaPreparation.state === 'prepared' ? repositoryArenaPreparation.path : null;
   const arenaDirs = [fallbackArena, repositoryArena].filter(Boolean);
   const arenaResult = sweepProjectIgnoreArenas(arenaDirs);
-  const arenaPreparationFailures =
-    Number(fallbackArena === null) + Number(repositoryArenaAuthorized && !repositoryArena);
-  const arenaSweep =
-    arenaPreparationFailures + arenaResult.failures > 0
+  const arenaStructuralConflict =
+    fallbackArenaPreparation.state === 'structural-conflict' ||
+    arenaResult.failures.some((failure) => failure.state === 'structural-conflict');
+  const arenaSweep = arenaStructuralConflict
+    ? { state: 'refused', reason: 'arena-structural-conflict' }
+    : arenaResult.failures.length > 0
       ? { state: 'refused', reason: 'arena-sweep-failed' }
       : arenaResult.removed > 0
         ? { state: 'cleaned' }
@@ -1642,7 +1699,9 @@ export function maintainProjectIgnore({
             arenaSweep,
             legacySweep,
             'exclude',
-            'repository-arena-unavailable',
+            repositoryArenaPreparation.state === 'structural-conflict'
+              ? 'repository-arena-conflict'
+              : 'repository-arena-unavailable',
           );
         } else {
           artifacts = maintainProjectIgnoreArtifacts({

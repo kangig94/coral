@@ -79,8 +79,50 @@ function initProjectApplyBlock(): string {
   if (!block) throw new Error('init-project apply block not found');
   return block
     .replace(/^ {2}/gmu, '')
-    .replace(/^CORAL_PROJECT_IGNORE_SCRIPT=.*$/mu, 'CORAL_PROJECT_IGNORE_SCRIPT="project-ignore-validator"')
+    .replace(
+      /^CORAL_PROJECT_IGNORE_SCRIPT=.*$/mu,
+      `CORAL_PROJECT_IGNORE_SCRIPT=${JSON.stringify(hookScript('project-ignore.mjs'))}`,
+    )
     .replace(/^CORAL_PROJECT_IGNORE_OWNER=.*$/mu, 'CORAL_PROJECT_IGNORE_OWNER="project-ignore-owner"');
+}
+
+function projectIgnoreResultFixture(status: 'complete' | 'partial' | 'refused'): string {
+  const completeArtifacts = {
+    arenaSweep: { state: 'unchanged' },
+    durabilityReconciliation: { state: 'reconciled' },
+    legacySweep: { state: 'unchanged' },
+    exclude: { state: 'not-needed', residue: 'none' },
+    symlink: { state: 'not-requested' },
+    scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+    rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+  };
+  if (status === 'complete') return JSON.stringify({ status, artifacts: completeArtifacts });
+  if (status === 'partial') {
+    return JSON.stringify({
+      status,
+      artifacts: {
+        ...completeArtifacts,
+        exclude: {
+          state: 'published',
+          residue: 'none',
+          durability: { state: 'synced', reasons: [] },
+        },
+        symlink: { state: 'refused', reason: 'publish-failed' },
+        scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+        rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+      },
+    });
+  }
+  return JSON.stringify({
+    status,
+    artifacts: {
+      ...completeArtifacts,
+      exclude: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+      symlink: { state: 'refused', reason: 'claude-directory-missing' },
+      scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+      rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+    },
+  });
 }
 
 function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string): void {
@@ -90,8 +132,9 @@ function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string)
   expect(isRepositoryProjectIgnoreStagingAuthorized(context)).toBe(true);
 
   const expected = repositoryProjectIgnoreStagingDir(context.commonGitDir);
-  const arena = prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir);
-  expect(arena).toBe(realpathSync(expected));
+  const preparation = prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir);
+  expect(preparation).toEqual({ state: 'prepared', path: realpathSync(expected) });
+  const arena = preparation.path;
   expect(relative(context.commonGitDir, arena)).toBe(join('coral', 'staging', 'project-ignore'));
   expect(isAbsolute(relative(context.commonGitDir, arena))).toBe(false);
   expect(relative(context.commonGitDir, arena).startsWith('..')).toBe(false);
@@ -176,11 +219,17 @@ describe('project-ignore repository arena', () => {
 
     const commonGitDir = realpathSync(join(repository, '.git'));
     symlinkSync(outside, join(commonGitDir, 'coral'));
-    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toBeNull();
+    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toEqual({
+      state: 'structural-conflict',
+      path: join(commonGitDir, 'coral'),
+    });
 
     rmSync(join(commonGitDir, 'coral'));
     writeFileSync(join(commonGitDir, 'coral'), 'not a directory');
-    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toBeNull();
+    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toEqual({
+      state: 'structural-conflict',
+      path: join(commonGitDir, 'coral'),
+    });
   });
 });
 
@@ -204,7 +253,7 @@ describe('project-ignore arena reclamation', () => {
       monotonicNow: () => 0,
     });
 
-    expect(result).toEqual({ inspected: 2, removed: 1, failures: 0 });
+    expect(result).toEqual({ inspected: 2, removed: 1, failures: [] });
     expect(existsSync(join(firstArena, '400000-1'))).toBe(false);
     expect(existsSync(join(secondArena, '400001-2'))).toBe(true);
   });
@@ -220,7 +269,7 @@ describe('project-ignore arena reclamation', () => {
       monotonicNow: () => 0,
     });
 
-    expect(result).toEqual({ inspected: 1, removed: 0, failures: 0 });
+    expect(result).toEqual({ inspected: 1, removed: 0, failures: [] });
     expect(statSync(runDir).mode & 0o777).toBe(0o700);
   });
 
@@ -263,7 +312,7 @@ describe('project-ignore arena reclamation', () => {
       monotonicNow: () => readings.shift() ?? PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
     });
 
-    expect(result).toEqual({ inspected: 1, removed: 1, failures: 0 });
+    expect(result).toEqual({ inspected: 1, removed: 1, failures: [] });
     expect(existsSync(join(firstArena, '1-1'))).toBe(false);
     expect(existsSync(join(secondArena, '2-2'))).toBe(true);
   });
@@ -492,11 +541,11 @@ describe('project-ignore maintenance ownership', () => {
     expect(child.status).toBe(1);
     expect(result).toMatchObject({
       status: 'refused',
-      artifacts: { exclude: { state: 'refused', reason: 'repository-arena-unavailable' } },
+      artifacts: { exclude: { state: 'refused', reason: 'repository-arena-conflict' } },
     });
     expect(child.stdout.trim()).toBe(JSON.stringify(result));
-    expect(child.stderr).toContain('Coral could not prepare its staging arena in the authorized common Git directory.');
-    expect(child.stderr).toContain('It is attempted again at the next session start.');
+    expect(child.stderr).toContain('Remedy: replace <commonGitDir>/coral with a real directory');
+    expect(child.stderr).not.toContain('It is attempted again at the next session start.');
   });
 
   it('runs the owner through non-blocking no-fork flock with the validated context', () => {
@@ -799,19 +848,39 @@ describe('project-ignore maintenance ownership', () => {
       status: 1,
       stdout: 'not-json',
       diagnostic: 'owner malformed diagnostic',
-      validatorStatus: 1,
       outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output',
       remedy: 'Coral project-ignore setup returned malformed result data.',
       exitCode: 1,
     },
     {
-      name: 'a successful result',
+      name: 'a complete result',
       status: 0,
-      stdout: '{"status":"complete"}',
+      stdout: projectIgnoreResultFixture('complete'),
       diagnostic: '',
       outcome: null,
       remedy: null,
+      handoff: true,
       exitCode: 0,
+    },
+    {
+      name: 'a partial result',
+      status: 1,
+      stdout: projectIgnoreResultFixture('partial'),
+      diagnostic: '',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=partial',
+      remedy: 'Coral project-ignore setup reported a partial result.',
+      handoff: true,
+      exitCode: 1,
+    },
+    {
+      name: 'a refused result',
+      status: 1,
+      stdout: projectIgnoreResultFixture('refused'),
+      diagnostic: '',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=refused',
+      remedy: 'Coral project-ignore setup refused before making progress.',
+      handoff: true,
+      exitCode: 1,
     },
   ])('executes the init-project apply block for $name without a working-tree file', (scenario) => {
     const binDir = join(fixtureRoot, `bin-${scenario.status}`);
@@ -820,10 +889,12 @@ describe('project-ignore maintenance ownership', () => {
     mkdirSync(workingDir);
     const nodeStub = join(binDir, 'node');
     const ownerStub = join(binDir, 'project-ignore-owner');
-    const validatorStub = join(binDir, 'project-ignore-validator');
-    const validatorArgsCapture = join(fixtureRoot, `validator-args-${scenario.status}`);
-    const validatorStdinCapture = join(fixtureRoot, `validator-stdin-${scenario.status}`);
-    writeFileSync(nodeStub, '#!/bin/sh\nexec "$@"\n');
+    writeFileSync(
+      nodeStub,
+      ['#!/bin/sh', 'if [ "$1" = "$STUB_REAL_VALIDATOR" ]; then exec "$STUB_REAL_NODE" "$@"; fi', 'exec "$@"', ''].join(
+        '\n',
+      ),
+    );
     writeFileSync(
       ownerStub,
       [
@@ -837,17 +908,7 @@ describe('project-ignore maintenance ownership', () => {
         '',
       ].join('\n'),
     );
-    writeFileSync(
-      validatorStub,
-      [
-        '#!/bin/sh',
-        'printf \'%s\\n\' "$@" > "$STUB_VALIDATOR_ARGS_CAPTURE"',
-        'cat > "$STUB_VALIDATOR_STDIN_CAPTURE"',
-        'exit "$STUB_VALIDATOR_STATUS"',
-        '',
-      ].join('\n'),
-    );
-    for (const path of [nodeStub, ownerStub, validatorStub]) chmodSync(path, 0o700);
+    for (const path of [nodeStub, ownerStub]) chmodSync(path, 0o700);
 
     const child = spawnSync('sh', ['-c', initProjectApplyBlock()], {
       cwd: workingDir,
@@ -859,9 +920,8 @@ describe('project-ignore maintenance ownership', () => {
         STUB_OWNER_STATUS: String(scenario.status),
         STUB_OWNER_STDOUT: scenario.stdout,
         STUB_OWNER_STDERR: scenario.diagnostic,
-        STUB_VALIDATOR_ARGS_CAPTURE: validatorArgsCapture,
-        STUB_VALIDATOR_STDIN_CAPTURE: validatorStdinCapture,
-        STUB_VALIDATOR_STATUS: String('validatorStatus' in scenario ? scenario.validatorStatus : 0),
+        STUB_REAL_NODE: process.execPath,
+        STUB_REAL_VALIDATOR: hookScript('project-ignore.mjs'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -869,20 +929,18 @@ describe('project-ignore maintenance ownership', () => {
     expect(child.status).toBe(scenario.exitCode);
     expect(child.stderr).not.toContain('STUB_OWNER_OBSERVED_WORKING_FILE');
     expect(readdirSync(workingDir)).toEqual([]);
-    if (scenario.stdout) {
-      expect(readFileSync(validatorArgsCapture, 'utf-8')).toBe('--validate-result\n');
-      expect(readFileSync(validatorStdinCapture, 'utf-8')).toBe(`${scenario.stdout}\n`);
-    } else {
-      expect(existsSync(validatorArgsCapture)).toBe(false);
-      expect(existsSync(validatorStdinCapture)).toBe(false);
-    }
+    const handoff = `CORAL_PROJECT_IGNORE_RESULT=${scenario.stdout}`;
+    const handoffCount = child.stderr.split(handoff).length - 1;
+    expect(handoffCount).toBe('handoff' in scenario && scenario.handoff ? 1 : 0);
     if (scenario.outcome) {
       expect(child.stderr).toContain(scenario.outcome);
       expect(child.stderr).toContain(scenario.remedy);
-      expect(child.stderr.indexOf(scenario.diagnostic)).toBeLessThan(child.stderr.indexOf(scenario.outcome));
+      if (scenario.diagnostic) {
+        expect(child.stderr.indexOf(scenario.diagnostic)).toBeLessThan(child.stderr.indexOf(scenario.outcome));
+      }
     } else {
       expect(child.stderr).not.toContain('CORAL_PROJECT_IGNORE_OUTCOME=');
-      expect(child.stderr).toBe('');
+      expect(child.stderr).toBe(`${handoff}\n`);
     }
   });
 });

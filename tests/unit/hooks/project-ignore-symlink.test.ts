@@ -1,6 +1,8 @@
 // The correction is scoped to links Coral itself placed. A link an operator pointed somewhere of their own is
 // left alone: recognising our own artifact is not licence to overwrite someone else's.
 
+import type * as NodeChildProcess from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type * as NodeFs from 'node:fs';
 import {
@@ -23,6 +25,7 @@ import {
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `coralStateRoot` has no cached module-level state (it reads `homedir()` fresh on every call), so a static
@@ -68,6 +71,7 @@ const fixture = vi.hoisted(() => ({
     phase: 'lstat' | 'open' | 'fstat' | 'read';
     path: string;
     code: string;
+    successesRemaining?: number;
   },
   failDirectoryFsyncPath: null as string | null,
   failDirectoryFsyncCode: null as string | null,
@@ -89,6 +93,17 @@ vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeOs>();
   return { ...actual, homedir: () => fixture.home };
 });
+
+function consumeObservationFailure(phase: 'lstat' | 'open' | 'fstat' | 'read', path: string): string | null {
+  const failure = fixture.failMarkerObservation;
+  if (failure?.phase !== phase || path !== failure.path) return null;
+  if ((failure.successesRemaining ?? 0) > 0) {
+    failure.successesRemaining = (failure.successesRemaining ?? 0) - 1;
+    return null;
+  }
+  fixture.failMarkerObservation = null;
+  return failure.code;
+}
 
 // The flavor has to arrive the way the lib actually reads it — from the build manifest — because
 // `coralProjectDir` calls `buildFlavor()` inside its own module, where a mocked export does not reach. Only
@@ -127,10 +142,9 @@ vi.mock('node:fs', async (importOriginal) => {
         fixture.failLstatPath = null;
         throw Object.assign(new Error('simulated lstat failure'), { code: 'EIO' });
       }
-      const failure = fixture.failMarkerObservation;
-      if (failure?.phase === 'lstat' && String(path) === failure.path) {
-        fixture.failMarkerObservation = null;
-        throw Object.assign(new Error('simulated marker lstat failure'), { code: failure.code });
+      const failureCode = consumeObservationFailure('lstat', String(path));
+      if (failureCode) {
+        throw Object.assign(new Error('simulated lstat failure'), { code: failureCode });
       }
       return actual.lstatSync(path as NodeFs.PathLike);
     },
@@ -143,10 +157,10 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     readFileSync: (path: unknown, encoding?: unknown) => {
       if (String(path).endsWith('manifest.json')) return JSON.stringify({ flavor: manifest.flavor });
-      const failure = fixture.failMarkerObservation;
-      if (failure?.phase === 'read' && typeof path === 'number' && fixture.openPaths.get(path) === failure.path) {
-        fixture.failMarkerObservation = null;
-        throw Object.assign(new Error('simulated marker read failure'), { code: failure.code });
+      const failureCode =
+        typeof path === 'number' ? consumeObservationFailure('read', fixture.openPaths.get(path) ?? '') : null;
+      if (failureCode) {
+        throw Object.assign(new Error('simulated read failure'), { code: failureCode });
       }
       return (actual.readFileSync as (p: unknown, e?: unknown) => string | Buffer)(path, encoding);
     },
@@ -214,10 +228,9 @@ vi.mock('node:fs', async (importOriginal) => {
       return (actual.readdirSync as (p: unknown, o?: unknown) => unknown)(path, options);
     },
     openSync: (path: unknown, flags: unknown, mode: unknown) => {
-      const failure = fixture.failMarkerObservation;
-      if (failure?.phase === 'open' && String(path) === failure.path) {
-        fixture.failMarkerObservation = null;
-        throw Object.assign(new Error('simulated marker open failure'), { code: failure.code });
+      const failureCode = consumeObservationFailure('open', String(path));
+      if (failureCode) {
+        throw Object.assign(new Error('simulated open failure'), { code: failureCode });
       }
       const fd = (actual.openSync as (p: unknown, f: unknown, m: unknown) => number)(path, flags, mode);
       fixture.openPaths.set(fd, String(path));
@@ -227,10 +240,9 @@ vi.mock('node:fs', async (importOriginal) => {
       return fd;
     },
     fstatSync: (fd: number) => {
-      const failure = fixture.failMarkerObservation;
-      if (failure?.phase === 'fstat' && fixture.openPaths.get(fd) === failure.path) {
-        fixture.failMarkerObservation = null;
-        throw Object.assign(new Error('simulated marker fstat failure'), { code: failure.code });
+      const failureCode = consumeObservationFailure('fstat', fixture.openPaths.get(fd) ?? '');
+      if (failureCode) {
+        throw Object.assign(new Error('simulated fstat failure'), { code: failureCode });
       }
       return actual.fstatSync(fd);
     },
@@ -309,10 +321,10 @@ const execFileSyncMock = vi.hoisted(() =>
     throw Object.assign(new Error('unexpected git context field'), { code: 'ENOENT' });
   }),
 );
-vi.mock('node:child_process', () => ({
-  execSync: execSyncMock,
-  execFileSync: execFileSyncMock,
-}));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeChildProcess>();
+  return { ...actual, execSync: execSyncMock, execFileSync: execFileSyncMock };
+});
 
 let root: string;
 let projectDir: string;
@@ -459,13 +471,29 @@ async function maintain(
   const projectIgnore = await import('../../../clients/hooks/lib/project-ignore.mjs');
   const contextProbeDeadlineNs = process.hrtime.bigint() + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
   const context = suppliedContext ?? projectIgnore.resolveProjectContext(projectDir, contextProbeDeadlineNs);
-  return projectIgnore.maintainProjectIgnore({
+  const result = projectIgnore.maintainProjectIgnore({
     projectDir,
     createSymlink,
     token: 'test-token',
     context,
     contextProbeDeadlineNs,
   });
+  const validator = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    'clients',
+    'hooks',
+    'project-ignore.mjs',
+  );
+  const validation = spawnSync(process.execPath, [validator, '--validate-result'], {
+    encoding: 'utf-8',
+    input: JSON.stringify(result),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  expect(validation.status).toBe(0);
+  return result;
 }
 
 async function resolveContext(): Promise<ProjectIgnoreContext> {
@@ -995,19 +1023,24 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it('refuses when the authorized repository arena cannot be prepared', async () => {
-    writeFileSync(join(fixture.gitDir, 'coral'), 'not a directory');
+  it('refuses a regular repository arena component non-retryably and names its replacement', async () => {
+    const coralArenaComponent = join(fixture.gitDir, 'coral');
+    writeFileSync(coralArenaComponent, 'not a directory');
 
     const result = await maintain('prod');
 
     expect(result.status).toBe('refused');
     expect(result.artifacts.exclude).toEqual({
       state: 'refused',
-      reason: 'repository-arena-unavailable',
+      reason: 'repository-arena-conflict',
       residue: 'none',
     });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      "The common Git directory's coral staging component is a symlink or non-directory. Remedy: replace <commonGitDir>/coral with a real directory before Coral maintenance runs again.",
+    ]);
     expect(existsSync(link())).toBe(false);
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+    expect(readFileSync(coralArenaComponent, 'utf-8')).toBe('not a directory');
   });
 
   it('repoints a link left behind by the other flavor', async () => {
@@ -1222,7 +1255,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.artifacts.arenaSweep).toEqual({ state: 'unchanged' });
     expect(result.artifacts.durabilityReconciliation).toEqual({
       state: 'refused',
-      reasons: ['durability-evidence-quarantined', 'durability-sync-failed', 'durability-sync-unsupported'],
+      reasons: ['durability-evidence-quarantined', 'durability-sync-failed', 'durability-sync-unsupported-discharged'],
     });
     expect(existsSync(failedMarker)).toBe(true);
     expect(existsSync(invalidMarker)).toBe(false);
@@ -1533,8 +1566,11 @@ describe('project-ignore symlink maintenance', () => {
       expect(discharged.artifacts.arenaSweep).toEqual({ state: 'unchanged' });
       expect(discharged.artifacts.durabilityReconciliation).toEqual({
         state: 'refused',
-        reasons: ['durability-sync-unsupported'],
+        reasons: ['durability-sync-unsupported-discharged'],
       });
+      expect(renderProjectIgnoreResultNotices(discharged)).toEqual([
+        'The platform does not support syncing the parent named by a pending durability record, so Coral discharged that record and will not retry it.',
+      ]);
       expect(existsSync(marker)).toBe(false);
 
       fixture.fsyncedDirectoryPaths.length = 0;
@@ -1739,28 +1775,35 @@ describe('project-ignore symlink maintenance', () => {
     },
   );
 
-  it('refuses a non-missing .git/info observation failure before observing or publishing the exclude', async () => {
-    const infoDir = join(fixture.gitDir, 'info');
-    const excludePath = join(infoDir, 'exclude');
-    fixture.failMarkerObservation = { phase: 'lstat', path: infoDir, code: 'EACCES' };
-    fixture.lstatPaths.length = 0;
+  it.each([
+    ['EACCES', 'artifact-unreadable', false],
+    ['EIO', 'artifact-observation-failed', true],
+  ] as const)(
+    'classifies a non-missing .git/info %s failure before observing or publishing the exclude',
+    async (code, reason, retryable) => {
+      const infoDir = join(fixture.gitDir, 'info');
+      const excludePath = join(infoDir, 'exclude');
+      fixture.failMarkerObservation = { phase: 'lstat', path: infoDir, code };
+      fixture.lstatPaths.length = 0;
 
-    const result = await maintain('prod');
+      const result = await maintain('prod');
 
-    expect(result.status).toBe('refused');
-    expect(result.artifacts.exclude).toEqual({
-      state: 'refused',
-      reason: 'artifact-unreadable',
-      residue: 'none',
-    });
-    expect(result.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
-    expect(fixture.lstatPaths).toContain(infoDir);
-    expect(fixture.lstatPaths).not.toContain(excludePath);
-    expect(existsSync(excludePath)).toBe(false);
-    expect(existsSync(link())).toBe(false);
-    expect(durabilityMarkers()).toEqual([]);
-    expect(fixture.durabilityEvents).toEqual([]);
-  });
+      expect(result.status).toBe('refused');
+      expect(result.artifacts.exclude).toEqual({
+        state: 'refused',
+        reason,
+        residue: 'none',
+      });
+      expect(result.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
+      expect(renderProjectIgnoreResultNotices(result)[0].includes('next session start')).toBe(retryable);
+      expect(fixture.lstatPaths).toContain(infoDir);
+      expect(fixture.lstatPaths).not.toContain(excludePath);
+      expect(existsSync(excludePath)).toBe(false);
+      expect(existsSync(link())).toBe(false);
+      expect(durabilityMarkers()).toEqual([]);
+      expect(fixture.durabilityEvents).toEqual([]);
+    },
+  );
 
   it('reports a retained marker when exclude publication cannot record durable evidence', async () => {
     const excludePath = join(fixture.gitDir, 'info', 'exclude');
@@ -1836,6 +1879,9 @@ describe('project-ignore symlink maintenance', () => {
       residue: 'none',
       durability: { state: 'unsupported', reasons: ['durability-sync-unsupported'] },
     });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'The platform does not support syncing an affected parent directory, so Coral retained the publication marker for reconciliation. It is attempted again at the next session start.',
+    ]);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
     const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
@@ -1860,7 +1906,7 @@ describe('project-ignore symlink maintenance', () => {
     });
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
       'Coral could not sync the parent named by a retained durability record. Remedy: check the filesystem and storage device; the next run will reconcile that record before planning project artifacts. It is attempted again at the next session start.',
-      'The platform does not support syncing an affected parent directory, so Coral could not confirm crash durability for this publication. When this was reported while reconciling a pending record, Coral discharged that record and will not retry it.',
+      'The platform does not support syncing an affected parent directory, so Coral retained the publication marker for reconciliation. It is attempted again at the next session start.',
     ]);
     expect(durabilityMarkers()).toHaveLength(2);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
@@ -1950,21 +1996,47 @@ describe('project-ignore symlink maintenance', () => {
     expect(completed.artifacts.symlink.state).toBe('created');
   });
 
-  it('refuses a non-directory .claude structurally when symlink creation is not requested', async () => {
+  it('refuses retryably when the exact second preflight .claude observation fails', async () => {
     const claudeDir = join(projectDir, '.claude');
-    rmSync(claudeDir, { recursive: true });
-    writeFileSync(claudeDir, 'not a directory');
+    const scopedIgnore = join(claudeDir, '.gitignore');
+    writeFileSync(scopedIgnore, 'coral\n');
+    fixture.failLstatAfter = { path: claudeDir, successesRemaining: 3 };
 
     const result = await maintain('prod', false);
 
     expect(result.status).toBe('refused');
-    expect(result.artifacts.symlink).toEqual({
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({
       state: 'refused',
-      reason: 'claude-directory-invalid',
+      reason: 'artifact-observation-failed',
+      residue: 'none',
     });
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
-      'The project .claude path is not a real directory. Remedy: replace that file or symlink with a real directory before requesting the Coral symlink.',
+      'Coral could not inspect or re-read an affected ignore file. Remedy: make the file and its parent directories observable by the current user, or repair the filesystem error blocking inspection. It is attempted again at the next session start.',
     ]);
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe('coral\n');
+  });
+
+  it('retracts the Git-root legacy line through a non-directory .claude when creation is off', async () => {
+    const claudeDir = join(projectDir, '.claude');
+    rmSync(claudeDir, { recursive: true });
+    writeFileSync(claudeDir, 'not a directory');
+    writeFileSync(join(projectDir, '.gitignore'), '.claude/coral\nkeep-me\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.symlink).toEqual({ state: 'not-requested' });
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({
+      state: 'not-needed',
+      residue: 'none',
+    });
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: { state: 'synced', reasons: [] },
+    });
+    expect(readFileSync(join(projectDir, '.gitignore'), 'utf-8')).toBe('keep-me\n');
+    expect(readFileSync(claudeDir, 'utf-8')).toBe('not a directory');
   });
 
   it('refuses retryably without reporting a conflict when .claude hides the link path', async () => {
@@ -2153,16 +2225,71 @@ describe('project-ignore symlink maintenance', () => {
     }
   });
 
-  it('covers exactly every reason admitted by the result validator', async () => {
-    const { isProjectIgnoreResult, PROJECT_IGNORE_REASONS, PROJECT_IGNORE_REFUSAL_REASONS } = await import(
+  it('accepts exactly the explicit artifact and refusal-reason matrix', async () => {
+    const { isProjectIgnoreResult, PROJECT_IGNORE_REASONS } = await import(
       // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
       '../../../clients/hooks/lib/project-ignore-result.mjs'
     );
 
     expect(new Set(Object.keys(PROJECT_IGNORE_REASON_NOTICES))).toEqual(new Set(PROJECT_IGNORE_REASONS));
-    expect(PROJECT_IGNORE_REFUSAL_REASONS.exclude).not.toContain('legacy-sweep-observation-failed');
-    expect(PROJECT_IGNORE_REFUSAL_REASONS.exclude).not.toContain('symlink-observation-failed');
-    expect(PROJECT_IGNORE_REFUSAL_REASONS.symlink).not.toContain('artifact-changed');
+    const expectedMatrix = {
+      arenaSweep: ['arena-sweep-failed', 'arena-structural-conflict'],
+      durabilityReconciliation: [
+        'durability-evidence-unavailable',
+        'durability-evidence-unreadable',
+        'durability-evidence-quarantined',
+        'durability-evidence-cleanup-failed',
+        'durability-sync-unsupported-discharged',
+        'durability-sync-failed',
+      ],
+      legacySweep: ['legacy-sweep-failed', 'legacy-sweep-observation-failed'],
+      exclude: [
+        'project-path-unrepresentable',
+        'exclude-path-unresolvable',
+        'repository-arena-unavailable',
+        'repository-arena-conflict',
+        'artifact-unreadable',
+        'artifact-too-large',
+        'artifact-changed',
+        'artifact-observation-failed',
+        'staging-device-mismatch',
+        'publish-cross-device',
+        'publish-failed',
+        'durability-evidence-unavailable',
+      ],
+      symlink: [
+        'project-context-unresolvable',
+        'claude-directory-missing',
+        'claude-directory-invalid',
+        'staging-device-mismatch',
+        'publish-cross-device',
+        'publish-failed',
+        'symlink-target-unavailable',
+        'symlink-observation-failed',
+        'durability-evidence-unavailable',
+        'symlink-conflict',
+      ],
+      scopedIgnoreRetraction: [
+        'artifact-unreadable',
+        'artifact-too-large',
+        'artifact-changed',
+        'artifact-observation-failed',
+        'staging-device-mismatch',
+        'publish-cross-device',
+        'publish-failed',
+        'durability-evidence-unavailable',
+      ],
+      rootIgnoreRetraction: [
+        'artifact-unreadable',
+        'artifact-too-large',
+        'artifact-changed',
+        'artifact-observation-failed',
+        'staging-device-mismatch',
+        'publish-cross-device',
+        'publish-failed',
+        'durability-evidence-unavailable',
+      ],
+    } as const;
 
     const baseArtifacts = {
       arenaSweep: { state: 'unchanged' },
@@ -2173,17 +2300,33 @@ describe('project-ignore symlink maintenance', () => {
       scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
       rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
     };
-    for (const [artifact, value] of [
-      ['exclude', { state: 'refused', reason: 'legacy-sweep-observation-failed', residue: 'none' }],
-      ['exclude', { state: 'refused', reason: 'symlink-observation-failed', residue: 'none' }],
-      ['symlink', { state: 'refused', reason: 'artifact-changed' }],
-    ] as const) {
-      expect(
-        isProjectIgnoreResult({
-          status: 'refused',
-          artifacts: { ...baseArtifacts, [artifact]: value },
-        }),
-      ).toBe(false);
+    const allRefusalReasons = [...new Set(Object.values(expectedMatrix).flat())];
+    const nonRefusalReasons = ['durability-sync-unsupported', 'staging-cleanup-failed', 'upstream-refusal'];
+    const allReasons = [...allRefusalReasons, ...nonRefusalReasons];
+    expect(new Set(PROJECT_IGNORE_REASONS)).toEqual(new Set(allReasons));
+    for (const [artifact, allowedReasons] of Object.entries(expectedMatrix)) {
+      const expectedReasons = new Set<string>(allowedReasons);
+      for (const reason of allReasons) {
+        const refusedArtifact =
+          artifact === 'durabilityReconciliation'
+            ? { state: 'refused', reasons: [reason] }
+            : artifact === 'legacySweep'
+              ? {
+                  state: 'refused',
+                  reason,
+                  path: reason === 'legacy-sweep-observation-failed' ? '.claude' : '.gitignore.coral-1-2.tmp',
+                  count: 0,
+                }
+              : artifact === 'arenaSweep' || artifact === 'symlink'
+                ? { state: 'refused', reason }
+                : { state: 'refused', reason, residue: 'none' };
+        const accepted = isProjectIgnoreResult({
+          status: artifact === 'arenaSweep' ? 'complete' : 'refused',
+          artifacts: { ...baseArtifacts, [artifact]: refusedArtifact },
+        });
+
+        expect(accepted, `${artifact}/${reason}`).toBe(expectedReasons.has(reason));
+      }
     }
   });
 
@@ -2276,6 +2419,43 @@ describe('project-ignore symlink maintenance', () => {
     expect(readdirSync(repositoryArena())).toEqual([]);
   });
 
+  it('classifies a transient initial snapshot read failure as retryable', async () => {
+    const rootIgnore = join(projectDir, '.gitignore');
+    writeFileSync(rootIgnore, '.claude/coral\n');
+    fixture.failMarkerObservation = { phase: 'open', path: rootIgnore, code: 'EIO' };
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'refused',
+      reason: 'artifact-observation-failed',
+      residue: 'none',
+    });
+    expect(renderProjectIgnoreResultNotices(result)[0]).toContain('It is attempted again at the next session start.');
+    expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\n');
+  });
+
+  it('classifies an observed non-regular initial snapshot as non-retryable', async () => {
+    const rootIgnore = join(projectDir, '.gitignore');
+    rmSync(rootIgnore);
+    mkdirSync(rootIgnore);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'refused',
+      reason: 'artifact-unreadable',
+      residue: 'none',
+    });
+    expect(renderProjectIgnoreResultNotices(result)).toContain(ARTIFACT_UNREADABLE_NOTICE);
+    expect(renderProjectIgnoreResultNotices(result)[0]).not.toContain(
+      'It is attempted again at the next session start.',
+    );
+    expect(lstatSync(rootIgnore).isDirectory()).toBe(true);
+  });
+
   it('reports a failed snapshot re-read without blaming a concurrent writer', async () => {
     const rootIgnore = join(projectDir, '.gitignore');
     writeFileSync(rootIgnore, '.claude/coral\n');
@@ -2291,8 +2471,29 @@ describe('project-ignore symlink maintenance', () => {
     });
     expect(JSON.stringify(result)).not.toContain('artifact-changed');
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
-      'Coral could not re-read an ignore file after preparing its staged update. Remedy: make the affected ignore file and its parent directories observable by the current user, or repair the filesystem error blocking inspection. It is attempted again at the next session start.',
+      'Coral could not inspect or re-read an affected ignore file. Remedy: make the file and its parent directories observable by the current user, or repair the filesystem error blocking inspection. It is attempted again at the next session start.',
     ]);
+  });
+
+  it('reports a target that disappears between comparison lstat and open as changed', async () => {
+    const rootIgnore = join(projectDir, '.gitignore');
+    writeFileSync(rootIgnore, '.claude/coral\n');
+    fixture.failMarkerObservation = {
+      phase: 'open',
+      path: rootIgnore,
+      code: 'ENOENT',
+      successesRemaining: 1,
+    };
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'refused',
+      reason: 'artifact-changed',
+      residue: 'none',
+    });
+    expect(JSON.stringify(result)).not.toContain('artifact-observation-failed');
   });
 
   it('reports a marker staging file when both of its cleanup attempts fail', async () => {

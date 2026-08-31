@@ -21,9 +21,14 @@ const DURABILITY_RECONCILIATION_REASONS = new Set([
   'durability-evidence-unreadable',
   'durability-evidence-quarantined',
   'durability-evidence-cleanup-failed',
-  'durability-sync-unsupported',
+  'durability-sync-unsupported-discharged',
   'durability-sync-failed',
 ]);
+const DURABILITY_REASONS = [
+  'durability-sync-unsupported',
+  'durability-sync-failed',
+  'durability-evidence-cleanup-failed',
+];
 const REPLACEMENT_REFUSAL_REASONS = [
   'artifact-unreadable',
   'artifact-too-large',
@@ -35,13 +40,14 @@ const REPLACEMENT_REFUSAL_REASONS = [
   'durability-evidence-unavailable',
 ];
 export const PROJECT_IGNORE_REFUSAL_REASONS = Object.freeze({
-  arenaSweep: Object.freeze(['arena-sweep-failed']),
+  arenaSweep: Object.freeze(['arena-sweep-failed', 'arena-structural-conflict']),
   durabilityReconciliation: Object.freeze([...DURABILITY_RECONCILIATION_REASONS]),
   legacySweep: Object.freeze(['legacy-sweep-failed', 'legacy-sweep-observation-failed']),
   exclude: Object.freeze([
     'project-path-unrepresentable',
     'exclude-path-unresolvable',
     'repository-arena-unavailable',
+    'repository-arena-conflict',
     ...REPLACEMENT_REFUSAL_REASONS,
   ]),
   symlink: Object.freeze([
@@ -61,7 +67,11 @@ export const PROJECT_IGNORE_REFUSAL_REASONS = Object.freeze({
 });
 const SPECIAL_REASONS = ['staging-cleanup-failed', 'upstream-refusal'];
 export const PROJECT_IGNORE_REASONS = Object.freeze([
-  ...new Set([...Object.values(PROJECT_IGNORE_REFUSAL_REASONS).flat(), ...SPECIAL_REASONS]),
+  ...new Set([
+    ...Object.values(PROJECT_IGNORE_REFUSAL_REASONS).flat(),
+    ...DURABILITY_REASONS,
+    ...SPECIAL_REASONS,
+  ]),
 ]);
 const REASONS = new Set(PROJECT_IGNORE_REASONS);
 const REFUSAL_REASON_SETS = Object.fromEntries(
@@ -100,11 +110,7 @@ function validateDurability(value) {
   if (
     !value.reasons.every(
       (reason, index) =>
-        [
-          'durability-sync-unsupported',
-          'durability-sync-failed',
-          'durability-evidence-cleanup-failed',
-        ].includes(reason) &&
+        DURABILITY_REASONS.includes(reason) &&
         (index === 0 || value.reasons[index - 1] < reason),
     )
   ) {
