@@ -1238,13 +1238,17 @@ function preflightProjectIgnoreArtifacts({
     try {
       const excludeDirStat = lstatSync(excludeDir);
       if (
-        !excludeDirStat.isSymbolicLink() &&
-        excludeDirStat.isDirectory() &&
+        excludeDirStat.isSymbolicLink() ||
+        !excludeDirStat.isDirectory() ||
         !isUsableExcludeDirectory(excludeDir)
       ) {
         return { ok: false, artifact: 'exclude', reason: 'artifact-unreadable' };
       }
-    } catch {}
+    } catch (error) {
+      if (!isMissing(error)) {
+        return { ok: false, artifact: 'exclude', reason: 'artifact-unreadable' };
+      }
+    }
     excludeSnapshot = readRegularSnapshot(context.excludePath, { allowMissing: true });
     if (!excludeSnapshot.ok) return { ok: false, artifact: 'exclude', reason: excludeSnapshot.reason };
     excludePathDevice = excludeDevicePath(context.excludePath);

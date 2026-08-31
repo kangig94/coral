@@ -22,6 +22,7 @@ import {
   hostKind,
   isValidSessionId,
   PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
+  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
   PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
   readStdin,
   resolveFlavorDisposition,

@@ -425,7 +425,8 @@ export function prepareProjectIgnoreStagingDir() {
   const stagingDir = prepareProjectIgnoreStateStagingDir();
   if (!stagingDir) return null;
   const arena = join(stagingDir, basename(projectIgnoreStagingDir()));
-  if (!ensureRealDirectoryComponent(arena)) return null;
+  const arenaPreparation = ensureRealDirectoryComponent(arena);
+  if (arenaPreparation.kind !== 'prepared') return null;
   try {
     const canonicalArena = realpathSync(arena);
     return canonicalArena === arena ? canonicalArena : null;

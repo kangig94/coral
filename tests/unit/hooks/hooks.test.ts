@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -168,6 +169,31 @@ describe('session-start.mjs', () => {
       /^SessionStart:session_id=sess-123\nCurrent host: (claude|codex)\nClaude config dir: .+\n\n/u,
     );
     expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
+  });
+
+  it.each([126, 127])('classifies an owner process exit %i as an unavailable maintenance lock', (status) => {
+    const fixture = createFixture();
+    const hooksRoot = join(fixture.root, `hooks-${status}`);
+    cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+    writeFileSync(join(hooksRoot, 'project-ignore-owner.mjs'), `process.exit(${status});\n`);
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      join(hooksRoot, 'session-start.mjs'),
+      { session_id: `sess-owner-status-${status}` },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_FLAVOR: undefined,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
+      'Coral project-ignore maintenance could not open or own its maintenance lock',
+    );
   });
 
   it('emits a flat, unwrapped payload and "Current host: copilot" under Copilot CLI', () => {
@@ -410,7 +436,7 @@ describe('session-start.mjs', () => {
     expect(readFileSync(externalIgnore, 'utf-8')).toBe('.claude/coral\nkeep/\n');
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
     expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
-      'An affected ignore file is not a readable regular file, or its existing .git/info directory lacks owner access.',
+      'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access.',
     );
   });
 

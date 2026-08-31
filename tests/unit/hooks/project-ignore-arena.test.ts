@@ -535,7 +535,6 @@ describe('project-ignore maintenance ownership', () => {
   it('pins the init-project lock branches to the hook exit-code constants', () => {
     const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
-    const sessionStart = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'session-start.mjs'), 'utf-8');
     const conflictBranch = `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE} ]; then`;
     const unavailableBranch =
       `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE} ] || ` +
@@ -549,7 +548,6 @@ describe('project-ignore maintenance ownership', () => {
     expect(initProject.slice(initProject.indexOf(noOutputBranch))).toContain('CORAL_PROJECT_IGNORE_OUTCOME=no-output');
     expect(initProject).not.toContain('CORAL_PROJECT_IGNORE_STDERR_FILE');
     expect(initProject).not.toContain('CORAL_PROJECT_IGNORE_STDERR=');
-    expect(sessionStart).toContain('[PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)');
   });
 
   it.each([

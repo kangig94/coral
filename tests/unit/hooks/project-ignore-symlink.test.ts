@@ -46,6 +46,7 @@ const fixture = vi.hoisted(() => ({
   failSymlinkTarget: null as string | null,
   failRenameTo: null as string | null,
   failQuarantineRename: false,
+  failChmodPath: null as string | null,
   failLinkTo: null as string | null,
   failUnlinkPath: null as string | null,
   failReplacementUnlink: false,
@@ -69,6 +70,8 @@ const fixture = vi.hoisted(() => ({
   durabilityEvents: [] as string[],
   gitReadDurationsMs: [] as number[],
   monotonicNs: 0n,
+  lstatPaths: [] as string[],
+  realpathPaths: [] as string[],
 }));
 
 vi.mock('node:os', async (importOriginal) => {
@@ -83,6 +86,16 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>();
   return {
     ...actual,
+    chmodSync: (path: unknown, mode: unknown) => {
+      if (fixture.failChmodPath !== null && String(path) === fixture.failChmodPath) {
+        throw Object.assign(new Error('simulated chmod failure'), { code: 'EACCES' });
+      }
+      return (actual.chmodSync as (p: unknown, m: unknown) => void)(path, mode);
+    },
+    realpathSync: (path: unknown, options?: unknown) => {
+      fixture.realpathPaths.push(String(path));
+      return (actual.realpathSync as (p: unknown, o?: unknown) => string | Buffer)(path, options);
+    },
     mkdirSync: (path: unknown, options?: unknown) => {
       if (fixture.failMkdirPath !== null && String(path) === fixture.failMkdirPath) {
         throw Object.assign(new Error('simulated mkdir failure'), { code: 'ENOSPC' });
@@ -90,6 +103,7 @@ vi.mock('node:fs', async (importOriginal) => {
       return (actual.mkdirSync as (p: unknown, o?: unknown) => unknown)(path, options);
     },
     lstatSync: (path: unknown) => {
+      fixture.lstatPaths.push(String(path));
       const failure = fixture.failMarkerObservation;
       if (failure?.phase === 'lstat' && String(path) === failure.path) {
         fixture.failMarkerObservation = null;
@@ -285,6 +299,7 @@ beforeEach(() => {
   fixture.failSymlinkTarget = null;
   fixture.failRenameTo = null;
   fixture.failQuarantineRename = false;
+  fixture.failChmodPath = null;
   fixture.failLinkTo = null;
   fixture.failUnlinkPath = null;
   fixture.failReplacementUnlink = false;
@@ -304,6 +319,8 @@ beforeEach(() => {
   fixture.durabilityEvents.length = 0;
   fixture.gitReadDurationsMs.length = 0;
   fixture.monotonicNs = 0n;
+  fixture.lstatPaths.length = 0;
+  fixture.realpathPaths.length = 0;
   mkdirSync(fixture.home, { recursive: true });
   mkdirSync(join(fixture.gitDir, 'info'), { recursive: true });
   projectDir = join(root, 'project');
@@ -421,8 +438,62 @@ const durabilityMarkers = (): string[] =>
 const durabilityMarker = (target: string): string =>
   join(durabilityArena(), `.durability-${createHash('sha256').update(target).digest('hex')}.pending`);
 const quarantineDir = (): string => join(durabilityArena(), 'quarantine');
+const ARTIFACT_UNREADABLE_NOTICE =
+  'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, replace a symlink or non-directory .git/info with a real directory, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.';
 
 describe('project-ignore symlink maintenance', () => {
+  it('refuses a regular file at the fallback arena and reports unavailable durability evidence', async () => {
+    const arena = durabilityArena();
+    mkdirSync(dirname(arena), { recursive: true });
+    writeFileSync(arena, 'not a directory');
+    vi.resetModules();
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { prepareProjectIgnoreStagingDir } = await import('../../../clients/hooks/lib/hook-utils.mjs');
+    fixture.realpathPaths.length = 0;
+
+    expect(prepareProjectIgnoreStagingDir()).toBeNull();
+    expect(fixture.realpathPaths).not.toContain(arena);
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.durabilityReconciliation).toEqual({
+      state: 'refused',
+      reasons: ['durability-evidence-unavailable'],
+    });
+    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
+    expect(readFileSync(arena, 'utf-8')).toBe('not a directory');
+  });
+
+  it('refuses a symlink at the fallback arena before canonicalizing it', async () => {
+    const arena = durabilityArena();
+    const outside = join(root, 'outside-arena');
+    mkdirSync(dirname(arena), { recursive: true });
+    mkdirSync(outside);
+    symlinkSync(outside, arena);
+    vi.resetModules();
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { prepareProjectIgnoreStagingDir } = await import('../../../clients/hooks/lib/hook-utils.mjs');
+    fixture.realpathPaths.length = 0;
+
+    expect(prepareProjectIgnoreStagingDir()).toBeNull();
+    expect(fixture.realpathPaths).not.toContain(arena);
+  });
+
+  it('refuses a fallback arena whose mode cannot be normalized', async () => {
+    const arena = durabilityArena();
+    mkdirSync(arena, { recursive: true });
+    fixture.failChmodPath = arena;
+    vi.resetModules();
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { prepareProjectIgnoreStagingDir } = await import('../../../clients/hooks/lib/hook-utils.mjs');
+    fixture.realpathPaths.length = 0;
+
+    expect(prepareProjectIgnoreStagingDir()).toBeNull();
+    expect(fixture.realpathPaths).not.toContain(arena);
+  });
+
   it.each([
     ['root wildcard characters', '*?[]\\', '\\*\\?\\[\\]\\\\'],
     ['nested wildcard characters', 'nested/*?[]\\/.claude/coral', 'nested/\\*\\?\\[\\]\\\\/.claude/coral'],
@@ -1429,13 +1500,67 @@ describe('project-ignore symlink maintenance', () => {
       expect(existsSync(excludePath)).toBe(false);
       expect(existsSync(link())).toBe(false);
       expect(statSync(infoDir).mode & 0o777).toBe(0o077);
-      expect(renderProjectIgnoreResultNotices(result)).toContain(
-        'An affected ignore file is not a readable regular file, or its existing .git/info directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.',
-      );
+      expect(renderProjectIgnoreResultNotices(result)).toContain(ARTIFACT_UNREADABLE_NOTICE);
     } finally {
       restoreOwnerAccess(root);
     }
   });
+
+  it.each(['symlink', 'regular file'] as const)(
+    'refuses a %s at .git/info before publishing any artifact',
+    async (shape) => {
+      const infoDir = join(fixture.gitDir, 'info');
+      const externalInfo = join(root, 'external-info');
+      rmSync(infoDir, { recursive: true });
+      if (shape === 'symlink') {
+        mkdirSync(externalInfo);
+        writeFileSync(join(externalInfo, 'operator-entry'), 'preserve me');
+        symlinkSync(externalInfo, infoDir);
+      } else {
+        writeFileSync(infoDir, 'operator metadata');
+      }
+      fixture.lstatPaths.length = 0;
+
+      const result = await maintain('prod');
+
+      expect(result.status).toBe('refused');
+      expect(result.artifacts.exclude).toEqual({
+        state: 'refused',
+        reason: 'artifact-unreadable',
+        residue: 'none',
+      });
+      expect(result.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
+      expect(result.artifacts.scopedIgnoreRetraction).toEqual({
+        state: 'skipped',
+        reason: 'upstream-refusal',
+        residue: 'none',
+      });
+      expect(result.artifacts.rootIgnoreRetraction).toEqual({
+        state: 'skipped',
+        reason: 'upstream-refusal',
+        residue: 'none',
+      });
+      expect(renderProjectIgnoreResultNotices(result)).toContain(ARTIFACT_UNREADABLE_NOTICE);
+      expect(renderProjectIgnoreResultNotices(result)[0]).not.toContain(
+        'It is attempted again at the next session start.',
+      );
+      expect(fixture.lstatPaths).toContain(infoDir);
+      expect(fixture.lstatPaths).not.toContain(join(infoDir, 'exclude'));
+      expect(existsSync(join(infoDir, 'exclude'))).toBe(false);
+      expect(existsSync(link())).toBe(false);
+      expect(readFileSync(join(projectDir, '.gitignore'), 'utf-8')).toBe('');
+      expect(durabilityMarkers()).toEqual([]);
+      expect(fixture.durabilityEvents).toEqual([]);
+      if (shape === 'symlink') {
+        expect(lstatSync(infoDir).isSymbolicLink()).toBe(true);
+        expect(readFileSync(join(externalInfo, 'operator-entry'), 'utf-8')).toBe('preserve me');
+        expect(readdirSync(externalInfo)).toEqual(['operator-entry']);
+      } else {
+        expect(lstatSync(infoDir).isFile()).toBe(true);
+        expect(readFileSync(infoDir, 'utf-8')).toBe('operator metadata');
+      }
+    },
+  );
 
   it('does not begin publication when syncing the installed marker rename fails', async () => {
     fixture.failDirectoryFsyncPath = durabilityArena();

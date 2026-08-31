@@ -31,7 +31,7 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'artifact-unreadable': {
     sentence:
-      'An affected ignore file is not a readable regular file, or its existing .git/info directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.',
+      'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, replace a symlink or non-directory .git/info with a real directory, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.',
     retryable: false,
   },
   'artifact-too-large': {
