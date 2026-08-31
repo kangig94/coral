@@ -34,14 +34,7 @@ const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK | NO_FOLLOW;
 const TEMP_WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
 const CORAL_IGNORE_ENTRY = 'coral';
-// `ensureCoralSymlink` swaps the link in via `renameSync` over a temp name so a kill between the write and the
-// swap never leaves `.claude/coral` missing — but a kill before the swap leaves the temp name itself behind. A
-// kill at the same point in `atomicTransform`'s own write of `.claude/.gitignore` (this file's other caller of
-// that helper, in `ensureScopedIgnore`) leaves a second, differently-prefixed temp name behind for the same
-// reason. Both live directly under `.claude/`, so one glob covers both rather than naming each. `atomicTransform`
-// also runs on the git-root `.gitignore` during migration; a temp file left there would need an entry back in
-// the root `.gitignore` — the file this whole migration exists to stop adding generated entries to — so that
-// leak is left uncovered rather than reopening what the migration empties.
+// The scoped entries must move or disappear together so an intermediate release never drops ignore coverage.
 const CORAL_IGNORE_TEMP_ENTRY = '*.coral-*.tmp';
 const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 
@@ -180,16 +173,23 @@ function fsyncParent(path) {
   }
 }
 
-function atomicTransform(path, transform, token) {
-  const snapshot = readRegularSnapshot(path, { allowMissing: true });
-  if (!snapshot.ok) return { ok: false, changed: false };
+export function atomicReplace({ target, snapshot, next, stagingDir }) {
+  if (next.equals(snapshot.content)) return { state: 'unchanged', residue: 'none' };
+  if (next.length > MAX_GITIGNORE_BYTES) {
+    return { state: 'refused', reason: 'artifact-too-large', residue: 'none' };
+  }
 
-  const next = transform(snapshot.content);
-  if (next.equals(snapshot.content)) return { ok: true, changed: false };
-  if (next.length > MAX_GITIGNORE_BYTES) return { ok: false, changed: false };
+  try {
+    if (lstatSync(dirname(target)).dev !== lstatSync(stagingDir).dev) {
+      return { state: 'refused', reason: 'staging-device-mismatch', residue: 'none' };
+    }
+  } catch {
+    return { state: 'refused', reason: 'publish-failed', residue: 'none' };
+  }
 
-  const tempPath = `${path}.coral-${token}.tmp`;
+  const tempPath = join(stagingDir, 'replacement.tmp');
   let fd;
+  let published = false;
   try {
     fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
     writeFileSync(fd, next);
@@ -198,17 +198,40 @@ function atomicTransform(path, transform, token) {
     closeSync(fd);
     fd = undefined;
 
-    if (!snapshotUnchanged(path, snapshot)) return { ok: false, changed: false };
-    if (snapshot.exists) {
-      renameSync(tempPath, path);
-    } else {
-      linkSync(tempPath, path);
-      unlinkSync(tempPath);
+    if (!snapshotUnchanged(target, snapshot)) {
+      return { state: 'refused', reason: 'artifact-changed', residue: 'none' };
     }
-    fsyncParent(path);
-    return { ok: true, changed: true };
+
+    try {
+      if (snapshot.exists) {
+        renameSync(tempPath, target);
+      } else {
+        linkSync(tempPath, target);
+      }
+      published = true;
+    } catch (error) {
+      return {
+        state: 'refused',
+        reason: error?.code === 'EXDEV' ? 'publish-cross-device' : 'publish-failed',
+        residue: 'none',
+      };
+    }
+
+    if (!snapshot.exists) {
+      try {
+        unlinkSync(tempPath);
+      } catch {
+        return {
+          state: 'published',
+          reason: 'staging-cleanup-failed',
+          residue: 'owned-staging',
+        };
+      }
+    }
+    fsyncParent(target);
+    return { state: 'published', residue: 'none' };
   } catch {
-    return { ok: false, changed: false };
+    return { state: 'refused', reason: 'publish-failed', residue: 'none' };
   } finally {
     if (fd !== undefined) {
       try {
@@ -217,8 +240,18 @@ function atomicTransform(path, transform, token) {
         // best effort
       }
     }
-    safeUnlink(tempPath);
+    if (!published) safeUnlink(tempPath);
   }
+}
+
+function atomicTransform(target, transform, stagingDir) {
+  const snapshot = readRegularSnapshot(target, { allowMissing: true });
+  if (!snapshot.ok) {
+    return { state: 'refused', reason: 'artifact-unreadable', residue: 'none' };
+  }
+
+  const next = transform(snapshot.content);
+  return atomicReplace({ target, snapshot, next, stagingDir });
 }
 
 function ensureRealDirectory(path) {
@@ -423,13 +456,15 @@ export function resolveProjectContext(projectDir) {
   };
 }
 
-function ensureScopedIgnore(projectDir, token) {
+function ensureScopedIgnore(projectDir, stagingDir) {
   const claudeDir = join(projectDir, '.claude');
-  if (!ensureRealDirectory(claudeDir)) return { ok: false, changed: false };
+  if (!ensureRealDirectory(claudeDir)) {
+    return { state: 'refused', reason: 'publish-failed', residue: 'none' };
+  }
   return atomicTransform(
     join(claudeDir, '.gitignore'),
     (content) => appendExactLine(appendExactLine(content, CORAL_IGNORE_ENTRY), CORAL_IGNORE_TEMP_ENTRY),
-    token,
+    stagingDir,
   );
 }
 
@@ -499,7 +534,7 @@ function ensureCoralSymlink(projectDir, token) {
 // every session says which one, without carrying a path or an errno to a surface that renders to a user.
 const FAILED = { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
 
-function maintainProjectIgnoreArtifacts({ context, createSymlink, token }) {
+function maintainProjectIgnoreArtifacts({ context, createSymlink, token, stagingDir }) {
   const rootSnapshot = readRegularSnapshot(context.rootGitignore, { allowMissing: true });
   if (!rootSnapshot.ok) {
     return { ...FAILED, reason: 'root-gitignore-unreadable' };
@@ -508,11 +543,14 @@ function maintainProjectIgnoreArtifacts({ context, createSymlink, token }) {
   let scopedIgnoreUpdated = false;
 
   if (hasLegacyEntry || createSymlink) {
-    const scoped = ensureScopedIgnore(context.projectDir, token);
-    if (!scoped.ok) {
+    const scoped = ensureScopedIgnore(context.projectDir, stagingDir);
+    scopedIgnoreUpdated = scoped.state === 'published';
+    if (scoped.state === 'refused') {
       return { ...FAILED, reason: 'scoped-gitignore-unwritable' };
     }
-    scopedIgnoreUpdated = scoped.changed;
+    if (scoped.residue === 'owned-staging') {
+      return { ...FAILED, scopedIgnoreUpdated, reason: scoped.reason };
+    }
   }
 
   let migrated = false;
@@ -520,12 +558,15 @@ function maintainProjectIgnoreArtifacts({ context, createSymlink, token }) {
     const migration = atomicTransform(
       context.rootGitignore,
       (content) => removeExactLines(content, context.legacyEntry),
-      token,
+      stagingDir,
     );
-    if (!migration.ok) {
+    migrated = migration.state === 'published';
+    if (migration.state === 'refused') {
       return { ...FAILED, scopedIgnoreUpdated, reason: 'legacy-entry-not-removable' };
     }
-    migrated = migration.changed;
+    if (migration.residue === 'owned-staging') {
+      return { ...FAILED, migrated, scopedIgnoreUpdated, reason: migration.reason };
+    }
   }
 
   let symlinkCreated = false;
@@ -558,12 +599,12 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
   const arenaDirs = repositoryArena ? [repositoryArena, fallbackArena] : [fallbackArena];
   sweepProjectIgnoreArenas(arenaDirs);
 
-  const runDir = createProjectIgnoreRunDir(repositoryArena ?? fallbackArena, startedAt);
-  if (!runDir) return { ...FAILED, reason: 'staging-arena-unavailable' };
+  const stagingDir = createProjectIgnoreRunDir(repositoryArena ?? fallbackArena, startedAt);
+  if (!stagingDir) return { ...FAILED, reason: 'staging-arena-unavailable' };
 
   try {
-    return maintainProjectIgnoreArtifacts({ context, createSymlink, token });
+    return maintainProjectIgnoreArtifacts({ context, createSymlink, token, stagingDir });
   } finally {
-    removeProjectIgnoreRunDir(runDir);
+    removeProjectIgnoreRunDir(stagingDir);
   }
 }
