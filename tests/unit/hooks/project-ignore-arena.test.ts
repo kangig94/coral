@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -498,34 +499,176 @@ describe('project-ignore maintenance ownership', () => {
     expect(child.stderr).toContain('It is attempted again at the next session start.');
   });
 
-  it('routes both entry points through the exec-style owner and requires its child marker', () => {
-    const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    const sessionStart = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'session-start.mjs'), 'utf-8');
-    const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
-    const owner = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'project-ignore-owner.mjs'), 'utf-8');
-    const child = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'project-ignore.mjs'), 'utf-8');
-
-    for (const entryPoint of [sessionStart, initProject]) {
-      expect(entryPoint).toContain('project-ignore-owner.mjs');
-    }
-    expect(owner).toContain('--nonblock');
-    expect(owner).toContain('--no-fork');
-    expect(owner).toContain('--conflict-exit-code');
-    expect(owner).toContain('--maintenance-locked');
-    expect(owner).toContain('openProjectIgnoreMaintenanceLock()');
-    expect(owner.indexOf('resolveProjectContext(request.projectDir, contextProbeDeadlineNs)')).toBeLessThan(
-      owner.indexOf('openProjectIgnoreMaintenanceLock()'),
+  it('runs the owner through non-blocking no-fork flock with the validated context', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    const hooksRoot = join(fixtureRoot, 'hooks');
+    const binDir = join(fixtureRoot, 'bin');
+    const flockCapture = join(fixtureRoot, 'flock-args');
+    const childCapture = join(fixtureRoot, 'child-args');
+    initRepository(repository);
+    mkdirSync(home);
+    mkdirSync(binDir);
+    cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+    const flockStub = join(binDir, 'flock');
+    writeFileSync(
+      flockStub,
+      [
+        '#!/bin/sh',
+        'printf \'%s\\n\' "$@" > "$CORAL_FLOCK_CAPTURE"',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --exclusive|--nonblock|--no-fork) shift ;;',
+        '    --conflict-exit-code) shift 2 ;;',
+        '    *) break ;;',
+        '  esac',
+        'done',
+        'shift',
+        'exec "$@"',
+        '',
+      ].join('\n'),
     );
-    expect(owner).toContain('resolveProjectContext(request.projectDir, contextProbeDeadlineNs)');
-    expect(owner).toContain('projectIgnoreContextProbeDeadline(startedNs)');
-    expect(owner).toContain("'--project-context'");
-    expect(owner).toContain("'/dev/fd/0'");
-    expect(sessionStart).toContain("outcome: 'maintenance-busy'");
-    expect(sessionStart).toContain("outcome: 'maintenance-lock-unavailable'");
-    expect(sessionStart).toContain('timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS');
-    expect(child).toContain('lockWrapperWithinBudget(request.lockWrapperStartedNs)');
-    expect(child).toContain('projectIgnoreContextProbeDeadline(request.lockWrapperStartedNs)');
-    expect(child).toContain('contextProbeDeadlineNs,');
+    chmodSync(flockStub, 0o700);
+    writeFileSync(
+      join(hooksRoot, 'project-ignore.mjs'),
+      `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.CORAL_CHILD_CAPTURE, JSON.stringify(process.argv.slice(2)));\n`,
+    );
+    const startedNs = process.hrtime.bigint().toString();
+
+    const owner = spawnSync(
+      process.execPath,
+      [join(hooksRoot, 'project-ignore-owner.mjs'), '--started-ns', startedNs, '--project-dir', repository],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+          CORAL_FLOCK_CAPTURE: flockCapture,
+          CORAL_CHILD_CAPTURE: childCapture,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(owner.status).toBe(0);
+    const flockArgs = readFileSync(flockCapture, 'utf-8').trim().split('\n');
+    expect(flockArgs).toContain('--exclusive');
+    expect(flockArgs).toContain('--nonblock');
+    expect(flockArgs).toContain('--no-fork');
+    expect(flockArgs).toContain('--conflict-exit-code');
+    expect(flockArgs).toContain('/dev/fd/0');
+    const childArgs = JSON.parse(readFileSync(childCapture, 'utf-8')) as string[];
+    expect(childArgs).toContain('--maintenance-locked');
+    expect(
+      childArgs.slice(
+        childArgs.indexOf('--lock-wrapper-started-ns'),
+        childArgs.indexOf('--lock-wrapper-started-ns') + 2,
+      ),
+    ).toEqual(['--lock-wrapper-started-ns', startedNs]);
+    expect(childArgs.slice(childArgs.indexOf('--project-dir'), childArgs.indexOf('--project-dir') + 2)).toEqual([
+      '--project-dir',
+      realpathSync(repository),
+    ]);
+    const context = JSON.parse(childArgs[childArgs.indexOf('--project-context') + 1]) as {
+      projectDir: string;
+      refusalReason: string | null;
+    };
+    expect(context.projectDir).toBe(realpathSync(repository));
+    expect(context.refusalReason).toBeNull();
+  });
+
+  it('makes the child reject an expired wrapper and pass the shared deadline to maintenance', () => {
+    const hooksRoot = join(fixtureRoot, 'child-hooks');
+    const capture = join(fixtureRoot, 'maintenance-input');
+    cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+    writeFileSync(
+      join(hooksRoot, 'lib', 'project-ignore.mjs'),
+      [
+        "import { writeFileSync } from 'node:fs';",
+        'export function isProjectIgnoreContext(value) { return value?.refusalReason === null; }',
+        'export function maintainProjectIgnore(input) {',
+        '  writeFileSync(process.env.CORAL_MAINTENANCE_CAPTURE, JSON.stringify({',
+        '    projectDir: input.projectDir,',
+        '    context: input.context,',
+        '    contextProbeDeadlineNs: input.contextProbeDeadlineNs.toString(),',
+        '  }));',
+        '  return {',
+        "    status: 'complete',",
+        '    artifacts: {',
+        "      arenaSweep: { state: 'unchanged' },",
+        "      durabilityReconciliation: { state: 'reconciled' },",
+        "      legacySweep: { state: 'unchanged' },",
+        "      exclude: { state: 'not-needed', residue: 'none' },",
+        "      symlink: { state: 'not-requested' },",
+        "      scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },",
+        "      rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },",
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const childScript = join(hooksRoot, 'project-ignore.mjs');
+    const projectDir = join(fixtureRoot, 'project');
+    const context = { projectDir, refusalReason: null };
+    const startedNs = process.hrtime.bigint();
+    const args = [
+      childScript,
+      '--maintenance-locked',
+      '--lock-wrapper-started-ns',
+      startedNs.toString(),
+      '--project-dir',
+      projectDir,
+      '--project-context',
+      JSON.stringify(context),
+    ];
+
+    const accepted = spawnSync(process.execPath, args, {
+      encoding: 'utf-8',
+      env: { ...process.env, CORAL_MAINTENANCE_CAPTURE: capture },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(readFileSync(capture, 'utf-8'))).toEqual({
+      projectDir,
+      context,
+      contextProbeDeadlineNs: projectIgnoreContextProbeDeadline(startedNs)?.toString(),
+    });
+
+    rmSync(capture);
+    const expiredStartedNs =
+      process.hrtime.bigint() -
+      BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS + 10) * 1_000_000n;
+    const rejected = spawnSync(
+      process.execPath,
+      [
+        childScript,
+        '--maintenance-locked',
+        '--lock-wrapper-started-ns',
+        expiredStartedNs.toString(),
+        '--project-dir',
+        projectDir,
+        '--project-context',
+        JSON.stringify(context),
+      ],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, CORAL_MAINTENANCE_CAPTURE: capture },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(rejected.status).toBe(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+    expect(existsSync(capture)).toBe(false);
+  });
+
+  it('keeps the init-project owner and validator contract pinned', () => {
+    const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+
+    expect(initProject).toContain('project-ignore-owner.mjs');
     expect(initProject).toContain('--validate-result');
     expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');
     expect(initProject).not.toMatch(/(?:Retry|rerun) init-project/u);

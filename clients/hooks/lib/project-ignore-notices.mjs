@@ -152,7 +152,7 @@ export function renderProjectIgnoreResultNotices(result) {
     } else if (artifact.reason === 'staging-cleanup-failed') {
       reasons.add(artifact.reason);
     }
-    if (artifact.durability?.reason) reasons.add(artifact.durability.reason);
+    for (const reason of artifact.durability?.reasons ?? []) reasons.add(reason);
   }
 
   return [...reasons].sort().map((reason) => {

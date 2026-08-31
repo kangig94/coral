@@ -68,14 +68,26 @@ function hasReason(value, expected) {
 
 function validateDurability(value) {
   if (!isRecord(value) || !['synced', 'unsupported', 'failed'].includes(value.state)) return false;
-  if (value.state === 'synced') return hasExactKeys(value, ['state']);
-  if (value.state === 'unsupported') {
-    return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'durability-sync-unsupported');
+  if (!hasExactKeys(value, ['state', 'reasons']) || !Array.isArray(value.reasons)) return false;
+  if (
+    !value.reasons.every(
+      (reason, index) =>
+        [
+          'durability-sync-unsupported',
+          'durability-sync-failed',
+          'durability-evidence-cleanup-failed',
+        ].includes(reason) &&
+        (index === 0 || value.reasons[index - 1] < reason),
+    )
+  ) {
+    return false;
   }
-  return (
-    hasExactKeys(value, ['state', 'reason']) &&
-    ['durability-sync-failed', 'durability-evidence-cleanup-failed'].includes(value.reason) &&
-    hasReason(value)
+  if (value.state === 'synced') return value.reasons.length === 0;
+  if (value.state === 'unsupported') {
+    return value.reasons.length === 1 && value.reasons[0] === 'durability-sync-unsupported';
+  }
+  return value.reasons.some((reason) =>
+    ['durability-sync-failed', 'durability-evidence-cleanup-failed'].includes(reason),
   );
 }
 
@@ -126,17 +138,23 @@ function validateReplacement(value, states) {
   if (!isRecord(value) || !states.includes(value.state) || !['none', 'owned-staging'].includes(value.residue)) {
     return false;
   }
+  const hasDurability = Object.hasOwn(value, 'durability');
+  if (hasDurability && !validateDurability(value.durability)) return false;
   if (value.state === 'refused') {
     return (
-      hasExactKeys(value, ['state', 'reason', 'residue']) &&
+      hasExactKeys(value, [
+        'state',
+        'reason',
+        'residue',
+        ...(hasDurability ? ['durability'] : []),
+      ]) &&
       hasReason(value) &&
+      (!hasDurability || value.durability.state !== 'synced') &&
       !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
         value.reason,
       )
     );
   }
-  const hasDurability = Object.hasOwn(value, 'durability');
-  if (hasDurability && !validateDurability(value.durability)) return false;
   if (value.residue === 'owned-staging') {
     if (value.state === 'published') {
       return (
@@ -167,6 +185,21 @@ function validateSymlink(value) {
   if (value.residue !== undefined && !['none', 'owned-staging'].includes(value.residue)) return false;
   const hasDurability = Object.hasOwn(value, 'durability');
   if (hasDurability && !validateDurability(value.durability)) return false;
+  if (value.state === 'refused') {
+    return (
+      hasExactKeys(value, [
+        'state',
+        'reason',
+        ...(value.residue === undefined ? [] : ['residue']),
+        ...(hasDurability ? ['durability'] : []),
+      ]) &&
+      (!hasDurability || value.durability.state !== 'synced') &&
+      hasReason(value) &&
+      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
+        value.reason,
+      )
+    );
+  }
   if (value.residue === 'owned-staging') {
     if (value.state === 'repointed') {
       return (
@@ -175,27 +208,10 @@ function validateSymlink(value) {
         hasReason(value, 'staging-cleanup-failed')
       );
     }
-    return (
-      value.state === 'refused' &&
-      hasExactKeys(value, ['state', 'reason', 'residue']) &&
-      hasReason(value) &&
-      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
-        value.reason,
-      )
-    );
+    return false;
   }
   if (value.state === 'repointed') {
     return hasDurability && hasExactKeys(value, ['state', 'residue', 'durability']);
-  }
-  if (value.state === 'refused') {
-    return (
-      (hasExactKeys(value, ['state', 'reason']) || hasExactKeys(value, ['state', 'reason', 'residue'])) &&
-      (value.residue === undefined || value.residue === 'none') &&
-      hasReason(value) &&
-      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
-        value.reason,
-      )
-    );
   }
   if (value.state === 'skipped') {
     return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'upstream-refusal');
@@ -229,11 +245,13 @@ export function projectIgnoreStatus(artifacts) {
         artifact.residue === 'owned-staging' ||
         (artifact.durability && artifact.durability.state !== 'synced'),
     );
+  // Evidence a refusal left behind is not something the run accomplished: a publication that did not
+  // happen may not read as one that partly did.
   const hasProgress = selected.some(
     (artifact) =>
       ['cleaned', 'published', 'created', 'repointed'].includes(artifact.state) ||
       artifact.residue === 'owned-staging' ||
-      (artifact.durability && artifact.durability.state !== 'synced') ||
+      (artifact.state !== 'refused' && artifact.durability && artifact.durability.state !== 'synced') ||
       (artifact.state === 'refused' && Number.isSafeInteger(artifact.count) && artifact.count > 0),
   );
   if (!hasFailure) return 'complete';

@@ -168,14 +168,14 @@ export function fsyncParent(path, { missingParentIsSynced = false } = {}) {
   try {
     fd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY);
     fsyncSync(fd);
-    return { state: 'synced' };
+    return { state: 'synced', reasons: [] };
   } catch (error) {
     if (missingParentIsSynced && (isMissing(error) || error?.code === 'ENOTDIR')) {
-      return { state: 'synced' };
+      return { state: 'synced', reasons: [] };
     }
     return UNSUPPORTED_DIRECTORY_SYNC_CODES.has(error?.code)
-      ? { state: 'unsupported', reason: 'durability-sync-unsupported' }
-      : { state: 'failed', reason: 'durability-sync-failed' };
+      ? { state: 'unsupported', reasons: ['durability-sync-unsupported'] }
+      : { state: 'failed', reasons: ['durability-sync-failed'] };
   } finally {
     if (fd !== undefined) {
       try {
@@ -189,17 +189,29 @@ export function fsyncParent(path, { missingParentIsSynced = false } = {}) {
 
 function combineDurability(...outcomes) {
   const durability = outcomes.filter(Boolean);
-  return (
-    durability.find((outcome) => outcome.state === 'failed') ??
-    durability.find((outcome) => outcome.state === 'unsupported') ??
-    durability[0]
-  );
+  if (durability.length === 0) return null;
+  const state = durability.some((outcome) => outcome.state === 'failed')
+    ? 'failed'
+    : durability.some((outcome) => outcome.state === 'unsupported')
+      ? 'unsupported'
+      : 'synced';
+  const reasons = [...new Set(durability.flatMap((outcome) => outcome.reasons))].sort();
+  return { state, reasons };
 }
 
 function withDurability(artifact, ...outcomes) {
-  if (!['published', 'unchanged'].includes(artifact.state)) return artifact;
   const durability = combineDurability(artifact.durability, ...outcomes);
-  return durability ? { ...artifact, durability } : artifact;
+  if (!durability) return artifact;
+  if (['published', 'unchanged'].includes(artifact.state)) return { ...artifact, durability };
+  return artifact.state === 'refused' && durability.state !== 'synced'
+    ? { ...artifact, durability }
+    : artifact;
+}
+
+function cleanupFinalDurabilityMarker(marker) {
+  return safeUnlink(marker.path)
+    ? null
+    : { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] };
 }
 
 // Durability evidence must remain discoverable without the repository context or artifact demand that created it.
@@ -366,12 +378,16 @@ function reconcileDurabilityMarkers(durabilityDir) {
     }
     const durability = fsyncParent(marker.target, { missingParentIsSynced: true });
     if (durability.state === 'failed') {
-      reasons.add(durability.reason);
+      for (const reason of durability.reasons) reasons.add(reason);
       continue;
     }
     if (durability.state === 'unsupported') {
       const removed = safeUnlink(markerPath);
-      reasons.add(removed ? durability.reason : 'durability-evidence-cleanup-failed');
+      if (removed) {
+        for (const reason of durability.reasons) reasons.add(reason);
+      } else {
+        reasons.add('durability-evidence-cleanup-failed');
+      }
       continue;
     }
     if (!safeUnlink(markerPath)) reasons.add('durability-evidence-cleanup-failed');
@@ -386,7 +402,7 @@ function syncPendingPublication(target, marker) {
   if (durability.state !== 'synced') return durability;
   return safeUnlink(marker.path)
     ? durability
-    : { state: 'failed', reason: 'durability-evidence-cleanup-failed' };
+    : { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] };
 }
 
 export function atomicReplace({
@@ -465,7 +481,9 @@ export function atomicReplace({
           ? { ...result, reason: 'staging-cleanup-failed', residue: 'owned-staging' }
           : { ...result, residue: 'owned-staging' };
     }
-    if (markerCreated && result.state !== 'published') safeUnlink(durabilityMarker.path);
+    if (markerCreated && result.state !== 'published') {
+      result = withDurability(result, cleanupFinalDurabilityMarker(durabilityMarker));
+    }
   }
   return result;
 }
@@ -1008,23 +1026,27 @@ function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
   if (!marker) return { ok: false, reason: 'durability-evidence-unavailable' };
   const recorded = recordPendingDurability(marker);
   if (!recorded.ok) {
-    if (recorded.created) safeUnlink(marker.path);
-    return { ok: false, reason: 'durability-evidence-unavailable' };
+    const durability = recorded.created ? cleanupFinalDurabilityMarker(marker) : null;
+    return durability
+      ? { ok: false, reason: 'durability-evidence-unavailable', durability }
+      : { ok: false, reason: 'durability-evidence-unavailable' };
   }
   let created = false;
   try {
     mkdirSync(excludeDir);
     created = true;
   } catch (error) {
-    if (recorded.created) safeUnlink(marker.path);
-    if (error?.code !== 'EEXIST') return { ok: false };
+    if (error?.code !== 'EEXIST') {
+      const durability = recorded.created ? cleanupFinalDurabilityMarker(marker) : null;
+      return durability ? { ok: false, durability } : { ok: false };
+    }
   }
   const usable = created
     ? addOwnerAccessToCreatedExcludeDirectory(excludeDir)
     : isUsableExcludeDirectory(excludeDir);
   if (!usable) {
-    if (recorded.created) safeUnlink(marker.path);
-    return { ok: false };
+    const durability = recorded.created ? cleanupFinalDurabilityMarker(marker) : null;
+    return durability ? { ok: false, durability } : { ok: false };
   }
   return { ok: true, durability: syncPendingPublication(excludeDir, marker) };
 }
@@ -1127,7 +1149,9 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
         reason: error?.code === 'EEXIST' ? 'symlink-conflict' : 'publish-failed',
       };
     } finally {
-      if (markerCreated && result.state !== 'created') safeUnlink(marker.path);
+      if (markerCreated && result.state !== 'created') {
+        result = withDurability(result, cleanupFinalDurabilityMarker(marker));
+      }
     }
     return result;
   }
@@ -1165,7 +1189,9 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
           ? { ...result, reason: 'staging-cleanup-failed', residue: 'owned-staging' }
           : { ...result, residue: 'owned-staging' };
     }
-    if (markerCreated && result.state !== 'repointed') safeUnlink(marker.path);
+    if (markerCreated && result.state !== 'repointed') {
+      result = withDurability(result, cleanupFinalDurabilityMarker(marker));
+    }
   }
   return result;
 }
@@ -1355,11 +1381,14 @@ function maintainProjectIgnoreArtifacts({
       durabilityRunDir,
     );
     if (!excludeDirectory.ok) {
-      artifacts.exclude = {
-        state: 'refused',
-        reason: excludeDirectory.reason ?? 'publish-failed',
-        residue: 'none',
-      };
+      artifacts.exclude = withDurability(
+        {
+          state: 'refused',
+          reason: excludeDirectory.reason ?? 'publish-failed',
+          residue: 'none',
+        },
+        excludeDirectory.durability,
+      );
       artifacts.symlink = { ...SKIPPED_ARTIFACT };
       artifacts.scopedIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
       artifacts.rootIgnoreRetraction = { ...SKIPPED_REPLACEMENT };

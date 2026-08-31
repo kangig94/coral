@@ -22,13 +22,16 @@ import {
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `coralStateRoot` has no cached module-level state (it reads `homedir()` fresh on every call), so a static
 // import is safe to use across the module reloads `maintain()` triggers below via `vi.resetModules()`.
-// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { coralStateRoot, PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS } from '../../../clients/hooks/lib/hook-utils.mjs';
+import {
+  coralStateRoot,
+  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
+  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/hook-utils.mjs';
 import {
   PROJECT_IGNORE_REASON_NOTICES,
   projectIgnoreOutcomeNotice,
@@ -367,7 +370,7 @@ async function maintain(
       residue?: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
-        reason?: string;
+        reasons: string[];
       };
     };
     exclude: {
@@ -376,7 +379,7 @@ async function maintain(
       residue: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
-        reason?: string;
+        reasons: string[];
       };
     };
     legacySweep: {
@@ -391,7 +394,7 @@ async function maintain(
       residue: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
-        reason?: string;
+        reasons: string[];
       };
     };
     rootIgnoreRetraction: {
@@ -400,7 +403,7 @@ async function maintain(
       residue: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
-        reason?: string;
+        reasons: string[];
       };
     };
   };
@@ -793,6 +796,136 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it('reports retained durability evidence on the refused publication that created it', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const marker = durabilityMarker(excludePath);
+    fixture.failLinkTo = excludePath;
+    fixture.failUnlinkPath = marker;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      residue: 'none',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe(excludePath);
+    expect(renderProjectIgnoreResultNotices(result)).toContain(
+      'Coral could not dispose of a pending durability record. Remedy: make the authorized project-ignore staging arena writable and repair any filesystem error blocking its removal or quarantine, then retry the maintenance. It is attempted again at the next session start.',
+    );
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+    for (const reasons of [
+      [],
+      ['durability-sync-unsupported', 'durability-sync-failed'],
+      ['durability-sync-failed', 'durability-sync-failed'],
+      ['artifact-unreadable'],
+    ]) {
+      expect(
+        isProjectIgnoreResult({
+          ...result,
+          artifacts: {
+            ...result.artifacts,
+            exclude: {
+              ...result.artifacts.exclude,
+              durability: { state: 'failed', reasons },
+            },
+          },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('reports retained durability evidence on a refused symlink creation', async () => {
+    const marker = durabilityMarker(link());
+    fixture.failSymlinkTarget = join(fixture.home, '.coral', 'projects', 'owner-repo');
+    fixture.failUnlinkPath = marker;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe(link());
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+  });
+
+  it('reports retained durability evidence on a refused symlink repoint', async () => {
+    await maintain('prod');
+    const marker = durabilityMarker(link());
+    fixture.failRenameTo = link();
+    fixture.failUnlinkPath = marker;
+
+    const result = await maintain('dev');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      residue: 'none',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe(link());
+  });
+
+  it('reports retained durability evidence when exclude-directory creation is refused', async () => {
+    const infoDir = join(fixture.gitDir, 'info');
+    const marker = durabilityMarker(infoDir);
+    rmSync(infoDir, { recursive: true });
+    fixture.failMkdirPath = infoDir;
+    fixture.failUnlinkPath = marker;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      residue: 'none',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe(infoDir);
+  });
+
+  it('does not claim a successful directory sync for an exclude publication that was refused', async () => {
+    const infoDir = join(fixture.gitDir, 'info');
+    const excludePath = join(infoDir, 'exclude');
+    rmSync(infoDir, { recursive: true });
+    fixture.failLinkTo = excludePath;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      residue: 'none',
+    });
+    expect(durabilityMarkers()).toEqual([]);
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(
+      isProjectIgnoreResult({
+        ...result,
+        artifacts: {
+          ...result.artifacts,
+          exclude: {
+            ...result.artifacts.exclude,
+            durability: { state: 'synced', reasons: [] },
+          },
+        },
+      }),
+    ).toBe(false);
+  });
+
   it('reconciles an interrupted symlink creation when a later run does not request the link', async () => {
     fixture.failDirectoryFsyncPath = join(projectDir, '.claude');
     fixture.failDirectoryFsyncCode = 'EIO';
@@ -803,7 +936,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(published.status).toBe('partial');
     expect(published.artifacts.symlink).toEqual({
       state: 'created',
-      durability: { state: 'failed', reason: 'durability-sync-failed' },
+      durability: { state: 'failed', reasons: ['durability-sync-failed'] },
     });
     expect(readFileSync(marker, 'utf-8')).toBe(link());
 
@@ -904,7 +1037,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(published.artifacts.symlink).toEqual({
       state: 'repointed',
       residue: 'none',
-      durability: { state: 'failed', reason: 'durability-sync-failed' },
+      durability: { state: 'failed', reasons: ['durability-sync-failed'] },
     });
     expect(readFileSync(marker, 'utf-8')).toBe(link());
 
@@ -930,7 +1063,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(published.artifacts.exclude).toEqual({
       state: 'published',
       residue: 'none',
-      durability: { state: 'failed', reason: 'durability-sync-failed' },
+      durability: { state: 'failed', reasons: ['durability-sync-failed'] },
     });
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
     const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
@@ -1380,7 +1513,7 @@ describe('project-ignore symlink maintenance', () => {
 
     expect(fsyncParent(target)).toEqual({
       state: 'failed',
-      reason: 'durability-sync-failed',
+      reasons: ['durability-sync-failed'],
     });
     expect(fixture.fsyncedDirectoryPaths).not.toContain(parent);
 
@@ -1562,6 +1695,29 @@ describe('project-ignore symlink maintenance', () => {
     },
   );
 
+  it('refuses a non-missing .git/info observation failure before observing or publishing the exclude', async () => {
+    const infoDir = join(fixture.gitDir, 'info');
+    const excludePath = join(infoDir, 'exclude');
+    fixture.failMarkerObservation = { phase: 'lstat', path: infoDir, code: 'EACCES' };
+    fixture.lstatPaths.length = 0;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'artifact-unreadable',
+      residue: 'none',
+    });
+    expect(result.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
+    expect(fixture.lstatPaths).toContain(infoDir);
+    expect(fixture.lstatPaths).not.toContain(excludePath);
+    expect(existsSync(excludePath)).toBe(false);
+    expect(existsSync(link())).toBe(false);
+    expect(durabilityMarkers()).toEqual([]);
+    expect(fixture.durabilityEvents).toEqual([]);
+  });
+
   it('does not begin publication when syncing the installed marker rename fails', async () => {
     fixture.failDirectoryFsyncPath = durabilityArena();
     fixture.failDirectoryFsyncCode = 'EIO';
@@ -1589,8 +1745,35 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.artifacts.exclude).toEqual({
       state: 'published',
       residue: 'none',
-      durability: { state: 'unsupported', reason: 'durability-sync-unsupported' },
+      durability: { state: 'unsupported', reasons: ['durability-sync-unsupported'] },
     });
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+  });
+
+  it('keeps every distinct durability reason on one exclude artifact', async () => {
+    const infoDir = join(fixture.gitDir, 'info');
+    rmSync(infoDir, { recursive: true });
+    fixture.directoryFsyncFailures.set(fixture.gitDir, 'EINVAL');
+    fixture.directoryFsyncFailures.set(infoDir, 'EIO');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: {
+        state: 'failed',
+        reasons: ['durability-sync-failed', 'durability-sync-unsupported'],
+      },
+    });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'Coral could not sync the parent named by a retained durability record. Remedy: check the filesystem and storage device; the next run will reconcile that record before planning project artifacts. It is attempted again at the next session start.',
+      'The platform does not support syncing an affected parent directory, so Coral could not confirm crash durability for this publication. When this was reported while reconciling a pending record, Coral discharged that record and will not retry it.',
+    ]);
+    expect(durabilityMarkers()).toHaveLength(2);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
     const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
@@ -1718,9 +1901,6 @@ describe('project-ignore symlink maintenance', () => {
     expect(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + (remoteProbeTimeout ?? 0)).toBe(3500);
   });
 
-  // The caller's budget must exceed the aggregate context allowance plus the remote probe's bound. Reverting
-  // `session-start.mjs`'s spawnSync timeout to exactly that bound reproduces the SIGTERM-before-its-own-bound
-  // defect, so the margin has to be checked directly rather than left to a slow mount in production.
   it('gives the owner chain more time than its aggregate bounded-subprocess allowance', async () => {
     await maintain('prod');
     execFileSyncMock.mockClear();
@@ -1732,17 +1912,8 @@ describe('project-ignore symlink maintenance', () => {
       ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
     const childBound = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + remoteProbeTimeout;
 
-    const hookUtilsSource = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'lib', 'hook-utils.mjs'),
-      'utf-8',
-    );
-    const parentBudget = Number(hookUtilsSource.match(/PROJECT_IGNORE_SPAWN_TIMEOUT_MS\s*=\s*(\d+)/)?.[1]);
-
-    expect(parentBudget, 'hook-utils.mjs must define this shared constant as a plain number literal').toBeGreaterThan(
-      0,
-    );
     expect(
-      parentBudget,
+      PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
       "the parent's spawnSync timeout must leave margin beyond the chain's aggregate subprocess bound",
     ).toBeGreaterThan(childBound);
   });
@@ -1787,37 +1958,17 @@ describe('project-ignore symlink maintenance', () => {
     }
   });
 
-  it('renders every maintenance outcome it distinguishes, so none is split apart and then dropped', () => {
-    const source = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'session-start.mjs'),
-      'utf-8',
-    );
-
-    const produced = new Set([...source.matchAll(/outcome:\s*'([^']+)'/gu)].map((match) => match[1]));
-
-    expect(produced.size, 'the outcome literals must be readable from source').toBeGreaterThan(3);
-    for (const outcome of produced) {
-      if (outcome === 'ok' || outcome === 'no-project-dir') continue;
+  it('renders every non-success maintenance outcome exercised through SessionStart', () => {
+    for (const outcome of [
+      'killed',
+      'maintenance-busy',
+      'maintenance-lock-unavailable',
+      'no-output',
+      'unparseable-output',
+      'partial',
+      'failed',
+    ]) {
       expect(projectIgnoreOutcomeNotice(outcome)).not.toBeNull();
-    }
-    const migrationDerivation = source.match(
-      /const\s+(\w+)\s*=\s*\[([^\]]+)\]\.some\(\(artifact\)\s*=>\s*artifact\?\.state\s*===\s*'published'\)/su,
-    );
-    const migrationNotice = source.match(/const\s+(\w+)\s*=\s*\w+\s*\?\s*'Coral migration:/su)?.[1] ?? '';
-    const ignoreNotice =
-      source.match(/const\s+(\w+)\s*=\s*[^\n]+\n\s+\? `Coral project-ignore maintenance/u)?.[1] ?? '';
-    const renderedNotices = source.match(/\[([^\]]*Notice[^\]]*)\]\.filter\(Boolean\)/u)?.[1] ?? '';
-    expect(migrationDerivation?.[2], 'migration progress must read both legacy retraction artifacts').toContain(
-      'scopedIgnoreRetraction',
-    );
-    expect(migrationDerivation?.[2], 'migration progress must read both legacy retraction artifacts').toContain(
-      'rootIgnoreRetraction',
-    );
-    expect(migrationNotice, 'the migration notice must be readable from source').not.toBe('');
-    expect(ignoreNotice, 'the maintenance notice must be readable from source').not.toBe('');
-    expect(renderedNotices, 'the rendered notices must be readable from source').not.toBe('');
-    for (const notice of [migrationNotice, ignoreNotice]) {
-      expect(renderedNotices, 'every maintenance notice must reach additionalContext').toContain(notice);
     }
   });
 
@@ -1838,7 +1989,7 @@ describe('project-ignore symlink maintenance', () => {
         second: { state: 'refused', reason: 'durability-evidence-cleanup-failed' },
         third: {
           state: 'published',
-          durability: { reason: 'durability-sync-failed' },
+          durability: { reasons: ['durability-sync-failed'] },
         },
       },
     };
@@ -1911,7 +2062,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.artifacts.exclude).toEqual({
       state: 'published',
       residue: 'none',
-      durability: { state: 'synced' },
+      durability: { state: 'synced', reasons: [] },
     });
     expect(result.artifacts.symlink.state).toBe('created');
     expect(readdirSync(repositoryArena())).toEqual([]);

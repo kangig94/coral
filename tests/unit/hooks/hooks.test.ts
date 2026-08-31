@@ -15,6 +15,12 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
+  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/hook-utils.mjs';
+
+import {
   BASH_REWRITE_HOOK,
   CLAUDE_HOOKS_JSON_PATH,
   CODEX_HOOKS_JSON_PATH,
@@ -61,6 +67,42 @@ function seedCodebaseMemoryBinary(homeDir: string): void {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'codebase-memory-mcp'), 'binary');
   }
+}
+
+function projectIgnoreMaintenance(
+  status: 'complete' | 'refused' | 'partial',
+  artifacts: Record<string, unknown> = {},
+): object {
+  return {
+    status,
+    artifacts: {
+      arenaSweep: { state: 'unchanged' },
+      durabilityReconciliation: { state: 'reconciled' },
+      legacySweep: { state: 'unchanged' },
+      exclude: { state: 'not-needed', residue: 'none' },
+      symlink: { state: 'not-requested' },
+      scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      ...artifacts,
+    },
+  };
+}
+
+function copiedSessionStartHook(root: string, suffix: string): { hook: string; hooksRoot: string } {
+  const hooksRoot = join(root, `hooks-${suffix}`);
+  cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+  return { hook: join(hooksRoot, 'session-start.mjs'), hooksRoot };
+}
+
+function writeOwnerStub(
+  hooksRoot: string,
+  { status, stdout = '', delayMs = 0 }: { status: number; stdout?: string; delayMs?: number },
+): void {
+  const finish = `process.stdout.write(${JSON.stringify(stdout)}); process.exit(${status});`;
+  writeFileSync(
+    join(hooksRoot, 'project-ignore-owner.mjs'),
+    delayMs > 0 ? `setTimeout(() => { ${finish} }, ${delayMs});\n` : `${finish}\n`,
+  );
 }
 
 const HOOK_ENTRYPOINTS = [
@@ -171,15 +213,59 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
   });
 
-  it.each([126, 127])('classifies an owner process exit %i as an unavailable maintenance lock', (status) => {
+  it.each([
+    {
+      name: 'lock conflict',
+      status: 75,
+      stdout: '',
+      notice: 'did not start because another Coral project-ignore maintainer owns the lock',
+    },
+    ...[69, 126, 127].map((status) => ({
+      name: `unavailable lock status ${status}`,
+      status,
+      stdout: '',
+      notice: 'could not open or own its maintenance lock',
+    })),
+    { name: 'empty failure', status: 2, stdout: '', notice: 'exited without reporting a result' },
+    { name: 'invalid result', status: 1, stdout: '{}\n', notice: 'reported a result Coral could not read' },
+    {
+      name: 'refused result',
+      status: 1,
+      stdout: `${JSON.stringify(
+        projectIgnoreMaintenance('refused', {
+          exclude: { state: 'refused', reason: 'publish-failed', residue: 'none' },
+          symlink: { state: 'skipped', reason: 'upstream-refusal' },
+          scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+          rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+        }),
+      )}\n`,
+      notice: 'ran and reported it could not complete safely',
+    },
+    {
+      name: 'partial result',
+      status: 1,
+      stdout: `${JSON.stringify(
+        projectIgnoreMaintenance('partial', {
+          exclude: {
+            state: 'published',
+            residue: 'none',
+            durability: { state: 'synced', reasons: [] },
+          },
+          symlink: { state: 'refused', reason: 'symlink-conflict' },
+          scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+          rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+        }),
+      )}\n`,
+      notice: 'published or confirmed an artifact but could not establish every required disposition',
+    },
+  ])('renders the $name outcome from an executed owner', ({ name, status, stdout, notice }) => {
     const fixture = createFixture();
-    const hooksRoot = join(fixture.root, `hooks-${status}`);
-    cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
-    writeFileSync(join(hooksRoot, 'project-ignore-owner.mjs'), `process.exit(${status});\n`);
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, `${name.replaceAll(' ', '-')}-${status}`);
+    writeOwnerStub(hooksRoot, { status, stdout });
     writeInjectBundle(fixture.pluginRoot, 'Project instructions');
 
     const result = runHook(
-      join(hooksRoot, 'session-start.mjs'),
+      hook,
       { session_id: `sess-owner-status-${status}` },
       {
         CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
@@ -191,10 +277,147 @@ describe('session-start.mjs', () => {
     );
 
     expect(result.status).toBe(0);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(notice);
+  });
+
+  it('uses the shared owner timeout and renders a killed owner', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-timeout');
+    const hookUtilsPath = join(hooksRoot, 'lib', 'hook-utils.mjs');
+    const hookUtils = readFileSync(hookUtilsPath, 'utf-8').replace(
+      `export const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = ${PROJECT_IGNORE_SPAWN_TIMEOUT_MS};`,
+      'export const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 40;',
+    );
+    writeFileSync(hookUtilsPath, hookUtils);
+    writeOwnerStub(hooksRoot, { status: 0, delayMs: 200 });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-owner-timeout' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
     expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
-      'Coral project-ignore maintenance could not open or own its maintenance lock',
+      'ran out of its time budget and was terminated',
     );
   });
+
+  it('routes owner arguments and both maintenance notice variables into additionalContext', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-routing');
+    const capture = join(fixture.root, 'owner-args.json');
+    const maintenance = projectIgnoreMaintenance('partial', {
+      scopedIgnoreRetraction: {
+        state: 'published',
+        residue: 'none',
+        durability: { state: 'synced', reasons: [] },
+      },
+      rootIgnoreRetraction: { state: 'refused', reason: 'artifact-unreadable', residue: 'none' },
+    });
+    writeFileSync(
+      join(hooksRoot, 'project-ignore-owner.mjs'),
+      `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.CORAL_OWNER_CAPTURE, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(${JSON.stringify(
+        `${JSON.stringify(maintenance)}\n`,
+      )});\nprocess.exit(1);\n`,
+    );
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-owner-routing' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: '1',
+        CORAL_OWNER_CAPTURE: capture,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    const args = JSON.parse(readFileSync(capture, 'utf-8')) as string[];
+    expect(args).toContain('--started-ns');
+    expect(args.slice(args.indexOf('--project-dir'), args.indexOf('--project-dir') + 2)).toEqual([
+      '--project-dir',
+      fixture.projectRoot,
+    ]);
+    expect(args).toContain('--create-symlink');
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext).toContain('Coral migration: retracted legacy coral ignore rule(s)');
+    expect(additionalContext).toContain('Coral project-ignore maintenance published or confirmed an artifact');
+    expect(additionalContext).toContain('An affected ignore file is not a readable regular file');
+  });
+
+  it('recognizes migration progress from either legacy retraction artifact', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'migration-artifacts');
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    for (const artifact of ['scopedIgnoreRetraction', 'rootIgnoreRetraction']) {
+      writeOwnerStub(hooksRoot, {
+        status: 0,
+        stdout: `${JSON.stringify(
+          projectIgnoreMaintenance('complete', {
+            [artifact]: {
+              state: 'published',
+              residue: 'none',
+              durability: { state: 'synced', reasons: [] },
+            },
+          }),
+        )}\n`,
+      });
+      const result = runHook(
+        hook,
+        { session_id: `sess-migration-${artifact}` },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          HOME: fixture.root,
+          TMPDIR: fixture.tmpRoot,
+        },
+      );
+
+      expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
+        'Coral migration: retracted legacy coral ignore rule(s)',
+      );
+    }
+  });
+
+  it('lets the owner finish after the aggregate child subprocess allowance', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-parent-margin');
+    const childAllowance = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + 2_000;
+    expect(PROJECT_IGNORE_SPAWN_TIMEOUT_MS).toBeGreaterThan(childAllowance);
+    writeOwnerStub(hooksRoot, {
+      status: 0,
+      stdout: `${JSON.stringify(projectIgnoreMaintenance('complete'))}\n`,
+      delayMs: childAllowance + 50,
+    });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-owner-parent-margin' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).not.toContain(
+      'Coral project-ignore maintenance',
+    );
+  }, 10_000);
 
   it('emits a flat, unwrapped payload and "Current host: copilot" under Copilot CLI', () => {
     const fixture = createFixture();
