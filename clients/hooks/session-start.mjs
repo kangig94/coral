@@ -123,6 +123,11 @@ const PROJECT_IGNORE_REASON_NOTICES = {
       'Coral could not record pending durability outside the working tree. Remedy: make the authorized project-ignore staging arena a writable real directory on a filesystem that supports directory fsync, then retry the maintenance.',
     retryable: true,
   },
+  'durability-evidence-quarantined': {
+    sentence:
+      'Coral moved a pending durability record it could not use into the project-ignore quarantine. Coral will preserve it there for inspection and will not retry that record or act on any target it might contain.',
+    retryable: false,
+  },
   'durability-evidence-cleanup-failed': {
     sentence:
       'Coral synced the artifact but could not clear its pending durability record. Remedy: make the authorized project-ignore staging arena writable, then retry the maintenance.',
@@ -130,7 +135,7 @@ const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'durability-sync-unsupported': {
     sentence:
-      'The platform does not support syncing an affected parent directory, so Coral cannot confirm crash durability. Remedy: update the artifact manually on a filesystem that supports directory fsync.',
+      'The platform does not support syncing an affected parent directory, so Coral could not confirm crash durability for this publication. When this was reported while reconciling a pending record, Coral discharged that record and will not retry it.',
     retryable: false,
   },
   'durability-sync-failed': {

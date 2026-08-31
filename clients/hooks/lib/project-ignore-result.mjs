@@ -29,6 +29,7 @@ const REASONS = new Set([
   'publish-cross-device',
   'publish-failed',
   'durability-evidence-unavailable',
+  'durability-evidence-quarantined',
   'durability-evidence-cleanup-failed',
   'durability-sync-unsupported',
   'durability-sync-failed',
@@ -89,6 +90,7 @@ function validateSweep(value, legacy) {
       [
         'arena-sweep-failed',
         'durability-evidence-unavailable',
+        'durability-evidence-quarantined',
         'durability-evidence-cleanup-failed',
         'durability-sync-unsupported',
         'durability-sync-failed',
@@ -181,6 +183,7 @@ function validateSymlink(value) {
     return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'upstream-refusal');
   }
   if (value.state === 'not-requested') return hasExactKeys(value, ['state']);
+  if (value.state === 'unchanged') return !hasDurability && hasExactKeys(value, ['state']);
   return hasDurability && hasExactKeys(value, ['state', 'durability']);
 }
 

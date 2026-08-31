@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   openProjectIgnoreMaintenanceLock,
-  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
+  projectIgnoreContextProbeDeadline,
   PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
 } from './lib/hook-utils.mjs';
@@ -43,8 +43,8 @@ let ownerDeadlineNs;
 try {
   const startedNs = BigInt(ownerStartedNs);
   if (startedNs < 0 || startedNs > process.hrtime.bigint()) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
-  contextProbeDeadlineNs =
-    startedNs + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+  contextProbeDeadlineNs = projectIgnoreContextProbeDeadline(startedNs);
+  if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
   ownerDeadlineNs =
     contextProbeDeadlineNs + BigInt(PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS) * 1_000_000n;
 } catch {

@@ -340,6 +340,14 @@ export const PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS = 250;
 export const PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS = 32;
 export const PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE = 75;
 
+export function projectIgnoreContextProbeDeadline(startedNs) {
+  try {
+    return BigInt(startedNs) + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+  } catch {
+    return null;
+  }
+}
+
 export function projectIgnoreStagingDir() {
   return join(coralStateRoot(), 'staging', 'project-ignore');
 }

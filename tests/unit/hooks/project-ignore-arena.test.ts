@@ -31,6 +31,7 @@ import {
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
   PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
   PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS,
+  projectIgnoreContextProbeDeadline,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 } from '../../../clients/hooks/lib/hook-utils.mjs';
 
@@ -230,6 +231,15 @@ describe('project-ignore arena reclamation', () => {
 });
 
 describe('project-ignore maintenance ownership', () => {
+  it('derives one absolute context-probe deadline from the owner chain start', () => {
+    const chainStartedNs = 12_345_678_901n;
+    const expectedDeadlineNs = chainStartedNs + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+
+    expect(projectIgnoreContextProbeDeadline(chainStartedNs)).toBe(expectedDeadlineNs);
+    expect(projectIgnoreContextProbeDeadline(chainStartedNs.toString())).toBe(expectedDeadlineNs);
+    expect(projectIgnoreContextProbeDeadline('not-a-clock-reading')).toBeNull();
+  });
+
   it('refuses an LF-bearing repository path through the real owner before creating lock state', () => {
     const repositoryRoot = join(fixtureRoot, 'repository\nroot');
     const projectDir = join(repositoryRoot, 'nested\nproject');
@@ -284,13 +294,14 @@ describe('project-ignore maintenance ownership', () => {
       owner.indexOf('openProjectIgnoreMaintenanceLock()'),
     );
     expect(owner).toContain('resolveProjectContext(request.projectDir, contextProbeDeadlineNs)');
+    expect(owner).toContain('projectIgnoreContextProbeDeadline(startedNs)');
     expect(owner).toContain("'--project-context'");
     expect(owner).toContain("'/dev/fd/0'");
     expect(sessionStart).toContain("outcome: 'maintenance-busy'");
     expect(sessionStart).toContain("outcome: 'maintenance-lock-unavailable'");
     expect(sessionStart).toContain('timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS');
     expect(child).toContain('lockWrapperWithinBudget(request.lockWrapperStartedNs)');
-    expect(child).toContain('contextProbeDeadline(request.lockWrapperStartedNs)');
+    expect(child).toContain('projectIgnoreContextProbeDeadline(request.lockWrapperStartedNs)');
     expect(child).toContain('contextProbeDeadlineNs,');
     expect(initProject).toContain('--validate-result');
     expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');

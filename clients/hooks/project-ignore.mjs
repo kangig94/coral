@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { isProjectIgnoreContext, maintainProjectIgnore } from './lib/project-ignore.mjs';
 import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 import {
+  projectIgnoreContextProbeDeadline,
   PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
 } from './lib/hook-utils.mjs';
@@ -58,14 +59,6 @@ function lockWrapperWithinBudget(startedNs) {
   }
 }
 
-function contextProbeDeadline(startedNs) {
-  try {
-    return BigInt(startedNs) + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
-  } catch {
-    return null;
-  }
-}
-
 if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result') {
   try {
     const result = JSON.parse(readFileSync(0, 'utf-8'));
@@ -77,7 +70,7 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result
   const request = parseArgs(process.argv.slice(2));
   if (!request) process.exit(1);
   if (!lockWrapperWithinBudget(request.lockWrapperStartedNs)) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
-  const contextProbeDeadlineNs = contextProbeDeadline(request.lockWrapperStartedNs);
+  const contextProbeDeadlineNs = projectIgnoreContextProbeDeadline(request.lockWrapperStartedNs);
   if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 
   try {

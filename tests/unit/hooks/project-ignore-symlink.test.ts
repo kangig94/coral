@@ -36,6 +36,7 @@ const fixture = vi.hoisted(() => ({
   gitIdentities: [] as string[],
   failSymlinkTarget: null as string | null,
   failRenameTo: null as string | null,
+  failQuarantineRename: false,
   failLinkTo: null as string | null,
   failUnlinkPath: null as string | null,
   failReplacementUnlink: false,
@@ -78,7 +79,10 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     // Only the final symlink path triggers this fixture; ignore-file publication must keep using the real rename.
     renameSync: (oldPath: unknown, newPath: unknown) => {
-      if (fixture.failRenameTo !== null && String(newPath) === fixture.failRenameTo) {
+      if (
+        (fixture.failRenameTo !== null && String(newPath) === fixture.failRenameTo) ||
+        (fixture.failQuarantineRename && String(newPath).includes('/quarantine/'))
+      ) {
         throw Object.assign(new Error('simulated rename failure'), { code: 'EIO' });
       }
       return (actual.renameSync as (o: unknown, n: unknown) => void)(oldPath, newPath);
@@ -108,7 +112,9 @@ vi.mock('node:fs', async (importOriginal) => {
     openSync: (path: unknown, flags: unknown, mode: unknown) => {
       const fd = (actual.openSync as (p: unknown, f: unknown, m: unknown) => number)(path, flags, mode);
       fixture.openPaths.set(fd, String(path));
-      if (flags === actual.constants.O_RDONLY) fixture.directoryFds.set(fd, String(path));
+      if ((Number(flags) & actual.constants.O_DIRECTORY) !== 0) {
+        fixture.directoryFds.set(fd, String(path));
+      }
       return fd;
     },
     fsyncSync: (fd: number) => {
@@ -208,6 +214,7 @@ beforeEach(() => {
   fixture.gitIdentities.length = 0;
   fixture.failSymlinkTarget = null;
   fixture.failRenameTo = null;
+  fixture.failQuarantineRename = false;
   fixture.failLinkTo = null;
   fixture.failUnlinkPath = null;
   fixture.failReplacementUnlink = false;
@@ -321,6 +328,7 @@ const durabilityMarkers = (): string[] =>
   readdirSync(durabilityArena()).filter((name) => name.startsWith('.durability-'));
 const durabilityMarker = (target: string): string =>
   join(durabilityArena(), `.durability-${createHash('sha256').update(target).digest('hex')}.pending`);
+const quarantineDir = (): string => join(durabilityArena(), 'quarantine');
 
 describe('project-ignore symlink maintenance', () => {
   it.each([
@@ -488,6 +496,31 @@ describe('project-ignore symlink maintenance', () => {
     expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
   });
 
+  it('reconciles an interrupted symlink creation when a later run does not request the link', async () => {
+    fixture.failDirectoryFsyncPath = join(projectDir, '.claude');
+    fixture.failDirectoryFsyncCode = 'EIO';
+
+    const published = await maintain('prod');
+    const marker = durabilityMarker(link());
+
+    expect(published.status).toBe('partial');
+    expect(published.artifacts.symlink).toEqual({
+      state: 'created',
+      durability: { state: 'failed', reason: 'durability-sync-failed' },
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe(link());
+
+    fixture.failDirectoryFsyncPath = null;
+    fixture.failDirectoryFsyncCode = null;
+    fixture.fsyncedDirectoryPaths.length = 0;
+    const reconciled = await maintain('prod', false);
+
+    expect(reconciled.status).toBe('complete');
+    expect(reconciled.artifacts.symlink).toEqual({ state: 'not-requested' });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(projectDir, '.claude'));
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it('refuses when the authorized repository arena cannot be prepared', async () => {
     writeFileSync(join(fixture.gitDir, 'coral'), 'not a directory');
 
@@ -542,11 +575,51 @@ describe('project-ignore symlink maintenance', () => {
 
     expect(result.status).toBe('complete');
     expect(result.artifacts.exclude).toEqual({ state: 'unchanged', residue: 'none' });
-    expect(result.artifacts.symlink).toEqual({ state: 'unchanged', durability: { state: 'synced' } });
+    expect(result.artifacts.symlink).toEqual({ state: 'unchanged' });
     expect(result.artifacts.scopedIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
     expect(result.artifacts.rootIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
-    expect(fixture.fsyncedDirectoryPaths).toEqual([join(projectDir, '.claude')]);
+    expect(fixture.fsyncedDirectoryPaths).toEqual([]);
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
+  });
+
+  it('does not sync or report partial for an unchanged symlink when directory sync is unsupported', async () => {
+    await maintain('prod');
+    fixture.failDirectoryFsyncPath = join(projectDir, '.claude');
+    fixture.failDirectoryFsyncCode = 'EINVAL';
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.symlink).toEqual({ state: 'unchanged' });
+    expect(fixture.fsyncedDirectoryPaths).toEqual([]);
+  });
+
+  it('reconciles an interrupted symlink repoint on a later run', async () => {
+    await maintain('prod');
+    fixture.failDirectoryFsyncPath = join(projectDir, '.claude');
+    fixture.failDirectoryFsyncCode = 'EIO';
+
+    const published = await maintain('dev');
+    const marker = durabilityMarker(link());
+
+    expect(published.status).toBe('partial');
+    expect(published.artifacts.symlink).toEqual({
+      state: 'repointed',
+      residue: 'none',
+      durability: { state: 'failed', reason: 'durability-sync-failed' },
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe(link());
+
+    fixture.failDirectoryFsyncPath = null;
+    fixture.failDirectoryFsyncCode = null;
+    fixture.fsyncedDirectoryPaths.length = 0;
+    const reconciled = await maintain('dev', false);
+
+    expect(reconciled.status).toBe('complete');
+    expect(reconciled.artifacts.symlink).toEqual({ state: 'not-requested' });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(projectDir, '.claude'));
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('reconciles an interrupted publication when that artifact is not planned later', async () => {
@@ -662,10 +735,56 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it('leaves an invalid marker in place and reports unavailable durability evidence', async () => {
+  it('quarantines an undecodable marker once and leaves the next run clean', async () => {
+    await maintain('prod');
+    const marker = durabilityMarker(join(fixture.gitDir, 'info', 'exclude'));
+    const undecodable = Buffer.from([0xc3, 0x28]);
+    writeFileSync(marker, undecodable);
+
+    const quarantined = await maintain('prod');
+
+    expect(quarantined.status).toBe('refused');
+    expect(quarantined.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-quarantined',
+    });
+    expect(existsSync(marker)).toBe(false);
+    const quarantinedNames = readdirSync(quarantineDir());
+    expect(quarantinedNames).toHaveLength(1);
+    expect(readFileSync(join(quarantineDir(), quarantinedNames[0]))).toEqual(undecodable);
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(quarantined)).toBe(true);
+
+    const clean = await maintain('prod');
+
+    expect(clean.status).toBe('complete');
+    expect(clean.artifacts.arenaSweep).toEqual({ state: 'unchanged' });
+    expect(readdirSync(quarantineDir())).toEqual(quarantinedNames);
+  });
+
+  it('quarantines a marker that does not name an absolute target', async () => {
     await maintain('prod');
     const marker = durabilityMarker(join(fixture.gitDir, 'info', 'exclude'));
     writeFileSync(marker, 'not-an-absolute-path');
+
+    const result = await maintain('prod');
+
+    expect(result.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-quarantined',
+    });
+    expect(existsSync(marker)).toBe(false);
+    const quarantinedNames = readdirSync(quarantineDir());
+    expect(quarantinedNames).toHaveLength(1);
+    expect(readFileSync(join(quarantineDir(), quarantinedNames[0]), 'utf-8')).toBe('not-an-absolute-path');
+  });
+
+  it('retains an undecodable marker when its quarantine move fails', async () => {
+    await maintain('prod');
+    const marker = durabilityMarker(join(fixture.gitDir, 'info', 'exclude'));
+    writeFileSync(marker, Buffer.from([0xc3, 0x28]));
+    fixture.failQuarantineRename = true;
 
     const result = await maintain('prod');
 
@@ -674,10 +793,7 @@ describe('project-ignore symlink maintenance', () => {
       state: 'refused',
       reason: 'durability-evidence-unavailable',
     });
-    expect(readFileSync(marker, 'utf-8')).toBe('not-an-absolute-path');
-    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
-    expect(isProjectIgnoreResult(result)).toBe(true);
+    expect(existsSync(marker)).toBe(true);
   });
 
   it('removes a marker whose named parent no longer exists', async () => {
@@ -690,6 +806,54 @@ describe('project-ignore symlink maintenance', () => {
 
     expect(result.status).toBe('complete');
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('discharges an unsupported reconciliation record and leaves the next run clean', async () => {
+    await maintain('prod');
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const marker = durabilityMarker(excludePath);
+    writeFileSync(marker, excludePath);
+    fixture.failDirectoryFsyncPath = join(fixture.gitDir, 'info');
+    fixture.failDirectoryFsyncCode = 'EINVAL';
+
+    const discharged = await maintain('prod');
+
+    expect(discharged.status).toBe('refused');
+    expect(discharged.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'durability-sync-unsupported',
+    });
+    expect(existsSync(marker)).toBe(false);
+
+    fixture.fsyncedDirectoryPaths.length = 0;
+    const clean = await maintain('prod');
+
+    expect(clean.status).toBe('complete');
+    expect(clean.artifacts.arenaSweep).toEqual({ state: 'unchanged' });
+    expect(fixture.fsyncedDirectoryPaths).toEqual([]);
+  });
+
+  it('refuses to sync a regular-file parent and reconciles it as unreachable', async () => {
+    await maintain('prod');
+    const parent = join(root, 'former-parent');
+    const target = join(parent, 'artifact');
+    writeFileSync(parent, 'not a directory');
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { fsyncParent } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+
+    expect(fsyncParent(target)).toEqual({
+      state: 'failed',
+      reason: 'durability-sync-failed',
+    });
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(parent);
+
+    const marker = durabilityMarker(target);
+    writeFileSync(marker, target);
+    const reconciled = await maintain('prod');
+
+    expect(reconciled.status).toBe('complete');
+    expect(existsSync(marker)).toBe(false);
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(parent);
   });
 
   it('leaves no final evidence when marker installation is interrupted', async () => {
@@ -714,6 +878,23 @@ describe('project-ignore symlink maintenance', () => {
     expect(later.status).toBe('complete');
     expect(later.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
     expect(fixture.fsyncedDirectoryPaths).not.toContain(join(fixture.gitDir, 'info'));
+    expect(durabilityMarkers()).toEqual([]);
+  });
+
+  it('does not begin publication when syncing the installed marker rename fails', async () => {
+    fixture.failDirectoryFsyncPath = durabilityArena();
+    fixture.failDirectoryFsyncCode = 'EIO';
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+      residue: 'none',
+    });
+    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
     expect(durabilityMarkers()).toEqual([]);
   });
 
@@ -951,6 +1132,9 @@ describe('project-ignore symlink maintenance', () => {
     expect(noticed.size, 'the notice table must be readable from source').toBeGreaterThan(0);
     expect(source).toContain("'durability-sync-unsupported'");
     expect(source).toContain("'durability-sync-failed'");
+    expect(source).toContain("'durability-evidence-quarantined'");
+    expect(source).toContain('will not retry that record or act on any target it might contain');
+    expect(source).toContain('Coral discharged that record and will not retry it');
     expect(source).toContain('the next run will reconcile that record before planning project artifacts');
     expect(source).toContain('artifact.durability?.reason');
     expect(

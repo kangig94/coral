@@ -21,7 +21,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import {
   coralProjectDir,
   coralStateRoot,
@@ -161,14 +161,16 @@ function snapshotUnchanged(path, snapshot) {
   return current.ok && current.exists === snapshot.exists && current.content.equals(snapshot.content);
 }
 
-function fsyncParent(path, { missingParentIsSynced = false } = {}) {
+export function fsyncParent(path, { missingParentIsSynced = false } = {}) {
   let fd;
   try {
-    fd = openSync(dirname(path), constants.O_RDONLY);
+    fd = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY);
     fsyncSync(fd);
     return { state: 'synced' };
   } catch (error) {
-    if (missingParentIsSynced && isMissing(error)) return { state: 'synced' };
+    if (missingParentIsSynced && (isMissing(error) || error?.code === 'ENOTDIR')) {
+      return { state: 'synced' };
+    }
     return UNSUPPORTED_DIRECTORY_SYNC_CODES.has(error?.code)
       ? { state: 'unsupported', reason: 'durability-sync-unsupported' }
       : { state: 'failed', reason: 'durability-sync-failed' };
@@ -237,6 +239,57 @@ function recordPendingDurability(marker) {
   }
 }
 
+function quarantineDurabilityMarker(durabilityDir, markerPath, markerName) {
+  const quarantineDir = join(durabilityDir, 'quarantine');
+  let quarantineCreated = false;
+  try {
+    mkdirSync(quarantineDir, { mode: 0o700 });
+    quarantineCreated = true;
+  } catch (error) {
+    if (error?.code !== 'EEXIST' || !isRealDirectory(quarantineDir)) return false;
+  }
+  if (quarantineCreated && fsyncParent(quarantineDir).state === 'failed') return false;
+
+  let quarantinePath = join(quarantineDir, markerName);
+  for (let suffix = 1; ; suffix += 1) {
+    try {
+      lstatSync(quarantinePath);
+      quarantinePath = join(quarantineDir, `${markerName}.${suffix}`);
+    } catch (error) {
+      if (!isMissing(error)) return false;
+      break;
+    }
+  }
+
+  try {
+    renameSync(markerPath, quarantinePath);
+  } catch {
+    return false;
+  }
+
+  const quarantineDurability = fsyncParent(quarantinePath);
+  const reconciliationDurability = fsyncParent(markerPath);
+  if (quarantineDurability.state !== 'failed' && reconciliationDurability.state !== 'failed') {
+    return true;
+  }
+  try {
+    renameSync(quarantinePath, markerPath);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function decodeDurabilityTarget(content) {
+  let target;
+  try {
+    target = new TextDecoder('utf-8', { fatal: true }).decode(content);
+  } catch {
+    return null;
+  }
+  return isAbsolute(target) && !target.includes('\0') ? target : null;
+}
+
 function reconcileDurabilityMarkers(durabilityDir) {
   if (!durabilityDir) return { ok: false, reason: 'durability-evidence-unavailable' };
   let markerNames;
@@ -254,17 +307,27 @@ function reconcileDurabilityMarkers(durabilityDir) {
     const markerPath = join(durabilityDir, name);
     const snapshot = readRegularSnapshot(markerPath);
     if (!snapshot.ok) {
-      failure ??= 'durability-evidence-unavailable';
+      failure ??= quarantineDurabilityMarker(durabilityDir, markerPath, name)
+        ? 'durability-evidence-quarantined'
+        : 'durability-evidence-unavailable';
       continue;
     }
-    const target = snapshot.content.toString('utf-8');
-    if (!isAbsolute(target) || target.includes('\0')) {
-      failure ??= 'durability-evidence-unavailable';
+    const target = decodeDurabilityTarget(snapshot.content);
+    if (target === null) {
+      failure ??= quarantineDurabilityMarker(durabilityDir, markerPath, name)
+        ? 'durability-evidence-quarantined'
+        : 'durability-evidence-unavailable';
       continue;
     }
     const durability = fsyncParent(target, { missingParentIsSynced: true });
-    if (durability.state !== 'synced') {
+    if (durability.state === 'failed') {
       failure ??= durability.reason;
+      continue;
+    }
+    if (durability.state === 'unsupported') {
+      failure ??= safeUnlink(markerPath)
+        ? durability.reason
+        : 'durability-evidence-cleanup-failed';
       continue;
     }
     if (!safeUnlink(markerPath)) failure ??= 'durability-evidence-cleanup-failed';
@@ -935,33 +998,68 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
   return { ok: true, symlinkExists: true, action: 'repoint', link, target };
 }
 
-function placeCoralSymlink(symlinkPlan, token, stagingDir) {
+function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabilityRunDir) {
   if (symlinkPlan.action === 'not-requested') return { state: 'not-requested' };
-  if (symlinkPlan.action === 'unchanged') {
-    return { state: 'unchanged', durability: fsyncParent(symlinkPlan.link) };
-  }
+  if (symlinkPlan.action === 'unchanged') return { state: 'unchanged' };
 
   const target = symlinkPlan.target;
   try {
     mkdirSync(target, { recursive: true });
-    if (symlinkPlan.action === 'create') {
-      symlinkSync(target, symlinkPlan.link);
-      return { state: 'created', durability: fsyncParent(symlinkPlan.link) };
-    }
   } catch (error) {
     return {
       state: 'refused',
-      reason: error?.code === 'EEXIST' ? 'symlink-conflict' : 'publish-failed',
+      reason: 'publish-failed',
     };
   }
 
-  // A repoint must not expose a missing final link if the hook is killed between syscalls.
+  const marker = durabilityMarker(durabilityDir, durabilityRunDir, symlinkPlan.link);
+  if (!marker) return { state: 'refused', reason: 'durability-evidence-unavailable' };
+
+  if (symlinkPlan.action === 'create') {
+    let markerCreated = false;
+    let result = { state: 'refused', reason: 'publish-failed' };
+    try {
+      const recorded = recordPendingDurability(marker);
+      markerCreated = recorded.created;
+      if (!recorded.ok) {
+        return { state: 'refused', reason: 'durability-evidence-unavailable' };
+      }
+      symlinkSync(target, symlinkPlan.link);
+      result = {
+        state: 'created',
+        durability: syncPendingPublication(symlinkPlan.link, marker),
+      };
+    } catch (error) {
+      result = {
+        state: 'refused',
+        reason: error?.code === 'EEXIST' ? 'symlink-conflict' : 'publish-failed',
+      };
+    } finally {
+      if (markerCreated && result.state !== 'created') safeUnlink(marker.path);
+    }
+    return result;
+  }
+
   const tempLink = join(stagingDir, `coral-${token}.tmp`);
+  let markerCreated = false;
   let result = { state: 'refused', reason: 'publish-failed', residue: 'none' };
   try {
+    const recorded = recordPendingDurability(marker);
+    markerCreated = recorded.created;
+    if (!recorded.ok) {
+      return {
+        state: 'refused',
+        reason: 'durability-evidence-unavailable',
+        residue: 'none',
+      };
+    }
     symlinkSync(target, tempLink);
     renameSync(tempLink, symlinkPlan.link);
-    result = { state: 'repointed', residue: 'none', durability: fsyncParent(symlinkPlan.link) };
+    result = {
+      state: 'repointed',
+      residue: 'none',
+      durability: syncPendingPublication(symlinkPlan.link, marker),
+    };
   } catch (error) {
     result = {
       state: 'refused',
@@ -975,6 +1073,7 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir) {
           ? { ...result, reason: 'staging-cleanup-failed', residue: 'owned-staging' }
           : { ...result, residue: 'owned-staging' };
     }
+    if (markerCreated && result.state !== 'repointed') safeUnlink(marker.path);
   }
   return result;
 }
@@ -1170,7 +1269,13 @@ function maintainProjectIgnoreArtifacts({
     }
   }
 
-  artifacts.symlink = placeCoralSymlink(preflight.symlink, token, stagingDir);
+  artifacts.symlink = placeCoralSymlink(
+    preflight.symlink,
+    token,
+    stagingDir,
+    durabilityDir,
+    durabilityRunDir,
+  );
   if (artifacts.symlink.state === 'refused') {
     artifacts.scopedIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
     artifacts.rootIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
