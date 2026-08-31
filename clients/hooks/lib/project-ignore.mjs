@@ -20,7 +20,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   coralProjectDir,
@@ -40,7 +40,7 @@ const TEMP_WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EX
 const CORAL_IGNORE_ENTRY = 'coral';
 const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 const LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS = 30_000;
-const GIT_CONTEXT_FIELD_TIMEOUT_MS = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS / 4;
+const DURABILITY_MARKER_NAME = /^\.durability-[0-9a-f]{64}\.pending$/u;
 const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP']);
 
 function isMissing(error) {
@@ -161,13 +161,14 @@ function snapshotUnchanged(path, snapshot) {
   return current.ok && current.exists === snapshot.exists && current.content.equals(snapshot.content);
 }
 
-function fsyncParent(path) {
+function fsyncParent(path, { missingParentIsSynced = false } = {}) {
   let fd;
   try {
     fd = openSync(dirname(path), constants.O_RDONLY);
     fsyncSync(fd);
     return { state: 'synced' };
   } catch (error) {
+    if (missingParentIsSynced && isMissing(error)) return { state: 'synced' };
     return UNSUPPORTED_DIRECTORY_SYNC_CODES.has(error?.code)
       ? { state: 'unsupported', reason: 'durability-sync-unsupported' }
       : { state: 'failed', reason: 'durability-sync-failed' };
@@ -197,48 +198,78 @@ function withDurability(artifact, ...outcomes) {
   return durability ? { ...artifact, durability } : artifact;
 }
 
-// Nothing about a marker may depend on its content: readers reach it only through the target-derived path they already hold.
+// Durability evidence must remain discoverable without the repository context or artifact demand that created it.
 function durabilityMarkerPath(durabilityDir, target) {
   const digest = createHash('sha256').update(target).digest('hex');
   return join(durabilityDir, `.durability-${digest}.pending`);
 }
 
-function inspectDurabilityMarker(durabilityDir, target) {
-  if (!durabilityDir) return { ok: false };
+function durabilityMarker(durabilityDir, durabilityRunDir, target) {
+  if (!durabilityDir || !durabilityRunDir) return null;
   const path = durabilityMarkerPath(durabilityDir, target);
-  try {
-    lstatSync(path);
-    return { ok: true, marker: { path, pending: true } };
-  } catch (error) {
-    return isMissing(error)
-      ? { ok: true, marker: { path, pending: false } }
-      : { ok: false };
-  }
+  return { path, stagingPath: join(durabilityRunDir, basename(path)), target };
 }
 
 function recordPendingDurability(marker) {
-  if (marker.pending) return { ok: true, created: false };
   let fd;
+  let created = false;
   try {
-    fd = openSync(marker.path, TEMP_WRITE_FLAGS, 0o600);
+    fd = openSync(marker.stagingPath, TEMP_WRITE_FLAGS, 0o600);
+    writeFileSync(fd, marker.target);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
+    renameSync(marker.stagingPath, marker.path);
+    created = true;
     if (fsyncParent(marker.path).state !== 'synced') {
-      safeUnlink(marker.path);
-      return { ok: false, created: false };
+      return { ok: false, created };
     }
-    marker.pending = true;
-    return { ok: true, created: true };
+    return { ok: true, created };
   } catch {
-    return { ok: false, created: false };
+    return { ok: false, created };
   } finally {
     if (fd !== undefined) {
       try {
         closeSync(fd);
       } catch {}
     }
+    safeUnlink(marker.stagingPath);
   }
+}
+
+function reconcileDurabilityMarkers(durabilityDir) {
+  if (!durabilityDir) return { ok: false, reason: 'durability-evidence-unavailable' };
+  let markerNames;
+  try {
+    markerNames = readdirSync(durabilityDir, { withFileTypes: true })
+      .filter((entry) => DURABILITY_MARKER_NAME.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return { ok: false, reason: 'durability-evidence-unavailable' };
+  }
+
+  let failure = null;
+  for (const name of markerNames) {
+    const markerPath = join(durabilityDir, name);
+    const snapshot = readRegularSnapshot(markerPath);
+    if (!snapshot.ok) {
+      failure ??= 'durability-evidence-unavailable';
+      continue;
+    }
+    const target = snapshot.content.toString('utf-8');
+    if (!isAbsolute(target) || target.includes('\0')) {
+      failure ??= 'durability-evidence-unavailable';
+      continue;
+    }
+    const durability = fsyncParent(target, { missingParentIsSynced: true });
+    if (durability.state !== 'synced') {
+      failure ??= durability.reason;
+      continue;
+    }
+    if (!safeUnlink(markerPath)) failure ??= 'durability-evidence-cleanup-failed';
+  }
+  return failure ? { ok: false, reason: failure } : { ok: true };
 }
 
 function syncPendingPublication(target, marker) {
@@ -258,13 +289,7 @@ export function atomicReplace({
   stagingName = 'replacement.tmp',
 }) {
   if (next.equals(snapshot.content)) {
-    return durabilityMarker.pending
-      ? {
-          state: 'unchanged',
-          residue: 'none',
-          durability: syncPendingPublication(target, durabilityMarker),
-        }
-      : { state: 'unchanged', residue: 'none' };
+    return { state: 'unchanged', residue: 'none' };
   }
   if (next.length > MAX_GITIGNORE_BYTES) {
     return { state: 'refused', reason: 'artifact-too-large', residue: 'none' };
@@ -284,10 +309,10 @@ export function atomicReplace({
   let result = { state: 'refused', reason: 'publish-failed', residue: 'none' };
   try {
     const recorded = recordPendingDurability(durabilityMarker);
+    markerCreated = recorded.created;
     if (!recorded.ok) {
       return { state: 'refused', reason: 'durability-evidence-unavailable', residue: 'none' };
     }
-    markerCreated = recorded.created;
     fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
     writeFileSync(fd, next);
     if (snapshot.exists) fchmodSync(fd, snapshot.mode);
@@ -369,13 +394,19 @@ function isNotGitRepository(error, projectDir) {
   );
 }
 
-function readGitPath(projectDir, args) {
+function gitContextProbeDeadline() {
+  return process.hrtime.bigint() + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+}
+
+function readGitPath(projectDir, args, probeDeadlineNs) {
+  const remainingMs = Number((probeDeadlineNs - process.hrtime.bigint()) / 1_000_000n);
+  if (remainingMs < 1) throw new Error('git context probe budget exhausted');
   const output = execFileSync('git', args, {
     cwd: projectDir,
     encoding: 'utf-8',
     env: { ...process.env, LC_ALL: 'C' },
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_CONTEXT_FIELD_TIMEOUT_MS,
+    timeout: Math.min(remainingMs, PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS),
   });
   if (!output.endsWith('\n')) throw new Error('unterminated git context field');
   return output.slice(0, -1);
@@ -392,14 +423,16 @@ function resolveCommonGitDirectory(gitDir) {
   }
 }
 
-function resolveGitDirectoryIdentity(projectDir) {
-  return realpathSync(readGitPath(projectDir, ['rev-parse', '--absolute-git-dir']));
+function resolveGitDirectoryIdentity(projectDir, probeDeadlineNs) {
+  return realpathSync(readGitPath(projectDir, ['rev-parse', '--absolute-git-dir'], probeDeadlineNs));
 }
 
-function findGitContext(projectDir) {
+function findGitContext(projectDir, probeDeadlineNs) {
   try {
-    const gitDir = resolveGitDirectoryIdentity(projectDir);
-    const gitRoot = realpathSync(readGitPath(projectDir, ['rev-parse', '--show-toplevel']));
+    const gitDir = resolveGitDirectoryIdentity(projectDir, probeDeadlineNs);
+    const gitRoot = realpathSync(
+      readGitPath(projectDir, ['rev-parse', '--show-toplevel'], probeDeadlineNs),
+    );
     const commonGitDir = resolveCommonGitDirectory(gitDir);
     if (!gitRoot || !commonGitDir) return { state: 'unresolvable' };
     const excludePath = join(commonGitDir, 'info', 'exclude');
@@ -586,14 +619,14 @@ function removeProjectIgnoreRunDir(runDir) {
   }
 }
 
-export function resolveProjectContext(projectDir) {
+export function resolveProjectContext(projectDir, probeDeadlineNs = gitContextProbeDeadline()) {
   let realProjectDir;
   try {
     realProjectDir = realpathSync(projectDir);
   } catch {
     return null;
   }
-  const gitContext = findGitContext(realProjectDir);
+  const gitContext = findGitContext(realProjectDir, probeDeadlineNs);
   if (gitContext.state === 'unresolvable') return null;
   const repositoryContext = gitContext.state === 'resolved' ? gitContext : null;
   const gitRoot = repositoryContext?.gitRoot ?? realProjectDir;
@@ -802,18 +835,17 @@ function prepareReplacement({
   devicePath,
   stagingDir,
   durabilityDir,
+  durabilityRunDir,
 }) {
-  const durability = inspectDurabilityMarker(durabilityDir, target);
-  if (!durability.ok) return { ok: false, reason: 'durability-evidence-unavailable' };
-  if (!contentChangeNeeded && !durability.marker.pending) {
-    return { ok: true, replacement: null };
-  }
+  if (!contentChangeNeeded) return { ok: true, replacement: null };
   if (next.length > MAX_GITIGNORE_BYTES) return { ok: false, reason: 'artifact-too-large' };
   if (!next.equals(snapshot.content)) {
     const deviceRefusal = stagingDeviceRefusal(devicePath, stagingDir);
     if (deviceRefusal) return { ok: false, reason: deviceRefusal };
   }
-  return { ok: true, replacement: { target, snapshot, next, durabilityMarker: durability.marker } };
+  const marker = durabilityMarker(durabilityDir, durabilityRunDir, target);
+  if (!marker) return { ok: false, reason: 'durability-evidence-unavailable' };
+  return { ok: true, replacement: { target, snapshot, next, durabilityMarker: marker } };
 }
 
 function excludeDevicePath(excludePath) {
@@ -829,28 +861,27 @@ function excludeDevicePath(excludePath) {
   return isRealDirectory(parent) ? parent : null;
 }
 
-function ensureExcludeDirectory(excludePath, durabilityDir) {
+function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
   const excludeDir = dirname(excludePath);
-  const durability = inspectDurabilityMarker(durabilityDir, excludeDir);
-  if (!durability.ok) return { ok: false, reason: 'durability-evidence-unavailable' };
-  if (isRealDirectory(excludeDir)) {
-    return durability.marker.pending
-      ? { ok: true, durability: syncPendingPublication(excludeDir, durability.marker) }
-      : { ok: true };
+  if (isRealDirectory(excludeDir)) return { ok: true };
+  const marker = durabilityMarker(durabilityDir, durabilityRunDir, excludeDir);
+  if (!marker) return { ok: false, reason: 'durability-evidence-unavailable' };
+  const recorded = recordPendingDurability(marker);
+  if (!recorded.ok) {
+    if (recorded.created) safeUnlink(marker.path);
+    return { ok: false, reason: 'durability-evidence-unavailable' };
   }
-  const recorded = recordPendingDurability(durability.marker);
-  if (!recorded.ok) return { ok: false, reason: 'durability-evidence-unavailable' };
   try {
     mkdirSync(excludeDir);
   } catch (error) {
-    if (recorded.created) safeUnlink(durability.marker.path);
+    if (recorded.created) safeUnlink(marker.path);
     if (error?.code !== 'EEXIST') return { ok: false };
   }
   if (!isRealDirectory(excludeDir)) {
-    if (recorded.created) safeUnlink(durability.marker.path);
+    if (recorded.created) safeUnlink(marker.path);
     return { ok: false };
   }
-  return { ok: true, durability: syncPendingPublication(excludeDir, durability.marker) };
+  return { ok: true, durability: syncPendingPublication(excludeDir, marker) };
 }
 
 function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
@@ -967,7 +998,24 @@ function refusedArtifacts(arenaSweep, legacySweep, artifact, reason) {
   return artifacts;
 }
 
-function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir, durabilityDir }) {
+function refusedDurabilityReconciliation(reason) {
+  return {
+    arenaSweep: { state: 'refused', reason },
+    legacySweep: { ...SKIPPED_ARTIFACT },
+    exclude: { ...SKIPPED_REPLACEMENT },
+    symlink: { ...SKIPPED_ARTIFACT },
+    scopedIgnoreRetraction: { ...SKIPPED_REPLACEMENT },
+    rootIgnoreRetraction: { ...SKIPPED_REPLACEMENT },
+  };
+}
+
+function preflightProjectIgnoreArtifacts({
+  context,
+  createSymlink,
+  stagingDir,
+  durabilityDir,
+  durabilityRunDir,
+}) {
   const symlink = prepareCoralSymlink(context.projectDir, createSymlink, stagingDir);
   if (!symlink.ok) return { ok: false, artifact: 'symlink', reason: symlink.reason };
 
@@ -1009,6 +1057,7 @@ function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir, d
       devicePath: excludePathDevice,
       stagingDir,
       durabilityDir,
+      durabilityRunDir,
     });
   }
   let scopedIgnoreRetraction = null;
@@ -1021,6 +1070,7 @@ function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir, d
       devicePath: claudeDir,
       stagingDir,
       durabilityDir,
+      durabilityRunDir,
     });
   }
   const rootIgnoreRetraction = prepareReplacement({
@@ -1031,6 +1081,7 @@ function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir, d
     devicePath: context.gitRoot,
     stagingDir,
     durabilityDir,
+    durabilityRunDir,
   });
 
   for (const [artifact, replacement] of [
@@ -1059,6 +1110,7 @@ function maintainProjectIgnoreArtifacts({
   token,
   stagingDir,
   durabilityDir,
+  durabilityRunDir,
   arenaSweep,
   legacySweep,
 }) {
@@ -1067,6 +1119,7 @@ function maintainProjectIgnoreArtifacts({
     createSymlink,
     stagingDir,
     durabilityDir,
+    durabilityRunDir,
   });
   if (!preflight.ok) {
     return refusedArtifacts(arenaSweep, legacySweep, preflight.artifact, preflight.reason);
@@ -1087,7 +1140,11 @@ function maintainProjectIgnoreArtifacts({
       : { state: 'not-needed', residue: 'none' },
   };
   if (preflight.publishExclude) {
-    const excludeDirectory = ensureExcludeDirectory(context.excludePath, durabilityDir);
+    const excludeDirectory = ensureExcludeDirectory(
+      context.excludePath,
+      durabilityDir,
+      durabilityRunDir,
+    );
     if (!excludeDirectory.ok) {
       artifacts.exclude = {
         state: 'refused',
@@ -1166,13 +1223,20 @@ export function maintainProjectIgnore({
   createSymlink = false,
   token = `${process.pid}-${Date.now()}`,
   context: suppliedContext,
+  contextProbeDeadlineNs,
 }) {
-  const context = suppliedContext === undefined ? resolveProjectContext(projectDir) : suppliedContext;
+  const context =
+    suppliedContext === undefined
+      ? resolveProjectContext(projectDir, contextProbeDeadlineNs)
+      : suppliedContext;
   const contextRefusal = projectIgnoreContextRefusal(context);
   if (contextRefusal) return contextRefusal;
   if (
     suppliedContext !== undefined &&
-    !isDeepStrictEqual(resolveProjectContext(context.projectDir), suppliedContext)
+    !isDeepStrictEqual(
+      resolveProjectContext(context.projectDir, contextProbeDeadlineNs),
+      suppliedContext,
+    )
   ) {
     return projectIgnoreContextRefusal(null);
   }
@@ -1197,43 +1261,56 @@ export function maintainProjectIgnore({
         : { state: 'unchanged' };
 
   let artifacts;
-  const legacySweep = sweepLegacyWorkingTreeStaging(context);
-  if (legacySweep.state === 'refused') {
-    artifacts = {
-      arenaSweep,
-      legacySweep,
-      exclude: { ...SKIPPED_REPLACEMENT },
-      symlink: { ...SKIPPED_ARTIFACT },
-      scopedIgnoreRetraction: { ...SKIPPED_REPLACEMENT },
-      rootIgnoreRetraction: { ...SKIPPED_REPLACEMENT },
-    };
+  const reconciliation = reconcileDurabilityMarkers(fallbackArena);
+  if (!reconciliation.ok) {
+    artifacts = refusedDurabilityReconciliation(reconciliation.reason);
   } else {
-    const useRepositoryArena = context.commonGitDir !== null && repositoryArenaAuthorized;
-    const arena = useRepositoryArena ? repositoryArena : fallbackArena;
-    const stagingDir = arena ? createProjectIgnoreRunDir(arena, startedAt) : null;
-
-    if (!stagingDir && useRepositoryArena) {
-      artifacts = refusedArtifacts(
+    const legacySweep = sweepLegacyWorkingTreeStaging(context);
+    if (legacySweep.state === 'refused') {
+      artifacts = {
         arenaSweep,
         legacySweep,
-        'exclude',
-        'repository-arena-unavailable',
-      );
+        exclude: { ...SKIPPED_REPLACEMENT },
+        symlink: { ...SKIPPED_ARTIFACT },
+        scopedIgnoreRetraction: { ...SKIPPED_REPLACEMENT },
+        rootIgnoreRetraction: { ...SKIPPED_REPLACEMENT },
+      };
     } else {
+      const useRepositoryArena = context.commonGitDir !== null && repositoryArenaAuthorized;
+      const durabilityRunDir = fallbackArena
+        ? createProjectIgnoreRunDir(fallbackArena, startedAt)
+        : null;
+      const stagingDir = useRepositoryArena
+        ? repositoryArena
+          ? createProjectIgnoreRunDir(repositoryArena, startedAt)
+          : null
+        : durabilityRunDir;
       try {
-        artifacts = maintainProjectIgnoreArtifacts({
-          context,
-          createSymlink,
-          token,
-          stagingDir,
-          durabilityDir: arena,
-          arenaSweep,
-          legacySweep,
-        });
-      } finally {
-        if (stagingDir && removeProjectIgnoreRunDir(stagingDir)) {
-          reconcileRemovedProjectIgnoreStaging(artifacts);
+        if (!stagingDir && useRepositoryArena) {
+          artifacts = refusedArtifacts(
+            arenaSweep,
+            legacySweep,
+            'exclude',
+            'repository-arena-unavailable',
+          );
+        } else {
+          artifacts = maintainProjectIgnoreArtifacts({
+            context,
+            createSymlink,
+            token,
+            stagingDir,
+            durabilityDir: fallbackArena,
+            durabilityRunDir,
+            arenaSweep,
+            legacySweep,
+          });
         }
+      } finally {
+        const stagingRemoved = stagingDir && removeProjectIgnoreRunDir(stagingDir);
+        if (durabilityRunDir && durabilityRunDir !== stagingDir) {
+          removeProjectIgnoreRunDir(durabilityRunDir);
+        }
+        if (stagingRemoved) reconcileRemovedProjectIgnoreStaging(artifacts);
       }
     }
   }

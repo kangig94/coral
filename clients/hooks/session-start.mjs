@@ -135,7 +135,7 @@ const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'durability-sync-failed': {
     sentence:
-      'Coral published or found the artifact but the filesystem failed to sync its parent directory. Remedy: check the filesystem and storage device, then retry the maintenance.',
+      'Coral could not sync the parent named by a retained durability record. Remedy: check the filesystem and storage device; the next run will reconcile that record before planning project artifacts.',
     retryable: true,
   },
   'staging-cleanup-failed': {

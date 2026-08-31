@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // `coralStateRoot` has no cached module-level state (it reads `homedir()` fresh on every call), so a static
 // import is safe to use across the module reloads `maintain()` triggers below via `vi.resetModules()`.
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { coralStateRoot } from '../../../clients/hooks/lib/hook-utils.mjs';
+import { coralStateRoot, PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS } from '../../../clients/hooks/lib/hook-utils.mjs';
 
 const manifest = vi.hoisted(() => ({ flavor: 'prod' as 'prod' | 'dev' }));
 const fixture = vi.hoisted(() => ({
@@ -43,8 +43,12 @@ const fixture = vi.hoisted(() => ({
   failRmUnder: null as string | null,
   failDirectoryFsyncPath: null as string | null,
   failDirectoryFsyncCode: null as string | null,
+  failDurabilityMarkerFsync: false,
   directoryFds: new Map<number, string>(),
+  openPaths: new Map<number, string>(),
   fsyncedDirectoryPaths: [] as string[],
+  gitReadDurationsMs: [] as number[],
+  monotonicNs: 0n,
 }));
 
 vi.mock('node:os', async (importOriginal) => {
@@ -103,6 +107,7 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     openSync: (path: unknown, flags: unknown, mode: unknown) => {
       const fd = (actual.openSync as (p: unknown, f: unknown, m: unknown) => number)(path, flags, mode);
+      fixture.openPaths.set(fd, String(path));
       if (flags === actual.constants.O_RDONLY) fixture.directoryFds.set(fd, String(path));
       return fd;
     },
@@ -116,6 +121,15 @@ vi.mock('node:fs', async (importOriginal) => {
           });
         }
       }
+      const openPath = fixture.openPaths.get(fd);
+      if (
+        fixture.failDurabilityMarkerFsync &&
+        openPath?.includes('/.coral/staging/project-ignore/') &&
+        openPath.split('/').at(-1)?.startsWith('.durability-')
+      ) {
+        fixture.failDurabilityMarkerFsync = false;
+        throw Object.assign(new Error('simulated marker fsync failure'), { code: 'EIO' });
+      }
       return actual.fsyncSync(fd);
     },
     closeSync: (fd: number) => {
@@ -123,6 +137,7 @@ vi.mock('node:fs', async (importOriginal) => {
         return actual.closeSync(fd);
       } finally {
         fixture.directoryFds.delete(fd);
+        fixture.openPaths.delete(fd);
       }
     },
   };
@@ -146,6 +161,14 @@ const execFileSyncMock = vi.hoisted(() =>
     }
 
     const cwd = String((options as { cwd?: unknown }).cwd);
+    const configuredTimeout = Number((options as { timeout?: unknown }).timeout);
+    const timeout = Number.isFinite(configuredTimeout) ? configuredTimeout : Number.MAX_SAFE_INTEGER;
+    const duration = fixture.gitReadDurationsMs.shift() ?? 0;
+    const elapsed = Math.min(duration, timeout);
+    fixture.monotonicNs += BigInt(elapsed) * 1_000_000n;
+    if (duration > timeout) {
+      throw Object.assign(new Error('simulated git context timeout'), { code: 'ETIMEDOUT' });
+    }
     const query = args.join('\0');
     if (query === 'rev-parse\0--absolute-git-dir') {
       return `${fixture.gitIdentities.shift() ?? fixture.gitDir}\n`;
@@ -192,8 +215,12 @@ beforeEach(() => {
   fixture.failRmUnder = null;
   fixture.failDirectoryFsyncPath = null;
   fixture.failDirectoryFsyncCode = null;
+  fixture.failDurabilityMarkerFsync = false;
   fixture.directoryFds.clear();
+  fixture.openPaths.clear();
   fixture.fsyncedDirectoryPaths.length = 0;
+  fixture.gitReadDurationsMs.length = 0;
+  fixture.monotonicNs = 0n;
   mkdirSync(fixture.home, { recursive: true });
   mkdirSync(join(fixture.gitDir, 'info'), { recursive: true });
   projectDir = join(root, 'project');
@@ -214,6 +241,10 @@ async function maintain(
 ): Promise<{
   status: 'complete' | 'refused' | 'partial';
   artifacts: {
+    arenaSweep: {
+      state: 'unchanged' | 'cleaned' | 'refused' | 'skipped';
+      reason?: string;
+    };
     symlink: {
       state: 'not-requested' | 'unchanged' | 'created' | 'repointed' | 'refused' | 'skipped';
       reason?: string;
@@ -263,8 +294,15 @@ async function maintain(
   vi.resetModules();
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
   const projectIgnore = await import('../../../clients/hooks/lib/project-ignore.mjs');
-  const context = suppliedContext ?? projectIgnore.resolveProjectContext(projectDir);
-  return projectIgnore.maintainProjectIgnore({ projectDir, createSymlink, token: 'test-token', context });
+  const contextProbeDeadlineNs = process.hrtime.bigint() + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+  const context = suppliedContext ?? projectIgnore.resolveProjectContext(projectDir, contextProbeDeadlineNs);
+  return projectIgnore.maintainProjectIgnore({
+    projectDir,
+    createSymlink,
+    token: 'test-token',
+    context,
+    contextProbeDeadlineNs,
+  });
 }
 
 async function resolveContext(): Promise<ProjectIgnoreContext> {
@@ -278,10 +316,11 @@ async function resolveContext(): Promise<ProjectIgnoreContext> {
 
 const link = (): string => join(projectDir, '.claude', 'coral');
 const repositoryArena = (): string => join(fixture.gitDir, 'coral', 'staging', 'project-ignore');
+const durabilityArena = (): string => join(fixture.home, '.coral', 'staging', 'project-ignore');
 const durabilityMarkers = (): string[] =>
-  readdirSync(repositoryArena()).filter((name) => name.startsWith('.durability-'));
+  readdirSync(durabilityArena()).filter((name) => name.startsWith('.durability-'));
 const durabilityMarker = (target: string): string =>
-  join(repositoryArena(), `.durability-${createHash('sha256').update(target).digest('hex')}.pending`);
+  join(durabilityArena(), `.durability-${createHash('sha256').update(target).digest('hex')}.pending`);
 
 describe('project-ignore symlink maintenance', () => {
   it.each([
@@ -510,11 +549,12 @@ describe('project-ignore symlink maintenance', () => {
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
   });
 
-  it('keeps a published file and reports an unexpected parent-sync failure until an unchanged retry syncs it', async () => {
+  it('reconciles an interrupted publication when that artifact is not planned later', async () => {
     fixture.failDirectoryFsyncPath = join(fixture.gitDir, 'info');
     fixture.failDirectoryFsyncCode = 'EIO';
 
     const published = await maintain('prod');
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
 
     expect(published.status).toBe('partial');
     expect(published.artifacts.exclude).toEqual({
@@ -525,53 +565,156 @@ describe('project-ignore symlink maintenance', () => {
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
     const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
     expect(isProjectIgnoreResult(published)).toBe(true);
-    expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
+    expect(readFileSync(excludePath, 'utf-8')).toBe('/.claude/coral\n');
     expect(durabilityMarkers()).toHaveLength(1);
-    expect(readFileSync(join(repositoryArena(), durabilityMarkers()[0]))).toHaveLength(0);
+    expect(readFileSync(join(durabilityArena(), durabilityMarkers()[0]), 'utf-8')).toBe(excludePath);
+    expect(readdirSync(repositoryArena()).filter((name) => name.startsWith('.durability-'))).toEqual([]);
 
-    const unchanged = await maintain('prod');
-    expect(unchanged.status).toBe('partial');
-    expect(unchanged.artifacts.exclude).toEqual({
-      state: 'unchanged',
-      residue: 'none',
-      durability: { state: 'failed', reason: 'durability-sync-failed' },
-    });
-    expect(isProjectIgnoreResult(unchanged)).toBe(true);
-    expect(durabilityMarkers()).toHaveLength(1);
-    expect(readFileSync(join(repositoryArena(), durabilityMarkers()[0]))).toHaveLength(0);
-
+    rmSync(link());
     fixture.failDirectoryFsyncPath = null;
     fixture.failDirectoryFsyncCode = null;
-    const durable = await maintain('prod');
+    fixture.fsyncedDirectoryPaths.length = 0;
+    const durable = await maintain('prod', false);
+
     expect(durable.status).toBe('complete');
-    expect(durable.artifacts.exclude).toEqual({
-      state: 'unchanged',
-      residue: 'none',
-      durability: { state: 'synced' },
-    });
+    expect(durable.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(durable.artifacts.symlink).toEqual({ state: 'not-requested' });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
+    expect(durabilityMarkers()).toEqual([]);
+    expect(isProjectIgnoreResult(durable)).toBe(true);
+  });
+
+  it('reconciles an interrupted publication after the repository identity changes', async () => {
+    const commonBefore = join(root, 'common-before');
+    const commonAfter = join(root, 'common-after');
+    mkdirSync(join(commonBefore, 'info'), { recursive: true });
+    mkdirSync(join(commonAfter, 'info'), { recursive: true });
+    writeFileSync(join(fixture.gitDir, 'commondir'), `${commonBefore}\n`);
+    fixture.failDirectoryFsyncPath = join(commonBefore, 'info');
+    fixture.failDirectoryFsyncCode = 'EIO';
+
+    const published = await maintain('prod');
+    const oldExcludePath = join(commonBefore, 'info', 'exclude');
+    const oldMarker = durabilityMarker(oldExcludePath);
+
+    expect(published.status).toBe('partial');
+    expect(readFileSync(oldMarker, 'utf-8')).toBe(oldExcludePath);
+    expect(existsSync(join(commonBefore, 'coral', 'staging', 'project-ignore'))).toBe(true);
+    rmSync(link());
+    writeFileSync(join(fixture.gitDir, 'commondir'), `${commonAfter}\n`);
+    fixture.failDirectoryFsyncPath = null;
+    fixture.failDirectoryFsyncCode = null;
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const durable = await maintain('prod', false);
+
+    expect(durable.status).toBe('complete');
+    expect(durable.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(commonBefore, 'info'));
+    expect(durabilityMarker(join(commonAfter, 'info', 'exclude'))).not.toBe(oldMarker);
+    expect(existsSync(join(commonAfter, 'coral', 'staging', 'project-ignore'))).toBe(true);
+    expect(existsSync(oldMarker)).toBe(false);
     expect(durabilityMarkers()).toEqual([]);
   });
 
-  it.each([
-    ['empty', ''],
-    ['non-empty', 'unexpected marker content'],
-  ])('treats an existing %s durability marker as pending evidence', async (_name, content) => {
+  it('retains a marker and refuses planning when reconciliation cannot sync its parent', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    fixture.failDirectoryFsyncPath = join(fixture.gitDir, 'info');
+    fixture.failDirectoryFsyncCode = 'EIO';
+
+    const published = await maintain('prod');
+    const marker = durabilityMarker(excludePath);
+    rmSync(link());
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const refused = await maintain('prod', false);
+
+    expect(published.status).toBe('partial');
+    expect(refused.status).toBe('refused');
+    expect(refused.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'durability-sync-failed',
+    });
+    expect(refused.artifacts.exclude).toEqual({
+      state: 'skipped',
+      reason: 'upstream-refusal',
+      residue: 'none',
+    });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
+    expect(readFileSync(marker, 'utf-8')).toBe(excludePath);
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(refused)).toBe(true);
+  });
+
+  it('reconciles a complete marker by reading the absolute obligation it names', async () => {
     await maintain('prod');
     const excludePath = join(fixture.gitDir, 'info', 'exclude');
     const marker = durabilityMarker(excludePath);
-    writeFileSync(marker, content);
+    writeFileSync(marker, excludePath);
     fixture.fsyncedDirectoryPaths.length = 0;
 
     const result = await maintain('prod');
 
     expect(result.status).toBe('complete');
-    expect(result.artifacts.exclude).toEqual({
-      state: 'unchanged',
-      residue: 'none',
-      durability: { state: 'synced' },
-    });
+    expect(result.artifacts.exclude).toEqual({ state: 'unchanged', residue: 'none' });
     expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('leaves an invalid marker in place and reports unavailable durability evidence', async () => {
+    await maintain('prod');
+    const marker = durabilityMarker(join(fixture.gitDir, 'info', 'exclude'));
+    writeFileSync(marker, 'not-an-absolute-path');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+    });
+    expect(readFileSync(marker, 'utf-8')).toBe('not-an-absolute-path');
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+  });
+
+  it('removes a marker whose named parent no longer exists', async () => {
+    await maintain('prod');
+    const target = join(root, 'removed-parent', 'artifact');
+    const marker = durabilityMarker(target);
+    writeFileSync(marker, target);
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('leaves no final evidence when marker installation is interrupted', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const marker = durabilityMarker(excludePath);
+    fixture.failDurabilityMarkerFsync = true;
+
+    const interrupted = await maintain('prod');
+
+    expect(interrupted.status).toBe('refused');
+    expect(interrupted.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+      residue: 'none',
+    });
+    expect(existsSync(marker)).toBe(false);
+    expect(durabilityMarkers()).toEqual([]);
+
+    fixture.fsyncedDirectoryPaths.length = 0;
+    const later = await maintain('prod', false);
+
+    expect(later.status).toBe('complete');
+    expect(later.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(join(fixture.gitDir, 'info'));
+    expect(durabilityMarkers()).toEqual([]);
   });
 
   it('reports a narrowly unsupported directory sync separately from an I/O failure', async () => {
@@ -685,7 +828,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
-  it('spends the whole 3.5s Git allowance across its five bounded subprocesses', async () => {
+  it('bounds every context read by the aggregate allowance remaining for the owner chain', async () => {
     await maintain('prod');
     execFileSyncMock.mockClear();
     execSyncMock.mockClear();
@@ -700,37 +843,32 @@ describe('project-ignore symlink maintenance', () => {
       execSyncMock,
       'git remote get-url origin, to confirm the existing link is not outgrown',
     ).toHaveBeenCalledTimes(1);
-    const findGitContextTimeout = (execFileSyncMock.mock.calls as unknown[][]).reduce(
-      (total, call) => total + ((call[2] as { timeout?: number } | undefined)?.timeout ?? 0),
-      0,
+    const contextTimeouts = (execFileSyncMock.mock.calls as unknown[][]).map(
+      (call) => (call[2] as { timeout?: number } | undefined)?.timeout ?? 0,
     );
-    const coralProjectDirTimeout = (
-      (execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined
-    )?.timeout;
-    expect(
-      findGitContextTimeout + (coralProjectDirTimeout ?? 0),
-      'session-start.mjs must give this chain more than its bounded Git subprocesses before accounting for Node startup',
-    ).toBe(3500);
+    const remoteProbeTimeout = ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)
+      ?.timeout;
+    expect(contextTimeouts.every((timeout) => timeout > 0)).toBe(true);
+    expect(contextTimeouts.every((timeout) => timeout <= PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS)).toBe(true);
+    for (let index = 1; index < contextTimeouts.length; index += 1) {
+      expect(contextTimeouts[index]).toBeLessThanOrEqual(contextTimeouts[index - 1]);
+    }
+    expect(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + (remoteProbeTimeout ?? 0)).toBe(3500);
   });
 
-  // The test above pins the child's own bound; this one pins the other half of the same guarantee — that the
-  // caller's budget actually exceeds it. Reverting `session-start.mjs`'s spawnSync timeout back to exactly this
-  // sum reproduces the SIGTERM-before-its-own-bound defect with every other test here still green, so the
-  // margin has to be checked directly rather than left to be noticed only against a slow mount in production.
-  it('gives the owner chain a budget strictly greater than its Git subprocess sum', async () => {
+  // The caller's budget must exceed the aggregate context allowance plus the remote probe's bound. Reverting
+  // `session-start.mjs`'s spawnSync timeout to exactly that bound reproduces the SIGTERM-before-its-own-bound
+  // defect, so the margin has to be checked directly rather than left to a slow mount in production.
+  it('gives the owner chain more time than its aggregate bounded-subprocess allowance', async () => {
     await maintain('prod');
     execFileSyncMock.mockClear();
     execSyncMock.mockClear();
 
     await maintain('prod');
 
-    const findGitContextTimeout = (execFileSyncMock.mock.calls as unknown[][]).reduce(
-      (total, call) => total + ((call[2] as { timeout?: number } | undefined)?.timeout ?? 0),
-      0,
-    );
-    const coralProjectDirTimeout =
+    const remoteProbeTimeout =
       ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
-    const childBoundSum = findGitContextTimeout + coralProjectDirTimeout;
+    const childBound = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + remoteProbeTimeout;
 
     const hookUtilsSource = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'lib', 'hook-utils.mjs'),
@@ -743,8 +881,48 @@ describe('project-ignore symlink maintenance', () => {
     );
     expect(
       parentBudget,
-      "the parent's spawnSync timeout must leave margin beyond the chain's Git subprocesses",
-    ).toBeGreaterThan(childBoundSum);
+      "the parent's spawnSync timeout must leave margin beyond the chain's aggregate subprocess bound",
+    ).toBeGreaterThan(childBound);
+  });
+
+  it('allows one 400 ms context read to use time donated by faster reads', async () => {
+    const clock = vi.spyOn(process.hrtime, 'bigint').mockImplementation(() => fixture.monotonicNs);
+    fixture.gitReadDurationsMs.push(400, 0, 0, 0);
+    execFileSyncMock.mockClear();
+
+    try {
+      const result = await maintain('prod');
+      const timeouts = (execFileSyncMock.mock.calls as unknown[][]).map(
+        (call) => (call[2] as { timeout?: number } | undefined)?.timeout,
+      );
+
+      expect(result.status).toBe('complete');
+      expect(timeouts).toEqual([1500, 1100, 1100, 1100]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('refuses context reads whose combined time exhausts the aggregate allowance', async () => {
+    const clock = vi.spyOn(process.hrtime, 'bigint').mockImplementation(() => fixture.monotonicNs);
+    fixture.gitReadDurationsMs.push(400, 400, 400, 400);
+    execFileSyncMock.mockClear();
+
+    try {
+      const result = await maintain('prod');
+      const timeouts = (execFileSyncMock.mock.calls as unknown[][]).map(
+        (call) => (call[2] as { timeout?: number } | undefined)?.timeout,
+      );
+
+      expect(result.status).toBe('refused');
+      expect(result.artifacts.symlink).toEqual({
+        state: 'refused',
+        reason: 'project-context-unresolvable',
+      });
+      expect(timeouts).toEqual([1500, 1100, 700, 300]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   // `runProjectIgnoreMaintenance` tells a timeout kill, a failed launch, an empty result, an unreadable one, and
@@ -773,6 +951,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(noticed.size, 'the notice table must be readable from source').toBeGreaterThan(0);
     expect(source).toContain("'durability-sync-unsupported'");
     expect(source).toContain("'durability-sync-failed'");
+    expect(source).toContain('the next run will reconcile that record before planning project artifacts');
     expect(source).toContain('artifact.durability?.reason');
     expect(
       [...produced].filter((outcome) => outcome !== 'ok' && outcome !== 'no-project-dir' && !noticed.has(outcome)),

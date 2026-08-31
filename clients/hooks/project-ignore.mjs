@@ -58,6 +58,14 @@ function lockWrapperWithinBudget(startedNs) {
   }
 }
 
+function contextProbeDeadline(startedNs) {
+  try {
+    return BigInt(startedNs) + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+  } catch {
+    return null;
+  }
+}
+
 if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result') {
   try {
     const result = JSON.parse(readFileSync(0, 'utf-8'));
@@ -69,12 +77,15 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result
   const request = parseArgs(process.argv.slice(2));
   if (!request) process.exit(1);
   if (!lockWrapperWithinBudget(request.lockWrapperStartedNs)) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  const contextProbeDeadlineNs = contextProbeDeadline(request.lockWrapperStartedNs);
+  if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 
   try {
     const result = maintainProjectIgnore({
       projectDir: request.projectDir,
       createSymlink: request.createSymlink,
       context: request.projectContext,
+      contextProbeDeadlineNs,
     });
     if (!isProjectIgnoreResult(result)) throw new Error('invalid project-ignore result');
     process.stdout.write(`${JSON.stringify(result)}\n`);

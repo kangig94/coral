@@ -84,7 +84,17 @@ function validateSweep(value, legacy) {
         value.count >= 0
       );
     }
-    return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'arena-sweep-failed');
+    return (
+      hasExactKeys(value, ['state', 'reason']) &&
+      [
+        'arena-sweep-failed',
+        'durability-evidence-unavailable',
+        'durability-evidence-cleanup-failed',
+        'durability-sync-unsupported',
+        'durability-sync-failed',
+      ].includes(value.reason) &&
+      hasReason(value)
+    );
   }
   if (value.state === 'skipped') {
     return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'upstream-refusal');
@@ -188,13 +198,17 @@ export function isLegacyWorkingTreeStagingPath(path) {
 
 export function projectIgnoreStatus(artifacts) {
   const selected = SELECTOR_KEYS.map((key) => artifacts[key]);
-  const hasFailure = selected.some(
-    (artifact) =>
-      artifact.state === 'refused' ||
-      (artifact.state === 'skipped' && artifact.reason === 'upstream-refusal') ||
-      artifact.residue === 'owned-staging' ||
-      (artifact.durability && artifact.durability.state !== 'synced'),
-  );
+  const durabilityReconciliationFailed =
+    artifacts.arenaSweep.state === 'refused' && artifacts.arenaSweep.reason !== 'arena-sweep-failed';
+  const hasFailure =
+    durabilityReconciliationFailed ||
+    selected.some(
+      (artifact) =>
+        artifact.state === 'refused' ||
+        (artifact.state === 'skipped' && artifact.reason === 'upstream-refusal') ||
+        artifact.residue === 'owned-staging' ||
+        (artifact.durability && artifact.durability.state !== 'synced'),
+    );
   const hasProgress = selected.some(
     (artifact) =>
       ['cleaned', 'published', 'created', 'repointed'].includes(artifact.state) ||

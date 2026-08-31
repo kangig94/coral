@@ -280,15 +280,18 @@ describe('project-ignore maintenance ownership', () => {
     expect(owner).toContain('--conflict-exit-code');
     expect(owner).toContain('--maintenance-locked');
     expect(owner).toContain('openProjectIgnoreMaintenanceLock()');
-    expect(owner.indexOf('resolveProjectContext(request.projectDir)')).toBeLessThan(
+    expect(owner.indexOf('resolveProjectContext(request.projectDir, contextProbeDeadlineNs)')).toBeLessThan(
       owner.indexOf('openProjectIgnoreMaintenanceLock()'),
     );
+    expect(owner).toContain('resolveProjectContext(request.projectDir, contextProbeDeadlineNs)');
     expect(owner).toContain("'--project-context'");
     expect(owner).toContain("'/dev/fd/0'");
     expect(sessionStart).toContain("outcome: 'maintenance-busy'");
     expect(sessionStart).toContain("outcome: 'maintenance-lock-unavailable'");
     expect(sessionStart).toContain('timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS');
     expect(child).toContain('lockWrapperWithinBudget(request.lockWrapperStartedNs)');
+    expect(child).toContain('contextProbeDeadline(request.lockWrapperStartedNs)');
+    expect(child).toContain('contextProbeDeadlineNs,');
     expect(initProject).toContain('--validate-result');
     expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');
     expect(initProject).not.toMatch(/(?:Retry|rerun) init-project/u);
