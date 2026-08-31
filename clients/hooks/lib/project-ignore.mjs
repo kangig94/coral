@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   constants,
   fchmodSync,
@@ -249,6 +250,12 @@ function quarantineDurabilityMarker(durabilityDir, markerPath, markerName) {
   } catch (error) {
     if (error?.code !== 'EEXIST' || !isRealDirectory(quarantineDir)) return false;
   }
+  try {
+    if (!isRealDirectory(quarantineDir)) return false;
+    chmodSync(quarantineDir, 0o700);
+  } catch {
+    return false;
+  }
   if (quarantineCreated && fsyncParent(quarantineDir).state === 'failed') return false;
 
   let quarantinePath = join(quarantineDir, markerName);
@@ -337,7 +344,7 @@ function reconcileDurabilityMarkers(durabilityDir) {
       .map((entry) => entry.name)
       .sort();
   } catch {
-    return { state: 'refused', reasons: ['durability-evidence-unavailable'] };
+    return { state: 'refused', reasons: ['durability-evidence-unreadable'] };
   }
 
   const reasons = new Set();
@@ -352,7 +359,7 @@ function reconcileDurabilityMarkers(durabilityDir) {
     if (marker.state === 'invalid') {
       const quarantined = quarantineDurabilityMarker(durabilityDir, markerPath, name);
       reasons.add(
-        quarantined ? 'durability-evidence-quarantined' : 'durability-evidence-unavailable',
+        quarantined ? 'durability-evidence-quarantined' : 'durability-evidence-cleanup-failed',
       );
       continue;
     }
@@ -415,8 +422,8 @@ export function atomicReplace({
       return { state: 'refused', reason: 'durability-evidence-unavailable', residue: 'none' };
     }
     fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
+    fchmodSync(fd, snapshot.exists ? snapshot.mode : (fstatSync(fd).mode & 0o777) | 0o600);
     writeFileSync(fd, next);
-    if (snapshot.exists) fchmodSync(fd, snapshot.mode);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -559,7 +566,9 @@ export function repositoryProjectIgnoreStagingDir(commonGitDir) {
 function ensureArenaComponent(path) {
   try {
     const stat = lstatSync(path);
-    return !stat.isSymbolicLink() && stat.isDirectory();
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    chmodSync(path, 0o700);
+    return true;
   } catch (error) {
     if (!isMissing(error)) return false;
   }
@@ -572,7 +581,9 @@ function ensureArenaComponent(path) {
 
   try {
     const stat = lstatSync(path);
-    return !stat.isSymbolicLink() && stat.isDirectory();
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    chmodSync(path, 0o700);
+    return true;
   } catch {
     return false;
   }
@@ -646,6 +657,12 @@ export function sweepProjectIgnoreArenas(
 
   for (const arenaDir of new Set(arenaDirs)) {
     try {
+      const arenaStat = lstatSync(arenaDir);
+      if (arenaStat.isSymbolicLink() || !arenaStat.isDirectory()) {
+        failures += 1;
+        continue;
+      }
+      chmodSync(arenaDir, 0o700);
       for (const entry of readdirSync(arenaDir, { withFileTypes: true })) {
         const run = parseArenaRun(entry.name);
         if (!run || !entry.isDirectory() || entry.isSymbolicLink()) continue;
@@ -677,6 +694,7 @@ export function sweepProjectIgnoreArenas(
     try {
       const stat = lstatSync(runDir);
       if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+      chmodSync(runDir, 0o700);
       rmSync(runDir, { recursive: true });
       removed += 1;
     } catch {
@@ -695,6 +713,7 @@ function createProjectIgnoreRunDir(arenaDir, startedAt) {
   const runDir = projectIgnoreRunDir(arenaDir, startedAt);
   try {
     mkdirSync(runDir, { mode: 0o700 });
+    chmodSync(runDir, 0o700);
     const stat = lstatSync(runDir);
     if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
     return runDir;

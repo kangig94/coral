@@ -14,6 +14,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -28,6 +29,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // import is safe to use across the module reloads `maintain()` triggers below via `vi.resetModules()`.
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { coralStateRoot, PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS } from '../../../clients/hooks/lib/hook-utils.mjs';
+import {
+  projectIgnoreOutcomeNotice,
+  renderProjectIgnoreResultNotices,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore-notices.mjs';
 
 const manifest = vi.hoisted(() => ({ flavor: 'prod' as 'prod' | 'dev' }));
 const fixture = vi.hoisted(() => ({
@@ -44,6 +50,7 @@ const fixture = vi.hoisted(() => ({
   failReplacementUnlink: false,
   failSymlinkTempUnlink: false,
   failRmUnder: null as string | null,
+  failReaddirPath: null as string | null,
   failMarkerObservation: null as null | {
     phase: 'lstat' | 'open' | 'fstat' | 'read';
     path: string;
@@ -139,6 +146,12 @@ vi.mock('node:fs', async (importOriginal) => {
         throw Object.assign(new Error('simulated removal failure'), { code: 'EACCES' });
       }
       return (actual.rmSync as (p: unknown, o: unknown) => void)(path, options);
+    },
+    readdirSync: (path: unknown, options?: unknown) => {
+      if (String(path) === fixture.failReaddirPath) {
+        throw Object.assign(new Error('simulated directory enumeration failure'), { code: 'EIO' });
+      }
+      return (actual.readdirSync as (p: unknown, o?: unknown) => unknown)(path, options);
     },
     openSync: (path: unknown, flags: unknown, mode: unknown) => {
       const failure = fixture.failMarkerObservation;
@@ -269,6 +282,7 @@ beforeEach(() => {
   fixture.failReplacementUnlink = false;
   fixture.failSymlinkTempUnlink = false;
   fixture.failRmUnder = null;
+  fixture.failReaddirPath = null;
   fixture.failMarkerObservation = null;
   fixture.failDirectoryFsyncPath = null;
   fixture.failDirectoryFsyncCode = null;
@@ -967,6 +981,23 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it('reports a durability arena enumeration failure as unreadable evidence', async () => {
+    await maintain('prod');
+    fixture.failReaddirPath = durabilityArena();
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.durabilityReconciliation).toEqual({
+      state: 'refused',
+      reasons: ['durability-evidence-unreadable'],
+    });
+    expect(result.artifacts.durabilityReconciliation).not.toEqual({
+      state: 'refused',
+      reasons: ['durability-evidence-unavailable'],
+    });
+  });
+
   it('quarantines an undecodable marker once and leaves the next run clean', async () => {
     await maintain('prod');
     const marker = durabilityMarker(join(fixture.gitDir, 'info', 'exclude'));
@@ -1072,7 +1103,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.artifacts.arenaSweep).toEqual({ state: 'unchanged' });
     expect(result.artifacts.durabilityReconciliation).toEqual({
       state: 'refused',
-      reasons: ['durability-evidence-unavailable'],
+      reasons: ['durability-evidence-cleanup-failed'],
     });
     expect(fixture.fsyncedDirectoryPaths).toContain(quarantineDir());
     expect(fixture.fsyncedDirectoryPaths).toContain(durabilityArena());
@@ -1092,8 +1123,11 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.artifacts.arenaSweep).toEqual({ state: 'unchanged' });
     expect(result.artifacts.durabilityReconciliation).toEqual({
       state: 'refused',
-      reasons: ['durability-evidence-unavailable'],
+      reasons: ['durability-evidence-cleanup-failed'],
     });
+    expect(renderProjectIgnoreResultNotices(result)).toContain(
+      'Coral could not dispose of a pending durability record. Remedy: make the authorized project-ignore staging arena writable and repair any filesystem error blocking its removal or quarantine, then retry the maintenance. It is attempted again at the next session start.',
+    );
     expect(existsSync(marker)).toBe(true);
   });
 
@@ -1199,6 +1233,7 @@ describe('project-ignore symlink maintenance', () => {
 
       expect(published.status).toBe('partial');
       expect(existsSync(marker)).toBe(true);
+      expect(statSync(marker).mode & 0o777).toBe(0o600);
 
       fixture.failDirectoryFsyncPath = null;
       fixture.failDirectoryFsyncCode = null;
@@ -1207,6 +1242,25 @@ describe('project-ignore symlink maintenance', () => {
       expect(reconciled.status).toBe('complete');
       expect(reconciled.artifacts.durabilityReconciliation).toEqual({ state: 'reconciled' });
       expect(existsSync(marker)).toBe(false);
+    } finally {
+      process.umask(previousUmask);
+      restoreOwnerAccess(root);
+    }
+  });
+
+  it('adds owner access to a new ignore artifact without overriding the umask for anyone else', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const target = join(fixture.home, '.coral', 'projects', 'owner-repo');
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, link());
+    const previousUmask = process.umask(0o427);
+    try {
+      const result = await maintain('prod', false);
+
+      expect(result.status).toBe('complete');
+      expect(readFileSync(excludePath, 'utf-8')).toContain('/.claude/coral');
+      expect(statSync(excludePath).mode & 0o777).toBe(0o640);
+      expect(statSync(excludePath).mode & 0o077).toBe(0o040);
     } finally {
       process.umask(previousUmask);
       restoreOwnerAccess(root);
@@ -1438,13 +1492,6 @@ describe('project-ignore symlink maintenance', () => {
     }
   });
 
-  // `runProjectIgnoreMaintenance` tells a timeout kill, a failed launch, an empty result, an unreadable one, and
-  // a maintenance pass that ran to completion but reported it could not finish apart, and that split buys
-  // nothing unless the caller reads it — a maintenance pass that did not run leaves the ignore file and the
-  // symlink exactly as a pass that had nothing to do would. Read from source rather than by import:
-  // `session-start.mjs` is a script with a top-level `await readStdin()` that exits the process. Driving the
-  // outcomes end-to-end is not available either — the child is spawned with `process.execPath` against a path
-  // derived from `import.meta.url`, so no fixture can make it fail.
   it('renders every maintenance outcome it distinguishes, so none is split apart and then dropped', () => {
     const source = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'session-start.mjs'),
@@ -1452,42 +1499,18 @@ describe('project-ignore symlink maintenance', () => {
     );
 
     const produced = new Set([...source.matchAll(/outcome:\s*'([^']+)'/gu)].map((match) => match[1]));
-    const noticed = new Set(
-      [
-        ...(source.match(/const PROJECT_IGNORE_OUTCOME_NOTICES = \{[^}]*\}/su)?.[0] ?? '').matchAll(
-          /^\s*'?([a-z-]+)'?:/gmu,
-        ),
-      ].map((match) => match[1]),
-    );
 
     expect(produced.size, 'the outcome literals must be readable from source').toBeGreaterThan(3);
-    expect(noticed.size, 'the notice table must be readable from source').toBeGreaterThan(0);
-    expect(source).toContain("'durability-sync-unsupported'");
-    expect(source).toContain("'durability-sync-failed'");
-    expect(source).toContain("'durability-evidence-quarantined'");
-    expect(source).toContain("'durability-evidence-unreadable'");
-    expect(source).toContain('will not retry that record or act on any target it might contain');
-    expect(source).toContain('Coral discharged that record and will not retry it');
-    expect(source).toContain('the next run will reconcile that record before planning project artifacts');
-    expect(source).toContain('make the marker readable and owned by the current user');
-    expect(source).toContain('repair the filesystem or storage device');
-    expect(source).toContain('const reasons = new Set()');
-    expect(source).toContain('for (const reason of artifact.reasons) reasons.add(reason)');
-    expect(source).toContain('artifact.durability?.reason');
-    expect(
-      [...produced].filter((outcome) => outcome !== 'ok' && outcome !== 'no-project-dir' && !noticed.has(outcome)),
-      'every outcome other than ok and no-project-dir must have a notice the session can read',
-    ).toEqual([]);
-    // Do not pin this assertion to notice variable names, order, or adjacency.
+    for (const outcome of produced) {
+      if (outcome === 'ok' || outcome === 'no-project-dir') continue;
+      expect(projectIgnoreOutcomeNotice(outcome)).not.toBeNull();
+    }
     const migrationDerivation = source.match(
       /const\s+(\w+)\s*=\s*\[([^\]]+)\]\.some\(\(artifact\)\s*=>\s*artifact\?\.state\s*===\s*'published'\)/su,
     );
     const migrationNotice = source.match(/const\s+(\w+)\s*=\s*\w+\s*\?\s*'Coral migration:/su)?.[1] ?? '';
     const ignoreNotice =
       source.match(/const\s+(\w+)\s*=\s*[^\n]+\n\s+\? `Coral project-ignore maintenance/u)?.[1] ?? '';
-    // Matched on the composition that collects the notices, not on the separator it joins them with: the
-    // separator is presentation and pinning it has already broken this assertion twice for reasons that
-    // changed nothing about whether a notice reaches the payload.
     const renderedNotices = source.match(/\[([^\]]*Notice[^\]]*)\]\.filter\(Boolean\)/u)?.[1] ?? '';
     expect(migrationDerivation?.[2], 'migration progress must read both legacy retraction artifacts').toContain(
       'scopedIgnoreRetraction',
@@ -1501,6 +1524,28 @@ describe('project-ignore symlink maintenance', () => {
     for (const notice of [migrationNotice, ignoreNotice]) {
       expect(renderedNotices, 'every maintenance notice must reach additionalContext').toContain(notice);
     }
+  });
+
+  it('renders every distinct project-ignore reason once in deterministic order', () => {
+    const result = {
+      artifacts: {
+        first: {
+          state: 'refused',
+          reasons: ['durability-sync-failed', 'artifact-too-large', 'durability-sync-failed'],
+        },
+        second: { state: 'refused', reason: 'durability-evidence-cleanup-failed' },
+        third: {
+          state: 'published',
+          durability: { reason: 'durability-sync-failed' },
+        },
+      },
+    };
+
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      "An affected ignore file exceeds Coral's 1 MiB safety limit. Remedy: reduce that file below 1 MiB before maintenance runs again.",
+      'Coral could not dispose of a pending durability record. Remedy: make the authorized project-ignore staging arena writable and repair any filesystem error blocking its removal or quarantine, then retry the maintenance. It is attempted again at the next session start.',
+      'Coral could not sync the parent named by a retained durability record. Remedy: check the filesystem and storage device; the next run will reconcile that record before planning project artifacts. It is attempted again at the next session start.',
+    ]);
   });
 
   it('leaves the working link in place when writing its replacement fails', async () => {

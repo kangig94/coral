@@ -290,7 +290,9 @@ argument-hint: "[existing|new]"
   writes the anchored `.git/info/exclude` entry, creates or reuses the symlink, and then
   retracts Coral-owned scoped and Git-root lines. This is the same bounded, atomic
   implementation used by SessionStart; do not reimplement these mutations with shell
-  text processing.
+  text processing. The maintainer writes its result JSON alone to stdout and writes every
+  distinct refusal remedy to stderr, so command substitution preserves parseable result
+  data while the operator still sees each named exit.
 
   ```bash
   CORAL_PROJECT_IGNORE_SCRIPT="{skill_base_dir}/../../hooks/project-ignore.mjs"

@@ -30,6 +30,10 @@ import {
 import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
+import {
+  projectIgnoreOutcomeNotice,
+  renderProjectIgnoreResultNotices,
+} from './lib/project-ignore-notices.mjs';
 import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 
 // Unconditionally spawn coral-backend on session start. The daemon's own
@@ -45,135 +49,6 @@ import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');
-const PROJECT_IGNORE_OUTCOME_NOTICES = {
-  killed: 'ran out of its time budget and was terminated',
-  'not-spawned': 'could not be started',
-  'no-output': 'exited without reporting a result',
-  'unparseable-output': 'reported a result Coral could not read',
-  'maintenance-busy':
-    'did not start because another Coral project-ignore maintainer owns the lock; wait for that invocation to finish or terminate it if it is stuck',
-  'maintenance-lock-unavailable':
-    'could not open or own its maintenance lock; install flock and ensure ~/.coral/staging is a writable real directory with no symlink components',
-  failed: 'ran and reported it could not complete safely',
-  partial: 'published or confirmed an artifact but could not establish every required disposition',
-};
-const PROJECT_IGNORE_REASON_NOTICES = {
-  'project-context-unresolvable': {
-    sentence:
-      'Coral could not resolve the project and its Git context. Remedy: verify the project path is accessible and fix any error reported by `git status` in that directory.',
-    retryable: true,
-  },
-  'project-path-unrepresentable': {
-    sentence:
-      'The project-relative path contains a carriage return or line feed, which .git/info/exclude cannot represent as one pattern. Remedy: rename the affected project directory to remove CR and LF characters.',
-    retryable: false,
-  },
-  'exclude-path-unresolvable': {
-    sentence:
-      'Git did not return a usable .git/info/exclude path. Remedy: run `git rev-parse --git-path info/exclude` in the project and repair its Git metadata until that command succeeds.',
-    retryable: false,
-  },
-  'artifact-unreadable': {
-    sentence:
-      'An affected ignore file is not a readable regular file. Remedy: make the project .gitignore files and .git/info/exclude readable regular files owned or writable by the current user.',
-    retryable: false,
-  },
-  'artifact-too-large': {
-    sentence:
-      'An affected ignore file exceeds Coral\'s 1 MiB safety limit. Remedy: reduce that file below 1 MiB before maintenance runs again.',
-    retryable: false,
-  },
-  'artifact-changed': {
-    sentence:
-      'An ignore file changed while Coral was preparing its update. Remedy: let the other writer finish before Coral tries again.',
-    retryable: true,
-  },
-  'claude-directory-missing': {
-    sentence:
-      'The project has no .claude directory, so Coral did not create the requested symlink. Remedy: run `mkdir .claude` in the project.',
-    retryable: false,
-  },
-  'claude-directory-invalid': {
-    sentence:
-      'The project .claude path is not a real directory. Remedy: replace that file or symlink with a real directory before requesting the Coral symlink.',
-    retryable: false,
-  },
-  'repository-arena-unavailable': {
-    sentence:
-      'Coral could not prepare its staging arena in the authorized common Git directory. Remedy: replace any coral arena symlink or non-directory component and make the common Git directory writable.',
-    retryable: true,
-  },
-  'staging-device-mismatch': {
-    sentence:
-      'The target and its authorized staging arena are on different devices, so Coral cannot safely replace an existing artifact. Remedy: place them on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
-    retryable: false,
-  },
-  'publish-cross-device': {
-    sentence:
-      'The filesystem rejected an atomic replacement across devices. Remedy: place the target and its authorized staging arena on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
-    retryable: false,
-  },
-  'publish-failed': {
-    sentence:
-      'The filesystem refused an artifact update. Remedy: check permissions and free space for the project and its Git metadata.',
-    retryable: true,
-  },
-  'durability-evidence-unavailable': {
-    sentence:
-      'Coral could not record pending durability outside the working tree. Remedy: make the authorized project-ignore staging arena a writable real directory on a filesystem that supports directory fsync, then retry the maintenance.',
-    retryable: true,
-  },
-  'durability-evidence-unreadable': {
-    sentence:
-      'Coral found pending durability evidence but could not read it. Remedy: make the marker readable and owned by the current user, or repair the filesystem or storage device reporting the read failure.',
-    retryable: true,
-  },
-  'durability-evidence-quarantined': {
-    sentence:
-      'Coral moved a pending durability record it could not use into the project-ignore quarantine. Coral will preserve it there for inspection and will not retry that record or act on any target it might contain.',
-    retryable: false,
-  },
-  'durability-evidence-cleanup-failed': {
-    sentence:
-      'Coral synced the artifact but could not clear its pending durability record. Remedy: make the authorized project-ignore staging arena writable, then retry the maintenance.',
-    retryable: true,
-  },
-  'durability-sync-unsupported': {
-    sentence:
-      'The platform does not support syncing an affected parent directory, so Coral could not confirm crash durability for this publication. When this was reported while reconciling a pending record, Coral discharged that record and will not retry it.',
-    retryable: false,
-  },
-  'durability-sync-failed': {
-    sentence:
-      'Coral could not sync the parent named by a retained durability record. Remedy: check the filesystem and storage device; the next run will reconcile that record before planning project artifacts.',
-    retryable: true,
-  },
-  'staging-cleanup-failed': {
-    sentence:
-      'Coral published the artifact but could not remove its owned staging file. Remedy: make the authorized project-ignore staging arena writable.',
-    retryable: true,
-  },
-  'symlink-conflict': {
-    sentence:
-      'The project .claude/coral path conflicts with the requested symlink. Remedy: move the conflicting entry aside or replace it with the intended Coral symlink.',
-    retryable: false,
-  },
-  'legacy-sweep-failed': {
-    sentence:
-      'Coral could not remove the authorized legacy staging path named above. Remedy: remove that path manually or make its parent directory writable.',
-    retryable: true,
-  },
-  'arena-sweep-failed': {
-    sentence:
-      'Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory\'s coral/staging/project-ignore path are writable real directories.',
-    retryable: true,
-  },
-  'upstream-refusal': {
-    sentence:
-      'A later artifact was skipped because an earlier artifact did not complete cleanly. Remedy: resolve the earlier failure reported in this notice.',
-    retryable: false,
-  },
-};
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
@@ -270,28 +145,6 @@ function readRecentStartupFailureNotice(runDir) {
   }
 }
 
-function projectIgnoreRefusalNotices(maintenance) {
-  const reasons = new Set();
-  for (const artifact of Object.values(maintenance?.artifacts ?? {})) {
-    if (artifact.state === 'refused') {
-      if (Array.isArray(artifact.reasons)) {
-        for (const reason of artifact.reasons) reasons.add(reason);
-      } else {
-        reasons.add(artifact.reason);
-      }
-    } else if (artifact.reason === 'staging-cleanup-failed') {
-      reasons.add(artifact.reason);
-    }
-    if (artifact.durability?.reason) reasons.add(artifact.durability.reason);
-  }
-  return [...reasons].map((reason) => {
-    const notice = PROJECT_IGNORE_REASON_NOTICES[reason];
-    return notice.retryable
-      ? `${notice.sentence} It is attempted again at the next session start.`
-      : notice.sentence;
-  });
-}
-
 exitIfChildProcess();
 const flavorDisposition = resolveFlavorDisposition();
 if (flavorDisposition.kind === 'unrecognized') {
@@ -353,8 +206,8 @@ try {
       : legacySweep?.state === 'refused'
         ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s), then could not remove authorized legacy staging path ${legacySweep.path}.`
         : null;
-  const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
-  const ignoreRefusalNotices = projectIgnoreRefusalNotices(ignoreOutcome.maintenance);
+  const ignoreFailure = projectIgnoreOutcomeNotice(ignoreOutcome.outcome);
+  const ignoreRefusalNotices = renderProjectIgnoreResultNotices(ignoreOutcome.maintenance);
   const ignoreNotice =
     ignoreFailure || ignoreRefusalNotices.length > 0
       ? `Coral project-ignore maintenance${ignoreFailure ? ` ${ignoreFailure}.` : ':'}${

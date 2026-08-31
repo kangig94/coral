@@ -1,7 +1,9 @@
 import { execSync } from 'node:child_process';
 import {
+  chmodSync,
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -359,7 +361,9 @@ export function projectIgnoreMaintenanceLockPath() {
 function ensureRealDirectoryComponent(path) {
   try {
     const stat = lstatSync(path);
-    return !stat.isSymbolicLink() && stat.isDirectory();
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    chmodSync(path, 0o700);
+    return true;
   } catch (error) {
     if (error?.code !== 'ENOENT') return false;
   }
@@ -372,7 +376,9 @@ function ensureRealDirectoryComponent(path) {
 
   try {
     const stat = lstatSync(path);
-    return !stat.isSymbolicLink() && stat.isDirectory();
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    chmodSync(path, 0o700);
+    return true;
   } catch {
     return false;
   }
@@ -415,6 +421,13 @@ export function openProjectIgnoreMaintenanceLock() {
   const lockPath = projectIgnoreMaintenanceLockPath();
   let fd;
   try {
+    try {
+      const named = lstatSync(lockPath);
+      if (named.isSymbolicLink() || !named.isFile()) return null;
+      chmodSync(lockPath, 0o600);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return null;
+    }
     fd = openSync(
       lockPath,
       constants.O_RDWR | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0),
@@ -432,6 +445,7 @@ export function openProjectIgnoreMaintenanceLock() {
       closeSync(fd);
       return null;
     }
+    fchmodSync(fd, 0o600);
     return fd;
   } catch {
     if (fd !== undefined) {

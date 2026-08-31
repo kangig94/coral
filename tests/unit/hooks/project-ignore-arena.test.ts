@@ -1,11 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -57,6 +59,10 @@ function initRepository(path: string): void {
   writeFileSync(join(path, 'tracked.txt'), 'tracked\n');
   git(path, 'add', 'tracked.txt');
   git(path, 'commit', '--quiet', '-m', 'fixture');
+}
+
+function hookScript(name: string): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', name);
 }
 
 function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string): void {
@@ -248,15 +254,7 @@ describe('project-ignore maintenance ownership', () => {
     mkdirSync(join(projectDir, '.claude'), { recursive: true });
     mkdirSync(home);
 
-    const ownerScript = join(
-      dirname(fileURLToPath(import.meta.url)),
-      '..',
-      '..',
-      '..',
-      'clients',
-      'hooks',
-      'project-ignore-owner.mjs',
-    );
+    const ownerScript = hookScript('project-ignore-owner.mjs');
     const child = spawnSync(process.execPath, [ownerScript, '--project-dir', projectDir, '--create-symlink'], {
       encoding: 'utf-8',
       env: { ...process.env, HOME: home },
@@ -273,6 +271,141 @@ describe('project-ignore maintenance ownership', () => {
     expect(existsSync(join(home, '.coral'))).toBe(false);
     expect(existsSync(join(repositoryRoot, '.git', 'coral'))).toBe(false);
     expect(existsSync(join(projectDir, '.claude', 'coral'))).toBe(false);
+  });
+
+  it('reopens the lock and reconciles on a second fresh owner run under an owner-read-masking umask', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+    const privateDirectories = [
+      join(home, '.coral'),
+      join(home, '.coral', 'staging'),
+      join(home, '.coral', 'staging', 'project-ignore'),
+      join(repository, '.git', 'coral'),
+      join(repository, '.git', 'coral', 'staging'),
+      join(repository, '.git', 'coral', 'staging', 'project-ignore'),
+    ];
+    const previousUmask = process.umask(0o400);
+    try {
+      const first = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const second = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      expect(first.status).toBe(0);
+      expect(second.status).toBe(0);
+      expect(JSON.parse(second.stdout)).toMatchObject({
+        status: 'complete',
+        artifacts: { durabilityReconciliation: { state: 'reconciled' } },
+      });
+      expect(statSync(join(home, '.coral', 'staging', 'project-ignore.maintenance.lock')).mode & 0o777).toBe(0o600);
+      for (const path of privateDirectories) {
+        expect(statSync(path).mode & 0o777).toBe(0o700);
+      }
+    } finally {
+      process.umask(previousUmask);
+      for (const path of privateDirectories) {
+        try {
+          chmodSync(path, 0o700);
+        } catch {
+          // best effort: cleanup removes whatever it can reach
+        }
+      }
+    }
+  });
+
+  it('repairs an existing owner-write-only maintenance lock before opening it', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    const staging = join(home, '.coral', 'staging');
+    const lock = join(staging, 'project-ignore.maintenance.lock');
+    initRepository(repository);
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(lock, '');
+    chmodSync(lock, 0o200);
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+
+    const child = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout).status).toBe('complete');
+    expect(statSync(lock).mode & 0o777).toBe(0o600);
+  });
+
+  it('repairs an existing owner-write-and-execute-only repository arena component', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const component = join(repository, '.git', 'coral');
+    mkdirSync(join(component, 'staging', 'project-ignore'), { recursive: true });
+    chmodSync(component, 0o300);
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+
+    const child = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const componentMode = statSync(component).mode & 0o777;
+    chmodSync(component, 0o700);
+
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout).status).toBe('complete');
+    expect(componentMode).toBe(0o700);
+  });
+
+  it('writes refusal remedies to stderr while stdout remains result JSON', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const context = resolveProjectContext(repository);
+    expect(context).not.toBeNull();
+    writeFileSync(join(repository, '.git', 'coral'), 'not a directory');
+    const script = hookScript('project-ignore.mjs');
+    const startedNs = process.hrtime.bigint().toString();
+
+    const child = spawnSync(
+      process.execPath,
+      [
+        script,
+        '--project-dir',
+        repository,
+        '--maintenance-locked',
+        '--lock-wrapper-started-ns',
+        startedNs,
+        '--project-context',
+        JSON.stringify(context),
+      ],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    const result = JSON.parse(child.stdout);
+    expect(child.status).toBe(1);
+    expect(result).toMatchObject({
+      status: 'refused',
+      artifacts: { exclude: { state: 'refused', reason: 'repository-arena-unavailable' } },
+    });
+    expect(child.stdout.trim()).toBe(JSON.stringify(result));
+    expect(child.stderr).toContain('Coral could not prepare its staging arena in the authorized common Git directory.');
+    expect(child.stderr).toContain('It is attempted again at the next session start.');
   });
 
   it('routes both entry points through the exec-style owner and requires its child marker', () => {
