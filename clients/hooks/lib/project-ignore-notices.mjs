@@ -10,7 +10,7 @@ const PROJECT_IGNORE_OUTCOME_NOTICES = {
   'maintenance-lock-unavailable':
     'could not open or own its maintenance lock; install flock and ensure ~/.coral/staging is a writable real directory with no symlink components',
   failed: 'ran and reported it could not complete safely',
-  partial: 'published or confirmed an artifact but could not establish every required disposition',
+  partial: 'made progress or retained Coral-owned staging but could not establish every required disposition',
 };
 
 export const PROJECT_IGNORE_REASON_NOTICES = {

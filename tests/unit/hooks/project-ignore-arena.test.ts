@@ -722,6 +722,16 @@ describe('project-ignore maintenance ownership', () => {
       exitCode: 1,
     },
     {
+      name: 'a malformed result',
+      status: 1,
+      stdout: 'not-json',
+      diagnostic: 'owner malformed diagnostic',
+      validatorStatus: 1,
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output',
+      remedy: 'Coral project-ignore setup returned malformed result data.',
+      exitCode: 1,
+    },
+    {
       name: 'a successful result',
       status: 0,
       stdout: '{"status":"complete"}',
@@ -738,6 +748,8 @@ describe('project-ignore maintenance ownership', () => {
     const nodeStub = join(binDir, 'node');
     const ownerStub = join(binDir, 'project-ignore-owner');
     const validatorStub = join(binDir, 'project-ignore-validator');
+    const validatorArgsCapture = join(fixtureRoot, `validator-args-${scenario.status}`);
+    const validatorStdinCapture = join(fixtureRoot, `validator-stdin-${scenario.status}`);
     writeFileSync(nodeStub, '#!/bin/sh\nexec "$@"\n');
     writeFileSync(
       ownerStub,
@@ -752,7 +764,16 @@ describe('project-ignore maintenance ownership', () => {
         '',
       ].join('\n'),
     );
-    writeFileSync(validatorStub, '#!/bin/sh\ncat >/dev/null\nexit 0\n');
+    writeFileSync(
+      validatorStub,
+      [
+        '#!/bin/sh',
+        'printf \'%s\\n\' "$@" > "$STUB_VALIDATOR_ARGS_CAPTURE"',
+        'cat > "$STUB_VALIDATOR_STDIN_CAPTURE"',
+        'exit "$STUB_VALIDATOR_STATUS"',
+        '',
+      ].join('\n'),
+    );
     for (const path of [nodeStub, ownerStub, validatorStub]) chmodSync(path, 0o700);
 
     const child = spawnSync('sh', ['-c', initProjectApplyBlock()], {
@@ -765,6 +786,9 @@ describe('project-ignore maintenance ownership', () => {
         STUB_OWNER_STATUS: String(scenario.status),
         STUB_OWNER_STDOUT: scenario.stdout,
         STUB_OWNER_STDERR: scenario.diagnostic,
+        STUB_VALIDATOR_ARGS_CAPTURE: validatorArgsCapture,
+        STUB_VALIDATOR_STDIN_CAPTURE: validatorStdinCapture,
+        STUB_VALIDATOR_STATUS: String('validatorStatus' in scenario ? scenario.validatorStatus : 0),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -772,6 +796,13 @@ describe('project-ignore maintenance ownership', () => {
     expect(child.status).toBe(scenario.exitCode);
     expect(child.stderr).not.toContain('STUB_OWNER_OBSERVED_WORKING_FILE');
     expect(readdirSync(workingDir)).toEqual([]);
+    if (scenario.stdout) {
+      expect(readFileSync(validatorArgsCapture, 'utf-8')).toBe('--validate-result\n');
+      expect(readFileSync(validatorStdinCapture, 'utf-8')).toBe(`${scenario.stdout}\n`);
+    } else {
+      expect(existsSync(validatorArgsCapture)).toBe(false);
+      expect(existsSync(validatorStdinCapture)).toBe(false);
+    }
     if (scenario.outcome) {
       expect(child.stderr).toContain(scenario.outcome);
       expect(child.stderr).toContain(scenario.remedy);

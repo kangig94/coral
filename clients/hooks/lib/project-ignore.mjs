@@ -436,35 +436,36 @@ export function atomicReplace({
     const recorded = recordPendingDurability(durabilityMarker);
     markerCreated = recorded.created;
     if (!recorded.ok) {
-      return { state: 'refused', reason: 'durability-evidence-unavailable', residue: 'none' };
-    }
-    fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
-    fchmodSync(fd, snapshot.exists ? snapshot.mode : (fstatSync(fd).mode & 0o777) | 0o600);
-    writeFileSync(fd, next);
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-
-    if (!snapshotUnchanged(target, snapshot)) {
-      result = { state: 'refused', reason: 'artifact-changed', residue: 'none' };
+      result = { state: 'refused', reason: 'durability-evidence-unavailable', residue: 'none' };
     } else {
-      try {
-        if (snapshot.exists) {
-          renameSync(tempPath, target);
-        } else {
-          linkSync(tempPath, target);
+      fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
+      fchmodSync(fd, snapshot.exists ? snapshot.mode : (fstatSync(fd).mode & 0o777) | 0o600);
+      writeFileSync(fd, next);
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+
+      if (!snapshotUnchanged(target, snapshot)) {
+        result = { state: 'refused', reason: 'artifact-changed', residue: 'none' };
+      } else {
+        try {
+          if (snapshot.exists) {
+            renameSync(tempPath, target);
+          } else {
+            linkSync(tempPath, target);
+          }
+          result = {
+            state: 'published',
+            residue: 'none',
+            durability: syncPendingPublication(target, durabilityMarker),
+          };
+        } catch (error) {
+          result = {
+            state: 'refused',
+            reason: error?.code === 'EXDEV' ? 'publish-cross-device' : 'publish-failed',
+            residue: 'none',
+          };
         }
-        result = {
-          state: 'published',
-          residue: 'none',
-          durability: syncPendingPublication(target, durabilityMarker),
-        };
-      } catch (error) {
-        result = {
-          state: 'refused',
-          reason: error?.code === 'EXDEV' ? 'publish-cross-device' : 'publish-failed',
-          residue: 'none',
-        };
       }
     }
   } catch {
@@ -1136,13 +1137,14 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
       const recorded = recordPendingDurability(marker);
       markerCreated = recorded.created;
       if (!recorded.ok) {
-        return { state: 'refused', reason: 'durability-evidence-unavailable' };
+        result = { state: 'refused', reason: 'durability-evidence-unavailable' };
+      } else {
+        symlinkSync(target, symlinkPlan.link);
+        result = {
+          state: 'created',
+          durability: syncPendingPublication(symlinkPlan.link, marker),
+        };
       }
-      symlinkSync(target, symlinkPlan.link);
-      result = {
-        state: 'created',
-        durability: syncPendingPublication(symlinkPlan.link, marker),
-      };
     } catch (error) {
       result = {
         state: 'refused',
@@ -1163,19 +1165,20 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
     const recorded = recordPendingDurability(marker);
     markerCreated = recorded.created;
     if (!recorded.ok) {
-      return {
+      result = {
         state: 'refused',
         reason: 'durability-evidence-unavailable',
         residue: 'none',
       };
+    } else {
+      symlinkSync(target, tempLink);
+      renameSync(tempLink, symlinkPlan.link);
+      result = {
+        state: 'repointed',
+        residue: 'none',
+        durability: syncPendingPublication(symlinkPlan.link, marker),
+      };
     }
-    symlinkSync(target, tempLink);
-    renameSync(tempLink, symlinkPlan.link);
-    result = {
-      state: 'repointed',
-      residue: 'none',
-      durability: syncPendingPublication(symlinkPlan.link, marker),
-    };
   } catch (error) {
     result = {
       state: 'refused',

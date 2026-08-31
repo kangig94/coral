@@ -242,23 +242,20 @@ describe('session-start.mjs', () => {
       notice: 'ran and reported it could not complete safely',
     },
     {
-      name: 'partial result',
+      name: 'residue-only partial from a refused repoint',
       status: 1,
       stdout: `${JSON.stringify(
         projectIgnoreMaintenance('partial', {
-          exclude: {
-            state: 'published',
-            residue: 'none',
-            durability: { state: 'synced', reasons: [] },
-          },
-          symlink: { state: 'refused', reason: 'symlink-conflict' },
+          symlink: { state: 'refused', reason: 'publish-failed', residue: 'owned-staging' },
           scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
           rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
         }),
       )}\n`,
-      notice: 'published or confirmed an artifact but could not establish every required disposition',
+      notice: 'made progress or retained Coral-owned staging but could not establish every required disposition',
+      absentNotice: 'published',
     },
-  ])('renders the $name outcome from an executed owner', ({ name, status, stdout, notice }) => {
+  ])('renders the $name outcome from an executed owner', (scenario) => {
+    const { name, status, stdout, notice } = scenario;
     const fixture = createFixture();
     const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, `${name.replaceAll(' ', '-')}-${status}`);
     writeOwnerStub(hooksRoot, { status, stdout });
@@ -277,7 +274,9 @@ describe('session-start.mjs', () => {
     );
 
     expect(result.status).toBe(0);
-    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(notice);
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext).toContain(notice);
+    if ('absentNotice' in scenario) expect(additionalContext).not.toContain(scenario.absentNotice);
   });
 
   it('uses the shared owner timeout and renders a killed owner', () => {
@@ -351,7 +350,9 @@ describe('session-start.mjs', () => {
     expect(args).toContain('--create-symlink');
     const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
     expect(additionalContext).toContain('Coral migration: retracted legacy coral ignore rule(s)');
-    expect(additionalContext).toContain('Coral project-ignore maintenance published or confirmed an artifact');
+    expect(additionalContext).toContain(
+      'Coral project-ignore maintenance made progress or retained Coral-owned staging',
+    );
     expect(additionalContext).toContain('An affected ignore file is not a readable regular file');
   });
 

@@ -1718,9 +1718,12 @@ describe('project-ignore symlink maintenance', () => {
     expect(fixture.durabilityEvents).toEqual([]);
   });
 
-  it('does not begin publication when syncing the installed marker rename fails', async () => {
+  it('reports a retained marker when exclude publication cannot record durable evidence', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const marker = durabilityMarker(excludePath);
     fixture.failDirectoryFsyncPath = durabilityArena();
     fixture.failDirectoryFsyncCode = 'EIO';
+    fixture.failUnlinkPath = marker;
 
     const result = await maintain('prod');
 
@@ -1729,10 +1732,52 @@ describe('project-ignore symlink maintenance', () => {
       state: 'refused',
       reason: 'durability-evidence-unavailable',
       residue: 'none',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
     });
-    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+    expect(existsSync(excludePath)).toBe(false);
     expect(existsSync(link())).toBe(false);
-    expect(durabilityMarkers()).toEqual([]);
+    expect(readFileSync(marker, 'utf-8')).toBe(excludePath);
+  });
+
+  it('reports a retained marker when symlink creation cannot record durable evidence', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const marker = durabilityMarker(link());
+    writeFileSync(excludePath, '/.claude/coral\n');
+    fixture.failDirectoryFsyncPath = durabilityArena();
+    fixture.failDirectoryFsyncCode = 'EIO';
+    fixture.failUnlinkPath = marker;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
+    });
+    expect(existsSync(link())).toBe(false);
+    expect(readFileSync(marker, 'utf-8')).toBe(link());
+  });
+
+  it('reports a retained marker when symlink repoint cannot record durable evidence', async () => {
+    await maintain('prod');
+    const original = readlinkSync(link());
+    const marker = durabilityMarker(link());
+    fixture.failDirectoryFsyncPath = durabilityArena();
+    fixture.failDirectoryFsyncCode = 'EIO';
+    fixture.failUnlinkPath = marker;
+
+    const result = await maintain('dev');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+      residue: 'none',
+      durability: { state: 'failed', reasons: ['durability-evidence-cleanup-failed'] },
+    });
+    expect(readlinkSync(link())).toBe(original);
+    expect(readFileSync(marker, 'utf-8')).toBe(link());
   });
 
   it('reports a narrowly unsupported directory sync separately from an I/O failure', async () => {
