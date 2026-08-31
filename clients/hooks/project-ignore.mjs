@@ -5,17 +5,20 @@ import { maintainProjectIgnore } from './lib/project-ignore.mjs';
 function parseArgs(argv) {
   let projectDir;
   let createSymlink = false;
+  let maintenanceLocked = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--project-dir') {
       projectDir = argv[index + 1];
       index += 1;
     } else if (argv[index] === '--create-symlink') {
       createSymlink = true;
+    } else if (argv[index] === '--maintenance-locked') {
+      maintenanceLocked = true;
     } else {
       return null;
     }
   }
-  return projectDir ? { projectDir, createSymlink } : null;
+  return projectDir && maintenanceLocked ? { projectDir, createSymlink } : null;
 }
 
 const request = parseArgs(process.argv.slice(2));

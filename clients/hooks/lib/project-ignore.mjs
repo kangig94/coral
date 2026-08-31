@@ -9,16 +9,25 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
-import { coralProjectDir, coralStateRoot } from './hook-utils.mjs';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import {
+  coralProjectDir,
+  coralStateRoot,
+  prepareProjectIgnoreStagingDir,
+  PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
+  PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
+  PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS,
+} from './hook-utils.mjs';
 
 const MAX_GITIGNORE_BYTES = 1024 * 1024;
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -229,34 +238,176 @@ function ensureRealDirectory(path) {
   }
 }
 
-// This fork is paid by every call to `resolveProjectContext` below, no-op or not — finding the ignore-scoped
-// git root is not something the symlink logic can skip past. On the common path where `.claude/coral` already
-// exists, `ensureCoralSymlink` pays a second fork of its own (`coralProjectDir`'s 2000ms bound in
-// `hook-utils.mjs`, to confirm the link is not outgrown), so this script's own worst case is 1500 + 2000 =
-// 3500ms of child work, before this process's own Node startup. `session-start.mjs` owns the budget it spawns
-// this script with as a whole child process; that budget is not this file's number to restate.
-function findGitRoot(projectDir) {
+function findGitContext(projectDir) {
   try {
-    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: projectDir,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1500,
-    }).trim();
-    return realpathSync(root);
+    const output = execFileSync(
+      'git',
+      ['rev-parse', '--show-toplevel', '--git-common-dir', '--git-path', 'info/exclude'],
+      {
+        cwd: projectDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1500,
+      },
+    );
+    const lines = output.replace(/\r?\n$/u, '').split(/\r?\n/u);
+    if (lines.length !== 3 || lines.some((line) => line.length === 0)) return null;
+    return {
+      gitRoot: realpathSync(lines[0]),
+      commonGitDir: realpathSync(resolve(projectDir, lines[1])),
+      excludePath: resolve(projectDir, lines[2]),
+    };
   } catch {
-    return projectDir;
+    return null;
   }
 }
 
-function resolveProjectContext(projectDir) {
+export function repositoryProjectIgnoreStagingDir(commonGitDir) {
+  return join(commonGitDir, 'coral', 'staging', 'project-ignore');
+}
+
+function ensureArenaComponent(path) {
+  try {
+    const stat = lstatSync(path);
+    return !stat.isSymbolicLink() && stat.isDirectory();
+  } catch (error) {
+    if (!isMissing(error)) return false;
+  }
+
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') return false;
+  }
+
+  try {
+    const stat = lstatSync(path);
+    return !stat.isSymbolicLink() && stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export function prepareRepositoryProjectIgnoreStagingDir(commonGitDir) {
+  try {
+    const canonicalCommonGitDir = realpathSync(commonGitDir);
+    const expectedArena = repositoryProjectIgnoreStagingDir(canonicalCommonGitDir);
+    let current = canonicalCommonGitDir;
+    for (const component of ['coral', 'staging', 'project-ignore']) {
+      current = join(current, component);
+      if (!ensureArenaComponent(current)) return null;
+    }
+
+    const canonicalArena = realpathSync(current);
+    if (current !== expectedArena) return null;
+    const containment = relative(canonicalCommonGitDir, canonicalArena);
+    if (
+      containment.length === 0 ||
+      isAbsolute(containment) ||
+      containment === '..' ||
+      containment.startsWith(`..${sep}`)
+    ) {
+      return null;
+    }
+    return canonicalArena;
+  } catch {
+    return null;
+  }
+}
+
+function parseArenaRun(name) {
+  const match = /^(0|[1-9]\d*)-(0|[1-9]\d*)$/u.exec(name);
+  if (!match) return null;
+  const startedAt = Number(match[1]);
+  const pid = Number(match[2]);
+  if (!Number.isSafeInteger(startedAt) || !Number.isSafeInteger(pid) || startedAt < 1 || pid < 1) return null;
+  return { startedAt, pid };
+}
+
+export function sweepProjectIgnoreArenas(
+  arenaDirs,
+  { now = Date.now(), monotonicNow = () => performance.now() } = {},
+) {
+  const sweepStartedAt = monotonicNow();
+  const candidates = [];
+  let failures = 0;
+
+  for (const arenaDir of new Set(arenaDirs)) {
+    try {
+      for (const entry of readdirSync(arenaDir, { withFileTypes: true })) {
+        const run = parseArenaRun(entry.name);
+        if (!run || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+        candidates.push({ arenaDir, name: entry.name, ...run });
+      }
+    } catch {
+      failures += 1;
+    }
+  }
+
+  candidates.sort(
+    (left, right) =>
+      left.startedAt - right.startedAt || left.pid - right.pid || left.arenaDir.localeCompare(right.arenaDir),
+  );
+
+  let inspected = 0;
+  let removed = 0;
+  for (const candidate of candidates) {
+    if (
+      inspected >= PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS ||
+      monotonicNow() - sweepStartedAt >= PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS
+    ) {
+      break;
+    }
+    inspected += 1;
+    if (now - candidate.startedAt < PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS) continue;
+
+    const runDir = join(candidate.arenaDir, candidate.name);
+    try {
+      const stat = lstatSync(runDir);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+      rmSync(runDir, { recursive: true });
+      removed += 1;
+    } catch {
+      failures += 1;
+    }
+  }
+
+  return { inspected, removed, failures };
+}
+
+export function projectIgnoreRunDir(arenaDir, startedAt, pid = process.pid) {
+  return join(arenaDir, `${startedAt}-${pid}`);
+}
+
+function createProjectIgnoreRunDir(arenaDir, startedAt) {
+  const runDir = projectIgnoreRunDir(arenaDir, startedAt);
+  try {
+    mkdirSync(runDir, { mode: 0o700 });
+    const stat = lstatSync(runDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
+    return runDir;
+  } catch {
+    return null;
+  }
+}
+
+function removeProjectIgnoreRunDir(runDir) {
+  try {
+    const stat = lstatSync(runDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return;
+    rmSync(runDir, { recursive: true });
+  } catch {}
+}
+
+export function resolveProjectContext(projectDir) {
   let realProjectDir;
   try {
     realProjectDir = realpathSync(projectDir);
   } catch {
     return null;
   }
-  const gitRoot = findGitRoot(realProjectDir);
+  const gitContext = findGitContext(realProjectDir);
+  const gitRoot = gitContext?.gitRoot ?? realProjectDir;
   const projectRelative = relative(gitRoot, realProjectDir);
   if (isAbsolute(projectRelative) || projectRelative === '..' || projectRelative.startsWith(`..${sep}`)) {
     return null;
@@ -265,6 +416,8 @@ function resolveProjectContext(projectDir) {
   return {
     projectDir: realProjectDir,
     gitRoot,
+    commonGitDir: gitContext?.commonGitDir ?? null,
+    excludePath: gitContext?.excludePath ?? null,
     rootGitignore: join(gitRoot, '.gitignore'),
     legacyEntry: gitignorePrefix ? `${gitignorePrefix}/${LEGACY_CORAL_IGNORE_ENTRY}` : LEGACY_CORAL_IGNORE_ENTRY,
   };
@@ -317,11 +470,6 @@ function ensureCoralSymlink(projectDir, token) {
   try {
     const stat = lstatSync(link);
     if (!stat.isSymbolicLink()) return { ok: false, created: false, repointed: false };
-    // Computed here, not before the lstat: only the two branches that don't reach this point — not a symlink,
-    // or an lstat error below — have no need to know the target at all, so only they are fork-free. The
-    // ordinary case, an existing symlink that turns out to already be correct, still pays this fork:
-    // confirming "already correct" is impossible without a target to compare against (see `findGitRoot`'s
-    // comment above for the combined budget this adds up to).
     target = coralProjectDir(projectDir);
     if (!isOutgrownCoralLink(link, target)) return { ok: true, created: false, repointed: false };
     repointed = true;
@@ -351,12 +499,7 @@ function ensureCoralSymlink(projectDir, token) {
 // every session says which one, without carrying a path or an errno to a surface that renders to a user.
 const FAILED = { ok: false, migrated: false, scopedIgnoreUpdated: false, symlinkCreated: false, symlinkRepointed: false };
 
-export function maintainProjectIgnore({ projectDir, createSymlink = false, token = `${process.pid}-${Date.now()}` }) {
-  const context = resolveProjectContext(projectDir);
-  if (!context) {
-    return { ...FAILED, reason: 'project-context-unresolvable' };
-  }
-
+function maintainProjectIgnoreArtifacts({ context, createSymlink, token }) {
   const rootSnapshot = readRegularSnapshot(context.rootGitignore, { allowMissing: true });
   if (!rootSnapshot.ok) {
     return { ...FAILED, reason: 'root-gitignore-unreadable' };
@@ -397,4 +540,30 @@ export function maintainProjectIgnore({ projectDir, createSymlink = false, token
   }
 
   return { ok: true, migrated, scopedIgnoreUpdated, symlinkCreated, symlinkRepointed };
+}
+
+export function maintainProjectIgnore({ projectDir, createSymlink = false, token = `${process.pid}-${Date.now()}` }) {
+  const startedAt = Date.now();
+  const context = resolveProjectContext(projectDir);
+  if (!context) return { ...FAILED, reason: 'project-context-unresolvable' };
+
+  const fallbackArena = prepareProjectIgnoreStagingDir();
+  const repositoryArena = context.commonGitDir
+    ? prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir)
+    : null;
+  if (!fallbackArena || (context.commonGitDir && !repositoryArena)) {
+    return { ...FAILED, reason: 'staging-arena-unavailable' };
+  }
+
+  const arenaDirs = repositoryArena ? [repositoryArena, fallbackArena] : [fallbackArena];
+  sweepProjectIgnoreArenas(arenaDirs);
+
+  const runDir = createProjectIgnoreRunDir(repositoryArena ?? fallbackArena, startedAt);
+  if (!runDir) return { ...FAILED, reason: 'staging-arena-unavailable' };
+
+  try {
+    return maintainProjectIgnoreArtifacts({ context, createSymlink, token });
+  } finally {
+    removeProjectIgnoreRunDir(runDir);
+  }
 }

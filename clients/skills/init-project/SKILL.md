@@ -293,9 +293,46 @@ argument-hint: "[existing|new]"
 
   ```bash
   CORAL_PROJECT_IGNORE_SCRIPT="{skill_base_dir}/../../hooks/project-ignore.mjs"
-  if ! CORAL_PROJECT_IGNORE_RESULT="$(
-    node "$CORAL_PROJECT_IGNORE_SCRIPT" --project-dir "$PWD" --create-symlink
-  )"; then
+  CORAL_PROJECT_IGNORE_STATE_DIR="$HOME/.coral/staging"
+  CORAL_PROJECT_IGNORE_LOCK="$CORAL_PROJECT_IGNORE_STATE_DIR/project-ignore.maintenance.lock"
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable" >&2
+    echo "Coral project-ignore setup needs flock. Install util-linux flock, then retry." >&2
+    exit 1
+  fi
+  for CORAL_PROJECT_IGNORE_DIR in "$HOME/.coral" "$CORAL_PROJECT_IGNORE_STATE_DIR"; do
+    if [ -L "$CORAL_PROJECT_IGNORE_DIR" ] || { [ -e "$CORAL_PROJECT_IGNORE_DIR" ] && [ ! -d "$CORAL_PROJECT_IGNORE_DIR" ]; }; then
+      echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable" >&2
+      echo "Coral project-ignore setup requires $CORAL_PROJECT_IGNORE_DIR to be a real directory, not a symlink or another file type. Repair that path, then retry." >&2
+      exit 1
+    fi
+    if [ ! -d "$CORAL_PROJECT_IGNORE_DIR" ] && ! mkdir -m 700 "$CORAL_PROJECT_IGNORE_DIR"; then
+      echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable" >&2
+      echo "Coral project-ignore setup could not create $CORAL_PROJECT_IGNORE_DIR. Make its parent writable, then retry." >&2
+      exit 1
+    fi
+  done
+  if [ -L "$CORAL_PROJECT_IGNORE_LOCK" ] || { [ -e "$CORAL_PROJECT_IGNORE_LOCK" ] && [ ! -f "$CORAL_PROJECT_IGNORE_LOCK" ]; }; then
+    echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable" >&2
+    echo "Coral project-ignore setup requires $CORAL_PROJECT_IGNORE_LOCK to be a regular lock file. Repair that path, then retry." >&2
+    exit 1
+  fi
+  CORAL_PROJECT_IGNORE_STATUS=0
+  CORAL_PROJECT_IGNORE_RESULT="$(
+    flock --exclusive --nonblock --no-fork --conflict-exit-code 75 "$CORAL_PROJECT_IGNORE_LOCK" \
+      node "$CORAL_PROJECT_IGNORE_SCRIPT" --maintenance-locked --project-dir "$PWD" --create-symlink
+  )" || CORAL_PROJECT_IGNORE_STATUS=$?
+  if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 75 ]; then
+    echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-busy" >&2
+    echo "Another Coral project-ignore maintainer owns the lock. Wait for it to finish, or terminate it if it is stuck, then retry." >&2
+    exit 1
+  fi
+  if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ] && [ -z "$CORAL_PROJECT_IGNORE_RESULT" ]; then
+    echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable" >&2
+    echo "Coral project-ignore setup could not open the maintenance lock or launch its owner. Ensure ~/.coral/staging is writable and flock is executable, then retry." >&2
+    exit 1
+  fi
+  if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ]; then
     echo "Coral project-ignore setup failed; the legacy ignore entry was preserved. Resolve unsafe or unwritable ignore paths, then retry." >&2
     exit 1
   fi

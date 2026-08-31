@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -12,6 +22,10 @@ import {
   exitIfChildProcess,
   hostKind,
   isValidSessionId,
+  openProjectIgnoreMaintenanceLock,
+  PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
+  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+  projectIgnoreMaintenanceLockPath,
   readStdin,
   resolveFlavorDisposition,
   writeHookOutput,
@@ -34,27 +48,6 @@ const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
 /**
- * What the child is allowed, and why it is not the sum of what the child spends.
- *
- * `project-ignore.mjs` pays two bounded git forks on its ordinary path: `git rev-parse --show-toplevel`
- * (1500ms, to find the ignore root) and `git remote get-url origin` (2000ms, to derive the project directory
- * the symlink must point at). That is 3500ms of child work before its own Node startup. A budget equal to the
- * work it bounds is not a budget: a child doing nothing wrong, on a slow mount, would be SIGTERMed while its
- * own bounds were still running.
- *
- * The margin goes here rather than into shrinking either probe, because shortening those trades a correct
- * answer for headroom that belongs to the caller: a probe cut short reports "could not tell" for a machine
- * that was merely slow. This budget is not the only cost charged against the hook's registered timeout —
- * `renderInject` runs its own bounded git fork in this process rather than the child (see
- * `resolveProjectSource` in `clients/hooks/lib/hook-utils.mjs`) — so what is left for this file's own work is
- * well under half of that timeout, not half of it.
- *
- * `tests/unit/hooks/project-ignore-symlink.test.ts` pins the child's 3500ms sum by reading both mocks' actual
- * options, and separately asserts this constant is strictly greater than that sum; if either bound moves, one
- * of those tests fails and the number here has to be re-derived rather than guessed.
- */
-const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
-/**
  * What each non-`ok` maintenance outcome is told to the session as, keyed by the outcome itself.
  *
  * Splitting the outcomes apart only moves the defect if nobody reads the split: a child SIGTERMed on a slow
@@ -69,9 +62,12 @@ const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
  */
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
   killed: 'ran out of its time budget and was terminated',
-  'not-spawned': 'could not be started',
   'no-output': 'exited without reporting a result',
   'unparseable-output': 'reported a result Coral could not read',
+  'maintenance-busy':
+    'did not start because another Coral project-ignore maintainer owns the lock; wait for that invocation to finish or terminate it if it is stuck',
+  'maintenance-lock-unavailable':
+    'could not open or own its maintenance lock; install flock and ensure ~/.coral/staging is a writable real directory with no symlink components',
   failed: 'ran and reported it could not complete safely',
 };
 // Long enough to still catch the failure when a session starts minutes after the
@@ -249,17 +245,26 @@ try {
   process.exit(0);
 }
 
-// A launch failure and a timeout kill both leave `result.status` null and set `result.error`, and `result.signal`
-// does not separate them either: this call also sets `maxBuffer`, and a buffer overflow can arrive with a signal
-// set or left null depending on a race this code does not control, so a signal by itself proves nothing about
-// which of the three happened. `result.error.code` is what `spawnSync` itself reports the reason as —
-// `'ETIMEDOUT'` for the timeout kill, whatever launch errno the OS gave otherwise — so the code is sorted on
-// below, not the signal.
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
+  const lockFd = openProjectIgnoreMaintenanceLock();
+  if (lockFd === null) return { outcome: 'maintenance-lock-unavailable', maintenance: null };
+
   try {
-    const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
+    const args = [
+      '--exclusive',
+      '--nonblock',
+      '--no-fork',
+      '--conflict-exit-code',
+      String(PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE),
+      projectIgnoreMaintenanceLockPath(),
+      process.execPath,
+      PROJECT_IGNORE_SCRIPT,
+      '--maintenance-locked',
+      '--project-dir',
+      projectDir,
+    ];
     if (createSymlink) args.push('--create-symlink');
-    const result = spawnSync(process.execPath, args, {
+    const result = spawnSync('flock', args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
@@ -267,7 +272,18 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     });
     if (result.error) {
       if (result.error.code === 'ETIMEDOUT') return { outcome: 'killed', maintenance: null };
-      return { outcome: 'not-spawned', maintenance: null };
+      return { outcome: 'maintenance-lock-unavailable', maintenance: null };
+    }
+    if (result.status === PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE) {
+      return { outcome: 'maintenance-busy', maintenance: null };
+    }
+    if (
+      !result.stdout &&
+      ((typeof result.status === 'number' && result.status >= 64 && result.status <= 78) ||
+        result.status === 126 ||
+        result.status === 127)
+    ) {
+      return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }
     if (!result.stdout) return { outcome: 'no-output', maintenance: null };
     // A parse that succeeds is not the same as a result Coral can act on: `maintainProjectIgnore`'s contract is
@@ -282,6 +298,10 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     return { outcome: 'ok', maintenance: parsed };
   } catch {
     return { outcome: 'unparseable-output', maintenance: null };
+  } finally {
+    try {
+      closeSync(lockFd);
+    } catch {}
   }
 }
 

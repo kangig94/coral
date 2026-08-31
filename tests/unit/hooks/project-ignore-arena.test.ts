@@ -1,0 +1,206 @@
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  prepareRepositoryProjectIgnoreStagingDir,
+  projectIgnoreRunDir,
+  repositoryProjectIgnoreStagingDir,
+  resolveProjectContext,
+  sweepProjectIgnoreArenas,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore.mjs';
+import {
+  PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
+  PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
+  PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
+  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+  PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/hook-utils.mjs';
+
+let fixtureRoot: string;
+
+beforeEach(() => {
+  fixtureRoot = mkdtempSync(join(tmpdir(), 'coral-project-ignore-arena-'));
+});
+
+afterEach(() => {
+  rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+function initRepository(path: string): void {
+  mkdirSync(path, { recursive: true });
+  git(path, 'init', '--quiet');
+  git(path, 'config', 'user.name', 'Coral Test');
+  git(path, 'config', 'user.email', 'coral@example.invalid');
+  writeFileSync(join(path, 'tracked.txt'), 'tracked\n');
+  git(path, 'add', 'tracked.txt');
+  git(path, 'commit', '--quiet', '-m', 'fixture');
+}
+
+function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string): void {
+  const context = resolveProjectContext(projectDir);
+  expect(context).not.toBeNull();
+  expect(context.commonGitDir).toBe(realpathSync(expectedCommonGitDir));
+
+  const expected = repositoryProjectIgnoreStagingDir(context.commonGitDir);
+  const arena = prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir);
+  expect(arena).toBe(realpathSync(expected));
+  expect(relative(context.commonGitDir, arena)).toBe(join('coral', 'staging', 'project-ignore'));
+  expect(isAbsolute(relative(context.commonGitDir, arena))).toBe(false);
+  expect(relative(context.commonGitDir, arena).startsWith('..')).toBe(false);
+}
+
+describe('project-ignore repository arena', () => {
+  it('places each invocation in its startedAt-pid directory', () => {
+    expect(projectIgnoreRunDir('/git/coral/staging/project-ignore', 1234, 5678)).toBe(
+      join('/git/coral/staging/project-ignore', '1234-5678'),
+    );
+  });
+
+  it('is contained by the common Git directory in an ordinary repository', () => {
+    const repository = join(fixtureRoot, 'ordinary');
+    initRepository(repository);
+
+    expectRepositoryArena(repository, join(repository, '.git'));
+  });
+
+  it('is contained by the common Git directory from a linked worktree', () => {
+    const repository = join(fixtureRoot, 'main');
+    const worktree = join(fixtureRoot, 'linked');
+    initRepository(repository);
+    git(repository, 'worktree', 'add', '--quiet', '--detach', worktree);
+
+    expectRepositoryArena(worktree, join(repository, '.git'));
+  });
+
+  it('is contained by the submodule common Git directory', () => {
+    const source = join(fixtureRoot, 'source');
+    const repository = join(fixtureRoot, 'parent');
+    initRepository(source);
+    initRepository(repository);
+    git(repository, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', source, 'module');
+
+    expectRepositoryArena(join(repository, 'module'), join(repository, '.git', 'modules', 'module'));
+  });
+
+  it('rejects a symlink or non-directory arena component', () => {
+    const repository = join(fixtureRoot, 'unsafe');
+    const outside = join(fixtureRoot, 'outside');
+    initRepository(repository);
+    mkdirSync(outside);
+
+    const commonGitDir = realpathSync(join(repository, '.git'));
+    symlinkSync(outside, join(commonGitDir, 'coral'));
+    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toBeNull();
+
+    rmSync(join(commonGitDir, 'coral'));
+    writeFileSync(join(commonGitDir, 'coral'), 'not a directory');
+    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toBeNull();
+  });
+});
+
+describe('project-ignore arena reclamation', () => {
+  it('derives the cooperating residue age from the five-second owner lifetime', () => {
+    expect(PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS).toBe(120 * PROJECT_IGNORE_SPAWN_TIMEOUT_MS);
+    expect(PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS).toBe(250);
+    expect(PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS).toBe(250);
+    expect(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS).toBe(32);
+  });
+
+  it('retains 599,999 ms and removes 600,000 ms after decisive ownership', () => {
+    const firstArena = join(fixtureRoot, 'first');
+    const secondArena = join(fixtureRoot, 'second');
+    mkdirSync(join(firstArena, '400000-1'), { recursive: true });
+    mkdirSync(join(secondArena, '400001-2'), { recursive: true });
+
+    const result = sweepProjectIgnoreArenas([firstArena, secondArena], {
+      now: 1_000_000,
+      monotonicNow: () => 0,
+    });
+
+    expect(result).toEqual({ inspected: 2, removed: 1, failures: 0 });
+    expect(existsSync(join(firstArena, '400000-1'))).toBe(false);
+    expect(existsSync(join(secondArena, '400001-2'))).toBe(true);
+  });
+
+  it('inspects at most 32 parsed runs across both roots, oldest first', () => {
+    const firstArena = join(fixtureRoot, 'first');
+    const secondArena = join(fixtureRoot, 'second');
+    mkdirSync(firstArena);
+    mkdirSync(secondArena);
+    for (let startedAt = 1; startedAt <= 40; startedAt += 1) {
+      const arena = startedAt % 2 === 0 ? firstArena : secondArena;
+      mkdirSync(join(arena, `${startedAt}-${startedAt}`));
+    }
+
+    const result = sweepProjectIgnoreArenas([firstArena, secondArena], {
+      now: PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS + 100,
+      monotonicNow: () => 0,
+    });
+
+    expect(result.inspected).toBe(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS);
+    expect(result.removed).toBe(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS);
+    for (let startedAt = 1; startedAt <= 32; startedAt += 1) {
+      const arena = startedAt % 2 === 0 ? firstArena : secondArena;
+      expect(existsSync(join(arena, `${startedAt}-${startedAt}`))).toBe(false);
+    }
+    for (let startedAt = 33; startedAt <= 40; startedAt += 1) {
+      const arena = startedAt % 2 === 0 ? firstArena : secondArena;
+      expect(existsSync(join(arena, `${startedAt}-${startedAt}`))).toBe(true);
+    }
+  });
+
+  it('stops before another run when the shared 250 ms budget is exhausted', () => {
+    const firstArena = join(fixtureRoot, 'first');
+    const secondArena = join(fixtureRoot, 'second');
+    mkdirSync(join(firstArena, '1-1'), { recursive: true });
+    mkdirSync(join(secondArena, '2-2'), { recursive: true });
+    const readings = [0, 0, PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS];
+
+    const result = sweepProjectIgnoreArenas([firstArena, secondArena], {
+      now: PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS + 100,
+      monotonicNow: () => readings.shift() ?? PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
+    });
+
+    expect(result).toEqual({ inspected: 1, removed: 1, failures: 0 });
+    expect(existsSync(join(firstArena, '1-1'))).toBe(false);
+    expect(existsSync(join(secondArena, '2-2'))).toBe(true);
+  });
+});
+
+describe('project-ignore maintenance ownership', () => {
+  it('routes both entry points through the exec-style owner and requires its child marker', () => {
+    const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const sessionStart = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'session-start.mjs'), 'utf-8');
+    const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+    const child = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'project-ignore.mjs'), 'utf-8');
+
+    for (const entryPoint of [sessionStart, initProject]) {
+      expect(entryPoint).toContain('--nonblock');
+      expect(entryPoint).toContain('--no-fork');
+      expect(entryPoint).toContain('--conflict-exit-code');
+      expect(entryPoint).toContain('--maintenance-locked');
+    }
+    expect(sessionStart).toContain("outcome: 'maintenance-busy'");
+    expect(sessionStart).toContain("outcome: 'maintenance-lock-unavailable'");
+    expect(child).toContain('projectDir && maintenanceLocked');
+  });
+});

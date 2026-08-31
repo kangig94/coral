@@ -91,6 +91,7 @@ beforeEach(() => {
   fixture.home = join(root, 'home');
   fixture.failSymlinkTarget = null;
   fixture.failRenameTo = null;
+  mkdirSync(fixture.home, { recursive: true });
   projectDir = join(root, 'project');
   mkdirSync(join(projectDir, '.claude'), { recursive: true });
   writeFileSync(join(projectDir, '.gitignore'), '', 'utf-8');
@@ -243,7 +244,7 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
-  // F3: the two forks this script makes — `git rev-parse --show-toplevel` (`findGitRoot`, always paid) and
+  // F3: the two forks this script makes — `git rev-parse` (`findGitContext`, always paid) and
   // `git remote get-url origin` (`coralProjectDir`, paid here because the recheck above needs a target) — sum
   // to 3500ms of child work before this process's own Node startup. `session-start.mjs` used to give the child
   // exactly that, so a child doing nothing wrong was killed while its own bounds were still running; its budget
@@ -292,13 +293,15 @@ describe('ensureCoralSymlink keeps its own link pointing at the current flavor',
       ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
     const childBoundSum = findGitRootTimeout + coralProjectDirTimeout;
 
-    const sessionStartSource = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'session-start.mjs'),
+    const hookUtilsSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', 'lib', 'hook-utils.mjs'),
       'utf-8',
     );
-    const parentBudget = Number(sessionStartSource.match(/PROJECT_IGNORE_SPAWN_TIMEOUT_MS\s*=\s*(\d+)/)?.[1]);
+    const parentBudget = Number(hookUtilsSource.match(/PROJECT_IGNORE_SPAWN_TIMEOUT_MS\s*=\s*(\d+)/)?.[1]);
 
-    expect(parentBudget, 'session-start.mjs must define this constant as a plain number literal').toBeGreaterThan(0);
+    expect(parentBudget, 'hook-utils.mjs must define this shared constant as a plain number literal').toBeGreaterThan(
+      0,
+    );
     expect(
       parentBudget,
       "the parent's spawnSync timeout must leave margin beyond the child's own two forks",

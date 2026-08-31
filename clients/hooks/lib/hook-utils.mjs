@@ -1,5 +1,17 @@
 import { execSync } from 'node:child_process';
-import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -318,6 +330,108 @@ export function claudeConfigDir() {
 // request and never select a different daemon or state tree.
 export function coralStateRoot() {
   return join(homedir(), '.coral');
+}
+
+export const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
+export const PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS = 250;
+export const PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS = 600_000;
+export const PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS = 250;
+export const PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS = 32;
+export const PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE = 75;
+
+export function projectIgnoreStagingDir() {
+  return join(coralStateRoot(), 'staging', 'project-ignore');
+}
+
+export function projectIgnoreMaintenanceLockPath() {
+  return join(coralStateRoot(), 'staging', 'project-ignore.maintenance.lock');
+}
+
+function ensureRealDirectoryComponent(path) {
+  try {
+    const stat = lstatSync(path);
+    return !stat.isSymbolicLink() && stat.isDirectory();
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false;
+  }
+
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') return false;
+  }
+
+  try {
+    const stat = lstatSync(path);
+    return !stat.isSymbolicLink() && stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function prepareProjectIgnoreStateStagingDir() {
+  try {
+    const stateRoot = coralStateRoot();
+    const home = realpathSync(dirname(stateRoot));
+    const expectedStateRoot = join(home, basename(stateRoot));
+    if (!ensureRealDirectoryComponent(expectedStateRoot)) return null;
+    const canonicalStateRoot = realpathSync(stateRoot);
+    if (canonicalStateRoot !== expectedStateRoot) return null;
+    const expectedStagingDir = join(canonicalStateRoot, 'staging');
+    if (!ensureRealDirectoryComponent(expectedStagingDir)) return null;
+    const canonicalStagingDir = realpathSync(expectedStagingDir);
+    return canonicalStagingDir === expectedStagingDir ? canonicalStagingDir : null;
+  } catch {
+    return null;
+  }
+}
+
+export function prepareProjectIgnoreStagingDir() {
+  const stagingDir = prepareProjectIgnoreStateStagingDir();
+  if (!stagingDir) return null;
+  const arena = join(stagingDir, basename(projectIgnoreStagingDir()));
+  if (!ensureRealDirectoryComponent(arena)) return null;
+  try {
+    const canonicalArena = realpathSync(arena);
+    return canonicalArena === arena ? canonicalArena : null;
+  } catch {
+    return null;
+  }
+}
+
+export function openProjectIgnoreMaintenanceLock() {
+  const stagingDir = prepareProjectIgnoreStateStagingDir();
+  if (!stagingDir) return null;
+
+  const lockPath = projectIgnoreMaintenanceLockPath();
+  let fd;
+  try {
+    fd = openSync(
+      lockPath,
+      constants.O_RDWR | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    const opened = fstatSync(fd);
+    const named = lstatSync(lockPath);
+    if (
+      !opened.isFile() ||
+      named.isSymbolicLink() ||
+      !named.isFile() ||
+      opened.dev !== named.dev ||
+      opened.ino !== named.ino
+    ) {
+      closeSync(fd);
+      return null;
+    }
+    return fd;
+  } catch {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+    return null;
+  }
 }
 
 export function resolveKbRoot() {
