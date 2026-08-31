@@ -229,6 +229,7 @@ function durabilityMarker(durabilityDir, durabilityRunDir, target) {
 function recordPendingDurability(marker) {
   let fd;
   let created = false;
+  let result = { ok: false, created, residue: 'none' };
   try {
     fd = openSync(marker.stagingPath, TEMP_WRITE_FLAGS, 0o600);
     writeFileSync(fd, marker.target);
@@ -239,19 +240,21 @@ function recordPendingDurability(marker) {
     renameSync(marker.stagingPath, marker.path);
     created = true;
     if (fsyncParent(marker.path).state !== 'synced') {
-      return { ok: false, created };
+      result = { ok: false, created, residue: 'none' };
+    } else {
+      result = { ok: true, created, residue: 'none' };
     }
-    return { ok: true, created };
   } catch {
-    return { ok: false, created };
+    result = { ok: false, created, residue: 'none' };
   } finally {
     if (fd !== undefined) {
       try {
         closeSync(fd);
       } catch {}
     }
-    safeUnlink(marker.stagingPath);
+    if (!safeUnlink(marker.stagingPath)) result = { ...result, residue: 'owned-staging' };
   }
+  return result;
 }
 
 function quarantineDurabilityMarker(durabilityDir, markerPath, markerName) {
@@ -436,7 +439,11 @@ export function atomicReplace({
     const recorded = recordPendingDurability(durabilityMarker);
     markerCreated = recorded.created;
     if (!recorded.ok) {
-      result = { state: 'refused', reason: 'durability-evidence-unavailable', residue: 'none' };
+      result = {
+        state: 'refused',
+        reason: 'durability-evidence-unavailable',
+        residue: recorded.residue,
+      };
     } else {
       fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
       fchmodSync(fd, snapshot.exists ? snapshot.mode : (fstatSync(fd).mode & 0o777) | 0o600);
@@ -827,27 +834,45 @@ function isCoralProjectsTarget(path) {
   });
 }
 
-function hasLegacySymlinkAuthorship(path) {
+function inspectLegacySymlinkAuthorship(path) {
   try {
-    return isCoralProjectsTarget(resolve(dirname(path), readlinkSync(path)));
-  } catch {
-    return false;
+    return {
+      state: 'observed',
+      authored: isCoralProjectsTarget(resolve(dirname(path), readlinkSync(path))),
+    };
+  } catch (error) {
+    return { state: isMissing(error) ? 'missing' : 'observation-failed' };
   }
 }
 
 function legacyStagingCandidate(context, directory, entry, baseName, kind) {
-  if (!entry.name.startsWith(`${baseName}.coral-`) || entry.isDirectory()) return null;
+  if (!entry.name.startsWith(`${baseName}.coral-`) || entry.isDirectory()) {
+    return { state: 'not-candidate' };
+  }
   const path = join(directory, entry.name);
   const reportPath = relative(context.gitRoot, path);
-  if (!isLegacyWorkingTreeStagingPath(reportPath)) return null;
+  if (!isLegacyWorkingTreeStagingPath(reportPath)) return { state: 'not-candidate' };
 
   try {
     const stat = lstatSync(path);
-    if (kind === 'regular' && (stat.isSymbolicLink() || !stat.isFile())) return null;
-    if (kind === 'symlink' && (!stat.isSymbolicLink() || !hasLegacySymlinkAuthorship(path))) return null;
-    return { path, reportPath, mtimeMs: stat.mtimeMs, kind };
-  } catch {
-    return null;
+    if (kind === 'regular' && (stat.isSymbolicLink() || !stat.isFile())) {
+      return { state: 'not-candidate' };
+    }
+    if (kind === 'symlink') {
+      if (!stat.isSymbolicLink()) return { state: 'not-candidate' };
+      const authorship = inspectLegacySymlinkAuthorship(path);
+      if (authorship.state === 'observation-failed') {
+        return { state: 'observation-failed', path: reportPath };
+      }
+      if (authorship.state !== 'observed' || !authorship.authored) {
+        return { state: 'not-candidate' };
+      }
+    }
+    return { state: 'candidate', candidate: { path, reportPath, mtimeMs: stat.mtimeMs, kind } };
+  } catch (error) {
+    return isMissing(error)
+      ? { state: 'not-candidate' }
+      : { state: 'observation-failed', path: reportPath };
   }
 }
 
@@ -855,12 +880,25 @@ function legacyCandidateStillAuthorized(candidate, now) {
   try {
     const stat = lstatSync(candidate.path);
     const age = now - stat.mtimeMs;
-    if (!Number.isFinite(age) || age < LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS) return false;
-    if (candidate.kind === 'regular') return !stat.isSymbolicLink() && stat.isFile();
-    return stat.isSymbolicLink() && hasLegacySymlinkAuthorship(candidate.path);
-  } catch {
-    return false;
+    if (!Number.isFinite(age) || age < LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS) {
+      return { state: 'not-authorized' };
+    }
+    if (candidate.kind === 'regular') {
+      return { state: !stat.isSymbolicLink() && stat.isFile() ? 'authorized' : 'not-authorized' };
+    }
+    if (!stat.isSymbolicLink()) return { state: 'not-authorized' };
+    const authorship = inspectLegacySymlinkAuthorship(candidate.path);
+    if (authorship.state === 'observation-failed') return authorship;
+    return {
+      state: authorship.state === 'observed' && authorship.authored ? 'authorized' : 'not-authorized',
+    };
+  } catch (error) {
+    return { state: isMissing(error) ? 'not-authorized' : 'observation-failed' };
   }
+}
+
+function legacySweepRefusal(reason, path, count) {
+  return { state: 'refused', reason, path, count };
 }
 
 /**
@@ -873,37 +911,71 @@ export function sweepLegacyWorkingTreeStaging(context, { now = Date.now() } = {}
     { directory: join(context.projectDir, '.claude'), baseName: '.gitignore', kind: 'regular' },
     { directory: join(context.projectDir, '.claude'), baseName: 'coral', kind: 'symlink' },
   ];
-  const candidates = [];
+  let count = 0;
 
   for (const location of locations) {
-    if (!isRealDirectory(location.directory)) continue;
+    let directoryStat;
     try {
-      for (const entry of readdirSync(location.directory, { withFileTypes: true })) {
-        const candidate = legacyStagingCandidate(
-          context,
-          location.directory,
-          entry,
-          location.baseName,
-          location.kind,
-        );
-        const age = candidate ? now - candidate.mtimeMs : Number.NaN;
-        if (!candidate || !Number.isFinite(age) || age < LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS) continue;
-        candidates.push(candidate);
-      }
-    } catch {
-      // An unreadable location provides no authority to finalize any entry within it.
+      directoryStat = lstatSync(location.directory);
+    } catch (error) {
+      if (isMissing(error)) continue;
+      return legacySweepRefusal(
+        'legacy-sweep-observation-failed',
+        relative(context.gitRoot, location.directory) || '.',
+        count,
+      );
     }
-  }
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) continue;
 
-  candidates.sort((left, right) => left.reportPath.localeCompare(right.reportPath));
-  let count = 0;
-  for (const candidate of candidates) {
-    if (!legacyCandidateStillAuthorized(candidate, now)) continue;
+    let entries;
     try {
-      unlinkSync(candidate.path);
-      count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
-    } catch {
-      return { state: 'refused', reason: 'legacy-sweep-failed', path: candidate.reportPath, count };
+      entries = readdirSync(location.directory, { withFileTypes: true }).sort((left, right) =>
+        left.name.localeCompare(right.name),
+      );
+    } catch (error) {
+      if (isMissing(error)) continue;
+      return legacySweepRefusal(
+        'legacy-sweep-observation-failed',
+        relative(context.gitRoot, location.directory) || '.',
+        count,
+      );
+    }
+
+    for (const entry of entries) {
+      const inspected = legacyStagingCandidate(
+        context,
+        location.directory,
+        entry,
+        location.baseName,
+        location.kind,
+      );
+      if (inspected.state === 'observation-failed') {
+        return legacySweepRefusal(
+          'legacy-sweep-observation-failed',
+          inspected.path,
+          count,
+        );
+      }
+      if (inspected.state !== 'candidate') continue;
+      const candidate = inspected.candidate;
+      const age = now - candidate.mtimeMs;
+      if (!Number.isFinite(age) || age < LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS) continue;
+
+      const authorization = legacyCandidateStillAuthorized(candidate, now);
+      if (authorization.state === 'observation-failed') {
+        return legacySweepRefusal(
+          'legacy-sweep-observation-failed',
+          candidate.reportPath,
+          count,
+        );
+      }
+      if (authorization.state !== 'authorized') continue;
+      try {
+        unlinkSync(candidate.path);
+        count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
+      } catch {
+        return legacySweepRefusal('legacy-sweep-failed', candidate.reportPath, count);
+      }
     }
   }
   return count === 0 ? { state: 'unchanged' } : { state: 'cleaned', count };
@@ -918,30 +990,23 @@ export function escapeGitignoreLiteralPath(path) {
   return escaped;
 }
 
-/**
- * Whether an existing `.claude/coral` link is one Coral placed and has since outgrown.
- *
- * Only a link pointing into `~/.coral/projects*` qualifies. Anything else — a link an operator made to a
- * directory of their own — is left exactly where it is; correcting our own artifact is not licence to
- * overwrite someone's.
- */
-function isOutgrownCoralLink(link, target) {
-  let current;
+function inspectCoralLink(link) {
   try {
-    // `readlinkSync` returns the target text exactly as stored, with no normalization — `symlinkSync` does not
-    // normalize on write either, so a target like `<root>/projects/../projects-mine/<slug>` reads back with the
-    // `..` still in it. It textually starts with the `projects` root while semantically escaping it, and
-    // `normalize()` is what tells those apart without resolving anything through the filesystem the way
-    // `realpathSync` would (the link's target need not exist for this check).
-    current = normalize(readlinkSync(link));
-  } catch {
-    return false;
+    const stat = lstatSync(link);
+    if (!stat.isSymbolicLink()) return { state: 'non-link' };
+  } catch (error) {
+    return { state: isMissing(error) ? 'missing' : 'observation-failed' };
   }
+
+  try {
+    return { state: 'link', target: normalize(readlinkSync(link)) };
+  } catch (error) {
+    return { state: isMissing(error) ? 'missing' : 'observation-failed' };
+  }
+}
+
+function isOutgrownCoralLink(current, target) {
   if (current === target) return false;
-  // Both legitimate roots are checked on purpose — a link left behind by the other flavor is still ours to
-  // repoint. Each match needs its own separator boundary: `startsWith('…/projects')` alone also matches
-  // `…/projects-mine`, `…/projects-old`, `…/projectsBackup` — an operator's own directory that merely shares
-  // the prefix, not a link Coral placed.
   return ['projects', 'projects-dev'].some((name) => {
     const root = join(coralStateRoot(), name);
     return current === root || current.startsWith(root + sep);
@@ -1028,9 +1093,12 @@ function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
   const recorded = recordPendingDurability(marker);
   if (!recorded.ok) {
     const durability = recorded.created ? cleanupFinalDurabilityMarker(marker) : null;
-    return durability
-      ? { ok: false, reason: 'durability-evidence-unavailable', durability }
-      : { ok: false, reason: 'durability-evidence-unavailable' };
+    return {
+      ok: false,
+      reason: 'durability-evidence-unavailable',
+      residue: recorded.residue,
+      ...(durability ? { durability } : {}),
+    };
   }
   let created = false;
   try {
@@ -1058,11 +1126,11 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
   if (claudeRefusal) return { ok: false, reason: claudeRefusal };
 
   const link = join(projectDir, '.claude', 'coral');
-  let stat;
-  try {
-    stat = lstatSync(link);
-  } catch (error) {
-    if (!isMissing(error)) return { ok: false, reason: 'symlink-conflict' };
+  const inspection = inspectCoralLink(link);
+  if (inspection.state === 'observation-failed') {
+    return { ok: false, reason: 'symlink-observation-failed' };
+  }
+  if (inspection.state === 'missing') {
     let target = null;
     if (createSymlink) {
       try {
@@ -1090,7 +1158,7 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
     };
   }
 
-  if (!stat.isSymbolicLink()) {
+  if (inspection.state === 'non-link') {
     return createSymlink
       ? { ok: false, reason: 'symlink-conflict' }
       : { ok: true, symlinkExists: false, action: 'not-requested', link, target: null };
@@ -1113,7 +1181,7 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
         targetPreparation.kind === 'structural-conflict' ? 'symlink-target-unavailable' : 'publish-failed',
     };
   }
-  if (!isOutgrownCoralLink(link, target)) {
+  if (!isOutgrownCoralLink(inspection.target, target)) {
     return { ok: true, symlinkExists: true, action: 'unchanged', link, target };
   }
   const deviceRefusal = stagingDeviceRefusal(projectDir, stagingDir);
@@ -1137,7 +1205,11 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
       const recorded = recordPendingDurability(marker);
       markerCreated = recorded.created;
       if (!recorded.ok) {
-        result = { state: 'refused', reason: 'durability-evidence-unavailable' };
+        result = {
+          state: 'refused',
+          reason: 'durability-evidence-unavailable',
+          ...(recorded.residue === 'owned-staging' ? { residue: recorded.residue } : {}),
+        };
       } else {
         symlinkSync(target, symlinkPlan.link);
         result = {
@@ -1168,7 +1240,7 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
       result = {
         state: 'refused',
         reason: 'durability-evidence-unavailable',
-        residue: 'none',
+        residue: recorded.residue,
       };
     } else {
       symlinkSync(target, tempLink);
@@ -1388,7 +1460,7 @@ function maintainProjectIgnoreArtifacts({
         {
           state: 'refused',
           reason: excludeDirectory.reason ?? 'publish-failed',
-          residue: 'none',
+          residue: excludeDirectory.residue ?? 'none',
         },
         excludeDirectory.durability,
       );
@@ -1554,11 +1626,14 @@ export function maintainProjectIgnore({
           });
         }
       } finally {
-        const stagingRemoved = stagingDir && removeProjectIgnoreRunDir(stagingDir);
-        if (durabilityRunDir && durabilityRunDir !== stagingDir) {
-          removeProjectIgnoreRunDir(durabilityRunDir);
+        const runDirectoriesRemoved = [...new Set([stagingDir, durabilityRunDir].filter(Boolean))]
+          .map((runDir) => removeProjectIgnoreRunDir(runDir))
+          .every(Boolean);
+        if (runDirectoriesRemoved) {
+          reconcileRemovedProjectIgnoreStaging(artifacts);
+        } else {
+          artifacts.arenaSweep = { state: 'refused', reason: 'arena-sweep-failed' };
         }
-        if (stagingRemoved) reconcileRemovedProjectIgnoreStaging(artifacts);
       }
     }
   }

@@ -7,6 +7,7 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  lutimesSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -21,7 +22,7 @@ import {
 } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `coralStateRoot` has no cached module-level state (it reads `homedir()` fresh on every call), so a static
@@ -57,6 +58,9 @@ const fixture = vi.hoisted(() => ({
   failMkdirPath: null as string | null,
   failRmUnder: null as string | null,
   failReaddirPath: null as string | null,
+  failLstatPath: null as string | null,
+  failReadlinkPath: null as string | null,
+  failDurabilityStagingUnlink: false,
   failMarkerObservation: null as null | {
     phase: 'lstat' | 'open' | 'fstat' | 'read';
     path: string;
@@ -107,12 +111,23 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     lstatSync: (path: unknown) => {
       fixture.lstatPaths.push(String(path));
+      if (String(path) === fixture.failLstatPath) {
+        fixture.failLstatPath = null;
+        throw Object.assign(new Error('simulated lstat failure'), { code: 'EIO' });
+      }
       const failure = fixture.failMarkerObservation;
       if (failure?.phase === 'lstat' && String(path) === failure.path) {
         fixture.failMarkerObservation = null;
         throw Object.assign(new Error('simulated marker lstat failure'), { code: failure.code });
       }
       return actual.lstatSync(path as NodeFs.PathLike);
+    },
+    readlinkSync: (path: unknown, options?: unknown) => {
+      if (String(path) === fixture.failReadlinkPath) {
+        fixture.failReadlinkPath = null;
+        throw Object.assign(new Error('simulated readlink failure'), { code: 'EIO' });
+      }
+      return (actual.readlinkSync as (p: unknown, o?: unknown) => string | Buffer)(path, options);
     },
     readFileSync: (path: unknown, encoding?: unknown) => {
       if (String(path).endsWith('manifest.json')) return JSON.stringify({ flavor: manifest.flavor });
@@ -160,7 +175,11 @@ vi.mock('node:fs', async (importOriginal) => {
       if (
         (fixture.failUnlinkPath !== null && String(path) === fixture.failUnlinkPath) ||
         (fixture.failReplacementUnlink && String(path).endsWith('/replacement.tmp')) ||
-        (fixture.failSymlinkTempUnlink && String(path).endsWith('/coral-test-token.tmp'))
+        (fixture.failSymlinkTempUnlink && String(path).endsWith('/coral-test-token.tmp')) ||
+        (fixture.failDurabilityStagingUnlink &&
+          dirname(String(path)) !== durabilityArena() &&
+          String(path).startsWith(`${durabilityArena()}/`) &&
+          basename(String(path)).startsWith('.durability-'))
       ) {
         throw Object.assign(new Error('simulated unlink failure'), { code: 'EACCES' });
       }
@@ -310,6 +329,9 @@ beforeEach(() => {
   fixture.failMkdirPath = null;
   fixture.failRmUnder = null;
   fixture.failReaddirPath = null;
+  fixture.failLstatPath = null;
+  fixture.failReadlinkPath = null;
+  fixture.failDurabilityStagingUnlink = false;
   fixture.failMarkerObservation = null;
   fixture.failDirectoryFsyncPath = null;
   fixture.failDirectoryFsyncCode = null;
@@ -1849,6 +1871,61 @@ describe('project-ignore symlink maintenance', () => {
     expect(readlinkSync(link()), 'recognising our own artifact is not licence to overwrite theirs').toBe(elsewhere);
   });
 
+  it('refuses retryably when an existing link target cannot be observed', async () => {
+    const target = join(fixture.home, '.coral', 'projects', 'owner-repo');
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, link());
+    fixture.failReadlinkPath = link();
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'symlink-observation-failed',
+    });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'Coral could not inspect the project .claude/coral path. Remedy: make .claude and .claude/coral observable by the current user, including owner search access on .claude, and repair any filesystem error blocking inspection. It is attempted again at the next session start.',
+    ]);
+    expect(readlinkSync(link())).toBe(target);
+    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+  });
+
+  it('refuses retryably when the link path itself cannot be observed', async () => {
+    fixture.failLstatPath = link();
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'symlink-observation-failed',
+    });
+    expect(existsSync(link())).toBe(false);
+    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+  });
+
+  it('refuses retryably without reporting a conflict when .claude hides the link path', async () => {
+    chmodSync(join(projectDir, '.claude'), 0o000);
+    try {
+      const result = await maintain('prod');
+      const notices = renderProjectIgnoreResultNotices(result);
+
+      expect(result.status).toBe('refused');
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('observable by the current user');
+      expect(notices[0]).toContain('It is attempted again at the next session start.');
+      expect(JSON.stringify(result)).not.toContain('symlink-conflict');
+    } finally {
+      chmodSync(join(projectDir, '.claude'), 0o700);
+    }
+    expect(existsSync(link())).toBe(false);
+    expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+  });
+
   // `~/.coral/projects*` covers two legitimate roots by design (prod and dev), but the character overlap that
   // buys that also matches an operator's own directory that merely starts with the same letters. Each of these
   // lives inside `~/.coral/` itself — the harder case than `does not touch a link pointing somewhere an
@@ -2113,6 +2190,47 @@ describe('project-ignore symlink maintenance', () => {
     expect(readdirSync(repositoryArena())).toEqual([]);
   });
 
+  it('reports a marker staging file when both of its cleanup attempts fail', async () => {
+    fixture.failDurabilityMarkerFsync = true;
+    fixture.failDurabilityStagingUnlink = true;
+    fixture.failRmUnder = durabilityArena();
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'arena-sweep-failed',
+    });
+    expect(result.artifacts.exclude).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+      residue: 'owned-staging',
+    });
+    const retainedRuns = readdirSync(durabilityArena()).filter((name) => /^\d+-\d+$/u.test(name));
+    expect(retainedRuns).toHaveLength(1);
+    expect(readdirSync(join(durabilityArena(), retainedRuns[0]))).toHaveLength(1);
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+  });
+
+  it('reports a run-directory removal failure even when inline cleanup left it empty', async () => {
+    fixture.failRmUnder = repositoryArena();
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'arena-sweep-failed',
+    });
+    expect(renderProjectIgnoreResultNotices(result)).toContain(
+      "Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory's coral/staging/project-ignore path are writable real directories. It is attempted again at the next session start.",
+    );
+    expect(readdirSync(repositoryArena())).toHaveLength(1);
+  });
+
   it('reports symlink staging residue when repoint publication and both cleanup attempts fail', async () => {
     await maintain('prod');
     fixture.failRenameTo = link();
@@ -2147,8 +2265,8 @@ describe('project-ignore symlink maintenance', () => {
   });
 
   it('keeps the completed deletion count when a later legacy staging deletion refuses', async () => {
-    const removed = join(projectDir, '.claude', '.gitignore.coral-1-1.tmp');
-    const refused = join(projectDir, '.gitignore.coral-1-2.tmp');
+    const removed = join(projectDir, '.gitignore.coral-1-1.tmp');
+    const refused = join(projectDir, '.claude', '.gitignore.coral-1-2.tmp');
     writeFileSync(removed, 'staging');
     writeFileSync(refused, 'staging');
     utimesSync(removed, 0, 0);
@@ -2161,10 +2279,56 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.artifacts.legacySweep).toEqual({
       state: 'refused',
       reason: 'legacy-sweep-failed',
-      path: '.gitignore.coral-1-2.tmp',
+      path: join('.claude', '.gitignore.coral-1-2.tmp'),
       count: 1,
     });
+    const notices = renderProjectIgnoreResultNotices(result);
+    expect(notices).toHaveLength(1);
+    expect(notices.find((notice: string) => notice.includes('authorized legacy staging path'))).toContain(
+      JSON.stringify(join('.claude', '.gitignore.coral-1-2.tmp')),
+    );
     expect(existsSync(removed)).toBe(false);
     expect(existsSync(refused)).toBe(true);
   });
+
+  it.each(['readdir', 'lstat', 'readlink'] as const)(
+    'refuses a legacy %s observation failure after preserving completed deletions',
+    async (phase) => {
+      const removed = join(projectDir, '.gitignore.coral-1-1.tmp');
+      const observed =
+        phase === 'readlink'
+          ? join(projectDir, '.claude', 'coral.coral-1-2.tmp')
+          : join(projectDir, '.claude', '.gitignore.coral-1-2.tmp');
+      writeFileSync(removed, 'staging');
+      if (phase === 'readlink') {
+        symlinkSync(join(fixture.home, '.coral', 'projects', 'owner-repo'), observed);
+      } else {
+        writeFileSync(observed, 'staging');
+      }
+      utimesSync(removed, 0, 0);
+      if (phase === 'readlink') lutimesSync(observed, 0, 0);
+      else utimesSync(observed, 0, 0);
+
+      if (phase === 'readdir') fixture.failReaddirPath = join(projectDir, '.claude');
+      if (phase === 'lstat') fixture.failLstatPath = observed;
+      if (phase === 'readlink') fixture.failReadlinkPath = observed;
+
+      const result = await maintain('prod');
+
+      expect(result.status).toBe('partial');
+      expect(result.artifacts.legacySweep).toEqual({
+        state: 'refused',
+        reason: 'legacy-sweep-observation-failed',
+        path: phase === 'readdir' ? '.claude' : relative(projectDir, observed),
+        count: 1,
+      });
+      expect(existsSync(removed)).toBe(false);
+      expect(lstatSync(observed)).toBeDefined();
+      expect(existsSync(link())).toBe(false);
+      expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
+      // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+      const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+      expect(isProjectIgnoreResult(result)).toBe(true);
+    },
+  );
 });

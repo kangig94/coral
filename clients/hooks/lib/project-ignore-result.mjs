@@ -10,6 +10,7 @@ const ARTIFACT_KEYS = [
   'rootIgnoreRetraction',
 ];
 const SELECTOR_KEYS = [
+  'arenaSweep',
   'legacySweep',
   'exclude',
   'symlink',
@@ -38,10 +39,12 @@ export const PROJECT_IGNORE_REASONS = Object.freeze([
   'publish-cross-device',
   'publish-failed',
   'symlink-target-unavailable',
+  'symlink-observation-failed',
   ...DURABILITY_RECONCILIATION_REASONS,
   'staging-cleanup-failed',
   'symlink-conflict',
   'legacy-sweep-failed',
+  'legacy-sweep-observation-failed',
   'arena-sweep-failed',
   'upstream-refusal',
 ]);
@@ -116,8 +119,11 @@ function validateSweep(value, legacy) {
     if (legacy) {
       return (
         hasExactKeys(value, ['state', 'reason', 'path', 'count']) &&
-        hasReason(value, 'legacy-sweep-failed') &&
-        isLegacyWorkingTreeStagingPath(value.path) &&
+        hasReason(value) &&
+        ['legacy-sweep-failed', 'legacy-sweep-observation-failed'].includes(value.reason) &&
+        (value.reason === 'legacy-sweep-failed'
+          ? isLegacyWorkingTreeStagingPath(value.path)
+          : isLegacyWorkingTreeObservationPath(value.path)) &&
         Number.isSafeInteger(value.count) &&
         value.count >= 0
       );
@@ -231,6 +237,17 @@ export function isLegacyWorkingTreeStagingPath(path) {
   if (!LEGACY_TEMP_NAME.test(name)) return false;
   if (segments.length === 1) return name.startsWith('.gitignore.');
   return segments.at(-2) === '.claude';
+}
+
+function isLegacyWorkingTreeObservationPath(path) {
+  if (path === '.' || isLegacyWorkingTreeStagingPath(path)) return true;
+  if (typeof path !== 'string' || path.length === 0 || Buffer.byteLength(path, 'utf-8') > 4096) return false;
+  if (isAbsolute(path)) return false;
+  const segments = path.split(sep);
+  return (
+    segments.at(-1) === '.claude' &&
+    segments.every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
+  );
 }
 
 export function projectIgnoreStatus(artifacts) {

@@ -675,6 +675,40 @@ describe('project-ignore maintenance ownership', () => {
     expect(initProject.match(/\/coral:init-project/gu)).toHaveLength(4);
   });
 
+  it('executes the real project-ignore result validator for valid and malformed stdin', () => {
+    const validator = hookScript('project-ignore.mjs');
+    const validResult = {
+      status: 'complete',
+      artifacts: {
+        arenaSweep: { state: 'unchanged' },
+        durabilityReconciliation: { state: 'reconciled' },
+        legacySweep: { state: 'unchanged' },
+        exclude: { state: 'not-needed', residue: 'none' },
+        symlink: { state: 'not-requested' },
+        scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      },
+    };
+
+    const accepted = spawnSync(process.execPath, [validator, '--validate-result'], {
+      encoding: 'utf-8',
+      input: JSON.stringify(validResult),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const rejected = spawnSync(process.execPath, [validator, '--validate-result'], {
+      encoding: 'utf-8',
+      input: 'not-json',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    expect(accepted.status).toBe(0);
+    expect(accepted.stdout).toBe('');
+    expect(accepted.stderr).toBe('');
+    expect(rejected.status).toBe(1);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toBe('');
+  });
+
   it('pins the init-project lock branches to the hook exit-code constants', () => {
     const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');

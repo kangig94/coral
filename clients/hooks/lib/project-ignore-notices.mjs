@@ -79,6 +79,11 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
       'The Coral symlink target has a structural conflict. Remedy: replace the symlink or non-directory component at the selected ~/.coral/projects or ~/.coral/projects-dev root, or at its project leaf, with a directory owned and writable by the current user.',
     retryable: false,
   },
+  'symlink-observation-failed': {
+    sentence:
+      'Coral could not inspect the project .claude/coral path. Remedy: make .claude and .claude/coral observable by the current user, including owner search access on .claude, and repair any filesystem error blocking inspection.',
+    retryable: true,
+  },
   'durability-evidence-unavailable': {
     sentence:
       'Coral could not record pending durability outside the working tree. Remedy: make the authorized project-ignore staging arena a writable real directory on a filesystem that supports directory fsync, then retry the maintenance.',
@@ -120,8 +125,13 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
     retryable: false,
   },
   'legacy-sweep-failed': {
-    sentence:
-      'Coral could not remove the authorized legacy staging path named above. Remedy: remove that path manually or make its parent directory writable.',
+    sentence: (artifact) =>
+      `Coral could not remove the authorized legacy staging path ${JSON.stringify(artifact.path)}. Remedy: remove that path manually or make its parent directory writable.`,
+    retryable: true,
+  },
+  'legacy-sweep-observation-failed': {
+    sentence: (artifact) =>
+      `Coral could not inspect the legacy staging path ${JSON.stringify(artifact.path)}. Remedy: make that path and its parent directories observable by the current user, or repair the filesystem error blocking inspection.`,
     retryable: true,
   },
   'arena-sweep-failed': {
@@ -131,7 +141,7 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'upstream-refusal': {
     sentence:
-      'A later artifact was skipped because an earlier artifact did not complete cleanly. Remedy: resolve the earlier failure reported in this notice.',
+      'An artifact was skipped because another artifact did not complete cleanly. Remedy: resolve the other refusal reported for this run.',
     retryable: false,
   },
 };
@@ -141,26 +151,34 @@ export function projectIgnoreOutcomeNotice(outcome) {
 }
 
 export function renderProjectIgnoreResultNotices(result) {
-  const reasons = new Set();
+  const reasons = new Map();
   for (const artifact of Object.values(result?.artifacts ?? {})) {
     if (artifact.state === 'refused') {
       if (Array.isArray(artifact.reasons)) {
-        for (const reason of artifact.reasons) reasons.add(reason);
+        for (const reason of artifact.reasons) {
+          if (!reasons.has(reason)) reasons.set(reason, artifact);
+        }
       } else {
-        reasons.add(artifact.reason);
+        if (!reasons.has(artifact.reason)) reasons.set(artifact.reason, artifact);
       }
     } else if (artifact.reason === 'staging-cleanup-failed') {
-      reasons.add(artifact.reason);
+      if (!reasons.has(artifact.reason)) reasons.set(artifact.reason, artifact);
     }
-    for (const reason of artifact.durability?.reasons ?? []) reasons.add(reason);
+    for (const reason of artifact.durability?.reasons ?? []) {
+      if (!reasons.has(reason)) reasons.set(reason, artifact);
+    }
   }
 
-  return [...reasons].sort().map((reason) => {
-    const notice = PROJECT_IGNORE_REASON_NOTICES[reason];
-    return notice.retryable
-      ? `${notice.sentence} It is attempted again at the next session start.`
-      : notice.sentence;
-  });
+  return [...reasons]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([reason, artifact]) => {
+      const notice = PROJECT_IGNORE_REASON_NOTICES[reason];
+      const sentence =
+        typeof notice.sentence === 'function' ? notice.sentence(artifact) : notice.sentence;
+      return notice.retryable
+        ? `${sentence} It is attempted again at the next session start.`
+        : sentence;
+    });
 }
 
 export function emitProjectIgnoreResult(result) {
