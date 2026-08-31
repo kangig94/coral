@@ -290,6 +290,39 @@ function decodeDurabilityTarget(content) {
   return isAbsolute(target) && !target.includes('\0') ? target : null;
 }
 
+function readDurabilityMarker(path) {
+  try {
+    const pathStat = lstatSync(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile() || pathStat.size > MAX_GITIGNORE_BYTES) {
+      return { state: 'invalid' };
+    }
+  } catch (error) {
+    return { state: isMissing(error) ? 'absent' : 'unknown' };
+  }
+
+  let fd;
+  try {
+    fd = openSync(path, READ_FLAGS);
+  } catch (error) {
+    return { state: isMissing(error) ? 'absent' : 'unknown' };
+  }
+
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_GITIGNORE_BYTES) return { state: 'invalid' };
+    const content = readFileSync(fd);
+    if (content.length > MAX_GITIGNORE_BYTES) return { state: 'invalid' };
+    const target = decodeDurabilityTarget(content);
+    return target === null ? { state: 'invalid' } : { state: 'valid', target };
+  } catch (error) {
+    return { state: isMissing(error) ? 'absent' : 'unknown' };
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {}
+  }
+}
+
 function reconcileDurabilityMarkers(durabilityDir) {
   if (!durabilityDir) return { ok: false, reason: 'durability-evidence-unavailable' };
   let markerNames;
@@ -305,29 +338,27 @@ function reconcileDurabilityMarkers(durabilityDir) {
   let failure = null;
   for (const name of markerNames) {
     const markerPath = join(durabilityDir, name);
-    const snapshot = readRegularSnapshot(markerPath);
-    if (!snapshot.ok) {
-      failure ??= quarantineDurabilityMarker(durabilityDir, markerPath, name)
+    const marker = readDurabilityMarker(markerPath);
+    if (marker.state === 'absent') continue;
+    if (marker.state === 'unknown') {
+      failure ??= 'durability-evidence-unavailable';
+      continue;
+    }
+    if (marker.state === 'invalid') {
+      const quarantined = quarantineDurabilityMarker(durabilityDir, markerPath, name);
+      failure ??= quarantined
         ? 'durability-evidence-quarantined'
         : 'durability-evidence-unavailable';
       continue;
     }
-    const target = decodeDurabilityTarget(snapshot.content);
-    if (target === null) {
-      failure ??= quarantineDurabilityMarker(durabilityDir, markerPath, name)
-        ? 'durability-evidence-quarantined'
-        : 'durability-evidence-unavailable';
-      continue;
-    }
-    const durability = fsyncParent(target, { missingParentIsSynced: true });
+    const durability = fsyncParent(marker.target, { missingParentIsSynced: true });
     if (durability.state === 'failed') {
       failure ??= durability.reason;
       continue;
     }
     if (durability.state === 'unsupported') {
-      failure ??= safeUnlink(markerPath)
-        ? durability.reason
-        : 'durability-evidence-cleanup-failed';
+      const removed = safeUnlink(markerPath);
+      failure ??= removed ? durability.reason : 'durability-evidence-cleanup-failed';
       continue;
     }
     if (!safeUnlink(markerPath)) failure ??= 'durability-evidence-cleanup-failed';

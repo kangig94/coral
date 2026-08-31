@@ -127,6 +127,8 @@ It also:
 - runs ignore maintenance in a time-bounded child process and reports `complete`, `refused`, and `partial` results distinctly. Each refusal renders its own remedy; only retryable reasons promise another attempt at the next SessionStart, while persistent device-topology refusals require the named manual repair. A partial pass may already have changed an artifact and is not reported like a pass that never ran.
 - refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
 
+Quarantined project-ignore durability evidence is deliberately retained indefinitely. It is forensic evidence of corruption in Coral's own state, lives under `~/.coral` without touching the repository, and cannot be produced by this build; therefore it has no TTL, storage cap, or clearing command.
+
 ## Backend Warm-start
 
 `clients/hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The daemon's `bindWithHandoff` / `requestIncumbentShutdown` contention layer is the single source of truth for staleness: a healthy same-bundle peer makes the new daemon throw `BackendAlreadyRunningError` and exit; a mismatching peer triggers IPC `transport.shutdown` and the new daemon takes over the bound socket. The hook stays free of bundle/flavor comparison so the contention contract has one canonical home. Failures are ignored and the CLI can start the backend lazily later.
