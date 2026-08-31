@@ -33,6 +33,7 @@ import {
 import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
+import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 
 // Unconditionally spawn coral-backend on session start. The daemon's own
 // socket-as-lock contention is the single source of truth for staleness:
@@ -47,19 +48,6 @@ import { renderInject } from './lib/inject-render.mjs';
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
-/**
- * What each non-`ok` maintenance outcome is told to the session as, keyed by the outcome itself.
- *
- * Splitting the outcomes apart only moves the defect if nobody reads the split: a child SIGTERMed on a slow
- * mount, a child that never launched, and a child that ran to completion but reported it could not finish
- * safely all leave `.claude/.gitignore` and the coral symlink exactly as they were, and silence is what made
- * that read as "there was nothing to do". Every outcome `runProjectIgnoreMaintenance` can return other than
- * `ok` has an entry here, and `tests/unit/hooks/project-ignore-symlink.test.ts` fails if a new one is added
- * without one.
- *
- * `no-project-dir` is absent deliberately — no project directory means there was no maintenance to attempt,
- * which is not a refusal to report.
- */
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
   killed: 'ran out of its time budget and was terminated',
   'no-output': 'exited without reporting a result',
@@ -69,6 +57,7 @@ const PROJECT_IGNORE_OUTCOME_NOTICES = {
   'maintenance-lock-unavailable':
     'could not open or own its maintenance lock; install flock and ensure ~/.coral/staging is a writable real directory with no symlink components',
   failed: 'ran and reported it could not complete safely',
+  partial: 'changed at least one artifact and reported that another could not complete safely',
 };
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
@@ -213,21 +202,32 @@ try {
 
   const host = hostKind();
 
-  const migrationNotice = ignoreOutcome.maintenance?.migrated
-    ? 'Coral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
+  const migrationPublished = [
+    ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction,
+    ignoreOutcome.maintenance?.artifacts.rootIgnoreRetraction,
+  ].some((artifact) => artifact?.state === 'published');
+  const migrationNotice = migrationPublished
+    ? 'Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.'
     : null;
+  const legacySweep = ignoreOutcome.maintenance?.artifacts.legacySweep;
+  const legacySweepNotice =
+    legacySweep?.state === 'cleaned'
+      ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s): .gitignore.coral-<pid>-<timestamp>.tmp beside the Git-root .gitignore or project .claude/.gitignore, and coral.coral-<pid>-<timestamp>.tmp beside project .claude/coral.`
+      : legacySweep?.state === 'refused'
+        ? `Coral project-ignore maintenance could not remove authorized legacy staging path ${legacySweep.path}.`
+        : null;
   const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
-  // The reason travels when the child got far enough to have one. Without it a notice that repeats every
-  // session says only that maintenance failed, which is the same sentence for a project directory that could
-  // not be resolved and a symlink that could not be placed.
-  const ignoreReason =
-    typeof ignoreOutcome.maintenance?.reason === 'string' ? ` (${ignoreOutcome.maintenance.reason})` : '';
   const ignoreNotice = ignoreFailure
-    ? `Coral project-ignore maintenance ${ignoreFailure}${ignoreReason}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
+    ? `Coral project-ignore maintenance ${ignoreFailure}. It is attempted again at the next session start.`
     : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
-  const variableContent = [startupFailureNotice, migrationNotice, ignoreNotice].filter(Boolean).join('\n\n');
+  const variableContent = [
+    startupFailureNotice,
+    migrationNotice,
+    legacySweepNotice,
+    ignoreNotice,
+  ].filter(Boolean).join('\n\n');
   const additionalContext = fitAdditionalContext({
     fixedContent,
     variableContent,
@@ -286,15 +286,14 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
       return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }
     if (!result.stdout) return { outcome: 'no-output', maintenance: null };
-    // A parse that succeeds is not the same as a result Coral can act on: `maintainProjectIgnore`'s contract is
-    // an object carrying a boolean `ok`, and anything else reaching here — `null`, an array, a bare primitive, or
-    // an object whose `ok` is missing or not a boolean — is exactly as unusable as a parse failure, so it is
-    // reported the same way rather than silently passed through as a successful `ok` outcome with no data.
     const parsed = JSON.parse(result.stdout);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.ok !== 'boolean') {
+    if (!isProjectIgnoreResult(parsed)) {
       return { outcome: 'unparseable-output', maintenance: null };
     }
-    if (!parsed.ok) return { outcome: 'failed', maintenance: parsed };
+    const expectedExitCode = parsed.status === 'complete' ? 0 : 1;
+    if (result.status !== expectedExitCode) return { outcome: 'unparseable-output', maintenance: null };
+    if (parsed.status === 'partial') return { outcome: 'partial', maintenance: parsed };
+    if (parsed.status === 'refused') return { outcome: 'failed', maintenance: parsed };
     return { outcome: 'ok', maintenance: parsed };
   } catch {
     return { outcome: 'unparseable-output', maintenance: null };

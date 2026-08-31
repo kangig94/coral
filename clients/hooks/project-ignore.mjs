@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { maintainProjectIgnore } from './lib/project-ignore.mjs';
+import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 
 function parseArgs(argv) {
   let projectDir;
@@ -26,9 +27,10 @@ if (!request) process.exit(1);
 
 try {
   const result = maintainProjectIgnore(request);
+  if (!isProjectIgnoreResult(result)) throw new Error('invalid project-ignore result');
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  if (!result.ok) process.exitCode = 1;
+  process.exitCode = result.status === 'complete' ? 0 : 1;
 } catch {
-  process.stderr.write('Coral project-ignore maintenance failed safely; legacy protection was not intentionally removed.\n');
+  process.stderr.write('Coral project-ignore maintenance failed before it could report a valid result.\n');
   process.exitCode = 1;
 }
