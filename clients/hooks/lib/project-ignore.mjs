@@ -218,6 +218,7 @@ function recordPendingDurability(marker) {
   try {
     fd = openSync(marker.stagingPath, TEMP_WRITE_FLAGS, 0o600);
     writeFileSync(fd, marker.target);
+    fchmodSync(fd, 0o600);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -313,9 +314,11 @@ function readDurabilityMarker(path) {
     const content = readFileSync(fd);
     if (content.length > MAX_GITIGNORE_BYTES) return { state: 'invalid' };
     const target = decodeDurabilityTarget(content);
-    return target === null ? { state: 'invalid' } : { state: 'valid', target };
-  } catch (error) {
-    return { state: isMissing(error) ? 'absent' : 'unknown' };
+    return target === null || durabilityMarkerPath(dirname(path), target) !== path
+      ? { state: 'invalid' }
+      : { state: 'valid', target };
+  } catch {
+    return { state: 'unknown' };
   } finally {
     try {
       closeSync(fd);
@@ -324,7 +327,9 @@ function readDurabilityMarker(path) {
 }
 
 function reconcileDurabilityMarkers(durabilityDir) {
-  if (!durabilityDir) return { ok: false, reason: 'durability-evidence-unavailable' };
+  if (!durabilityDir) {
+    return { state: 'refused', reasons: ['durability-evidence-unavailable'] };
+  }
   let markerNames;
   try {
     markerNames = readdirSync(durabilityDir, { withFileTypes: true })
@@ -332,38 +337,40 @@ function reconcileDurabilityMarkers(durabilityDir) {
       .map((entry) => entry.name)
       .sort();
   } catch {
-    return { ok: false, reason: 'durability-evidence-unavailable' };
+    return { state: 'refused', reasons: ['durability-evidence-unavailable'] };
   }
 
-  let failure = null;
+  const reasons = new Set();
   for (const name of markerNames) {
     const markerPath = join(durabilityDir, name);
     const marker = readDurabilityMarker(markerPath);
     if (marker.state === 'absent') continue;
     if (marker.state === 'unknown') {
-      failure ??= 'durability-evidence-unavailable';
+      reasons.add('durability-evidence-unreadable');
       continue;
     }
     if (marker.state === 'invalid') {
       const quarantined = quarantineDurabilityMarker(durabilityDir, markerPath, name);
-      failure ??= quarantined
-        ? 'durability-evidence-quarantined'
-        : 'durability-evidence-unavailable';
+      reasons.add(
+        quarantined ? 'durability-evidence-quarantined' : 'durability-evidence-unavailable',
+      );
       continue;
     }
     const durability = fsyncParent(marker.target, { missingParentIsSynced: true });
     if (durability.state === 'failed') {
-      failure ??= durability.reason;
+      reasons.add(durability.reason);
       continue;
     }
     if (durability.state === 'unsupported') {
       const removed = safeUnlink(markerPath);
-      failure ??= removed ? durability.reason : 'durability-evidence-cleanup-failed';
+      reasons.add(removed ? durability.reason : 'durability-evidence-cleanup-failed');
       continue;
     }
-    if (!safeUnlink(markerPath)) failure ??= 'durability-evidence-cleanup-failed';
+    if (!safeUnlink(markerPath)) reasons.add('durability-evidence-cleanup-failed');
   }
-  return failure ? { ok: false, reason: failure } : { ok: true };
+  return reasons.size > 0
+    ? { state: 'refused', reasons: [...reasons].sort() }
+    : { state: 'reconciled' };
 }
 
 function syncPendingPublication(target, marker) {
@@ -1115,6 +1122,7 @@ const SKIPPED_ARTIFACT = { state: 'skipped', reason: 'upstream-refusal' };
 function refusedArtifacts(arenaSweep, legacySweep, artifact, reason) {
   const artifacts = {
     arenaSweep,
+    durabilityReconciliation: { state: 'reconciled' },
     legacySweep,
     exclude: { ...SKIPPED_REPLACEMENT },
     symlink: { ...SKIPPED_ARTIFACT },
@@ -1128,9 +1136,10 @@ function refusedArtifacts(arenaSweep, legacySweep, artifact, reason) {
   return artifacts;
 }
 
-function refusedDurabilityReconciliation(reason) {
+function refusedDurabilityReconciliation(arenaSweep, durabilityReconciliation) {
   return {
-    arenaSweep: { state: 'refused', reason },
+    arenaSweep,
+    durabilityReconciliation,
     legacySweep: { ...SKIPPED_ARTIFACT },
     exclude: { ...SKIPPED_REPLACEMENT },
     symlink: { ...SKIPPED_ARTIFACT },
@@ -1257,6 +1266,7 @@ function maintainProjectIgnoreArtifacts({
 
   const artifacts = {
     arenaSweep,
+    durabilityReconciliation: { state: 'reconciled' },
     legacySweep,
     exclude: preflight.publishExclude
       ? { state: 'unchanged', residue: 'none' }
@@ -1398,13 +1408,14 @@ export function maintainProjectIgnore({
 
   let artifacts;
   const reconciliation = reconcileDurabilityMarkers(fallbackArena);
-  if (!reconciliation.ok) {
-    artifacts = refusedDurabilityReconciliation(reconciliation.reason);
+  if (reconciliation.state === 'refused') {
+    artifacts = refusedDurabilityReconciliation(arenaSweep, reconciliation);
   } else {
     const legacySweep = sweepLegacyWorkingTreeStaging(context);
     if (legacySweep.state === 'refused') {
       artifacts = {
         arenaSweep,
+        durabilityReconciliation: reconciliation,
         legacySweep,
         exclude: { ...SKIPPED_REPLACEMENT },
         symlink: { ...SKIPPED_ARTIFACT },

@@ -123,6 +123,11 @@ const PROJECT_IGNORE_REASON_NOTICES = {
       'Coral could not record pending durability outside the working tree. Remedy: make the authorized project-ignore staging arena a writable real directory on a filesystem that supports directory fsync, then retry the maintenance.',
     retryable: true,
   },
+  'durability-evidence-unreadable': {
+    sentence:
+      'Coral found pending durability evidence but could not read it. Remedy: make the marker readable and owned by the current user, or repair the filesystem or storage device reporting the read failure.',
+    retryable: true,
+  },
   'durability-evidence-quarantined': {
     sentence:
       'Coral moved a pending durability record it could not use into the project-ignore quarantine. Coral will preserve it there for inspection and will not retry that record or act on any target it might contain.',
@@ -268,7 +273,13 @@ function readRecentStartupFailureNotice(runDir) {
 function projectIgnoreRefusalNotices(maintenance) {
   const reasons = new Set();
   for (const artifact of Object.values(maintenance?.artifacts ?? {})) {
-    if (artifact.state === 'refused' || artifact.reason === 'staging-cleanup-failed') {
+    if (artifact.state === 'refused') {
+      if (Array.isArray(artifact.reasons)) {
+        for (const reason of artifact.reasons) reasons.add(reason);
+      } else {
+        reasons.add(artifact.reason);
+      }
+    } else if (artifact.reason === 'staging-cleanup-failed') {
       reasons.add(artifact.reason);
     }
     if (artifact.durability?.reason) reasons.add(artifact.durability.reason);

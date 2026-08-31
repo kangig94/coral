@@ -2,6 +2,7 @@ import { isAbsolute, sep } from 'node:path';
 
 const ARTIFACT_KEYS = [
   'arenaSweep',
+  'durabilityReconciliation',
   'legacySweep',
   'exclude',
   'symlink',
@@ -15,6 +16,14 @@ const SELECTOR_KEYS = [
   'scopedIgnoreRetraction',
   'rootIgnoreRetraction',
 ];
+const DURABILITY_RECONCILIATION_REASONS = new Set([
+  'durability-evidence-unavailable',
+  'durability-evidence-unreadable',
+  'durability-evidence-quarantined',
+  'durability-evidence-cleanup-failed',
+  'durability-sync-unsupported',
+  'durability-sync-failed',
+]);
 const REASONS = new Set([
   'project-context-unresolvable',
   'project-path-unrepresentable',
@@ -28,11 +37,7 @@ const REASONS = new Set([
   'staging-device-mismatch',
   'publish-cross-device',
   'publish-failed',
-  'durability-evidence-unavailable',
-  'durability-evidence-quarantined',
-  'durability-evidence-cleanup-failed',
-  'durability-sync-unsupported',
-  'durability-sync-failed',
+  ...DURABILITY_RECONCILIATION_REASONS,
   'staging-cleanup-failed',
   'symlink-conflict',
   'legacy-sweep-failed',
@@ -68,6 +73,20 @@ function validateDurability(value) {
   );
 }
 
+function validateDurabilityReconciliation(value) {
+  if (!isRecord(value) || !['reconciled', 'refused'].includes(value.state)) return false;
+  if (value.state === 'reconciled') return hasExactKeys(value, ['state']);
+  if (!hasExactKeys(value, ['state', 'reasons']) || !Array.isArray(value.reasons)) return false;
+  return (
+    value.reasons.length > 0 &&
+    value.reasons.every(
+      (reason, index) =>
+        DURABILITY_RECONCILIATION_REASONS.has(reason) &&
+        (index === 0 || value.reasons[index - 1] < reason),
+    )
+  );
+}
+
 function validateSweep(value, legacy) {
   if (!isRecord(value) || !['unchanged', 'cleaned', 'refused', 'skipped'].includes(value.state)) return false;
   if (value.state === 'cleaned') {
@@ -87,14 +106,7 @@ function validateSweep(value, legacy) {
     }
     return (
       hasExactKeys(value, ['state', 'reason']) &&
-      [
-        'arena-sweep-failed',
-        'durability-evidence-unavailable',
-        'durability-evidence-quarantined',
-        'durability-evidence-cleanup-failed',
-        'durability-sync-unsupported',
-        'durability-sync-failed',
-      ].includes(value.reason) &&
+      value.reason === 'arena-sweep-failed' &&
       hasReason(value)
     );
   }
@@ -201,8 +213,7 @@ export function isLegacyWorkingTreeStagingPath(path) {
 
 export function projectIgnoreStatus(artifacts) {
   const selected = SELECTOR_KEYS.map((key) => artifacts[key]);
-  const durabilityReconciliationFailed =
-    artifacts.arenaSweep.state === 'refused' && artifacts.arenaSweep.reason !== 'arena-sweep-failed';
+  const durabilityReconciliationFailed = artifacts.durabilityReconciliation.state === 'refused';
   const hasFailure =
     durabilityReconciliationFailed ||
     selected.some(
@@ -232,7 +243,13 @@ export function isProjectIgnoreResult(value) {
   if (!['complete', 'refused', 'partial'].includes(value.status)) return false;
   const artifacts = value.artifacts;
   if (!isRecord(artifacts) || !hasExactKeys(artifacts, ARTIFACT_KEYS)) return false;
-  if (!validateSweep(artifacts.arenaSweep, false) || !validateSweep(artifacts.legacySweep, true)) return false;
+  if (
+    !validateSweep(artifacts.arenaSweep, false) ||
+    !validateDurabilityReconciliation(artifacts.durabilityReconciliation) ||
+    !validateSweep(artifacts.legacySweep, true)
+  ) {
+    return false;
+  }
   if (!validateReplacement(artifacts.exclude, ['not-needed', 'unchanged', 'published', 'refused', 'skipped'])) {
     return false;
   }
