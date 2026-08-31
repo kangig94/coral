@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -26,6 +26,7 @@ import {
 import {
   PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
   PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
+  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
   PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
   PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS,
@@ -134,6 +135,7 @@ describe('project-ignore repository arena', () => {
 describe('project-ignore arena reclamation', () => {
   it('derives the cooperating residue age from the five-second owner lifetime', () => {
     expect(PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS).toBe(120 * PROJECT_IGNORE_SPAWN_TIMEOUT_MS);
+    expect(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS).toBe(1500);
     expect(PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS).toBe(250);
     expect(PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS).toBe(250);
     expect(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS).toBe(32);
@@ -201,6 +203,41 @@ describe('project-ignore arena reclamation', () => {
 });
 
 describe('project-ignore maintenance ownership', () => {
+  it('refuses an LF-bearing repository path through the real owner before creating lock state', () => {
+    const repositoryRoot = join(fixtureRoot, 'repository\nroot');
+    const projectDir = join(repositoryRoot, 'nested\nproject');
+    const home = join(fixtureRoot, 'fresh-home');
+    initRepository(repositoryRoot);
+    mkdirSync(join(projectDir, '.claude'), { recursive: true });
+    mkdirSync(home);
+
+    const ownerScript = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      '..',
+      'clients',
+      'hooks',
+      'project-ignore-owner.mjs',
+    );
+    const child = spawnSync(process.execPath, [ownerScript, '--project-dir', projectDir, '--create-symlink'], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        exclude: { state: 'refused', reason: 'project-path-unrepresentable' },
+      },
+    });
+    expect(existsSync(join(home, '.coral'))).toBe(false);
+    expect(existsSync(join(repositoryRoot, '.git', 'coral'))).toBe(false);
+    expect(existsSync(join(projectDir, '.claude', 'coral'))).toBe(false);
+  });
+
   it('routes both entry points through the exec-style owner and requires its child marker', () => {
     const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const sessionStart = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'session-start.mjs'), 'utf-8');
@@ -216,6 +253,10 @@ describe('project-ignore maintenance ownership', () => {
     expect(owner).toContain('--conflict-exit-code');
     expect(owner).toContain('--maintenance-locked');
     expect(owner).toContain('openProjectIgnoreMaintenanceLock()');
+    expect(owner.indexOf('resolveProjectContext(request.projectDir)')).toBeLessThan(
+      owner.indexOf('openProjectIgnoreMaintenanceLock()'),
+    );
+    expect(owner).toContain("'--project-context'");
     expect(owner).toContain("'/dev/fd/0'");
     expect(sessionStart).toContain("outcome: 'maintenance-busy'");
     expect(sessionStart).toContain("outcome: 'maintenance-lock-unavailable'");
@@ -223,5 +264,7 @@ describe('project-ignore maintenance ownership', () => {
     expect(child).toContain('lockWrapperWithinBudget(request.lockWrapperStartedNs)');
     expect(initProject).toContain('--validate-result');
     expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');
+    expect(initProject).not.toMatch(/(?:Retry|rerun) init-project/u);
+    expect(initProject.match(/\/coral:init-project/gu)).toHaveLength(4);
   });
 });

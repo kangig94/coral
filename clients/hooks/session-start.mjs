@@ -55,7 +55,7 @@ const PROJECT_IGNORE_OUTCOME_NOTICES = {
   'maintenance-lock-unavailable':
     'could not open or own its maintenance lock; install flock and ensure ~/.coral/staging is a writable real directory with no symlink components',
   failed: 'ran and reported it could not complete safely',
-  partial: 'changed at least one artifact and reported that another could not complete safely',
+  partial: 'published or confirmed an artifact but could not establish every required disposition',
 };
 const PROJECT_IGNORE_REASON_NOTICES = {
   'project-context-unresolvable': {
@@ -116,6 +116,16 @@ const PROJECT_IGNORE_REASON_NOTICES = {
   'publish-failed': {
     sentence:
       'The filesystem refused an artifact update. Remedy: check permissions and free space for the project and its Git metadata.',
+    retryable: true,
+  },
+  'durability-sync-unsupported': {
+    sentence:
+      'The platform does not support syncing an affected parent directory, so Coral cannot confirm crash durability. Remedy: update the artifact manually on a filesystem that supports directory fsync.',
+    retryable: false,
+  },
+  'durability-sync-failed': {
+    sentence:
+      'Coral published or found the artifact but the filesystem failed to sync its parent directory. Remedy: check the filesystem and storage device, then retry the maintenance.',
     retryable: true,
   },
   'staging-cleanup-failed': {
@@ -246,6 +256,7 @@ function projectIgnoreRefusalNotices(maintenance) {
     if (artifact.state === 'refused' || artifact.reason === 'staging-cleanup-failed') {
       reasons.add(artifact.reason);
     }
+    if (artifact.durability?.reason) reasons.add(artifact.durability.reason);
   }
   return [...reasons].map((reason) => {
     const notice = PROJECT_IGNORE_REASON_NOTICES[reason];

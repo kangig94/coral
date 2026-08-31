@@ -38,6 +38,10 @@ const fixture = vi.hoisted(() => ({
   failReplacementUnlink: false,
   failSymlinkTempUnlink: false,
   failRmUnder: null as string | null,
+  failDirectoryFsyncPath: null as string | null,
+  failDirectoryFsyncCode: null as string | null,
+  directoryFds: new Map<number, string>(),
+  fsyncedDirectoryPaths: [] as string[],
 }));
 
 vi.mock('node:os', async (importOriginal) => {
@@ -94,21 +98,41 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return (actual.rmSync as (p: unknown, o: unknown) => void)(path, options);
     },
+    openSync: (path: unknown, flags: unknown, mode: unknown) => {
+      const fd = (actual.openSync as (p: unknown, f: unknown, m: unknown) => number)(path, flags, mode);
+      if (flags === actual.constants.O_RDONLY) fixture.directoryFds.set(fd, String(path));
+      return fd;
+    },
+    fsyncSync: (fd: number) => {
+      const path = fixture.directoryFds.get(fd);
+      if (path) {
+        fixture.fsyncedDirectoryPaths.push(path);
+        if (path === fixture.failDirectoryFsyncPath && fixture.failDirectoryFsyncCode) {
+          throw Object.assign(new Error('simulated directory fsync failure'), {
+            code: fixture.failDirectoryFsyncCode,
+          });
+        }
+      }
+      return actual.fsyncSync(fd);
+    },
+    closeSync: (fd: number) => {
+      try {
+        return actual.closeSync(fd);
+      } finally {
+        fixture.directoryFds.delete(fd);
+      }
+    },
   };
 });
 
 // `execSync` is a spy, not a bare stub: it is the fork `coralProjectDir` pays to resolve the project source, and
 // several tests below measure how many times a single `maintain()` call pays it — F3 is specifically about not
 // paying it on paths that never need to know the target. `execFileSync` resolves the project and Git metadata
-// context; it is a spy for the same reason, and the combined child-process budget is what F3 pins.
+// context; it is a spy for the same reason, and the combined subprocess budget is what F3 pins.
 const execSyncMock = vi.hoisted(() => vi.fn(() => 'https://github.com/owner/repo.git\n'));
 const execFileSyncMock = vi.hoisted(() =>
   vi.fn((command: unknown, args: unknown, options: unknown) => {
-    const isGitContextQuery =
-      command === 'git' &&
-      Array.isArray(args) &&
-      args.join('\0') === 'rev-parse\0--show-toplevel\0--git-common-dir\0--git-path\0info/exclude';
-    if (!isGitContextQuery) {
+    if (command !== 'git' || !Array.isArray(args) || args[0] !== 'rev-parse') {
       throw Object.assign(new Error('unexpected execFileSync command'), { code: 'ENOENT' });
     }
     if (!fixture.gitRepository) {
@@ -119,7 +143,11 @@ const execFileSyncMock = vi.hoisted(() =>
     }
 
     const cwd = String((options as { cwd?: unknown }).cwd);
-    return `${fixture.gitRoot || cwd}\n${fixture.gitDir}\n${fixture.gitDir}/info/exclude\n`;
+    const query = args.slice(1).join('\0');
+    if (query === '--show-toplevel') return `${fixture.gitRoot || cwd}\n`;
+    if (query === '--git-common-dir') return `${fixture.gitDir}\n`;
+    if (query === '--git-path\0info/exclude') return `${fixture.gitDir}/info/exclude\n`;
+    throw Object.assign(new Error('unexpected git context field'), { code: 'ENOENT' });
   }),
 );
 vi.mock('node:child_process', () => ({
@@ -143,6 +171,10 @@ beforeEach(() => {
   fixture.failReplacementUnlink = false;
   fixture.failSymlinkTempUnlink = false;
   fixture.failRmUnder = null;
+  fixture.failDirectoryFsyncPath = null;
+  fixture.failDirectoryFsyncCode = null;
+  fixture.directoryFds.clear();
+  fixture.fsyncedDirectoryPaths.length = 0;
   mkdirSync(fixture.home, { recursive: true });
   mkdirSync(join(fixture.gitDir, 'info'), { recursive: true });
   projectDir = join(root, 'project');
@@ -163,11 +195,19 @@ async function maintain(flavor: 'prod' | 'dev'): Promise<{
       state: 'not-requested' | 'unchanged' | 'created' | 'repointed' | 'refused' | 'skipped';
       reason?: string;
       residue?: 'none' | 'owned-staging';
+      durability?: {
+        state: 'synced' | 'unsupported' | 'failed';
+        reason?: string;
+      };
     };
     exclude: {
-      state: 'unchanged' | 'published' | 'refused' | 'skipped';
+      state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
       reason?: string;
       residue: 'none' | 'owned-staging';
+      durability?: {
+        state: 'synced' | 'unsupported' | 'failed';
+        reason?: string;
+      };
     };
     legacySweep: {
       state: 'unchanged' | 'cleaned' | 'refused' | 'skipped';
@@ -291,12 +331,86 @@ describe('project-ignore symlink maintenance', () => {
 
   it('leaves it alone when it already points where it should', async () => {
     await maintain('prod');
+    fixture.fsyncedDirectoryPaths.length = 0;
 
     const result = await maintain('prod');
 
     expect(result.status).toBe('complete');
-    expect(result.artifacts.symlink.state).toBe('unchanged');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'unchanged',
+      durability: { state: 'synced' },
+    });
+    expect(fixture.fsyncedDirectoryPaths).toEqual(
+      expect.arrayContaining([fixture.gitDir, join(fixture.gitDir, 'info'), projectDir, join(projectDir, '.claude')]),
+    );
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
+  });
+
+  it('keeps a published file and reports an unexpected parent-sync failure until an unchanged retry syncs it', async () => {
+    fixture.failDirectoryFsyncPath = join(fixture.gitDir, 'info');
+    fixture.failDirectoryFsyncCode = 'EIO';
+
+    const published = await maintain('prod');
+
+    expect(published.status).toBe('partial');
+    expect(published.artifacts.exclude).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: { state: 'failed', reason: 'durability-sync-failed' },
+    });
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(published)).toBe(true);
+    expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
+
+    const unchanged = await maintain('prod');
+    expect(unchanged.status).toBe('partial');
+    expect(unchanged.artifacts.exclude).toEqual({
+      state: 'unchanged',
+      residue: 'none',
+      durability: { state: 'failed', reason: 'durability-sync-failed' },
+    });
+    expect(isProjectIgnoreResult(unchanged)).toBe(true);
+
+    fixture.failDirectoryFsyncPath = null;
+    fixture.failDirectoryFsyncCode = null;
+    const durable = await maintain('prod');
+    expect(durable.status).toBe('complete');
+    expect(durable.artifacts.exclude).toEqual({
+      state: 'unchanged',
+      residue: 'none',
+      durability: { state: 'synced' },
+    });
+  });
+
+  it('reports a narrowly unsupported directory sync separately from an I/O failure', async () => {
+    fixture.failDirectoryFsyncPath = join(fixture.gitDir, 'info');
+    fixture.failDirectoryFsyncCode = 'EINVAL';
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: { state: 'unsupported', reason: 'durability-sync-unsupported' },
+    });
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    expect(isProjectIgnoreResult(result)).toBe(true);
+  });
+
+  it('syncs the Git directory after creating info and before syncing the published exclude file', async () => {
+    rmSync(join(fixture.gitDir, 'info'), { recursive: true });
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    const gitDirectorySync = fixture.fsyncedDirectoryPaths.indexOf(fixture.gitDir);
+    const infoDirectorySync = fixture.fsyncedDirectoryPaths.indexOf(join(fixture.gitDir, 'info'));
+    expect(gitDirectorySync).toBeGreaterThanOrEqual(0);
+    expect(infoDirectorySync).toBeGreaterThan(gitDirectorySync);
   });
 
   it('does not touch a link pointing somewhere an operator chose', async () => {
@@ -380,35 +494,36 @@ describe('project-ignore symlink maintenance', () => {
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
-  // F3: the two forks this script makes — `git rev-parse` (`findGitContext`, always paid) and
-  // `git remote get-url origin` (`coralProjectDir`, paid here because the recheck above needs a target) — sum
-  // to 3500ms of child work before this process's own Node startup. `session-start.mjs` used to give the child
+  // F3: the three framed `git rev-parse` fields (`findGitContext`, always paid) and `git remote get-url
+  // origin` (`coralProjectDir`, paid here because the recheck above needs a target) sum to 3500ms of bounded
+  // subprocess work. `session-start.mjs` used to give the child
   // exactly that, so a child doing nothing wrong was killed while its own bounds were still running; its budget
   // is now 5000ms. This test pins the sum so that if either bound moves, the parent's number is re-derived
   // rather than left as a guess. Read from the two mocks'
   // own call options rather than restated as a literal, so a change to either bound is caught here rather than
   // only discovered against the outer timeout in production.
-  it('spends the whole 3.5s hard-kill budget across its two git forks on the ordinary recheck path', async () => {
+  it('spends the whole 3.5s Git allowance across its four bounded subprocesses', async () => {
     await maintain('prod');
     execFileSyncMock.mockClear();
     execSyncMock.mockClear();
 
     await maintain('prod');
 
-    expect(execFileSyncMock, 'git rev-parse, for the project and Git metadata context').toHaveBeenCalledTimes(1);
+    expect(execFileSyncMock, 'one process frame per Git context field').toHaveBeenCalledTimes(3);
     expect(
       execSyncMock,
       'git remote get-url origin, to confirm the existing link is not outgrown',
     ).toHaveBeenCalledTimes(1);
-    const findGitContextTimeout = (
-      (execFileSyncMock.mock.calls as unknown[][])[0]?.[2] as { timeout?: number } | undefined
-    )?.timeout;
+    const findGitContextTimeout = (execFileSyncMock.mock.calls as unknown[][]).reduce(
+      (total, call) => total + ((call[2] as { timeout?: number } | undefined)?.timeout ?? 0),
+      0,
+    );
     const coralProjectDirTimeout = (
       (execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined
     )?.timeout;
     expect(
-      (findGitContextTimeout ?? 0) + (coralProjectDirTimeout ?? 0),
-      "session-start.mjs must give this child more than the work the child itself bounds; these two forks alone are the whole of it, before this process's own Node startup",
+      findGitContextTimeout + (coralProjectDirTimeout ?? 0),
+      'session-start.mjs must give this chain more than its bounded Git subprocesses before accounting for Node startup',
     ).toBe(3500);
   });
 
@@ -416,15 +531,17 @@ describe('project-ignore symlink maintenance', () => {
   // caller's budget actually exceeds it. Reverting `session-start.mjs`'s spawnSync timeout back to exactly this
   // sum reproduces the SIGTERM-before-its-own-bound defect with every other test here still green, so the
   // margin has to be checked directly rather than left to be noticed only against a slow mount in production.
-  it("gives the child a budget strictly greater than the child's own two-fork sum", async () => {
+  it('gives the owner chain a budget strictly greater than its Git subprocess sum', async () => {
     await maintain('prod');
     execFileSyncMock.mockClear();
     execSyncMock.mockClear();
 
     await maintain('prod');
 
-    const findGitContextTimeout =
-      ((execFileSyncMock.mock.calls as unknown[][])[0]?.[2] as { timeout?: number } | undefined)?.timeout ?? 0;
+    const findGitContextTimeout = (execFileSyncMock.mock.calls as unknown[][]).reduce(
+      (total, call) => total + ((call[2] as { timeout?: number } | undefined)?.timeout ?? 0),
+      0,
+    );
     const coralProjectDirTimeout =
       ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
     const childBoundSum = findGitContextTimeout + coralProjectDirTimeout;
@@ -440,7 +557,7 @@ describe('project-ignore symlink maintenance', () => {
     );
     expect(
       parentBudget,
-      "the parent's spawnSync timeout must leave margin beyond the child's own two forks",
+      "the parent's spawnSync timeout must leave margin beyond the chain's Git subprocesses",
     ).toBeGreaterThan(childBoundSum);
   });
 
@@ -468,6 +585,9 @@ describe('project-ignore symlink maintenance', () => {
 
     expect(produced.size, 'the outcome literals must be readable from source').toBeGreaterThan(3);
     expect(noticed.size, 'the notice table must be readable from source').toBeGreaterThan(0);
+    expect(source).toContain("'durability-sync-unsupported'");
+    expect(source).toContain("'durability-sync-failed'");
+    expect(source).toContain('artifact.durability?.reason');
     expect(
       [...produced].filter((outcome) => outcome !== 'ok' && outcome !== 'no-project-dir' && !noticed.has(outcome)),
       'every outcome other than ok and no-project-dir must have a notice the session can read',
@@ -551,7 +671,11 @@ describe('project-ignore symlink maintenance', () => {
     const result = await maintain('prod');
 
     expect(result.status).toBe('complete');
-    expect(result.artifacts.exclude).toEqual({ state: 'published', residue: 'none' });
+    expect(result.artifacts.exclude).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: { state: 'synced' },
+    });
     expect(result.artifacts.symlink.state).toBe('created');
     expect(readdirSync(repositoryArena())).toEqual([]);
   });
