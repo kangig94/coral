@@ -56,9 +56,12 @@ const fixture = vi.hoisted(() => ({
   failReplacementUnlink: false,
   failSymlinkTempUnlink: false,
   failMkdirPath: null as string | null,
+  failRmPath: null as string | null,
   failRmUnder: null as string | null,
+  rmPaths: [] as string[],
   failReaddirPath: null as string | null,
   failLstatPath: null as string | null,
+  failLstatAfter: null as null | { path: string; successesRemaining: number },
   failReadlinkPath: null as string | null,
   failDurabilityStagingUnlink: false,
   failMarkerObservation: null as null | {
@@ -70,6 +73,7 @@ const fixture = vi.hoisted(() => ({
   failDirectoryFsyncCode: null as string | null,
   directoryFsyncFailures: new Map<string, string>(),
   failDurabilityMarkerFsync: false,
+  failDurabilityMarkerFsyncFor: null as string | null,
   directoryFds: new Map<number, string>(),
   openPaths: new Map<number, string>(),
   fsyncedDirectoryPaths: [] as string[],
@@ -111,6 +115,14 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     lstatSync: (path: unknown) => {
       fixture.lstatPaths.push(String(path));
+      const delayedFailure = fixture.failLstatAfter;
+      if (delayedFailure && String(path) === delayedFailure.path) {
+        if (delayedFailure.successesRemaining === 0) {
+          fixture.failLstatAfter = null;
+          throw Object.assign(new Error('simulated delayed lstat failure'), { code: 'EIO' });
+        }
+        delayedFailure.successesRemaining -= 1;
+      }
       if (String(path) === fixture.failLstatPath) {
         fixture.failLstatPath = null;
         throw Object.assign(new Error('simulated lstat failure'), { code: 'EIO' });
@@ -186,7 +198,11 @@ vi.mock('node:fs', async (importOriginal) => {
       return (actual.unlinkSync as (p: unknown) => void)(path);
     },
     rmSync: (path: unknown, options: unknown) => {
-      if (fixture.failRmUnder !== null && String(path).startsWith(fixture.failRmUnder)) {
+      fixture.rmPaths.push(String(path));
+      if (
+        String(path) === fixture.failRmPath ||
+        (fixture.failRmUnder !== null && String(path).startsWith(fixture.failRmUnder))
+      ) {
         throw Object.assign(new Error('simulated removal failure'), { code: 'EACCES' });
       }
       return (actual.rmSync as (p: unknown, o: unknown) => void)(path, options);
@@ -235,11 +251,13 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       const openPath = fixture.openPaths.get(fd);
       if (
-        fixture.failDurabilityMarkerFsync &&
+        (fixture.failDurabilityMarkerFsync ||
+          basename(openPath ?? '') === basename(fixture.failDurabilityMarkerFsyncFor ?? '')) &&
         openPath?.includes('/.coral/staging/project-ignore/') &&
         openPath.split('/').at(-1)?.startsWith('.durability-')
       ) {
         fixture.failDurabilityMarkerFsync = false;
+        fixture.failDurabilityMarkerFsyncFor = null;
         throw Object.assign(new Error('simulated marker fsync failure'), { code: 'EIO' });
       }
       return actual.fsyncSync(fd);
@@ -327,9 +345,12 @@ beforeEach(() => {
   fixture.failReplacementUnlink = false;
   fixture.failSymlinkTempUnlink = false;
   fixture.failMkdirPath = null;
+  fixture.failRmPath = null;
   fixture.failRmUnder = null;
+  fixture.rmPaths.length = 0;
   fixture.failReaddirPath = null;
   fixture.failLstatPath = null;
+  fixture.failLstatAfter = null;
   fixture.failReadlinkPath = null;
   fixture.failDurabilityStagingUnlink = false;
   fixture.failMarkerObservation = null;
@@ -337,6 +358,7 @@ beforeEach(() => {
   fixture.failDirectoryFsyncCode = null;
   fixture.directoryFsyncFailures.clear();
   fixture.failDurabilityMarkerFsync = false;
+  fixture.failDurabilityMarkerFsyncFor = null;
   fixture.directoryFds.clear();
   fixture.openPaths.clear();
   fixture.fsyncedDirectoryPaths.length = 0;
@@ -1908,6 +1930,43 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
   });
 
+  it('retries a failed .claude observation and succeeds once the directory is observable', async () => {
+    fixture.failLstatPath = join(projectDir, '.claude');
+
+    const refused = await maintain('prod');
+    const completed = await maintain('prod');
+
+    // The legacy scan reaches .claude before the link does, so the one unobservable directory is
+    // reported once and everything downstream of it is skipped rather than diagnosed again.
+    expect(refused.status).toBe('refused');
+    expect(refused.artifacts.legacySweep).toEqual({
+      state: 'refused',
+      reason: 'legacy-sweep-observation-failed',
+      path: '.claude',
+      count: 0,
+    });
+    expect(refused.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
+    expect(completed.status).toBe('complete');
+    expect(completed.artifacts.symlink.state).toBe('created');
+  });
+
+  it('refuses a non-directory .claude structurally when symlink creation is not requested', async () => {
+    const claudeDir = join(projectDir, '.claude');
+    rmSync(claudeDir, { recursive: true });
+    writeFileSync(claudeDir, 'not a directory');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'claude-directory-invalid',
+    });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'The project .claude path is not a real directory. Remedy: replace that file or symlink with a real directory before requesting the Coral symlink.',
+    ]);
+  });
+
   it('refuses retryably without reporting a conflict when .claude hides the link path', async () => {
     chmodSync(join(projectDir, '.claude'), 0o000);
     try {
@@ -2095,10 +2154,37 @@ describe('project-ignore symlink maintenance', () => {
   });
 
   it('covers exactly every reason admitted by the result validator', async () => {
-    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { PROJECT_IGNORE_REASONS } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult, PROJECT_IGNORE_REASONS, PROJECT_IGNORE_REFUSAL_REASONS } = await import(
+      // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+      '../../../clients/hooks/lib/project-ignore-result.mjs'
+    );
 
     expect(new Set(Object.keys(PROJECT_IGNORE_REASON_NOTICES))).toEqual(new Set(PROJECT_IGNORE_REASONS));
+    expect(PROJECT_IGNORE_REFUSAL_REASONS.exclude).not.toContain('legacy-sweep-observation-failed');
+    expect(PROJECT_IGNORE_REFUSAL_REASONS.exclude).not.toContain('symlink-observation-failed');
+    expect(PROJECT_IGNORE_REFUSAL_REASONS.symlink).not.toContain('artifact-changed');
+
+    const baseArtifacts = {
+      arenaSweep: { state: 'unchanged' },
+      durabilityReconciliation: { state: 'reconciled' },
+      legacySweep: { state: 'unchanged' },
+      exclude: { state: 'not-needed', residue: 'none' },
+      symlink: { state: 'not-requested' },
+      scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+    };
+    for (const [artifact, value] of [
+      ['exclude', { state: 'refused', reason: 'legacy-sweep-observation-failed', residue: 'none' }],
+      ['exclude', { state: 'refused', reason: 'symlink-observation-failed', residue: 'none' }],
+      ['symlink', { state: 'refused', reason: 'artifact-changed' }],
+    ] as const) {
+      expect(
+        isProjectIgnoreResult({
+          status: 'refused',
+          artifacts: { ...baseArtifacts, [artifact]: value },
+        }),
+      ).toBe(false);
+    }
   });
 
   it('renders every distinct project-ignore reason once in deterministic order', () => {
@@ -2190,7 +2276,27 @@ describe('project-ignore symlink maintenance', () => {
     expect(readdirSync(repositoryArena())).toEqual([]);
   });
 
+  it('reports a failed snapshot re-read without blaming a concurrent writer', async () => {
+    const rootIgnore = join(projectDir, '.gitignore');
+    writeFileSync(rootIgnore, '.claude/coral\n');
+    fixture.failLstatAfter = { path: rootIgnore, successesRemaining: 1 };
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'refused',
+      reason: 'artifact-observation-failed',
+      residue: 'none',
+    });
+    expect(JSON.stringify(result)).not.toContain('artifact-changed');
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'Coral could not re-read an ignore file after preparing its staged update. Remedy: make the affected ignore file and its parent directories observable by the current user, or repair the filesystem error blocking inspection. It is attempted again at the next session start.',
+    ]);
+  });
+
   it('reports a marker staging file when both of its cleanup attempts fail', async () => {
+    rmSync(join(fixture.gitDir, 'info'), { recursive: true });
     fixture.failDurabilityMarkerFsync = true;
     fixture.failDurabilityStagingUnlink = true;
     fixture.failRmUnder = durabilityArena();
@@ -2215,12 +2321,35 @@ describe('project-ignore symlink maintenance', () => {
     expect(isProjectIgnoreResult(result)).toBe(true);
   });
 
-  it('reports a run-directory removal failure even when inline cleanup left it empty', async () => {
+  it.each([
+    ['create', 'prod'],
+    ['repoint', 'dev'],
+  ] as const)('retains symlink marker staging from the %s path on its symlink artifact', async (action, flavor) => {
+    if (action === 'repoint') await maintain('prod');
+    fixture.failDurabilityMarkerFsyncFor = durabilityMarker(link());
+    fixture.failDurabilityStagingUnlink = true;
+    fixture.failRmUnder = durabilityArena();
+
+    const result = await maintain(flavor);
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'durability-evidence-unavailable',
+      residue: 'owned-staging',
+    });
+    expect(result.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'arena-sweep-failed',
+    });
+  });
+
+  it('keeps an empty current run-directory removal failure out of aggregate status', async () => {
     fixture.failRmUnder = repositoryArena();
 
     const result = await maintain('prod');
 
-    expect(result.status).toBe('partial');
+    expect(result.status).toBe('complete');
     expect(result.artifacts.arenaSweep).toEqual({
       state: 'refused',
       reason: 'arena-sweep-failed',
@@ -2229,6 +2358,25 @@ describe('project-ignore symlink maintenance', () => {
       "Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory's coral/staging/project-ignore path are writable real directories. It is attempted again at the next session start.",
     );
     expect(readdirSync(repositoryArena())).toHaveLength(1);
+    expect(fixture.rmPaths.some((path) => dirname(path) === durabilityArena())).toBe(true);
+    expect(readdirSync(durabilityArena()).filter((name) => /^\d+-\d+$/u.test(name))).toEqual([]);
+  });
+
+  it('keeps a foreign arena cleanup failure out of an otherwise clean result', async () => {
+    await maintain('prod');
+    const foreignRun = join(repositoryArena(), '1-999999');
+    mkdirSync(foreignRun);
+    writeFileSync(join(foreignRun, 'retained'), 'foreign staging');
+    fixture.failRmPath = foreignRun;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.arenaSweep).toEqual({
+      state: 'refused',
+      reason: 'arena-sweep-failed',
+    });
+    expect(existsSync(foreignRun)).toBe(true);
   });
 
   it('reports symlink staging residue when repoint publication and both cleanup attempts fail', async () => {

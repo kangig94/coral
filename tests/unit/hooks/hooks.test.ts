@@ -279,6 +279,43 @@ describe('session-start.mjs', () => {
     if ('absentNotice' in scenario) expect(additionalContext).not.toContain(scenario.absentNotice);
   });
 
+  it('lets the shared renderer own an escaped legacy observation refusal', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'legacy-observation-refusal');
+    const observedPath = 'nested\n"/.claude';
+    writeOwnerStub(hooksRoot, {
+      status: 1,
+      stdout: `${JSON.stringify(
+        projectIgnoreMaintenance('partial', {
+          legacySweep: {
+            state: 'refused',
+            reason: 'legacy-sweep-observation-failed',
+            path: observedPath,
+            count: 1,
+          },
+        }),
+      )}\n`,
+    });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-legacy-observation-refusal' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext.match(/legacy staging path/gu)).toHaveLength(1);
+    expect(additionalContext).toContain(JSON.stringify(observedPath));
+    expect(additionalContext).not.toContain(observedPath);
+    expect(additionalContext).not.toContain('could not remove authorized legacy staging path');
+  });
+
   it('uses the shared owner timeout and renders a killed owner', () => {
     const fixture = createFixture();
     const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-timeout');

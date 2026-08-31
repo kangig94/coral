@@ -44,6 +44,11 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
       'An ignore file changed while Coral was preparing its update. Remedy: let the other writer finish before Coral tries again.',
     retryable: true,
   },
+  'artifact-observation-failed': {
+    sentence:
+      'Coral could not re-read an ignore file after preparing its staged update. Remedy: make the affected ignore file and its parent directories observable by the current user, or repair the filesystem error blocking inspection.',
+    retryable: true,
+  },
   'claude-directory-missing': {
     sentence:
       'The project has no .claude directory, so Coral did not create the requested symlink. Remedy: run `mkdir .claude` in the project.',

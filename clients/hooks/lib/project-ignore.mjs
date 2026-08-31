@@ -61,8 +61,12 @@ function safeUnlink(path) {
 function readRegularSnapshot(path, { allowMissing = false } = {}) {
   try {
     const pathStat = lstatSync(path);
-    if (pathStat.isSymbolicLink() || !pathStat.isFile()) return { ok: false, reason: 'artifact-unreadable' };
-    if (pathStat.size > MAX_GITIGNORE_BYTES) return { ok: false, reason: 'artifact-too-large' };
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+      return { ok: false, reason: 'artifact-unreadable', mismatch: true };
+    }
+    if (pathStat.size > MAX_GITIGNORE_BYTES) {
+      return { ok: false, reason: 'artifact-too-large', mismatch: true };
+    }
   } catch (error) {
     if (allowMissing && isMissing(error)) {
       return { ok: true, exists: false, content: Buffer.alloc(0), mode: 0o666 };
@@ -79,10 +83,14 @@ function readRegularSnapshot(path, { allowMissing = false } = {}) {
 
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) return { ok: false, reason: 'artifact-unreadable' };
-    if (stat.size > MAX_GITIGNORE_BYTES) return { ok: false, reason: 'artifact-too-large' };
+    if (!stat.isFile()) return { ok: false, reason: 'artifact-unreadable', mismatch: true };
+    if (stat.size > MAX_GITIGNORE_BYTES) {
+      return { ok: false, reason: 'artifact-too-large', mismatch: true };
+    }
     const content = readFileSync(fd);
-    if (content.length > MAX_GITIGNORE_BYTES) return { ok: false, reason: 'artifact-too-large' };
+    if (content.length > MAX_GITIGNORE_BYTES) {
+      return { ok: false, reason: 'artifact-too-large', mismatch: true };
+    }
     return {
       ok: true,
       exists: true,
@@ -158,9 +166,12 @@ function appendExactLine(content, entry) {
   return Buffer.concat([content, ...(needsBoundary ? [newline] : []), Buffer.from(entry), newline]);
 }
 
-function snapshotUnchanged(path, snapshot) {
+function compareSnapshot(path, snapshot) {
   const current = readRegularSnapshot(path, { allowMissing: true });
-  return current.ok && current.exists === snapshot.exists && current.content.equals(snapshot.content);
+  if (!current.ok) return current.mismatch ? 'changed' : 'observation-failed';
+  return current.exists === snapshot.exists && current.content.equals(snapshot.content)
+    ? 'unchanged'
+    : 'changed';
 }
 
 export function fsyncParent(path, { missingParentIsSynced = false } = {}) {
@@ -452,8 +463,16 @@ export function atomicReplace({
       closeSync(fd);
       fd = undefined;
 
-      if (!snapshotUnchanged(target, snapshot)) {
-        result = { state: 'refused', reason: 'artifact-changed', residue: 'none' };
+      const snapshotState = compareSnapshot(target, snapshot);
+      if (snapshotState !== 'unchanged') {
+        result = {
+          state: 'refused',
+          reason:
+            snapshotState === 'observation-failed'
+              ? 'artifact-observation-failed'
+              : 'artifact-changed',
+          residue: 'none',
+        };
       } else {
         try {
           if (snapshot.exists) {
@@ -496,13 +515,17 @@ export function atomicReplace({
   return result;
 }
 
-function isRealDirectory(path) {
+function observeDirectory(path) {
   try {
     const stat = lstatSync(path);
-    return !stat.isSymbolicLink() && stat.isDirectory();
-  } catch {
-    return false;
+    return !stat.isSymbolicLink() && stat.isDirectory() ? 'directory' : 'non-directory';
+  } catch (error) {
+    return isMissing(error) ? 'missing' : 'observation-failed';
   }
+}
+
+function isRealDirectory(path) {
+  return observeDirectory(path) === 'directory';
 }
 
 function hasGitMarker(projectDir) {
@@ -1013,16 +1036,6 @@ function isOutgrownCoralLink(current, target) {
   });
 }
 
-function claudeDirectoryRefusal(claudeDir) {
-  if (isRealDirectory(claudeDir)) return null;
-  try {
-    lstatSync(claudeDir);
-    return 'claude-directory-invalid';
-  } catch (error) {
-    return isMissing(error) ? 'claude-directory-missing' : 'claude-directory-invalid';
-  }
-}
-
 function stagingDeviceRefusal(path, stagingDir) {
   try {
     return lstatSync(path).dev === lstatSync(stagingDir).dev ? null : 'staging-device-mismatch';
@@ -1122,10 +1135,20 @@ function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
 
 function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
   const claudeDir = join(projectDir, '.claude');
-  const claudeRefusal = createSymlink ? claudeDirectoryRefusal(claudeDir) : null;
-  if (claudeRefusal) return { ok: false, reason: claudeRefusal };
-
   const link = join(projectDir, '.claude', 'coral');
+  const claudeDirectory = observeDirectory(claudeDir);
+  if (claudeDirectory === 'observation-failed') {
+    return { ok: false, reason: 'symlink-observation-failed' };
+  }
+  if (claudeDirectory === 'non-directory') {
+    return { ok: false, reason: 'claude-directory-invalid' };
+  }
+  if (claudeDirectory === 'missing') {
+    return createSymlink
+      ? { ok: false, reason: 'claude-directory-missing' }
+      : { ok: true, symlinkExists: false, action: 'not-requested', link, target: null };
+  }
+
   const inspection = inspectCoralLink(link);
   if (inspection.state === 'observation-failed') {
     return { ok: false, reason: 'symlink-observation-failed' };
@@ -1518,10 +1541,18 @@ function maintainProjectIgnoreArtifacts({
   return artifacts;
 }
 
-function reconcileRemovedProjectIgnoreStaging(artifacts) {
+function reconcileRemovedProjectIgnoreStaging(
+  artifacts,
+  removedRunDirectories,
+  stagingDir,
+  durabilityRunDir,
+) {
   for (const key of ['exclude', 'symlink', 'scopedIgnoreRetraction', 'rootIgnoreRetraction']) {
     const artifact = artifacts[key];
     if (artifact.residue !== 'owned-staging') continue;
+    const ownerRunDir =
+      artifact.reason === 'durability-evidence-unavailable' ? durabilityRunDir : stagingDir;
+    if (!removedRunDirectories.has(ownerRunDir)) continue;
     const reconciled = { ...artifact, residue: 'none' };
     if (['published', 'repointed'].includes(artifact.state)) delete reconciled.reason;
     artifacts[key] = reconciled;
@@ -1626,12 +1657,19 @@ export function maintainProjectIgnore({
           });
         }
       } finally {
-        const runDirectoriesRemoved = [...new Set([stagingDir, durabilityRunDir].filter(Boolean))]
-          .map((runDir) => removeProjectIgnoreRunDir(runDir))
-          .every(Boolean);
-        if (runDirectoriesRemoved) {
-          reconcileRemovedProjectIgnoreStaging(artifacts);
-        } else {
+        const runDirectoryRemovals = [...new Set([stagingDir, durabilityRunDir].filter(Boolean))].map(
+          (runDir) => [runDir, removeProjectIgnoreRunDir(runDir)],
+        );
+        const removedRunDirectories = new Set(
+          runDirectoryRemovals.filter(([, removed]) => removed).map(([runDir]) => runDir),
+        );
+        reconcileRemovedProjectIgnoreStaging(
+          artifacts,
+          removedRunDirectories,
+          stagingDir,
+          durabilityRunDir,
+        );
+        if (runDirectoryRemovals.some(([, removed]) => !removed)) {
           artifacts.arenaSweep = { state: 'refused', reason: 'arena-sweep-failed' };
         }
       }

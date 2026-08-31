@@ -10,7 +10,6 @@ const ARTIFACT_KEYS = [
   'rootIgnoreRetraction',
 ];
 const SELECTOR_KEYS = [
-  'arenaSweep',
   'legacySweep',
   'exclude',
   'symlink',
@@ -25,30 +24,52 @@ const DURABILITY_RECONCILIATION_REASONS = new Set([
   'durability-sync-unsupported',
   'durability-sync-failed',
 ]);
-export const PROJECT_IGNORE_REASONS = Object.freeze([
-  'project-context-unresolvable',
-  'project-path-unrepresentable',
-  'exclude-path-unresolvable',
+const REPLACEMENT_REFUSAL_REASONS = [
   'artifact-unreadable',
   'artifact-too-large',
   'artifact-changed',
-  'claude-directory-missing',
-  'claude-directory-invalid',
-  'repository-arena-unavailable',
+  'artifact-observation-failed',
   'staging-device-mismatch',
   'publish-cross-device',
   'publish-failed',
-  'symlink-target-unavailable',
-  'symlink-observation-failed',
-  ...DURABILITY_RECONCILIATION_REASONS,
-  'staging-cleanup-failed',
-  'symlink-conflict',
-  'legacy-sweep-failed',
-  'legacy-sweep-observation-failed',
-  'arena-sweep-failed',
-  'upstream-refusal',
+  'durability-evidence-unavailable',
+];
+export const PROJECT_IGNORE_REFUSAL_REASONS = Object.freeze({
+  arenaSweep: Object.freeze(['arena-sweep-failed']),
+  durabilityReconciliation: Object.freeze([...DURABILITY_RECONCILIATION_REASONS]),
+  legacySweep: Object.freeze(['legacy-sweep-failed', 'legacy-sweep-observation-failed']),
+  exclude: Object.freeze([
+    'project-path-unrepresentable',
+    'exclude-path-unresolvable',
+    'repository-arena-unavailable',
+    ...REPLACEMENT_REFUSAL_REASONS,
+  ]),
+  symlink: Object.freeze([
+    'project-context-unresolvable',
+    'claude-directory-missing',
+    'claude-directory-invalid',
+    'staging-device-mismatch',
+    'publish-cross-device',
+    'publish-failed',
+    'symlink-target-unavailable',
+    'symlink-observation-failed',
+    'durability-evidence-unavailable',
+    'symlink-conflict',
+  ]),
+  scopedIgnoreRetraction: Object.freeze([...REPLACEMENT_REFUSAL_REASONS]),
+  rootIgnoreRetraction: Object.freeze([...REPLACEMENT_REFUSAL_REASONS]),
+});
+const SPECIAL_REASONS = ['staging-cleanup-failed', 'upstream-refusal'];
+export const PROJECT_IGNORE_REASONS = Object.freeze([
+  ...new Set([...Object.values(PROJECT_IGNORE_REFUSAL_REASONS).flat(), ...SPECIAL_REASONS]),
 ]);
 const REASONS = new Set(PROJECT_IGNORE_REASONS);
+const REFUSAL_REASON_SETS = Object.fromEntries(
+  Object.entries(PROJECT_IGNORE_REFUSAL_REASONS).map(([artifact, reasons]) => [
+    artifact,
+    new Set(reasons),
+  ]),
+);
 const LEGACY_TEMP_NAME = /^(?:\.gitignore|coral)\.coral-[1-9]\d*-[1-9]\d*\.tmp$/u;
 
 function isRecord(value) {
@@ -67,6 +88,10 @@ function hasReason(value, expected) {
     REASONS.has(value.reason) &&
     (!expected || value.reason === expected)
   );
+}
+
+function hasRefusalReason(value, artifact) {
+  return typeof value.reason === 'string' && REFUSAL_REASON_SETS[artifact].has(value.reason);
 }
 
 function validateDurability(value) {
@@ -108,7 +133,8 @@ function validateDurabilityReconciliation(value) {
   );
 }
 
-function validateSweep(value, legacy) {
+function validateSweep(value, artifact) {
+  const legacy = artifact === 'legacySweep';
   if (!isRecord(value) || !['unchanged', 'cleaned', 'refused', 'skipped'].includes(value.state)) return false;
   if (value.state === 'cleaned') {
     return legacy
@@ -119,8 +145,7 @@ function validateSweep(value, legacy) {
     if (legacy) {
       return (
         hasExactKeys(value, ['state', 'reason', 'path', 'count']) &&
-        hasReason(value) &&
-        ['legacy-sweep-failed', 'legacy-sweep-observation-failed'].includes(value.reason) &&
+        hasRefusalReason(value, artifact) &&
         (value.reason === 'legacy-sweep-failed'
           ? isLegacyWorkingTreeStagingPath(value.path)
           : isLegacyWorkingTreeObservationPath(value.path)) &&
@@ -130,8 +155,7 @@ function validateSweep(value, legacy) {
     }
     return (
       hasExactKeys(value, ['state', 'reason']) &&
-      value.reason === 'arena-sweep-failed' &&
-      hasReason(value)
+      hasRefusalReason(value, artifact)
     );
   }
   if (value.state === 'skipped') {
@@ -140,7 +164,7 @@ function validateSweep(value, legacy) {
   return hasExactKeys(value, ['state']);
 }
 
-function validateReplacement(value, states) {
+function validateReplacement(value, states, artifact) {
   if (!isRecord(value) || !states.includes(value.state) || !['none', 'owned-staging'].includes(value.residue)) {
     return false;
   }
@@ -154,11 +178,8 @@ function validateReplacement(value, states) {
         'residue',
         ...(hasDurability ? ['durability'] : []),
       ]) &&
-      hasReason(value) &&
-      (!hasDurability || value.durability.state !== 'synced') &&
-      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
-        value.reason,
-      )
+      hasRefusalReason(value, artifact) &&
+      (!hasDurability || value.durability.state !== 'synced')
     );
   }
   if (value.residue === 'owned-staging') {
@@ -200,10 +221,7 @@ function validateSymlink(value) {
         ...(hasDurability ? ['durability'] : []),
       ]) &&
       (!hasDurability || value.durability.state !== 'synced') &&
-      hasReason(value) &&
-      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
-        value.reason,
-      )
+      hasRefusalReason(value, 'symlink')
     );
   }
   if (value.residue === 'owned-staging') {
@@ -285,31 +303,33 @@ export function isProjectIgnoreResult(value) {
   const artifacts = value.artifacts;
   if (!isRecord(artifacts) || !hasExactKeys(artifacts, ARTIFACT_KEYS)) return false;
   if (
-    !validateSweep(artifacts.arenaSweep, false) ||
+    !validateSweep(artifacts.arenaSweep, 'arenaSweep') ||
     !validateDurabilityReconciliation(artifacts.durabilityReconciliation) ||
-    !validateSweep(artifacts.legacySweep, true)
+    !validateSweep(artifacts.legacySweep, 'legacySweep')
   ) {
     return false;
   }
-  if (!validateReplacement(artifacts.exclude, ['not-needed', 'unchanged', 'published', 'refused', 'skipped'])) {
+  if (
+    !validateReplacement(
+      artifacts.exclude,
+      ['not-needed', 'unchanged', 'published', 'refused', 'skipped'],
+      'exclude',
+    )
+  ) {
     return false;
   }
   if (!validateSymlink(artifacts.symlink)) return false;
   if (
-    !validateReplacement(artifacts.scopedIgnoreRetraction, [
-      'not-needed',
-      'unchanged',
-      'published',
-      'refused',
-      'skipped',
-    ]) ||
-    !validateReplacement(artifacts.rootIgnoreRetraction, [
-      'not-needed',
-      'unchanged',
-      'published',
-      'refused',
-      'skipped',
-    ])
+    !validateReplacement(
+      artifacts.scopedIgnoreRetraction,
+      ['not-needed', 'unchanged', 'published', 'refused', 'skipped'],
+      'scopedIgnoreRetraction',
+    ) ||
+    !validateReplacement(
+      artifacts.rootIgnoreRetraction,
+      ['not-needed', 'unchanged', 'published', 'refused', 'skipped'],
+      'rootIgnoreRetraction',
+    )
   ) {
     return false;
   }

@@ -709,6 +709,45 @@ describe('project-ignore maintenance ownership', () => {
     expect(rejected.stderr).toBe('');
   });
 
+  it.each([
+    [
+      'replacement with a legacy reason',
+      'exclude',
+      { state: 'refused', reason: 'legacy-sweep-observation-failed', residue: 'none' },
+    ],
+    [
+      'replacement with a symlink reason',
+      'exclude',
+      { state: 'refused', reason: 'symlink-observation-failed', residue: 'none' },
+    ],
+    ['symlink with a replacement reason', 'symlink', { state: 'refused', reason: 'artifact-changed' }],
+  ] as const)('rejects a %s through the real result validator', (_name, artifact, invalidArtifact) => {
+    const validator = hookScript('project-ignore.mjs');
+    const invalidResult = {
+      status: 'refused',
+      artifacts: {
+        arenaSweep: { state: 'unchanged' },
+        durabilityReconciliation: { state: 'reconciled' },
+        legacySweep: { state: 'unchanged' },
+        exclude: { state: 'not-needed', residue: 'none' },
+        symlink: { state: 'not-requested' },
+        scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        [artifact]: invalidArtifact,
+      },
+    };
+
+    const rejected = spawnSync(process.execPath, [validator, '--validate-result'], {
+      encoding: 'utf-8',
+      input: JSON.stringify(invalidResult),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    expect(rejected.status).toBe(1);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toBe('');
+  });
+
   it('pins the init-project lock branches to the hook exit-code constants', () => {
     const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');

@@ -202,11 +202,9 @@ try {
     : null;
   const legacySweep = ignoreOutcome.maintenance?.artifacts.legacySweep;
   const legacySweepNotice =
-    legacySweep?.state === 'cleaned'
+    ['cleaned', 'refused'].includes(legacySweep?.state) && legacySweep?.count > 0
       ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s): .gitignore.coral-<pid>-<timestamp>.tmp beside the Git-root .gitignore or project .claude/.gitignore, and coral.coral-<pid>-<timestamp>.tmp beside project .claude/coral.`
-      : legacySweep?.state === 'refused'
-        ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s), then could not remove authorized legacy staging path ${legacySweep.path}.`
-        : null;
+      : null;
   const ignoreFailure = projectIgnoreOutcomeNotice(ignoreOutcome.outcome);
   const ignoreRefusalNotices = renderProjectIgnoreResultNotices(ignoreOutcome.maintenance);
   const ignoreNotice =
