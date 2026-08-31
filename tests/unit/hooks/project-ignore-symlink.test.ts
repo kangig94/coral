@@ -26,6 +26,8 @@ import { coralStateRoot } from '../../../clients/hooks/lib/hook-utils.mjs';
 const manifest = vi.hoisted(() => ({ flavor: 'prod' as 'prod' | 'dev' }));
 const fixture = vi.hoisted(() => ({
   home: '',
+  gitDir: '',
+  gitRepository: true,
   failSymlinkTarget: null as string | null,
   failRenameTo: null as string | null,
 }));
@@ -73,8 +75,23 @@ vi.mock('node:fs', async (importOriginal) => {
 // pay together is what F3 pins.
 const execSyncMock = vi.hoisted(() => vi.fn(() => 'https://github.com/owner/repo.git\n'));
 const execFileSyncMock = vi.hoisted(() =>
-  vi.fn(() => {
-    throw Object.assign(new Error('no git'), { code: 'ENOENT' });
+  vi.fn((command: unknown, args: unknown, options: unknown) => {
+    const isGitContextQuery =
+      command === 'git' &&
+      Array.isArray(args) &&
+      args.join('\0') === 'rev-parse\0--show-toplevel\0--git-common-dir\0--git-path\0info/exclude';
+    if (!isGitContextQuery) {
+      throw Object.assign(new Error('unexpected execFileSync command'), { code: 'ENOENT' });
+    }
+    if (!fixture.gitRepository) {
+      throw Object.assign(new Error('no git repository'), {
+        status: 128,
+        stderr: 'fatal: not a git repository (or any of the parent directories): .git\n',
+      });
+    }
+
+    const cwd = String((options as { cwd?: unknown }).cwd);
+    return `${cwd}\n${fixture.gitDir}\n${fixture.gitDir}/info/exclude\n`;
   }),
 );
 vi.mock('node:child_process', () => ({
@@ -89,9 +106,12 @@ beforeEach(() => {
   vi.resetModules();
   root = mkdtempSync(join(tmpdir(), 'coral-symlink-'));
   fixture.home = join(root, 'home');
+  fixture.gitDir = join(root, 'git-common');
+  fixture.gitRepository = true;
   fixture.failSymlinkTarget = null;
   fixture.failRenameTo = null;
   mkdirSync(fixture.home, { recursive: true });
+  mkdirSync(join(fixture.gitDir, 'info'), { recursive: true });
   projectDir = join(root, 'project');
   mkdirSync(join(projectDir, '.claude'), { recursive: true });
   writeFileSync(join(projectDir, '.gitignore'), '', 'utf-8');
