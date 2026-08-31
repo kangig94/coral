@@ -61,7 +61,10 @@ function safeUnlink(path) {
   }
 }
 
-function classifySnapshotError(error) {
+function classifySnapshotError(error, phase) {
+  if (phase === 'descriptor') {
+    return { kind: 'observation-failed', reason: 'artifact-observation-failed' };
+  }
   if (isMissing(error)) return { kind: 'missing' };
   return ARTIFACT_ACCESS_CODES.has(error?.code) || ARTIFACT_STRUCTURAL_CODES.has(error?.code)
     ? { kind: 'structural', reason: 'artifact-unreadable' }
@@ -78,7 +81,7 @@ function readRegularSnapshot(path) {
       return { ok: false, kind: 'structural', reason: 'artifact-too-large' };
     }
   } catch (error) {
-    const failure = classifySnapshotError(error);
+    const failure = classifySnapshotError(error, 'pathname');
     if (failure.kind === 'missing') {
       return { ok: true, kind: 'missing', exists: false, content: Buffer.alloc(0), mode: 0o666 };
     }
@@ -89,7 +92,7 @@ function readRegularSnapshot(path) {
   try {
     fd = openSync(path, READ_FLAGS);
   } catch (error) {
-    const failure = classifySnapshotError(error);
+    const failure = classifySnapshotError(error, 'pathname');
     if (failure.kind === 'missing') {
       return { ok: true, kind: 'missing', exists: false, content: Buffer.alloc(0), mode: 0o666 };
     }
@@ -116,10 +119,7 @@ function readRegularSnapshot(path) {
       mode: stat.mode & 0o777,
     };
   } catch (error) {
-    const failure = classifySnapshotError(error);
-    if (failure.kind === 'missing') {
-      return { ok: true, kind: 'missing', exists: false, content: Buffer.alloc(0), mode: 0o666 };
-    }
+    const failure = classifySnapshotError(error, 'descriptor');
     return { ok: false, ...failure };
   } finally {
     try {
@@ -678,11 +678,14 @@ export function prepareRepositoryProjectIgnoreStagingDir(commonGitDir) {
     for (const component of ['coral', 'staging', 'project-ignore']) {
       current = join(current, component);
       const preparation = ensureArenaComponent(current);
+      if (preparation.state === 'structural-conflict') return { ...preparation, component };
       if (preparation.state !== 'ready') return preparation;
     }
 
     const canonicalArena = realpathSync(current);
-    if (current !== expectedArena) return { state: 'structural-conflict', path: current };
+    if (current !== expectedArena) {
+      return { state: 'structural-conflict', path: current, component: 'project-ignore' };
+    }
     const containment = relative(canonicalCommonGitDir, canonicalArena);
     if (
       containment.length === 0 ||
@@ -690,7 +693,7 @@ export function prepareRepositoryProjectIgnoreStagingDir(commonGitDir) {
       containment === '..' ||
       containment.startsWith(`..${sep}`)
     ) {
-      return { state: 'structural-conflict', path: current };
+      return { state: 'structural-conflict', path: current, component: 'project-ignore' };
     }
     return { state: 'prepared', path: canonicalArena };
   } catch {
@@ -1083,12 +1086,14 @@ function prepareReplacement({
   contentChangeNeeded,
   devicePath,
   stagingDir,
+  stagingRefusal,
   durabilityDir,
   durabilityRunDir,
 }) {
   if (!contentChangeNeeded) return { ok: true, replacement: null };
   if (next.length > MAX_GITIGNORE_BYTES) return { ok: false, reason: 'artifact-too-large' };
   if (!next.equals(snapshot.content)) {
+    if (!stagingDir && stagingRefusal) return { ok: false, ...stagingRefusal };
     const deviceRefusal = stagingDeviceRefusal(devicePath, stagingDir);
     if (deviceRefusal) return { ok: false, reason: deviceRefusal };
   }
@@ -1179,7 +1184,7 @@ function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
   return { ok: true, durability: syncPendingPublication(excludeDir, marker) };
 }
 
-function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
+function prepareCoralSymlink(projectDir, createSymlink, stagingDir, stagingRefusal) {
   const claudeDir = join(projectDir, '.claude');
   const link = join(projectDir, '.claude', 'coral');
   const claudeDirectory = observeDirectory(claudeDir);
@@ -1254,6 +1259,7 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
   if (!isOutgrownCoralLink(inspection.target, target)) {
     return { ok: true, symlinkExists: true, action: 'unchanged', link, target };
   }
+  if (!stagingDir && stagingRefusal) return { ok: false, ...stagingRefusal };
   const deviceRefusal = stagingDeviceRefusal(projectDir, stagingDir);
   if (deviceRefusal) return { ok: false, reason: deviceRefusal };
   return { ok: true, symlinkExists: true, action: 'repoint', link, target };
@@ -1344,7 +1350,7 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
 const SKIPPED_REPLACEMENT = { state: 'skipped', reason: 'upstream-refusal', residue: 'none' };
 const SKIPPED_ARTIFACT = { state: 'skipped', reason: 'upstream-refusal' };
 
-function refusedArtifacts(arenaSweep, legacySweep, artifact, reason) {
+function refusedArtifacts(arenaSweep, legacySweep, artifact, reason, detail = {}) {
   const artifacts = {
     arenaSweep,
     durabilityReconciliation: { state: 'reconciled' },
@@ -1356,8 +1362,8 @@ function refusedArtifacts(arenaSweep, legacySweep, artifact, reason) {
   };
   artifacts[artifact] =
     artifact === 'symlink'
-      ? { state: 'refused', reason }
-      : { state: 'refused', reason, residue: 'none' };
+      ? { state: 'refused', reason, ...detail }
+      : { state: 'refused', reason, residue: 'none', ...detail };
   return artifacts;
 }
 
@@ -1377,11 +1383,24 @@ function preflightProjectIgnoreArtifacts({
   context,
   createSymlink,
   stagingDir,
+  stagingRefusal,
   durabilityDir,
   durabilityRunDir,
 }) {
-  const symlink = prepareCoralSymlink(context.projectDir, createSymlink, stagingDir);
-  if (!symlink.ok) return { ok: false, artifact: 'symlink', reason: symlink.reason };
+  const symlink = prepareCoralSymlink(
+    context.projectDir,
+    createSymlink,
+    stagingDir,
+    stagingRefusal,
+  );
+  if (!symlink.ok) {
+    return {
+      ok: false,
+      artifact: 'symlink',
+      reason: symlink.reason,
+      ...(symlink.component ? { component: symlink.component } : {}),
+    };
+  }
 
   const rootSnapshot = readRegularSnapshot(context.rootGitignore);
   if (!rootSnapshot.ok) {
@@ -1436,6 +1455,7 @@ function preflightProjectIgnoreArtifacts({
       contentChangeNeeded: !hasExactLine(excludeSnapshot.content, context.excludeEntry),
       devicePath: excludePathDevice,
       stagingDir,
+      stagingRefusal,
       durabilityDir,
       durabilityRunDir,
     });
@@ -1449,6 +1469,7 @@ function preflightProjectIgnoreArtifacts({
       contentChangeNeeded: hasExactLine(scopedSnapshot.content, CORAL_IGNORE_ENTRY),
       devicePath: claudeDir,
       stagingDir,
+      stagingRefusal,
       durabilityDir,
       durabilityRunDir,
     });
@@ -1460,6 +1481,7 @@ function preflightProjectIgnoreArtifacts({
     contentChangeNeeded: hasExactLine(rootSnapshot.content, context.legacyEntry),
     devicePath: context.gitRoot,
     stagingDir,
+    stagingRefusal,
     durabilityDir,
     durabilityRunDir,
   });
@@ -1469,7 +1491,14 @@ function preflightProjectIgnoreArtifacts({
     ['scopedIgnoreRetraction', scopedIgnoreRetraction],
     ['rootIgnoreRetraction', rootIgnoreRetraction],
   ]) {
-    if (replacement && !replacement.ok) return { ok: false, artifact, reason: replacement.reason };
+    if (replacement && !replacement.ok) {
+      return {
+        ok: false,
+        artifact,
+        reason: replacement.reason,
+        ...(replacement.component ? { component: replacement.component } : {}),
+      };
+    }
   }
 
   return {
@@ -1489,6 +1518,7 @@ function maintainProjectIgnoreArtifacts({
   createSymlink,
   token,
   stagingDir,
+  stagingRefusal,
   durabilityDir,
   durabilityRunDir,
   arenaSweep,
@@ -1498,11 +1528,18 @@ function maintainProjectIgnoreArtifacts({
     context,
     createSymlink,
     stagingDir,
+    stagingRefusal,
     durabilityDir,
     durabilityRunDir,
   });
   if (!preflight.ok) {
-    return refusedArtifacts(arenaSweep, legacySweep, preflight.artifact, preflight.reason);
+    return refusedArtifacts(
+      arenaSweep,
+      legacySweep,
+      preflight.artifact,
+      preflight.reason,
+      preflight.component ? { component: preflight.component } : {},
+    );
   }
 
   const artifacts = {
@@ -1693,28 +1730,30 @@ export function maintainProjectIgnore({
           ? createProjectIgnoreRunDir(repositoryArena, startedAt)
           : null
         : durabilityRunDir;
+      const stagingRefusal =
+        useRepositoryArena && !repositoryArena
+          ? {
+              reason:
+                repositoryArenaPreparation.state === 'structural-conflict'
+                  ? 'repository-arena-conflict'
+                  : 'repository-arena-unavailable',
+              ...(repositoryArenaPreparation.component
+                ? { component: repositoryArenaPreparation.component }
+                : {}),
+            }
+          : null;
       try {
-        if (!stagingDir && useRepositoryArena) {
-          artifacts = refusedArtifacts(
-            arenaSweep,
-            legacySweep,
-            'exclude',
-            repositoryArenaPreparation.state === 'structural-conflict'
-              ? 'repository-arena-conflict'
-              : 'repository-arena-unavailable',
-          );
-        } else {
-          artifacts = maintainProjectIgnoreArtifacts({
-            context,
-            createSymlink,
-            token,
-            stagingDir,
-            durabilityDir: fallbackArena,
-            durabilityRunDir,
-            arenaSweep,
-            legacySweep,
-          });
-        }
+        artifacts = maintainProjectIgnoreArtifacts({
+          context,
+          createSymlink,
+          token,
+          stagingDir,
+          stagingRefusal,
+          durabilityDir: fallbackArena,
+          durabilityRunDir,
+          arenaSweep,
+          legacySweep,
+        });
       } finally {
         const runDirectoryRemovals = [...new Set([stagingDir, durabilityRunDir].filter(Boolean))].map(
           (runDir) => [runDir, removeProjectIgnoreRunDir(runDir)],

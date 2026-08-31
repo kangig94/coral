@@ -39,6 +39,11 @@ const REPLACEMENT_REFUSAL_REASONS = [
   'publish-failed',
   'durability-evidence-unavailable',
 ];
+const REPOSITORY_ARENA_REFUSAL_REASONS = [
+  'repository-arena-unavailable',
+  'repository-arena-conflict',
+];
+const REPOSITORY_ARENA_COMPONENTS = new Set(['coral', 'staging', 'project-ignore']);
 export const PROJECT_IGNORE_REFUSAL_REASONS = Object.freeze({
   arenaSweep: Object.freeze(['arena-sweep-failed', 'arena-structural-conflict']),
   durabilityReconciliation: Object.freeze([...DURABILITY_RECONCILIATION_REASONS]),
@@ -46,8 +51,7 @@ export const PROJECT_IGNORE_REFUSAL_REASONS = Object.freeze({
   exclude: Object.freeze([
     'project-path-unrepresentable',
     'exclude-path-unresolvable',
-    'repository-arena-unavailable',
-    'repository-arena-conflict',
+    ...REPOSITORY_ARENA_REFUSAL_REASONS,
     ...REPLACEMENT_REFUSAL_REASONS,
   ]),
   symlink: Object.freeze([
@@ -61,9 +65,16 @@ export const PROJECT_IGNORE_REFUSAL_REASONS = Object.freeze({
     'symlink-observation-failed',
     'durability-evidence-unavailable',
     'symlink-conflict',
+    ...REPOSITORY_ARENA_REFUSAL_REASONS,
   ]),
-  scopedIgnoreRetraction: Object.freeze([...REPLACEMENT_REFUSAL_REASONS]),
-  rootIgnoreRetraction: Object.freeze([...REPLACEMENT_REFUSAL_REASONS]),
+  scopedIgnoreRetraction: Object.freeze([
+    ...REPOSITORY_ARENA_REFUSAL_REASONS,
+    ...REPLACEMENT_REFUSAL_REASONS,
+  ]),
+  rootIgnoreRetraction: Object.freeze([
+    ...REPOSITORY_ARENA_REFUSAL_REASONS,
+    ...REPLACEMENT_REFUSAL_REASONS,
+  ]),
 });
 const SPECIAL_REASONS = ['staging-cleanup-failed', 'upstream-refusal'];
 export const PROJECT_IGNORE_REASONS = Object.freeze([
@@ -102,6 +113,13 @@ function hasReason(value, expected) {
 
 function hasRefusalReason(value, artifact) {
   return typeof value.reason === 'string' && REFUSAL_REASON_SETS[artifact].has(value.reason);
+}
+
+function refusalComponentKeys(value) {
+  if (value.reason !== 'repository-arena-conflict') {
+    return Object.hasOwn(value, 'component') ? null : [];
+  }
+  return REPOSITORY_ARENA_COMPONENTS.has(value.component) ? ['component'] : null;
 }
 
 function validateDurability(value) {
@@ -177,11 +195,14 @@ function validateReplacement(value, states, artifact) {
   const hasDurability = Object.hasOwn(value, 'durability');
   if (hasDurability && !validateDurability(value.durability)) return false;
   if (value.state === 'refused') {
+    const componentKeys = refusalComponentKeys(value);
+    if (!componentKeys) return false;
     return (
       hasExactKeys(value, [
         'state',
         'reason',
         'residue',
+        ...componentKeys,
         ...(hasDurability ? ['durability'] : []),
       ]) &&
       hasRefusalReason(value, artifact) &&
@@ -219,10 +240,13 @@ function validateSymlink(value) {
   const hasDurability = Object.hasOwn(value, 'durability');
   if (hasDurability && !validateDurability(value.durability)) return false;
   if (value.state === 'refused') {
+    const componentKeys = refusalComponentKeys(value);
+    if (!componentKeys) return false;
     return (
       hasExactKeys(value, [
         'state',
         'reason',
+        ...componentKeys,
         ...(value.residue === undefined ? [] : ['residue']),
         ...(hasDurability ? ['durability'] : []),
       ]) &&

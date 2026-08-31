@@ -1,5 +1,11 @@
 import { writeFileSync } from 'node:fs';
 
+const REPOSITORY_ARENA_COMPONENT_PATHS = {
+  coral: '<commonGitDir>/coral',
+  staging: '<commonGitDir>/coral/staging',
+  'project-ignore': '<commonGitDir>/coral/staging/project-ignore',
+};
+
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
   killed: 'ran out of its time budget and was terminated',
   'not-spawned': 'could not be started',
@@ -65,8 +71,10 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
     retryable: true,
   },
   'repository-arena-conflict': {
-    sentence:
-      "The common Git directory's coral staging component is a symlink or non-directory. Remedy: replace <commonGitDir>/coral with a real directory before Coral maintenance runs again.",
+    sentence: (artifact) => {
+      const path = REPOSITORY_ARENA_COMPONENT_PATHS[artifact.component];
+      return `The repository staging component ${path} is a symlink or non-directory. Remedy: replace ${path} with a real directory before Coral maintenance runs again.`;
+    },
     retryable: false,
   },
   'staging-device-mismatch': {

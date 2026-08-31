@@ -423,6 +423,7 @@ async function maintain(
     symlink: {
       state: 'not-requested' | 'unchanged' | 'created' | 'repointed' | 'refused' | 'skipped';
       reason?: string;
+      component?: 'coral' | 'staging' | 'project-ignore';
       residue?: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
@@ -432,6 +433,7 @@ async function maintain(
     exclude: {
       state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
       reason?: string;
+      component?: 'coral' | 'staging' | 'project-ignore';
       residue: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
@@ -447,6 +449,7 @@ async function maintain(
     scopedIgnoreRetraction: {
       state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
       reason?: string;
+      component?: 'coral' | 'staging' | 'project-ignore';
       residue: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
@@ -456,6 +459,7 @@ async function maintain(
     rootIgnoreRetraction: {
       state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
       reason?: string;
+      component?: 'coral' | 'staging' | 'project-ignore';
       residue: 'none' | 'owned-staging';
       durability?: {
         state: 'synced' | 'unsupported' | 'failed';
@@ -1034,9 +1038,10 @@ describe('project-ignore symlink maintenance', () => {
       state: 'refused',
       reason: 'repository-arena-conflict',
       residue: 'none',
+      component: 'coral',
     });
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
-      "The common Git directory's coral staging component is a symlink or non-directory. Remedy: replace <commonGitDir>/coral with a real directory before Coral maintenance runs again.",
+      'The repository staging component <commonGitDir>/coral is a symlink or non-directory. Remedy: replace <commonGitDir>/coral with a real directory before Coral maintenance runs again.',
     ]);
     expect(existsSync(link())).toBe(false);
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
@@ -2268,8 +2273,12 @@ describe('project-ignore symlink maintenance', () => {
         'symlink-observation-failed',
         'durability-evidence-unavailable',
         'symlink-conflict',
+        'repository-arena-unavailable',
+        'repository-arena-conflict',
       ],
       scopedIgnoreRetraction: [
+        'repository-arena-unavailable',
+        'repository-arena-conflict',
         'artifact-unreadable',
         'artifact-too-large',
         'artifact-changed',
@@ -2280,6 +2289,8 @@ describe('project-ignore symlink maintenance', () => {
         'durability-evidence-unavailable',
       ],
       rootIgnoreRetraction: [
+        'repository-arena-unavailable',
+        'repository-arena-conflict',
         'artifact-unreadable',
         'artifact-too-large',
         'artifact-changed',
@@ -2318,8 +2329,17 @@ describe('project-ignore symlink maintenance', () => {
                   count: 0,
                 }
               : artifact === 'arenaSweep' || artifact === 'symlink'
-                ? { state: 'refused', reason }
-                : { state: 'refused', reason, residue: 'none' };
+                ? {
+                    state: 'refused',
+                    reason,
+                    ...(reason === 'repository-arena-conflict' ? { component: 'coral' } : {}),
+                  }
+                : {
+                    state: 'refused',
+                    reason,
+                    residue: 'none',
+                    ...(reason === 'repository-arena-conflict' ? { component: 'coral' } : {}),
+                  };
         const accepted = isProjectIgnoreResult({
           status: artifact === 'arenaSweep' ? 'complete' : 'refused',
           artifacts: { ...baseArtifacts, [artifact]: refusedArtifact },
@@ -2328,6 +2348,20 @@ describe('project-ignore symlink maintenance', () => {
         expect(accepted, `${artifact}/${reason}`).toBe(expectedReasons.has(reason));
       }
     }
+    expect(
+      isProjectIgnoreResult({
+        status: 'refused',
+        artifacts: {
+          ...baseArtifacts,
+          rootIgnoreRetraction: {
+            state: 'refused',
+            reason: 'repository-arena-conflict',
+            residue: 'none',
+            component: 'other',
+          },
+        },
+      }),
+    ).toBe(false);
   });
 
   it('renders every distinct project-ignore reason once in deterministic order', () => {
@@ -2435,6 +2469,40 @@ describe('project-ignore symlink maintenance', () => {
     expect(renderProjectIgnoreResultNotices(result)[0]).toContain('It is attempted again at the next session start.');
     expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\n');
   });
+
+  it.each([
+    ['fstat', 'initial', 0],
+    ['read', 'initial', 0],
+    ['fstat', 'comparison', 1],
+    ['read', 'comparison', 1],
+  ] as const)(
+    'classifies descriptor-bound ENOENT at %s during the %s snapshot as an observation failure',
+    async (phase, _snapshot, successesRemaining) => {
+      const rootIgnore = join(projectDir, '.gitignore');
+      writeFileSync(rootIgnore, '.claude/coral\n');
+      fixture.failMarkerObservation = {
+        phase,
+        path: rootIgnore,
+        code: 'ENOENT',
+        successesRemaining,
+      };
+
+      const result = await maintain('prod', false);
+
+      expect(result.status).toBe('refused');
+      expect(result.artifacts.rootIgnoreRetraction).toEqual({
+        state: 'refused',
+        reason: 'artifact-observation-failed',
+        residue: 'none',
+      });
+      expect(result.artifacts.rootIgnoreRetraction).not.toEqual({
+        state: 'not-needed',
+        residue: 'none',
+      });
+      expect(JSON.stringify(result)).not.toContain('artifact-changed');
+      expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\n');
+    },
+  );
 
   it('classifies an observed non-regular initial snapshot as non-retryable', async () => {
     const rootIgnore = join(projectDir, '.gitignore');

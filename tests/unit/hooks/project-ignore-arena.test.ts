@@ -222,6 +222,7 @@ describe('project-ignore repository arena', () => {
     expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toEqual({
       state: 'structural-conflict',
       path: join(commonGitDir, 'coral'),
+      component: 'coral',
     });
 
     rmSync(join(commonGitDir, 'coral'));
@@ -229,6 +230,7 @@ describe('project-ignore repository arena', () => {
     expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toEqual({
       state: 'structural-conflict',
       path: join(commonGitDir, 'coral'),
+      component: 'coral',
     });
   });
 });
@@ -507,45 +509,82 @@ describe('project-ignore maintenance ownership', () => {
     expect(componentMode).toBe(0o700);
   });
 
-  it('writes refusal remedies to stderr while stdout remains result JSON', () => {
+  it('completes through the owner when no artifact needs the conflicting repository arena', () => {
     const repository = join(fixtureRoot, 'repository');
     const home = join(fixtureRoot, 'home');
     initRepository(repository);
     mkdirSync(home);
-    const context = resolveProjectContext(repository);
-    expect(context).not.toBeNull();
-    writeFileSync(join(repository, '.git', 'coral'), 'not a directory');
-    const script = hookScript('project-ignore.mjs');
-    const startedNs = process.hrtime.bigint().toString();
+    const conflict = join(repository, '.git', 'coral');
+    writeFileSync(conflict, 'not a directory');
+    const before = git(repository, 'status', '--porcelain');
 
-    const child = spawnSync(
-      process.execPath,
-      [
-        script,
-        '--project-dir',
-        repository,
-        '--maintenance-locked',
-        '--lock-wrapper-started-ns',
-        startedNs,
-        '--project-context',
-        JSON.stringify(context),
-      ],
-      {
-        encoding: 'utf-8',
-        env: { ...process.env, HOME: home },
-        stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawnSync(process.execPath, [hookScript('project-ignore-owner.mjs'), '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const result = JSON.parse(child.stdout);
+    expect(child.status).toBe(0);
+    expect(result).toEqual({
+      status: 'complete',
+      artifacts: {
+        arenaSweep: { state: 'unchanged' },
+        durabilityReconciliation: { state: 'reconciled' },
+        legacySweep: { state: 'unchanged' },
+        exclude: { state: 'not-needed', residue: 'none' },
+        symlink: { state: 'not-requested' },
+        scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
       },
-    );
+    });
+    expect(child.stdout.trim()).toBe(JSON.stringify(result));
+    expect(child.stderr).toBe('');
+    expect(git(repository, 'status', '--porcelain')).toBe(before);
+    expect(readFileSync(conflict, 'utf-8')).toBe('not a directory');
+  });
+
+  it.each([
+    ['coral', '<commonGitDir>/coral'],
+    ['staging', '<commonGitDir>/coral/staging'],
+    ['project-ignore', '<commonGitDir>/coral/staging/project-ignore'],
+  ] as const)('refuses residue through the owner and names the conflicting %s component', (component, remedyPath) => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const components = ['coral', 'staging', 'project-ignore'];
+    const conflictIndex = components.indexOf(component);
+    const conflict = join(repository, '.git', ...components.slice(0, conflictIndex + 1));
+    mkdirSync(dirname(conflict), { recursive: true });
+    writeFileSync(conflict, 'not a directory');
+    const rootIgnore = join(repository, '.gitignore');
+    writeFileSync(rootIgnore, '.claude/coral\n');
+
+    const child = spawnSync(process.execPath, [hookScript('project-ignore-owner.mjs'), '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
     const result = JSON.parse(child.stdout);
     expect(child.status).toBe(1);
     expect(result).toMatchObject({
       status: 'refused',
-      artifacts: { exclude: { state: 'refused', reason: 'repository-arena-conflict' } },
+      artifacts: {
+        rootIgnoreRetraction: {
+          state: 'refused',
+          reason: 'repository-arena-conflict',
+          residue: 'none',
+          component,
+        },
+      },
     });
     expect(child.stdout.trim()).toBe(JSON.stringify(result));
-    expect(child.stderr).toContain('Remedy: replace <commonGitDir>/coral with a real directory');
+    expect(child.stderr).toContain(`Remedy: replace ${remedyPath} with a real directory`);
     expect(child.stderr).not.toContain('It is attempted again at the next session start.');
+    expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\n');
+    expect(readFileSync(conflict, 'utf-8')).toBe('not a directory');
   });
 
   it('runs the owner through non-blocking no-fork flock with the validated context', () => {
