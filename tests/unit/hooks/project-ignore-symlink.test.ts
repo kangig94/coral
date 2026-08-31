@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { coralStateRoot, PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS } from '../../../clients/hooks/lib/hook-utils.mjs';
 import {
+  PROJECT_IGNORE_REASON_NOTICES,
   projectIgnoreOutcomeNotice,
   renderProjectIgnoreResultNotices,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
@@ -579,6 +580,21 @@ describe('project-ignore symlink maintenance', () => {
     expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
   });
 
+  it('refuses a symlinked projects root without creating the project leaf outside it', async () => {
+    const outside = join(root, 'outside-projects');
+    const projectsRoot = join(fixture.home, '.coral', 'projects');
+    mkdirSync(join(fixture.home, '.coral'));
+    mkdirSync(outside);
+    symlinkSync(outside, projectsRoot);
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('partial');
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
+    expect(existsSync(join(outside, 'owner-repo'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
+  });
+
   it('installs and syncs the symlink marker before the final repoint rename', async () => {
     mkdirSync(durabilityArena(), { recursive: true });
     writeFileSync(join(fixture.gitDir, 'info', 'exclude'), '/.claude/coral\n');
@@ -996,6 +1012,11 @@ describe('project-ignore symlink maintenance', () => {
       state: 'refused',
       reasons: ['durability-evidence-unavailable'],
     });
+    // One unreadable arena refuses two independent things, and both name their own exit.
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      "Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory's coral/staging/project-ignore path are writable real directories. It is attempted again at the next session start.",
+      'Coral could not inspect pending durability evidence. Remedy: make the authorized project-ignore staging arena and its markers readable and owned by the current user, or repair the filesystem or storage device reporting the failure. It is attempted again at the next session start.',
+    ]);
   });
 
   it('quarantines an undecodable marker once and leaves the next run clean', async () => {
@@ -1524,6 +1545,13 @@ describe('project-ignore symlink maintenance', () => {
     for (const notice of [migrationNotice, ignoreNotice]) {
       expect(renderedNotices, 'every maintenance notice must reach additionalContext').toContain(notice);
     }
+  });
+
+  it('covers exactly every reason admitted by the result validator', async () => {
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { PROJECT_IGNORE_REASONS } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+
+    expect(new Set(Object.keys(PROJECT_IGNORE_REASON_NOTICES))).toEqual(new Set(PROJECT_IGNORE_REASONS));
   });
 
   it('renders every distinct project-ignore reason once in deterministic order', () => {

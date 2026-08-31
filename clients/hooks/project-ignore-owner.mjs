@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { closeSync, writeFileSync } from 'node:fs';
+import { closeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -10,6 +10,7 @@ import {
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
 } from './lib/hook-utils.mjs';
 import { projectIgnoreContextRefusal, resolveProjectContext } from './lib/project-ignore.mjs';
+import { emitProjectIgnoreResult } from './lib/project-ignore-notices.mjs';
 
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
 const LOCK_UNAVAILABLE_EXIT_CODE = 69;
@@ -54,7 +55,7 @@ try {
 const projectContext = resolveProjectContext(request.projectDir, contextProbeDeadlineNs);
 const contextRefusal = projectIgnoreContextRefusal(projectContext);
 if (contextRefusal) {
-  writeFileSync(1, `${JSON.stringify(contextRefusal)}\n`);
+  emitProjectIgnoreResult(contextRefusal);
   process.exit(1);
 }
 if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);

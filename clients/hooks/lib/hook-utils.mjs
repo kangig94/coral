@@ -384,21 +384,37 @@ function ensureRealDirectoryComponent(path) {
   }
 }
 
-function prepareProjectIgnoreStateStagingDir() {
+function prepareCoralStateDirectory(components) {
   try {
     const stateRoot = coralStateRoot();
     const home = realpathSync(dirname(stateRoot));
     const expectedStateRoot = join(home, basename(stateRoot));
     if (!ensureRealDirectoryComponent(expectedStateRoot)) return null;
-    const canonicalStateRoot = realpathSync(stateRoot);
+    let canonicalStateRoot = realpathSync(stateRoot);
     if (canonicalStateRoot !== expectedStateRoot) return null;
-    const expectedStagingDir = join(canonicalStateRoot, 'staging');
-    if (!ensureRealDirectoryComponent(expectedStagingDir)) return null;
-    const canonicalStagingDir = realpathSync(expectedStagingDir);
-    return canonicalStagingDir === expectedStagingDir ? canonicalStagingDir : null;
+    for (const component of components) {
+      const expectedComponent = join(canonicalStateRoot, component);
+      if (!ensureRealDirectoryComponent(expectedComponent)) return null;
+      canonicalStateRoot = realpathSync(expectedComponent);
+      if (canonicalStateRoot !== expectedComponent) return null;
+    }
+    return canonicalStateRoot;
   } catch {
     return null;
   }
+}
+
+function prepareProjectIgnoreStateStagingDir() {
+  return prepareCoralStateDirectory(['staging']);
+}
+
+export function prepareCoralProjectDir(target) {
+  const projectsRootName = buildFlavor() === 'dev' ? 'projects-dev' : 'projects';
+  const projectsRoot = join(coralStateRoot(), projectsRootName);
+  if (target === projectsRoot || dirname(target) !== projectsRoot) return null;
+  const projectName = basename(target);
+  if (join(projectsRoot, projectName) !== target) return null;
+  return prepareCoralStateDirectory([projectsRootName, projectName]);
 }
 
 export function prepareProjectIgnoreStagingDir() {

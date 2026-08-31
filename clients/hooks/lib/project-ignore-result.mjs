@@ -24,7 +24,7 @@ const DURABILITY_RECONCILIATION_REASONS = new Set([
   'durability-sync-unsupported',
   'durability-sync-failed',
 ]);
-const REASONS = new Set([
+export const PROJECT_IGNORE_REASONS = Object.freeze([
   'project-context-unresolvable',
   'project-path-unrepresentable',
   'exclude-path-unresolvable',
@@ -44,6 +44,7 @@ const REASONS = new Set([
   'arena-sweep-failed',
   'upstream-refusal',
 ]);
+const REASONS = new Set(PROJECT_IGNORE_REASONS);
 const LEGACY_TEMP_NAME = /^(?:\.gitignore|coral)\.coral-[1-9]\d*-[1-9]\d*\.tmp$/u;
 
 function isRecord(value) {
@@ -57,7 +58,11 @@ function hasExactKeys(value, required) {
 }
 
 function hasReason(value, expected) {
-  return typeof value.reason === 'string' && REASONS.has(value.reason) && (!expected || value.reason === expected);
+  return (
+    typeof value.reason === 'string' &&
+    REASONS.has(value.reason) &&
+    (!expected || value.reason === expected)
+  );
 }
 
 function validateDurability(value) {

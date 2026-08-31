@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs';
+
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
   killed: 'ran out of its time budget and was terminated',
   'not-spawned': 'could not be started',
@@ -11,7 +13,7 @@ const PROJECT_IGNORE_OUTCOME_NOTICES = {
   partial: 'published or confirmed an artifact but could not establish every required disposition',
 };
 
-const PROJECT_IGNORE_REASON_NOTICES = {
+export const PROJECT_IGNORE_REASON_NOTICES = {
   'project-context-unresolvable': {
     sentence:
       'Coral could not resolve the project and its Git context. Remedy: verify the project path is accessible and fix any error reported by `git status` in that directory.',
@@ -79,7 +81,7 @@ const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'durability-evidence-unreadable': {
     sentence:
-      'Coral found pending durability evidence but could not read it. Remedy: make the marker readable and owned by the current user, or repair the filesystem or storage device reporting the read failure.',
+      'Coral could not inspect pending durability evidence. Remedy: make the authorized project-ignore staging arena and its markers readable and owned by the current user, or repair the filesystem or storage device reporting the failure.',
     retryable: true,
   },
   'durability-evidence-quarantined': {
@@ -154,4 +156,10 @@ export function renderProjectIgnoreResultNotices(result) {
       ? `${notice.sentence} It is attempted again at the next session start.`
       : notice.sentence;
   });
+}
+
+export function emitProjectIgnoreResult(result) {
+  const notices = renderProjectIgnoreResultNotices(result);
+  if (notices.length > 0) writeFileSync(2, `${notices.join('\n')}\n`);
+  writeFileSync(1, `${JSON.stringify(result)}\n`);
 }

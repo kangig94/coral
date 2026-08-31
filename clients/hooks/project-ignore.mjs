@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { isProjectIgnoreContext, maintainProjectIgnore } from './lib/project-ignore.mjs';
-import { renderProjectIgnoreResultNotices } from './lib/project-ignore-notices.mjs';
+import { emitProjectIgnoreResult } from './lib/project-ignore-notices.mjs';
 import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 import {
   projectIgnoreContextProbeDeadline,
@@ -82,9 +82,7 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result
       contextProbeDeadlineNs,
     });
     if (!isProjectIgnoreResult(result)) throw new Error('invalid project-ignore result');
-    const notices = renderProjectIgnoreResultNotices(result);
-    if (notices.length > 0) process.stderr.write(`${notices.join('\n')}\n`);
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    emitProjectIgnoreResult(result);
     process.exitCode = result.status === 'complete' ? 0 : 1;
   } catch {
     process.stderr.write('Coral project-ignore maintenance failed before it could report a valid result.\n');

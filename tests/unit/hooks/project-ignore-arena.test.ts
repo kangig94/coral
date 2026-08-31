@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -191,6 +192,21 @@ describe('project-ignore arena reclamation', () => {
     expect(existsSync(join(secondArena, '400001-2'))).toBe(true);
   });
 
+  it('repairs a retained young run directory before its age permits deletion', () => {
+    const arena = join(fixtureRoot, 'arena');
+    const runDir = join(arena, '400001-2');
+    mkdirSync(runDir, { recursive: true });
+    chmodSync(runDir, 0o300);
+
+    const result = sweepProjectIgnoreArenas([arena], {
+      now: 1_000_000,
+      monotonicNow: () => 0,
+    });
+
+    expect(result).toEqual({ inspected: 1, removed: 0, failures: 0 });
+    expect(statSync(runDir).mode & 0o777).toBe(0o700);
+  });
+
   it('inspects at most 32 parsed runs across both roots, oldest first', () => {
     const firstArena = join(fixtureRoot, 'first');
     const secondArena = join(fixtureRoot, 'second');
@@ -262,50 +278,108 @@ describe('project-ignore maintenance ownership', () => {
     });
 
     expect(child.status).toBe(1);
-    expect(JSON.parse(child.stdout)).toMatchObject({
+    const result = JSON.parse(child.stdout);
+    expect(result).toMatchObject({
       status: 'refused',
       artifacts: {
         exclude: { state: 'refused', reason: 'project-path-unrepresentable' },
       },
     });
+    expect(child.stdout.trim()).toBe(JSON.stringify(result));
+    expect(child.stderr).toContain(
+      'The project-relative path contains a carriage return or line feed, which .git/info/exclude cannot represent as one pattern.',
+    );
+    expect(child.stderr).toContain('Remedy: rename the affected project directory to remove CR and LF characters.');
     expect(existsSync(join(home, '.coral'))).toBe(false);
     expect(existsSync(join(repositoryRoot, '.git', 'coral'))).toBe(false);
     expect(existsSync(join(projectDir, '.claude', 'coral'))).toBe(false);
   });
 
-  it('reopens the lock and reconciles on a second fresh owner run under an owner-read-masking umask', () => {
+  it('normalizes every owned directory across fresh owner runs under an owner-read-masking umask', () => {
     const repository = join(fixtureRoot, 'repository');
     const home = join(fixtureRoot, 'home');
     initRepository(repository);
+    mkdirSync(join(repository, '.claude'));
     mkdirSync(home);
     const ownerScript = hookScript('project-ignore-owner.mjs');
-    const privateDirectories = [
+    const fallbackArena = join(home, '.coral', 'staging', 'project-ignore');
+    const repositoryArena = join(repository, '.git', 'coral', 'staging', 'project-ignore');
+    let privateDirectories = [
       join(home, '.coral'),
       join(home, '.coral', 'staging'),
-      join(home, '.coral', 'staging', 'project-ignore'),
+      fallbackArena,
       join(repository, '.git', 'coral'),
       join(repository, '.git', 'coral', 'staging'),
-      join(repository, '.git', 'coral', 'staging', 'project-ignore'),
+      repositoryArena,
     ];
     const previousUmask = process.umask(0o400);
     try {
-      const first = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+      const first = spawnSync(process.execPath, [ownerScript, '--project-dir', repository, '--create-symlink'], {
         encoding: 'utf-8',
         env: { ...process.env, HOME: home },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      const second = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+      expect(first.status).toBe(0);
+
+      const link = join(repository, '.claude', 'coral');
+      const projectLeaf = readlinkSync(link);
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        status: 'complete',
+        artifacts: { symlink: { state: 'created' } },
+      });
+      expect(statSync(dirname(projectLeaf)).mode & 0o777).toBe(0o700);
+      expect(statSync(projectLeaf).mode & 0o777).toBe(0o700);
+      chmodSync(dirname(projectLeaf), 0o300);
+      chmodSync(projectLeaf, 0o300);
+      const fallbackRun = join(fallbackArena, `${Date.now()}-900001`);
+      const repositoryRun = join(repositoryArena, `${Date.now()}-900002`);
+      mkdirSync(fallbackRun, { mode: 0o700 });
+      mkdirSync(repositoryRun, { mode: 0o700 });
+      const marker = join(fallbackArena, `.durability-${'0'.repeat(64)}.pending`);
+      writeFileSync(marker, 'not-an-absolute-path');
+      chmodSync(marker, 0o600);
+
+      const second = spawnSync(process.execPath, [ownerScript, '--project-dir', repository, '--create-symlink'], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const third = spawnSync(process.execPath, [ownerScript, '--project-dir', repository, '--create-symlink'], {
         encoding: 'utf-8',
         env: { ...process.env, HOME: home },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      expect(first.status).toBe(0);
-      expect(second.status).toBe(0);
+      privateDirectories = [
+        join(home, '.coral'),
+        dirname(projectLeaf),
+        projectLeaf,
+        join(home, '.coral', 'staging'),
+        fallbackArena,
+        join(fallbackArena, 'quarantine'),
+        fallbackRun,
+        join(repository, '.git', 'coral'),
+        join(repository, '.git', 'coral', 'staging'),
+        repositoryArena,
+        repositoryRun,
+      ];
+
+      expect(second.status).toBe(1);
       expect(JSON.parse(second.stdout)).toMatchObject({
+        status: 'refused',
+        artifacts: {
+          durabilityReconciliation: {
+            state: 'refused',
+            reasons: ['durability-evidence-quarantined'],
+          },
+        },
+      });
+      expect(third.status).toBe(0);
+      expect(JSON.parse(third.stdout)).toMatchObject({
         status: 'complete',
         artifacts: { durabilityReconciliation: { state: 'reconciled' } },
       });
+      expect(existsSync(link)).toBe(true);
       expect(statSync(join(home, '.coral', 'staging', 'project-ignore.maintenance.lock')).mode & 0o777).toBe(0o600);
       for (const path of privateDirectories) {
         expect(statSync(path).mode & 0o777).toBe(0o700);

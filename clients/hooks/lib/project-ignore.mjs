@@ -26,6 +26,7 @@ import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import {
   coralProjectDir,
   coralStateRoot,
+  prepareCoralProjectDir,
   prepareProjectIgnoreStagingDir,
   PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
   PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
@@ -688,13 +689,12 @@ export function sweepProjectIgnoreArenas(
       break;
     }
     inspected += 1;
-    if (now - candidate.startedAt < PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS) continue;
-
     const runDir = join(candidate.arenaDir, candidate.name);
     try {
       const stat = lstatSync(runDir);
       if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
       chmodSync(runDir, 0o700);
+      if (now - candidate.startedAt < PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS) continue;
       rmSync(runDir, { recursive: true });
       removed += 1;
     } catch {
@@ -1057,17 +1057,15 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
 
 function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabilityRunDir) {
   if (symlinkPlan.action === 'not-requested') return { state: 'not-requested' };
-  if (symlinkPlan.action === 'unchanged') return { state: 'unchanged' };
 
   const target = symlinkPlan.target;
-  try {
-    mkdirSync(target, { recursive: true });
-  } catch (error) {
+  if (!prepareCoralProjectDir(target)) {
     return {
       state: 'refused',
       reason: 'publish-failed',
     };
   }
+  if (symlinkPlan.action === 'unchanged') return { state: 'unchanged' };
 
   const marker = durabilityMarker(durabilityDir, durabilityRunDir, symlinkPlan.link);
   if (!marker) return { state: 'refused', reason: 'durability-evidence-unavailable' };
