@@ -264,9 +264,7 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     }
     if (
       !result.stdout &&
-      ((typeof result.status === 'number' && result.status >= 64 && result.status <= 78) ||
-        result.status === 126 ||
-        result.status === 127)
+      [PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)
     ) {
       return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }

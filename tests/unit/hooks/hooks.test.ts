@@ -410,7 +410,7 @@ describe('session-start.mjs', () => {
     expect(readFileSync(externalIgnore, 'utf-8')).toBe('.claude/coral\nkeep/\n');
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
     expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
-      'An affected ignore file is not a readable regular file.',
+      'An affected ignore file is not a readable regular file, or its existing .git/info directory lacks owner access.',
     );
   });
 

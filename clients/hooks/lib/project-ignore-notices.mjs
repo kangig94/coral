@@ -31,7 +31,7 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'artifact-unreadable': {
     sentence:
-      'An affected ignore file is not a readable regular file. Remedy: make the project .gitignore files and .git/info/exclude readable regular files owned or writable by the current user.',
+      'An affected ignore file is not a readable regular file, or its existing .git/info directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.',
     retryable: false,
   },
   'artifact-too-large': {
@@ -71,12 +71,12 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'publish-failed': {
     sentence:
-      'The filesystem refused an artifact update. Remedy: check permissions and free space for the project and its Git metadata.',
+      'The filesystem refused an artifact update. Remedy: check permissions and free space for the affected Coral state, project, and Git metadata paths.',
     retryable: true,
   },
   'symlink-target-unavailable': {
     sentence:
-      'The Coral symlink target is unavailable. Remedy: replace the symlink or non-directory component under ~/.coral/projects or ~/.coral/projects-dev and make that path a directory owned and writable by the current user.',
+      'The Coral symlink target has a structural conflict. Remedy: replace the symlink or non-directory component at the selected ~/.coral/projects or ~/.coral/projects-dev root, or at its project leaf, with a directory owned and writable by the current user.',
     retryable: false,
   },
   'durability-evidence-unavailable': {

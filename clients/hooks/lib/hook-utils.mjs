@@ -362,26 +362,26 @@ export function projectIgnoreMaintenanceLockPath() {
 function ensureRealDirectoryComponent(path) {
   try {
     const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return { kind: 'structural-conflict' };
     chmodSync(path, 0o700);
-    return true;
+    return { kind: 'prepared' };
   } catch (error) {
-    if (error?.code !== 'ENOENT') return false;
+    if (error?.code !== 'ENOENT') return { kind: 'operational-failure' };
   }
 
   try {
     mkdirSync(path, { mode: 0o700 });
   } catch (error) {
-    if (error?.code !== 'EEXIST') return false;
+    if (error?.code !== 'EEXIST') return { kind: 'operational-failure' };
   }
 
   try {
     const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return { kind: 'structural-conflict' };
     chmodSync(path, 0o700);
-    return true;
+    return { kind: 'prepared' };
   } catch {
-    return false;
+    return { kind: 'operational-failure' };
   }
 }
 
@@ -390,31 +390,34 @@ function prepareCoralStateDirectory(components) {
     const stateRoot = coralStateRoot();
     const home = realpathSync(dirname(stateRoot));
     const expectedStateRoot = join(home, basename(stateRoot));
-    if (!ensureRealDirectoryComponent(expectedStateRoot)) return null;
+    const stateRootPreparation = ensureRealDirectoryComponent(expectedStateRoot);
+    if (stateRootPreparation.kind !== 'prepared') return stateRootPreparation;
     let canonicalStateRoot = realpathSync(stateRoot);
-    if (canonicalStateRoot !== expectedStateRoot) return null;
+    if (canonicalStateRoot !== expectedStateRoot) return { kind: 'structural-conflict' };
     for (const component of components) {
       const expectedComponent = join(canonicalStateRoot, component);
-      if (!ensureRealDirectoryComponent(expectedComponent)) return null;
+      const componentPreparation = ensureRealDirectoryComponent(expectedComponent);
+      if (componentPreparation.kind !== 'prepared') return componentPreparation;
       canonicalStateRoot = realpathSync(expectedComponent);
-      if (canonicalStateRoot !== expectedComponent) return null;
+      if (canonicalStateRoot !== expectedComponent) return { kind: 'structural-conflict' };
     }
-    return canonicalStateRoot;
+    return { kind: 'prepared', path: canonicalStateRoot };
   } catch {
-    return null;
+    return { kind: 'operational-failure' };
   }
 }
 
 function prepareProjectIgnoreStateStagingDir() {
-  return prepareCoralStateDirectory(['staging']);
+  const preparation = prepareCoralStateDirectory(['staging']);
+  return preparation.kind === 'prepared' ? preparation.path : null;
 }
 
 export function prepareCoralProjectDir(target) {
   const projectsRootName = buildFlavor() === 'dev' ? 'projects-dev' : 'projects';
   const projectsRoot = join(coralStateRoot(), projectsRootName);
-  if (target === projectsRoot || dirname(target) !== projectsRoot) return null;
+  if (target === projectsRoot || dirname(target) !== projectsRoot) return { kind: 'structural-conflict' };
   const projectName = basename(target);
-  if (join(projectsRoot, projectName) !== target) return null;
+  if (join(projectsRoot, projectName) !== target) return { kind: 'structural-conflict' };
   return prepareCoralStateDirectory([projectsRootName, projectName]);
 }
 

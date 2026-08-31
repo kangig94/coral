@@ -50,6 +50,7 @@ const fixture = vi.hoisted(() => ({
   failUnlinkPath: null as string | null,
   failReplacementUnlink: false,
   failSymlinkTempUnlink: false,
+  failMkdirPath: null as string | null,
   failRmUnder: null as string | null,
   failReaddirPath: null as string | null,
   failMarkerObservation: null as null | {
@@ -82,6 +83,12 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>();
   return {
     ...actual,
+    mkdirSync: (path: unknown, options?: unknown) => {
+      if (fixture.failMkdirPath !== null && String(path) === fixture.failMkdirPath) {
+        throw Object.assign(new Error('simulated mkdir failure'), { code: 'ENOSPC' });
+      }
+      return (actual.mkdirSync as (p: unknown, o?: unknown) => unknown)(path, options);
+    },
     lstatSync: (path: unknown) => {
       const failure = fixture.failMarkerObservation;
       if (failure?.phase === 'lstat' && String(path) === failure.path) {
@@ -282,6 +289,7 @@ beforeEach(() => {
   fixture.failUnlinkPath = null;
   fixture.failReplacementUnlink = false;
   fixture.failSymlinkTempUnlink = false;
+  fixture.failMkdirPath = null;
   fixture.failRmUnder = null;
   fixture.failReaddirPath = null;
   fixture.failMarkerObservation = null;
@@ -546,7 +554,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(link())).toBe(false);
   });
 
-  it('reports residue-free retractions as not needed on repeated fsync-less sessions', async () => {
+  it('keeps retractions residue-free and leaves both project leaves absent when no symlink is requested', async () => {
     rmSync(join(projectDir, '.claude'), { recursive: true });
     rmSync(join(projectDir, '.gitignore'));
     fixture.failDirectoryFsyncPath = projectDir;
@@ -569,6 +577,8 @@ describe('project-ignore symlink maintenance', () => {
     expect(fixture.fsyncedDirectoryPaths).not.toContain(projectDir);
     expect(existsSync(join(projectDir, '.gitignore'))).toBe(false);
     expect(existsSync(join(projectDir, '.claude'))).toBe(false);
+    expect(existsSync(join(fixture.home, '.coral', 'projects', 'owner-repo'))).toBe(false);
+    expect(existsSync(join(fixture.home, '.coral', 'projects-dev', 'owner-repo'))).toBe(false);
   });
 
   it('creates it on first run', async () => {
@@ -596,10 +606,42 @@ describe('project-ignore symlink maintenance', () => {
       reason: 'symlink-target-unavailable',
     });
     expect(notices).toEqual([
-      'The Coral symlink target is unavailable. Remedy: replace the symlink or non-directory component under ~/.coral/projects or ~/.coral/projects-dev and make that path a directory owned and writable by the current user.',
+      'The Coral symlink target has a structural conflict. Remedy: replace the symlink or non-directory component at the selected ~/.coral/projects or ~/.coral/projects-dev root, or at its project leaf, with a directory owned and writable by the current user.',
     ]);
     expect(notices[0]).not.toContain('It is attempted again at the next session start.');
     expect(existsSync(join(outside, 'owner-repo'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
+  });
+
+  it('reports an operational target mkdir failure as retryable', async () => {
+    fixture.failMkdirPath = join(fixture.home, '.coral', 'projects', 'owner-repo');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'The filesystem refused an artifact update. Remedy: check permissions and free space for the affected Coral state, project, and Git metadata paths. It is attempted again at the next session start.',
+    ]);
+    expect(existsSync(link())).toBe(false);
+  });
+
+  // A conflict at ~/.coral itself never reaches the symlink target check: the arena this run needs
+  // lives under the same component, so preparing it refuses first.
+  it('refuses through the arena when the state root itself is a symlink', async () => {
+    const outside = join(root, 'outside-coral-state');
+    mkdirSync(outside);
+    symlinkSync(outside, join(fixture.home, '.coral'));
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.durabilityReconciliation).toEqual({
+      state: 'refused',
+      reasons: ['durability-evidence-unavailable'],
+    });
+    expect(result.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
+    expect(existsSync(join(outside, 'projects'))).toBe(false);
     expect(existsSync(link())).toBe(false);
   });
 
@@ -652,7 +694,7 @@ describe('project-ignore symlink maintenance', () => {
       reason: 'symlink-target-unavailable',
     });
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
-      'The Coral symlink target is unavailable. Remedy: replace the symlink or non-directory component under ~/.coral/projects or ~/.coral/projects-dev and make that path a directory owned and writable by the current user.',
+      'The Coral symlink target has a structural conflict. Remedy: replace the symlink or non-directory component at the selected ~/.coral/projects or ~/.coral/projects-dev root, or at its project leaf, with a directory owned and writable by the current user.',
     ]);
     expect(readFileSync(excludePath, 'utf-8')).toBe('/.claude/coral\n');
     expect(readlinkSync(link())).toBe(target);
@@ -1355,7 +1397,7 @@ describe('project-ignore symlink maintenance', () => {
     const infoDir = join(fixture.gitDir, 'info');
     const excludePath = join(infoDir, 'exclude');
     rmSync(infoDir, { recursive: true });
-    const previousUmask = process.umask(0o700);
+    const previousUmask = process.umask(0o727);
     try {
       const result = await maintain('prod');
 
@@ -1363,26 +1405,33 @@ describe('project-ignore symlink maintenance', () => {
       expect(result.artifacts.exclude.state).toBe('published');
       expect(result.artifacts.symlink.state).toBe('created');
       expect(readFileSync(excludePath, 'utf-8')).toContain('/.claude/coral');
-      expect(statSync(infoDir).mode & 0o777).toBe(0o777);
-      expect(statSync(infoDir).mode & 0o077).toBe(0o077);
+      expect(statSync(infoDir).mode & 0o777).toBe(0o750);
     } finally {
       process.umask(previousUmask);
       restoreOwnerAccess(root);
     }
   });
 
-  it('repairs owner access after an interrupted Git info directory creation', async () => {
+  it('refuses an existing unusable Git info directory without changing its mode', async () => {
     const infoDir = join(fixture.gitDir, 'info');
     const excludePath = join(infoDir, 'exclude');
     chmodSync(infoDir, 0o077);
     try {
       const result = await maintain('prod');
 
-      expect(result.status).toBe('complete');
-      expect(result.artifacts.exclude.state).toBe('published');
-      expect(result.artifacts.symlink.state).toBe('created');
-      expect(readFileSync(excludePath, 'utf-8')).toContain('/.claude/coral');
-      expect(statSync(infoDir).mode & 0o777).toBe(0o777);
+      expect(result.status).toBe('refused');
+      expect(result.artifacts.exclude).toEqual({
+        state: 'refused',
+        reason: 'artifact-unreadable',
+        residue: 'none',
+      });
+      expect(result.artifacts.symlink).toEqual({ state: 'skipped', reason: 'upstream-refusal' });
+      expect(existsSync(excludePath)).toBe(false);
+      expect(existsSync(link())).toBe(false);
+      expect(statSync(infoDir).mode & 0o777).toBe(0o077);
+      expect(renderProjectIgnoreResultNotices(result)).toContain(
+        'An affected ignore file is not a readable regular file, or its existing .git/info directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.',
+      );
     } finally {
       restoreOwnerAccess(root);
     }

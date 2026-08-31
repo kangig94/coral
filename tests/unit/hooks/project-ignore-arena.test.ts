@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -66,6 +67,19 @@ function initRepository(path: string): void {
 
 function hookScript(name: string): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', name);
+}
+
+function initProjectApplyBlock(): string {
+  const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const skill = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+  const block = [...skill.matchAll(/```bash\n([\s\S]*?)\n\s*```/gu)]
+    .map((match) => match[1])
+    .find((candidate) => candidate.includes('CORAL_PROJECT_IGNORE_SCRIPT='));
+  if (!block) throw new Error('init-project apply block not found');
+  return block
+    .replace(/^ {2}/gmu, '')
+    .replace(/^CORAL_PROJECT_IGNORE_SCRIPT=.*$/mu, 'CORAL_PROJECT_IGNORE_SCRIPT="project-ignore-validator"')
+    .replace(/^CORAL_PROJECT_IGNORE_OWNER=.*$/mu, 'CORAL_PROJECT_IGNORE_OWNER="project-ignore-owner"');
 }
 
 function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string): void {
@@ -521,8 +535,11 @@ describe('project-ignore maintenance ownership', () => {
   it('pins the init-project lock branches to the hook exit-code constants', () => {
     const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+    const sessionStart = readFileSync(join(repositoryRoot, 'clients', 'hooks', 'session-start.mjs'), 'utf-8');
     const conflictBranch = `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE} ]; then`;
-    const unavailableBranch = `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE} ]; then`;
+    const unavailableBranch =
+      `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE} ] || ` +
+      '[ "$CORAL_PROJECT_IGNORE_STATUS" -eq 126 ] || [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 127 ]; then';
     const noOutputBranch = 'if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ] && [ -z "$CORAL_PROJECT_IGNORE_RESULT" ]; then';
 
     expect(initProject).toContain(conflictBranch);
@@ -530,7 +547,97 @@ describe('project-ignore maintenance ownership', () => {
     expect(initProject.indexOf(conflictBranch)).toBeLessThan(initProject.indexOf(noOutputBranch));
     expect(initProject.indexOf(unavailableBranch)).toBeLessThan(initProject.indexOf(noOutputBranch));
     expect(initProject.slice(initProject.indexOf(noOutputBranch))).toContain('CORAL_PROJECT_IGNORE_OUTCOME=no-output');
-    expect(initProject).toContain('2>"$CORAL_PROJECT_IGNORE_STDERR_FILE"');
-    expect(initProject).toContain('printf \'%s\\n\' "$CORAL_PROJECT_IGNORE_STDERR" >&2');
+    expect(initProject).not.toContain('CORAL_PROJECT_IGNORE_STDERR_FILE');
+    expect(initProject).not.toContain('CORAL_PROJECT_IGNORE_STDERR=');
+    expect(sessionStart).toContain('[PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)');
+  });
+
+  it.each([
+    {
+      name: 'a lock conflict',
+      status: 75,
+      stdout: '',
+      diagnostic: 'owner conflict diagnostic',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=maintenance-busy',
+      remedy: 'Another Coral project-ignore maintainer owns the lock.',
+      exitCode: 1,
+    },
+    ...[PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].map((status) => ({
+      name: `lock-wrapper status ${status}`,
+      status,
+      stdout: '',
+      diagnostic: `owner status ${status} diagnostic`,
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable',
+      remedy: 'Ensure ~/.coral/staging is writable and flock is executable, then retry.',
+      exitCode: 1,
+    })),
+    {
+      name: 'a generic empty failure',
+      status: 2,
+      stdout: '',
+      diagnostic: 'owner generic diagnostic',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=no-output',
+      remedy: 'report a recurring failure as a Coral defect',
+      exitCode: 1,
+    },
+    {
+      name: 'a successful result',
+      status: 0,
+      stdout: '{"status":"complete"}',
+      diagnostic: '',
+      outcome: null,
+      remedy: null,
+      exitCode: 0,
+    },
+  ])('executes the init-project apply block for $name without a working-tree file', (scenario) => {
+    const binDir = join(fixtureRoot, `bin-${scenario.status}`);
+    const workingDir = join(fixtureRoot, `working-${scenario.status}`);
+    mkdirSync(binDir);
+    mkdirSync(workingDir);
+    const nodeStub = join(binDir, 'node');
+    const ownerStub = join(binDir, 'project-ignore-owner');
+    const validatorStub = join(binDir, 'project-ignore-validator');
+    writeFileSync(nodeStub, '#!/bin/sh\nexec "$@"\n');
+    writeFileSync(
+      ownerStub,
+      [
+        '#!/bin/sh',
+        'if [ -n "$(find "$PWD" -mindepth 1 -print -quit)" ]; then',
+        '  echo "STUB_OWNER_OBSERVED_WORKING_FILE=1" >&2',
+        'fi',
+        'if [ -n "$STUB_OWNER_STDERR" ]; then printf \'%s\\n\' "$STUB_OWNER_STDERR" >&2; fi',
+        'if [ -n "$STUB_OWNER_STDOUT" ]; then printf \'%s\\n\' "$STUB_OWNER_STDOUT"; fi',
+        'exit "$STUB_OWNER_STATUS"',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(validatorStub, '#!/bin/sh\ncat >/dev/null\nexit 0\n');
+    for (const path of [nodeStub, ownerStub, validatorStub]) chmodSync(path, 0o700);
+
+    const child = spawnSync('sh', ['-c', initProjectApplyBlock()], {
+      cwd: workingDir,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+        TMPDIR: workingDir,
+        STUB_OWNER_STATUS: String(scenario.status),
+        STUB_OWNER_STDOUT: scenario.stdout,
+        STUB_OWNER_STDERR: scenario.diagnostic,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(child.status).toBe(scenario.exitCode);
+    expect(child.stderr).not.toContain('STUB_OWNER_OBSERVED_WORKING_FILE');
+    expect(readdirSync(workingDir)).toEqual([]);
+    if (scenario.outcome) {
+      expect(child.stderr).toContain(scenario.outcome);
+      expect(child.stderr).toContain(scenario.remedy);
+      expect(child.stderr.indexOf(scenario.diagnostic)).toBeLessThan(child.stderr.indexOf(scenario.outcome));
+    } else {
+      expect(child.stderr).not.toContain('CORAL_PROJECT_IGNORE_OUTCOME=');
+      expect(child.stderr).toBe('');
+    }
   });
 });

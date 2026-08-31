@@ -298,21 +298,15 @@ argument-hint: "[existing|new]"
   CORAL_PROJECT_IGNORE_SCRIPT="{skill_base_dir}/../../hooks/project-ignore.mjs"
   CORAL_PROJECT_IGNORE_OWNER="{skill_base_dir}/../../hooks/project-ignore-owner.mjs"
   CORAL_PROJECT_IGNORE_STATUS=0
-  CORAL_PROJECT_IGNORE_STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/coral-project-ignore.XXXXXX")"
   CORAL_PROJECT_IGNORE_RESULT="$(
-    node "$CORAL_PROJECT_IGNORE_OWNER" --project-dir "$PWD" --create-symlink 2>"$CORAL_PROJECT_IGNORE_STDERR_FILE"
+    node "$CORAL_PROJECT_IGNORE_OWNER" --project-dir "$PWD" --create-symlink
   )" || CORAL_PROJECT_IGNORE_STATUS=$?
-  CORAL_PROJECT_IGNORE_STDERR="$(cat "$CORAL_PROJECT_IGNORE_STDERR_FILE")"
-  rm -f "$CORAL_PROJECT_IGNORE_STDERR_FILE"
-  if [ -n "$CORAL_PROJECT_IGNORE_STDERR" ]; then
-    printf '%s\n' "$CORAL_PROJECT_IGNORE_STDERR" >&2
-  fi
   if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 75 ]; then
     echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-busy" >&2
     echo "Another Coral project-ignore maintainer owns the lock. Wait for it to finish, or terminate it if it is stuck, then retry." >&2
     exit 1
   fi
-  if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 69 ]; then
+  if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 69 ] || [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 126 ] || [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 127 ]; then
     echo "CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable" >&2
     echo "Coral project-ignore setup could not open the maintenance lock or launch its owner. Ensure ~/.coral/staging is writable and flock is executable, then retry." >&2
     exit 1
