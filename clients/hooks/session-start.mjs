@@ -50,6 +50,7 @@ const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
   killed: 'ran out of its time budget and was terminated',
+  'not-spawned': 'could not be started',
   'no-output': 'exited without reporting a result',
   'unparseable-output': 'reported a result Coral could not read',
   'maintenance-busy':
@@ -58,6 +59,83 @@ const PROJECT_IGNORE_OUTCOME_NOTICES = {
     'could not open or own its maintenance lock; install flock and ensure ~/.coral/staging is a writable real directory with no symlink components',
   failed: 'ran and reported it could not complete safely',
   partial: 'changed at least one artifact and reported that another could not complete safely',
+};
+const PROJECT_IGNORE_REASON_NOTICES = {
+  'project-context-unresolvable': {
+    sentence:
+      'Coral could not resolve the project and its Git context. Remedy: verify the project path is accessible and fix any error reported by `git status` in that directory.',
+    retryable: true,
+  },
+  'exclude-path-unresolvable': {
+    sentence:
+      'Git did not return a usable .git/info/exclude path. Remedy: run `git rev-parse --git-path info/exclude` in the project and repair its Git metadata until that command succeeds.',
+    retryable: false,
+  },
+  'artifact-unreadable': {
+    sentence:
+      'An affected ignore file is not a readable regular file. Remedy: make the project .gitignore files and .git/info/exclude readable regular files owned or writable by the current user.',
+    retryable: false,
+  },
+  'artifact-too-large': {
+    sentence:
+      'An affected ignore file exceeds Coral\'s 1 MiB safety limit. Remedy: reduce that file below 1 MiB before maintenance runs again.',
+    retryable: false,
+  },
+  'artifact-changed': {
+    sentence:
+      'An ignore file changed while Coral was preparing its update. Remedy: let the other writer finish before Coral tries again.',
+    retryable: true,
+  },
+  'claude-directory-missing': {
+    sentence:
+      'The project has no .claude directory, so Coral did not create the requested symlink. Remedy: run `mkdir .claude` in the project.',
+    retryable: false,
+  },
+  'claude-directory-invalid': {
+    sentence:
+      'The project .claude path is not a real directory. Remedy: replace that file or symlink with a real directory before requesting the Coral symlink.',
+    retryable: false,
+  },
+  'staging-device-mismatch': {
+    sentence:
+      'The working tree and its common Git directory are on different devices, so Coral cannot safely replace an existing artifact. Remedy: place them on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
+    retryable: false,
+  },
+  'publish-cross-device': {
+    sentence:
+      'The filesystem rejected an atomic replacement across devices. Remedy: place the working tree and its common Git directory on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
+    retryable: false,
+  },
+  'publish-failed': {
+    sentence:
+      'The filesystem refused an artifact update. Remedy: check permissions and free space for the project and its Git metadata.',
+    retryable: true,
+  },
+  'staging-cleanup-failed': {
+    sentence:
+      'Coral published the artifact but could not remove its owned staging file. Remedy: make the common Git directory\'s coral/staging/project-ignore directory writable.',
+    retryable: true,
+  },
+  'symlink-conflict': {
+    sentence:
+      'The project .claude/coral path conflicts with the requested symlink. Remedy: move the conflicting entry aside or replace it with the intended Coral symlink.',
+    retryable: false,
+  },
+  'legacy-sweep-failed': {
+    sentence:
+      'Coral could not remove the authorized legacy staging path named above. Remedy: remove that path manually or make its parent directory writable.',
+    retryable: true,
+  },
+  'arena-sweep-failed': {
+    sentence:
+      'Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory\'s coral/staging/project-ignore path are writable real directories.',
+    retryable: true,
+  },
+  'upstream-refusal': {
+    sentence:
+      'A later artifact was skipped because an earlier artifact refused. Remedy: resolve the earlier refusal reported in this notice.',
+    retryable: false,
+  },
 };
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
@@ -155,6 +233,21 @@ function readRecentStartupFailureNotice(runDir) {
   }
 }
 
+function projectIgnoreRefusalNotices(maintenance) {
+  const reasons = new Set();
+  for (const artifact of Object.values(maintenance?.artifacts ?? {})) {
+    if (artifact.state === 'refused' || artifact.reason === 'staging-cleanup-failed') {
+      reasons.add(artifact.reason);
+    }
+  }
+  return [...reasons].map((reason) => {
+    const notice = PROJECT_IGNORE_REASON_NOTICES[reason];
+    return notice.retryable
+      ? `${notice.sentence} It is attempted again at the next session start.`
+      : notice.sentence;
+  });
+}
+
 exitIfChildProcess();
 const flavorDisposition = resolveFlavorDisposition();
 if (flavorDisposition.kind === 'unrecognized') {
@@ -217,9 +310,13 @@ try {
         ? `Coral project-ignore maintenance could not remove authorized legacy staging path ${legacySweep.path}.`
         : null;
   const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
-  const ignoreNotice = ignoreFailure
-    ? `Coral project-ignore maintenance ${ignoreFailure}. It is attempted again at the next session start.`
-    : null;
+  const ignoreRefusalNotices = projectIgnoreRefusalNotices(ignoreOutcome.maintenance);
+  const ignoreNotice =
+    ignoreFailure || ignoreRefusalNotices.length > 0
+      ? `Coral project-ignore maintenance${ignoreFailure ? ` ${ignoreFailure}.` : ':'}${
+          ignoreRefusalNotices.length > 0 ? `\n${ignoreRefusalNotices.join('\n')}` : ''
+        }`
+      : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
   const variableContent = [
