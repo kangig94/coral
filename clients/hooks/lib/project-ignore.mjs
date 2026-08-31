@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -195,9 +196,72 @@ function withDurability(artifact, ...outcomes) {
   return durability ? { ...artifact, durability } : artifact;
 }
 
-export function atomicReplace({ target, snapshot, next, stagingDir, stagingName = 'replacement.tmp' }) {
+function durabilityMarkerPath(durabilityDir, target) {
+  const digest = createHash('sha256').update(target).digest('hex');
+  return join(durabilityDir, `.durability-${digest}.pending`);
+}
+
+function inspectDurabilityMarker(durabilityDir, target) {
+  if (!durabilityDir) return { ok: false };
+  const path = durabilityMarkerPath(durabilityDir, target);
+  const snapshot = readRegularSnapshot(path, { allowMissing: true });
+  if (!snapshot.ok) return { ok: false };
+  if (!snapshot.exists) return { ok: true, marker: { path, target, pending: false } };
+  return snapshot.content.equals(Buffer.from(target))
+    ? { ok: true, marker: { path, target, pending: true } }
+    : { ok: false };
+}
+
+function recordPendingDurability(marker) {
+  if (marker.pending) return { ok: true, created: false };
+  let fd;
+  try {
+    fd = openSync(marker.path, TEMP_WRITE_FLAGS, 0o600);
+    writeFileSync(fd, marker.target);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    if (fsyncParent(marker.path).state !== 'synced') {
+      safeUnlink(marker.path);
+      return { ok: false, created: false };
+    }
+    marker.pending = true;
+    return { ok: true, created: true };
+  } catch {
+    return { ok: false, created: false };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+function syncPendingPublication(target, marker) {
+  const durability = fsyncParent(target);
+  if (durability.state !== 'synced') return durability;
+  return safeUnlink(marker.path)
+    ? durability
+    : { state: 'failed', reason: 'durability-evidence-cleanup-failed' };
+}
+
+export function atomicReplace({
+  target,
+  snapshot,
+  next,
+  stagingDir,
+  durabilityMarker,
+  stagingName = 'replacement.tmp',
+}) {
   if (next.equals(snapshot.content)) {
-    return { state: 'unchanged', residue: 'none', durability: fsyncParent(target) };
+    return durabilityMarker.pending
+      ? {
+          state: 'unchanged',
+          residue: 'none',
+          durability: syncPendingPublication(target, durabilityMarker),
+        }
+      : { state: 'unchanged', residue: 'none' };
   }
   if (next.length > MAX_GITIGNORE_BYTES) {
     return { state: 'refused', reason: 'artifact-too-large', residue: 'none' };
@@ -213,8 +277,14 @@ export function atomicReplace({ target, snapshot, next, stagingDir, stagingName 
 
   const tempPath = join(stagingDir, stagingName);
   let fd;
+  let markerCreated = false;
   let result = { state: 'refused', reason: 'publish-failed', residue: 'none' };
   try {
+    const recorded = recordPendingDurability(durabilityMarker);
+    if (!recorded.ok) {
+      return { state: 'refused', reason: 'durability-evidence-unavailable', residue: 'none' };
+    }
+    markerCreated = recorded.created;
     fd = openSync(tempPath, TEMP_WRITE_FLAGS, snapshot.mode);
     writeFileSync(fd, next);
     if (snapshot.exists) fchmodSync(fd, snapshot.mode);
@@ -231,7 +301,11 @@ export function atomicReplace({ target, snapshot, next, stagingDir, stagingName 
         } else {
           linkSync(tempPath, target);
         }
-        result = { state: 'published', residue: 'none', durability: fsyncParent(target) };
+        result = {
+          state: 'published',
+          residue: 'none',
+          durability: syncPendingPublication(target, durabilityMarker),
+        };
       } catch (error) {
         result = {
           state: 'refused',
@@ -254,6 +328,7 @@ export function atomicReplace({ target, snapshot, next, stagingDir, stagingName 
           ? { ...result, reason: 'staging-cleanup-failed', residue: 'owned-staging' }
           : { ...result, residue: 'owned-staging' };
     }
+    if (markerCreated && result.state !== 'published') safeUnlink(durabilityMarker.path);
   }
   return result;
 }
@@ -291,8 +366,8 @@ function isNotGitRepository(error, projectDir) {
   );
 }
 
-function readGitContextField(projectDir, args) {
-  const output = execFileSync('git', ['rev-parse', ...args], {
+function readGitPath(projectDir, args) {
+  const output = execFileSync('git', args, {
     cwd: projectDir,
     encoding: 'utf-8',
     env: { ...process.env, LC_ALL: 'C' },
@@ -303,20 +378,49 @@ function readGitContextField(projectDir, args) {
   return output.slice(0, -1);
 }
 
+function resolveCommonGitDirectory(gitDir) {
+  try {
+    const content = readFileSync(join(gitDir, 'commondir'), 'utf-8');
+    const value = content.endsWith('\n') ? content.slice(0, -1) : content;
+    if (!value || value.includes('\n') || value.includes('\0')) return null;
+    return realpathSync(resolve(gitDir, value));
+  } catch (error) {
+    return isMissing(error) ? gitDir : null;
+  }
+}
+
+function resolveGitDirectoryIdentity(projectDir) {
+  return realpathSync(readGitPath(projectDir, ['rev-parse', '--absolute-git-dir']));
+}
+
 function findGitContext(projectDir) {
   try {
-    const gitRoot = readGitContextField(projectDir, ['--show-toplevel']);
-    const commonGitDir = readGitContextField(projectDir, ['--git-common-dir']);
-    const excludePath = readGitContextField(projectDir, ['--git-path', 'info/exclude']);
-    if (!gitRoot || !commonGitDir || !excludePath) return { state: 'unresolvable' };
+    const gitDir = resolveGitDirectoryIdentity(projectDir);
+    const gitRoot = realpathSync(readGitPath(projectDir, ['rev-parse', '--show-toplevel']));
+    const commonGitDir = resolveCommonGitDirectory(gitDir);
+    if (!gitRoot || !commonGitDir) return { state: 'unresolvable' };
+    const excludePath = join(commonGitDir, 'info', 'exclude');
+    if (relative(commonGitDir, excludePath) !== join('info', 'exclude')) {
+      return { state: 'unresolvable' };
+    }
     return {
       state: 'resolved',
-      gitRoot: realpathSync(gitRoot),
-      commonGitDir: realpathSync(resolve(projectDir, commonGitDir)),
-      excludePath: resolve(projectDir, excludePath),
+      gitDir,
+      gitRoot,
+      commonGitDir,
+      excludePath,
     };
   } catch (error) {
     return { state: isNotGitRepository(error, projectDir) ? 'absent' : 'unresolvable' };
+  }
+}
+
+function gitDirectoryIdentityMatches(context) {
+  try {
+    const currentGitDir = resolveGitDirectoryIdentity(context.projectDir);
+    return context.gitDir !== null && currentGitDir === context.gitDir;
+  } catch (error) {
+    return context.gitDir === null && isNotGitRepository(error, context.projectDir);
   }
 }
 
@@ -511,6 +615,7 @@ export function resolveProjectContext(projectDir) {
   const escapedCanonicalEntry = escapeGitignoreLiteralPath(canonicalEntry);
   return {
     projectDir: realProjectDir,
+    gitDir: repositoryContext?.gitDir ?? null,
     gitRoot,
     commonGitDir: repositoryContext?.commonGitDir ?? null,
     excludePath: repositoryContext?.excludePath ?? null,
@@ -525,6 +630,7 @@ export function isProjectIgnoreContext(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const keys = [
     'projectDir',
+    'gitDir',
     'gitRoot',
     'commonGitDir',
     'excludePath',
@@ -542,6 +648,7 @@ export function isProjectIgnoreContext(value) {
     return false;
   }
   if (value.commonGitDir !== null && typeof value.commonGitDir !== 'string') return false;
+  if (value.gitDir !== null && typeof value.gitDir !== 'string') return false;
   if (value.excludePath !== null && typeof value.excludePath !== 'string') return false;
   if (value.excludeEntry !== null && typeof value.excludeEntry !== 'string') return false;
   return value.refusalReason === null || value.refusalReason === 'project-path-unrepresentable';
@@ -693,12 +800,26 @@ function stagingDeviceRefusal(path, stagingDir) {
   }
 }
 
-function prepareReplacement({ target, snapshot, next, devicePath, stagingDir }) {
-  if (next.equals(snapshot.content)) return { ok: true, replacement: { target, snapshot, next } };
+function prepareReplacement({
+  target,
+  snapshot,
+  next,
+  contentChangeNeeded,
+  devicePath,
+  stagingDir,
+  durabilityDir,
+}) {
+  const durability = inspectDurabilityMarker(durabilityDir, target);
+  if (!durability.ok) return { ok: false, reason: 'durability-evidence-unavailable' };
+  if (!contentChangeNeeded && !durability.marker.pending) {
+    return { ok: true, replacement: null };
+  }
   if (next.length > MAX_GITIGNORE_BYTES) return { ok: false, reason: 'artifact-too-large' };
-  const deviceRefusal = stagingDeviceRefusal(devicePath, stagingDir);
-  if (deviceRefusal) return { ok: false, reason: deviceRefusal };
-  return { ok: true, replacement: { target, snapshot, next } };
+  if (!next.equals(snapshot.content)) {
+    const deviceRefusal = stagingDeviceRefusal(devicePath, stagingDir);
+    if (deviceRefusal) return { ok: false, reason: deviceRefusal };
+  }
+  return { ok: true, replacement: { target, snapshot, next, durabilityMarker: durability.marker } };
 }
 
 function excludeDevicePath(excludePath) {
@@ -714,19 +835,28 @@ function excludeDevicePath(excludePath) {
   return isRealDirectory(parent) ? parent : null;
 }
 
-function ensureExcludeDirectory(excludePath) {
+function ensureExcludeDirectory(excludePath, durabilityDir) {
   const excludeDir = dirname(excludePath);
+  const durability = inspectDurabilityMarker(durabilityDir, excludeDir);
+  if (!durability.ok) return { ok: false, reason: 'durability-evidence-unavailable' };
   if (isRealDirectory(excludeDir)) {
-    return { ok: true, durability: fsyncParent(excludeDir) };
+    return durability.marker.pending
+      ? { ok: true, durability: syncPendingPublication(excludeDir, durability.marker) }
+      : { ok: true };
   }
+  const recorded = recordPendingDurability(durability.marker);
+  if (!recorded.ok) return { ok: false, reason: 'durability-evidence-unavailable' };
   try {
     mkdirSync(excludeDir);
   } catch (error) {
+    if (recorded.created) safeUnlink(durability.marker.path);
     if (error?.code !== 'EEXIST') return { ok: false };
   }
-  return isRealDirectory(excludeDir)
-    ? { ok: true, durability: fsyncParent(excludeDir) }
-    : { ok: false };
+  if (!isRealDirectory(excludeDir)) {
+    if (recorded.created) safeUnlink(durability.marker.path);
+    return { ok: false };
+  }
+  return { ok: true, durability: syncPendingPublication(excludeDir, durability.marker) };
 }
 
 function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
@@ -843,7 +973,7 @@ function refusedArtifacts(arenaSweep, legacySweep, artifact, reason) {
   return artifacts;
 }
 
-function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir }) {
+function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir, durabilityDir }) {
   const symlink = prepareCoralSymlink(context.projectDir, createSymlink, stagingDir);
   if (!symlink.ok) return { ok: false, artifact: 'symlink', reason: symlink.reason };
 
@@ -881,8 +1011,10 @@ function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir })
       target: context.excludePath,
       snapshot: excludeSnapshot,
       next: appendExactLine(excludeSnapshot.content, context.excludeEntry),
+      contentChangeNeeded: !hasExactLine(excludeSnapshot.content, context.excludeEntry),
       devicePath: excludePathDevice,
       stagingDir,
+      durabilityDir,
     });
   }
   let scopedIgnoreRetraction = null;
@@ -891,16 +1023,20 @@ function preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir })
       target: join(claudeDir, '.gitignore'),
       snapshot: scopedSnapshot,
       next: removeExactLines(scopedSnapshot.content, CORAL_IGNORE_ENTRY),
+      contentChangeNeeded: hasExactLine(scopedSnapshot.content, CORAL_IGNORE_ENTRY),
       devicePath: claudeDir,
       stagingDir,
+      durabilityDir,
     });
   }
   const rootIgnoreRetraction = prepareReplacement({
     target: context.rootGitignore,
     snapshot: rootSnapshot,
     next: removeExactLines(rootSnapshot.content, context.legacyEntry),
+    contentChangeNeeded: hasExactLine(rootSnapshot.content, context.legacyEntry),
     devicePath: context.gitRoot,
     stagingDir,
+    durabilityDir,
   });
 
   for (const [artifact, replacement] of [
@@ -928,10 +1064,16 @@ function maintainProjectIgnoreArtifacts({
   createSymlink,
   token,
   stagingDir,
+  durabilityDir,
   arenaSweep,
   legacySweep,
 }) {
-  const preflight = preflightProjectIgnoreArtifacts({ context, createSymlink, stagingDir });
+  const preflight = preflightProjectIgnoreArtifacts({
+    context,
+    createSymlink,
+    stagingDir,
+    durabilityDir,
+  });
   if (!preflight.ok) {
     return refusedArtifacts(arenaSweep, legacySweep, preflight.artifact, preflight.reason);
   }
@@ -946,19 +1088,27 @@ function maintainProjectIgnoreArtifacts({
     scopedIgnoreRetraction: preflight.replacements.scopedIgnoreRetraction
       ? { state: 'unchanged', residue: 'none' }
       : { state: 'not-needed', residue: 'none' },
-    rootIgnoreRetraction: { state: 'unchanged', residue: 'none' },
+    rootIgnoreRetraction: preflight.replacements.rootIgnoreRetraction
+      ? { state: 'unchanged', residue: 'none' }
+      : { state: 'not-needed', residue: 'none' },
   };
   if (preflight.publishExclude) {
-    const excludeDirectory = ensureExcludeDirectory(context.excludePath);
+    const excludeDirectory = ensureExcludeDirectory(context.excludePath, durabilityDir);
     if (!excludeDirectory.ok) {
-      artifacts.exclude = { state: 'refused', reason: 'publish-failed', residue: 'none' };
+      artifacts.exclude = {
+        state: 'refused',
+        reason: excludeDirectory.reason ?? 'publish-failed',
+        residue: 'none',
+      };
       artifacts.symlink = { ...SKIPPED_ARTIFACT };
       artifacts.scopedIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
       artifacts.rootIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
       return artifacts;
     }
     artifacts.exclude = withDurability(
-      atomicReplace({ ...preflight.replacements.exclude, stagingDir }),
+      preflight.replacements.exclude
+        ? atomicReplace({ ...preflight.replacements.exclude, stagingDir })
+        : artifacts.exclude,
       excludeDirectory.durability,
     );
     if (artifacts.exclude.state === 'refused') {
@@ -988,11 +1138,13 @@ function maintainProjectIgnoreArtifacts({
     }
   }
 
-  artifacts.rootIgnoreRetraction = atomicReplace({
-    ...preflight.replacements.rootIgnoreRetraction,
-    stagingDir,
-    stagingName: 'root-ignore-retraction.tmp',
-  });
+  if (preflight.replacements.rootIgnoreRetraction) {
+    artifacts.rootIgnoreRetraction = atomicReplace({
+      ...preflight.replacements.rootIgnoreRetraction,
+      stagingDir,
+      stagingName: 'root-ignore-retraction.tmp',
+    });
+  }
   return artifacts;
 }
 
@@ -1024,6 +1176,7 @@ export function maintainProjectIgnore({
   const context = suppliedContext === undefined ? resolveProjectContext(projectDir) : suppliedContext;
   const contextRefusal = projectIgnoreContextRefusal(context);
   if (contextRefusal) return contextRefusal;
+  if (!gitDirectoryIdentityMatches(context)) return projectIgnoreContextRefusal(null);
 
   const startedAt = Date.now();
   const fallbackArena = prepareProjectIgnoreStagingDir();
@@ -1074,6 +1227,7 @@ export function maintainProjectIgnore({
           createSymlink,
           token,
           stagingDir,
+          durabilityDir: arena,
           arenaSweep,
           legacySweep,
         });

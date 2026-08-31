@@ -28,6 +28,8 @@ const REASONS = new Set([
   'staging-device-mismatch',
   'publish-cross-device',
   'publish-failed',
+  'durability-evidence-unavailable',
+  'durability-evidence-cleanup-failed',
   'durability-sync-unsupported',
   'durability-sync-failed',
   'staging-cleanup-failed',
@@ -55,8 +57,14 @@ function hasReason(value, expected) {
 function validateDurability(value) {
   if (!isRecord(value) || !['synced', 'unsupported', 'failed'].includes(value.state)) return false;
   if (value.state === 'synced') return hasExactKeys(value, ['state']);
-  const expected = value.state === 'unsupported' ? 'durability-sync-unsupported' : 'durability-sync-failed';
-  return hasExactKeys(value, ['state', 'reason']) && hasReason(value, expected);
+  if (value.state === 'unsupported') {
+    return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'durability-sync-unsupported');
+  }
+  return (
+    hasExactKeys(value, ['state', 'reason']) &&
+    ['durability-sync-failed', 'durability-evidence-cleanup-failed'].includes(value.reason) &&
+    hasReason(value)
+  );
 }
 
 function validateSweep(value, legacy) {
@@ -113,6 +121,9 @@ function validateReplacement(value, states) {
     return hasExactKeys(value, ['state', 'reason', 'residue']) && hasReason(value, 'upstream-refusal');
   }
   if (value.state === 'not-needed') return hasExactKeys(value, ['state', 'residue']);
+  if (value.state === 'unchanged' && !hasDurability) {
+    return hasExactKeys(value, ['state', 'residue']);
+  }
   return hasDurability && hasExactKeys(value, ['state', 'residue', 'durability']);
 }
 

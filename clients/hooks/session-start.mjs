@@ -118,6 +118,16 @@ const PROJECT_IGNORE_REASON_NOTICES = {
       'The filesystem refused an artifact update. Remedy: check permissions and free space for the project and its Git metadata.',
     retryable: true,
   },
+  'durability-evidence-unavailable': {
+    sentence:
+      'Coral could not record pending durability outside the working tree. Remedy: make the authorized project-ignore staging arena a writable real directory on a filesystem that supports directory fsync, then retry the maintenance.',
+    retryable: true,
+  },
+  'durability-evidence-cleanup-failed': {
+    sentence:
+      'Coral synced the artifact but could not clear its pending durability record. Remedy: make the authorized project-ignore staging arena writable, then retry the maintenance.',
+    retryable: true,
+  },
   'durability-sync-unsupported': {
     sentence:
       'The platform does not support syncing an affected parent directory, so Coral cannot confirm crash durability. Remedy: update the artifact manually on a filesystem that supports directory fsync.',

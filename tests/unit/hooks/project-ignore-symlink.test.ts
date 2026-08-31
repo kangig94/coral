@@ -31,6 +31,7 @@ const fixture = vi.hoisted(() => ({
   gitDir: '',
   gitRoot: '',
   gitRepository: true,
+  gitIdentities: [] as string[],
   failSymlinkTarget: null as string | null,
   failRenameTo: null as string | null,
   failLinkTo: null as string | null,
@@ -132,7 +133,7 @@ vi.mock('node:fs', async (importOriginal) => {
 const execSyncMock = vi.hoisted(() => vi.fn(() => 'https://github.com/owner/repo.git\n'));
 const execFileSyncMock = vi.hoisted(() =>
   vi.fn((command: unknown, args: unknown, options: unknown) => {
-    if (command !== 'git' || !Array.isArray(args) || args[0] !== 'rev-parse') {
+    if (command !== 'git' || !Array.isArray(args)) {
       throw Object.assign(new Error('unexpected execFileSync command'), { code: 'ENOENT' });
     }
     if (!fixture.gitRepository) {
@@ -143,10 +144,13 @@ const execFileSyncMock = vi.hoisted(() =>
     }
 
     const cwd = String((options as { cwd?: unknown }).cwd);
-    const query = args.slice(1).join('\0');
-    if (query === '--show-toplevel') return `${fixture.gitRoot || cwd}\n`;
-    if (query === '--git-common-dir') return `${fixture.gitDir}\n`;
-    if (query === '--git-path\0info/exclude') return `${fixture.gitDir}/info/exclude\n`;
+    const query = args.join('\0');
+    if (query === 'rev-parse\0--absolute-git-dir') {
+      return `${fixture.gitIdentities.shift() ?? fixture.gitDir}\n`;
+    }
+    if (query === 'rev-parse\0--show-toplevel') {
+      return `${fixture.gitRoot || cwd}\n`;
+    }
     throw Object.assign(new Error('unexpected git context field'), { code: 'ENOENT' });
   }),
 );
@@ -164,6 +168,7 @@ beforeEach(() => {
   fixture.home = join(root, 'home');
   fixture.gitDir = join(root, 'git-common');
   fixture.gitRepository = true;
+  fixture.gitIdentities.length = 0;
   fixture.failSymlinkTarget = null;
   fixture.failRenameTo = null;
   fixture.failLinkTo = null;
@@ -188,7 +193,10 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function maintain(flavor: 'prod' | 'dev'): Promise<{
+async function maintain(
+  flavor: 'prod' | 'dev',
+  createSymlink = true,
+): Promise<{
   status: 'complete' | 'refused' | 'partial';
   artifacts: {
     symlink: {
@@ -215,6 +223,24 @@ async function maintain(flavor: 'prod' | 'dev'): Promise<{
       path?: string;
       count?: number;
     };
+    scopedIgnoreRetraction: {
+      state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
+      reason?: string;
+      residue: 'none' | 'owned-staging';
+      durability?: {
+        state: 'synced' | 'unsupported' | 'failed';
+        reason?: string;
+      };
+    };
+    rootIgnoreRetraction: {
+      state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
+      reason?: string;
+      residue: 'none' | 'owned-staging';
+      durability?: {
+        state: 'synced' | 'unsupported' | 'failed';
+        reason?: string;
+      };
+    };
   };
 }> {
   manifest.flavor = flavor;
@@ -222,11 +248,13 @@ async function maintain(flavor: 'prod' | 'dev'): Promise<{
   vi.resetModules();
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
   const { maintainProjectIgnore } = await import('../../../clients/hooks/lib/project-ignore.mjs');
-  return maintainProjectIgnore({ projectDir, createSymlink: true, token: 'test-token' });
+  return maintainProjectIgnore({ projectDir, createSymlink, token: 'test-token' });
 }
 
 const link = (): string => join(projectDir, '.claude', 'coral');
 const repositoryArena = (): string => join(fixture.gitDir, 'coral', 'staging', 'project-ignore');
+const durabilityMarkers = (): string[] =>
+  readdirSync(repositoryArena()).filter((name) => name.startsWith('.durability-'));
 
 describe('project-ignore symlink maintenance', () => {
   it.each([
@@ -272,6 +300,55 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(join(fixture.gitDir, 'coral'))).toBe(false);
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
     expect(existsSync(link())).toBe(false);
+  });
+
+  it('refuses a repository identity change before mutating any artifact', async () => {
+    const repointedGitDir = join(projectDir, '.metadata');
+    mkdirSync(join(repointedGitDir, 'info'), { recursive: true });
+    writeFileSync(join(projectDir, '.gitignore'), '.claude/coral\n');
+    writeFileSync(join(projectDir, '.claude', '.gitignore'), 'coral\n');
+    writeFileSync(join(fixture.gitDir, 'info', 'exclude'), 'external-before\n');
+    writeFileSync(join(repointedGitDir, 'info', 'exclude'), 'in-tree-before\n');
+    fixture.gitIdentities.push(fixture.gitDir, repointedGitDir);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'project-context-unresolvable',
+    });
+    expect(readFileSync(join(projectDir, '.gitignore'), 'utf-8')).toBe('.claude/coral\n');
+    expect(readFileSync(join(projectDir, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('external-before\n');
+    expect(readFileSync(join(repointedGitDir, 'info', 'exclude'), 'utf-8')).toBe('in-tree-before\n');
+    expect(existsSync(join(fixture.home, '.coral'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
+  });
+
+  it('reports residue-free retractions as not needed on repeated fsync-less sessions', async () => {
+    rmSync(join(projectDir, '.claude'), { recursive: true });
+    rmSync(join(projectDir, '.gitignore'));
+    fixture.failDirectoryFsyncPath = projectDir;
+    fixture.failDirectoryFsyncCode = 'EINVAL';
+
+    const first = await maintain('prod', false);
+    fixture.fsyncedDirectoryPaths.length = 0;
+    const second = await maintain('prod', false);
+    // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe('complete');
+      expect(result.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
+      expect(result.artifacts.symlink).toEqual({ state: 'not-requested' });
+      expect(result.artifacts.scopedIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+      expect(result.artifacts.rootIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+      expect(isProjectIgnoreResult(result)).toBe(true);
+    }
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(projectDir);
+    expect(existsSync(join(projectDir, '.gitignore'))).toBe(false);
+    expect(existsSync(join(projectDir, '.claude'))).toBe(false);
   });
 
   it('creates it on first run', async () => {
@@ -336,13 +413,11 @@ describe('project-ignore symlink maintenance', () => {
     const result = await maintain('prod');
 
     expect(result.status).toBe('complete');
-    expect(result.artifacts.symlink).toEqual({
-      state: 'unchanged',
-      durability: { state: 'synced' },
-    });
-    expect(fixture.fsyncedDirectoryPaths).toEqual(
-      expect.arrayContaining([fixture.gitDir, join(fixture.gitDir, 'info'), projectDir, join(projectDir, '.claude')]),
-    );
+    expect(result.artifacts.exclude).toEqual({ state: 'unchanged', residue: 'none' });
+    expect(result.artifacts.symlink).toEqual({ state: 'unchanged', durability: { state: 'synced' } });
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(fixture.fsyncedDirectoryPaths).toEqual([join(projectDir, '.claude')]);
     expect(readlinkSync(link())).toBe(join(fixture.home, '.coral', 'projects', 'owner-repo'));
   });
 
@@ -362,6 +437,7 @@ describe('project-ignore symlink maintenance', () => {
     const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
     expect(isProjectIgnoreResult(published)).toBe(true);
     expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
+    expect(durabilityMarkers()).toHaveLength(1);
 
     const unchanged = await maintain('prod');
     expect(unchanged.status).toBe('partial');
@@ -371,6 +447,7 @@ describe('project-ignore symlink maintenance', () => {
       durability: { state: 'failed', reason: 'durability-sync-failed' },
     });
     expect(isProjectIgnoreResult(unchanged)).toBe(true);
+    expect(durabilityMarkers()).toHaveLength(1);
 
     fixture.failDirectoryFsyncPath = null;
     fixture.failDirectoryFsyncCode = null;
@@ -381,6 +458,7 @@ describe('project-ignore symlink maintenance', () => {
       residue: 'none',
       durability: { state: 'synced' },
     });
+    expect(durabilityMarkers()).toEqual([]);
   });
 
   it('reports a narrowly unsupported directory sync separately from an I/O failure', async () => {
@@ -494,8 +572,9 @@ describe('project-ignore symlink maintenance', () => {
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
-  // F3: the three framed `git rev-parse` fields (`findGitContext`, always paid) and `git remote get-url
-  // origin` (`coralProjectDir`, paid here because the recheck above needs a target) sum to 3500ms of bounded
+  // F3: the pinned Git-directory lookup, repository top-level lookup, post-lock identity lookup, and
+  // `git remote get-url origin` (`coralProjectDir`, paid here because the recheck above needs a target) sum to
+  // 3500ms of bounded
   // subprocess work. `session-start.mjs` used to give the child
   // exactly that, so a child doing nothing wrong was killed while its own bounds were still running; its budget
   // is now 5000ms. This test pins the sum so that if either bound moves, the parent's number is re-derived
@@ -509,7 +588,10 @@ describe('project-ignore symlink maintenance', () => {
 
     await maintain('prod');
 
-    expect(execFileSyncMock, 'one process frame per Git context field').toHaveBeenCalledTimes(3);
+    expect(
+      execFileSyncMock,
+      'Git-directory and repository-root lookups plus the post-lock identity check',
+    ).toHaveBeenCalledTimes(3);
     expect(
       execSyncMock,
       'git remote get-url origin, to confirm the existing link is not outgrown',
