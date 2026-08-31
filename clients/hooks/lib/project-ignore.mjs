@@ -21,6 +21,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   coralProjectDir,
   coralStateRoot,
@@ -39,7 +40,7 @@ const TEMP_WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EX
 const CORAL_IGNORE_ENTRY = 'coral';
 const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 const LEGACY_WORKING_TREE_STAGING_MAX_AGE_MS = 30_000;
-const GIT_CONTEXT_FIELD_TIMEOUT_MS = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS / 3;
+const GIT_CONTEXT_FIELD_TIMEOUT_MS = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS / 4;
 const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP']);
 
 function isMissing(error) {
@@ -196,6 +197,7 @@ function withDurability(artifact, ...outcomes) {
   return durability ? { ...artifact, durability } : artifact;
 }
 
+// Nothing about a marker may depend on its content: readers reach it only through the target-derived path they already hold.
 function durabilityMarkerPath(durabilityDir, target) {
   const digest = createHash('sha256').update(target).digest('hex');
   return join(durabilityDir, `.durability-${digest}.pending`);
@@ -204,12 +206,14 @@ function durabilityMarkerPath(durabilityDir, target) {
 function inspectDurabilityMarker(durabilityDir, target) {
   if (!durabilityDir) return { ok: false };
   const path = durabilityMarkerPath(durabilityDir, target);
-  const snapshot = readRegularSnapshot(path, { allowMissing: true });
-  if (!snapshot.ok) return { ok: false };
-  if (!snapshot.exists) return { ok: true, marker: { path, target, pending: false } };
-  return snapshot.content.equals(Buffer.from(target))
-    ? { ok: true, marker: { path, target, pending: true } }
-    : { ok: false };
+  try {
+    lstatSync(path);
+    return { ok: true, marker: { path, pending: true } };
+  } catch (error) {
+    return isMissing(error)
+      ? { ok: true, marker: { path, pending: false } }
+      : { ok: false };
+  }
 }
 
 function recordPendingDurability(marker) {
@@ -217,7 +221,6 @@ function recordPendingDurability(marker) {
   let fd;
   try {
     fd = openSync(marker.path, TEMP_WRITE_FLAGS, 0o600);
-    writeFileSync(fd, marker.target);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -412,15 +415,6 @@ function findGitContext(projectDir) {
     };
   } catch (error) {
     return { state: isNotGitRepository(error, projectDir) ? 'absent' : 'unresolvable' };
-  }
-}
-
-function gitDirectoryIdentityMatches(context) {
-  try {
-    const currentGitDir = resolveGitDirectoryIdentity(context.projectDir);
-    return context.gitDir !== null && currentGitDir === context.gitDir;
-  } catch (error) {
-    return context.gitDir === null && isNotGitRepository(error, context.projectDir);
   }
 }
 
@@ -1176,7 +1170,12 @@ export function maintainProjectIgnore({
   const context = suppliedContext === undefined ? resolveProjectContext(projectDir) : suppliedContext;
   const contextRefusal = projectIgnoreContextRefusal(context);
   if (contextRefusal) return contextRefusal;
-  if (!gitDirectoryIdentityMatches(context)) return projectIgnoreContextRefusal(null);
+  if (
+    suppliedContext !== undefined &&
+    !isDeepStrictEqual(resolveProjectContext(context.projectDir), suppliedContext)
+  ) {
+    return projectIgnoreContextRefusal(null);
+  }
 
   const startedAt = Date.now();
   const fallbackArena = prepareProjectIgnoreStagingDir();

@@ -1,6 +1,7 @@
 // The correction is scoped to links Coral itself placed. A link an operator pointed somewhere of their own is
 // left alone: recognising our own artifact is not licence to overwrite someone else's.
 
+import { createHash } from 'node:crypto';
 import type * as NodeFs from 'node:fs';
 import {
   existsSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   readlinkSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -162,6 +164,18 @@ vi.mock('node:child_process', () => ({
 let root: string;
 let projectDir: string;
 
+type ProjectIgnoreContext = {
+  projectDir: string;
+  gitDir: string | null;
+  gitRoot: string;
+  commonGitDir: string | null;
+  excludePath: string | null;
+  rootGitignore: string;
+  legacyEntry: string;
+  excludeEntry: string | null;
+  refusalReason: 'project-path-unrepresentable' | null;
+};
+
 beforeEach(() => {
   vi.resetModules();
   root = mkdtempSync(join(tmpdir(), 'coral-symlink-'));
@@ -196,6 +210,7 @@ afterEach(() => {
 async function maintain(
   flavor: 'prod' | 'dev',
   createSymlink = true,
+  suppliedContext?: ProjectIgnoreContext,
 ): Promise<{
   status: 'complete' | 'refused' | 'partial';
   artifacts: {
@@ -247,14 +262,26 @@ async function maintain(
   // Re-imported per call: both the flavor and the project source are cached module-level on first read.
   vi.resetModules();
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-  const { maintainProjectIgnore } = await import('../../../clients/hooks/lib/project-ignore.mjs');
-  return maintainProjectIgnore({ projectDir, createSymlink, token: 'test-token' });
+  const projectIgnore = await import('../../../clients/hooks/lib/project-ignore.mjs');
+  const context = suppliedContext ?? projectIgnore.resolveProjectContext(projectDir);
+  return projectIgnore.maintainProjectIgnore({ projectDir, createSymlink, token: 'test-token', context });
+}
+
+async function resolveContext(): Promise<ProjectIgnoreContext> {
+  vi.resetModules();
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+  const { resolveProjectContext } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+  const context = resolveProjectContext(projectDir) as ProjectIgnoreContext | null;
+  expect(context).not.toBeNull();
+  return context as ProjectIgnoreContext;
 }
 
 const link = (): string => join(projectDir, '.claude', 'coral');
 const repositoryArena = (): string => join(fixture.gitDir, 'coral', 'staging', 'project-ignore');
 const durabilityMarkers = (): string[] =>
   readdirSync(repositoryArena()).filter((name) => name.startsWith('.durability-'));
+const durabilityMarker = (target: string): string =>
+  join(repositoryArena(), `.durability-${createHash('sha256').update(target).digest('hex')}.pending`);
 
 describe('project-ignore symlink maintenance', () => {
   it.each([
@@ -323,6 +350,68 @@ describe('project-ignore symlink maintenance', () => {
     expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('external-before\n');
     expect(readFileSync(join(repointedGitDir, 'info', 'exclude'), 'utf-8')).toBe('in-tree-before\n');
     expect(existsSync(join(fixture.home, '.coral'))).toBe(false);
+    expect(existsSync(link())).toBe(false);
+  });
+
+  it('refuses a stale common Git directory before preparing or sweeping an arena', async () => {
+    const staleCommonGitDir = join(root, 'common-before');
+    const currentCommonGitDir = join(root, 'common-after');
+    mkdirSync(join(staleCommonGitDir, 'info'), { recursive: true });
+    mkdirSync(join(currentCommonGitDir, 'info'), { recursive: true });
+    writeFileSync(join(fixture.gitDir, 'commondir'), '../common-before\n');
+    writeFileSync(join(staleCommonGitDir, 'info', 'exclude'), 'stale-before\n');
+    writeFileSync(join(currentCommonGitDir, 'info', 'exclude'), 'current-before\n');
+    writeFileSync(join(projectDir, '.gitignore'), '.claude/coral\n');
+    writeFileSync(join(projectDir, '.claude', '.gitignore'), 'coral\n');
+    const context = await resolveContext();
+    expect(context.gitDir).toBe(realpathSync(fixture.gitDir));
+    expect(context.commonGitDir).toBe(realpathSync(staleCommonGitDir));
+    const staleRun = join(staleCommonGitDir, 'coral', 'staging', 'project-ignore', '0-1');
+    mkdirSync(staleRun, { recursive: true });
+
+    writeFileSync(join(fixture.gitDir, 'commondir'), '../common-after\n');
+    const result = await maintain('prod', false, context);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'project-context-unresolvable',
+    });
+    expect(existsSync(staleRun)).toBe(true);
+    expect(existsSync(join(currentCommonGitDir, 'coral'))).toBe(false);
+    expect(existsSync(join(fixture.home, '.coral'))).toBe(false);
+    expect(readFileSync(join(staleCommonGitDir, 'info', 'exclude'), 'utf-8')).toBe('stale-before\n');
+    expect(readFileSync(join(currentCommonGitDir, 'info', 'exclude'), 'utf-8')).toBe('current-before\n');
+    expect(readFileSync(join(projectDir, '.gitignore'), 'utf-8')).toBe('.claude/coral\n');
+    expect(readFileSync(join(projectDir, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(existsSync(link())).toBe(false);
+  });
+
+  it('refuses a stale Git root before preparing or sweeping an arena', async () => {
+    writeFileSync(join(fixture.gitDir, 'info', 'exclude'), 'exclude-before\n');
+    writeFileSync(join(projectDir, '.gitignore'), '.claude/coral\n');
+    writeFileSync(join(projectDir, '.claude', '.gitignore'), 'coral\n');
+    writeFileSync(join(root, '.gitignore'), 'parent-before\n');
+    const context = await resolveContext();
+    expect(context.gitDir).toBe(realpathSync(fixture.gitDir));
+    expect(context.gitRoot).toBe(realpathSync(projectDir));
+    const staleRun = join(repositoryArena(), '0-1');
+    mkdirSync(staleRun, { recursive: true });
+
+    fixture.gitRoot = root;
+    const result = await maintain('prod', false, context);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'project-context-unresolvable',
+    });
+    expect(existsSync(staleRun)).toBe(true);
+    expect(existsSync(join(fixture.home, '.coral'))).toBe(false);
+    expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('exclude-before\n');
+    expect(readFileSync(join(projectDir, '.gitignore'), 'utf-8')).toBe('.claude/coral\n');
+    expect(readFileSync(join(projectDir, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readFileSync(join(root, '.gitignore'), 'utf-8')).toBe('parent-before\n');
     expect(existsSync(link())).toBe(false);
   });
 
@@ -438,6 +527,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(isProjectIgnoreResult(published)).toBe(true);
     expect(readFileSync(join(fixture.gitDir, 'info', 'exclude'), 'utf-8')).toBe('/.claude/coral\n');
     expect(durabilityMarkers()).toHaveLength(1);
+    expect(readFileSync(join(repositoryArena(), durabilityMarkers()[0]))).toHaveLength(0);
 
     const unchanged = await maintain('prod');
     expect(unchanged.status).toBe('partial');
@@ -448,6 +538,7 @@ describe('project-ignore symlink maintenance', () => {
     });
     expect(isProjectIgnoreResult(unchanged)).toBe(true);
     expect(durabilityMarkers()).toHaveLength(1);
+    expect(readFileSync(join(repositoryArena(), durabilityMarkers()[0]))).toHaveLength(0);
 
     fixture.failDirectoryFsyncPath = null;
     fixture.failDirectoryFsyncCode = null;
@@ -459,6 +550,28 @@ describe('project-ignore symlink maintenance', () => {
       durability: { state: 'synced' },
     });
     expect(durabilityMarkers()).toEqual([]);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['non-empty', 'unexpected marker content'],
+  ])('treats an existing %s durability marker as pending evidence', async (_name, content) => {
+    await maintain('prod');
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    const marker = durabilityMarker(excludePath);
+    writeFileSync(marker, content);
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'unchanged',
+      residue: 'none',
+      durability: { state: 'synced' },
+    });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('reports a narrowly unsupported directory sync separately from an I/O failure', async () => {
@@ -572,16 +685,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
-  // F3: the pinned Git-directory lookup, repository top-level lookup, post-lock identity lookup, and
-  // `git remote get-url origin` (`coralProjectDir`, paid here because the recheck above needs a target) sum to
-  // 3500ms of bounded
-  // subprocess work. `session-start.mjs` used to give the child
-  // exactly that, so a child doing nothing wrong was killed while its own bounds were still running; its budget
-  // is now 5000ms. This test pins the sum so that if either bound moves, the parent's number is re-derived
-  // rather than left as a guess. Read from the two mocks'
-  // own call options rather than restated as a literal, so a change to either bound is caught here rather than
-  // only discovered against the outer timeout in production.
-  it('spends the whole 3.5s Git allowance across its four bounded subprocesses', async () => {
+  it('spends the whole 3.5s Git allowance across its five bounded subprocesses', async () => {
     await maintain('prod');
     execFileSyncMock.mockClear();
     execSyncMock.mockClear();
@@ -590,8 +694,8 @@ describe('project-ignore symlink maintenance', () => {
 
     expect(
       execFileSyncMock,
-      'Git-directory and repository-root lookups plus the post-lock identity check',
-    ).toHaveBeenCalledTimes(3);
+      'both Git-directory and repository-root resolutions around the lock',
+    ).toHaveBeenCalledTimes(4);
     expect(
       execSyncMock,
       'git remote get-url origin, to confirm the existing link is not outgrown',

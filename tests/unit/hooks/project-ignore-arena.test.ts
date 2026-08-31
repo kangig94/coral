@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   isRepositoryProjectIgnoreStagingAuthorized,
   prepareRepositoryProjectIgnoreStagingDir,
+  projectIgnoreContextRefusal,
   projectIgnoreRunDir,
   repositoryProjectIgnoreStagingDir,
   resolveProjectContext,
@@ -72,6 +73,32 @@ function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string)
 }
 
 describe('project-ignore repository arena', () => {
+  it('refuses a bare repository without classifying it as a no-repository working tree', () => {
+    const bareRepository = join(fixtureRoot, 'bare.git');
+    const plainDirectory = join(fixtureRoot, 'plain');
+    mkdirSync(bareRepository);
+    mkdirSync(plainDirectory);
+    git(bareRepository, 'init', '--bare', '--quiet');
+
+    const bareContext = resolveProjectContext(bareRepository);
+    const plainContext = resolveProjectContext(plainDirectory);
+
+    expect(bareContext).toBeNull();
+    expect(projectIgnoreContextRefusal(bareContext)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        symlink: { state: 'refused', reason: 'project-context-unresolvable' },
+      },
+    });
+    expect(plainContext).toMatchObject({
+      projectDir: realpathSync(plainDirectory),
+      gitDir: null,
+      gitRoot: realpathSync(plainDirectory),
+      commonGitDir: null,
+      excludePath: null,
+    });
+  });
+
   it('places each invocation in its startedAt-pid directory', () => {
     expect(projectIgnoreRunDir('/git/coral/staging/project-ignore', 1234, 5678)).toBe(
       join('/git/coral/staging/project-ignore', '1234-5678'),
