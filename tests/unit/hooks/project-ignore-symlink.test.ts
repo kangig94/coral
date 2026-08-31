@@ -588,11 +588,74 @@ describe('project-ignore symlink maintenance', () => {
     symlinkSync(outside, projectsRoot);
 
     const result = await maintain('prod');
+    const notices = renderProjectIgnoreResultNotices(result);
 
-    expect(result.status).toBe('partial');
-    expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'publish-failed' });
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'symlink-target-unavailable',
+    });
+    expect(notices).toEqual([
+      'The Coral symlink target is unavailable. Remedy: replace the symlink or non-directory component under ~/.coral/projects or ~/.coral/projects-dev and make that path a directory owned and writable by the current user.',
+    ]);
+    expect(notices[0]).not.toContain('It is attempted again at the next session start.');
     expect(existsSync(join(outside, 'owner-repo'))).toBe(false);
     expect(existsSync(link())).toBe(false);
+  });
+
+  it('refuses an unavailable symlink target before publishing the exclude entry', async () => {
+    const outside = join(root, 'outside-projects');
+    const projectsRoot = join(fixture.home, '.coral', 'projects');
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    mkdirSync(join(fixture.home, '.coral'));
+    mkdirSync(outside);
+    symlinkSync(outside, projectsRoot);
+    writeFileSync(excludePath, 'before\n');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'skipped',
+      reason: 'upstream-refusal',
+      residue: 'none',
+    });
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'symlink-target-unavailable',
+    });
+    expect(readFileSync(excludePath, 'utf-8')).toBe('before\n');
+  });
+
+  it('refuses an unchanged link whose target root became unavailable', async () => {
+    const outside = join(root, 'outside-projects');
+    const projectsRoot = join(fixture.home, '.coral', 'projects');
+    const target = join(projectsRoot, 'owner-repo');
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, link());
+    writeFileSync(excludePath, '/.claude/coral\n');
+    rmSync(projectsRoot, { recursive: true });
+    mkdirSync(outside);
+    symlinkSync(outside, projectsRoot);
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.exclude).toEqual({
+      state: 'skipped',
+      reason: 'upstream-refusal',
+      residue: 'none',
+    });
+    expect(result.artifacts.symlink).toEqual({
+      state: 'refused',
+      reason: 'symlink-target-unavailable',
+    });
+    expect(renderProjectIgnoreResultNotices(result)).toEqual([
+      'The Coral symlink target is unavailable. Remedy: replace the symlink or non-directory component under ~/.coral/projects or ~/.coral/projects-dev and make that path a directory owned and writable by the current user.',
+    ]);
+    expect(readFileSync(excludePath, 'utf-8')).toBe('/.claude/coral\n');
+    expect(readlinkSync(link())).toBe(target);
   });
 
   it('installs and syncs the symlink marker before the final repoint rename', async () => {
@@ -1284,6 +1347,43 @@ describe('project-ignore symlink maintenance', () => {
       expect(statSync(excludePath).mode & 0o077).toBe(0o040);
     } finally {
       process.umask(previousUmask);
+      restoreOwnerAccess(root);
+    }
+  });
+
+  it('adds owner access to a new Git info directory without overriding the umask for anyone else', async () => {
+    const infoDir = join(fixture.gitDir, 'info');
+    const excludePath = join(infoDir, 'exclude');
+    rmSync(infoDir, { recursive: true });
+    const previousUmask = process.umask(0o700);
+    try {
+      const result = await maintain('prod');
+
+      expect(result.status).toBe('complete');
+      expect(result.artifacts.exclude.state).toBe('published');
+      expect(result.artifacts.symlink.state).toBe('created');
+      expect(readFileSync(excludePath, 'utf-8')).toContain('/.claude/coral');
+      expect(statSync(infoDir).mode & 0o777).toBe(0o777);
+      expect(statSync(infoDir).mode & 0o077).toBe(0o077);
+    } finally {
+      process.umask(previousUmask);
+      restoreOwnerAccess(root);
+    }
+  });
+
+  it('repairs owner access after an interrupted Git info directory creation', async () => {
+    const infoDir = join(fixture.gitDir, 'info');
+    const excludePath = join(infoDir, 'exclude');
+    chmodSync(infoDir, 0o077);
+    try {
+      const result = await maintain('prod');
+
+      expect(result.status).toBe('complete');
+      expect(result.artifacts.exclude.state).toBe('published');
+      expect(result.artifacts.symlink.state).toBe('created');
+      expect(readFileSync(excludePath, 'utf-8')).toContain('/.claude/coral');
+      expect(statSync(infoDir).mode & 0o777).toBe(0o777);
+    } finally {
       restoreOwnerAccess(root);
     }
   });

@@ -37,6 +37,7 @@ export const PROJECT_IGNORE_REASONS = Object.freeze([
   'staging-device-mismatch',
   'publish-cross-device',
   'publish-failed',
+  'symlink-target-unavailable',
   ...DURABILITY_RECONCILIATION_REASONS,
   'staging-cleanup-failed',
   'symlink-conflict',

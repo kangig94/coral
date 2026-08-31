@@ -981,9 +981,22 @@ function excludeDevicePath(excludePath) {
   return isRealDirectory(parent) ? parent : null;
 }
 
+function ensureExcludeDirectoryOwnerAccess(excludeDir) {
+  try {
+    const stat = lstatSync(excludeDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    const mode = stat.mode & 0o777;
+    if ((mode & 0o700) !== 0o700) chmodSync(excludeDir, mode | 0o700);
+    const prepared = lstatSync(excludeDir);
+    return !prepared.isSymbolicLink() && prepared.isDirectory() && (prepared.mode & 0o700) === 0o700;
+  } catch {
+    return false;
+  }
+}
+
 function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
   const excludeDir = dirname(excludePath);
-  if (isRealDirectory(excludeDir)) return { ok: true };
+  if (ensureExcludeDirectoryOwnerAccess(excludeDir)) return { ok: true };
   const marker = durabilityMarker(durabilityDir, durabilityRunDir, excludeDir);
   if (!marker) return { ok: false, reason: 'durability-evidence-unavailable' };
   const recorded = recordPendingDurability(marker);
@@ -997,7 +1010,7 @@ function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
     if (recorded.created) safeUnlink(marker.path);
     if (error?.code !== 'EEXIST') return { ok: false };
   }
-  if (!isRealDirectory(excludeDir)) {
+  if (!ensureExcludeDirectoryOwnerAccess(excludeDir)) {
     if (recorded.created) safeUnlink(marker.path);
     return { ok: false };
   }
@@ -1021,6 +1034,9 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
         target = coralProjectDir(projectDir);
       } catch {
         return { ok: false, reason: 'publish-failed' };
+      }
+      if (!prepareCoralProjectDir(target)) {
+        return { ok: false, reason: 'symlink-target-unavailable' };
       }
     }
     return {
@@ -1047,6 +1063,9 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir) {
   } catch {
     return { ok: false, reason: 'publish-failed' };
   }
+  if (!prepareCoralProjectDir(target)) {
+    return { ok: false, reason: 'symlink-target-unavailable' };
+  }
   if (!isOutgrownCoralLink(link, target)) {
     return { ok: true, symlinkExists: true, action: 'unchanged', link, target };
   }
@@ -1059,12 +1078,6 @@ function placeCoralSymlink(symlinkPlan, token, stagingDir, durabilityDir, durabi
   if (symlinkPlan.action === 'not-requested') return { state: 'not-requested' };
 
   const target = symlinkPlan.target;
-  if (!prepareCoralProjectDir(target)) {
-    return {
-      state: 'refused',
-      reason: 'publish-failed',
-    };
-  }
   if (symlinkPlan.action === 'unchanged') return { state: 'unchanged' };
 
   const marker = durabilityMarker(durabilityDir, durabilityRunDir, symlinkPlan.link);
@@ -1197,6 +1210,17 @@ function preflightProjectIgnoreArtifacts({
   let excludeSnapshot = null;
   let excludePathDevice = null;
   if (publishExclude) {
+    const excludeDir = dirname(context.excludePath);
+    try {
+      const excludeDirStat = lstatSync(excludeDir);
+      if (
+        !excludeDirStat.isSymbolicLink() &&
+        excludeDirStat.isDirectory() &&
+        !ensureExcludeDirectoryOwnerAccess(excludeDir)
+      ) {
+        return { ok: false, artifact: 'exclude', reason: 'artifact-unreadable' };
+      }
+    } catch {}
     excludeSnapshot = readRegularSnapshot(context.excludePath, { allowMissing: true });
     if (!excludeSnapshot.ok) return { ok: false, artifact: 'exclude', reason: excludeSnapshot.reason };
     excludePathDevice = excludeDevicePath(context.excludePath);

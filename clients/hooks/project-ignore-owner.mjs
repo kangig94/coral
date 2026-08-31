@@ -7,13 +7,13 @@ import {
   openProjectIgnoreMaintenanceLock,
   projectIgnoreContextProbeDeadline,
   PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
+  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
 } from './lib/hook-utils.mjs';
 import { projectIgnoreContextRefusal, resolveProjectContext } from './lib/project-ignore.mjs';
 import { emitProjectIgnoreResult } from './lib/project-ignore-notices.mjs';
 
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
-const LOCK_UNAVAILABLE_EXIT_CODE = 69;
 
 function parseArgs(argv) {
   let projectDir;
@@ -36,20 +36,24 @@ function parseArgs(argv) {
 }
 
 const request = parseArgs(process.argv.slice(2));
-if (!request || typeof process.execve !== 'function') process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+if (!request || typeof process.execve !== 'function') {
+  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+}
 
 const ownerStartedNs = request.startedNs ?? process.hrtime.bigint().toString();
 let contextProbeDeadlineNs;
 let ownerDeadlineNs;
 try {
   const startedNs = BigInt(ownerStartedNs);
-  if (startedNs < 0 || startedNs > process.hrtime.bigint()) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  if (startedNs < 0 || startedNs > process.hrtime.bigint()) {
+    process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  }
   contextProbeDeadlineNs = projectIgnoreContextProbeDeadline(startedNs);
-  if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  if (contextProbeDeadlineNs === null) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
   ownerDeadlineNs =
     contextProbeDeadlineNs + BigInt(PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS) * 1_000_000n;
 } catch {
-  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 }
 
 const projectContext = resolveProjectContext(request.projectDir, contextProbeDeadlineNs);
@@ -58,20 +62,20 @@ if (contextRefusal) {
   emitProjectIgnoreResult(contextRefusal);
   process.exit(1);
 }
-if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 
 try {
   // `process.execve` preserves only standard descriptors, so fd 0 carries the validated lock inode into flock.
   closeSync(0);
 } catch {
-  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 }
 const lockFd = openProjectIgnoreMaintenanceLock();
 if (lockFd !== 0) {
   if (lockFd !== null) closeSync(lockFd);
-  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 }
-if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 
 try {
   const maintainerArgs = [
@@ -104,5 +108,5 @@ try {
     process.env,
   );
 } catch {
-  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 }

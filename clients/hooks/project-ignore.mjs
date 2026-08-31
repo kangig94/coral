@@ -7,10 +7,9 @@ import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
 import {
   projectIgnoreContextProbeDeadline,
   PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
+  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
 } from './lib/hook-utils.mjs';
-
-const LOCK_UNAVAILABLE_EXIT_CODE = 69;
 
 function parseArgs(argv) {
   let projectDir;
@@ -70,9 +69,11 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result
 } else {
   const request = parseArgs(process.argv.slice(2));
   if (!request) process.exit(1);
-  if (!lockWrapperWithinBudget(request.lockWrapperStartedNs)) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  if (!lockWrapperWithinBudget(request.lockWrapperStartedNs)) {
+    process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  }
   const contextProbeDeadlineNs = projectIgnoreContextProbeDeadline(request.lockWrapperStartedNs);
-  if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
+  if (contextProbeDeadlineNs === null) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
 
   try {
     const result = maintainProjectIgnore({

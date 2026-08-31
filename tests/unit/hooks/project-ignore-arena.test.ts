@@ -31,6 +31,8 @@ import {
   PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
   PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
   PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
+  PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
+  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
   PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
   PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
   PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS,
@@ -514,5 +516,21 @@ describe('project-ignore maintenance ownership', () => {
     expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');
     expect(initProject).not.toMatch(/(?:Retry|rerun) init-project/u);
     expect(initProject.match(/\/coral:init-project/gu)).toHaveLength(4);
+  });
+
+  it('pins the init-project lock branches to the hook exit-code constants', () => {
+    const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+    const conflictBranch = `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE} ]; then`;
+    const unavailableBranch = `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE} ]; then`;
+    const noOutputBranch = 'if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ] && [ -z "$CORAL_PROJECT_IGNORE_RESULT" ]; then';
+
+    expect(initProject).toContain(conflictBranch);
+    expect(initProject).toContain(unavailableBranch);
+    expect(initProject.indexOf(conflictBranch)).toBeLessThan(initProject.indexOf(noOutputBranch));
+    expect(initProject.indexOf(unavailableBranch)).toBeLessThan(initProject.indexOf(noOutputBranch));
+    expect(initProject.slice(initProject.indexOf(noOutputBranch))).toContain('CORAL_PROJECT_IGNORE_OUTCOME=no-output');
+    expect(initProject).toContain('2>"$CORAL_PROJECT_IGNORE_STDERR_FILE"');
+    expect(initProject).toContain('printf \'%s\\n\' "$CORAL_PROJECT_IGNORE_STDERR" >&2');
   });
 });

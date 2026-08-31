@@ -74,6 +74,11 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
       'The filesystem refused an artifact update. Remedy: check permissions and free space for the project and its Git metadata.',
     retryable: true,
   },
+  'symlink-target-unavailable': {
+    sentence:
+      'The Coral symlink target is unavailable. Remedy: replace the symlink or non-directory component under ~/.coral/projects or ~/.coral/projects-dev and make that path a directory owned and writable by the current user.',
+    retryable: false,
+  },
   'durability-evidence-unavailable': {
     sentence:
       'Coral could not record pending durability outside the working tree. Remedy: make the authorized project-ignore staging arena a writable real directory on a filesystem that supports directory fsync, then retry the maintenance.',
