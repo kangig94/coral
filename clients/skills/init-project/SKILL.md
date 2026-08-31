@@ -286,10 +286,11 @@ argument-hint: "[existing|new]"
   cp -r "$STAGING/dot-claude/"* .claude/ && rm -rf "$STAGING"
   ```
 
-  Then run Coral's shared project-ignore maintainer. It safely writes the scoped
-  ignore first, migrates the legacy Git-root entry, and only then creates the symlink.
-  This is the same bounded, atomic implementation used by SessionStart; do not
-  reimplement these mutations with shell text processing.
+  Then run Coral's shared project-ignore maintainer. It preflights the complete change,
+  writes the anchored `.git/info/exclude` entry, creates or reuses the symlink, and then
+  retracts Coral-owned scoped and Git-root lines. This is the same bounded, atomic
+  implementation used by SessionStart; do not reimplement these mutations with shell
+  text processing.
 
   ```bash
   CORAL_PROJECT_IGNORE_SCRIPT="{skill_base_dir}/../../hooks/project-ignore.mjs"
@@ -332,16 +333,40 @@ argument-hint: "[existing|new]"
     echo "Coral project-ignore setup could not open the maintenance lock or launch its owner. Ensure ~/.coral/staging is writable and flock is executable, then retry." >&2
     exit 1
   fi
+  case "$CORAL_PROJECT_IGNORE_RESULT" in
+    *'"status":"complete"'*) CORAL_PROJECT_IGNORE_RESULT_STATUS=complete ;;
+    *'"status":"partial"'*) CORAL_PROJECT_IGNORE_RESULT_STATUS=partial ;;
+    *'"status":"refused"'*) CORAL_PROJECT_IGNORE_RESULT_STATUS=refused ;;
+    *)
+      echo "Coral project-ignore setup returned an unreadable result. Inspect the reported JSON and retry." >&2
+      exit 1
+      ;;
+  esac
+  if [ "$CORAL_PROJECT_IGNORE_RESULT_STATUS" = partial ]; then
+    echo "CORAL_PROJECT_IGNORE_OUTCOME=partial" >&2
+    printf 'CORAL_PROJECT_IGNORE_RESULT=%s\n' "$CORAL_PROJECT_IGNORE_RESULT" >&2
+    echo "Coral project-ignore setup changed at least one artifact, then another artifact refused. Inspect CORAL_PROJECT_IGNORE_RESULT, resolve its refusal and retry." >&2
+    exit 1
+  fi
+  if [ "$CORAL_PROJECT_IGNORE_RESULT_STATUS" = refused ]; then
+    echo "CORAL_PROJECT_IGNORE_OUTCOME=refused" >&2
+    printf 'CORAL_PROJECT_IGNORE_RESULT=%s\n' "$CORAL_PROJECT_IGNORE_RESULT" >&2
+    echo "Coral project-ignore setup refused before making progress. Inspect CORAL_PROJECT_IGNORE_RESULT, resolve its refusal and retry." >&2
+    exit 1
+  fi
   if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ]; then
-    echo "Coral project-ignore setup failed; the legacy ignore entry was preserved. Resolve unsafe or unwritable ignore paths, then retry." >&2
+    echo "Coral project-ignore setup reported complete with an inconsistent process exit. Inspect CORAL_PROJECT_IGNORE_RESULT and retry." >&2
     exit 1
   fi
   ```
 
   Keep `CORAL_PROJECT_IGNORE_RESULT` for the Phase 6 report. A successful result
-  confirms that `.claude/.gitignore` carries the entries Coral owns — a standalone
-  `coral` line, and `*.coral-*.tmp` for its own interrupted atomic writes — before
-  any legacy protection is removed.
+  confirms that `.git/info/exclude` carries Coral's anchored project-relative symlink
+  entry and that the Coral-owned standalone `coral` line was retracted from
+  `.claude/.gitignore`. Coral no longer owns or adds any scoped ignore line, including
+  `*.coral-*.tmp`; the manifest verifies their absence. A partial result records changes
+  that already happened; report them from the artifact dispositions instead of
+  describing the run as refused.
 
   ## Phase 6: Report
 
@@ -358,8 +383,9 @@ argument-hint: "[existing|new]"
 
   ### Updated (stale content corrected)
   - {files with targeted edits, what was changed and why}
-  - {report the project-ignore migration result: generated/updated `.claude/.gitignore`,
-    removed legacy Git-root entry when present, and created/reused `.claude/coral`}
+  - {report the project-ignore migration result by status and artifact disposition:
+    anchored `.git/info/exclude` entry, removed Coral-owned scoped and Git-root lines
+    when present, and created/reused `.claude/coral`}
 
   ### Note
   {If CLAUDE.md was enhanced/updated: mention what was added/changed vs preserved}
@@ -387,7 +413,8 @@ argument-hint: "[existing|new]"
   | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Template | `.claude/templates/AGENT.md` | Must NOT be created | Internal template — not deployed to user project |
   | Skills | `.claude/skills/tier-review/SKILL.md` | Must exist | `name: tier-review` in frontmatter |
-  | Ignore | `.claude/.gitignore` | Must exist | Standalone `coral` line, and a `*.coral-*.tmp` line |
+  | Ignore | `.git/info/exclude` | For a Git repository | Anchored, literal-escaped project-relative `.claude/coral` entry |
+  | Ignore | `.claude/.gitignore` | If it exists | Coral-owned standalone `coral` and `*.coral-*.tmp` lines absent; every other byte preserved |
   | Ignore | Git-root `.gitignore` | If it contained Coral's legacy project entry | Exact legacy entry absent; every other byte preserved |
   | Link | `.claude/coral` | Must exist as a symlink | Resolves to `CORAL_PROJECT` |
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
@@ -422,5 +449,6 @@ argument-hint: "[existing|new]"
   | Domain reference file not found | Proceed with available references, note the missing domain |
   | Template file not found | FIRST confirm genuine absence with a full `find {skill_base_dir}/templates -type f` (no `-maxdepth`, no `grep`) — a partial or filtered listing has falsely triggered this fallback. Only then report for that artifact and continue |
   | File already exists | Follow merge rule from plan: enhance (append missing sections) or update (patch stale content). Preserve non-cited content. Include in report as enhanced/updated |
-  | Project-ignore maintainer fails | STOP Phase 5. Report that legacy protection remains in place; repair unsafe, oversized, or unwritable ignore paths before retrying |
+  | Project-ignore maintainer returns `partial` | STOP Phase 5. Report every completed artifact disposition and the refusal; do not claim earlier changes were rolled back |
+  | Project-ignore maintainer returns `refused` | STOP Phase 5. Report the refusal and repair the named unsafe, oversized, or unwritable path before retrying |
 </Error_Handling>

@@ -96,14 +96,19 @@ const PROJECT_IGNORE_REASON_NOTICES = {
       'The project .claude path is not a real directory. Remedy: replace that file or symlink with a real directory before requesting the Coral symlink.',
     retryable: false,
   },
+  'repository-arena-unavailable': {
+    sentence:
+      'Coral could not prepare its staging arena in the authorized common Git directory. Remedy: replace any coral arena symlink or non-directory component and make the common Git directory writable.',
+    retryable: true,
+  },
   'staging-device-mismatch': {
     sentence:
-      'The working tree and its common Git directory are on different devices, so Coral cannot safely replace an existing artifact. Remedy: place them on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
+      'The target and its authorized staging arena are on different devices, so Coral cannot safely replace an existing artifact. Remedy: place them on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
     retryable: false,
   },
   'publish-cross-device': {
     sentence:
-      'The filesystem rejected an atomic replacement across devices. Remedy: place the working tree and its common Git directory on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
+      'The filesystem rejected an atomic replacement across devices. Remedy: place the target and its authorized staging arena on the same filesystem or update the affected ignore file or .claude/coral symlink manually.',
     retryable: false,
   },
   'publish-failed': {
@@ -113,7 +118,7 @@ const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'staging-cleanup-failed': {
     sentence:
-      'Coral published the artifact but could not remove its owned staging file. Remedy: make the common Git directory\'s coral/staging/project-ignore directory writable.',
+      'Coral published the artifact but could not remove its owned staging file. Remedy: make the authorized project-ignore staging arena writable.',
     retryable: true,
   },
   'symlink-conflict': {
@@ -133,7 +138,7 @@ const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'upstream-refusal': {
     sentence:
-      'A later artifact was skipped because an earlier artifact refused. Remedy: resolve the earlier refusal reported in this notice.',
+      'A later artifact was skipped because an earlier artifact did not complete cleanly. Remedy: resolve the earlier failure reported in this notice.',
     retryable: false,
   },
 };
@@ -307,7 +312,7 @@ try {
     legacySweep?.state === 'cleaned'
       ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s): .gitignore.coral-<pid>-<timestamp>.tmp beside the Git-root .gitignore or project .claude/.gitignore, and coral.coral-<pid>-<timestamp>.tmp beside project .claude/coral.`
       : legacySweep?.state === 'refused'
-        ? `Coral project-ignore maintenance could not remove authorized legacy staging path ${legacySweep.path}.`
+        ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s), then could not remove authorized legacy staging path ${legacySweep.path}.`
         : null;
   const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
   const ignoreRefusalNotices = projectIgnoreRefusalNotices(ignoreOutcome.maintenance);

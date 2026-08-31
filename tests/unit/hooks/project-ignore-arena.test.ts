@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  isRepositoryProjectIgnoreStagingAuthorized,
   prepareRepositoryProjectIgnoreStagingDir,
   projectIgnoreRunDir,
   repositoryProjectIgnoreStagingDir,
@@ -59,6 +60,7 @@ function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string)
   const context = resolveProjectContext(projectDir);
   expect(context).not.toBeNull();
   expect(context.commonGitDir).toBe(realpathSync(expectedCommonGitDir));
+  expect(isRepositoryProjectIgnoreStagingAuthorized(context)).toBe(true);
 
   const expected = repositoryProjectIgnoreStagingDir(context.commonGitDir);
   const arena = prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir);
@@ -99,6 +101,18 @@ describe('project-ignore repository arena', () => {
     git(repository, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', source, 'module');
 
     expectRepositoryArena(join(repository, 'module'), join(repository, '.git', 'modules', 'module'));
+  });
+
+  it('does not authorize a separate Git directory inside the working tree', () => {
+    const repository = join(fixtureRoot, 'separate');
+    mkdirSync(repository);
+    git(repository, 'init', '--quiet', '--separate-git-dir=.metadata');
+
+    const context = resolveProjectContext(repository);
+    expect(context).not.toBeNull();
+    expect(context.commonGitDir).toBe(realpathSync(join(repository, '.metadata')));
+    expect(isRepositoryProjectIgnoreStagingAuthorized(context)).toBe(false);
+    expect(existsSync(join(repository, '.metadata', 'coral'))).toBe(false);
   });
 
   it('rejects a symlink or non-directory arena component', () => {

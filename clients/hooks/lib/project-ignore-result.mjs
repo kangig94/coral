@@ -23,6 +23,7 @@ const REASONS = new Set([
   'artifact-changed',
   'claude-directory-missing',
   'claude-directory-invalid',
+  'repository-arena-unavailable',
   'staging-device-mismatch',
   'publish-cross-device',
   'publish-failed',
@@ -58,9 +59,11 @@ function validateSweep(value, legacy) {
   if (value.state === 'refused') {
     if (legacy) {
       return (
-        hasExactKeys(value, ['state', 'reason', 'path']) &&
+        hasExactKeys(value, ['state', 'reason', 'path', 'count']) &&
         hasReason(value, 'legacy-sweep-failed') &&
-        isLegacyWorkingTreeStagingPath(value.path)
+        isLegacyWorkingTreeStagingPath(value.path) &&
+        Number.isSafeInteger(value.count) &&
+        value.count >= 0
       );
     }
     return hasExactKeys(value, ['state', 'reason']) && hasReason(value, 'arena-sweep-failed');
@@ -75,10 +78,19 @@ function validateReplacement(value, states) {
   if (!isRecord(value) || !states.includes(value.state) || !['none', 'owned-staging'].includes(value.residue)) {
     return false;
   }
-  if (value.state === 'published' && value.residue === 'owned-staging') {
-    return hasExactKeys(value, ['state', 'reason', 'residue']) && hasReason(value, 'staging-cleanup-failed');
+  if (value.residue === 'owned-staging') {
+    if (value.state === 'published') {
+      return hasExactKeys(value, ['state', 'reason', 'residue']) && hasReason(value, 'staging-cleanup-failed');
+    }
+    return (
+      value.state === 'refused' &&
+      hasExactKeys(value, ['state', 'reason', 'residue']) &&
+      hasReason(value) &&
+      !['upstream-refusal', 'staging-cleanup-failed', 'legacy-sweep-failed', 'arena-sweep-failed'].includes(
+        value.reason,
+      )
+    );
   }
-  if (value.residue !== 'none') return false;
   if (value.state === 'refused') {
     return (
       hasExactKeys(value, ['state', 'reason', 'residue']) &&
@@ -139,7 +151,8 @@ export function projectIgnoreStatus(artifacts) {
   const hasProgress = selected.some(
     (artifact) =>
       ['cleaned', 'published', 'created', 'repointed'].includes(artifact.state) ||
-      artifact.residue === 'owned-staging',
+      artifact.residue === 'owned-staging' ||
+      (artifact.state === 'refused' && Number.isSafeInteger(artifact.count) && artifact.count > 0),
   );
   if (!hasFailure) return 'complete';
   return hasProgress ? 'partial' : 'refused';
