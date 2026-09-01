@@ -89,6 +89,30 @@ the exact binding captured by the session; it cannot retarget the work to a curr
 captured provider profile and subject can make the retry viable, but no current command can substitute a
 different binding.
 
+## Re-measured 2026-09-01 — the pair is not a pair, and one row is disposable now
+
+Read from `~/.coral/gen2/data/store/store.db` rather than from the status line, because this document's
+own lesson is that a total sampled at intervals is not a measurement.
+
+`session-retention-work` now stands at **eight** rows, not two. Seven carry the binding refusal: the two
+from 08-15, then 08-23, 08-27, and four on 08-29. None of the seven has any
+`session.retention.discard.completed` or `.failed` event on its session, so all seven are genuinely
+un-terminal and the disposition question above is the live one for them. What changed is that the
+question is not about a closed pair: something kept producing them for two weeks after this was written,
+so a decision that only disposes of the existing rows leaves the producer.
+
+The eighth is a different state. Subject `01688ce7-8e7e-4967-8228-1e1e7c7b5dd6`, detected 08-23,
+`state=continuation`, held under the fixed checkpoint message `retention discard remains in progress`
+that `persistRetentionContinuation` writes for every stage. Its journal already carries
+`session.retention.discard.completed` with `outcome=discarded`, so `hasTerminalRetentionDiscardOutcome`
+answers true and `enforceRetention` retires it before it can reach `readyBoundProvider` — no binding is
+needed. It is disposable by a single `clear` and has been for nine days.
+
+That row belongs to the first item above, not the second: nothing re-evaluates a quarantined subject. The
+first item was written about `active` rows whose scan no longer yields them, and a `continuation` row
+whose work has since completed is the same absence reached from a third direction. A startup pass that
+re-evaluated quarantined subjects would empty it without an operator knowing the row exists.
+
 ## Explicitly out of scope
 
 #311 itself, the quarantine mechanism, and #316's disposition. This is about what happens to rows a

@@ -24,8 +24,15 @@ rather than an edited-clean text, because the corrections are the part that does
 
 Added 2026-08-17, when seven entries arrived at once and the index could say what each one was but not
 which could be started. The sections below group by the **cause** an entry shares with its neighbours;
-this one orders by **what has to be true before it can be worked**. An entry appears here only if that
-ordering is not obvious from its own start condition.
+this one ordered by **what has to be true before it can be worked**, until the re-ordering below replaced
+that axis. An entry appears here only if that ordering is not obvious from its own start condition.
+
+**Re-ordered 2026-09-01, from what a release needs.** The previous ordering asked what has to be true
+before an entry can be worked, and kept the suite load first because no gate result is trustworthy while it
+can starve the live coordinator. That is still true and is still the reason the load matters — but the suite
+entry is half closed and its remainder wants an observed flake, so it cannot lead. What leads now is what
+0.10.10 cannot ship without, followed by what the 0.10.9..main diff has made cheap while that code is still
+warm.
 
 **One decision blocks four documents.** `build-identity-and-upgrade`, `jobs-read-contract-schema-first`
 and `result-artifact-availability` are the same transition — an older and a newer build reading each
@@ -50,19 +57,41 @@ out of scope — adjacent, not joint. And `darwin-signal-authority` states it do
 `kb-daemon-independent-containment` or `wedged-coordinator-self-drain`: it is about the authority to
 signal a correctly identified target, they are about there being no party left to signal at all.
 
-**Why the suite load is first.** A suite run saturates the one filesystem that the repo, `~/.coral` and
-`/tmp` all share, and a coordinator blocked mid-fsync holds the store lock and misses its heartbeat. The
-messaging defects that misread those symptoms are fixed; the load that produces them is not, and no gate
-result is trustworthy while it can starve the live coordinator.
+**Why the escalation is first.** It stopped being an argument on 2026-09-01, when the failure was met head-on
+during unrelated work. A coordinator refused a handoff it could not complete; the sentence naming the exact
+repair went to `coordinator.log` and nowhere else. What the operator's three commands said instead:
+`coral-cli wait` returned a generic `backend_unreachable`; `backend status` said **"Backend not running. Any
+coral-cli mutating command relaunches it"**, which was false, because nothing could; and `backend shutdown`
+answered `not_running`, because it reads the recorded pid while a different process held the socket.
+Recovering meant reading the log by hand and finding the holder with `ss -xlp`. Every refusal Coral has been
+taught to make now names an exit; this one already had the best sentence in the system and no delivery.
+
+**What the 0.10.9..main diff made cheap.** Twenty-one commits across 315 files, dominated by a new
+handoff-routing subsystem, a provable build identity, the coordinator socket address, the file-mode
+discipline under a shared root, and two comment sweeps. Entries sitting on that code are cheapest now:
+the compatibility policy because 0.10.10 is the release that exercises it, the comment ledger because the
+sweep that filled it just landed, and `exec-result-overclaim` because both its members were found in the
+branch that became the build-identity work.
+
+**One suspicion, checked and dismissed, so nobody re-derives it.** `src/store/schema.sql` gained
+`projection_jobs.work_dir` and a `CHECK` constraint since 0.10.9, and the store format fingerprint is a hash
+over the DDL, so 0.10.10 ships a new store format. That is not a principle-10 problem: `v0.10.9` already
+carries `newer-incompatible` and `current-selection-newer-store`, so an older build meeting the newer store
+refuses to open it rather than failing on the constraint. The compatibility policy below is still worth
+settling first, but not because the schema change is unsafe.
 
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | **Half closed.** The store fixtures that manufactured most of the load are gone from the concurrent tier and an invariant keeps them out. What remains is the cap itself and 22 real sleeps totalling 1.4 s — under 1% of wall time, so the case for them is flake, not load, and it wants an observed flake to start from. |
-| 2     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others. The routing-reason step is closed; this entry still carries the record direction behind the compatibility policy and the independent output direction. |
-| 3     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
-| 4     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
-| 5     | `coordinator-process-disposition`                           | After `provider-operation-admission-hold` has settled the recovery boundary the custody transfer has to attach to.                                                                          |
-| 6     | `foreign-capsule-retirement-terminal-recovery`              | After `provider-operation-admission-hold` or `coordinator-process-disposition`, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
+| 1     | [`handoff-escalation-never-reaches-the-operator`](./handoff-escalation-never-reaches-the-operator.md) | **Observed 2026-09-01.** A real escalation surfaces to the operator as a timeout and a false "not running". Needs one decision — whether a coordinator-internal failure joins the CLI's documented error vocabulary — and no reproduction. |
+| 2     | [`preflight-cannot-defer`](./preflight-cannot-defer.md)     | A preflight that could not check terminalizes the job it could not check, so the job dies carrying a sentence that is not true. Both providers already observe the third answer; carrying it across one boundary is a change to a contract every provider implements. |
+| 3     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others, and 0.10.10 is the release that exercises it: the store DDL changed, so this build ships a new format fingerprint. The routing-reason step is closed; this entry still carries the record direction and the independent output direction. |
+| 4     | [`comment-sweep-bug-ledger`](./comment-sweep-bug-ledger.md) | A ledger of defects the sweeps deliberately did not fix. Draining it is cheapest immediately after the sweep that filled it, which has just landed.        |
+| 5     | [`exec-result-overclaim`](./exec-result-overclaim.md)       | Two small independent members, each with a correct sibling in the same file, both found in the branch that became the build-identity work.                 |
+| 6     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | **Half closed**, and the reason it used to lead still holds: a suite run saturates the one filesystem the repo, `~/.coral` and `/tmp` share, and a coordinator blocked mid-fsync holds the store lock and misses its heartbeat. What remains is the cap itself and 22 real sleeps totalling 1.4 s — under 1% of wall time — so the case for them is flake, and it wants an observed flake to start from. |
+| 7     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
+| 8     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
+| 9     | `coordinator-process-disposition`                           | After `provider-operation-admission-hold` has settled the recovery boundary the custody transfer has to attach to.                                                                          |
+| 10    | `foreign-capsule-retirement-terminal-recovery`              | After `provider-operation-admission-hold` or `coordinator-process-disposition`, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
 
 **Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` **was observed on 2026-08-23** and
 its start condition is met — a coordinator held in uninterruptible sleep on an ext4 journal commit, long
@@ -81,6 +110,9 @@ hold when no evidence will — not a step in code.
 and the rest is a port-shape decision that would be the first of its kind, so it wants either a report of a
 misfiled memo, or a discuss continuation that stopped matching its source, or a general ruling on dispositions
 in `RuntimePaths`.
+`run-directory-residue` stays observation-only, and a second census on 2026-09-01 found the same two shapes
+alive — 26 backend processes, several over an hour old, and a run directory of several hundred provider
+sockets. Still no attribution, which is what it asks for.
 
 ---
 
