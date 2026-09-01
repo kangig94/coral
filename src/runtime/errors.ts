@@ -26,7 +26,7 @@ export type OperatorFacingCoralSetupError =
       userMessage: string;
       remediation: string;
     }>
-  | Readonly<{ kind: 'unrecognized_code' }>
+  | Readonly<{ kind: 'unrecognized_code'; code: string }>
   | Readonly<{ kind: 'invalid_diagnostic' }>;
 
 export type DocumentedCoralSetupErrorCode =
@@ -35,6 +35,10 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
   | 'startup_bundle_unresolvable'
+  | 'backend_remote_bind_requires_opt_in'
+  | 'backend_remote_bind_invalid_allowlist'
+  | 'backend_remote_bind_requires_access_policy'
+  | 'system_provider_scope_invalid'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
   | 'coordinator_socket_dir_insecure'
@@ -365,6 +369,36 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
     remediation: (context) =>
       `Reinstall or update the Coral plugin at ${stringContextValue(context, 'pluginRoot', '<plugin-root>')} so its bridge bundle and manifest are present, then start Coral again.`,
+  },
+  backend_remote_bind_requires_opt_in: {
+    userMessage: (context) =>
+      `Refusing to bind Coral backend to non-loopback host '${stringContextValue(context, 'bindHost', '<bind-host>')}' without CORAL_BACKEND_ALLOW_REMOTE=1.`,
+    remediation:
+      'Use loopback-only CORAL_BACKEND_BIND (127.0.0.1, ::1, or localhost), or set CORAL_BACKEND_ALLOW_REMOTE=1 only when remote backend exposure is intentional and protected by a trusted network boundary.',
+  },
+  backend_remote_bind_invalid_allowlist: {
+    userMessage: (context) =>
+      `Invalid CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST entry '${stringContextValue(context, 'invalidEntry', '<invalid-address>')}'.`,
+    remediation:
+      'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST currently accepts comma-separated IP address literals only; use CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
+  },
+  backend_remote_bind_requires_access_policy: {
+    userMessage: (context) =>
+      `Refusing to bind Coral backend to non-loopback host '${stringContextValue(context, 'bindHost', '<bind-host>')}' without a remote access policy.`,
+    remediation:
+      'Set CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST to a comma-separated list of trusted client IP addresses, or set CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
+  },
+  system_provider_scope_invalid: {
+    userMessage: (context) => {
+      const scopeName = stringContextValue(context, 'scopeName', '');
+      return scopeName.length > 0
+        ? `Named system provider scope '${scopeName}' is invalid.`
+        : 'CORAL_SYSTEM_PROVIDER_SCOPE is not a valid named system provider scope.';
+    },
+    remediation: (context) =>
+      stringContextValue(context, 'scopeName', '').length > 0
+        ? 'Edit CORAL_SYSTEM_PROVIDER_SCOPE, remove the duplicate or invalid provider entry, and restart Coral.'
+        : 'Set CORAL_SYSTEM_PROVIDER_SCOPE to a strict JSON object with origin "system", a non-empty name, and canonical provider profiles, or unset it to disable HTTP/internal provider execution.',
   },
   coordinator_socket_in_use: {
     userMessage: (context) =>
@@ -1218,7 +1252,15 @@ export function isSerializedCoralSetupError(error: unknown): error is Serialized
   );
 }
 
-const OPERATOR_FACING_SETUP_ERROR_CONTEXT: CoralSetupErrorContext = Object.freeze({
+const MAX_OPERATOR_FACING_CONTEXT_STRING_LENGTH = 512;
+const MAX_OPERATOR_FACING_CONTEXT_NUMBER = 1_000_000_000_000;
+const SETUP_ERROR_IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const OPERATOR_FACING_CONTEXT_KEY_PATTERN = /^[a-z][A-Za-z0-9]*$/;
+const OPERATOR_FACING_CONTEXT_STRING_PATTERN = /^[A-Za-z0-9 ._/:@+,=()[\]{}%#&!?~-]+$/;
+const MAX_SETUP_ERROR_IDENTIFIER_LENGTH = 128;
+const MAX_OPERATOR_FACING_CONTEXT_KEY_LENGTH = 128;
+
+const OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS: CoralSetupErrorContext = Object.freeze({
   stage: 'before-signal',
   pid: '<pid>',
   signal: '<signal>',
@@ -1232,18 +1274,115 @@ const OPERATOR_FACING_SETUP_ERROR_CONTEXT: CoralSetupErrorContext = Object.freez
   policy: '<handoff-policy>',
 });
 
-export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacingCoralSetupError {
-  if (!isRecord(error) || typeof error.code !== 'string') {
-    return { kind: 'invalid_diagnostic' };
+const OPERATOR_FACING_CLOSED_CONTEXT_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  stage: new Set<HandoffRefusalContextByCode[HandoffRefusalCode]['stage']>([
+    'before-signal',
+    'after-rejected-signal',
+    'after-accepted-signal-bind',
+    'after-accepted-signal-failure',
+    'after-sigterm-grace',
+    'after-sigkill-grace',
+    'shutdown-request',
+    'handoff-deadline',
+  ]),
+  signal: new Set(['SIGTERM', 'SIGKILL']),
+  requestedSignal: new Set(['SIGTERM', 'SIGKILL']),
+  previousSignal: new Set(['SIGTERM', 'SIGKILL']),
+  policy: new Set(['manual', 'term-only']),
+});
+
+function parseSetupErrorIdentifier(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MAX_SETUP_ERROR_IDENTIFIER_LENGTH ||
+    !SETUP_ERROR_IDENTIFIER_PATTERN.test(value)
+  ) {
+    return null;
   }
-  if (documentedCoralSetupErrorSpec(error.code) === undefined) {
-    return { kind: 'unrecognized_code' };
+  return value;
+}
+
+function parseOperatorFacingContextKey(value: string): string | null {
+  if (
+    value.length === 0 ||
+    value.length > MAX_OPERATOR_FACING_CONTEXT_KEY_LENGTH ||
+    !OPERATOR_FACING_CONTEXT_KEY_PATTERN.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function canonicalOperatorFacingContextValue(key: string, value: unknown): unknown | undefined {
+  if (key === 'missingFields') {
+    if (
+      !Array.isArray(value) ||
+      value.length === 0 ||
+      value.length > 3 ||
+      !value.every(
+        (field): field is MissingSignalCapabilityField =>
+          field === 'instanceId' || field === 'token' || field === 'bootToken',
+      )
+    ) {
+      return undefined;
+    }
+    return [...new Set(value)];
   }
 
-  const code = error.code as DocumentedCoralSetupErrorCode;
+  if (typeof value === 'string') {
+    if (
+      value.length === 0 ||
+      value.length > MAX_OPERATOR_FACING_CONTEXT_STRING_LENGTH ||
+      value !== value.trim() ||
+      !OPERATOR_FACING_CONTEXT_STRING_PATTERN.test(value)
+    ) {
+      return undefined;
+    }
+    const closedValues = OPERATOR_FACING_CLOSED_CONTEXT_VALUES[key];
+    return closedValues === undefined || closedValues.has(value) ? value : undefined;
+  }
+
+  if (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_OPERATOR_FACING_CONTEXT_NUMBER
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function operatorFacingSetupErrorContext(value: unknown): CoralSetupErrorContext {
+  const context = { ...OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS };
+  if (!isRecord(value)) return context;
+
+  for (const [key, raw] of Object.entries(value)) {
+    if (parseOperatorFacingContextKey(key) === null) continue;
+    const canonical = canonicalOperatorFacingContextValue(key, raw);
+    if (canonical !== undefined) context[key] = canonical;
+  }
+  return context;
+}
+
+export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacingCoralSetupError {
+  if (!isRecord(error)) {
+    return { kind: 'invalid_diagnostic' };
+  }
+  const parsedCode = parseSetupErrorIdentifier(error.code);
+  if (parsedCode === null) {
+    return { kind: 'invalid_diagnostic' };
+  }
+  if (documentedCoralSetupErrorSpec(parsedCode) === undefined) {
+    return { kind: 'unrecognized_code', code: parsedCode };
+  }
+
+  const code = parsedCode as DocumentedCoralSetupErrorCode;
   let authored: CoralSetupError;
   try {
-    authored = documentedCoralSetupError(code, OPERATOR_FACING_SETUP_ERROR_CONTEXT);
+    authored = documentedCoralSetupError(code, operatorFacingSetupErrorContext(error.context));
   } catch {
     return { kind: 'invalid_diagnostic' };
   }

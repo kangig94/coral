@@ -764,9 +764,11 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
       'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
     );
   } else if (result.setupError.kind === 'unrecognized_code') {
-    lines.push('Cause: Coral recorded a setup refusal whose code this build does not document.');
     lines.push(
-      'Next step: update Coral to a build that documents the recorded setup-error code, then rerun coral-cli backend status; recognition by that build ends this hold and reveals the authored remediation.',
+      `Cause: Coral recorded a setup refusal whose code this build does not document. [code=${result.setupError.code}]`,
+    );
+    lines.push(
+      "Next step: inspect the coordinator log for that code, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
     );
   } else if (result.setupError.kind === 'invalid_diagnostic') {
     lines.push('Cause: Coral recorded a setup refusal whose authored text could not be reconstructed.');

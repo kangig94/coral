@@ -1108,6 +1108,16 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
           },
         });
       }
+      if (signalPolicy === 'manual') {
+        throw new HandoffEscalationError({
+          code: 'handoff_manual_policy',
+          context: {
+            stage: 'before-signal',
+            pid: incumbent.pid,
+            policy: 'manual',
+          },
+        });
+      }
       incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth, {
         stage: 'before-signal',
         pid: incumbent.pid,
@@ -1116,15 +1126,6 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
         stage: 'before-signal',
         pid: incumbent.pid,
       };
-      if (signalPolicy === 'manual') {
-        throw new HandoffEscalationError({
-          code: 'handoff_manual_policy',
-          context: {
-            ...beforeSignal,
-            policy: 'manual',
-          },
-        });
-      }
       const anchoredIncarnation = signalAnchorFor(incumbent.pid);
       if (verifySignalTarget(incumbent, anchoredIncarnation, opts.runtime.process, platform, beforeSignal) === 'gone') {
         backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);

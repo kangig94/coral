@@ -1,6 +1,6 @@
 import { processIncarnationSchema } from '../../infra/node-process.js';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { backendLog } from '../../infra/backend-log.js';
@@ -23,6 +23,7 @@ import {
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { TimePort } from '../../infra/port-types.js';
+import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
@@ -967,7 +968,18 @@ async function executeResolvedHandoff(
 
       executionPhase.current = 'target-authority';
       const execution = withValidatedHandoffTarget(routing.target);
-      const expectedStartupAttemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
+      const startup =
+        operation.kind === 'backend-startup'
+          ? {
+              identity: {
+                version: execution.manifest.version,
+                bundleHash: execution.manifest.bundleHash,
+                flavor: execution.manifest.flavor,
+                namespace: pluginRootNamespace(dirname(execution.bundleDir)),
+              } satisfies StartupAttemptIdentity,
+              expectedAttemptId: runtime.env.get('CORAL_STARTUP_ATTEMPT_ID'),
+            }
+          : undefined;
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : 'coral-cli.cjs';
       const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
       const spawnOptions: SpawnOptions = {
@@ -985,14 +997,14 @@ async function executeResolvedHandoff(
       const childObservation = observeChild(child);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
-      if (operation.kind === 'backend-startup') {
+      if (startup !== undefined) {
         child.unref();
         const startupObservation = await waitForBackendStartupObservation(
           childObservation,
           runtime,
           time,
-          execution.manifest,
-          expectedStartupAttemptId,
+          startup.identity,
+          startup.expectedAttemptId,
           signal,
         );
         return {

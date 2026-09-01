@@ -2086,6 +2086,41 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([]);
   });
 
+  it('manual signal policy remains decisive when deadline discovery is unavailable', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 1357,
+      incarnation: testIncarnation(901),
+      source: 'health',
+    };
+    let discoveryReads = 0;
+    const { options, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      signalPolicy: 'manual',
+      readDiscovery: () => {
+        discoveryReads += 1;
+        return discoveryReads === 1
+          ? {
+              ...verifiedIdentity,
+              source: 'discovery',
+              bootToken: 'boot-token',
+              shutdownToken: 'shutdown-token',
+            }
+          : null;
+      },
+    });
+
+    const outcome = await bindWithHandoff(options).catch((e: Error) => e);
+
+    expectHandoffRefusal(outcome, 'handoff_manual_policy', {
+      stage: 'before-signal',
+      pid: 1357,
+      policy: 'manual',
+    });
+    expect(discoveryReads).toBe(1);
+    expect(killCalls).toEqual([]);
+  });
+
   it('refuses to signal when fresh discovery lacks signal capability fields', async () => {
     const verifiedIdentity: IncumbentIdentity = {
       pid: 9753,

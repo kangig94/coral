@@ -35,4 +35,26 @@ describe('startup attempt lineage', () => {
     ).toEqual({ kind: 'proven-other-attempt', proof: 'different-startup-attempt-id' });
     expect(resolveStartupAttemptLineage({ desiredIdentity })).toEqual({ kind: 'unknown' });
   });
+
+  it('does not prove lineage from an identity that cannot state its namespace', () => {
+    const observedIdentity = {
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod' as const,
+      namespace: 'observed-namespace',
+    };
+
+    expect(
+      resolveStartupAttemptLineage({
+        observedIdentity,
+        // A canonical startup identity must state the namespace that owns its coordinator address.
+        // @ts-expect-error Intentionally exercise a non-canonical caller at the runtime boundary.
+        desiredIdentity: {
+          version: observedIdentity.version,
+          bundleHash: observedIdentity.bundleHash,
+          flavor: observedIdentity.flavor,
+        },
+      }),
+    ).toEqual({ kind: 'unknown' });
+  });
 });

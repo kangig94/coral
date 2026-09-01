@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -29,6 +29,7 @@ import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routin
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import type { TimePort } from '#src/infra/port-types.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { withValidatedHandoffTarget, type ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type * as RealRuntimeMod from '#src/runtime/real.js';
@@ -173,13 +174,13 @@ function createBundle(): string {
   return root;
 }
 
-function liveHealth(bundleDir?: string): LiveIncumbentHealth {
+function liveHealth(bundleDir?: string, namespace = 'handoff-runner'): LiveIncumbentHealth {
   return {
     status: 'ok',
     version: manifest.version,
     bundleHash: manifest.bundleHash,
     flavor: manifest.flavor,
-    namespace: 'handoff-runner',
+    namespace,
     instanceId: 'incumbent-1',
     pid: 4242,
     ...(bundleDir === undefined ? {} : { manifest, bundleDir }),
@@ -187,6 +188,7 @@ function liveHealth(bundleDir?: string): LiveIncumbentHealth {
 }
 
 function configureNewerIncumbent(bundleDir = createBundle()): string {
+  const namespace = pluginRootNamespace(dirname(bundleDir));
   mockState.probeCoordinator.mockReturnValue({
     kind: 'live',
     record: {
@@ -194,11 +196,11 @@ function configureNewerIncumbent(bundleDir = createBundle()): string {
       pid: 4242,
       bundleHash: manifest.bundleHash,
       flavor: manifest.flavor,
-      namespace: 'handoff-runner',
+      namespace,
       bootToken: 'boot-token',
     },
   });
-  mockState.health.mockResolvedValue(liveHealth(bundleDir));
+  mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
   return bundleDir;
 }
 
@@ -1107,6 +1109,66 @@ describe('handoff-routing/runner', () => {
     await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
   });
 
+  it('holds matching build health from a different plugin-root namespace until the spawned backend ends', async () => {
+    const bundleDir = roots[0];
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    const foreignNamespace = 'foreign-plugin-root';
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: foreignNamespace,
+        bootToken: 'foreign-boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue(liveHealth(bundleDir, foreignNamespace));
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalled());
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 23, null);
+    for (const release of releasePolls.splice(0)) release();
+    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+  });
+
   // The behaviour `5ad55ded` exists to produce, and the one nothing asserted: an unobservable pid is not an
   // absent one. Flipping the guard back to `probe.kind !== 'live'` reintroduces the false absence and left the
   // whole suite green before this test — established by mutation, not assumed.
@@ -1119,7 +1181,7 @@ describe('handoff-routing/runner', () => {
         pid: 4242,
         bundleHash: manifest.bundleHash,
         flavor: manifest.flavor,
-        namespace: 'handoff-runner',
+        namespace: pluginRootNamespace(dirname(roots[0])),
         bootToken: 'boot-token',
       },
     });

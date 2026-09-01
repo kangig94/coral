@@ -1430,11 +1430,11 @@ describe('backend status provider proxy dispositions', () => {
 describe('backend startup diagnostic classification', () => {
   const now = Date.parse('2026-08-02T12:00:00.000Z');
 
-  // Deriving the expectation from the catalog rather than pasting its prose is what makes these two
-  // cases discriminating: a reader that forwarded the diagnostic file's own strings would satisfy a
-  // pasted literal but cannot satisfy this.
-  const authored = (code: DocumentedCoralSetupErrorCode): { userMessage: string; remediation: string } => {
-    const error = documentedCoralSetupError(code);
+  const authored = (
+    code: DocumentedCoralSetupErrorCode,
+    context?: Record<string, unknown>,
+  ): { userMessage: string; remediation: string } => {
+    const error = documentedCoralSetupError(code, context);
     return { userMessage: error.userMessage, remediation: error.remediation };
   };
 
@@ -1519,8 +1519,6 @@ describe('backend startup diagnostic classification', () => {
               'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
             remediation:
               "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
-            // Context is deliberately not forwarded: only the two rendered
-            // strings are authored per code and safe to show.
             context: { flavor: 'prod', version: '0.11.0' },
           },
         },
@@ -1533,8 +1531,8 @@ describe('backend startup diagnostic classification', () => {
       setupError: {
         kind: 'documented',
         code: 'store_newer_incompatible',
-        userMessage: authored('store_newer_incompatible').userMessage,
-        remediation: authored('store_newer_incompatible').remediation,
+        userMessage: authored('store_newer_incompatible', { flavor: 'prod', version: '0.11.0' }).userMessage,
+        remediation: authored('store_newer_incompatible', { flavor: 'prod', version: '0.11.0' }).remediation,
       },
     });
   });

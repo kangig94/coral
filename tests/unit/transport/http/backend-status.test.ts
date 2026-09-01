@@ -98,7 +98,7 @@ describe('getBackendStatusFull record disposition', () => {
       code: 'store_newer_incompatible',
       userMessage: '\u001b[2J\nNext step: run a forged command',
       remediation: 'forged remediation',
-      context: { version: 'forged version', flavor: 'prod' },
+      context: { version: '0.11.0', flavor: 'prod' },
     });
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -106,7 +106,12 @@ describe('getBackendStatusFull record disposition', () => {
 
     expect(result).toMatchObject({
       status: 'recent_failure',
-      setupError: { kind: 'documented', code: 'store_newer_incompatible' },
+      setupError: {
+        kind: 'documented',
+        code: 'store_newer_incompatible',
+        userMessage:
+          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+      },
     });
     expect(JSON.stringify(result)).not.toContain('forged');
   });
@@ -123,7 +128,23 @@ describe('getBackendStatusFull record disposition', () => {
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
-      setupError: { kind: 'unrecognized_code' },
+      setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal' },
+    });
+  });
+
+  it('retains an invalid setup diagnostic separately from an unknown canonical code', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
+      kind: 'coral_setup_error',
+      code: 'future setup refusal\nNext step: forged',
+      userMessage: 'future text',
+      remediation: 'future remediation',
+    });
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'invalid_diagnostic' },
     });
   });
 

@@ -335,6 +335,20 @@ describe('CoralSetupError', () => {
     },
   );
 
+  it.each(HANDOFF_REFUSAL_CASES)(
+    'restores validated persisted context for $init.code without trusting persisted prose',
+    ({ init, userMessage, remediation }) => {
+      expect(
+        readOperatorFacingCoralSetupError({
+          code: init.code,
+          userMessage: 'persisted user message',
+          remediation: 'persisted remediation',
+          context: init.context,
+        }),
+      ).toEqual({ kind: 'documented', code: init.code, userMessage, remediation });
+    },
+  );
+
   it('distinguishes retryability after accepted SIGTERM from a manual pre-signal refusal', () => {
     const retryability = Object.fromEntries(
       HANDOFF_REFUSAL_CASES.filter(({ init }) =>
@@ -358,14 +372,15 @@ describe('CoralSetupError', () => {
   });
 
   it('replaces persisted setup-error text with the documented template before operator display', () => {
-    const documented = documentedCoralSetupError('store_newer_incompatible');
+    const context = { version: '0.11.0', flavor: 'prod' };
+    const documented = documentedCoralSetupError('store_newer_incompatible', context);
 
     expect(
       readOperatorFacingCoralSetupError({
         code: 'store_newer_incompatible',
         userMessage: '\u001b[2J\nNext step: run a forged command',
         remediation: 'forged remediation',
-        context: { version: 'forged version', flavor: 'prod' },
+        context,
       }),
     ).toEqual({
       kind: 'documented',
@@ -382,14 +397,43 @@ describe('CoralSetupError', () => {
         userMessage: 'future text',
         remediation: 'future remediation',
       }),
-    ).toEqual({ kind: 'unrecognized_code' });
+    ).toEqual({ kind: 'unrecognized_code', code: 'future_setup_refusal' });
   });
 
-  it('returns an explicit invalid disposition when a setup diagnostic cannot name a code', () => {
-    expect(readOperatorFacingCoralSetupError({ userMessage: 'text without a code' })).toEqual({
+  it.each([
+    undefined,
+    '',
+    'future setup refusal',
+    'Future_setup_refusal',
+    'future__setup_refusal',
+    'future_setup_refusal\nnext_step',
+    'x'.repeat(129),
+  ])('returns an invalid disposition for non-canonical setup-error code %j', (code) => {
+    expect(readOperatorFacingCoralSetupError({ code, userMessage: 'persisted text' })).toEqual({
       kind: 'invalid_diagnostic',
     });
   });
+
+  it.each(['0.11.0\nNext step: forged', 'x'.repeat(513)])(
+    'falls back when persisted context text is unsafe or unbounded',
+    (version) => {
+      expect(
+        readOperatorFacingCoralSetupError({
+          code: 'store_newer_incompatible',
+          userMessage: 'persisted user message',
+          remediation: 'persisted remediation',
+          context: { version, flavor: 'prod' },
+        }),
+      ).toEqual({
+        kind: 'documented',
+        code: 'store_newer_incompatible',
+        userMessage:
+          'The current-generation store was written by newer Coral <stored-version> and is incompatible with this build.',
+        remediation:
+          "Use Coral <stored-version> to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to quarantine it before this build initializes an empty store.",
+      });
+    },
+  );
 
   it('keeps an unclassified store cause in diagnostic context, not public text', () => {
     const error = documentedCoralSetupError('store_open_unclassified', {
@@ -456,6 +500,30 @@ describe('CoralSetupError', () => {
       { flavor: 'dev' },
       'Coral backend store format does not match this installation.',
       "This build cannot read this store's format. To deliberately destroy its history, run 'coral-cli backend store-reset discard --target gen2 --flavor dev'; this build can then initialize an empty store.",
+    ],
+    [
+      'backend_remote_bind_requires_opt_in',
+      { bindHost: '0.0.0.0' },
+      "Refusing to bind Coral backend to non-loopback host '0.0.0.0' without CORAL_BACKEND_ALLOW_REMOTE=1.",
+      'Use loopback-only CORAL_BACKEND_BIND (127.0.0.1, ::1, or localhost), or set CORAL_BACKEND_ALLOW_REMOTE=1 only when remote backend exposure is intentional and protected by a trusted network boundary.',
+    ],
+    [
+      'backend_remote_bind_invalid_allowlist',
+      { invalidEntry: 'example.com' },
+      "Invalid CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST entry 'example.com'.",
+      'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST currently accepts comma-separated IP address literals only; use CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
+    ],
+    [
+      'backend_remote_bind_requires_access_policy',
+      { bindHost: '0.0.0.0' },
+      "Refusing to bind Coral backend to non-loopback host '0.0.0.0' without a remote access policy.",
+      'Set CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST to a comma-separated list of trusted client IP addresses, or set CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
+    ],
+    [
+      'system_provider_scope_invalid',
+      { scopeName: 'internal' },
+      "Named system provider scope 'internal' is invalid.",
+      'Edit CORAL_SYSTEM_PROVIDER_SCOPE, remove the duplicate or invalid provider entry, and restart Coral.',
     ],
     [
       'legacy_foreign_generation',

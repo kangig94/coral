@@ -1156,15 +1156,15 @@ describe('cli format', () => {
           status: 'recent_failure',
           phase: 'startup_failed',
           retryable: false,
-          setupError: { kind: 'unrecognized_code' },
+          setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal' },
         }),
       ).toBe(
         [
           'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
-          'Cause: Coral recorded a setup refusal whose code this build does not document.',
-          'Next step: update Coral to a build that documents the recorded setup-error code, then rerun coral-cli backend status; recognition by that build ends this hold and reveals the authored remediation.',
+          'Cause: Coral recorded a setup refusal whose code this build does not document. [code=future_setup_refusal]',
+          "Next step: inspect the coordinator log for that code, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
         ].join('\n'),
       );
     });

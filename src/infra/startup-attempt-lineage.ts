@@ -13,7 +13,7 @@ export type StartupAttemptIdentity = Readonly<{
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
-  namespace?: string;
+  namespace: string;
 }>;
 
 const startupAttemptLineageProof: unique symbol = Symbol('StartupAttemptLineageProof');
@@ -48,7 +48,9 @@ export function resolveStartupAttemptLineage(evidence: {
     observed.version === desired.version &&
     observed.bundleHash === desired.bundleHash &&
     observed.flavor === desired.flavor &&
-    (desired.namespace === undefined || observed.namespace === desired.namespace)
+    typeof desired.namespace === 'string' &&
+    desired.namespace.length > 0 &&
+    observed.namespace === desired.namespace
   ) {
     return Object.freeze({
       kind: 'proven-current-attempt',
