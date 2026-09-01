@@ -28,8 +28,31 @@ export type OperatorFacingCoralSetupError =
       userMessage: string;
       remediation: string;
     }>
-  | Readonly<{ kind: 'unrecognized_code'; code: string }>
+  | Readonly<{
+      kind: 'self_authored';
+      code: string;
+      userMessage: string;
+      remediation: string;
+    }>
+  | Readonly<{ kind: 'unrecognized_code'; code: string; authorship: SetupErrorAuthorshipKind }>
   | Readonly<{ kind: 'invalid_diagnostic' }>;
+
+/**
+ * Which build authored a persisted setup-error record. `unprovable` is not a weaker `other-build`: it is the
+ * answer when either side's identity is missing or not an identifier, and an identity that cannot be proven
+ * may not stand for equality — two builds that both fail to prove one would otherwise compare equal.
+ */
+export type SetupErrorAuthorshipKind = 'this-build' | 'other-build' | 'unprovable';
+
+export type SetupErrorAuthorIdentity = Readonly<{ bundleHash: string; namespace: string }>;
+
+const setupErrorAuthorshipProof: unique symbol = Symbol('SetupErrorAuthorshipProof');
+
+/** Only `resolveSetupErrorAuthorship` may mint this; a caller cannot assert `this-build` without the identities. */
+export type SetupErrorAuthorship = Readonly<{
+  kind: SetupErrorAuthorshipKind;
+  [setupErrorAuthorshipProof]: true;
+}>;
 
 export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_lock_contended'
@@ -1255,11 +1278,17 @@ export function isSerializedCoralSetupError(error: unknown): error is Serialized
 }
 
 const MAX_OPERATOR_FACING_CONTEXT_STRING_LENGTH = 512;
+const MAX_OPERATOR_FACING_PROSE_LENGTH = 1_024;
 const MAX_OPERATOR_FACING_CONTEXT_NUMBER = 1_000_000_000_000;
 const SETUP_ERROR_IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const OPERATOR_FACING_CONTEXT_KEY_PATTERN = /^[a-z][A-Za-z0-9]*$/;
 const OPERATOR_FACING_CONTEXT_STRING_PATTERN = /^[A-Za-z0-9 ._/:@+,=()[\]{}%#&!?~-]+$/;
-const OPERATOR_FACING_FILESYSTEM_CONTEXT_UNSAFE_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+/**
+ * Characters no operator-facing value may carry, whether it arrived as a path, a context value, or recorded
+ * prose. A line break belongs here for the same reason an escape sequence does: the surfaces that render
+ * these build their output line by line, so an embedded break forges a line the renderer never wrote.
+ */
+const OPERATOR_FACING_UNSAFE_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const MAX_SETUP_ERROR_IDENTIFIER_LENGTH = 128;
 const MAX_OPERATOR_FACING_CONTEXT_KEY_LENGTH = 128;
 
@@ -1345,9 +1374,7 @@ function canonicalOperatorFacingContextValue(key: string, value: unknown): unkno
       return undefined;
     }
     if (OPERATOR_FACING_FILESYSTEM_CONTEXT_KEYS.has(key)) {
-      return OPERATOR_FACING_FILESYSTEM_CONTEXT_UNSAFE_PATTERN.test(value) ||
-        !isAbsolute(value) ||
-        normalize(value) !== value
+      return OPERATOR_FACING_UNSAFE_CHARACTER_PATTERN.test(value) || !isAbsolute(value) || normalize(value) !== value
         ? undefined
         : value;
     }
@@ -1538,7 +1565,69 @@ function isHandoffRefusalCode(code: DocumentedCoralSetupErrorCode): code is Hand
   return Object.prototype.hasOwnProperty.call(HANDOFF_REFUSAL_CONTEXT_VALIDATORS, code);
 }
 
-export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacingCoralSetupError {
+function provenAuthorIdentity(identity: SetupErrorAuthorIdentity | null): SetupErrorAuthorIdentity | null {
+  if (identity === null) return null;
+  return identity.bundleHash.trim().length > 0 && identity.namespace.trim().length > 0 ? identity : null;
+}
+
+function setupErrorAuthorship(kind: SetupErrorAuthorshipKind): SetupErrorAuthorship {
+  return Object.freeze({ kind, [setupErrorAuthorshipProof]: true as const });
+}
+
+/**
+ * `self` must be an identity this build proved, not one it read back from the same artifact family the
+ * record came from; a fallback both sides share is not evidence of common authorship.
+ */
+export function resolveSetupErrorAuthorship(evidence: {
+  readonly recorded: SetupErrorAuthorIdentity | null;
+  readonly self: SetupErrorAuthorIdentity | null;
+}): SetupErrorAuthorship {
+  const recorded = provenAuthorIdentity(evidence.recorded);
+  const self = provenAuthorIdentity(evidence.self);
+  if (recorded === null || self === null) {
+    return setupErrorAuthorship('unprovable');
+  }
+  return setupErrorAuthorship(
+    recorded.bundleHash === self.bundleHash && recorded.namespace === self.namespace ? 'this-build' : 'other-build',
+  );
+}
+
+function canonicalSelfAuthoredProse(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text.length === 0 || text.length > MAX_OPERATOR_FACING_PROSE_LENGTH) return null;
+  return OPERATOR_FACING_UNSAFE_CHARACTER_PATTERN.test(text) ? null : text;
+}
+
+/**
+ * A code with no catalog entry has no text to regenerate, so the record's own prose is the only text there
+ * is. Showing it requires both halves: proven authorship bounds who wrote the record, and the character and
+ * length bounds are what bound what that writer interpolated into it. Neither substitutes for the other.
+ */
+function readSelfAuthoredCoralSetupError(
+  code: string,
+  error: Record<string, unknown>,
+  authorship: SetupErrorAuthorship,
+): OperatorFacingCoralSetupError {
+  if (authorship.kind !== 'this-build') {
+    return { kind: 'unrecognized_code', code, authorship: authorship.kind };
+  }
+  const userMessage = canonicalSelfAuthoredProse(error.userMessage);
+  const remediation = canonicalSelfAuthoredProse(error.remediation);
+  if (userMessage === null || remediation === null) {
+    return { kind: 'unrecognized_code', code, authorship: authorship.kind };
+  }
+  return { kind: 'self_authored', code, userMessage, remediation };
+}
+
+/**
+ * A documented code's operator text is regenerated from the catalog whoever wrote the record: the recorded
+ * prose was rendered from context this build never validated, and the catalog renders from context it did.
+ */
+export function readOperatorFacingCoralSetupError(
+  error: unknown,
+  authorship: SetupErrorAuthorship,
+): OperatorFacingCoralSetupError {
   if (!isRecord(error)) {
     return { kind: 'invalid_diagnostic' };
   }
@@ -1547,7 +1636,7 @@ export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacin
     return { kind: 'invalid_diagnostic' };
   }
   if (documentedCoralSetupErrorSpec(parsedCode) === undefined) {
-    return { kind: 'unrecognized_code', code: parsedCode };
+    return readSelfAuthoredCoralSetupError(parsedCode, error, authorship);
   }
 
   const code = parsedCode as DocumentedCoralSetupErrorCode;

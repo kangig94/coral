@@ -8,12 +8,27 @@ import {
   documentedCoralSetupErrorExitCode,
   isRetryableCoralSetupError,
   readOperatorFacingCoralSetupError,
+  resolveSetupErrorAuthorship,
   type DocumentedCoralSetupErrorCode,
   type HandoffRefusalCode,
   type HandoffRefusalContextByCode,
   type HandoffRefusalInit,
+  type OperatorFacingCoralSetupError,
+  type SetupErrorAuthorIdentity,
 } from '#src/runtime/errors.js';
 import { statusFromStartupDiagnostic } from '#src/transport/http/backend/status.js';
+
+const SELF_IDENTITY: SetupErrorAuthorIdentity = { bundleHash: '0123456789abcdef', namespace: 'self-namespace' };
+const OTHER_IDENTITY: SetupErrorAuthorIdentity = { bundleHash: 'fedcba9876543210', namespace: 'other-namespace' };
+
+const THIS_BUILD = resolveSetupErrorAuthorship({ recorded: SELF_IDENTITY, self: SELF_IDENTITY });
+const OTHER_BUILD = resolveSetupErrorAuthorship({ recorded: OTHER_IDENTITY, self: SELF_IDENTITY });
+const UNPROVABLE = resolveSetupErrorAuthorship({ recorded: SELF_IDENTITY, self: null });
+
+/** A documented code renders from the catalog whoever wrote the record, so these cases fix authorship. */
+function readAsThisBuild(error: unknown): OperatorFacingCoralSetupError {
+  return readOperatorFacingCoralSetupError(error, THIS_BUILD);
+}
 
 type HandoffRefusalCase = Readonly<{
   init: HandoffRefusalInit;
@@ -340,7 +355,7 @@ describe('CoralSetupError', () => {
     'restores validated persisted context for $init.code without trusting persisted prose',
     ({ init, userMessage, remediation }) => {
       expect(
-        readOperatorFacingCoralSetupError({
+        readAsThisBuild({
           code: init.code,
           userMessage: 'persisted user message',
           remediation: 'persisted remediation',
@@ -377,7 +392,7 @@ describe('CoralSetupError', () => {
     const documented = documentedCoralSetupError('store_newer_incompatible', context);
 
     expect(
-      readOperatorFacingCoralSetupError({
+      readAsThisBuild({
         code: 'store_newer_incompatible',
         userMessage: '\u001b[2J\nNext step: run a forged command',
         remediation: 'forged remediation',
@@ -391,14 +406,106 @@ describe('CoralSetupError', () => {
     });
   });
 
-  it('returns an explicit unrecognized disposition for a serialized code outside the catalog', () => {
+  it('returns an explicit unrecognized disposition for a foreign code outside the catalog', () => {
     expect(
-      readOperatorFacingCoralSetupError({
-        code: 'future_setup_refusal',
-        userMessage: 'future text',
-        remediation: 'future remediation',
+      readOperatorFacingCoralSetupError(
+        {
+          code: 'future_setup_refusal',
+          userMessage: 'future text',
+          remediation: 'future remediation',
+        },
+        OTHER_BUILD,
+      ),
+    ).toEqual({ kind: 'unrecognized_code', code: 'future_setup_refusal', authorship: 'other-build' });
+  });
+
+  // Everything this build throws that the catalog does not name reaches an operator through this arm; the
+  // catalog was assumed complete twice and was not, and completing it is not a property anything can check.
+  it('carries the recorded text of an uncatalogued code this build proves it wrote', () => {
+    expect(
+      readAsThisBuild({
+        code: 'describer_missing',
+        userMessage: 'Event describer missing for: job_started, session_forked.',
+        remediation: "Add an entry to the owning domain's event-describers.ts.",
       }),
-    ).toEqual({ kind: 'unrecognized_code', code: 'future_setup_refusal' });
+    ).toEqual({
+      kind: 'self_authored',
+      code: 'describer_missing',
+      userMessage: 'Event describer missing for: job_started, session_forked.',
+      remediation: "Add an entry to the owning domain's event-describers.ts.",
+    });
+  });
+
+  it('refuses the recorded text of an uncatalogued code when authorship is unprovable', () => {
+    expect(
+      readOperatorFacingCoralSetupError(
+        {
+          code: 'describer_missing',
+          userMessage: 'unproven text',
+          remediation: 'unproven remediation',
+        },
+        UNPROVABLE,
+      ),
+    ).toEqual({ kind: 'unrecognized_code', code: 'describer_missing', authorship: 'unprovable' });
+  });
+
+  it.each([
+    ['a terminal escape', '\u001b[2J\nNext step: run a forged command'],
+    ['a bare line break', 'Event describer missing.\nNext step: run a forged command'],
+    ['an unbounded span', 'x'.repeat(1_025)],
+    ['nothing at all', '   '],
+  ])('refuses recorded text this build wrote when it carries %s', (_name, userMessage) => {
+    expect(readAsThisBuild({ code: 'describer_missing', userMessage, remediation: 'authored remediation' })).toEqual({
+      kind: 'unrecognized_code',
+      code: 'describer_missing',
+      authorship: 'this-build',
+    });
+  });
+
+  it('refuses recorded text this build wrote when only its remediation is unsafe', () => {
+    expect(
+      readAsThisBuild({
+        code: 'describer_missing',
+        userMessage: 'Event describer missing for: job_started.',
+        remediation: '\u001b[2Jforged remediation',
+      }),
+    ).toEqual({ kind: 'unrecognized_code', code: 'describer_missing', authorship: 'this-build' });
+  });
+
+  it('trims recorded text rather than rejecting it for surrounding space', () => {
+    expect(
+      readAsThisBuild({
+        code: 'describer_missing',
+        userMessage: '  Event describer missing for: job_started.  ',
+        remediation: ' Add an entry. ',
+      }),
+    ).toEqual({
+      kind: 'self_authored',
+      code: 'describer_missing',
+      userMessage: 'Event describer missing for: job_started.',
+      remediation: 'Add an entry.',
+    });
+  });
+
+  it.each([
+    { name: 'a matching identity', recorded: SELF_IDENTITY, self: SELF_IDENTITY, expected: 'this-build' },
+    { name: 'a differing identity', recorded: OTHER_IDENTITY, self: SELF_IDENTITY, expected: 'other-build' },
+    { name: 'no recorded identity', recorded: null, self: SELF_IDENTITY, expected: 'unprovable' },
+    { name: 'no proven self identity', recorded: SELF_IDENTITY, self: null, expected: 'unprovable' },
+    {
+      name: 'an empty recorded bundle hash',
+      recorded: { bundleHash: '', namespace: 'self-namespace' },
+      self: { bundleHash: '', namespace: 'self-namespace' },
+      expected: 'unprovable',
+    },
+    {
+      name: 'a blank recorded namespace',
+      recorded: { bundleHash: '0123456789abcdef', namespace: '   ' },
+      self: { bundleHash: '0123456789abcdef', namespace: '   ' },
+      expected: 'unprovable',
+    },
+  ])('resolves authorship from $name', ({ recorded, self, expected }) => {
+    expect(resolveSetupErrorAuthorship({ recorded, self }).kind).toBe(expected);
   });
 
   it.each([
@@ -410,7 +517,7 @@ describe('CoralSetupError', () => {
     'future_setup_refusal\nnext_step',
     'x'.repeat(129),
   ])('returns an invalid disposition for non-canonical setup-error code %j', (code) => {
-    expect(readOperatorFacingCoralSetupError({ code, userMessage: 'persisted text' })).toEqual({
+    expect(readAsThisBuild({ code, userMessage: 'persisted text' })).toEqual({
       kind: 'invalid_diagnostic',
     });
   });
@@ -419,7 +526,7 @@ describe('CoralSetupError', () => {
     'falls back when persisted context text is unsafe or unbounded',
     (version) => {
       expect(
-        readOperatorFacingCoralSetupError({
+        readAsThisBuild({
           code: 'store_newer_incompatible',
           userMessage: 'persisted user message',
           remediation: 'persisted remediation',
@@ -439,7 +546,7 @@ describe('CoralSetupError', () => {
   it('renders a missing context value with the placeholder its own template names', () => {
     // The template that reads `socketPath` owns the word shown when a diagnostic did not carry it.
     const documented = documentedCoralSetupError('coordinator_socket_bind_failed');
-    const restored = readOperatorFacingCoralSetupError({
+    const restored = readAsThisBuild({
       code: 'coordinator_socket_bind_failed',
       userMessage: 'persisted user message',
       remediation: 'persisted remediation',
@@ -466,7 +573,7 @@ describe('CoralSetupError', () => {
     const documented = documentedCoralSetupError('handoff_signal_cooldown_active', context);
 
     expect(
-      readOperatorFacingCoralSetupError({
+      readAsThisBuild({
         code: 'handoff_signal_cooldown_active',
         userMessage: 'persisted user message',
         remediation: 'persisted remediation',
@@ -483,7 +590,7 @@ describe('CoralSetupError', () => {
 
   it('still drops a negative value on a context key that measures no elapsed span', () => {
     expect(
-      readOperatorFacingCoralSetupError({
+      readAsThisBuild({
         code: 'handoff_sigkill_grace_target_alive',
         userMessage: 'persisted user message',
         remediation: 'persisted remediation',
@@ -496,7 +603,7 @@ describe('CoralSetupError', () => {
     const socketPath = '/home/김/.coral/run/coordinator.sock';
 
     expect(
-      readOperatorFacingCoralSetupError({
+      readAsThisBuild({
         code: 'handoff_socket_holder_unverified',
         userMessage: 'persisted user message',
         remediation: 'persisted remediation',
@@ -567,7 +674,7 @@ describe('CoralSetupError', () => {
       expected: '/home/김/coordination',
     },
   ])('preserves non-ASCII filesystem field $field', ({ code, context, expected }) => {
-    const result = readOperatorFacingCoralSetupError({
+    const result = readAsThisBuild({
       code,
       userMessage: 'persisted user message',
       remediation: 'persisted remediation',
@@ -587,7 +694,7 @@ describe('CoralSetupError', () => {
       '/home/김/.coral/run/\u202ecoordinator.sock',
     ]) {
       expect(
-        readOperatorFacingCoralSetupError({
+        readAsThisBuild({
           code: 'handoff_socket_holder_unverified',
           userMessage: 'persisted user message',
           remediation: 'persisted remediation',
@@ -628,6 +735,7 @@ describe('CoralSetupError', () => {
           },
         },
         now,
+        () => SELF_IDENTITY,
       ),
     ).toEqual({
       status: 'recent_failure',

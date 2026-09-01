@@ -1,3 +1,4 @@
+import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -10,7 +11,11 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
+import {
+  readBuildFlavor,
+  type StrictBundleIdentityResult,
+  type StrictBundleManifest,
+} from '#src/infra/bundle-manifest.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 
 const mockState = vi.hoisted(() => ({
@@ -21,7 +26,16 @@ const mockState = vi.hoisted(() => ({
   createdClients: [] as Array<{ socketPath: string; auth: unknown }>,
   home: '',
   platform: process.platform,
+  /** What this build can prove about its own bundle; a unit run has no injected identity, so default is a refusal. */
+  strictIdentity: { ok: false, reason: 'embedded_identity_unavailable' } as StrictBundleIdentityResult,
 }));
+
+// Only `resolveStrictBundleIdentity` is replaced: the flavor and manifest reads below must stay real, because
+// the temporary plugin roots these tests build are what those reads are supposed to see.
+vi.mock('#src/infra/bundle-manifest.js', async () => {
+  const actual = await vi.importActual<typeof BundleManifestMod>('#src/infra/bundle-manifest.js');
+  return { ...actual, resolveStrictBundleIdentity: () => mockState.strictIdentity };
+});
 
 vi.mock('node:child_process', () => ({
   spawn: mockState.spawn,
@@ -181,6 +195,18 @@ function writeStartupSentinel(
   );
 }
 
+function provenManifest(bundleHash: string): StrictBundleManifest {
+  return {
+    version: '0.5.2',
+    buildSetId: '00000000-0000-4000-8000-000000000000',
+    flavor: 'prod',
+    storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+    bundleHash,
+    cliBundleHash: bundleHash,
+    claudeAppserverBundleHash: bundleHash,
+  };
+}
+
 function spawnedAttemptId(): string {
   const options = mockState.spawn.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
   const attemptId = options?.env?.CORAL_STARTUP_ATTEMPT_ID;
@@ -220,6 +246,7 @@ beforeEach(() => {
   delete process.env.CLAUDE_CONFIG_DIR;
   for (const key of childEnvKeys) delete process.env[key];
   mockState.spawn.mockImplementation(() => spawnedChild());
+  mockState.strictIdentity = { ok: false, reason: 'embedded_identity_unavailable' };
 });
 
 afterEach(() => {
@@ -1090,7 +1117,72 @@ describe('ipc ensure', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("setup-error code 'future_setup_refusal'");
+    expect((error as Error).message).toContain('could not prove which build recorded it');
     expect((error as Error).message).toContain('coral-cli backend status');
+    expect((error as Error).message).not.toContain('upgrade Coral');
+    expect((error as Error).message).not.toContain('private future-build text');
+    expect((error as Error).message).not.toContain('forged future-build command');
+  });
+
+  // Around forty codes this build throws are outside the catalog. Regenerating from the catalog cannot render
+  // any of them, and the arm that used to catch them told the operator to upgrade past a code this build wrote.
+  it('raises the recorded refusal of an uncatalogued code this build proves it wrote', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.strictIdentity = { ok: true, manifest: provenManifest('test-hash') };
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      code: 'describer_missing',
+      userMessage: 'Event describer missing for: job_started.',
+      remediation: "Add an entry to the owning domain's event-describers.ts.",
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toMatchObject({
+      code: 'describer_missing',
+      userMessage: 'Event describer missing for: job_started.',
+      remediation: "Add an entry to the owning domain's event-describers.ts.",
+    });
+    // Exact, not a substring: any other arm of the reader raises a different error whose message is prose
+    // about the code rather than the refusal itself.
+    expect((error as Error).message).toBe('Event describer missing for: job_started.');
+  });
+
+  it('refuses the recorded refusal of an uncatalogued code a delegated build wrote', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.strictIdentity = { ok: true, manifest: provenManifest('test-hash') };
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      bundleHash: 'delegated-build-hash',
+      namespace: 'delegated-plugin-root-namespace',
+      code: 'future_setup_refusal',
+      userMessage: 'private future-build text',
+      remediation: 'Run a forged future-build command.',
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect((error as Error).message).toContain("setup-error code 'future_setup_refusal'");
+    expect((error as Error).message).toContain('recorded by a Coral build other than the one running here');
+    expect((error as Error).message).toContain('upgrade Coral');
     expect((error as Error).message).not.toContain('private future-build text');
     expect((error as Error).message).not.toContain('forged future-build command');
   });

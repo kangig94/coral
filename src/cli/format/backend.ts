@@ -19,6 +19,7 @@ import {
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
+import type { OperatorFacingCoralSetupError } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -791,6 +792,51 @@ function formatNoRecordSocketPresentStatus(
   ].join('\n');
 }
 
+// "This build does not document it" may be said only about a code some other build wrote. A code the running
+// build itself recorded has no upgrade that adds it, so its unrenderable case names the log instead.
+function formatUnrecognizedSetupErrorLines(
+  setupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrecognized_code' }>,
+): readonly string[] {
+  const retry =
+    "then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.";
+  switch (setupError.authorship) {
+    case 'this-build':
+      return [
+        `Cause: Coral recorded a setup refusal this build wrote, and the text recorded with it could not be re-read. [code=${setupError.code}]`,
+        `Next step: inspect the coordinator log for that code, ${retry}`,
+      ];
+    case 'other-build':
+      return [
+        `Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=${setupError.code}]`,
+        `Next step: inspect the coordinator log for that code, upgrade Coral, ${retry}`,
+      ];
+    case 'unprovable':
+      return [
+        `Cause: Coral recorded a setup refusal and could not prove which Coral build wrote it. [code=${setupError.code}]`,
+        `Next step: inspect the coordinator log for that code, ${retry}`,
+      ];
+    default:
+      return assertNever(setupError.authorship);
+  }
+}
+
+function formatSetupErrorLines(setupError: OperatorFacingCoralSetupError): readonly string[] {
+  switch (setupError.kind) {
+    case 'documented':
+    case 'self_authored':
+      return [`Cause: ${setupError.userMessage} [code=${setupError.code}]`, `Next step: ${setupError.remediation}`];
+    case 'unrecognized_code':
+      return formatUnrecognizedSetupErrorLines(setupError);
+    case 'invalid_diagnostic':
+      return [
+        'Cause: Coral recorded a setup refusal whose authored text could not be reconstructed.',
+        'Next step: inspect the coordinator log, then retry a coral-cli mutating command so a current valid startup diagnostic replaces this one.',
+      ];
+    default:
+      return assertNever(setupError);
+  }
+}
+
 function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 'recent_failure' }>): string {
   const lines = [
     'Coral recorded a recent coordinator failure.',
@@ -798,28 +844,14 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
     `Retryable: ${result.retryable ? 'yes' : 'no'}`,
   ];
   if (result.setupError === undefined) {
-    // Undocumented failures have no authored remediation, and their raw message can carry provider payloads or
-    // credentials, so the log stays the only place it is rendered.
+    // A failure that is not a setup error has no authored remediation, and its raw message can carry provider
+    // payloads or credentials, so the log stays the only place it is rendered.
     lines.push(
       'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
     );
-  } else if (result.setupError.kind === 'unrecognized_code') {
-    lines.push(
-      `Cause: Coral recorded a setup refusal whose code this build does not document. [code=${result.setupError.code}]`,
-    );
-    lines.push(
-      "Next step: inspect the coordinator log for that code, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
-    );
-  } else if (result.setupError.kind === 'invalid_diagnostic') {
-    lines.push('Cause: Coral recorded a setup refusal whose authored text could not be reconstructed.');
-    lines.push(
-      'Next step: inspect the coordinator log, then retry a coral-cli mutating command so a current valid startup diagnostic replaces this one.',
-    );
-  } else {
-    lines.push(`Cause: ${result.setupError.userMessage} [code=${result.setupError.code}]`);
-    lines.push(`Next step: ${result.setupError.remediation}`);
+    return lines.join('\n');
   }
-  return lines.join('\n');
+  return [...lines, ...formatSetupErrorLines(result.setupError)].join('\n');
 }
 
 export function formatShutdown(result: ShutdownResult): string {

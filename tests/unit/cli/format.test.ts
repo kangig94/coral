@@ -1156,15 +1156,57 @@ describe('cli format', () => {
           status: 'recent_failure',
           phase: 'startup_failed',
           retryable: false,
-          setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal' },
+          setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal', authorship: 'other-build' },
         }),
       ).toBe(
         [
           'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
-          'Cause: Coral recorded a setup refusal whose code this build does not document. [code=future_setup_refusal]',
-          "Next step: inspect the coordinator log for that code, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+          'Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=future_setup_refusal]',
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+        ].join('\n'),
+      );
+    });
+
+    // Telling an operator to upgrade past a code the running build itself recorded sends them after a release
+    // that does not exist, so only the other-build arm above may say it.
+    it.each([
+      ['this-build', 'Cause: Coral recorded a setup refusal this build wrote, and the text recorded with it'],
+      ['unprovable', 'Cause: Coral recorded a setup refusal and could not prove which Coral build wrote it.'],
+    ] as const)('formats an unrecognized %s setup-error code without advising an upgrade', (authorship, cause) => {
+      const text = formatBackendStatus({
+        status: 'recent_failure',
+        phase: 'startup_failed',
+        retryable: false,
+        setupError: { kind: 'unrecognized_code', code: 'describer_missing', authorship },
+      });
+
+      expect(text).toContain(cause);
+      expect(text).toContain('[code=describer_missing]');
+      expect(text).not.toContain('upgrade Coral');
+    });
+
+    it('formats an uncatalogued setup refusal this build proved it wrote from its own recorded text', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: {
+            kind: 'self_authored',
+            code: 'describer_missing',
+            userMessage: 'Event describer missing for: job_started.',
+            remediation: "Add an entry to the owning domain's event-describers.ts.",
+          },
+        }),
+      ).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Cause: Event describer missing for: job_started. [code=describer_missing]',
+          "Next step: Add an entry to the owning domain's event-describers.ts.",
         ].join('\n'),
       );
     });

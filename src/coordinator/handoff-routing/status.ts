@@ -2284,7 +2284,7 @@ function observationProbe(
 }
 
 export async function readHandoffRoutingStatusWithOwnerObservations(
-  runtime: Pick<Runtime, 'storage' | 'process'>,
+  runtime: Pick<Runtime, 'storage' | 'process' | 'time'>,
   path: string,
 ): Promise<HandoffRoutingStatusReadResult> {
   const snapshot = readStatusSnapshot(runtime.storage, path);
@@ -2299,19 +2299,32 @@ export async function readHandoffRoutingStatusWithOwnerObservations(
   });
   if (owners.length === 0) return projectHandoffRoutingStatus(snapshot, undefined);
   type ProcessIdentityObservations = Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
+  type UnobservableCause = Extract<ProcessIdentityObservations[number]['evidence'], { kind: 'unobservable' }>['cause'];
+  const unobserved = (batch: typeof owners, cause: UnobservableCause): ProcessIdentityObservations =>
+    batch.map((owner): ProcessIdentityObservations[number] => ({ owner, evidence: { kind: 'unobservable', cause } }));
+
+  // The budget bounds the sweep, not one batch of it: batching exists so a large snapshot still reaches every
+  // owner, and a per-batch budget would multiply an operator's wait by however many batches a snapshot needs.
+  // An owner the remaining budget could not reach is unobserved for that reason, not for a probe that failed.
+  let remainingMs = MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS;
+  let measuredAt = runtime.time.now();
   let observations: ProcessIdentityObservations = [];
   for (let offset = 0; offset < owners.length; offset += MAX_UNRESOLVED_INVOCATIONS) {
     const batch = owners.slice(offset, offset + MAX_UNRESOLVED_INVOCATIONS);
+    if (remainingMs <= 0) {
+      observations = [...observations, ...unobserved(batch, 'deadline-expired')];
+      continue;
+    }
     let batchObservations: ProcessIdentityObservations;
     try {
-      batchObservations = await runtime.process.observeProcessIdentities(batch, MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
+      batchObservations = await runtime.process.observeProcessIdentities(batch, remainingMs);
     } catch {
-      batchObservations = batch.map((owner): ProcessIdentityObservations[number] => ({
-        owner,
-        evidence: { kind: 'unobservable', cause: 'probe-failed' },
-      }));
+      batchObservations = unobserved(batch, 'probe-failed');
     }
     observations = [...observations, ...batchObservations];
+    const now = runtime.time.now();
+    remainingMs -= now - measuredAt;
+    measuredAt = now;
   }
   return projectHandoffRoutingStatus(snapshot, observationProbe(observations));
 }

@@ -3,16 +3,22 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const NOW = 1_700_000_000_000;
 
+const SELF_BUNDLE_HASH = '0123456789abcdef';
+const SELF_NAMESPACE = 'self-namespace';
+
 const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
   /** The startup diagnostic on disk, or `null` for none. */
   diagnostic: null as string | null,
+  /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
+  strictIdentityProven: true,
 }));
 
 // Mocked at the seam this function depends on. `status` and `shutdown` ask the same three questions about the
@@ -24,6 +30,27 @@ vi.mock('#src/transport/http/backend/coordinator-observation.js', () => ({
 
 vi.mock('#src/infra/bundle-manifest.js', () => ({
   readBuildFlavor: vi.fn(() => 'prod'),
+  resolveStrictBundleIdentity: vi.fn(
+    (): StrictBundleIdentityResult =>
+      mockState.strictIdentityProven
+        ? {
+            ok: true,
+            manifest: {
+              version: '0.5.2',
+              buildSetId: '00000000-0000-4000-8000-000000000000',
+              flavor: 'prod',
+              storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+              bundleHash: '0123456789abcdef',
+              cliBundleHash: '0123456789abcdef',
+              claudeAppserverBundleHash: '0123456789abcdef',
+            },
+          }
+        : { ok: false, reason: 'embedded_identity_unavailable' },
+  ),
+}));
+
+vi.mock('#src/infra/plugin-identity.js', () => ({
+  pluginRootNamespace: vi.fn(() => 'self-namespace'),
 }));
 
 vi.mock('#src/runtime/real.js', () => ({
@@ -66,6 +93,7 @@ describe('getBackendStatusFull record disposition', () => {
   beforeEach(() => {
     mockState.observed = { kind: 'no-record' };
     mockState.diagnostic = null;
+    mockState.strictIdentityProven = true;
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -116,20 +144,101 @@ describe('getBackendStatusFull record disposition', () => {
     expect(JSON.stringify(result)).not.toContain('forged');
   });
 
-  it('retains a setup refusal whose code this build cannot render', async () => {
-    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
-      kind: 'coral_setup_error',
-      code: 'future_setup_refusal',
-      userMessage: 'future text',
-      remediation: 'future remediation',
-    });
+  it('carries the recorded text of an uncatalogued code this build proves it wrote', async () => {
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'describer_missing',
+        userMessage: 'Event describer missing for: job_started.',
+        remediation: "Add an entry to the owning domain's event-describers.ts.",
+      },
+      { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
+    );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
-      setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal' },
+      setupError: {
+        kind: 'self_authored',
+        code: 'describer_missing',
+        userMessage: 'Event describer missing for: job_started.',
+        remediation: "Add an entry to the owning domain's event-describers.ts.",
+      },
     });
+  });
+
+  it('refuses the recorded text of an uncatalogued code another build wrote', async () => {
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'future_setup_refusal',
+        userMessage: 'future text',
+        remediation: 'future remediation',
+      },
+      { bundleHash: 'fedcba9876543210', namespace: 'other-namespace' },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal', authorship: 'other-build' },
+    });
+    expect(JSON.stringify(result)).not.toContain('future text');
+    expect(JSON.stringify(result)).not.toContain('future remediation');
+  });
+
+  it('refuses recorded text when this build cannot prove its own identity, however the record matches', async () => {
+    mockState.strictIdentityProven = false;
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'describer_missing',
+        userMessage: 'unproven text',
+        remediation: 'unproven remediation',
+      },
+      { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code', code: 'describer_missing', authorship: 'unprovable' },
+    });
+    expect(JSON.stringify(result)).not.toContain('unproven text');
+  });
+
+  it('refuses recorded text this build wrote when the text itself is not renderable', async () => {
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'describer_missing',
+        userMessage: '\u001b[2J\nNext step: run a forged command',
+        remediation: 'forged remediation',
+      },
+      { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code', code: 'describer_missing', authorship: 'this-build' },
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
   });
 
   it('retains an invalid setup diagnostic separately from an unknown canonical code', async () => {
@@ -323,6 +432,7 @@ function startupDiagnostic(
   recordedAt: number,
   pid: number,
   error: Record<string, unknown> = { kind: 'other' },
+  identity?: { bundleHash: string; namespace: string },
 ): string {
   return JSON.stringify({
     schemaVersion: 1,
@@ -331,6 +441,7 @@ function startupDiagnostic(
     phase: 'startup_failed',
     recordedAt: new Date(recordedAt).toISOString(),
     pid,
+    ...(identity ?? {}),
     error,
   });
 }

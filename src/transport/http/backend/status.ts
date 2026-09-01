@@ -1,10 +1,16 @@
 import { observeCoordinator } from './coordinator-observation.js';
-import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
+import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
+import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
-import { readOperatorFacingCoralSetupError, type OperatorFacingCoralSetupError } from '../../../runtime/errors.js';
+import {
+  readOperatorFacingCoralSetupError,
+  resolveSetupErrorAuthorship,
+  type OperatorFacingCoralSetupError,
+  type SetupErrorAuthorIdentity,
+} from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
@@ -96,9 +102,20 @@ function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
 }
 
+function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAuthorIdentity | null {
+  return typeof value.bundleHash === 'string' && typeof value.namespace === 'string'
+    ? { bundleHash: value.bundleHash, namespace: value.namespace }
+    : null;
+}
+
+/**
+ * `provenSelfIdentity` is deferred because proving this build's own identity hashes bundle artifacts; a status
+ * probe that finds no setup-error diagnostic must not pay for an attribution it never makes.
+ */
 export function statusFromStartupDiagnostic(
   value: unknown,
   now: number,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt = Number.NEGATIVE_INFINITY,
   expectedPid?: number,
 ): RecentFailureStatus | null {
@@ -131,7 +148,12 @@ export function statusFromStartupDiagnostic(
 
   const error = value.error;
   const setupError: OperatorFacingCoralSetupError | null =
-    error.kind === 'coral_setup_error' ? readOperatorFacingCoralSetupError(error) : null;
+    error.kind === 'coral_setup_error'
+      ? readOperatorFacingCoralSetupError(
+          error,
+          resolveSetupErrorAuthorship({ recorded: recordedAuthorIdentity(value), self: provenSelfIdentity() }),
+        )
+      : null;
 
   return {
     status: 'recent_failure',
@@ -145,12 +167,13 @@ function readRecentFailureDiagnostic(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
   now: number,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): RecentFailureStatus | null {
   try {
     const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid);
+    return statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
   } catch {
     return null;
   }
@@ -160,6 +183,7 @@ function noDaemonStatus(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
   now: number,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   fallback: Extract<
     BackendStatusFull,
     { status: 'no_record_no_socket' | 'recorded_process_absent' | 'foreign_coordinator' }
@@ -167,7 +191,10 @@ function noDaemonStatus(
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): BackendStatusFull {
-  return readRecentFailureDiagnostic(storage, diagnosticFile, now, earliestRecordedAt, expectedPid) ?? fallback;
+  return (
+    readRecentFailureDiagnostic(storage, diagnosticFile, now, provenSelfIdentity, earliestRecordedAt, expectedPid) ??
+    fallback
+  );
 }
 
 /**
@@ -248,6 +275,12 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     env: runtime.env,
     paths: runtime.paths,
   });
+  // Only a strictly proven bundle identity may claim authorship of a diagnostic: a hash read back without that
+  // proof is not evidence, because a build that wrote nothing can read the same unproven value.
+  const provenSelfIdentity = (): SetupErrorAuthorIdentity | null => {
+    const strict = resolveStrictBundleIdentity();
+    return strict.ok ? { bundleHash: strict.manifest.bundleHash, namespace: pluginRootNamespace(pluginRoot) } : null;
+  };
 
   switch (observed.kind) {
     case 'unreadable-record':
@@ -257,6 +290,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.time.now(),
+        provenSelfIdentity,
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
@@ -265,6 +299,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
           runtime.storage,
           runtime.paths.coral.coordinator.startupDiagnosticFile,
           runtime.time.now(),
+          provenSelfIdentity,
         ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
       );
     case 'process-absent':
@@ -273,6 +308,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.time.now(),
+        provenSelfIdentity,
         { status: 'recorded_process_absent', pid: observed.pid },
         observed.startedAt,
         observed.pid,
@@ -288,6 +324,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,
       runtime.time.now(),
+      provenSelfIdentity,
       { status: 'foreign_coordinator', observed: observedIdentity },
       info.startedAt,
       info.pid,

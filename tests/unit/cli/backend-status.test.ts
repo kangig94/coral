@@ -12,7 +12,11 @@ import {
   formatHandoffRoutingStatus,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
-import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '#src/runtime/errors.js';
+import {
+  documentedCoralSetupError,
+  type DocumentedCoralSetupErrorCode,
+  type SetupErrorAuthorIdentity,
+} from '#src/runtime/errors.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -1566,6 +1570,8 @@ describe('backend status provider proxy dispositions', () => {
 
 describe('backend startup diagnostic classification', () => {
   const now = Date.parse('2026-08-02T12:00:00.000Z');
+  // The records below carry no build identity, so authorship stays unprovable however this build proves its own.
+  const provenSelfIdentity = (): SetupErrorAuthorIdentity => ({ bundleHash: '0123456789abcdef', namespace: 'ns-self' });
 
   const authored = (
     code: DocumentedCoralSetupErrorCode,
@@ -1597,6 +1603,7 @@ describe('backend startup diagnostic classification', () => {
           },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toEqual({
       status: 'recent_failure',
@@ -1624,6 +1631,7 @@ describe('backend startup diagnostic classification', () => {
           },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toEqual({
       status: 'recent_failure',
@@ -1660,6 +1668,7 @@ describe('backend startup diagnostic classification', () => {
           },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toEqual({
       status: 'recent_failure',
@@ -1692,6 +1701,7 @@ describe('backend startup diagnostic classification', () => {
         },
       },
       now,
+      provenSelfIdentity,
     );
     if (classified === null) throw new Error('expected recent startup failure');
     const status: BackendStatusCommandOperations = {
@@ -1723,6 +1733,7 @@ describe('backend startup diagnostic classification', () => {
           error: { message: 'old failure' },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toBeNull();
   });
@@ -1739,6 +1750,7 @@ describe('backend startup diagnostic classification', () => {
           error: { message: 'prior failure' },
         },
         now,
+        provenSelfIdentity,
         Date.parse('2026-08-02T11:59:45.000Z'),
       ),
     ).toBeNull();
@@ -1757,6 +1769,7 @@ describe('backend startup diagnostic classification', () => {
           error: { message: 'new contender failed' },
         },
         now,
+        provenSelfIdentity,
         Date.parse('2026-08-02T11:59:00.000Z'),
         4242,
       ),

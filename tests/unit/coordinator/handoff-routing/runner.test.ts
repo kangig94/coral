@@ -1109,15 +1109,21 @@ describe('handoff-routing/runner', () => {
   it('attaches terminal and abort observers once across repeated startup polls', async () => {
     const target = validatedTarget(roots[0]);
     const controller = new AbortController();
+    // Counted on this controller's own signal, not on a global: the original still runs, so the abort below
+    // reaches the observer.
+    const subscribe = vi.spyOn(controller.signal, 'addEventListener');
+    const abortSubscriptions = (): number => subscribe.mock.calls.filter(([type]) => type === 'abort').length;
     let sleepCalls = 0;
-    const sleep = vi.fn<TimePort['sleep']>((_ms, options) => {
+    let subscribedEarly = -1;
+    // The sleep parks rather than subscribing to the abort, so every abort subscription counted here is one the
+    // observer under test made. The abort still ends the run: the observer's own listener wakes the poll. The
+    // early sample is taken inside the third poll, because polls one to twenty resolve without yielding to a
+    // timer and a sample taken from the outside can land after all of them.
+    const sleep = vi.fn<TimePort['sleep']>(() => {
       sleepCalls += 1;
-      if (sleepCalls <= 20) return Promise.resolve();
-      return new Promise<void>((resolve) =>
-        options?.signal?.addEventListener('abort', () => resolve(), { once: true }),
-      );
+      if (sleepCalls === 3) subscribedEarly = abortSubscriptions();
+      return sleepCalls <= 20 ? Promise.resolve() : new Promise<void>(() => undefined);
     });
-    const race = vi.spyOn(Promise, 'race');
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
 
@@ -1132,9 +1138,10 @@ describe('handoff-routing/runner', () => {
     );
     await vi.waitFor(() => expect(sleepCalls).toBeGreaterThan(20));
 
-    // `Promise.race` subscribes to every promise it is given, so racing per poll re-attaches the terminal
-    // and abort observers on each pass.
-    expect(race).not.toHaveBeenCalled();
+    // Two samples eighteen polls apart, compared against each other rather than against a fixed count: a
+    // per-poll re-subscription grows between them, and no unrelated subscription can make them differ.
+    expect(subscribedEarly).toBeGreaterThanOrEqual(0);
+    expect(abortSubscriptions()).toBe(subscribedEarly);
     controller.abort();
     await expect(result).resolves.toMatchObject({
       kind: 'delegated',

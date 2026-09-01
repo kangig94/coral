@@ -27,8 +27,11 @@ import type { TimePort } from '../../infra/port-types.js';
 import {
   CoralSetupError,
   readOperatorFacingCoralSetupError,
+  resolveSetupErrorAuthorship,
   type OperatorFacingCoralSetupError,
+  type SetupErrorAuthorship,
 } from '../../runtime/errors.js';
+import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
@@ -105,7 +108,6 @@ type ExistingIncumbentIdentity = Readonly<{
 }>;
 
 type SpawnedCoordinator = {
-  readonly pid: number | undefined;
   readonly attemptId: string;
   readonly spawnedAt: number;
   readonly terminal: Promise<SpawnedCoordinatorTerminal>;
@@ -443,6 +445,39 @@ function clearStartupErrorSentinel(paths: CoordinatorPaths): void {
   }
 }
 
+/**
+ * "Upgrade Coral" may be said only about a code some other build wrote. Telling an operator to upgrade past a
+ * code the running build itself recorded sends them after a release that does not exist.
+ */
+function unrecognizedStartupCodeMessage(
+  startupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrecognized_code' }>,
+): string {
+  const recorded = `Coordinator startup stopped with setup-error code '${startupError.code}'`;
+  const inspect = 'Run `coral-cli backend status` to inspect the recorded failure';
+  switch (startupError.authorship) {
+    case 'this-build':
+      return `${recorded}, and the text this Coral build recorded with it could not be re-read. ${inspect}, read the coordinator log for that code, then retry the original command.`;
+    case 'other-build':
+      return `${recorded}, recorded by a Coral build other than the one running here, whose codes this build cannot name. ${inspect}, then upgrade Coral and retry the original command.`;
+    case 'unprovable':
+      return `${recorded}, and this Coral build could not prove which build recorded it. ${inspect}, read the coordinator log for that code, then retry the original command.`;
+    default:
+      return assertNever(startupError.authorship);
+  }
+}
+
+/**
+ * Only a strictly proven bundle identity may claim authorship of a sentinel. A hash this build read back
+ * without that proof is not evidence: the same unproven value can be read by a build that wrote nothing.
+ */
+function sentinelAuthorship(sentinel: StartupErrorSentinel, desired: DesiredCoordinator): SetupErrorAuthorship {
+  const strict = resolveStrictBundleIdentity();
+  return resolveSetupErrorAuthorship({
+    recorded: { bundleHash: sentinel.bundleHash, namespace: sentinel.namespace },
+    self: strict.ok ? { bundleHash: strict.manifest.bundleHash, namespace: desired.namespace } : null,
+  });
+}
+
 function matchingStartupError(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
@@ -470,7 +505,7 @@ function matchingStartupError(
     if (mtimeMs < earliestMtime) {
       return null;
     }
-    return readOperatorFacingCoralSetupError(sentinel.error);
+    return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
   }
 
   // No attempt id ties this sentinel to the spawn being waited on, so build identity is the only remaining
@@ -487,7 +522,7 @@ function matchingStartupError(
     clearStartupErrorSentinel(paths);
     return null;
   }
-  return readOperatorFacingCoralSetupError(sentinel.error);
+  return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
 }
 
 function rotateLogIfLarge(runDir: string): void {
@@ -555,7 +590,7 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
     });
     const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
-    return { pid: child.pid, attemptId, spawnedAt, terminal };
+    return { attemptId, spawnedAt, terminal };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -671,15 +706,16 @@ async function waitForBackendReady(
     if (startupError) {
       switch (startupError.kind) {
         case 'documented':
+        case 'self_authored':
           throw new CoralSetupError(startupError);
         case 'unrecognized_code':
-          throw new BackendUnreachableError(
-            `Coordinator startup stopped with setup-error code '${startupError.code}', which this Coral build does not recognize. Run \`coral-cli backend status\` to inspect the recorded failure, then upgrade Coral and retry the original command.`,
-          );
+          throw new BackendUnreachableError(unrecognizedStartupCodeMessage(startupError));
         case 'invalid_diagnostic':
           throw new BackendUnreachableError(
             'Coordinator startup stopped with an invalid setup-error diagnostic. Run `coral-cli backend status` to inspect the recorded failure, then reinstall or upgrade the selected Coral build and retry the original command.',
           );
+        default:
+          return assertNever(startupError);
       }
     }
     if (terminalOutcome !== null) {
