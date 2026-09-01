@@ -19,6 +19,16 @@ export interface CoralSetupErrorInit {
 export type CoralSetupErrorContext = Record<string, unknown>;
 export type SerializedCoralSetupError = CoralSetupErrorInit;
 
+export type OperatorFacingCoralSetupError =
+  | Readonly<{
+      kind: 'documented';
+      code: DocumentedCoralSetupErrorCode;
+      userMessage: string;
+      remediation: string;
+    }>
+  | Readonly<{ kind: 'unrecognized_code' }>
+  | Readonly<{ kind: 'invalid_diagnostic' }>;
+
 export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_lock_contended'
   | 'expansion_install_command_failed'
@@ -1206,6 +1216,43 @@ export function isSerializedCoralSetupError(error: unknown): error is Serialized
     typeof error.userMessage === 'string' &&
     typeof error.remediation === 'string'
   );
+}
+
+const OPERATOR_FACING_SETUP_ERROR_CONTEXT: CoralSetupErrorContext = Object.freeze({
+  stage: 'before-signal',
+  pid: '<pid>',
+  signal: '<signal>',
+  requestedSignal: '<signal>',
+  previousSignal: '<signal>',
+  graceMs: '<grace-ms>',
+  ageMs: '<age-ms>',
+  retryInMs: '<retry-ms>',
+  missingFields: ['<signal-capability-field>'],
+  socketPath: '<coordinator-socket>',
+  policy: '<handoff-policy>',
+});
+
+export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacingCoralSetupError {
+  if (!isRecord(error) || typeof error.code !== 'string') {
+    return { kind: 'invalid_diagnostic' };
+  }
+  if (documentedCoralSetupErrorSpec(error.code) === undefined) {
+    return { kind: 'unrecognized_code' };
+  }
+
+  const code = error.code as DocumentedCoralSetupErrorCode;
+  let authored: CoralSetupError;
+  try {
+    authored = documentedCoralSetupError(code, OPERATOR_FACING_SETUP_ERROR_CONTEXT);
+  } catch {
+    return { kind: 'invalid_diagnostic' };
+  }
+  return {
+    kind: 'documented',
+    code,
+    userMessage: authored.userMessage,
+    remediation: authored.remediation,
+  };
 }
 
 export function serializeCoralSetupError(error: unknown): SerializedCoralSetupError | null {

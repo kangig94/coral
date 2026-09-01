@@ -6,8 +6,6 @@ const expectedSocket = process.env.CORAL_DELEGATION_EXPECTED_SOCKET;
 const gatePath = process.env.CORAL_DELEGATION_GATE;
 const observationPath = process.env.CORAL_DELEGATION_OBSERVATION;
 const mode = process.env.CORAL_DELEGATION_MODE;
-const directBundleHash = process.env.CORAL_DELEGATION_DIRECT_BUNDLE_HASH;
-const selectedManifestPath = process.env.CORAL_DELEGATION_SELECTED_MANIFEST;
 
 if (selectedBackend && expectedSocket && gatePath && observationPath && process.argv[1] === selectedBackend) {
   const originalListen = net.Server.prototype.listen;
@@ -34,9 +32,6 @@ if (selectedBackend && expectedSocket && gatePath && observationPath && process.
       return originalListen.call(this, address, ...args);
     }
     if (mode === 'refusal') {
-      const manifest = JSON.parse(fs.readFileSync(selectedManifestPath, 'utf8'));
-      manifest.bundleHash = directBundleHash;
-      fs.writeFileSync(selectedManifestPath, `${JSON.stringify(manifest)}\n`);
       throw {
         code: 'handoff_socket_holder_unverified',
         userMessage: `Handoff refused at the startup deadline for socket ${expectedSocket}: the socket remained bound but no verified holder pid was available.`,

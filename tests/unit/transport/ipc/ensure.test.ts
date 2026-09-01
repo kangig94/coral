@@ -134,7 +134,13 @@ function writeDiscovery(
 function writeStartupSentinel(
   root: string,
   attemptId: string,
-  overrides: Partial<{ pid: number; code: string; userMessage: string; remediation: string }> = {},
+  overrides: Partial<{
+    pid: number;
+    bundleHash: string;
+    code: string;
+    userMessage: string;
+    remediation: string;
+  }> = {},
 ): void {
   const paths = coordinatorPaths(readBuildFlavor(root));
   mkdirSync(paths.runDir, { recursive: true });
@@ -150,7 +156,7 @@ function writeStartupSentinel(
       state: 'stopped_with_diagnostic',
       exitCode: 1,
       socketPath: paths.socketPath,
-      bundleHash: 'test-hash',
+      bundleHash: overrides.bundleHash ?? 'test-hash',
       flavor: 'prod',
       namespace: pluginRootNamespace(root),
       error: {
@@ -948,7 +954,7 @@ describe('ipc ensure', () => {
     expect(child.unref).toHaveBeenCalledOnce();
   });
 
-  it('adopts an exact-attempt sentinel after the former 60.8 second ceiling while the child remains alive', async () => {
+  it('adopts a delegated-build sentinel with the exact attempt after the former 60.8 second ceiling', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -964,6 +970,7 @@ describe('ipc ensure', () => {
       () =>
         writeStartupSentinel(root, spawnedAttemptId(), {
           pid: 99_999,
+          bundleHash: 'selected-build-hash',
           code: 'handoff_sigkill_grace_target_alive',
           userMessage: 'The verified target remained alive after accepted SIGKILL.',
           remediation: 'Wait for the target to exit, then retry.',

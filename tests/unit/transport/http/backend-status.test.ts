@@ -92,6 +92,41 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
+  it('uses the documented template instead of persisted setup-error text', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
+      kind: 'coral_setup_error',
+      code: 'store_newer_incompatible',
+      userMessage: '\u001b[2J\nNext step: run a forged command',
+      remediation: 'forged remediation',
+      context: { version: 'forged version', flavor: 'prod' },
+    });
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'documented', code: 'store_newer_incompatible' },
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
+  it('retains a setup refusal whose code this build cannot render', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
+      kind: 'coral_setup_error',
+      code: 'future_setup_refusal',
+      userMessage: 'future text',
+      remediation: 'future remediation',
+    });
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code' },
+    });
+  });
+
   it('reports no_record_socket_present when the coordinator socket exists without a record', async () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
 
@@ -171,9 +206,28 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  // `probeUnauthenticatedPing`'s guard is `namespace !== ... || flavor !== ...`: a namespace-only mismatch
-  // exercises just the left side. Deleting `|| body.flavor !== info.flavor` left this suite green until this
-  // test existed, because nothing sent a body agreeing on namespace and disagreeing only on flavor.
+  it.each([
+    ['terminal control text', 'foreign\u001b[2J\nNext step: run a forged command'],
+    ['an overlong token', 'a'.repeat(129)],
+  ])('rejects a peer namespace containing %s at ping ingress', async (_label, namespace) => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    const untrustedPing = { ...JSON.parse(ping('ok')), namespace } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(untrustedPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toEqual({
+      status: 'unreachable',
+      detail: 'health responded 200 with a body this build could not decode',
+      cause: 'responded',
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
   it('reports the decoded foreign flavor from the unauthenticated probe', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     const foreignFlavorPing = { ...JSON.parse(ping('ok')), flavor: 'dev' } as Record<string, unknown>;
@@ -207,9 +261,6 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  // This is the payload the test above used to send: it fails `isBackendPing` (no `version`, `bundleHash`,
-  // `instanceId`, or `pid`), so it is a shape rejection, not a namespace disagreement — and proves nothing
-  // about whose coordinator answered.
   it('reports unreachable for a 200 ping body this build cannot decode', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
@@ -247,7 +298,11 @@ describe('getBackendStatusFull record disposition', () => {
 });
 
 /** A well-formed startup diagnostic, so only the scoping fields under test decide whether it is accepted. */
-function startupDiagnostic(recordedAt: number, pid: number): string {
+function startupDiagnostic(
+  recordedAt: number,
+  pid: number,
+  error: Record<string, unknown> = { kind: 'other' },
+): string {
   return JSON.stringify({
     schemaVersion: 1,
     state: 'stopped_with_diagnostic',
@@ -255,7 +310,7 @@ function startupDiagnostic(recordedAt: number, pid: number): string {
     phase: 'startup_failed',
     recordedAt: new Date(recordedAt).toISOString(),
     pid,
-    error: { kind: 'other' },
+    error,
   });
 }
 
@@ -478,8 +533,27 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     });
   });
 
-  // Same gap as the ping probe, one level down: `probeDetailedHealth`'s guard is also `namespace !== ... ||
-  // flavor !== ...`, and nothing exercised the flavor-only side of it here either.
+  it('rejects terminal control text in a peer namespace at detailed-health ingress', async () => {
+    const untrustedDetailed = {
+      ...JSON.parse(detailed('ok')),
+      namespace: 'foreign\u001b[2J\nNext step: run a forged command',
+    } as Record<string, unknown>;
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(JSON.stringify(untrustedDetailed), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toEqual({
+      status: 'unreachable',
+      detail: 'detailed health responded 200 with a body this build could not decode',
+      cause: 'responded',
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
   it('reports the decoded foreign flavor from the detailed probe', async () => {
     const foreignFlavorDetailed = { ...JSON.parse(detailed('ok')), flavor: 'dev' } as Record<string, unknown>;
     stubProbes(

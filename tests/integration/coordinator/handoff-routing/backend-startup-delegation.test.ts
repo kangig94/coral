@@ -160,6 +160,7 @@ describe('real backend-startup delegation', () => {
       const selectedFixture = createPluginFixture(roots, {
         flavor: 'prod',
         version: nextPatchVersion(directManifest.version),
+        bundleHash: 'delegated-backend',
       });
       const selectedBundleDir = join(direct.root, 'selected-bridge');
       renameSync(join(selectedFixture.root, 'bridge'), selectedBundleDir);
@@ -173,6 +174,7 @@ describe('real backend-startup delegation', () => {
         flavor: 'prod';
         storeFormatFingerprint: string;
       }>;
+      expect(selectedManifest.bundleHash).not.toBe(directManifest.bundleHash);
 
       const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
       const selectionPaths = resolveActiveStoreRecordPaths(runtime);
@@ -205,8 +207,6 @@ describe('real backend-startup delegation', () => {
         CORAL_DELEGATION_GATE: gatePath,
         CORAL_DELEGATION_OBSERVATION: observationPath,
         CORAL_DELEGATION_MODE: mode,
-        CORAL_DELEGATION_DIRECT_BUNDLE_HASH: directManifest.bundleHash,
-        CORAL_DELEGATION_SELECTED_MANIFEST: selectedManifestPath,
       });
 
       await Promise.race([

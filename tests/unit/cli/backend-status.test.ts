@@ -12,6 +12,7 @@ import {
   formatHandoffRoutingStatus,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
+import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '#src/runtime/errors.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -1429,6 +1430,14 @@ describe('backend status provider proxy dispositions', () => {
 describe('backend startup diagnostic classification', () => {
   const now = Date.parse('2026-08-02T12:00:00.000Z');
 
+  // Deriving the expectation from the catalog rather than pasting its prose is what makes these two
+  // cases discriminating: a reader that forwarded the diagnostic file's own strings would satisfy a
+  // pasted literal but cannot satisfy this.
+  const authored = (code: DocumentedCoralSetupErrorCode): { userMessage: string; remediation: string } => {
+    const error = documentedCoralSetupError(code);
+    return { userMessage: error.userMessage, remediation: error.remediation };
+  };
+
   it('classifies a recent failure without returning serialized exception text', () => {
     expect(
       statusFromStartupDiagnostic(
@@ -1484,9 +1493,10 @@ describe('backend startup diagnostic classification', () => {
       phase: 'startup_failed',
       retryable: true,
       setupError: {
+        kind: 'documented',
         code: 'store_open_contended',
-        userMessage: 'The current-generation store could not be opened because it is in use.',
-        remediation: 'Wait for the other store user to release the SQLite lock, then retry.',
+        userMessage: authored('store_open_contended').userMessage,
+        remediation: authored('store_open_contended').remediation,
       },
     });
   });
@@ -1521,11 +1531,10 @@ describe('backend startup diagnostic classification', () => {
       phase: 'startup_failed',
       retryable: false,
       setupError: {
+        kind: 'documented',
         code: 'store_newer_incompatible',
-        userMessage:
-          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-        remediation:
-          "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+        userMessage: authored('store_newer_incompatible').userMessage,
+        remediation: authored('store_newer_incompatible').remediation,
       },
     });
   });

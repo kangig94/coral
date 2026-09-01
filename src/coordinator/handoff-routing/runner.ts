@@ -29,6 +29,11 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-status-store/index.js';
 import { createIpcClient } from '../../transport/ipc/client.js';
 import {
+  resolveStartupAttemptLineage,
+  type StartupAttemptIdentity,
+  type StartupAttemptLineage,
+} from '../../infra/startup-attempt-lineage.js';
+import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
   buildSummarySchema,
   incumbentIdentitySummarySchema,
@@ -90,6 +95,7 @@ export const liveIncumbentHealthSchema = z
     instanceId: incumbentIdentityShape.instanceId,
     pid: z.number().int().positive(),
     incarnation: processIncarnationSchema.optional(),
+    env: z.record(z.string()).optional(),
     manifest: strictBundleManifestSchema.optional(),
     bundleDir: z
       .string()
@@ -298,6 +304,14 @@ type ObservedChild = Readonly<{
 }>;
 
 type BackendStartupObservation = Readonly<{ kind: 'ready' }> | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>;
+
+type BackendStartupReadiness =
+  | Readonly<{ kind: 'ready' }>
+  | Readonly<{
+      kind: 'hold';
+      until: 'lineage-confirmed-health-or-child-terminal';
+      lineage: Exclude<StartupAttemptLineage, { kind: 'proven-current-attempt' }>;
+    }>;
 
 type RoutingResolution = Readonly<{
   routing: HandoffRoutingResult;
@@ -550,25 +564,52 @@ function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, Hando
   return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code ?? 1 });
 }
 
+function backendStartupReadiness(
+  reading: LiveIncumbentReading,
+  desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string | undefined,
+): BackendStartupReadiness | null {
+  if (reading.kind !== 'observed') {
+    return null;
+  }
+  const lineage = resolveStartupAttemptLineage({
+    observedAttemptId: reading.health.env?.CORAL_STARTUP_ATTEMPT_ID,
+    expectedAttemptId,
+    observedIdentity: reading.health,
+    desiredIdentity,
+  });
+  return lineage.kind === 'proven-current-attempt'
+    ? { kind: 'ready' }
+    : {
+        kind: 'hold',
+        until: 'lineage-confirmed-health-or-child-terminal',
+        lineage,
+      };
+}
+
 async function waitForBackendStartupObservation(
   observation: ObservedChild,
   runtime: Runtime,
   time: TimePort,
+  desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string | undefined,
   signal: AbortSignal | undefined,
 ): Promise<BackendStartupObservation> {
   const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
 
   while (true) {
-    const readiness = readLiveCoordinatorHealth(runtime, time).then((health) =>
-      health.kind === 'observed' ? ({ kind: 'ready' } as const) : null,
+    const readiness = readLiveCoordinatorHealth(runtime, time).then((reading) =>
+      backendStartupReadiness(reading, desiredIdentity, expectedAttemptId),
     );
     const observed = await Promise.race([terminal, readiness]);
     if (observed !== null) {
       if (observed.kind === 'ready') {
         return observed;
       }
-      const readinessAfterTerminal = await readiness;
-      return readinessAfterTerminal ?? observed;
+      if (observed.kind === 'terminal') {
+        const readinessAfterTerminal = await readiness;
+        return readinessAfterTerminal?.kind === 'ready' ? readinessAfterTerminal : observed;
+      }
     }
 
     const terminalDuringPoll = await Promise.race([
@@ -577,7 +618,8 @@ async function waitForBackendStartupObservation(
     ]);
     if (terminalDuringPoll !== null) {
       const finalHealth = await readLiveCoordinatorHealth(runtime, time);
-      return finalHealth.kind === 'observed' ? { kind: 'ready' } : terminalDuringPoll;
+      const finalReadiness = backendStartupReadiness(finalHealth, desiredIdentity, expectedAttemptId);
+      return finalReadiness?.kind === 'ready' ? finalReadiness : terminalDuringPoll;
     }
   }
 }
@@ -925,6 +967,7 @@ async function executeResolvedHandoff(
 
       executionPhase.current = 'target-authority';
       const execution = withValidatedHandoffTarget(routing.target);
+      const expectedStartupAttemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : 'coral-cli.cjs';
       const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
       const spawnOptions: SpawnOptions = {
@@ -944,7 +987,14 @@ async function executeResolvedHandoff(
       executionPhase.current = 'child-outcome-wait';
       if (operation.kind === 'backend-startup') {
         child.unref();
-        const startupObservation = await waitForBackendStartupObservation(childObservation, runtime, time, signal);
+        const startupObservation = await waitForBackendStartupObservation(
+          childObservation,
+          runtime,
+          time,
+          execution.manifest,
+          expectedStartupAttemptId,
+          signal,
+        );
         return {
           kind: 'delegated',
           version: execution.manifest.version,

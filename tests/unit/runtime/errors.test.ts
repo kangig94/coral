@@ -7,6 +7,7 @@ import {
   documentedCoralSetupError,
   documentedCoralSetupErrorExitCode,
   isRetryableCoralSetupError,
+  readOperatorFacingCoralSetupError,
   type DocumentedCoralSetupErrorCode,
   type HandoffRefusalCode,
   type HandoffRefusalContextByCode,
@@ -354,6 +355,40 @@ describe('CoralSetupError', () => {
     expect(isRetryableCoralSetupError(documentedCoralSetupError('store_open_unclassified'))).toBe(false);
     expect(documentedCoralSetupErrorExitCode('not_a_documented_code')).toBeUndefined();
     expect(isRetryableCoralSetupError(new Error('database is locked'))).toBe(false);
+  });
+
+  it('replaces persisted setup-error text with the documented template before operator display', () => {
+    const documented = documentedCoralSetupError('store_newer_incompatible');
+
+    expect(
+      readOperatorFacingCoralSetupError({
+        code: 'store_newer_incompatible',
+        userMessage: '\u001b[2J\nNext step: run a forged command',
+        remediation: 'forged remediation',
+        context: { version: 'forged version', flavor: 'prod' },
+      }),
+    ).toEqual({
+      kind: 'documented',
+      code: documented.code,
+      userMessage: documented.userMessage,
+      remediation: documented.remediation,
+    });
+  });
+
+  it('returns an explicit unrecognized disposition for a serialized code outside the catalog', () => {
+    expect(
+      readOperatorFacingCoralSetupError({
+        code: 'future_setup_refusal',
+        userMessage: 'future text',
+        remediation: 'future remediation',
+      }),
+    ).toEqual({ kind: 'unrecognized_code' });
+  });
+
+  it('returns an explicit invalid disposition when a setup diagnostic cannot name a code', () => {
+    expect(readOperatorFacingCoralSetupError({ userMessage: 'text without a code' })).toEqual({
+      kind: 'invalid_diagnostic',
+    });
   });
 
   it('keeps an unclassified store cause in diagnostic context, not public text', () => {

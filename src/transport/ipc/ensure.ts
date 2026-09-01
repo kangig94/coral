@@ -26,6 +26,7 @@ import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
+import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
 /** Time budget for the daemon to bind its socket / answer first health probe. */
 export const KERNEL_BIND_DEADLINE_MS = 5_000;
@@ -414,34 +415,16 @@ function childCoordinatorUnavailable(reason: string): BackendUnreachableError {
   );
 }
 
-function startupSentinelIdentityMatches(
+function startupSentinelBoundaryMatches(
   sentinel: StartupErrorSentinel,
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
 ): boolean {
   return (
     sentinel.socketPath === paths.socketPath &&
-    sentinel.bundleHash === desired.bundleHash &&
     sentinel.flavor === desired.flavor &&
     sentinel.namespace === desired.namespace
   );
-}
-
-function coordinatorMatchesDesired(health: RawCoordinatorHealth, desired: DesiredCoordinator): boolean {
-  return (
-    health.version === desired.version &&
-    health.bundleHash === desired.bundleHash &&
-    health.flavor === desired.flavor &&
-    health.namespace === desired.namespace
-  );
-}
-
-function coordinatorIsResultOfCurrentAttempt(
-  health: RawCoordinatorHealth,
-  desired: DesiredCoordinator,
-  attemptId: string,
-): boolean {
-  return coordinatorMatchesDesired(health, desired) || health.env?.CORAL_STARTUP_ATTEMPT_ID === attemptId;
 }
 
 function readStartupErrorSentinel(paths: CoordinatorPaths): { sentinel: StartupErrorSentinel; mtimeMs: number } | null {
@@ -474,12 +457,17 @@ function matchingStartupError(
   if (!record) return null;
 
   const { sentinel, mtimeMs } = record;
-  if (!startupSentinelIdentityMatches(sentinel, paths, desired)) {
+  if (!startupSentinelBoundaryMatches(sentinel, paths, desired)) {
     return null;
   }
 
   if (waitContext.kind === 'current-attempt') {
-    if (sentinel.attemptId !== waitContext.attemptId) {
+    const lineage = resolveStartupAttemptLineage({
+      observedAttemptId: sentinel.attemptId,
+      expectedAttemptId: waitContext.attemptId,
+      desiredIdentity: desired,
+    });
+    if (lineage.kind !== 'proven-current-attempt' || lineage.proof !== 'startup-attempt-id') {
       return null;
     }
     const earliestMtime = waitContext.spawnedAt - STARTUP_POLL_MS;
@@ -489,6 +477,9 @@ function matchingStartupError(
     return new CoralSetupError(sentinel.error);
   }
 
+  if (sentinel.bundleHash !== desired.bundleHash) {
+    return null;
+  }
   if (observedPid !== undefined && sentinel.pid !== observedPid) {
     return null;
   }
@@ -656,10 +647,16 @@ async function waitForBackendReady(
           timePort,
         );
         if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
-          const belongsToCurrentAttempt =
-            waitContext.kind !== 'current-attempt' ||
-            coordinatorIsResultOfCurrentAttempt(authenticatedHealth, desired, waitContext.attemptId);
-          if (belongsToCurrentAttempt) {
+          if (waitContext.kind !== 'current-attempt') {
+            return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+          }
+          const lineage = resolveStartupAttemptLineage({
+            observedAttemptId: authenticatedHealth.env?.CORAL_STARTUP_ATTEMPT_ID,
+            expectedAttemptId: waitContext.attemptId,
+            observedIdentity: authenticatedHealth,
+            desiredIdentity: desired,
+          });
+          if (lineage.kind === 'proven-current-attempt') {
             return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
           }
         }

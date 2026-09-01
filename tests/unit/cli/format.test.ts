@@ -1131,6 +1131,7 @@ describe('cli format', () => {
           phase: 'startup_failed',
           retryable: false,
           setupError: {
+            kind: 'documented',
             code: 'store_newer_incompatible',
             userMessage:
               'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
@@ -1147,6 +1148,37 @@ describe('cli format', () => {
           "Next step: Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
         ].join('\n'),
       );
+    });
+
+    it('formats an unrecognized setup-error code without printing persisted text', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: { kind: 'unrecognized_code' },
+        }),
+      ).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Cause: Coral recorded a setup refusal whose code this build does not document.',
+          'Next step: update Coral to a build that documents the recorded setup-error code, then rerun coral-cli backend status; recognition by that build ends this hold and reveals the authored remediation.',
+        ].join('\n'),
+      );
+    });
+
+    it('formats an invalid setup diagnostic as a refusal that must be replaced', () => {
+      const text = formatBackendStatus({
+        status: 'recent_failure',
+        phase: 'startup_failed',
+        retryable: false,
+        setupError: { kind: 'invalid_diagnostic' },
+      });
+
+      expect(text).toContain('Coral recorded a setup refusal whose authored text could not be reconstructed.');
+      expect(text).toContain('a current valid startup diagnostic replaces this one');
     });
 
     it('formats a shutting-down backend status', () => {

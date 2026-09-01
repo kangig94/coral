@@ -1037,6 +1037,76 @@ describe('handoff-routing/runner', () => {
     expect(child?.unref).toHaveBeenCalledOnce();
   });
 
+  it('holds a coordinator that cannot prove this startup attempt until the spawned backend ends', async () => {
+    const target = validatedTarget(roots[0]);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    // `childThatStaysAlive` emits 'spawn' from a microtask, so the child must be created inside the
+    // spawn call: built earlier, the event outruns the listener and the observation never starts.
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    // A displaced incumbent recovering mid-startup answers authenticated health coherently, but from a
+    // build that is not the selected one. Readiness that accepted it would release ownership of a child
+    // that has not started and may still refuse.
+    const foreignBundleDir = createBundle();
+    const foreignManifest = { ...manifest, version: '2.0.0', bundleHash: 'f'.repeat(16) };
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: foreignManifest.bundleHash,
+        flavor: foreignManifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'foreign-boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      ...liveHealth(foreignBundleDir),
+      version: foreignManifest.version,
+      bundleHash: foreignManifest.bundleHash,
+      manifest: foreignManifest,
+    });
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalled());
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 23, null);
+    for (const release of releasePolls.splice(0)) release();
+    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+  });
+
   // The behaviour `5ad55ded` exists to produce, and the one nothing asserted: an unobservable pid is not an
   // absent one. Flipping the guard back to `probe.kind !== 'live'` reintroduces the false absence and left the
   // whole suite green before this test — established by mutation, not assumed.

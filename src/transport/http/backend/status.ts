@@ -4,7 +4,7 @@ import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
-import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
+import { readOperatorFacingCoralSetupError, type OperatorFacingCoralSetupError } from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
@@ -41,22 +41,8 @@ type BackendStatus =
       status: 'shutting_down';
     };
 
-/**
- * The user-facing half of a documented setup failure. Two things make it safe to
- * print, and neither is "it contains no interpolated values" — the authored
- * templates do interpolate Coral's own identifiers (a legacy path, a lease
- * holder, a base dir, a stored version). What holds the boundary is that the
- * sentences are authored per code rather than assembled from an exception, and
- * that `context` is dropped here: `serializeBootstrapError` persists it, and at
- * least one site deliberately stashes a raw `error.message` in it. An arbitrary
- * bootstrap exception's `message` and `stack` therefore stay in the coordinator
- * log. Widening this projection past these three fields reopens that path.
- */
-export type PublicSetupErrorSummary = {
-  readonly code: string;
-  readonly userMessage: string;
-  readonly remediation: string;
-};
+/** Persisted diagnostic text and context must not cross this operator-facing boundary. */
+export type PublicSetupErrorSummary = OperatorFacingCoralSetupError;
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
@@ -147,9 +133,7 @@ export function statusFromStartupDiagnostic(
 
   const error = value.error;
   const setupError: PublicSetupErrorSummary | null =
-    error.kind === 'coral_setup_error' && isSerializedCoralSetupError(error)
-      ? { code: error.code, userMessage: error.userMessage, remediation: error.remediation }
-      : null;
+    error.kind === 'coral_setup_error' ? readOperatorFacingCoralSetupError(error) : null;
 
   return {
     status: 'recent_failure',
@@ -159,9 +143,6 @@ export function statusFromStartupDiagnostic(
   };
 }
 
-/** A decoded, in-scope startup diagnostic, or `null` if none applies — the shared read behind both
- *  `noDaemonStatus`'s decisive absence and `no-record-socket-present`'s unresolved one, which differ only in
- *  what they fall back to when no diagnostic applies. */
 function readRecentFailureDiagnostic(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
@@ -281,7 +262,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
-      // A matching recent diagnostic supersedes the unresolved socket evidence.
       return (
         readRecentFailureDiagnostic(
           runtime.storage,
