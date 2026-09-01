@@ -21,7 +21,7 @@ import {
   type ValidatedHandoffTarget,
 } from '../../infra/handoff-target.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
-import { assertNever } from '../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
@@ -141,8 +141,16 @@ export type HandoffSuccess = Readonly<{
   [handoffSuccessBrand]: true;
 }>;
 
+export type HandoffStartupObservationAborted = Readonly<{
+  kind: 'handoff-startup-observation-aborted';
+  version: string;
+  child: RecordedProcessIdentity;
+  childDisposition: 'left-running-and-unobserved';
+}>;
+
 export type HandoffOutcome =
   | HandoffSuccess
+  | HandoffStartupObservationAborted
   | Readonly<{ kind: 'handoff-exit'; exitCode: number }>
   | Readonly<{ kind: 'handoff-signal'; signal: NodeJS.Signals }>;
 
@@ -305,7 +313,16 @@ type ObservedChild = Readonly<{
   outcome: Promise<ChildOutcome>;
 }>;
 
-type BackendStartupObservation = Readonly<{ kind: 'ready' }> | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>;
+type BackendStartupObservationAbort = Readonly<{
+  kind: 'aborted';
+  child: RecordedProcessIdentity;
+  childDisposition: 'left-running-and-unobserved';
+}>;
+
+type BackendStartupObservation =
+  | Readonly<{ kind: 'ready' }>
+  | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>
+  | BackendStartupObservationAbort;
 
 type BackendStartupReadiness =
   | Readonly<{ kind: 'ready' }>
@@ -559,11 +576,25 @@ function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome 
   });
 }
 
-function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, HandoffSuccess> {
+function endedChildOutcome(
+  outcome: ChildOutcome,
+): Exclude<HandoffOutcome, HandoffSuccess | HandoffStartupObservationAborted> {
   if (outcome.signal !== null) {
     return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
   }
   return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code === 0 ? 1 : (outcome.code ?? 1) });
+}
+
+function spawnedChildIdentity(child: ChildProcess, runtime: Runtime): RecordedProcessIdentity {
+  const pid = child.pid;
+  if (pid === undefined) {
+    throw new Error('Spawned handoff child did not report a pid.');
+  }
+  const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+  if (incarnation === null) {
+    throw new Error(`Could not read the spawned handoff child incarnation (pid ${pid}).`);
+  }
+  return { pid, incarnation };
 }
 
 function liveBackendStartupReadiness(
@@ -604,31 +635,65 @@ async function waitForBackendStartupObservation(
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
+  child: ChildProcess,
   signal: AbortSignal | undefined,
 ): Promise<BackendStartupObservation> {
   const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
+  let removeAbortListener = (): void => undefined;
+  const aborted =
+    signal === undefined
+      ? new Promise<never>(() => undefined)
+      : new Promise<BackendStartupObservationAbort>((resolveAborted, rejectAborted) => {
+          const onAbort = (): void => {
+            try {
+              resolveAborted({
+                kind: 'aborted',
+                child: spawnedChildIdentity(child, runtime),
+                childDisposition: 'left-running-and-unobserved',
+              });
+            } catch (error: unknown) {
+              rejectAborted(error instanceof Error ? error : new Error(errorMessage(error), { cause: error }));
+            }
+          };
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener('abort', onAbort, { once: true });
+          removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+        });
 
-  while (true) {
-    const reading = readLiveCoordinatorHealth(runtime, time);
-    const readiness = reading.then((health) => liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId));
-    const observed = await Promise.race([terminal, readiness]);
-    if (observed !== null) {
-      if (observed.kind === 'ready') {
-        return observed;
+  try {
+    while (true) {
+      const reading = readLiveCoordinatorHealth(runtime, time);
+      const readiness = reading.then((health) =>
+        liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId),
+      );
+      const observed = await Promise.race([terminal, readiness, aborted]);
+      if (observed !== null) {
+        if (observed.kind === 'ready' || observed.kind === 'aborted') {
+          return observed;
+        }
+        if (observed.kind === 'terminal') {
+          return terminalBackendStartupReadiness(await reading, desiredIdentity) ?? observed;
+        }
       }
-      if (observed.kind === 'terminal') {
-        return terminalBackendStartupReadiness(await reading, desiredIdentity) ?? observed;
+
+      const terminalDuringPoll = await Promise.race([
+        terminal,
+        aborted,
+        time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS, { signal }).then(() => null),
+      ]);
+      if (terminalDuringPoll !== null) {
+        if (terminalDuringPoll.kind === 'aborted') {
+          return terminalDuringPoll;
+        }
+        const finalHealth = await readLiveCoordinatorHealth(runtime, time);
+        return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? terminalDuringPoll;
       }
     }
-
-    const terminalDuringPoll = await Promise.race([
-      terminal,
-      time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS, { signal }).then(() => null),
-    ]);
-    if (terminalDuringPoll !== null) {
-      const finalHealth = await readLiveCoordinatorHealth(runtime, time);
-      return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? terminalDuringPoll;
-    }
+  } finally {
+    removeAbortListener();
   }
 }
 
@@ -895,6 +960,13 @@ function finalizedDisposition(continuation: HandoffContinuationResult): DirectTe
       switch (continuation.outcome.kind) {
         case 'handoff-success':
           return { kind: 'delegated-success', version: continuation.version };
+        case 'handoff-startup-observation-aborted':
+          return {
+            kind: 'delegated-startup-observation-aborted',
+            version: continuation.outcome.version,
+            child: continuation.outcome.child,
+            childDisposition: continuation.outcome.childDisposition,
+          };
         case 'handoff-exit':
           return { kind: 'delegated-exit', version: continuation.version, exitCode: continuation.outcome.exitCode };
         case 'handoff-signal':
@@ -999,7 +1071,6 @@ async function executeResolvedHandoff(
       executionPhase.current = 'executable-check';
       execution.assertExecutable();
       executionPhase.current = 'child-spawn';
-      // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       await childObservation.spawned;
@@ -1012,16 +1083,29 @@ async function executeResolvedHandoff(
           time,
           startup.identity,
           startup.expectedAttemptId,
+          child,
           signal,
         );
-        return {
-          kind: 'delegated',
-          version: execution.manifest.version,
-          outcome:
-            startupObservation.kind === 'ready'
-              ? handoffOutcome(execution.manifest.version, { code: 0, signal: null })
-              : endedChildOutcome(startupObservation.outcome),
-        };
+        let outcome: HandoffOutcome;
+        switch (startupObservation.kind) {
+          case 'ready':
+            outcome = handoffOutcome(execution.manifest.version, { code: 0, signal: null });
+            break;
+          case 'aborted':
+            outcome = Object.freeze({
+              kind: 'handoff-startup-observation-aborted',
+              version: execution.manifest.version,
+              child: startupObservation.child,
+              childDisposition: startupObservation.childDisposition,
+            });
+            break;
+          case 'terminal':
+            outcome = endedChildOutcome(startupObservation.outcome);
+            break;
+          default:
+            return assertNever(startupObservation);
+        }
+        return { kind: 'delegated', version: execution.manifest.version, outcome };
       }
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
       return { kind: 'delegated', version: execution.manifest.version, outcome };

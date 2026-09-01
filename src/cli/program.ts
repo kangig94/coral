@@ -22,6 +22,8 @@ import {
   registerBackendCommands,
 } from './commands/backend.js';
 import { createStoreResetCommandOperations } from './store-reset.js';
+import { errorCodeToExit } from './errors.js';
+import { formatHandoffStartupObservationAborted } from './format/backend.js';
 import { registerDiscussCommands } from './commands/discuss.js';
 import { registerExpansionCommands } from './commands/expansion.js';
 import { registerKbCommands } from './commands/kb.js';
@@ -31,10 +33,12 @@ import { registerWorkflowCommands } from './commands/workflow.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { resolvePluginRoot } from './plugin-root.js';
 
-let cliHandoffPreflightPromise: Promise<HandoffOutcome | null> | null = null;
+type CliHandoffOutcome = Exclude<HandoffOutcome, { kind: 'handoff-startup-observation-aborted' }>;
+
+let cliHandoffPreflightPromise: Promise<CliHandoffOutcome | null> | null = null;
 let cliHandoffPreflightResult: LiveHandoffResult | null = null;
 
-async function executeCliHandoffPreflight(argv: readonly string[]): Promise<HandoffOutcome | null> {
+async function executeCliHandoffPreflight(argv: readonly string[]): Promise<CliHandoffOutcome | null> {
   const statusInvocation = argv[2] === 'backend' && argv[3] === 'status';
   let result: HandoffRunResult;
   try {
@@ -75,6 +79,9 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
           return statusInvocation && publicationIncidents.length > 0
             ? { kind: 'handoff-exit', exitCode: handoffPublicationIncidentsExitContribution(publicationIncidents) }
             : outcome;
+        case 'handoff-startup-observation-aborted':
+          process.stderr.write(`${formatHandoffStartupObservationAborted(outcome)}\n`);
+          return { kind: 'handoff-exit', exitCode: errorCodeToExit('transient') };
         case 'handoff-exit':
         case 'handoff-signal':
           return outcome;
@@ -87,7 +94,7 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
   }
 }
 
-export function runCliHandoffPreflight(argv: readonly string[] = process.argv): Promise<HandoffOutcome | null> {
+export function runCliHandoffPreflight(argv: readonly string[] = process.argv): Promise<CliHandoffOutcome | null> {
   cliHandoffPreflightPromise ??= executeCliHandoffPreflight(argv);
   return cliHandoffPreflightPromise;
 }
@@ -99,7 +106,7 @@ export function peekCliHandoffPreflightResult(): LiveHandoffResult | null {
 export async function parseProgramWithHandoff(
   program: Command,
   argv: readonly string[] = process.argv,
-): Promise<HandoffOutcome | null> {
+): Promise<CliHandoffOutcome | null> {
   const handoff = await runCliHandoffPreflight(argv);
   if (handoff !== null) {
     return handoff;

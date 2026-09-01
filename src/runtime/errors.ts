@@ -1314,19 +1314,21 @@ function parseOperatorFacingContextKey(value: string): string | null {
   return value;
 }
 
+function isMissingSignalCapabilityFields(value: unknown): value is readonly MissingSignalCapabilityField[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= 3 &&
+    value.every(
+      (field): field is MissingSignalCapabilityField =>
+        field === 'instanceId' || field === 'token' || field === 'bootToken',
+    )
+  );
+}
+
 function canonicalOperatorFacingContextValue(key: string, value: unknown): unknown | undefined {
   if (key === 'missingFields') {
-    if (
-      !Array.isArray(value) ||
-      value.length === 0 ||
-      value.length > 3 ||
-      !value.every(
-        (field): field is MissingSignalCapabilityField =>
-          field === 'instanceId' || field === 'token' || field === 'bootToken',
-      )
-    ) {
-      return undefined;
-    }
+    if (!isMissingSignalCapabilityFields(value)) return undefined;
     return [...new Set(value)];
   }
 
@@ -1355,8 +1357,8 @@ function canonicalOperatorFacingContextValue(key: string, value: unknown): unkno
   return undefined;
 }
 
-function operatorFacingSetupErrorContext(value: unknown): CoralSetupErrorContext {
-  const context = { ...OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS };
+function canonicalOperatorFacingSetupErrorContext(value: unknown): CoralSetupErrorContext {
+  const context: CoralSetupErrorContext = {};
   if (!isRecord(value)) return context;
 
   for (const [key, raw] of Object.entries(value)) {
@@ -1365,6 +1367,166 @@ function operatorFacingSetupErrorContext(value: unknown): CoralSetupErrorContext
     if (canonical !== undefined) context[key] = canonical;
   }
   return context;
+}
+
+function hasExactContextKeys(context: CoralSetupErrorContext, keys: readonly string[]): boolean {
+  const contextKeys = Object.keys(context);
+  return contextKeys.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(context, key));
+}
+
+function isSignal(value: unknown): value is 'SIGTERM' | 'SIGKILL' {
+  return value === 'SIGTERM' || value === 'SIGKILL';
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number';
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function isLiteral<const Value extends string>(...expected: readonly Value[]) {
+  return (value: unknown): value is Value => typeof value === 'string' && expected.includes(value as Value);
+}
+
+type ContextShape<Context extends CoralSetupErrorContext> = {
+  readonly [Key in keyof Context]-?: (value: unknown) => value is Context[Key];
+};
+
+function contextValidator<Context extends CoralSetupErrorContext>(
+  shape: ContextShape<Context>,
+): (context: CoralSetupErrorContext) => context is Context {
+  const keys = Object.keys(shape);
+  return (context): context is Context =>
+    hasExactContextKeys(context, keys) && keys.every((key) => shape[key as keyof Context](context[key]));
+}
+
+function isHandoffVerificationContext(
+  context: CoralSetupErrorContext,
+  additionalKeys: readonly string[] = [],
+): context is HandoffVerificationContext {
+  if (typeof context.pid !== 'number') return false;
+  switch (context.stage) {
+    case 'before-signal':
+      return hasExactContextKeys(context, ['stage', 'pid', ...additionalKeys]);
+    case 'after-rejected-signal':
+    case 'after-accepted-signal-bind':
+    case 'after-accepted-signal-failure':
+      return isSignal(context.signal) && hasExactContextKeys(context, ['stage', 'pid', 'signal', ...additionalKeys]);
+    case 'after-sigterm-grace':
+      return (
+        context.signal === 'SIGTERM' &&
+        typeof context.graceMs === 'number' &&
+        hasExactContextKeys(context, ['stage', 'pid', 'signal', 'graceMs', ...additionalKeys])
+      );
+    case 'after-sigkill-grace':
+      return (
+        context.signal === 'SIGKILL' &&
+        typeof context.graceMs === 'number' &&
+        hasExactContextKeys(context, ['stage', 'pid', 'signal', 'graceMs', ...additionalKeys])
+      );
+    default:
+      return false;
+  }
+}
+
+function isSignalCapabilityContext(
+  context: CoralSetupErrorContext,
+): context is HandoffRefusalContextByCode['handoff_signal_capability_unavailable'] {
+  const missingFields: unknown = context.missingFields;
+  return isHandoffVerificationContext(context, ['missingFields']) && isMissingSignalCapabilityFields(missingFields);
+}
+
+const isSignalCooldownContext = contextValidator<HandoffRefusalContextByCode['handoff_signal_cooldown_active']>({
+  stage: isLiteral('before-signal'),
+  pid: isNumber,
+  requestedSignal: isSignal,
+  previousSignal: isSignal,
+  ageMs: isNumber,
+  retryInMs: isNumber,
+});
+
+const isShutdownCapabilityRejectedContext = contextValidator<
+  HandoffRefusalContextByCode['handoff_shutdown_capability_rejected']
+>({
+  stage: isLiteral('shutdown-request'),
+  pid: (value): value is number | 'unknown' => isNumber(value) || value === 'unknown',
+});
+
+const isShutdownCredentialUnavailableContext = contextValidator<
+  HandoffRefusalContextByCode['handoff_shutdown_credential_unavailable']
+>({ stage: isLiteral('shutdown-request'), pid: isNumber });
+
+const isSocketHolderUnverifiedContext = contextValidator<
+  HandoffRefusalContextByCode['handoff_socket_holder_unverified']
+>({ stage: isLiteral('handoff-deadline'), socketPath: isString });
+
+const isManualPolicyContext = contextValidator<HandoffRefusalContextByCode['handoff_manual_policy']>({
+  stage: isLiteral('before-signal'),
+  pid: isNumber,
+  policy: isLiteral('manual'),
+});
+
+const isTermOnlyPolicyContext = contextValidator<HandoffRefusalContextByCode['handoff_term_only_policy']>({
+  stage: isLiteral('after-sigterm-grace'),
+  pid: isNumber,
+  graceMs: isNumber,
+  policy: isLiteral('term-only'),
+});
+
+const isRejectedSignalContext = contextValidator<HandoffRefusalContextByCode['handoff_signal_rejected_live']>({
+  stage: isLiteral('after-rejected-signal'),
+  pid: isNumber,
+  signal: isSignal,
+});
+
+const isAcceptedSignalFailureContext = contextValidator<
+  HandoffRefusalContextByCode['handoff_accepted_signal_target_alive_after_failure']
+>({ stage: isLiteral('after-accepted-signal-failure'), pid: isNumber, signal: isSignal });
+
+const isAcceptedSignalBindContext = contextValidator<
+  HandoffRefusalContextByCode['handoff_accepted_signal_target_alive_after_bind']
+>({ stage: isLiteral('after-accepted-signal-bind'), pid: isNumber, signal: isSignal });
+
+const isSigkillGraceContext = contextValidator<HandoffRefusalContextByCode['handoff_sigkill_grace_target_alive']>({
+  stage: isLiteral('after-sigkill-grace'),
+  pid: isNumber,
+  signal: isLiteral('SIGKILL'),
+  graceMs: isNumber,
+});
+
+type HandoffRefusalContextValidator<Code extends HandoffRefusalCode> = (
+  context: CoralSetupErrorContext,
+) => context is HandoffRefusalContextByCode[Code];
+
+const HANDOFF_REFUSAL_CONTEXT_VALIDATORS = {
+  handoff_fresh_discovery_unavailable: isHandoffVerificationContext,
+  handoff_fresh_discovery_changed: isHandoffVerificationContext,
+  handoff_signal_capability_unavailable: isSignalCapabilityContext,
+  handoff_signal_cooldown_active: isSignalCooldownContext,
+  handoff_legacy_signal_attempt_indeterminate: isSignalCooldownContext,
+  handoff_shutdown_capability_rejected: isShutdownCapabilityRejectedContext,
+  handoff_shutdown_credential_unavailable: isShutdownCredentialUnavailableContext,
+  handoff_socket_holder_unverified: isSocketHolderUnverifiedContext,
+  handoff_manual_policy: isManualPolicyContext,
+  handoff_term_only_policy: isTermOnlyPolicyContext,
+  handoff_process_identity_unavailable: isHandoffVerificationContext,
+  handoff_process_liveness_unknown: isHandoffVerificationContext,
+  handoff_platform_identity_insufficient: isHandoffVerificationContext,
+  handoff_published_incarnation_missing: isHandoffVerificationContext,
+  handoff_published_incarnation_mismatch: isHandoffVerificationContext,
+  handoff_signal_anchor_missing: isHandoffVerificationContext,
+  handoff_pid_recycled: isHandoffVerificationContext,
+  handoff_signal_rejected_live: isRejectedSignalContext,
+  handoff_accepted_signal_target_alive_after_failure: isAcceptedSignalFailureContext,
+  handoff_accepted_signal_target_alive_after_bind: isAcceptedSignalBindContext,
+  handoff_sigkill_grace_target_gone_socket_still_bound: isSigkillGraceContext,
+  handoff_sigkill_grace_target_alive: isSigkillGraceContext,
+} satisfies { readonly [Code in HandoffRefusalCode]: HandoffRefusalContextValidator<Code> };
+
+function isHandoffRefusalCode(code: DocumentedCoralSetupErrorCode): code is HandoffRefusalCode {
+  return Object.prototype.hasOwnProperty.call(HANDOFF_REFUSAL_CONTEXT_VALIDATORS, code);
 }
 
 export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacingCoralSetupError {
@@ -1380,9 +1542,21 @@ export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacin
   }
 
   const code = parsedCode as DocumentedCoralSetupErrorCode;
+  const canonicalContext = canonicalOperatorFacingSetupErrorContext(error.context);
+  if (isHandoffRefusalCode(code)) {
+    const validateContext: (context: CoralSetupErrorContext) => boolean = HANDOFF_REFUSAL_CONTEXT_VALIDATORS[code];
+    if (!validateContext(canonicalContext)) {
+      return { kind: 'invalid_diagnostic' };
+    }
+  }
   let authored: CoralSetupError;
   try {
-    authored = documentedCoralSetupError(code, operatorFacingSetupErrorContext(error.context));
+    authored = documentedCoralSetupError(
+      code,
+      isHandoffRefusalCode(code)
+        ? canonicalContext
+        : { ...OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS, ...canonicalContext },
+    );
   } catch {
     return { kind: 'invalid_diagnostic' };
   }

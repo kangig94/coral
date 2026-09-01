@@ -37,7 +37,10 @@ const LOCK_RELEASE_GATE_MS = 50;
 const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
 const BYTE_PRESSURE_COMPLETED_PAIRS = 204;
-const BYTE_PRESSURE_BATCHED_PAIRS = 180;
+// Capacity constraint: a maximal handoff-routing pair now spans two 4,096-byte pages instead of one,
+// so batch admission is roughly half what it was. Measured 2026-09-02: 104 pairs commit; 105 are rejected.
+// Keep this pressure batch below that packing-sensitive boundary.
+const BYTE_PRESSURE_BATCHED_PAIRS = 96;
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const runtime = createRealRuntime('prod');
 const time = runtime.time;
@@ -595,6 +598,9 @@ describe('handoff-routing/status', () => {
       const selected = await committed(path, maximumSelection(identity));
       await committed(path, maximumTerminal(identity, selected));
     }
+    const retainedCompletedPairs = retainedRecordCounts(path).completedPairs;
+    expect(retainedCompletedPairs).toBeLessThan(BYTE_PRESSURE_COMPLETED_PAIRS);
+    expect(retainedCompletedPairs).toBeLessThanOrEqual(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
 
     const admitted = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
       maximumSelection('admitted'),

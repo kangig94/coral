@@ -45,6 +45,10 @@ import {
 } from './policy.js';
 import type { ABSENT_HANDOFF_RESULT_OBLIGATION, HANDOFF_CONTINUATION_REASON_OBLIGATIONS } from './runner.js';
 
+/**
+ * Capacity constraint: with the store's 4,096-byte SQLite pages, a maximal handoff-routing pair spans
+ * two pages instead of one, so batch admission is roughly half what it was.
+ */
 export const MAX_HANDOFF_ROUTING_STATUS_BYTES = 1_048_576;
 export const MAX_RETIREMENT_TOMBSTONES = 128;
 // DDL bounds must never be derived from encoded fixtures; generation addressing and body capacity may not form a cycle.
@@ -63,9 +67,10 @@ const MAX_SIGNAL_LENGTH = 16;
 export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'routing-selected': 1_965,
   'execution-failed': 2_345,
-  'continuation-finalized': 2_923,
+  'continuation-finalized': 3_341,
 });
-export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_923;
+// A retained selection closes as a direct terminal or a retirement tombstone, never as a wrapped late terminal.
+export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_170;
 
 /**
  * A persisted disposition is a hold only when a Coral operation can change its record. Every other
@@ -85,6 +90,7 @@ const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
   'execution-failed': 'history',
   'continued-current': 'history',
   'delegated-success': 'history',
+  'delegated-startup-observation-aborted': 'history',
   'delegated-exit': 'history',
   'delegated-signal': 'history',
   'failed-without-selection': 'history',
@@ -334,6 +340,15 @@ const finalizedDispositionSchema = z.union([
     .readonly(),
   z
     .object({ kind: z.literal('delegated-success'), version: strictBundleManifestSchema.shape.version })
+    .strict()
+    .readonly(),
+  z
+    .object({
+      kind: z.literal('delegated-startup-observation-aborted'),
+      version: strictBundleManifestSchema.shape.version,
+      child: recordedProcessIdentitySchema,
+      childDisposition: z.literal('left-running-and-unobserved'),
+    })
     .strict()
     .readonly(),
   z
@@ -1413,6 +1428,7 @@ type BoundedWarningDisposition = Extract<
     kind:
       | 'delegated-exit'
       | 'delegated-signal'
+      | 'delegated-startup-observation-aborted'
       | 'execution-failed'
       | 'failed-without-selection'
       | 'finalized-without-selection'
@@ -1431,6 +1447,7 @@ const SELECTED_DISPOSITION_KINDS: Readonly<Record<SelectedHandoffDisposition['ki
 const BOUNDED_WARNING_DISPOSITION_KINDS: Readonly<Record<BoundedWarningDisposition['kind'], true>> = Object.freeze({
   'delegated-exit': true,
   'delegated-signal': true,
+  'delegated-startup-observation-aborted': true,
   'execution-failed': true,
   'failed-without-selection': true,
   'finalized-without-selection': true,
@@ -2353,6 +2370,22 @@ const MAX_FINALIZED_TERMINAL = terminalEventSchema.parse({
   selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
   disposition: { kind: 'continued-current', reason: { kind: 'routing', basis: MAX_BASIS } },
 });
+const MAX_ABANDONED_STARTUP_TERMINAL = terminalEventSchema.parse({
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
+  sequence: Number.MAX_SAFE_INTEGER,
+  eventId: MAX_ID,
+  invocationId: MAX_ID,
+  observedAt: MAX_OBSERVED_AT,
+  eventKind: 'continuation-finalized',
+  phase: 'terminal',
+  selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
+  disposition: {
+    kind: 'delegated-startup-observation-aborted',
+    version: MAX_VERSION,
+    child: { pid: Number.MAX_SAFE_INTEGER, incarnation: MAX_INCARNATION },
+    childDisposition: 'left-running-and-unobserved',
+  },
+});
 const MAX_RESOLVED_EXECUTION_TERMINAL = terminalEventSchema.parse({
   generation: HANDOFF_ROUTING_STATUS_GENERATION,
   sequence: Number.MAX_SAFE_INTEGER,
@@ -2395,13 +2428,47 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
     terminal: { kind: 'continued-current', reason: { kind: 'routing', basis: MAX_BASIS } },
   },
 });
+const MAX_RESOLVED_ABANDONED_STARTUP_TERMINAL = terminalEventSchema.parse({
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
+  sequence: Number.MAX_SAFE_INTEGER,
+  eventId: MAX_ID,
+  invocationId: MAX_ID,
+  observedAt: MAX_OBSERVED_AT,
+  eventKind: 'continuation-finalized',
+  phase: 'terminal',
+  selection: { kind: 'with-selection-sequence', selectionSequence: Number.MAX_SAFE_INTEGER },
+  disposition: {
+    kind: 'terminal-after-operator-resolution',
+    resolutionReason: 'operator-abandoned-unobservable',
+    retiredSelection: {
+      selectionSequence: Number.MAX_SAFE_INTEGER,
+      selectedAt: MAX_OBSERVED_AT,
+      owner: MAX_SELECTION.owner,
+      selectedDisposition: MAX_SELECTION.disposition,
+    },
+    terminal: {
+      kind: 'delegated-startup-observation-aborted',
+      version: MAX_VERSION,
+      child: { pid: Number.MAX_SAFE_INTEGER, incarnation: MAX_INCARNATION },
+      childDisposition: 'left-running-and-unobserved',
+    },
+  },
+});
+
+export const MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES = Math.max(
+  encodedBytes(MAX_EXECUTION_TERMINAL),
+  encodedBytes(MAX_FINALIZED_TERMINAL),
+  encodedBytes(MAX_ABANDONED_STARTUP_TERMINAL),
+);
 
 export const MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'routing-selected': encodedBytes(MAX_SELECTION),
   'execution-failed': Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)),
   'continuation-finalized': Math.max(
     encodedBytes(MAX_FINALIZED_TERMINAL),
+    encodedBytes(MAX_ABANDONED_STARTUP_TERMINAL),
     encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
+    encodedBytes(MAX_RESOLVED_ABANDONED_STARTUP_TERMINAL),
   ),
 });
 
@@ -2416,9 +2483,9 @@ export const MAX_LEGAL_ROUTING_SELECTED_TRANSITION = routingSelectedTransitionSc
 
 export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSchema.parse({
   kind: 'continuation-finalized',
-  eventId: MAX_FINALIZED_TERMINAL.eventId,
-  invocationId: MAX_FINALIZED_TERMINAL.invocationId,
-  observedAt: MAX_FINALIZED_TERMINAL.observedAt,
-  selection: MAX_FINALIZED_TERMINAL.selection,
-  disposition: MAX_FINALIZED_TERMINAL.disposition,
+  eventId: MAX_ABANDONED_STARTUP_TERMINAL.eventId,
+  invocationId: MAX_ABANDONED_STARTUP_TERMINAL.invocationId,
+  observedAt: MAX_ABANDONED_STARTUP_TERMINAL.observedAt,
+  selection: MAX_ABANDONED_STARTUP_TERMINAL.selection,
+  disposition: MAX_ABANDONED_STARTUP_TERMINAL.disposition,
 });

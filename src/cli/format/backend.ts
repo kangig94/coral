@@ -13,6 +13,7 @@ import {
 import {
   liveHandoffResultObligation,
   type HandoffContinuationReason,
+  type HandoffStartupObservationAborted,
   type LiveHandoffResult,
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
@@ -468,8 +469,23 @@ function formatRoutingOwnerLiveness(
 
 type FinalizedDisposition = Extract<
   StoredTerminalDisposition,
-  { kind: 'continued-current' | 'delegated-success' | 'delegated-exit' | 'delegated-signal' }
+  {
+    kind:
+      | 'continued-current'
+      | 'delegated-success'
+      | 'delegated-startup-observation-aborted'
+      | 'delegated-exit'
+      | 'delegated-signal';
+  }
 >;
+
+export function formatHandoffStartupObservationAborted(outcome: HandoffStartupObservationAborted): string {
+  return (
+    `Handoff startup observation for Coral ${outcome.version} was aborted; detached child pid ` +
+    `${outcome.child.pid} (incarnation ${outcome.child.incarnation}) was left running and unobserved. ` +
+    'Coral will neither await nor terminate it.'
+  );
+}
 
 function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
   switch (disposition.kind) {
@@ -484,6 +500,12 @@ function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
       }
     case 'delegated-success':
       return `delegated successfully to ${disposition.version}`;
+    case 'delegated-startup-observation-aborted':
+      return (
+        `startup observation aborted after delegating to ${disposition.version}; detached child pid ` +
+        `${disposition.child.pid} (incarnation ${disposition.child.incarnation}) was left running and unobserved, ` +
+        'and Coral will neither await nor terminate it'
+      );
     case 'delegated-exit':
       return `delegated to ${disposition.version}, which exited ${disposition.exitCode}`;
     case 'delegated-signal':
@@ -499,6 +521,7 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
       return `execution failed during ${disposition.throwPhase}`;
     case 'continued-current':
     case 'delegated-success':
+    case 'delegated-startup-observation-aborted':
     case 'delegated-exit':
     case 'delegated-signal':
       return formatFinalizedDisposition(disposition);

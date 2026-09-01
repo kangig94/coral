@@ -13,6 +13,7 @@ import {
   type HandoffRefusalContextByCode,
   type HandoffRefusalInit,
 } from '#src/runtime/errors.js';
+import { statusFromStartupDiagnostic } from '#src/transport/http/backend/status.js';
 
 type HandoffRefusalCase = Readonly<{
   init: HandoffRefusalInit;
@@ -434,6 +435,46 @@ describe('CoralSetupError', () => {
       });
     },
   );
+
+  it.each([
+    {
+      failure: 'a discriminator owned by another refusal',
+      code: 'handoff_fresh_discovery_unavailable',
+      context: { stage: 'shutdown-request', pid: 4242 },
+    },
+    {
+      failure: 'a missing required field',
+      code: 'handoff_shutdown_credential_unavailable',
+      context: { stage: 'shutdown-request' },
+    },
+  ])('marks $failure invalid when backend status reads a known refusal', ({ code, context }) => {
+    const now = Date.parse('2026-09-01T00:00:00.000Z');
+
+    expect(
+      statusFromStartupDiagnostic(
+        {
+          schemaVersion: 1,
+          state: 'stopped_with_diagnostic',
+          retryable: true,
+          phase: 'startup_failed',
+          recordedAt: new Date(now).toISOString(),
+          error: {
+            kind: 'coral_setup_error',
+            code,
+            userMessage: 'persisted user message',
+            remediation: 'persisted remediation',
+            context,
+          },
+        },
+        now,
+      ),
+    ).toEqual({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      retryable: true,
+      setupError: { kind: 'invalid_diagnostic' },
+    });
+  });
 
   it('keeps an unclassified store cause in diagnostic context, not public text', () => {
     const error = documentedCoralSetupError('store_open_unclassified', {

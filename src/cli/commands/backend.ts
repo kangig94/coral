@@ -110,6 +110,7 @@ import { errorCodeToExit } from '../errors.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
   formatBackendStatus,
+  formatHandoffStartupObservationAborted,
   formatHandoffRoutingResolveResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
@@ -1340,6 +1341,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           switch (continuation.outcome.kind) {
             case 'handoff-success':
               renderHandoffNotice(continuation.outcome);
+              return;
+            case 'handoff-startup-observation-aborted':
+              process.stderr.write(`${formatHandoffStartupObservationAborted(continuation.outcome)}\n`);
+              process.exitCode = errorCodeToExit('transient');
               return;
             case 'handoff-exit':
               process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);

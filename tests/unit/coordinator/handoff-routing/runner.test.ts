@@ -89,6 +89,7 @@ vi.mock('#src/transport/ipc/client.js', () => ({
 }));
 
 const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
+const SPAWNED_CHILD_PID = 4242;
 const originalGuard = process.env[GUARD_ENV];
 const roots: string[] = [];
 const backendBundle = 'handoff runner backend fixture';
@@ -209,7 +210,7 @@ function cliOperation(...args: string[]): HandoffOperation {
 }
 
 function childThatExits(code: number | null, signal: NodeJS.Signals | null): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+  const child = Object.assign(new EventEmitter(), { pid: SPAWNED_CHILD_PID }) as unknown as ChildProcess;
   child.unref = vi.fn();
   queueMicrotask(() => {
     child.emit('spawn');
@@ -226,7 +227,7 @@ function childThatErrors(error: Error): ChildProcess {
 }
 
 function childThatSpawnsThenErrors(error: Error): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+  const child = Object.assign(new EventEmitter(), { pid: SPAWNED_CHILD_PID }) as unknown as ChildProcess;
   child.unref = vi.fn();
   queueMicrotask(() => {
     child.emit('spawn');
@@ -236,7 +237,7 @@ function childThatSpawnsThenErrors(error: Error): ChildProcess {
 }
 
 function childThatStaysAlive(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+  const child = Object.assign(new EventEmitter(), { pid: SPAWNED_CHILD_PID }) as unknown as ChildProcess;
   child.unref = vi.fn();
   queueMicrotask(() => child.emit('spawn'));
   return child;
@@ -922,7 +923,7 @@ describe('handoff-routing/runner', () => {
     });
   });
 
-  it('refuses to continue-current for a startup handoff whose stdout drain would fail', async () => {
+  it('refuses to continue-current for an aborted startup handoff', async () => {
     const bundleDir = roots[0];
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
@@ -940,7 +941,12 @@ describe('handoff-routing/runner', () => {
 
     await expect(result).resolves.toMatchObject({
       kind: 'delegated',
-      outcome: { kind: 'handoff-success' },
+      outcome: {
+        kind: 'handoff-startup-observation-aborted',
+        version: manifest.version,
+        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
+        childDisposition: 'left-running-and-unobserved',
+      },
     });
 
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
@@ -949,6 +955,62 @@ describe('handoff-routing/runner', () => {
     ).resolves.toEqual({
       kind: 'run-current',
       reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    });
+  });
+
+  it('returns and records abandonment when startup observation is aborted', async () => {
+    const target = validatedTarget(roots[0]);
+    const controller = new AbortController();
+    const sleep = vi.fn<TimePort['sleep']>(
+      (_ms, options) =>
+        new Promise<void>((resolve) => {
+          if (options?.signal?.aborted === true) {
+            resolve();
+            return;
+          }
+          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
+        }),
+    );
+    const time: TimePort = {
+      ...runtime.time,
+      sleep,
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    // `childThatStaysAlive` emits 'spawn' from a microtask, so the child must be created inside the spawn
+    // call: built earlier, the event outruns the listener and the observation never starts.
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: controller.signal, time },
+    );
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(result).resolves.toEqual({
+      kind: 'delegated',
+      version: manifest.version,
+      outcome: {
+        kind: 'handoff-startup-observation-aborted',
+        version: manifest.version,
+        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
+        childDisposition: 'left-running-and-unobserved',
+      },
+    });
+    expect(mockState.probeCoordinator).toHaveBeenCalledOnce();
+    expect(child.unref).toHaveBeenCalledOnce();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: {
+        kind: 'delegated-startup-observation-aborted',
+        version: manifest.version,
+        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
+        childDisposition: 'left-running-and-unobserved',
+      },
     });
   });
 
@@ -1052,8 +1114,6 @@ describe('handoff-routing/runner', () => {
       clearInterval: vi.fn(),
     };
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    // `childThatStaysAlive` emits 'spawn' from a microtask, so the child must be created inside the
-    // spawn call: built earlier, the event outruns the listener and the observation never starts.
     let child!: ChildProcess;
     mockState.spawn.mockImplementation(() => {
       child = childThatStaysAlive();
@@ -1067,9 +1127,6 @@ describe('handoff-routing/runner', () => {
     void result.catch(() => undefined);
     await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
 
-    // A displaced incumbent recovering mid-startup answers authenticated health coherently, but from a
-    // build that is not the selected one. Readiness that accepted it would release ownership of a child
-    // that has not started and may still refuse.
     const foreignBundleDir = createBundle();
     const foreignManifest = { ...manifest, version: '2.0.0', bundleHash: 'f'.repeat(16) };
     mockState.probeCoordinator.mockReturnValue({

@@ -5,10 +5,12 @@ import { formatHandoffPublicationFailureSuccessor } from '#src/cli/format/handof
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
   handoffRoutingStatusStoreSchema,
+  persistedHandoffDispositionPolicy,
   type HandoffRoutingStatusClassification,
   type HandoffRoutingStatusClassificationPolicy,
 } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const generation = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const emptyRetirementHistory = {
@@ -189,6 +191,23 @@ const policyFixtures = [
 ] as const satisfies readonly PolicyFixture[];
 
 describe('handoff routing status classification policy', () => {
+  it('classifies an abandoned startup child as bounded warning history', () => {
+    expect(
+      persistedHandoffDispositionPolicy({
+        kind: 'delegated-startup-observation-aborted',
+        version: '2.3.4',
+        child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+        childDisposition: 'left-running-and-unobserved',
+      }),
+    ).toEqual({
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'warning',
+      classification: 'history',
+      exitContribution: 0,
+    });
+  });
+
   it('matches every independent policy fixture and no additional classification arm', () => {
     expect(Object.keys(HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY).sort()).toEqual(
       policyFixtures.map(({ classification }) => classification.kind).sort(),

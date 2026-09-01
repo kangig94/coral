@@ -373,6 +373,15 @@ describe('backend status local exit combination', () => {
       { kind: 'delegated-signal', version: '2.3.4', signal: 'SIGTERM' } as const,
       "The delegated child ended from signal SIGTERM; use the child's output to diagnose the operation",
     ],
+    [
+      {
+        kind: 'delegated-startup-observation-aborted',
+        version: '2.3.4',
+        child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+        childDisposition: 'left-running-and-unobserved',
+      } as const,
+      'The detached Coral 2.3.4 child pid 4242',
+    ],
   ])(
     'describes the recorded delegated outcome without generalizing it as finished',
     (terminalDisposition, expected) => {
@@ -544,6 +553,26 @@ describe('backend routing status', () => {
           },
         },
         {
+          kind: 'terminal',
+          selection: null,
+          terminal: {
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
+            sequence: 3,
+            eventId: 'abandoned-terminal-event',
+            invocationId: 'abandoned-terminal-invocation',
+            observedAt: '2026-08-02T01:00:00.000Z',
+            eventKind: 'continuation-finalized',
+            phase: 'terminal',
+            selection: { kind: 'with-selection-sequence', selectionSequence: 2 },
+            disposition: {
+              kind: 'delegated-startup-observation-aborted',
+              version: '0.11.0',
+              child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+              childDisposition: 'left-running-and-unobserved',
+            },
+          },
+        },
+        {
           kind: 'retired',
           tombstone: {
             generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -607,6 +636,7 @@ describe('backend routing status', () => {
       'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
       'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
+      `Routing invocation abandoned-terminal-invocation: terminal; startup observation aborted after delegating to 0.11.0; detached child pid 4242 (incarnation ${testIncarnation('selected-backend')}) was left running and unobserved, and Coral will neither await nor terminate it.`,
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
       'Routing invocation operator-resolved-invocation: retired (operator-resolved; reason: owner-absent). No action is needed.',
       'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',

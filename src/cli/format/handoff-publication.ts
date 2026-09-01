@@ -111,6 +111,13 @@ function formatPublicationAfterStatus(input: HandoffPublicationActionContext): s
       return `${resolveOpening}. Routing finished; the local operation is continuing`;
     case 'delegated-success':
       return `${resolveOpening}. The delegated operation succeeded; do not rerun it`;
+    case 'delegated-startup-observation-aborted':
+      return (
+        `${resolveOpening}. The detached Coral ${incident.terminalDisposition.version} child pid ` +
+        `${incident.terminalDisposition.child.pid} (incarnation ${incident.terminalDisposition.child.incarnation}) ` +
+        'was left running and unobserved; Coral will neither await nor terminate it. Inspect that exact process ' +
+        'externally before retrying'
+      );
     case 'delegated-exit':
       return `${resolveOpening}. The delegated child exited with code ${incident.terminalDisposition.exitCode}; follow the child's own diagnosis`;
     case 'delegated-signal':

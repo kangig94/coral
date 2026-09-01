@@ -20,6 +20,7 @@ import {
   type HandoffOutcome,
 } from '../coordinator/handoff-routing/runner.js';
 import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
+import { formatHandoffStartupObservationAborted } from './format/backend.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { getSharedReadCoralStore } from './read-store.js';
 import { errorCodeToExit, WaitResumeError } from './errors.js';
@@ -419,6 +420,16 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         }
         if (outcome.kind === 'handoff-exit') {
           return normalizeExitCode(outcome.exitCode);
+        }
+        if (outcome.kind === 'handoff-startup-observation-aborted') {
+          options.emitError(
+            new WaitResumeError(
+              formatHandoffStartupObservationAborted(outcome),
+              remainingJobIds,
+              serializeWaitCursor(currentCursor),
+            ),
+          );
+          return errorCodeToExit('transient');
         }
         if (outcome.signal === 'SIGINT' && sigintCount === 1) {
           continue followLoop;

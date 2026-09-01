@@ -13,6 +13,7 @@ import { createCoordinatorServer } from './index.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
+import { assertNever } from '../infra/error-format.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -99,6 +100,17 @@ export async function handoffStartupToSelectedBuild(
     switch (continuation.outcome.kind) {
       case 'handoff-success':
         return { kind: 'started' };
+      case 'handoff-startup-observation-aborted':
+        return {
+          kind: 'failed',
+          error: new Error(
+            `Selected backend startup observation was aborted for Coral ${continuation.outcome.version}; ` +
+              `detached child pid ${continuation.outcome.child.pid} (incarnation ` +
+              `${continuation.outcome.child.incarnation}) was left running and unobserved. ` +
+              'Coral will neither await nor terminate it.',
+          ),
+          exitCode: 75,
+        };
       case 'handoff-exit':
         return {
           kind: 'failed',
@@ -114,6 +126,8 @@ export async function handoffStartupToSelectedBuild(
             `Selected backend exited during startup handoff from signal ${continuation.outcome.signal}.`,
           ),
         };
+      default:
+        return assertNever(continuation.outcome);
     }
   } catch (error: unknown) {
     if (error instanceof HandoffRunError) {

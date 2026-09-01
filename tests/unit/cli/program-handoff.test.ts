@@ -8,6 +8,7 @@ import type * as ProgramMod from '#src/cli/program.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import { filterForwardableCoralEnv } from '#src/infra/env-sanitize.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const mockState = vi.hoisted(() => ({
   getBackendStatusFull: vi.fn(),
@@ -213,6 +214,39 @@ describe('program', () => {
     expect(mockState.renderHandoffNotice).toHaveBeenCalledOnce();
     expect(mockState.renderHandoffNotice).toHaveBeenCalledWith(success);
     expect(filterForwardableCoralEnv({ [GUARD_ENV]: '1' })).toEqual({ [GUARD_ENV]: '1' });
+  });
+
+  it('should report an abandoned startup child and return a transient exit without local dispatch', async () => {
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stderr += chunk.toString();
+      return true;
+    }) as typeof process.stderr.write);
+    mockState.runHandoff.mockResolvedValue(
+      recorded({
+        kind: 'delegated',
+        version: '2.3.4',
+        outcome: {
+          kind: 'handoff-startup-observation-aborted',
+          version: '2.3.4',
+          child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+          childDisposition: 'left-running-and-unobserved',
+        },
+      }),
+    );
+    const { parseProgramWithHandoff } = await loadProgramFresh();
+    const dispatch = vi.fn();
+
+    await expect(parseProgramWithHandoff(commandWithAction(dispatch), ['node', 'coral-cli', 'run'])).resolves.toEqual({
+      kind: 'handoff-exit',
+      exitCode: 75,
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(mockState.renderHandoffNotice).not.toHaveBeenCalled();
+    expect(stderr).toContain('detached child pid 4242');
+    expect(stderr).toContain(`incarnation ${testIncarnation('selected-backend')}`);
+    expect(stderr).toContain('left running and unobserved');
   });
 
   it.each<HandoffOutcome>([

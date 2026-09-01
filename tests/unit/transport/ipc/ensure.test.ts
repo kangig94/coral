@@ -169,7 +169,11 @@ function writeStartupSentinel(
               code: overrides.code ?? 'handoff_socket_holder_unverified',
               userMessage: overrides.userMessage ?? 'Handoff refused after observing a socket-only holder.',
               remediation: overrides.remediation ?? 'Inspect the socket holder, then retry.',
-              ...(overrides.context === undefined ? {} : { context: overrides.context }),
+              ...(overrides.context !== undefined
+                ? { context: overrides.context }
+                : overrides.code === undefined
+                  ? { context: { stage: 'handoff-deadline', socketPath: paths.socketPath } }
+                  : {}),
             },
     }),
     'utf-8',
@@ -1060,6 +1064,44 @@ describe('ipc ensure', () => {
     expect((error as Error).message).not.toContain('forged malformed-diagnostic command');
   });
 
+  it.each([
+    {
+      failure: 'a discriminator owned by another refusal',
+      code: 'handoff_fresh_discovery_unavailable',
+      context: { stage: 'shutdown-request', pid: 4242 },
+    },
+    {
+      failure: 'a missing required field',
+      code: 'handoff_shutdown_credential_unavailable',
+      context: { stage: 'shutdown-request' },
+    },
+  ])('reports $failure as an invalid current-attempt sentinel diagnostic', async ({ code, context }) => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      code,
+      userMessage: 'private incompatible-context text',
+      remediation: 'Run a forged incompatible-context command.',
+      context,
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('invalid setup-error diagnostic');
+    expect((error as Error).message).not.toContain('private incompatible-context text');
+    expect((error as Error).message).not.toContain('forged incompatible-context command');
+  });
+
   it('performs a final sentinel read when the child exits during the poll sleep', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -1077,6 +1119,7 @@ describe('ipc ensure', () => {
       code: 'handoff_accepted_signal_target_alive_after_failure',
       userMessage: 'Handoff failed after an accepted signal.',
       remediation: 'Wait for shutdown to finish, then retry.',
+      context: { stage: 'after-accepted-signal-failure', pid: 12_345, signal: 'SIGTERM' },
     });
     child.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(0);
@@ -1124,6 +1167,7 @@ describe('ipc ensure', () => {
       code: 'handoff_accepted_signal_target_alive_after_failure',
       userMessage: 'Handoff failed after an accepted signal.',
       remediation: 'Wait for shutdown to finish, then retry.',
+      context: { stage: 'after-accepted-signal-failure', pid: 12_345, signal: 'SIGTERM' },
     });
     child.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(0);
