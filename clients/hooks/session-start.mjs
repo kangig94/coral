@@ -21,9 +21,6 @@ import {
   exitIfChildProcess,
   hostKind,
   isValidSessionId,
-  PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
-  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
-  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
   readStdin,
   resolveFlavorDisposition,
   writeHookOutput,
@@ -34,8 +31,13 @@ import { renderInject } from './lib/inject-render.mjs';
 import {
   projectIgnoreOutcomeNotice,
   renderProjectIgnoreResultNotices,
-} from './lib/project-ignore-notices.mjs';
-import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
+} from './lib/project-ignore/notices.mjs';
+import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
+import {
+  LOCK_CONFLICT_EXIT_CODE,
+  LOCK_UNAVAILABLE_EXIT_CODE,
+  SPAWN_TIMEOUT_MS,
+} from './lib/project-ignore/arena.mjs';
 
 // Unconditionally spawn coral-backend on session start. The daemon's own
 // socket-as-lock contention is the single source of truth for staleness:
@@ -251,19 +253,19 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     const result = spawnSync(process.execPath, args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+      timeout: SPAWN_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
     });
     if (result.error) {
       if (result.error.code === 'ETIMEDOUT') return { outcome: 'killed', maintenance: null };
       return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }
-    if (result.status === PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE) {
+    if (result.status === LOCK_CONFLICT_EXIT_CODE) {
       return { outcome: 'maintenance-busy', maintenance: null };
     }
     if (
       !result.stdout &&
-      [PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)
+      [LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)
     ) {
       return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }

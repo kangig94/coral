@@ -15,10 +15,10 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
-  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+  CONTEXT_PROBE_BUDGET_MS,
+  SPAWN_TIMEOUT_MS,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-} from '../../../clients/hooks/lib/hook-utils.mjs';
+} from '../../../clients/hooks/lib/project-ignore/arena.mjs';
 
 import {
   BASH_REWRITE_HOOK,
@@ -226,8 +226,20 @@ describe('session-start.mjs', () => {
       stdout: '',
       notice: 'could not open or own its maintenance lock',
     })),
-    { name: 'empty failure', status: 2, stdout: '', notice: 'exited without reporting a result' },
-    { name: 'invalid result', status: 1, stdout: '{}\n', notice: 'reported a result Coral could not read' },
+    {
+      name: 'empty failure',
+      status: 2,
+      stdout: '',
+      notice:
+        'exited without reporting a result; retry in a new session, and if it recurs, report it with this diagnostic',
+    },
+    {
+      name: 'invalid result',
+      status: 1,
+      stdout: '{}\n',
+      notice:
+        'reported a result Coral could not read; retry in a new session, and if it recurs, report it with this diagnostic',
+    },
     {
       name: 'refused result',
       status: 1,
@@ -319,12 +331,12 @@ describe('session-start.mjs', () => {
   it('uses the shared owner timeout and renders a killed owner', () => {
     const fixture = createFixture();
     const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-timeout');
-    const hookUtilsPath = join(hooksRoot, 'lib', 'hook-utils.mjs');
-    const hookUtils = readFileSync(hookUtilsPath, 'utf-8').replace(
-      `export const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = ${PROJECT_IGNORE_SPAWN_TIMEOUT_MS};`,
-      'export const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 40;',
+    const arenaPath = join(hooksRoot, 'lib', 'project-ignore', 'arena.mjs');
+    const arena = readFileSync(arenaPath, 'utf-8').replace(
+      `export const SPAWN_TIMEOUT_MS = ${SPAWN_TIMEOUT_MS};`,
+      'export const SPAWN_TIMEOUT_MS = 40;',
     );
-    writeFileSync(hookUtilsPath, hookUtils);
+    writeFileSync(arenaPath, arena);
     writeOwnerStub(hooksRoot, { status: 0, delayMs: 200 });
     writeInjectBundle(fixture.pluginRoot, 'Project instructions');
 
@@ -341,7 +353,7 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
-      'ran out of its time budget and was terminated',
+      'ran out of its time budget and was terminated; retry in a new session, and if it recurs, report it with this diagnostic',
     );
   });
 
@@ -431,8 +443,8 @@ describe('session-start.mjs', () => {
   it('lets the owner finish after the aggregate child subprocess allowance', () => {
     const fixture = createFixture();
     const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-parent-margin');
-    const childAllowance = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + 2_000;
-    expect(PROJECT_IGNORE_SPAWN_TIMEOUT_MS).toBeGreaterThan(childAllowance);
+    const childAllowance = CONTEXT_PROBE_BUDGET_MS + 2_000;
+    expect(SPAWN_TIMEOUT_MS).toBeGreaterThan(childAllowance);
     writeOwnerStub(hooksRoot, {
       status: 0,
       stdout: `${JSON.stringify(projectIgnoreMaintenance('complete'))}\n`,

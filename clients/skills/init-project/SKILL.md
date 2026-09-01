@@ -339,12 +339,12 @@ argument-hint: "[existing|new]"
   printf 'CORAL_PROJECT_IGNORE_RESULT=%s\n' "$CORAL_PROJECT_IGNORE_RESULT" >&2
   if [ "$CORAL_PROJECT_IGNORE_RESULT_STATUS" = partial ]; then
     echo "CORAL_PROJECT_IGNORE_OUTCOME=partial" >&2
-    echo "Coral project-ignore setup reported a partial result. Inspect CORAL_PROJECT_IGNORE_RESULT, apply its named remedy, then rerun /coral:init-project." >&2
+    echo "Coral project-ignore setup reported a partial result. Inspect CORAL_PROJECT_IGNORE_RESULT, apply the remedy printed above, then rerun /coral:init-project." >&2
     exit 1
   fi
   if [ "$CORAL_PROJECT_IGNORE_RESULT_STATUS" = refused ]; then
     echo "CORAL_PROJECT_IGNORE_OUTCOME=refused" >&2
-    echo "Coral project-ignore setup refused before making progress. Inspect CORAL_PROJECT_IGNORE_RESULT, apply its named remedy, then rerun /coral:init-project." >&2
+    echo "Coral project-ignore setup refused before making progress. Inspect CORAL_PROJECT_IGNORE_RESULT, apply the remedy printed above, then rerun /coral:init-project." >&2
     exit 1
   fi
   if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ]; then

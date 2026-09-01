@@ -4,14 +4,14 @@ import { closeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
-  openProjectIgnoreMaintenanceLock,
-  projectIgnoreContextProbeDeadline,
-  PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
-  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
-  PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
-} from './lib/hook-utils.mjs';
-import { projectIgnoreContextRefusal, resolveProjectContext } from './lib/project-ignore.mjs';
-import { emitProjectIgnoreResult } from './lib/project-ignore-notices.mjs';
+  contextProbeDeadline,
+  LOCK_CONFLICT_EXIT_CODE,
+  LOCK_UNAVAILABLE_EXIT_CODE,
+  LOCK_WRAPPER_BUDGET_MS,
+  openMaintenanceLock,
+} from './lib/project-ignore/arena.mjs';
+import { projectIgnoreContextRefusal, resolveProjectContext } from './lib/project-ignore/index.mjs';
+import { emitProjectIgnoreResult } from './lib/project-ignore/notices.mjs';
 
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
 
@@ -37,7 +37,7 @@ function parseArgs(argv) {
 
 const request = parseArgs(process.argv.slice(2));
 if (!request || typeof process.execve !== 'function') {
-  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 }
 
 const ownerStartedNs = request.startedNs ?? process.hrtime.bigint().toString();
@@ -46,14 +46,14 @@ let ownerDeadlineNs;
 try {
   const startedNs = BigInt(ownerStartedNs);
   if (startedNs < 0 || startedNs > process.hrtime.bigint()) {
-    process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+    process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
   }
-  contextProbeDeadlineNs = projectIgnoreContextProbeDeadline(startedNs);
-  if (contextProbeDeadlineNs === null) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  contextProbeDeadlineNs = contextProbeDeadline(startedNs);
+  if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
   ownerDeadlineNs =
-    contextProbeDeadlineNs + BigInt(PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS) * 1_000_000n;
+    contextProbeDeadlineNs + BigInt(LOCK_WRAPPER_BUDGET_MS) * 1_000_000n;
 } catch {
-  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 }
 
 const projectContext = resolveProjectContext(request.projectDir, contextProbeDeadlineNs);
@@ -62,20 +62,20 @@ if (contextRefusal) {
   emitProjectIgnoreResult(contextRefusal);
   process.exit(1);
 }
-if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 
 try {
   // `process.execve` preserves only standard descriptors, so fd 0 carries the validated lock inode into flock.
   closeSync(0);
 } catch {
-  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 }
-const lockFd = openProjectIgnoreMaintenanceLock();
+const lockFd = openMaintenanceLock();
 if (lockFd !== 0) {
   if (lockFd !== null) closeSync(lockFd);
-  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 }
-if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+if (process.hrtime.bigint() > ownerDeadlineNs) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 
 try {
   const maintainerArgs = [
@@ -101,12 +101,12 @@ try {
       '--nonblock',
       '--no-fork',
       '--conflict-exit-code',
-      String(PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE),
+      String(LOCK_CONFLICT_EXIT_CODE),
       '/dev/fd/0',
       ...maintainerArgs,
     ],
     process.env,
   );
 } catch {
-  process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 }

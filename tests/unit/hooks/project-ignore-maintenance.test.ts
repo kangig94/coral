@@ -1,8 +1,4 @@
-// The correction is scoped to links Coral itself placed. A link an operator pointed somewhere of their own is
-// left alone: recognising our own artifact is not licence to overwrite someone else's.
-
 import type * as NodeChildProcess from 'node:child_process';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type * as NodeFs from 'node:fs';
 import {
@@ -25,23 +21,26 @@ import {
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `coralStateRoot` has no cached module-level state (it reads `homedir()` fresh on every call), so a static
-// import is safe to use across the module reloads `maintain()` triggers below via `vi.resetModules()`.
 import {
   coralStateRoot,
-  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
-  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 } from '../../../clients/hooks/lib/hook-utils.mjs';
 import {
+  CONTEXT_PROBE_BUDGET_MS,
+  SPAWN_TIMEOUT_MS,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore/arena.mjs';
+import {
   PROJECT_IGNORE_REASON_NOTICES,
-  projectIgnoreOutcomeNotice,
   renderProjectIgnoreResultNotices,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-} from '../../../clients/hooks/lib/project-ignore-notices.mjs';
+} from '../../../clients/hooks/lib/project-ignore/notices.mjs';
+import {
+  isProjectIgnoreResult,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore/result.mjs';
 
 const manifest = vi.hoisted(() => ({ flavor: 'prod' as 'prod' | 'dev' }));
 const fixture = vi.hoisted(() => ({
@@ -105,9 +104,6 @@ function consumeObservationFailure(phase: 'lstat' | 'open' | 'fstat' | 'read', p
   return failure.code;
 }
 
-// The flavor has to arrive the way the lib actually reads it — from the build manifest — because
-// `coralProjectDir` calls `buildFlavor()` inside its own module, where a mocked export does not reach. Only
-// that one file is answered from the fixture; every other read here is real, and this module does many.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>();
   return {
@@ -164,9 +160,6 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return (actual.readFileSync as (p: unknown, e?: unknown) => string | Buffer)(path, encoding);
     },
-    // Drives the atomicity guarantee with a real failure at the write step, rather than asserting call order:
-    // matched on `target` (where the link should point), not the destination path, so it fails the write
-    // regardless of whether the implementation symlinks straight to `link` or through a temp file first.
     symlinkSync: (target: unknown, path: unknown, type: unknown) => {
       if (String(path) === fixture.observeSymlinkPublicationPath) {
         fixture.durabilityEvents.push('publish');
@@ -176,7 +169,6 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return (actual.symlinkSync as (t: unknown, p: unknown, ty: unknown) => void)(target, path, type);
     },
-    // Only the final symlink path triggers this fixture; ignore-file publication must keep using the real rename.
     renameSync: (oldPath: unknown, newPath: unknown) => {
       if (String(newPath) === fixture.observeSymlinkPublicationPath) {
         fixture.durabilityEvents.push('publish');
@@ -285,10 +277,6 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-// `execSync` is a spy, not a bare stub: it is the fork `coralProjectDir` pays to resolve the project source, and
-// several tests below measure how many times a single `maintain()` call pays it — F3 is specifically about not
-// paying it on paths that never need to know the target. `execFileSync` resolves the project and Git metadata
-// context; it is a spy for the same reason, and the combined subprocess budget is what F3 pins.
 const execSyncMock = vi.hoisted(() => vi.fn(() => 'https://github.com/owner/repo.git\n'));
 const execFileSyncMock = vi.hoisted(() =>
   vi.fn((command: unknown, args: unknown, options: unknown) => {
@@ -393,8 +381,6 @@ afterEach(() => {
   vi.resetModules();
 });
 
-// A restrictive umask strips owner read from anything created under it, and a directory without it
-// cannot be listed — so the tree has to be reopened top-down before it can be removed.
 function restoreOwnerAccess(dir: string): void {
   try {
     chmodSync(dir, 0o700);
@@ -404,7 +390,7 @@ function restoreOwnerAccess(dir: string): void {
       else chmodSync(entry, 0o600);
     }
   } catch {
-    // best effort: cleanup removes whatever it can reach
+    // A test that has already finished must not fail on its own teardown.
   }
 }
 
@@ -469,11 +455,10 @@ async function maintain(
   };
 }> {
   manifest.flavor = flavor;
-  // Re-imported per call: both the flavor and the project source are cached module-level on first read.
   vi.resetModules();
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-  const projectIgnore = await import('../../../clients/hooks/lib/project-ignore.mjs');
-  const contextProbeDeadlineNs = process.hrtime.bigint() + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+  const projectIgnore = await import('../../../clients/hooks/lib/project-ignore/index.mjs');
+  const contextProbeDeadlineNs = process.hrtime.bigint() + BigInt(CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
   const context = suppliedContext ?? projectIgnore.resolveProjectContext(projectDir, contextProbeDeadlineNs);
   const result = projectIgnore.maintainProjectIgnore({
     projectDir,
@@ -482,28 +467,14 @@ async function maintain(
     context,
     contextProbeDeadlineNs,
   });
-  const validator = join(
-    dirname(fileURLToPath(import.meta.url)),
-    '..',
-    '..',
-    '..',
-    'clients',
-    'hooks',
-    'project-ignore.mjs',
-  );
-  const validation = spawnSync(process.execPath, [validator, '--validate-result'], {
-    encoding: 'utf-8',
-    input: JSON.stringify(result),
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  expect(validation.status).toBe(0);
+  expect(isProjectIgnoreResult(result)).toBe(true);
   return result;
 }
 
 async function resolveContext(): Promise<ProjectIgnoreContext> {
   vi.resetModules();
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-  const { resolveProjectContext } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+  const { resolveProjectContext } = await import('../../../clients/hooks/lib/project-ignore/index.mjs');
   const context = resolveProjectContext(projectDir) as ProjectIgnoreContext | null;
   expect(context).not.toBeNull();
   return context as ProjectIgnoreContext;
@@ -520,17 +491,17 @@ const quarantineDir = (): string => join(durabilityArena(), 'quarantine');
 const ARTIFACT_UNREADABLE_NOTICE =
   'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, replace a symlink or non-directory .git/info with a real directory, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.';
 
-describe('project-ignore symlink maintenance', () => {
+describe('project-ignore maintenance', () => {
   it('refuses a regular file at the fallback arena and reports unavailable durability evidence', async () => {
     const arena = durabilityArena();
     mkdirSync(dirname(arena), { recursive: true });
     writeFileSync(arena, 'not a directory');
     vi.resetModules();
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { prepareProjectIgnoreStagingDir } = await import('../../../clients/hooks/lib/hook-utils.mjs');
+    const { prepareFallbackArena } = await import('../../../clients/hooks/lib/project-ignore/arena.mjs');
     fixture.realpathPaths.length = 0;
 
-    expect(prepareProjectIgnoreStagingDir()).toBeNull();
+    expect(prepareFallbackArena()).toBeNull();
     expect(fixture.realpathPaths).not.toContain(arena);
 
     const result = await maintain('prod');
@@ -553,10 +524,10 @@ describe('project-ignore symlink maintenance', () => {
     symlinkSync(outside, arena);
     vi.resetModules();
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { prepareProjectIgnoreStagingDir } = await import('../../../clients/hooks/lib/hook-utils.mjs');
+    const { prepareFallbackArena } = await import('../../../clients/hooks/lib/project-ignore/arena.mjs');
     fixture.realpathPaths.length = 0;
 
-    expect(prepareProjectIgnoreStagingDir()).toBeNull();
+    expect(prepareFallbackArena()).toBeNull();
     expect(fixture.realpathPaths).not.toContain(arena);
   });
 
@@ -566,10 +537,10 @@ describe('project-ignore symlink maintenance', () => {
     fixture.failChmodPath = arena;
     vi.resetModules();
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { prepareProjectIgnoreStagingDir } = await import('../../../clients/hooks/lib/hook-utils.mjs');
+    const { prepareFallbackArena } = await import('../../../clients/hooks/lib/project-ignore/arena.mjs');
     fixture.realpathPaths.length = 0;
 
-    expect(prepareProjectIgnoreStagingDir()).toBeNull();
+    expect(prepareFallbackArena()).toBeNull();
     expect(fixture.realpathPaths).not.toContain(arena);
   });
 
@@ -578,7 +549,7 @@ describe('project-ignore symlink maintenance', () => {
     ['nested wildcard characters', 'nested/*?[]\\/.claude/coral', 'nested/\\*\\?\\[\\]\\\\/.claude/coral'],
   ])('literal-escapes %s for gitignore syntax', async (_name, input, expected) => {
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { escapeGitignoreLiteralPath } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+    const { escapeGitignoreLiteralPath } = await import('../../../clients/hooks/lib/project-ignore/index.mjs');
 
     expect(escapeGitignoreLiteralPath(input)).toBe(expected);
   });
@@ -590,7 +561,7 @@ describe('project-ignore symlink maintenance', () => {
     ['nested carriage return', 'nested/ev\ril/.claude/coral'],
   ])('rejects an unrepresentable %s instead of returning a multiline pattern', async (_name, input) => {
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { escapeGitignoreLiteralPath } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+    const { escapeGitignoreLiteralPath } = await import('../../../clients/hooks/lib/project-ignore/index.mjs');
 
     expect(escapeGitignoreLiteralPath(input)).toBeNull();
   });
@@ -714,7 +685,7 @@ describe('project-ignore symlink maintenance', () => {
     fixture.fsyncedDirectoryPaths.length = 0;
     const second = await maintain('prod', false);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
 
     for (const result of [first, second]) {
       expect(result.status).toBe('complete');
@@ -776,8 +747,6 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(link())).toBe(false);
   });
 
-  // A conflict at ~/.coral itself never reaches the symlink target check: the arena this run needs
-  // lives under the same component, so preparing it refuses first.
   it('refuses through the arena when the state root itself is a symlink', async () => {
     const outside = join(root, 'outside-coral-state');
     mkdirSync(outside);
@@ -892,7 +861,7 @@ describe('project-ignore symlink maintenance', () => {
       'Coral could not dispose of a pending durability record. Remedy: make the authorized project-ignore staging arena writable and repair any filesystem error blocking its removal or quarantine, then retry the maintenance. It is attempted again at the next session start.',
     );
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
     for (const reasons of [
       [],
@@ -930,7 +899,7 @@ describe('project-ignore symlink maintenance', () => {
     });
     expect(readFileSync(marker, 'utf-8')).toBe(link());
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
   });
 
@@ -987,7 +956,7 @@ describe('project-ignore symlink maintenance', () => {
     });
     expect(durabilityMarkers()).toEqual([]);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(
       isProjectIgnoreResult({
         ...result,
@@ -1041,7 +1010,7 @@ describe('project-ignore symlink maintenance', () => {
       component: 'coral',
     });
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
-      'The repository staging component <commonGitDir>/coral is a symlink or non-directory. Remedy: replace <commonGitDir>/coral with a real directory before Coral maintenance runs again.',
+      'The repository staging component coral is a symlink or non-directory. Remedy: run `git rev-parse --git-common-dir` in the project, then replace the coral component beneath the directory it prints with a real directory before Coral maintenance runs again.',
     ]);
     expect(existsSync(link())).toBe(false);
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
@@ -1062,11 +1031,6 @@ describe('project-ignore symlink maintenance', () => {
     expect(readlinkSync(link())).not.toBe(stale);
   });
 
-  // The mirror of the test above. `isOutgrownCoralLink` checks two anchors (`projects`, `projects-dev`)
-  // because a link can be left behind by either flavor — the prod→dev direction above only ever exercises the
-  // `projects` anchor (the flavor-'dev' target never starts with `.../projects-dev/` when read against a
-  // `projects`-rooted link, so the `some()` short-circuits on the first entry). Going dev→prod is what forces
-  // the second anchor to match.
   it('repoints a link left behind by the other flavor (dev → prod direction)', async () => {
     await maintain('dev');
     const stale = readlinkSync(link());
@@ -1148,7 +1112,7 @@ describe('project-ignore symlink maintenance', () => {
       durability: { state: 'failed', reasons: ['durability-sync-failed'] },
     });
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(published)).toBe(true);
     expect(readFileSync(excludePath, 'utf-8')).toBe('/.claude/coral\n');
     expect(durabilityMarkers()).toHaveLength(1);
@@ -1286,7 +1250,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
     expect(readFileSync(marker, 'utf-8')).toBe(excludePath);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(refused)).toBe(true);
   });
 
@@ -1356,7 +1320,7 @@ describe('project-ignore symlink maintenance', () => {
       expect(readFileSync(obligation.marker, 'utf-8')).toBe(obligation.target);
     }
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
     for (const reasons of [
       [],
@@ -1460,7 +1424,6 @@ describe('project-ignore symlink maintenance', () => {
       state: 'refused',
       reasons: ['durability-evidence-unavailable'],
     });
-    // One unreadable arena refuses two independent things, and both name their own exit.
     expect(renderProjectIgnoreResultNotices(result)).toEqual([
       "Coral could not inspect or clean one of its staging arenas. Remedy: ensure ~/.coral/staging/project-ignore and the common Git directory's coral/staging/project-ignore path are writable real directories. It is attempted again at the next session start.",
       'Coral could not inspect pending durability evidence. Remedy: make the authorized project-ignore staging arena and its markers readable and owned by the current user, or repair the filesystem or storage device reporting the failure. It is attempted again at the next session start.',
@@ -1488,7 +1451,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(readFileSync(join(quarantineDir(), quarantinedNames[0]))).toEqual(undecodable);
     expect(fixture.fsyncedDirectoryPaths).not.toContain('/tmp');
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(quarantined)).toBe(true);
 
     const clean = await maintain('prod');
@@ -1651,7 +1614,7 @@ describe('project-ignore symlink maintenance', () => {
     const target = join(parent, 'artifact');
     writeFileSync(parent, 'not a directory');
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { fsyncParent } = await import('../../../clients/hooks/lib/project-ignore.mjs');
+    const { fsyncParent } = await import('../../../clients/hooks/lib/project-ignore/artifacts.mjs');
 
     expect(fsyncParent(target)).toEqual({
       state: 'failed',
@@ -1945,7 +1908,7 @@ describe('project-ignore symlink maintenance', () => {
       'The platform does not support syncing an affected parent directory, so Coral retained the publication marker for reconciliation. It is attempted again at the next session start.',
     ]);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
   });
 
@@ -1972,7 +1935,7 @@ describe('project-ignore symlink maintenance', () => {
     ]);
     expect(durabilityMarkers()).toHaveLength(2);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
   });
 
@@ -2020,7 +1983,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(readlinkSync(link())).toBe(target);
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
   });
 
@@ -2044,8 +2007,6 @@ describe('project-ignore symlink maintenance', () => {
     const refused = await maintain('prod');
     const completed = await maintain('prod');
 
-    // The legacy scan reaches .claude before the link does, so the one unobservable directory is
-    // reported once and everything downstream of it is skipped rather than diagnosed again.
     expect(refused.status).toBe('refused');
     expect(refused.artifacts.legacySweep).toEqual({
       state: 'refused',
@@ -2119,11 +2080,6 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
   });
 
-  // `~/.coral/projects*` covers two legitimate roots by design (prod and dev), but the character overlap that
-  // buys that also matches an operator's own directory that merely starts with the same letters. Each of these
-  // lives inside `~/.coral/` itself — the harder case than `does not touch a link pointing somewhere an
-  // operator chose`, whose fixture points outside `~/.coral/` entirely and would not have caught an unanchored
-  // prefix match.
   it.each(['projects-mine', 'projects-old', 'projectsBackup'])(
     'does not touch a link into a look-alike directory (%s) that only shares the prefix',
     async (lookAlike) => {
@@ -2141,11 +2097,6 @@ describe('project-ignore symlink maintenance', () => {
     },
   );
 
-  // `readlinkSync` returns the target exactly as written — `symlinkSync` does not normalize on write — so a
-  // target built with a literal `..` segment reads back with the `..` still in it. It textually starts with
-  // the `projects` root, and would wrongly match `startsWith(root + sep)` without `normalize()`; measured by
-  // constructing the string directly rather than through `path.join`, which would have normalized it away
-  // before the fixture ever got to `symlinkSync`.
   it('does not treat a target that only textually starts with the projects root as ours to repoint', async () => {
     const escapee = `${join(coralStateRoot(), 'projects')}/../projects-mine/owner-repo`;
     mkdirSync(join(fixture.home, '.coral', 'projects-mine', 'owner-repo'), { recursive: true });
@@ -2170,9 +2121,6 @@ describe('project-ignore symlink maintenance', () => {
     expect(result.status, 'replacing a directory is a deletion nobody asked for').toBe('refused');
     expect(result.artifacts.symlink).toEqual({ state: 'refused', reason: 'symlink-conflict' });
     expect(existsSync(link())).toBe(true);
-    // Refusing because it is a directory needs no comparison against a target, so it must never fork git to
-    // compute one — `coralProjectDir` moving above the `lstatSync` early-return once made every run pay this
-    // fork regardless of which branch it took.
     expect(execSyncMock, 'a directory refusal needs no target and must not fork git to get one').not.toHaveBeenCalled();
   });
 
@@ -2182,9 +2130,6 @@ describe('project-ignore symlink maintenance', () => {
 
     await maintain('prod');
 
-    // Confirming "already correct" can only be known by comparing against where the link should point, so this
-    // one fork is the necessary floor — the defect F3 fixes was an *unconditional* fork paid even by branches
-    // (a missing lstat permission, a real directory) that never reach this comparison at all.
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
@@ -2209,11 +2154,11 @@ describe('project-ignore symlink maintenance', () => {
     const remoteProbeTimeout = ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)
       ?.timeout;
     expect(contextTimeouts.every((timeout) => timeout > 0)).toBe(true);
-    expect(contextTimeouts.every((timeout) => timeout <= PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS)).toBe(true);
+    expect(contextTimeouts.every((timeout) => timeout <= CONTEXT_PROBE_BUDGET_MS)).toBe(true);
     for (let index = 1; index < contextTimeouts.length; index += 1) {
       expect(contextTimeouts[index]).toBeLessThanOrEqual(contextTimeouts[index - 1]);
     }
-    expect(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + (remoteProbeTimeout ?? 0)).toBe(3500);
+    expect(CONTEXT_PROBE_BUDGET_MS + (remoteProbeTimeout ?? 0)).toBe(3500);
   });
 
   it('gives the owner chain more time than its aggregate bounded-subprocess allowance', async () => {
@@ -2225,10 +2170,10 @@ describe('project-ignore symlink maintenance', () => {
 
     const remoteProbeTimeout =
       ((execSyncMock.mock.calls as unknown[][])[0]?.[1] as { timeout?: number } | undefined)?.timeout ?? 0;
-    const childBound = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + remoteProbeTimeout;
+    const childBound = CONTEXT_PROBE_BUDGET_MS + remoteProbeTimeout;
 
     expect(
-      PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+      SPAWN_TIMEOUT_MS,
       "the parent's spawnSync timeout must leave margin beyond the chain's aggregate subprocess bound",
     ).toBeGreaterThan(childBound);
   });
@@ -2273,24 +2218,10 @@ describe('project-ignore symlink maintenance', () => {
     }
   });
 
-  it('renders every non-success maintenance outcome exercised through SessionStart', () => {
-    for (const outcome of [
-      'killed',
-      'maintenance-busy',
-      'maintenance-lock-unavailable',
-      'no-output',
-      'unparseable-output',
-      'partial',
-      'failed',
-    ]) {
-      expect(projectIgnoreOutcomeNotice(outcome)).not.toBeNull();
-    }
-  });
-
   it('accepts exactly the explicit artifact and refusal-reason matrix', async () => {
     const { isProjectIgnoreResult, PROJECT_IGNORE_REASONS } = await import(
       // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-      '../../../clients/hooks/lib/project-ignore-result.mjs'
+      '../../../clients/hooks/lib/project-ignore/result.mjs'
     );
 
     expect(new Set(Object.keys(PROJECT_IGNORE_REASON_NOTICES))).toEqual(new Set(PROJECT_IGNORE_REASONS));
@@ -2460,9 +2391,6 @@ describe('project-ignore symlink maintenance', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  // Complements the test above: that one fails `symlinkSync` (the write of the temp file) and shows the
-  // working link survives. This fails `renameSync` (the swap of the temp file onto the real link) instead —
-  // pinning `renameSync` as the actual swap mechanism, not just ruling out unlink-then-symlink.
   it('leaves the working link in place when the rename that swaps it in fails', async () => {
     await maintain('prod');
     const original = readlinkSync(link());
@@ -2643,7 +2571,7 @@ describe('project-ignore symlink maintenance', () => {
     expect(retainedRuns).toHaveLength(1);
     expect(readdirSync(join(durabilityArena(), retainedRuns[0]))).toHaveLength(1);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+    const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(result)).toBe(true);
   });
 
@@ -2801,7 +2729,7 @@ describe('project-ignore symlink maintenance', () => {
       expect(existsSync(link())).toBe(false);
       expect(existsSync(join(fixture.gitDir, 'info', 'exclude'))).toBe(false);
       // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-      const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore-result.mjs');
+      const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
       expect(isProjectIgnoreResult(result)).toBe(true);
     },
   );

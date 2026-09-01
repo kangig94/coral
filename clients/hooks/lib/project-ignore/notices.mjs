@@ -1,16 +1,19 @@
 import { writeFileSync } from 'node:fs';
 
 const REPOSITORY_ARENA_COMPONENT_PATHS = {
-  coral: '<commonGitDir>/coral',
-  staging: '<commonGitDir>/coral/staging',
-  'project-ignore': '<commonGitDir>/coral/staging/project-ignore',
+  coral: 'coral',
+  staging: 'coral/staging',
+  'project-ignore': 'coral/staging/project-ignore',
 };
 
 const PROJECT_IGNORE_OUTCOME_NOTICES = {
-  killed: 'ran out of its time budget and was terminated',
+  killed:
+    'ran out of its time budget and was terminated; retry in a new session, and if it recurs, report it with this diagnostic',
   'not-spawned': 'could not be started',
-  'no-output': 'exited without reporting a result',
-  'unparseable-output': 'reported a result Coral could not read',
+  'no-output':
+    'exited without reporting a result; retry in a new session, and if it recurs, report it with this diagnostic',
+  'unparseable-output':
+    'reported a result Coral could not read; retry in a new session, and if it recurs, report it with this diagnostic',
   'maintenance-busy':
     'did not start because another Coral project-ignore maintainer owns the lock; wait for that invocation to finish or terminate it if it is stuck',
   'maintenance-lock-unavailable':
@@ -73,7 +76,7 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   'repository-arena-conflict': {
     sentence: (artifact) => {
       const path = REPOSITORY_ARENA_COMPONENT_PATHS[artifact.component];
-      return `The repository staging component ${path} is a symlink or non-directory. Remedy: replace ${path} with a real directory before Coral maintenance runs again.`;
+      return `The repository staging component ${path} is a symlink or non-directory. Remedy: run \`git rev-parse --git-common-dir\` in the project, then replace the ${path} component beneath the directory it prints with a real directory before Coral maintenance runs again.`;
     },
     retryable: false,
   },
@@ -164,7 +167,7 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'arena-structural-conflict': {
     sentence:
-      "A Coral staging arena component is a symlink or non-directory. Remedy: replace the conflicting component under ~/.coral/staging/project-ignore or <commonGitDir>/coral/staging/project-ignore with a real directory.",
+      'A Coral staging arena component is a symlink or non-directory. Remedy: replace the conflicting component under ~/.coral/staging/project-ignore with a real directory, or run `git rev-parse --git-common-dir` in the project and repair the coral/staging/project-ignore component beneath the directory it prints.',
     retryable: false,
   },
   'upstream-refusal': {

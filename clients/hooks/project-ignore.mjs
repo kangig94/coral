@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 
 import { readFileSync } from 'node:fs';
-import { isProjectIgnoreContext, maintainProjectIgnore } from './lib/project-ignore.mjs';
-import { emitProjectIgnoreResult } from './lib/project-ignore-notices.mjs';
-import { isProjectIgnoreResult } from './lib/project-ignore-result.mjs';
+import { isProjectIgnoreContext, maintainProjectIgnore } from './lib/project-ignore/index.mjs';
+import { emitProjectIgnoreResult } from './lib/project-ignore/notices.mjs';
+import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
 import {
-  projectIgnoreContextProbeDeadline,
-  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
-  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
-  PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
-} from './lib/hook-utils.mjs';
+  CONTEXT_PROBE_BUDGET_MS,
+  contextProbeDeadline,
+  LOCK_UNAVAILABLE_EXIT_CODE,
+  LOCK_WRAPPER_BUDGET_MS,
+} from './lib/project-ignore/arena.mjs';
 
 function parseArgs(argv) {
   let projectDir;
@@ -52,7 +52,7 @@ function parseArgs(argv) {
 function lockWrapperWithinBudget(startedNs) {
   try {
     const elapsedNs = process.hrtime.bigint() - BigInt(startedNs);
-    const budgetMs = PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS;
+    const budgetMs = CONTEXT_PROBE_BUDGET_MS + LOCK_WRAPPER_BUDGET_MS;
     return elapsedNs >= 0 && elapsedNs <= BigInt(budgetMs) * 1_000_000n;
   } catch {
     return false;
@@ -70,10 +70,10 @@ if (process.argv.slice(2).length === 1 && process.argv[2] === '--validate-result
   const request = parseArgs(process.argv.slice(2));
   if (!request) process.exit(1);
   if (!lockWrapperWithinBudget(request.lockWrapperStartedNs)) {
-    process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+    process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
   }
-  const contextProbeDeadlineNs = projectIgnoreContextProbeDeadline(request.lockWrapperStartedNs);
-  if (contextProbeDeadlineNs === null) process.exit(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+  const contextProbeDeadlineNs = contextProbeDeadline(request.lockWrapperStartedNs);
+  if (contextProbeDeadlineNs === null) process.exit(LOCK_UNAVAILABLE_EXIT_CODE);
 
   try {
     const result = maintainProjectIgnore({

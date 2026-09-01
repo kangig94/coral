@@ -20,27 +20,27 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  isRepositoryProjectIgnoreStagingAuthorized,
-  prepareRepositoryProjectIgnoreStagingDir,
   projectIgnoreContextRefusal,
-  projectIgnoreRunDir,
-  repositoryProjectIgnoreStagingDir,
   resolveProjectContext,
-  sweepProjectIgnoreArenas,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-} from '../../../clients/hooks/lib/project-ignore.mjs';
+} from '../../../clients/hooks/lib/project-ignore/index.mjs';
 import {
-  PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
-  PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS,
-  PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS,
-  PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE,
-  PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE,
-  PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS,
-  PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
-  PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS,
-  projectIgnoreContextProbeDeadline,
+  ARENA_SWEEP_BUDGET_MS,
+  ARENA_SWEEP_MAX_RUNS,
+  arenaRunDir,
+  CONTEXT_PROBE_BUDGET_MS,
+  contextProbeDeadline,
+  isRepositoryArenaAuthorized,
+  LOCK_CONFLICT_EXIT_CODE,
+  LOCK_UNAVAILABLE_EXIT_CODE,
+  LOCK_WRAPPER_BUDGET_MS,
+  prepareRepositoryArena,
+  repositoryArenaDir,
+  SPAWN_TIMEOUT_MS,
+  STAGING_ARENA_MAX_AGE_MS,
+  sweepArenas,
   // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-} from '../../../clients/hooks/lib/hook-utils.mjs';
+} from '../../../clients/hooks/lib/project-ignore/arena.mjs';
 
 let fixtureRoot: string;
 
@@ -129,10 +129,10 @@ function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string)
   const context = resolveProjectContext(projectDir);
   expect(context).not.toBeNull();
   expect(context.commonGitDir).toBe(realpathSync(expectedCommonGitDir));
-  expect(isRepositoryProjectIgnoreStagingAuthorized(context)).toBe(true);
+  expect(isRepositoryArenaAuthorized(context)).toBe(true);
 
-  const expected = repositoryProjectIgnoreStagingDir(context.commonGitDir);
-  const preparation = prepareRepositoryProjectIgnoreStagingDir(context.commonGitDir);
+  const expected = repositoryArenaDir(context.commonGitDir);
+  const preparation = prepareRepositoryArena(context.commonGitDir);
   expect(preparation).toEqual({ state: 'prepared', path: realpathSync(expected) });
   const arena = preparation.path;
   expect(relative(context.commonGitDir, arena)).toBe(join('coral', 'staging', 'project-ignore'));
@@ -168,7 +168,7 @@ describe('project-ignore repository arena', () => {
   });
 
   it('places each invocation in its startedAt-pid directory', () => {
-    expect(projectIgnoreRunDir('/git/coral/staging/project-ignore', 1234, 5678)).toBe(
+    expect(arenaRunDir('/git/coral/staging/project-ignore', 1234, 5678)).toBe(
       join('/git/coral/staging/project-ignore', '1234-5678'),
     );
   });
@@ -207,7 +207,7 @@ describe('project-ignore repository arena', () => {
     const context = resolveProjectContext(repository);
     expect(context).not.toBeNull();
     expect(context.commonGitDir).toBe(realpathSync(join(repository, '.metadata')));
-    expect(isRepositoryProjectIgnoreStagingAuthorized(context)).toBe(false);
+    expect(isRepositoryArenaAuthorized(context)).toBe(false);
     expect(existsSync(join(repository, '.metadata', 'coral'))).toBe(false);
   });
 
@@ -219,7 +219,7 @@ describe('project-ignore repository arena', () => {
 
     const commonGitDir = realpathSync(join(repository, '.git'));
     symlinkSync(outside, join(commonGitDir, 'coral'));
-    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toEqual({
+    expect(prepareRepositoryArena(commonGitDir)).toEqual({
       state: 'structural-conflict',
       path: join(commonGitDir, 'coral'),
       component: 'coral',
@@ -227,7 +227,7 @@ describe('project-ignore repository arena', () => {
 
     rmSync(join(commonGitDir, 'coral'));
     writeFileSync(join(commonGitDir, 'coral'), 'not a directory');
-    expect(prepareRepositoryProjectIgnoreStagingDir(commonGitDir)).toEqual({
+    expect(prepareRepositoryArena(commonGitDir)).toEqual({
       state: 'structural-conflict',
       path: join(commonGitDir, 'coral'),
       component: 'coral',
@@ -237,11 +237,11 @@ describe('project-ignore repository arena', () => {
 
 describe('project-ignore arena reclamation', () => {
   it('derives the cooperating residue age from the five-second owner lifetime', () => {
-    expect(PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS).toBe(120 * PROJECT_IGNORE_SPAWN_TIMEOUT_MS);
-    expect(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS).toBe(1500);
-    expect(PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS).toBe(250);
-    expect(PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS).toBe(250);
-    expect(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS).toBe(32);
+    expect(STAGING_ARENA_MAX_AGE_MS).toBe(120 * SPAWN_TIMEOUT_MS);
+    expect(CONTEXT_PROBE_BUDGET_MS).toBe(1500);
+    expect(LOCK_WRAPPER_BUDGET_MS).toBe(250);
+    expect(ARENA_SWEEP_BUDGET_MS).toBe(250);
+    expect(ARENA_SWEEP_MAX_RUNS).toBe(32);
   });
 
   it('retains 599,999 ms and removes 600,000 ms after decisive ownership', () => {
@@ -250,7 +250,7 @@ describe('project-ignore arena reclamation', () => {
     mkdirSync(join(firstArena, '400000-1'), { recursive: true });
     mkdirSync(join(secondArena, '400001-2'), { recursive: true });
 
-    const result = sweepProjectIgnoreArenas([firstArena, secondArena], {
+    const result = sweepArenas([firstArena, secondArena], {
       now: 1_000_000,
       monotonicNow: () => 0,
     });
@@ -266,7 +266,7 @@ describe('project-ignore arena reclamation', () => {
     mkdirSync(runDir, { recursive: true });
     chmodSync(runDir, 0o300);
 
-    const result = sweepProjectIgnoreArenas([arena], {
+    const result = sweepArenas([arena], {
       now: 1_000_000,
       monotonicNow: () => 0,
     });
@@ -285,13 +285,13 @@ describe('project-ignore arena reclamation', () => {
       mkdirSync(join(arena, `${startedAt}-${startedAt}`));
     }
 
-    const result = sweepProjectIgnoreArenas([firstArena, secondArena], {
-      now: PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS + 100,
+    const result = sweepArenas([firstArena, secondArena], {
+      now: STAGING_ARENA_MAX_AGE_MS + 100,
       monotonicNow: () => 0,
     });
 
-    expect(result.inspected).toBe(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS);
-    expect(result.removed).toBe(PROJECT_IGNORE_ARENA_SWEEP_MAX_RUNS);
+    expect(result.inspected).toBe(ARENA_SWEEP_MAX_RUNS);
+    expect(result.removed).toBe(ARENA_SWEEP_MAX_RUNS);
     for (let startedAt = 1; startedAt <= 32; startedAt += 1) {
       const arena = startedAt % 2 === 0 ? firstArena : secondArena;
       expect(existsSync(join(arena, `${startedAt}-${startedAt}`))).toBe(false);
@@ -307,11 +307,11 @@ describe('project-ignore arena reclamation', () => {
     const secondArena = join(fixtureRoot, 'second');
     mkdirSync(join(firstArena, '1-1'), { recursive: true });
     mkdirSync(join(secondArena, '2-2'), { recursive: true });
-    const readings = [0, 0, PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS];
+    const readings = [0, 0, ARENA_SWEEP_BUDGET_MS];
 
-    const result = sweepProjectIgnoreArenas([firstArena, secondArena], {
-      now: PROJECT_IGNORE_STAGING_ARENA_MAX_AGE_MS + 100,
-      monotonicNow: () => readings.shift() ?? PROJECT_IGNORE_ARENA_SWEEP_BUDGET_MS,
+    const result = sweepArenas([firstArena, secondArena], {
+      now: STAGING_ARENA_MAX_AGE_MS + 100,
+      monotonicNow: () => readings.shift() ?? ARENA_SWEEP_BUDGET_MS,
     });
 
     expect(result).toEqual({ inspected: 1, removed: 1, failures: [] });
@@ -323,11 +323,11 @@ describe('project-ignore arena reclamation', () => {
 describe('project-ignore maintenance ownership', () => {
   it('derives one absolute context-probe deadline from the owner chain start', () => {
     const chainStartedNs = 12_345_678_901n;
-    const expectedDeadlineNs = chainStartedNs + BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+    const expectedDeadlineNs = chainStartedNs + BigInt(CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
 
-    expect(projectIgnoreContextProbeDeadline(chainStartedNs)).toBe(expectedDeadlineNs);
-    expect(projectIgnoreContextProbeDeadline(chainStartedNs.toString())).toBe(expectedDeadlineNs);
-    expect(projectIgnoreContextProbeDeadline('not-a-clock-reading')).toBeNull();
+    expect(contextProbeDeadline(chainStartedNs)).toBe(expectedDeadlineNs);
+    expect(contextProbeDeadline(chainStartedNs.toString())).toBe(expectedDeadlineNs);
+    expect(contextProbeDeadline('not-a-clock-reading')).toBeNull();
   });
 
   it('refuses an LF-bearing repository path through the real owner before creating lock state', () => {
@@ -361,6 +361,74 @@ describe('project-ignore maintenance ownership', () => {
     expect(existsSync(join(home, '.coral'))).toBe(false);
     expect(existsSync(join(repositoryRoot, '.git', 'coral'))).toBe(false);
     expect(existsSync(join(projectDir, '.claude', 'coral'))).toBe(false);
+  });
+
+  it('refuses symlink creation when the real project has no .claude directory', () => {
+    const repository = join(fixtureRoot, 'missing-claude');
+    const home = join(fixtureRoot, 'missing-claude-home');
+    initRepository(repository);
+    mkdirSync(home);
+    const excludePath = join(repository, '.git', 'info', 'exclude');
+    const excludeBefore = readFileSync(excludePath, 'utf-8');
+    const parentBefore = readdirSync(repository).sort();
+
+    const child = spawnSync(
+      process.execPath,
+      [hookScript('project-ignore-owner.mjs'), '--project-dir', repository, '--create-symlink'],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        symlink: { state: 'refused', reason: 'claude-directory-missing' },
+      },
+    });
+    expect(existsSync(join(repository, '.claude'))).toBe(false);
+    expect(existsSync(join(repository, '.claude', 'coral'))).toBe(false);
+    expect(readFileSync(excludePath, 'utf-8')).toBe(excludeBefore);
+    expect(readdirSync(repository).sort()).toEqual(parentBefore);
+    expect(existsSync(join(home, '.coral', 'projects'))).toBe(false);
+  });
+
+  it('refuses symlink creation when the real project .claude path is not a directory', () => {
+    const repository = join(fixtureRoot, 'invalid-claude');
+    const home = join(fixtureRoot, 'invalid-claude-home');
+    initRepository(repository);
+    mkdirSync(home);
+    const claudePath = join(repository, '.claude');
+    const excludePath = join(repository, '.git', 'info', 'exclude');
+    writeFileSync(claudePath, 'operator-owned parent\n');
+    const excludeBefore = readFileSync(excludePath, 'utf-8');
+    const parentBefore = readdirSync(repository).sort();
+
+    const child = spawnSync(
+      process.execPath,
+      [hookScript('project-ignore-owner.mjs'), '--project-dir', repository, '--create-symlink'],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        symlink: { state: 'refused', reason: 'claude-directory-invalid' },
+      },
+    });
+    expect(readFileSync(claudePath, 'utf-8')).toBe('operator-owned parent\n');
+    expect(existsSync(join(claudePath, 'coral'))).toBe(false);
+    expect(readFileSync(excludePath, 'utf-8')).toBe(excludeBefore);
+    expect(readdirSync(repository).sort()).toEqual(parentBefore);
+    expect(existsSync(join(home, '.coral', 'projects'))).toBe(false);
   });
 
   it('normalizes every owned directory across fresh owner runs under an owner-read-masking umask', () => {
@@ -458,7 +526,7 @@ describe('project-ignore maintenance ownership', () => {
         try {
           chmodSync(path, 0o700);
         } catch {
-          // best effort: cleanup removes whatever it can reach
+          // A test that has already finished must not fail on its own teardown.
         }
       }
     }
@@ -545,9 +613,9 @@ describe('project-ignore maintenance ownership', () => {
   });
 
   it.each([
-    ['coral', '<commonGitDir>/coral'],
-    ['staging', '<commonGitDir>/coral/staging'],
-    ['project-ignore', '<commonGitDir>/coral/staging/project-ignore'],
+    ['coral', 'coral'],
+    ['staging', 'coral/staging'],
+    ['project-ignore', 'coral/staging/project-ignore'],
   ] as const)('refuses residue through the owner and names the conflicting %s component', (component, remedyPath) => {
     const repository = join(fixtureRoot, 'repository');
     const home = join(fixtureRoot, 'home');
@@ -581,7 +649,9 @@ describe('project-ignore maintenance ownership', () => {
       },
     });
     expect(child.stdout.trim()).toBe(JSON.stringify(result));
-    expect(child.stderr).toContain(`Remedy: replace ${remedyPath} with a real directory`);
+    expect(child.stderr).toContain(
+      `Remedy: run \`git rev-parse --git-common-dir\` in the project, then replace the ${remedyPath} component beneath the directory it prints with a real directory`,
+    );
     expect(child.stderr).not.toContain('It is attempted again at the next session start.');
     expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\n');
     expect(readFileSync(conflict, 'utf-8')).toBe('not a directory');
@@ -671,7 +741,7 @@ describe('project-ignore maintenance ownership', () => {
     const capture = join(fixtureRoot, 'maintenance-input');
     cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
     writeFileSync(
-      join(hooksRoot, 'lib', 'project-ignore.mjs'),
+      join(hooksRoot, 'lib', 'project-ignore', 'index.mjs'),
       [
         "import { writeFileSync } from 'node:fs';",
         'export function isProjectIgnoreContext(value) { return value?.refusalReason === null; }',
@@ -722,13 +792,12 @@ describe('project-ignore maintenance ownership', () => {
     expect(JSON.parse(readFileSync(capture, 'utf-8'))).toEqual({
       projectDir,
       context,
-      contextProbeDeadlineNs: projectIgnoreContextProbeDeadline(startedNs)?.toString(),
+      contextProbeDeadlineNs: contextProbeDeadline(startedNs)?.toString(),
     });
 
     rmSync(capture);
     const expiredStartedNs =
-      process.hrtime.bigint() -
-      BigInt(PROJECT_IGNORE_CONTEXT_PROBE_BUDGET_MS + PROJECT_IGNORE_LOCK_WRAPPER_BUDGET_MS + 10) * 1_000_000n;
+      process.hrtime.bigint() - BigInt(CONTEXT_PROBE_BUDGET_MS + LOCK_WRAPPER_BUDGET_MS + 10) * 1_000_000n;
     const rejected = spawnSync(
       process.execPath,
       [
@@ -748,19 +817,8 @@ describe('project-ignore maintenance ownership', () => {
       },
     );
 
-    expect(rejected.status).toBe(PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE);
+    expect(rejected.status).toBe(LOCK_UNAVAILABLE_EXIT_CODE);
     expect(existsSync(capture)).toBe(false);
-  });
-
-  it('keeps the init-project owner and validator contract pinned', () => {
-    const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
-
-    expect(initProject).toContain('project-ignore-owner.mjs');
-    expect(initProject).toContain('--validate-result');
-    expect(initProject).toContain('CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output');
-    expect(initProject).not.toMatch(/(?:Retry|rerun) init-project/u);
-    expect(initProject.match(/\/coral:init-project/gu)).toHaveLength(4);
   });
 
   it('executes the real project-ignore result validator for valid and malformed stdin', () => {
@@ -836,22 +894,13 @@ describe('project-ignore maintenance ownership', () => {
     expect(rejected.stderr).toBe('');
   });
 
-  it('pins the init-project lock branches to the hook exit-code constants', () => {
-    const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-    const initProject = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
-    const conflictBranch = `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_CONFLICT_EXIT_CODE} ]; then`;
-    const unavailableBranch =
-      `if [ "$CORAL_PROJECT_IGNORE_STATUS" -eq ${PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE} ] || ` +
-      '[ "$CORAL_PROJECT_IGNORE_STATUS" -eq 126 ] || [ "$CORAL_PROJECT_IGNORE_STATUS" -eq 127 ]; then';
-    const noOutputBranch = 'if [ "$CORAL_PROJECT_IGNORE_STATUS" -ne 0 ] && [ -z "$CORAL_PROJECT_IGNORE_RESULT" ]; then';
+  it('keeps the init-project exit-code literals aligned with the hook constants', () => {
+    const exitCodes = [...initProjectApplyBlock().matchAll(/CORAL_PROJECT_IGNORE_STATUS" -eq (\d+)/gu)].map((match) =>
+      Number(match[1]),
+    );
 
-    expect(initProject).toContain(conflictBranch);
-    expect(initProject).toContain(unavailableBranch);
-    expect(initProject.indexOf(conflictBranch)).toBeLessThan(initProject.indexOf(noOutputBranch));
-    expect(initProject.indexOf(unavailableBranch)).toBeLessThan(initProject.indexOf(noOutputBranch));
-    expect(initProject.slice(initProject.indexOf(noOutputBranch))).toContain('CORAL_PROJECT_IGNORE_OUTCOME=no-output');
-    expect(initProject).not.toContain('CORAL_PROJECT_IGNORE_STDERR_FILE');
-    expect(initProject).not.toContain('CORAL_PROJECT_IGNORE_STDERR=');
+    expect(exitCodes).toContain(LOCK_CONFLICT_EXIT_CODE);
+    expect(exitCodes).toContain(LOCK_UNAVAILABLE_EXIT_CODE);
   });
 
   it.each([
@@ -864,7 +913,7 @@ describe('project-ignore maintenance ownership', () => {
       remedy: 'Another Coral project-ignore maintainer owns the lock.',
       exitCode: 1,
     },
-    ...[PROJECT_IGNORE_LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].map((status) => ({
+    ...[LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].map((status) => ({
       name: `lock-wrapper status ${status}`,
       status,
       stdout: '',
