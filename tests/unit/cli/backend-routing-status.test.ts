@@ -13,6 +13,7 @@ import {
   type HandoffRoutingResolveResult,
 } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -210,6 +211,14 @@ describe('backend routing-status resolve grammar', () => {
     [{ kind: 'stale', invocationId: INVOCATION_ID }, 'copy an invocation still shown as unresolved'],
     [{ kind: 'already-terminal', invocationId: INVOCATION_ID }, 'No resolution is needed'],
     [{ kind: 'live-owner', invocationId: INVOCATION_ID }, 'wait for the owner to finish'],
+    [
+      {
+        kind: 'live-owner',
+        invocationId: INVOCATION_ID,
+        abandonedChild: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+      },
+      `Stop that exact child through the service or account that owns it. If it is the coordinator addressed by this Coral installation, run coral-cli backend shutdown. After that exact PID and incarnation are absent, rerun coral-cli backend status, then run coral-cli backend routing-status resolve --invocation ${INVOCATION_ID}`,
+    ],
     [
       { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'incarnation-unavailable' },
       'verify the owner externally',

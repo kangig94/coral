@@ -743,8 +743,22 @@ export const handoffRoutingTransitionSchema = z.union([
 
 export type HandoffRoutingTransition = z.infer<typeof handoffRoutingTransitionSchema>;
 
+const selectionlessOperatorResolvedMutationSchema = transitionEnvelopeSchema
+  .extend({
+    kind: z.literal('operator-resolved'),
+    selectionSequence: z.null(),
+    reason: resolutionReasonSchema,
+  })
+  .strict()
+  .readonly();
+
+type OperatorResolvedMutation =
+  | z.infer<typeof operatorResolvedTransitionSchema>
+  | z.infer<typeof selectionlessOperatorResolvedMutationSchema>;
+
 const handoffRoutingMutationSchema = z.union([
   handoffRoutingTransitionSchema,
+  selectionlessOperatorResolvedMutationSchema,
   capacityEvictionAcknowledgedTransitionSchema,
 ]);
 
@@ -1008,7 +1022,7 @@ function retireOldestCompletedPairForCapacity(
   const selection = parseRecordBody(transaction.oldestCompletedSelectionBody(), routingSelectedEventSchema);
   if (selection === undefined) return false;
   const terminal = terminalForInvocation(transaction, selection.invocationId);
-  if (terminal?.disposition.kind !== 'delegated-startup-observation-aborted') {
+  if (terminal === undefined || unobservedStartupChild(terminal) === null) {
     retireSelection(transaction, ids, selection, 'completed-pair-compaction', observedAt, true);
     return true;
   }
@@ -1016,7 +1030,7 @@ function retireOldestCompletedPairForCapacity(
     const candidate = parseRecordBody(body, routingSelectedEventSchema);
     if (candidate === undefined) throw new HandoffRoutingStoreUnreadableError();
     const candidateTerminal = terminalForInvocation(transaction, candidate.invocationId);
-    if (candidateTerminal?.disposition.kind === 'delegated-startup-observation-aborted') continue;
+    if (candidateTerminal !== undefined && unobservedStartupChild(candidateTerminal) !== null) continue;
     retireSelection(transaction, ids, candidate, 'completed-pair-compaction', observedAt, true);
     return true;
   }
@@ -1090,7 +1104,7 @@ function compactExpiredCompletedPairs(
     const selection = parseRecordBody(body, routingSelectedEventSchema);
     if (selection === undefined) throw new HandoffRoutingStoreUnreadableError();
     const terminal = terminalForInvocation(transaction, selection.invocationId);
-    if (terminal?.disposition.kind === 'delegated-startup-observation-aborted') continue;
+    if (terminal !== undefined && unobservedStartupChild(terminal) !== null) continue;
     retireSelection(transaction, ids, selection, 'completed-pair-compaction', observedAt, true);
   }
 }
@@ -1176,6 +1190,13 @@ function applyTerminal(
       terminal: transition.disposition,
     });
   }
+  if (abandonedStartupChildIdentity(transition.disposition) !== null) {
+    return insertTerminal(transaction, transition, {
+      kind: 'terminal-without-retained-selection',
+      knowledge: 'identity-expired-or-selection-unavailable',
+      terminal: transition.disposition,
+    });
+  }
   const replacement = retirementTombstoneSchema.parse({
     ...tombstone,
     sequence: transaction.nextRecordSequence(),
@@ -1191,14 +1212,23 @@ function applyTerminal(
 function applyResolution(
   transaction: HandoffRoutingStatusTransaction,
   ids: Pick<IdPort, 'uuid'>,
-  transition: z.infer<typeof operatorResolvedTransitionSchema>,
+  transition: OperatorResolvedMutation,
 ): number {
   const selection = selectionForInvocation(transaction, transition.invocationId);
-  if (selection === undefined || selection.sequence !== transition.selectionSequence) {
-    throw new RejectedTransitionError();
-  }
   const terminal = terminalForInvocation(transaction, transition.invocationId);
-  if (terminal !== undefined && terminal.disposition.kind !== 'delegated-startup-observation-aborted') {
+  if (selection === undefined) {
+    if (
+      transition.selectionSequence !== null ||
+      terminal === undefined ||
+      abandonedStartupChildIdentity(terminal.disposition) === null
+    ) {
+      throw new RejectedTransitionError();
+    }
+    transaction.deleteInvocationRecords(transition.invocationId);
+    return terminal.sequence;
+  }
+  if (selection.sequence !== transition.selectionSequence) throw new RejectedTransitionError();
+  if (terminal !== undefined && abandonedStartupChildIdentity(terminal.disposition) === null) {
     throw new RejectedTransitionError();
   }
   if (terminal === undefined) releaseClosingReserve(transaction, selection.invocationId);
@@ -1404,6 +1434,21 @@ export type PersistedHandoffDisposition =
   | Readonly<{ kind: RetirementTombstone['retirementCause']; terminalExisted: boolean }>
   | RetirementHistoryTruncated;
 
+export function abandonedStartupChildIdentity(
+  disposition: PersistedHandoffDisposition,
+): RecordedProcessIdentity | null {
+  switch (disposition.kind) {
+    case 'delegated-startup-observation-aborted':
+      return disposition.child;
+    case 'finalized-without-selection':
+    case 'terminal-without-retained-selection':
+    case 'terminal-after-operator-resolution':
+      return abandonedStartupChildIdentity(disposition.terminal);
+    default:
+      return null;
+  }
+}
+
 type PersistedDispositionClassification = 'hold' | 'history';
 type LifecycleRoutingStatusPolicy = Extract<RoutingStatusPolicy, { durability: 'lifecycle-journal' }>;
 type PersistedDispositionClassifications = Readonly<
@@ -1522,9 +1567,10 @@ function unclassifiedPersistedDispositionPolicy(
   if (isRoutingBasisDisposition(disposition)) return HANDOFF_ROUTING_BASIS_POLICIES[disposition.kind];
   if (isSelectedDisposition(disposition)) return selectedDispositionPolicy(disposition);
   if (isRetirementDisposition(disposition)) return retirementDispositionPolicy(disposition);
-  if (disposition.kind === 'delegated-startup-observation-aborted') {
-    // These holds consume store capacity until the operator resolution path releases them, and admission is
-    // refused once they exhaust it.
+  if (
+    disposition.kind === 'delegated-startup-observation-aborted' ||
+    abandonedStartupChildIdentity(disposition) !== null
+  ) {
     return {
       durability: 'lifecycle-journal',
       retention: 'until-resolved',
@@ -1564,7 +1610,10 @@ export function persistedHandoffDispositionPolicy(
   disposition: PersistedHandoffDisposition,
 ): PersistedHandoffDispositionPolicy {
   const policy = unclassifiedPersistedDispositionPolicy(disposition);
-  const classification = PERSISTED_DISPOSITION_CLASSIFICATIONS[disposition.kind];
+  const classification =
+    abandonedStartupChildIdentity(disposition) === null
+      ? PERSISTED_DISPOSITION_CLASSIFICATIONS[disposition.kind]
+      : 'hold';
   return classification === 'history'
     ? { ...policy, classification, exitContribution: 0 }
     : { ...policy, classification };
@@ -1781,7 +1830,11 @@ export type HandoffRoutingResolveResult =
     }>
   | Readonly<{ kind: 'stale'; invocationId: string }>
   | Readonly<{ kind: 'already-terminal'; invocationId: string }>
-  | Readonly<{ kind: 'live-owner'; invocationId: string }>
+  | Readonly<{
+      kind: 'live-owner';
+      invocationId: string;
+      abandonedChild?: RecordedProcessIdentity;
+    }>
   | Readonly<{
       kind: 'unauthorized-unobservable';
       invocationId: string;
@@ -1825,9 +1878,18 @@ const closingReserveReadRowSchema = z
 
 type ClosingReserveReadRow = z.infer<typeof closingReserveReadRowSchema>;
 
+type AdmittedHandoffRoutingInvocationStatus =
+  | Readonly<{ kind: 'unresolved'; selection: RoutingSelectedEvent }>
+  | Readonly<{
+      kind: 'terminal';
+      selection: RoutingSelectedEvent | null;
+      terminal: HandoffRoutingTerminalEvent;
+    }>
+  | Readonly<{ kind: 'retired'; tombstone: RetirementTombstone }>;
+
 type StatusSnapshot = Readonly<{
   generation: typeof HANDOFF_ROUTING_STATUS_GENERATION;
-  statuses: readonly HandoffRoutingInvocationStatus[];
+  statuses: readonly AdmittedHandoffRoutingInvocationStatus[];
   retirementHistoryTruncated: RetirementHistoryTruncated;
 }>;
 
@@ -1842,13 +1904,13 @@ type InvocationRecords = {
 type UnreadableStatus = Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
 
 type StatusProjection =
-  | Readonly<{ kind: 'projected'; statuses: readonly HandoffRoutingInvocationStatus[] }>
+  | Readonly<{ kind: 'projected'; statuses: readonly AdmittedHandoffRoutingInvocationStatus[] }>
   | UnreadableStatus;
 
 type DecodedStatusRow = Readonly<{ kind: 'decoded'; record: StoredStatusRecord }> | UnreadableStatus;
 
 type InvocationStatusProjection =
-  | Readonly<{ kind: 'projected'; status: HandoffRoutingInvocationStatus }>
+  | Readonly<{ kind: 'projected'; status: AdmittedHandoffRoutingInvocationStatus }>
   | Readonly<{ kind: 'empty' }>
   | UnreadableStatus;
 
@@ -1885,7 +1947,7 @@ function ownerLiveness(
 }
 
 function unobservedStartupChild(terminal: HandoffRoutingTerminalEvent): RecordedProcessIdentity | null {
-  return terminal.disposition.kind === 'delegated-startup-observation-aborted' ? terminal.disposition.child : null;
+  return abandonedStartupChildIdentity(terminal.disposition);
 }
 
 function decodeAndValidateStatusRow(rawRow: unknown): DecodedStatusRow {
@@ -1968,7 +2030,6 @@ function validateInvocationReserve(
 function projectInvocationStatus(
   invocation: InvocationRecords,
   closingReserves: Map<string, ClosingReserveReadRow>,
-  probe: HandoffRoutingOwnerLivenessProbe | undefined,
 ): InvocationStatusProjection {
   if (invocation.tombstone !== undefined) {
     if (
@@ -1998,14 +2059,12 @@ function projectInvocationStatus(
     ) {
       return { kind: 'unreadable', reason: 'invalid-shape' };
     }
-    const child = unobservedStartupChild(invocation.terminal);
     return {
       kind: 'projected',
       status: {
         kind: 'terminal',
         selection: invocation.selection ?? null,
         terminal: invocation.terminal,
-        ...(child === null ? {} : { childLiveness: ownerLiveness(child, probe) }),
       },
     };
   }
@@ -2019,16 +2078,11 @@ function projectInvocationStatus(
     status: {
       kind: 'unresolved',
       selection: invocation.selection,
-      ownerLiveness: ownerLiveness(invocation.selection.owner, probe),
     },
   };
 }
 
-function projectInvocationStatuses(
-  rows: readonly unknown[],
-  reserves: readonly unknown[],
-  probe: HandoffRoutingOwnerLivenessProbe | undefined,
-): StatusProjection {
+function projectInvocationStatuses(rows: readonly unknown[], reserves: readonly unknown[]): StatusProjection {
   const invocations = new Map<string, InvocationRecords>();
   for (const rawRow of rows) {
     const decoded = decodeAndValidateStatusRow(rawRow);
@@ -2043,9 +2097,9 @@ function projectInvocationStatuses(
     }
   }
 
-  const statuses: HandoffRoutingInvocationStatus[] = [];
+  const statuses: AdmittedHandoffRoutingInvocationStatus[] = [];
   for (const invocation of invocations.values()) {
-    const projected = projectInvocationStatus(invocation, closingReserves, probe);
+    const projected = projectInvocationStatus(invocation, closingReserves);
     if (projected.kind === 'unreadable') return projected;
     if (projected.kind === 'projected') statuses.push(projected.status);
   }
@@ -2072,7 +2126,7 @@ function admitStatusSnapshot(
   if (snapshot.retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
-  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves, undefined);
+  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves);
   if (projection.kind === 'unreadable') return projection;
   return {
     kind: 'admitted',
@@ -2116,7 +2170,9 @@ function projectHandoffRoutingStatus(
     }
     if (status.kind === 'terminal') {
       const child = unobservedStartupChild(status.terminal);
-      if (child !== null) return { ...status, childLiveness: ownerLiveness(child, probe) };
+      if (child !== null && probe !== undefined) {
+        return { ...status, childLiveness: ownerLiveness(child, probe) };
+      }
     }
     return status;
   });
@@ -2192,17 +2248,20 @@ export async function readHandoffRoutingStatusWithOwnerObservations(
     return [];
   });
   if (owners.length === 0) return projectHandoffRoutingStatus(snapshot, undefined);
-  let observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
-  try {
-    observations = await runtime.process.observeProcessIdentities(
-      owners.slice(0, MAX_UNRESOLVED_INVOCATIONS),
-      MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
-    );
-  } catch {
-    observations = owners.map((owner) => ({
-      owner,
-      evidence: { kind: 'unobservable', cause: 'probe-failed' },
-    }));
+  type ProcessIdentityObservations = Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
+  let observations: ProcessIdentityObservations = [];
+  for (let offset = 0; offset < owners.length; offset += MAX_UNRESOLVED_INVOCATIONS) {
+    const batch = owners.slice(offset, offset + MAX_UNRESOLVED_INVOCATIONS);
+    let batchObservations: ProcessIdentityObservations;
+    try {
+      batchObservations = await runtime.process.observeProcessIdentities(batch, MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
+    } catch {
+      batchObservations = batch.map((owner): ProcessIdentityObservations[number] => ({
+        owner,
+        evidence: { kind: 'unobservable', cause: 'probe-failed' },
+      }));
+    }
+    observations = [...observations, ...batchObservations];
   }
   return projectHandoffRoutingStatus(snapshot, observationProbe(observations));
 }
@@ -2266,21 +2325,20 @@ export async function resolveHandoffRoutingStatus(
   }
 
   const selection = status.selection;
-  const observedLiveness =
-    status.kind === 'unresolved'
-      ? status.ownerLiveness
-      : status.terminal.disposition.kind === 'delegated-startup-observation-aborted' &&
-          status.childLiveness !== undefined
-        ? status.childLiveness
-        : null;
-  if (selection === null || observedLiveness === null) {
+  const abandonedChild = status.kind === 'terminal' ? unobservedStartupChild(status.terminal) : null;
+  const observedLiveness = status.kind === 'unresolved' ? status.ownerLiveness : (status.childLiveness ?? null);
+  if (observedLiveness === null) {
     return { kind: 'already-terminal', invocationId: request.invocationId };
   }
 
   let reason: 'owner-absent' | 'operator-abandoned-unobservable';
   switch (observedLiveness.kind) {
     case 'alive':
-      return { kind: 'live-owner', invocationId: request.invocationId };
+      return {
+        kind: 'live-owner',
+        invocationId: request.invocationId,
+        ...(abandonedChild === null ? {} : { abandonedChild }),
+      };
     case 'absent':
       reason = 'owner-absent';
       break;
@@ -2298,21 +2356,25 @@ export async function resolveHandoffRoutingStatus(
       return assertNever(observedLiveness);
   }
 
-  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(
-    runtime,
-    path,
-    [
-      {
-        kind: 'operator-resolved',
-        eventId: runtime.ids.uuid(),
-        invocationId: request.invocationId,
-        observedAt: new Date(runtime.time.now()).toISOString(),
-        selectionSequence: selection.sequence,
-        reason,
-      },
-    ],
-    signal,
-  );
+  const transition: OperatorResolvedMutation =
+    selection === null
+      ? {
+          kind: 'operator-resolved',
+          eventId: runtime.ids.uuid(),
+          invocationId: request.invocationId,
+          observedAt: new Date(runtime.time.now()).toISOString(),
+          selectionSequence: null,
+          reason,
+        }
+      : {
+          kind: 'operator-resolved',
+          eventId: runtime.ids.uuid(),
+          invocationId: request.invocationId,
+          observedAt: new Date(runtime.time.now()).toISOString(),
+          selectionSequence: selection.sequence,
+          reason,
+        };
+  const outcome = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [transition], signal);
   if (outcome.kind === 'committed') {
     return { kind: 'resolved', invocationId: request.invocationId, reason, sequence: outcome.sequence };
   }
@@ -2340,7 +2402,7 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
       }
       continue;
     }
-    if (status.terminal.disposition.kind === 'delegated-startup-observation-aborted') {
+    if (unobservedStartupChild(status.terminal) !== null) {
       if (status.childLiveness?.kind !== 'absent') return 75;
       continue;
     }
@@ -2544,13 +2606,4 @@ export const MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION = terminalT
   observedAt: MAX_FINALIZED_TERMINAL.observedAt,
   selection: MAX_FINALIZED_TERMINAL.selection,
   disposition: MAX_FINALIZED_TERMINAL.disposition,
-});
-
-export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSchema.parse({
-  kind: 'continuation-finalized',
-  eventId: MAX_ABANDONED_STARTUP_TERMINAL.eventId,
-  invocationId: MAX_ABANDONED_STARTUP_TERMINAL.invocationId,
-  observedAt: MAX_ABANDONED_STARTUP_TERMINAL.observedAt,
-  selection: MAX_ABANDONED_STARTUP_TERMINAL.selection,
-  disposition: MAX_ABANDONED_STARTUP_TERMINAL.disposition,
 });

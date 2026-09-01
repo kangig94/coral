@@ -666,6 +666,15 @@ function formatRoutingResolutionPublicationSuccessor(
   });
 }
 
+export function formatAbandonedStartupChildSuccessor(invocationId: string): string {
+  return (
+    'Stop that exact child through the service or account that owns it. ' +
+    'If it is the coordinator addressed by this Coral installation, run coral-cli backend shutdown. ' +
+    'After that exact PID and incarnation are absent, rerun coral-cli backend status, then run ' +
+    `coral-cli backend routing-status resolve --invocation ${invocationId}`
+  );
+}
+
 export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
   switch (result.kind) {
     case 'resolved':
@@ -677,7 +686,9 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
     case 'already-terminal':
       return `Routing invocation ${result.invocationId} is already terminal. No resolution is needed.\nNext step: no action is needed.`;
     case 'live-owner':
-      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`;
+      return result.abandonedChild === undefined
+        ? `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`
+        : `Refusing to resolve routing invocation ${result.invocationId}: detached startup child pid ${result.abandonedChild.pid} (incarnation ${result.abandonedChild.incarnation}) is alive.\nNext step: ${formatAbandonedStartupChildSuccessor(result.invocationId)}.`;
     case 'unauthorized-unobservable':
       return result.cause === 'deadline-expired'
         ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then retry without --force-unobservable; the flag cannot override an expired observation budget.`

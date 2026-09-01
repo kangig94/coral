@@ -73,17 +73,7 @@ function unobservedStartupChildStatus(childLiveness: OwnerLiveness): HandoffRout
     statuses: [
       {
         kind: 'terminal',
-        selection: {
-          generation: HANDOFF_ROUTING_STATUS_GENERATION,
-          sequence: 1,
-          eventId: 'selection-event',
-          invocationId,
-          observedAt: '2026-08-02T00:00:00.000Z',
-          eventKind: 'routing-selected',
-          phase: 'selection',
-          owner: { pid: 4000, incarnation: testIncarnation('routing-owner') },
-          disposition: { kind: 'continue-current', basis: { kind: 'incumbent-absent' } },
-        },
+        selection: null,
         childLiveness,
         terminal: {
           generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -93,12 +83,15 @@ function unobservedStartupChildStatus(childLiveness: OwnerLiveness): HandoffRout
           observedAt: '2026-08-02T00:00:01.000Z',
           eventKind: 'continuation-finalized',
           phase: 'terminal',
-          selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+          selection: { kind: 'without-selection' },
           disposition: {
-            kind: 'delegated-startup-observation-aborted',
-            version: '2.3.4',
-            child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-            childDisposition: 'left-running-and-unobserved',
+            kind: 'finalized-without-selection',
+            terminal: {
+              kind: 'delegated-startup-observation-aborted',
+              version: '2.3.4',
+              child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+              childDisposition: 'left-running-and-unobserved',
+            },
           },
         },
       },
@@ -873,7 +866,8 @@ describe('backend routing status', () => {
     {
       childLiveness: { kind: 'alive' } as const,
       expectedExit: 75,
-      expectedSuccessor: 'wait for that exact child to exit, then rerun coral-cli backend status',
+      expectedSuccessor:
+        'Stop that exact child through the service or account that owns it. If it is the coordinator addressed by this Coral installation, run coral-cli backend shutdown. After that exact PID and incarnation are absent, rerun coral-cli backend status, then run coral-cli backend routing-status resolve --invocation 123e4567-e89b-42d3-a456-426614174099',
     },
     {
       childLiveness: { kind: 'absent' } as const,

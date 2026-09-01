@@ -15,13 +15,15 @@ import {
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_CLOSING_RECORD_BYTES,
   MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
-  MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
+  handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   publishGenerationCoordinatedHandoffRoutingTransitions,
   readHandoffRoutingStatus,
+  readHandoffRoutingStatusWithOwnerObservations,
+  resolveHandoffRoutingStatus,
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing/status.js';
@@ -30,7 +32,7 @@ import { acquireOperatorSocketGuard } from '#src/cli/operator-socket-guard.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { acquireGenerationMaintenanceLease } from '#src/store/generation-mutation-coordination.js';
-import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
+import { SQLITE_ERROR, handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const FORMER_DIRECTORY_LOCK_STALE_MS = 30_000;
@@ -38,9 +40,7 @@ const LOCK_RELEASE_GATE_MS = 50;
 const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
 const BYTE_PRESSURE_COMPLETED_PAIRS = 204;
-// Capacity constraint: a maximal handoff-routing pair now spans two 4,096-byte pages instead of one,
-// so batch admission is roughly half what it was. Measured 2026-09-02: 104 pairs commit; 105 are rejected.
-// Keep this pressure batch below that packing-sensitive boundary.
+// Keep this pressure batch below the packing-sensitive capacity boundary.
 const BYTE_PRESSURE_BATCHED_PAIRS = 96;
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const runtime = createRealRuntime('prod');
@@ -74,6 +74,28 @@ function databasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'coral-handoff-routing-integration-'));
   temporaryDirectories.push(directory);
   return join(directory, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`);
+}
+
+function storageFailingBeforeCommit(storage: Runtime['storage']): Runtime['storage'] {
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property !== 'openSqliteDatabaseSync') return Reflect.get(target, property, target);
+      return (path: string, options?: { readOnly?: boolean }) => {
+        const database = target.openSqliteDatabaseSync(path, options);
+        if (options?.readOnly === true) return database;
+        return {
+          exec(sql: string) {
+            if (sql === 'BEGIN IMMEDIATE') {
+              throw Object.assign(new Error('injected pre-commit I/O failure'), { errcode: SQLITE_ERROR });
+            }
+            database.exec(sql);
+          },
+          prepare: database.prepare.bind(database),
+          close: database.close.bind(database),
+        };
+      };
+    },
+  });
 }
 
 function owner(pid = process.pid): Readonly<{ pid: number; incarnation: ReturnType<typeof testIncarnation> }> {
@@ -115,6 +137,29 @@ function terminal(identity: string, offset: number, selectionSequence: number): 
   };
 }
 
+function abandonedTerminal(
+  identity: string,
+  offset: number,
+  child: ReturnType<typeof owner>,
+  selectionLink:
+    | Readonly<{ kind: 'without-selection' }>
+    | Readonly<{ kind: 'with-selection-sequence'; selectionSequence: number }>,
+): HandoffRoutingTransition {
+  return {
+    kind: 'continuation-finalized',
+    eventId: `terminal-${identity}`,
+    invocationId: `invocation-${identity}`,
+    observedAt: observedAt(offset),
+    selection: selectionLink,
+    disposition: {
+      kind: 'delegated-startup-observation-aborted',
+      version: '0.10.9',
+      child,
+      childDisposition: 'left-running-and-unobserved',
+    },
+  };
+}
+
 function maximumIdentifier(identity: string): string {
   const encodedIdentity = [...identity]
     .map((character) => String.fromCharCode(0x0800 + character.charCodeAt(0)))
@@ -141,7 +186,7 @@ function maximumCompactableTerminal(identity: string, selectionSequence: number)
 
 function maximumGapTerminal(identity: string): HandoffRoutingTransition {
   return {
-    ...MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
+    ...MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
     eventId: maximumIdentifier(`g${identity}`),
     invocationId: maximumIdentifier(`x${identity}`),
     selection: { kind: 'without-selection' },
@@ -641,6 +686,224 @@ describe('handoff-routing/status', () => {
     await expect(
       publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [maximumSelection('after-gaps')]),
     ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
+  });
+
+  it('retains and resolves a live abandoned child after selection publication fails', async () => {
+    const path = databasePath();
+    const identity = 'missing-selection-abandoned-child';
+    const invocationId = `invocation-${identity}`;
+    const child = owner(4242);
+    const failedSelectionRuntime = {
+      ...runtime,
+      storage: storageFailingBeforeCommit(runtime.storage),
+    };
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(failedSelectionRuntime, path, [selection(identity, 1)]),
+    ).resolves.toEqual({ kind: 'not-published', cause: 'io-failed' });
+    await committed(path, abandonedTerminal(identity, 2, child, { kind: 'without-selection' }));
+
+    const observedPids: number[][] = [];
+    const liveRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) => {
+          observedPids.push(owners.map((owner) => owner.pid));
+          return owners.map((owner) => ({
+            owner,
+            evidence: { kind: 'incarnation' as const, incarnation: owner.incarnation },
+          }));
+        },
+      },
+    };
+    const liveStatus = await readHandoffRoutingStatusWithOwnerObservations(liveRuntime, path);
+
+    expect(observedPids).toEqual([[child.pid]]);
+    expect(liveStatus).toMatchObject({
+      kind: 'current',
+      statuses: [
+        {
+          kind: 'terminal',
+          selection: null,
+          childLiveness: { kind: 'alive' },
+          terminal: {
+            invocationId,
+            disposition: {
+              kind: 'finalized-without-selection',
+              terminal: { kind: 'delegated-startup-observation-aborted', child },
+            },
+          },
+        },
+      ],
+    });
+    expect(handoffRoutingStatusExitContribution(liveStatus)).toBe(75);
+    await expect(
+      resolveHandoffRoutingStatus(liveRuntime, path, { invocationId, forceUnobservable: false }),
+    ).resolves.toEqual({ kind: 'live-owner', invocationId, abandonedChild: child });
+
+    await expect(
+      publishGenerationCoordinatedHandoffRoutingTransitions(
+        runtime,
+        path,
+        Array.from({ length: MAX_COMPLETED_HANDOFF_ROUTING_PAIRS + 1 }, (_, index) =>
+          maximumGapTerminal(`history-after-abandoned-${index}`),
+        ),
+      ),
+    ).resolves.toMatchObject({ kind: 'committed' });
+    expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
+      kind: 'current',
+      statuses: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'terminal',
+          terminal: expect.objectContaining({
+            invocationId,
+            disposition: expect.objectContaining({ kind: 'finalized-without-selection' }),
+          }),
+        }),
+      ]),
+    });
+
+    const absentRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+    await expect(
+      resolveHandoffRoutingStatus(absentRuntime, path, { invocationId, forceUnobservable: false }),
+    ).resolves.toMatchObject({ kind: 'resolved', invocationId, reason: 'owner-absent' });
+    expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
+      kind: 'current',
+      statuses: expect.not.arrayContaining([
+        expect.objectContaining({ terminal: expect.objectContaining({ invocationId }) }),
+      ]),
+    });
+  });
+
+  it.each([
+    ['evicted', 'terminal-without-retained-selection'],
+    ['resolved', 'terminal-after-operator-resolution'],
+  ] as const)('preserves an abandoned child after its selection is %s', async (selectionState, durableKind) => {
+    const path = databasePath();
+    const identity = `${selectionState}-selection-abandoned-child`;
+    const invocationId = `invocation-${identity}`;
+    const child = owner(4343);
+    const selected = await committed(path, selection(identity, 1));
+    if (selectionState === 'evicted') {
+      await expect(
+        publishGenerationCoordinatedHandoffRoutingTransitions(
+          runtime,
+          path,
+          Array.from({ length: MAX_UNRESOLVED_INVOCATIONS }, (_, index) =>
+            selection(`opening-after-${selectionState}-${index}`, index + 2),
+          ),
+        ),
+      ).resolves.toMatchObject({ kind: 'committed' });
+    } else {
+      await committed(path, {
+        kind: 'operator-resolved',
+        eventId: `resolution-${identity}`,
+        invocationId,
+        observedAt: observedAt(2),
+        selectionSequence: selected,
+        reason: 'owner-absent',
+      });
+    }
+
+    await committed(
+      path,
+      abandonedTerminal(identity, 3, child, {
+        kind: 'with-selection-sequence',
+        selectionSequence: selected,
+      }),
+    );
+
+    const status = readHandoffRoutingStatus(runtime, path);
+    expect(status).toMatchObject({
+      kind: 'current',
+      statuses: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'terminal',
+          selection: null,
+          terminal: expect.objectContaining({
+            invocationId,
+            disposition: expect.objectContaining({
+              kind: durableKind,
+              terminal: expect.objectContaining({ kind: 'delegated-startup-observation-aborted', child }),
+            }),
+          }),
+        }),
+      ]),
+    });
+    expect(handoffRoutingStatusExitContribution(status)).toBe(75);
+    const absentRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' as const } })),
+      },
+    };
+    await expect(
+      resolveHandoffRoutingStatus(absentRuntime, path, { invocationId, forceUnobservable: false }),
+    ).resolves.toMatchObject({ kind: 'resolved', invocationId, reason: 'owner-absent' });
+  });
+
+  it('observes abandoned children after the first bounded batch and resolves an absent one normally', async () => {
+    const path = databasePath();
+    const holds = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + 1 }, (_, index) =>
+      abandonedTerminal(`bounded-${index}`, index, owner(5000 + index), { kind: 'without-selection' }),
+    );
+    await expect(publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, holds)).resolves.toMatchObject({
+      kind: 'committed',
+    });
+    const last = holds.at(-1);
+    if (last === undefined || last.kind !== 'continuation-finalized') {
+      throw new Error('Expected an abandoned-child terminal');
+    }
+    if (last.disposition.kind !== 'delegated-startup-observation-aborted') {
+      throw new Error('Expected an abandoned-child disposition');
+    }
+    const lastChild = last.disposition.child;
+    const calls: number[] = [];
+    const observationRuntime: Runtime = {
+      ...runtime,
+      process: {
+        ...runtime.process,
+        observeProcessIdentities: async (owners) => {
+          calls.push(owners.length);
+          return owners.map((owner) => ({
+            owner,
+            evidence:
+              owner.pid === lastChild.pid
+                ? { kind: 'pid-absent' as const }
+                : { kind: 'incarnation' as const, incarnation: owner.incarnation },
+          }));
+        },
+      },
+    };
+
+    const status = await readHandoffRoutingStatusWithOwnerObservations(observationRuntime, path);
+    expect(calls).toEqual([MAX_UNRESOLVED_INVOCATIONS, 1]);
+    expect(status).toMatchObject({
+      kind: 'current',
+      statuses: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'terminal',
+          childLiveness: { kind: 'absent' },
+          terminal: expect.objectContaining({ invocationId: last.invocationId }),
+        }),
+      ]),
+    });
+    await expect(
+      resolveHandoffRoutingStatus(observationRuntime, path, {
+        invocationId: last.invocationId,
+        forceUnobservable: false,
+      }),
+    ).resolves.toMatchObject({ kind: 'resolved', invocationId: last.invocationId, reason: 'owner-absent' });
   });
 
   it('admits a late terminal from a retained operator tombstone under completed-history pressure', async () => {

@@ -20,6 +20,7 @@ import {
 } from '../../coordinator/handoff-routing/repair-operation.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  abandonedStartupChildIdentity,
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   readHandoffRoutingStatusWithOwnerObservations,
@@ -109,6 +110,7 @@ import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
+  formatAbandonedStartupChildSuccessor,
   formatBackendStatus,
   formatHandoffStartupObservationAborted,
   formatHandoffRoutingResolveResult,
@@ -403,17 +405,16 @@ function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0
 function formatUnobservedStartupChildSuccessors(result: HandoffRoutingStatusReadResult): string[] {
   if (result.kind !== 'current') return [];
   return result.statuses.flatMap((status) => {
-    if (status.kind !== 'terminal' || status.terminal.disposition.kind !== 'delegated-startup-observation-aborted') {
-      return [];
-    }
+    if (status.kind !== 'terminal') return [];
+    const child = abandonedStartupChildIdentity(status.terminal.disposition);
+    if (child === null) return [];
     const invocationId = status.terminal.invocationId;
-    const child = status.terminal.disposition.child;
     const childLiveness = status.childLiveness;
     const subject = `Detached startup child pid ${child.pid} (incarnation ${child.incarnation})`;
     switch (childLiveness?.kind) {
       case 'alive':
         return [
-          `Current observation: ${subject} for routing invocation ${invocationId} is still alive. Next step: wait for that exact child to exit, then rerun coral-cli backend status.`,
+          `Current observation: ${subject} for routing invocation ${invocationId} is still alive. Next step: ${formatAbandonedStartupChildSuccessor(invocationId)}.`,
         ];
       case 'absent':
         return [
