@@ -30,7 +30,7 @@ import {
   type OperatorFacingCoralSetupError,
 } from '../../runtime/errors.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
-import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
+import { resolveStartupAttemptLineage, startupAttemptIdentityMatches } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
 /** Time budget for the daemon to bind its socket / answer first health probe. */
 export const KERNEL_BIND_DEADLINE_MS = 5_000;
@@ -643,6 +643,9 @@ async function waitForBackendReady(
         );
         if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
           if (waitContext.kind !== 'current-attempt') {
+            return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+          }
+          if (terminalOutcome !== null && startupAttemptIdentityMatches(authenticatedHealth, desired)) {
             return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
           }
           const lineage = resolveStartupAttemptLineage({

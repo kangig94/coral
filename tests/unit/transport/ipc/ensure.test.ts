@@ -1172,6 +1172,56 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).toHaveBeenCalledOnce();
   });
 
+  it('adopts the desired build from another attempt after the exact child terminates', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    let spawned = false;
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'winning-coordinator',
+        namespace: pluginRootNamespace(root),
+        env: { CORAL_STARTUP_ATTEMPT_ID: 'winning-attempt' },
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, { instanceId: 'winning-coordinator' });
+      return child;
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    await vi.advanceTimersByTimeAsync(0);
+
+    let settled = false;
+    void ensuredPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('winning-coordinator');
+    expect(ensured.bundleHash).toBe('test-hash');
+  });
+
   it('treats child error without exit as terminal without exposing its text', async () => {
     makeHome();
     vi.useFakeTimers();

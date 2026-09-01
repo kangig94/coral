@@ -76,6 +76,26 @@ describe('backend bootstrap store handoff', () => {
     expect(result).toMatchObject({ kind: 'failed', error: { message } });
   });
 
+  it('should never expose a failed startup handoff as exit code zero', async () => {
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recorded',
+      continuation: {
+        kind: 'delegated',
+        version: '2.0.0',
+        outcome: { kind: 'handoff-exit', exitCode: 0 },
+      },
+      publicationIncidents: [],
+    });
+
+    await expect(
+      handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target)),
+    ).resolves.toMatchObject({
+      kind: 'failed',
+      exitCode: 1,
+      error: { message: 'Selected backend exited during startup handoff with code 0.' },
+    });
+  });
+
   it('should preserve a handoff execution error for bootstrap diagnostics', async () => {
     const handoffError = new Error('spawn rejected');
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);

@@ -31,6 +31,7 @@ import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-stat
 import { createIpcClient } from '../../transport/ipc/client.js';
 import {
   resolveStartupAttemptLineage,
+  startupAttemptIdentityMatches,
   type StartupAttemptIdentity,
   type StartupAttemptLineage,
 } from '../../infra/startup-attempt-lineage.js';
@@ -562,10 +563,10 @@ function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, Hando
   if (outcome.signal !== null) {
     return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
   }
-  return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code ?? 1 });
+  return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code === 0 ? 1 : (outcome.code ?? 1) });
 }
 
-function backendStartupReadiness(
+function liveBackendStartupReadiness(
   reading: LiveIncumbentReading,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
@@ -588,6 +589,15 @@ function backendStartupReadiness(
       };
 }
 
+function terminalBackendStartupReadiness(
+  reading: LiveIncumbentReading,
+  desiredIdentity: StartupAttemptIdentity,
+): Readonly<{ kind: 'ready' }> | null {
+  return reading.kind === 'observed' && startupAttemptIdentityMatches(reading.health, desiredIdentity)
+    ? { kind: 'ready' }
+    : null;
+}
+
 async function waitForBackendStartupObservation(
   observation: ObservedChild,
   runtime: Runtime,
@@ -599,17 +609,15 @@ async function waitForBackendStartupObservation(
   const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
 
   while (true) {
-    const readiness = readLiveCoordinatorHealth(runtime, time).then((reading) =>
-      backendStartupReadiness(reading, desiredIdentity, expectedAttemptId),
-    );
+    const reading = readLiveCoordinatorHealth(runtime, time);
+    const readiness = reading.then((health) => liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId));
     const observed = await Promise.race([terminal, readiness]);
     if (observed !== null) {
       if (observed.kind === 'ready') {
         return observed;
       }
       if (observed.kind === 'terminal') {
-        const readinessAfterTerminal = await readiness;
-        return readinessAfterTerminal?.kind === 'ready' ? readinessAfterTerminal : observed;
+        return terminalBackendStartupReadiness(await reading, desiredIdentity) ?? observed;
       }
     }
 
@@ -619,8 +627,7 @@ async function waitForBackendStartupObservation(
     ]);
     if (terminalDuringPoll !== null) {
       const finalHealth = await readLiveCoordinatorHealth(runtime, time);
-      const finalReadiness = backendStartupReadiness(finalHealth, desiredIdentity, expectedAttemptId);
-      return finalReadiness?.kind === 'ready' ? finalReadiness : terminalDuringPoll;
+      return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? terminalDuringPoll;
     }
   }
 }

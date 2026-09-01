@@ -1,13 +1,10 @@
 /**
- * "Is this coordinator, or this sentinel, the result of my startup attempt?" — one question, one answer.
+ * Startup ownership may be released while the exact child is live only when the coordinator or sentinel
+ * is attributable to that attempt. Two present attempt ids that disagree must override matching build
+ * identity; desired-build usability after the exact child terminates is a separate decision.
  *
- * `CORAL_STARTUP_ATTEMPT_ID` is minted per spawn and inherited by delegated children, so a coordinator
- * carrying this attempt's id descends from it however many builds the startup was routed through. A
- * bundle-identity match proves the same thing only when two present attempt ids do not disagree. Two
- * present ids that disagree positively exclude the coordinator from this attempt.
- *
- * The proof brand is unforgeable outside this module: a caller cannot construct
- * `proven-current-attempt` from evidence that did not satisfy one of the two proofs.
+ * The proof brand prevents callers from constructing `proven-current-attempt` without this module's
+ * attribution rules.
  */
 export type StartupAttemptIdentity = Readonly<{
   version: string;
@@ -26,6 +23,21 @@ export type StartupAttemptLineage =
     }>
   | Readonly<{ kind: 'proven-other-attempt'; proof: 'different-startup-attempt-id' }>
   | Readonly<{ kind: 'unknown' }>;
+
+export function startupAttemptIdentityMatches(
+  observed: StartupAttemptIdentity | undefined,
+  desired: StartupAttemptIdentity,
+): boolean {
+  return (
+    observed !== undefined &&
+    observed.version === desired.version &&
+    observed.bundleHash === desired.bundleHash &&
+    observed.flavor === desired.flavor &&
+    typeof desired.namespace === 'string' &&
+    desired.namespace.length > 0 &&
+    observed.namespace === desired.namespace
+  );
+}
 
 export function resolveStartupAttemptLineage(evidence: {
   observedAttemptId?: string;
@@ -51,17 +63,7 @@ export function resolveStartupAttemptLineage(evidence: {
     });
   }
 
-  const observed = evidence.observedIdentity;
-  const desired = evidence.desiredIdentity;
-  if (
-    observed !== undefined &&
-    observed.version === desired.version &&
-    observed.bundleHash === desired.bundleHash &&
-    observed.flavor === desired.flavor &&
-    typeof desired.namespace === 'string' &&
-    desired.namespace.length > 0 &&
-    observed.namespace === desired.namespace
-  ) {
+  if (startupAttemptIdentityMatches(evidence.observedIdentity, evidence.desiredIdentity)) {
     return Object.freeze({
       kind: 'proven-current-attempt',
       proof: 'desired-identity',

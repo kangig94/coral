@@ -105,7 +105,7 @@ export async function handoffStartupToSelectedBuild(
           error: new Error(
             `Selected backend exited during startup handoff with code ${continuation.outcome.exitCode}.`,
           ),
-          exitCode: continuation.outcome.exitCode,
+          exitCode: continuation.outcome.exitCode === 0 ? 1 : continuation.outcome.exitCode,
         };
       case 'handoff-signal':
         return {

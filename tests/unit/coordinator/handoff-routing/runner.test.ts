@@ -1402,14 +1402,17 @@ describe('handoff-routing/runner', () => {
     );
   });
 
-  it.each([0, 23])(
-    'should report an immediate backend startup exit with code %s when no coordinator is live',
-    async (code) => {
+  it.each([
+    { childExitCode: 0, handoffExitCode: 1 },
+    { childExitCode: 23, handoffExitCode: 23 },
+  ])(
+    'should report an immediate backend startup exit with code $handoffExitCode for child code $childExitCode when no coordinator is live',
+    async ({ childExitCode, handoffExitCode }) => {
       const target = validatedTarget(roots[0]);
       let child: ChildProcess | undefined;
       mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
       mockState.spawn.mockImplementationOnce(() => {
-        child = childThatExits(code, null);
+        child = childThatExits(childExitCode, null);
         return child;
       });
 
@@ -1418,7 +1421,7 @@ describe('handoff-routing/runner', () => {
       ).resolves.toEqual({
         kind: 'delegated',
         version: manifest.version,
-        outcome: { kind: 'handoff-exit', exitCode: code },
+        outcome: { kind: 'handoff-exit', exitCode: handoffExitCode },
       });
       expect(child?.unref).toHaveBeenCalledOnce();
     },
@@ -1559,6 +1562,70 @@ describe('handoff-routing/runner', () => {
     spawnedFirstChild.emit('exit', 23, null);
 
     await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+  });
+
+  it('accepts the desired build from another attempt only after the exact child terminates', async () => {
+    const target = validatedTarget(roots[0]);
+    const currentAttemptId = 'current-attempt';
+    const attemptRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? currentAttemptId : runtime.env.get(key)),
+        fullSnapshot: () => ({
+          ...runtime.env.fullSnapshot(),
+          CORAL_STARTUP_ATTEMPT_ID: currentAttemptId,
+        }),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    mockState.createRealRuntime.mockReturnValue(attemptRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    const bundleDir = configureNewerIncumbent(roots[0]);
+    mockState.health.mockResolvedValue({
+      ...liveHealth(bundleDir, pluginRootNamespace(dirname(bundleDir))),
+      env: { CORAL_STARTUP_ATTEMPT_ID: 'other-attempt' },
+    });
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
   });
 
   // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists
