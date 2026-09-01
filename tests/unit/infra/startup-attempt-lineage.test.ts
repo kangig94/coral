@@ -25,7 +25,7 @@ describe('startup attempt lineage', () => {
         observedIdentity: desiredIdentity,
         desiredIdentity,
       }),
-    ).toMatchObject({ kind: 'proven-current-attempt', proof: 'desired-identity' });
+    ).toEqual({ kind: 'proven-other-attempt', proof: 'different-startup-attempt-id' });
     expect(
       resolveStartupAttemptLineage({
         observedAttemptId: 'other-attempt',

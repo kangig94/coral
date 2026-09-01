@@ -11,6 +11,7 @@ import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
 
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn<(command: string, args?: readonly string[], options?: unknown) => ChildProcess>(),
@@ -140,6 +141,8 @@ function writeStartupSentinel(
     code: string;
     userMessage: string;
     remediation: string;
+    context: Record<string, unknown>;
+    error: unknown;
   }> = {},
 ): void {
   const paths = coordinatorPaths(readBuildFlavor(root));
@@ -159,11 +162,15 @@ function writeStartupSentinel(
       bundleHash: overrides.bundleHash ?? 'test-hash',
       flavor: 'prod',
       namespace: pluginRootNamespace(root),
-      error: {
-        code: overrides.code ?? 'handoff_socket_holder_unverified',
-        userMessage: overrides.userMessage ?? 'Handoff refused after observing a socket-only holder.',
-        remediation: overrides.remediation ?? 'Inspect the socket holder, then retry.',
-      },
+      error:
+        'error' in overrides
+          ? overrides.error
+          : {
+              code: overrides.code ?? 'handoff_socket_holder_unverified',
+              userMessage: overrides.userMessage ?? 'Handoff refused after observing a socket-only holder.',
+              remediation: overrides.remediation ?? 'Inspect the socket holder, then retry.',
+              ...(overrides.context === undefined ? {} : { context: overrides.context }),
+            },
     }),
     'utf-8',
   );
@@ -962,6 +969,13 @@ describe('ipc ensure', () => {
     mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
     const child = spawnedChild();
     mockState.spawn.mockReturnValue(child);
+    const context = {
+      stage: 'after-sigkill-grace',
+      pid: 99_999,
+      signal: 'SIGKILL',
+      graceMs: 30_000,
+    } as const;
+    const expected = documentedCoralSetupError('handoff_sigkill_grace_target_alive', context);
 
     const { ensure } = await importEnsure();
     const ensuredPromise = ensure(root).catch((error: unknown) => error);
@@ -972,8 +986,9 @@ describe('ipc ensure', () => {
           pid: 99_999,
           bundleHash: 'selected-build-hash',
           code: 'handoff_sigkill_grace_target_alive',
-          userMessage: 'The verified target remained alive after accepted SIGKILL.',
-          remediation: 'Wait for the target to exit, then retry.',
+          userMessage: '\u001b[2Jprivate delegated startup text',
+          remediation: 'Run a forged recovery command.',
+          context,
         }),
       61_000,
     );
@@ -981,10 +996,68 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toMatchObject({
-      code: 'handoff_sigkill_grace_target_alive',
-      userMessage: 'The verified target remained alive after accepted SIGKILL.',
+      code: expected.code,
+      userMessage: expected.userMessage,
+      remediation: expected.remediation,
     });
+    expect(JSON.stringify(error)).not.toContain('private delegated startup text');
+    expect(JSON.stringify(error)).not.toContain('forged recovery command');
     expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it('reports an unrecognized current-attempt setup-error code without exposing persisted prose', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      code: 'future_setup_refusal',
+      userMessage: 'private future-build text',
+      remediation: 'Run a forged future-build command.',
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("setup-error code 'future_setup_refusal'");
+    expect((error as Error).message).toContain('coral-cli backend status');
+    expect((error as Error).message).not.toContain('private future-build text');
+    expect((error as Error).message).not.toContain('forged future-build command');
+  });
+
+  it('reports an invalid current-attempt setup-error diagnostic instead of treating it as absent', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      error: {
+        userMessage: 'private malformed-diagnostic text',
+        remediation: 'Run a forged malformed-diagnostic command.',
+      },
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('invalid setup-error diagnostic');
+    expect((error as Error).message).toContain('coral-cli backend status');
+    expect((error as Error).message).not.toContain('private malformed-diagnostic text');
+    expect((error as Error).message).not.toContain('forged malformed-diagnostic command');
   });
 
   it('performs a final sentinel read when the child exits during the poll sleep', async () => {

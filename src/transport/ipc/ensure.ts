@@ -24,7 +24,11 @@ import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
 import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
-import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
+import {
+  CoralSetupError,
+  readOperatorFacingCoralSetupError,
+  type OperatorFacingCoralSetupError,
+} from '../../runtime/errors.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
@@ -144,7 +148,7 @@ type StartupErrorSentinel = {
   readonly bundleHash: string;
   readonly flavor: 'prod' | 'dev';
   readonly namespace: string;
-  readonly error: SerializedCoralSetupError;
+  readonly error: unknown;
 };
 
 function summarizeBackend(
@@ -273,15 +277,6 @@ function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
   return verifiedBackendInfoSchema.safeParse(value).success;
 }
 
-function isSerializedStartupError(value: unknown): value is SerializedCoralSetupError {
-  return (
-    isRecord(value) &&
-    typeof value.code === 'string' &&
-    typeof value.userMessage === 'string' &&
-    typeof value.remediation === 'string'
-  );
-}
-
 function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
   return (
     isRecord(value) &&
@@ -295,7 +290,7 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
     typeof value.bundleHash === 'string' &&
     (value.flavor === 'prod' || value.flavor === 'dev') &&
     typeof value.namespace === 'string' &&
-    isSerializedStartupError(value.error)
+    'error' in value
   );
 }
 
@@ -452,7 +447,7 @@ function matchingStartupError(
   desired: DesiredCoordinator,
   waitContext: BackendReadyWaitContext,
   observedPid?: number,
-): CoralSetupError | null {
+): OperatorFacingCoralSetupError | null {
   const record = readStartupErrorSentinel(paths);
   if (!record) return null;
 
@@ -474,7 +469,7 @@ function matchingStartupError(
     if (mtimeMs < earliestMtime) {
       return null;
     }
-    return new CoralSetupError(sentinel.error);
+    return readOperatorFacingCoralSetupError(sentinel.error);
   }
 
   if (sentinel.bundleHash !== desired.bundleHash) {
@@ -489,7 +484,7 @@ function matchingStartupError(
     clearStartupErrorSentinel(paths);
     return null;
   }
-  return new CoralSetupError(sentinel.error);
+  return readOperatorFacingCoralSetupError(sentinel.error);
 }
 
 function rotateLogIfLarge(runDir: string): void {
@@ -669,7 +664,18 @@ async function waitForBackendReady(
 
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
     if (startupError) {
-      throw startupError;
+      switch (startupError.kind) {
+        case 'documented':
+          throw new CoralSetupError(startupError);
+        case 'unrecognized_code':
+          throw new BackendUnreachableError(
+            `Coordinator startup stopped with setup-error code '${startupError.code}', which this Coral build does not recognize. Run \`coral-cli backend status\` to inspect the recorded failure, then upgrade Coral and retry the original command.`,
+          );
+        case 'invalid_diagnostic':
+          throw new BackendUnreachableError(
+            'Coordinator startup stopped with an invalid setup-error diagnostic. Run `coral-cli backend status` to inspect the recorded failure, then reinstall or upgrade the selected Coral build and retry the original command.',
+          );
+      }
     }
     if (terminalOutcome !== null) {
       throw new BackendUnreachableError(

@@ -1497,11 +1497,11 @@ describe('handoff-routing/runner', () => {
     await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
   });
 
-  it('keeps the first delegator pending until a terminal descendant propagates', async () => {
+  it('keeps concurrent backend startup attempts isolated until each child terminates', async () => {
     const firstTarget = validatedTarget(roots[0]);
     const secondTarget = validatedTarget(roots[0]);
     let firstChild: ChildProcess | undefined;
-    let finalChild: ChildProcess | undefined;
+    let secondChild: ChildProcess | undefined;
     const releasePolls: Array<() => void> = [];
     const time: TimePort = {
       now: () => 0,
@@ -1519,8 +1519,8 @@ describe('handoff-routing/runner', () => {
         return firstChild;
       })
       .mockImplementationOnce(() => {
-        finalChild = childThatStaysAlive();
-        return finalChild;
+        secondChild = childThatStaysAlive();
+        return secondChild;
       });
 
     const first = runHandoff(
@@ -1536,18 +1536,28 @@ describe('handoff-routing/runner', () => {
     void second.catch(() => undefined);
     await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
     const spawnedFirstChild = firstChild;
-    const spawnedFinalChild = finalChild;
-    if (spawnedFirstChild === undefined || spawnedFinalChild === undefined) {
+    const spawnedSecondChild = secondChild;
+    if (spawnedFirstChild === undefined || spawnedSecondChild === undefined) {
       throw new Error('Expected both delegated backend children to spawn.');
     }
-    void second.then(
-      () => spawnedFirstChild.emit('exit', 23, null),
-      () => undefined,
+    spawnedSecondChild.emit('exit', 17, null);
+
+    await expect(second).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 17 } });
+
+    let firstSettled = false;
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
     );
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
 
-    spawnedFinalChild.emit('exit', 23, null);
+    spawnedFirstChild.emit('exit', 23, null);
 
-    await expect(second).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
     await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
   });
 

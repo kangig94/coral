@@ -5,6 +5,8 @@ import { backendLog } from '../infra/backend-log.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { isRecord } from '../infra/json.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { isRetryableCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
@@ -48,6 +50,17 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
   };
 }
 
+function isSameAttemptSetupErrorDiagnostic(value: unknown, attemptId: string): boolean {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === 1 &&
+    value.phase === 'startup_failed' &&
+    value.attemptId === attemptId &&
+    isRecord(value.error) &&
+    value.error.kind === 'coral_setup_error'
+  );
+}
+
 export function writeBootstrapDiagnostic(
   pluginRoot: string,
   phase: BootstrapDiagnosticPhase,
@@ -58,6 +71,8 @@ export function writeBootstrapDiagnostic(
     const flavor = resolveBuildFlavor(process.env);
     const runtime = createRealRuntime(flavor);
     const diagnosticFile = runtime.paths.coral.coordinator.startupDiagnosticFile;
+    const attemptId = process.env.CORAL_STARTUP_ATTEMPT_ID;
+    const serializedError = serializeBootstrapError(error);
     const diagnostic = {
       schemaVersion: 1,
       phase,
@@ -65,15 +80,27 @@ export function writeBootstrapDiagnostic(
       retryable: isRetryableCoralSetupError(error),
       pid: process.pid,
       recordedAt: new Date().toISOString(),
-      attemptId: process.env.CORAL_STARTUP_ATTEMPT_ID,
+      attemptId,
       startedAt: startupStartedAt(),
       socketPath: runtime.paths.coral.coordinator.socketPath,
       bundleHash: readBundleHash(pluginRoot),
       flavor,
       namespace: pluginRootNamespace(pluginRoot),
       exitCode,
-      error: serializeBootstrapError(error),
+      error: serializedError,
     };
+    if (phase === 'startup_failed' && serializedError.kind !== 'coral_setup_error' && attemptId !== undefined) {
+      try {
+        const existing: unknown = JSON.parse(runtime.storage.readFileSync(diagnosticFile, 'utf-8'));
+        if (isSameAttemptSetupErrorDiagnostic(existing, attemptId)) {
+          return diagnosticFile;
+        }
+      } catch (readError: unknown) {
+        if (!(isNoEntryError(readError) || readError instanceof SyntaxError)) {
+          throw readError;
+        }
+      }
+    }
     const tmp = `${diagnosticFile}.tmp-${process.pid}-${phase}`;
     runtime.storage.mkdirSync(dirname(diagnosticFile), { recursive: true });
     runtime.storage.writeFileSync(tmp, JSON.stringify(diagnostic, null, 2) + '\n', {

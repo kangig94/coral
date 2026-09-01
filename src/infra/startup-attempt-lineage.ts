@@ -3,8 +3,8 @@
  *
  * `CORAL_STARTUP_ATTEMPT_ID` is minted per spawn and inherited by delegated children, so a coordinator
  * carrying this attempt's id descends from it however many builds the startup was routed through. A
- * bundle-identity match proves the same thing independently; either proof alone is sufficient, and
- * neither is necessary.
+ * bundle-identity match proves the same thing only when two present attempt ids do not disagree. Two
+ * present ids that disagree positively exclude the coordinator from this attempt.
  *
  * The proof brand is unforgeable outside this module: a caller cannot construct
  * `proven-current-attempt` from evidence that did not satisfy one of the two proofs.
@@ -33,6 +33,16 @@ export function resolveStartupAttemptLineage(evidence: {
   observedIdentity?: StartupAttemptIdentity;
   desiredIdentity: StartupAttemptIdentity;
 }): StartupAttemptLineage {
+  // Two present ids that disagree must exclude this attempt even when the bundle identities match;
+  // a missing id excludes nothing and must not be read as someone else's.
+  if (
+    evidence.expectedAttemptId !== undefined &&
+    evidence.observedAttemptId !== undefined &&
+    evidence.observedAttemptId !== evidence.expectedAttemptId
+  ) {
+    return Object.freeze({ kind: 'proven-other-attempt', proof: 'different-startup-attempt-id' });
+  }
+
   if (evidence.expectedAttemptId !== undefined && evidence.observedAttemptId === evidence.expectedAttemptId) {
     return Object.freeze({
       kind: 'proven-current-attempt',
@@ -59,10 +69,5 @@ export function resolveStartupAttemptLineage(evidence: {
     });
   }
 
-  // Two ids that disagree is the only evidence that positively excludes this attempt; a missing id
-  // excludes nothing, and must not be read as someone else's.
-  if (evidence.expectedAttemptId !== undefined && evidence.observedAttemptId !== undefined) {
-    return Object.freeze({ kind: 'proven-other-attempt', proof: 'different-startup-attempt-id' });
-  }
   return Object.freeze({ kind: 'unknown' });
 }

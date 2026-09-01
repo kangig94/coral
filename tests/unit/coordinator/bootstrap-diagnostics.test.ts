@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const storage = vi.hoisted(() => ({
+  readFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   renameSync: vi.fn(),
@@ -29,6 +30,9 @@ import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtim
 
 beforeEach(() => {
   vi.clearAllMocks();
+  storage.readFileSync.mockImplementation(() => {
+    throw Object.assign(new Error('missing diagnostic'), { code: 'ENOENT' });
+  });
 });
 
 describe('serializeBootstrapError', () => {
@@ -97,5 +101,38 @@ describe('writeBootstrapDiagnostic', () => {
     const nonRetryable = JSON.parse(String(storage.writeFileSync.mock.calls[1]?.[1])) as Record<string, unknown>;
     expect(retryable.retryable).toBe(true);
     expect(nonRetryable.retryable).toBe(false);
+  });
+
+  it('does not replace a same-attempt setup refusal with an ancestor generic startup error', () => {
+    const previousAttemptId = process.env.CORAL_STARTUP_ATTEMPT_ID;
+    process.env.CORAL_STARTUP_ATTEMPT_ID = 'delegated-attempt';
+    storage.readFileSync.mockReturnValue(
+      JSON.stringify({
+        schemaVersion: 1,
+        phase: 'startup_failed',
+        attemptId: 'delegated-attempt',
+        error: {
+          kind: 'coral_setup_error',
+          code: 'handoff_manual_policy',
+          userMessage: 'authored refusal',
+          remediation: 'authored recovery',
+        },
+      }),
+    );
+
+    try {
+      expect(writeBootstrapDiagnostic('/plugin', 'startup_failed', new Error('generic ancestor error'), 1)).toBe(
+        '/state/startup-diagnostic.json',
+      );
+    } finally {
+      if (previousAttemptId === undefined) {
+        delete process.env.CORAL_STARTUP_ATTEMPT_ID;
+      } else {
+        process.env.CORAL_STARTUP_ATTEMPT_ID = previousAttemptId;
+      }
+    }
+
+    expect(storage.writeFileSync).not.toHaveBeenCalled();
+    expect(storage.renameSync).not.toHaveBeenCalled();
   });
 });
