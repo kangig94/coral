@@ -22,7 +22,7 @@ import {
 } from '../../infra/handoff-target.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { assertNever } from '../../infra/error-format.js';
-import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import type { TimePort } from '../../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
@@ -297,6 +297,8 @@ type ObservedChild = Readonly<{
   outcome: Promise<ChildOutcome>;
 }>;
 
+type BackendStartupObservation = Readonly<{ kind: 'ready' }> | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>;
+
 type RoutingResolution = Readonly<{
   routing: HandoffRoutingResult;
   runtime: Runtime;
@@ -548,16 +550,35 @@ function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, Hando
   return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code ?? 1 });
 }
 
-async function observeBackendStartupLiveness(observation: ObservedChild, time: TimePort): Promise<ChildOutcome | null> {
-  let timer: TimerHandle | null = null;
-  const stillRunning = new Promise<null>((resolveAlive) => {
-    timer = time.setTimeout(() => resolveAlive(null), BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS);
-  });
+async function waitForBackendStartupObservation(
+  observation: ObservedChild,
+  runtime: Runtime,
+  time: TimePort,
+  signal: AbortSignal | undefined,
+): Promise<BackendStartupObservation> {
+  const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
 
-  try {
-    return await Promise.race([observation.outcome, stillRunning]);
-  } finally {
-    time.clearTimeout(timer);
+  while (true) {
+    const readiness = readLiveCoordinatorHealth(runtime, time).then((health) =>
+      health.kind === 'observed' ? ({ kind: 'ready' } as const) : null,
+    );
+    const observed = await Promise.race([terminal, readiness]);
+    if (observed !== null) {
+      if (observed.kind === 'ready') {
+        return observed;
+      }
+      const readinessAfterTerminal = await readiness;
+      return readinessAfterTerminal ?? observed;
+    }
+
+    const terminalDuringPoll = await Promise.race([
+      terminal,
+      time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS, { signal }).then(() => null),
+    ]);
+    if (terminalDuringPoll !== null) {
+      const finalHealth = await readLiveCoordinatorHealth(runtime, time);
+      return finalHealth.kind === 'observed' ? { kind: 'ready' } : terminalDuringPoll;
+    }
   }
 }
 
@@ -923,27 +944,14 @@ async function executeResolvedHandoff(
       executionPhase.current = 'child-outcome-wait';
       if (operation.kind === 'backend-startup') {
         child.unref();
-        // The selected backend starts immediately; this bounded window delays only the retiring delegator and
-        // prevents a broken bundle that exits at once from being reported as a successful cold-start handoff.
-        const earlyOutcome = await observeBackendStartupLiveness(childObservation, time);
-        if (earlyOutcome !== null) {
-          const liveCoordinator = await readLiveCoordinatorHealth(runtime, time);
-          // Reporting success here is a finalization, so it requires the decisive case: `'observed'`. None of
-          // the others — a decisive absence, an unresolved probe, or a live-but-unusable incumbent — may read
-          // as confirmation: an early exit-shaped outcome plus a health probe that did not confirm a usable
-          // incumbent is not evidence the backend is up.
-          return liveCoordinator.kind === 'observed'
-            ? {
-                kind: 'delegated',
-                version: execution.manifest.version,
-                outcome: handoffOutcome(execution.manifest.version, { code: 0, signal: null }),
-              }
-            : { kind: 'delegated', version: execution.manifest.version, outcome: endedChildOutcome(earlyOutcome) };
-        }
+        const startupObservation = await waitForBackendStartupObservation(childObservation, runtime, time, signal);
         return {
           kind: 'delegated',
           version: execution.manifest.version,
-          outcome: handoffOutcome(execution.manifest.version, { code: 0, signal: null }),
+          outcome:
+            startupObservation.kind === 'ready'
+              ? handoffOutcome(execution.manifest.version, { code: 0, signal: null })
+              : endedChildOutcome(startupObservation.outcome),
         };
       }
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);

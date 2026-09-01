@@ -4,7 +4,7 @@ declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string;
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -57,6 +57,7 @@ export type RawCoordinatorHealth = {
   pid?: number;
   incarnation?: ProcessIncarnation;
   components?: TransportRuntimeComponentStatus[];
+  env?: Readonly<Record<string, string>>;
 };
 
 export type VerifiedBackendInfo = {
@@ -99,13 +100,23 @@ type ExistingIncumbentIdentity = Readonly<{
 }>;
 
 type SpawnedCoordinator = {
-  readonly pid: number;
+  readonly pid: number | undefined;
   readonly attemptId: string;
   readonly spawnedAt: number;
+  readonly terminal: Promise<SpawnedCoordinatorTerminal>;
 };
 
+type SpawnedCoordinatorTerminal =
+  | Readonly<{ kind: 'exit'; code: number | null; signal: NodeJS.Signals | null }>
+  | Readonly<{ kind: 'error'; error: Error }>;
+
 type BackendReadyWaitContext =
-  | { readonly kind: 'current-attempt'; readonly attemptId: string; readonly spawnedAt: number }
+  | {
+      readonly kind: 'current-attempt';
+      readonly attemptId: string;
+      readonly spawnedAt: number;
+      readonly terminal: Promise<SpawnedCoordinatorTerminal>;
+    }
   | { readonly kind: 'existing-starting' };
 
 type ReadyCoordinatorEvidence = Readonly<{
@@ -217,6 +228,7 @@ const rawCoordinatorHealthSchema = z
     pid: z.number().int().positive().optional(),
     incarnation: processIncarnationSchema.optional(),
     components: z.array(runtimeComponentStatusSchema).optional(),
+    env: z.record(z.string()).optional(),
   })
   .passthrough();
 
@@ -415,6 +427,23 @@ function startupSentinelIdentityMatches(
   );
 }
 
+function coordinatorMatchesDesired(health: RawCoordinatorHealth, desired: DesiredCoordinator): boolean {
+  return (
+    health.version === desired.version &&
+    health.bundleHash === desired.bundleHash &&
+    health.flavor === desired.flavor &&
+    health.namespace === desired.namespace
+  );
+}
+
+function coordinatorIsResultOfCurrentAttempt(
+  health: RawCoordinatorHealth,
+  desired: DesiredCoordinator,
+  attemptId: string,
+): boolean {
+  return coordinatorMatchesDesired(health, desired) || health.env?.CORAL_STARTUP_ATTEMPT_ID === attemptId;
+}
+
 function readStartupErrorSentinel(paths: CoordinatorPaths): { sentinel: StartupErrorSentinel; mtimeMs: number } | null {
   try {
     const raw = readFileSync(paths.startupErrorFile, 'utf-8');
@@ -454,8 +483,7 @@ function matchingStartupError(
       return null;
     }
     const earliestMtime = waitContext.spawnedAt - STARTUP_POLL_MS;
-    const latestMtime = waitContext.spawnedAt + KERNEL_READY_DEADLINE_MS;
-    if (mtimeMs < earliestMtime || mtimeMs > latestMtime) {
+    if (mtimeMs < earliestMtime) {
       return null;
     }
     return new CoralSetupError(sentinel.error);
@@ -489,6 +517,30 @@ function rotateLogIfLarge(runDir: string): void {
   }
 }
 
+function observeSpawnedCoordinatorTerminal(child: ChildProcess): Promise<SpawnedCoordinatorTerminal> {
+  return new Promise((resolve) => {
+    let settled = false;
+    function settle(outcome: SpawnedCoordinatorTerminal): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.off('exit', onExit);
+      child.off('error', onError);
+      resolve(outcome);
+    }
+    function onExit(code: number | null, signal: NodeJS.Signals | null): void {
+      settle({ kind: 'exit', code, signal });
+    }
+    function onError(error: Error): void {
+      settle({ kind: 'error', error });
+    }
+
+    child.once('exit', onExit);
+    child.once('error', onError);
+  });
+}
+
 function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedCoordinator {
   const attemptId = randomUUID();
   const spawnedAt = Date.now();
@@ -512,11 +564,9 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
         CORAL_STARTUP_STARTED_AT: String(spawnedAt),
       },
     });
-    if (child.pid === undefined) {
-      throw new Error('Spawned coordinator pid was unavailable.');
-    }
+    const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
-    return { pid: child.pid, attemptId, spawnedAt };
+    return { pid: child.pid, attemptId, spawnedAt, terminal };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -581,6 +631,7 @@ async function waitForBackendReady(
   const bindDeadline = timePort.now() + KERNEL_BIND_DEADLINE_MS;
   let sawFirstHealth = !currentAttempt;
   let readyDeadline = timePort.now() + timeoutMs;
+  let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
 
   const noteHealth = (health: RawCoordinatorHealth | null): void => {
     if (health === null || sawFirstHealth) {
@@ -590,7 +641,7 @@ async function waitForBackendReady(
     readyDeadline = timePort.now() + timeoutMs;
   };
 
-  while (timePort.now() < (sawFirstHealth ? readyDeadline : bindDeadline)) {
+  while (currentAttempt || timePort.now() < (sawFirstHealth ? readyDeadline : bindDeadline)) {
     const info = readDiscoverySnapshot(paths);
     let observedPid: number | undefined = info?.pid;
     if (info) {
@@ -605,7 +656,12 @@ async function waitForBackendReady(
           timePort,
         );
         if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
-          return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+          const belongsToCurrentAttempt =
+            waitContext.kind !== 'current-attempt' ||
+            coordinatorIsResultOfCurrentAttempt(authenticatedHealth, desired, waitContext.attemptId);
+          if (belongsToCurrentAttempt) {
+            return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+          }
         }
       }
     } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
@@ -618,7 +674,19 @@ async function waitForBackendReady(
     if (startupError) {
       throw startupError;
     }
-    await timePort.sleep(STARTUP_POLL_MS);
+    if (terminalOutcome !== null) {
+      throw new BackendUnreachableError(
+        sawFirstHealth
+          ? 'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.'
+          : 'Timed out waiting for Coral coordinator bind. Run `coral-cli backend status` to check coordinator health.',
+      );
+    }
+
+    if (waitContext.kind === 'current-attempt') {
+      terminalOutcome = await Promise.race([waitContext.terminal, timePort.sleep(STARTUP_POLL_MS).then(() => null)]);
+    } else {
+      await timePort.sleep(STARTUP_POLL_MS);
+    }
   }
   throw new BackendUnreachableError(
     sawFirstHealth
@@ -753,6 +821,7 @@ async function spawnTopLevelCoordinator(
     kind: 'current-attempt',
     attemptId: spawned.attemptId,
     spawnedAt: spawned.spawnedAt,
+    terminal: spawned.terminal,
   });
   return summarizeBackend(ready.info, timePort, 'boot');
 }

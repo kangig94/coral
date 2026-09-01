@@ -6,6 +6,7 @@ import { resolvePluginRoot } from './plugin-root.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { resolveUserHomeDir } from '../infra/path/index.js';
+import { BackendUnreachableError } from '../infra/http-errors.js';
 import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
@@ -507,10 +508,16 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
     const client = await ensure(resolvePluginRoot());
-    return client.request<TResult>(method, params, {
+    const result = await client.request<TResult | null>(method, params, {
       timeoutMs: TOOL_TIMEOUT_MS,
       ...authOptions,
     });
+    if (result === null) {
+      throw new BackendUnreachableError(
+        `Coral coordinator did not answer ${method}. Run \`coral-cli backend status\` and retry.`,
+      );
+    }
+    return result;
   };
 
   const subscribe = async <TResult>(
