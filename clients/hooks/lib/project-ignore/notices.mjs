@@ -117,8 +117,8 @@ export const PROJECT_IGNORE_REASON_NOTICES = {
   },
   'durability-evidence-quarantined': {
     sentence:
-      'Coral moved a pending durability record it could not use into the project-ignore quarantine. Coral will preserve it there for inspection and will not retry that record or act on any target it might contain.',
-    retryable: false,
+      'Coral moved a pending durability record it could not use into ~/.coral/staging/project-ignore/quarantine. Coral will not act on the target it named. Coral will keep the record there for inspection and will not remove it.',
+    retryable: true,
   },
   'durability-evidence-cleanup-failed': {
     sentence:

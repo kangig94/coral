@@ -251,7 +251,8 @@ describe('session-start.mjs', () => {
           rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
         }),
       )}\n`,
-      notice: 'ran and reported it could not complete safely',
+      notice:
+        'Coral project-ignore maintenance:\nThe filesystem refused an artifact update. Remedy: check permissions and free space for the affected Coral state, project, and Git metadata paths. It is attempted again at the next session start.\nCoral project-ignore maintenance ran and reported it could not complete safely.',
     },
     {
       name: 'residue-only partial from a refused repoint',
@@ -263,7 +264,8 @@ describe('session-start.mjs', () => {
           rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
         }),
       )}\n`,
-      notice: 'made progress or retained Coral-owned staging but could not establish every required disposition',
+      notice:
+        'Coral project-ignore maintenance:\nThe filesystem refused an artifact update. Remedy: check permissions and free space for the affected Coral state, project, and Git metadata paths. It is attempted again at the next session start.\nCoral project-ignore maintenance made progress or retained Coral-owned staging but could not establish every required disposition.',
       absentNotice: 'published',
     },
   ])('renders the $name outcome from an executed owner', (scenario) => {
@@ -400,7 +402,7 @@ describe('session-start.mjs', () => {
     const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
     expect(additionalContext).toContain('Coral migration: retracted legacy coral ignore rule(s)');
     expect(additionalContext).toContain(
-      'Coral project-ignore maintenance made progress or retained Coral-owned staging',
+      'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, replace a symlink or non-directory .git/info with a real directory, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.\nCoral project-ignore maintenance made progress or retained Coral-owned staging but could not establish every required disposition.',
     );
     expect(additionalContext).toContain('An affected ignore file is not a readable regular file');
   });

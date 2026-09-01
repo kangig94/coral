@@ -1450,6 +1450,9 @@ describe('project-ignore maintenance', () => {
     expect(quarantinedNames).toHaveLength(1);
     expect(readFileSync(join(quarantineDir(), quarantinedNames[0]))).toEqual(undecodable);
     expect(fixture.fsyncedDirectoryPaths).not.toContain('/tmp');
+    expect(renderProjectIgnoreResultNotices(quarantined)).toEqual([
+      'Coral moved a pending durability record it could not use into ~/.coral/staging/project-ignore/quarantine. Coral will not act on the target it named. Coral will keep the record there for inspection and will not remove it. It is attempted again at the next session start.',
+    ]);
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
     const { isProjectIgnoreResult } = await import('../../../clients/hooks/lib/project-ignore/result.mjs');
     expect(isProjectIgnoreResult(quarantined)).toBe(true);

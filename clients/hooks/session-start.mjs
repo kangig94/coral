@@ -210,11 +210,17 @@ try {
   const ignoreFailure = projectIgnoreOutcomeNotice(ignoreOutcome.outcome);
   const ignoreRefusalNotices = renderProjectIgnoreResultNotices(ignoreOutcome.maintenance);
   const ignoreNotice =
-    ignoreFailure || ignoreRefusalNotices.length > 0
-      ? `Coral project-ignore maintenance${ignoreFailure ? ` ${ignoreFailure}.` : ':'}${
-          ignoreRefusalNotices.length > 0 ? `\n${ignoreRefusalNotices.join('\n')}` : ''
-        }`
-      : null;
+    ignoreRefusalNotices.length > 0
+      ? [
+          'Coral project-ignore maintenance:',
+          ...ignoreRefusalNotices,
+          ignoreFailure ? `Coral project-ignore maintenance ${ignoreFailure}.` : null,
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : ignoreFailure
+        ? `Coral project-ignore maintenance ${ignoreFailure}.`
+        : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
   const variableContent = [

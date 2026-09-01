@@ -395,6 +395,26 @@ function ensureExcludeDirectory(excludePath, durabilityDir, durabilityRunDir) {
   return { ok: true, durability: syncPendingPublication(excludeDir, marker) };
 }
 
+function prepareCoralSymlinkTarget(projectDir) {
+  let target;
+  try {
+    target = coralProjectDir(projectDir);
+  } catch {
+    return { ok: false, reason: 'publish-failed' };
+  }
+  const targetPreparation = prepareCoralProjectDir(target);
+  if (targetPreparation.kind !== 'prepared') {
+    return {
+      ok: false,
+      reason:
+        targetPreparation.kind === 'structural-conflict'
+          ? 'symlink-target-unavailable'
+          : 'publish-failed',
+    };
+  }
+  return { ok: true, target };
+}
+
 function prepareCoralSymlink(projectDir, createSymlink, stagingDir, stagingRefusal) {
   const claudeDir = join(projectDir, '.claude');
   const link = join(projectDir, '.claude', 'coral');
@@ -419,21 +439,9 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir, stagingRefus
   if (inspection.state === 'missing') {
     let target = null;
     if (createSymlink) {
-      try {
-        target = coralProjectDir(projectDir);
-      } catch {
-        return { ok: false, reason: 'publish-failed' };
-      }
-      const targetPreparation = prepareCoralProjectDir(target);
-      if (targetPreparation.kind !== 'prepared') {
-        return {
-          ok: false,
-          reason:
-            targetPreparation.kind === 'structural-conflict'
-              ? 'symlink-target-unavailable'
-              : 'publish-failed',
-        };
-      }
+      const preparedTarget = prepareCoralSymlinkTarget(projectDir);
+      if (!preparedTarget.ok) return preparedTarget;
+      target = preparedTarget.target;
     }
     return {
       ok: true,
@@ -453,20 +461,9 @@ function prepareCoralSymlink(projectDir, createSymlink, stagingDir, stagingRefus
     return { ok: true, symlinkExists: true, action: 'not-requested', link, target: null };
   }
 
-  let target;
-  try {
-    target = coralProjectDir(projectDir);
-  } catch {
-    return { ok: false, reason: 'publish-failed' };
-  }
-  const targetPreparation = prepareCoralProjectDir(target);
-  if (targetPreparation.kind !== 'prepared') {
-    return {
-      ok: false,
-      reason:
-        targetPreparation.kind === 'structural-conflict' ? 'symlink-target-unavailable' : 'publish-failed',
-    };
-  }
+  const preparedTarget = prepareCoralSymlinkTarget(projectDir);
+  if (!preparedTarget.ok) return preparedTarget;
+  const { target } = preparedTarget;
   if (!isOutgrownCoralLink(inspection.target, target)) {
     return { ok: true, symlinkExists: true, action: 'unchanged', link, target };
   }
