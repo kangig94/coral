@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -12,6 +13,12 @@ import {
 } from 'node:fs';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+
+import {
+  CONTEXT_PROBE_BUDGET_MS,
+  SPAWN_TIMEOUT_MS,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore/arena.mjs';
 
 import {
   BASH_REWRITE_HOOK,
@@ -60,6 +67,42 @@ function seedCodebaseMemoryBinary(homeDir: string): void {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'codebase-memory-mcp'), 'binary');
   }
+}
+
+function projectIgnoreMaintenance(
+  status: 'complete' | 'refused' | 'partial',
+  artifacts: Record<string, unknown> = {},
+): object {
+  return {
+    status,
+    artifacts: {
+      arenaSweep: { state: 'unchanged' },
+      durabilityReconciliation: { state: 'reconciled' },
+      legacySweep: { state: 'unchanged' },
+      exclude: { state: 'not-needed', residue: 'none' },
+      symlink: { state: 'not-requested' },
+      scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      ...artifacts,
+    },
+  };
+}
+
+function copiedSessionStartHook(root: string, suffix: string): { hook: string; hooksRoot: string } {
+  const hooksRoot = join(root, `hooks-${suffix}`);
+  cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+  return { hook: join(hooksRoot, 'session-start.mjs'), hooksRoot };
+}
+
+function writeOwnerStub(
+  hooksRoot: string,
+  { status, stdout = '', delayMs = 0 }: { status: number; stdout?: string; delayMs?: number },
+): void {
+  const finish = `process.stdout.write(${JSON.stringify(stdout)}); process.exit(${status});`;
+  writeFileSync(
+    join(hooksRoot, 'project-ignore-owner.mjs'),
+    delayMs > 0 ? `setTimeout(() => { ${finish} }, ${delayMs});\n` : `${finish}\n`,
+  );
 }
 
 const HOOK_ENTRYPOINTS = [
@@ -170,6 +213,264 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
   });
 
+  it.each([
+    {
+      name: 'lock conflict',
+      status: 75,
+      stdout: '',
+      notice: 'did not start because another Coral project-ignore maintainer owns the lock',
+    },
+    ...[69, 126, 127].map((status) => ({
+      name: `unavailable lock status ${status}`,
+      status,
+      stdout: '',
+      notice: 'could not open or own its maintenance lock',
+    })),
+    {
+      name: 'empty failure',
+      status: 2,
+      stdout: '',
+      notice:
+        'exited without reporting a result; retry in a new session, and if it recurs, report it with this diagnostic',
+    },
+    {
+      name: 'invalid result',
+      status: 1,
+      stdout: '{}\n',
+      notice:
+        'reported a result Coral could not read; retry in a new session, and if it recurs, report it with this diagnostic',
+    },
+    {
+      name: 'refused result',
+      status: 1,
+      stdout: `${JSON.stringify(
+        projectIgnoreMaintenance('refused', {
+          exclude: { state: 'refused', reason: 'publish-failed', residue: 'none' },
+          symlink: { state: 'skipped', reason: 'upstream-refusal' },
+          scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+          rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+        }),
+      )}\n`,
+      notice:
+        'Coral project-ignore maintenance:\nThe filesystem refused an artifact update. Remedy: check permissions and free space for the affected Coral state, project, and Git metadata paths. It is attempted again at the next session start.\nCoral project-ignore maintenance ran and reported it could not complete safely.',
+    },
+    {
+      name: 'residue-only partial from a refused repoint',
+      status: 1,
+      stdout: `${JSON.stringify(
+        projectIgnoreMaintenance('partial', {
+          symlink: { state: 'refused', reason: 'publish-failed', residue: 'owned-staging' },
+          scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+          rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+        }),
+      )}\n`,
+      notice:
+        'Coral project-ignore maintenance:\nThe filesystem refused an artifact update. Remedy: check permissions and free space for the affected Coral state, project, and Git metadata paths. It is attempted again at the next session start.\nCoral project-ignore maintenance made progress or retained Coral-owned staging but could not establish every required disposition.',
+      absentNotice: 'published',
+    },
+  ])('renders the $name outcome from an executed owner', (scenario) => {
+    const { name, status, stdout, notice } = scenario;
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, `${name.replaceAll(' ', '-')}-${status}`);
+    writeOwnerStub(hooksRoot, { status, stdout });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: `sess-owner-status-${status}` },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_FLAVOR: undefined,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext).toContain(notice);
+    if ('absentNotice' in scenario) expect(additionalContext).not.toContain(scenario.absentNotice);
+  });
+
+  it('lets the shared renderer own an escaped legacy observation refusal', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'legacy-observation-refusal');
+    const observedPath = 'nested\n"/.claude';
+    writeOwnerStub(hooksRoot, {
+      status: 1,
+      stdout: `${JSON.stringify(
+        projectIgnoreMaintenance('partial', {
+          legacySweep: {
+            state: 'refused',
+            reason: 'legacy-sweep-observation-failed',
+            path: observedPath,
+            count: 1,
+          },
+        }),
+      )}\n`,
+    });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-legacy-observation-refusal' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext.match(/legacy staging path/gu)).toHaveLength(1);
+    expect(additionalContext).toContain(JSON.stringify(observedPath));
+    expect(additionalContext).not.toContain(observedPath);
+    expect(additionalContext).not.toContain('could not remove authorized legacy staging path');
+  });
+
+  it('uses the shared owner timeout and renders a killed owner', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-timeout');
+    const arenaPath = join(hooksRoot, 'lib', 'project-ignore', 'arena.mjs');
+    const arena = readFileSync(arenaPath, 'utf-8').replace(
+      `export const SPAWN_TIMEOUT_MS = ${SPAWN_TIMEOUT_MS};`,
+      'export const SPAWN_TIMEOUT_MS = 40;',
+    );
+    writeFileSync(arenaPath, arena);
+    writeOwnerStub(hooksRoot, { status: 0, delayMs: 200 });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-owner-timeout' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
+      'ran out of its time budget and was terminated; retry in a new session, and if it recurs, report it with this diagnostic',
+    );
+  });
+
+  it('routes owner arguments and both maintenance notice variables into additionalContext', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-routing');
+    const capture = join(fixture.root, 'owner-args.json');
+    const maintenance = projectIgnoreMaintenance('partial', {
+      scopedIgnoreRetraction: {
+        state: 'published',
+        residue: 'none',
+        durability: { state: 'synced', reasons: [] },
+      },
+      rootIgnoreRetraction: { state: 'refused', reason: 'artifact-unreadable', residue: 'none' },
+    });
+    writeFileSync(
+      join(hooksRoot, 'project-ignore-owner.mjs'),
+      `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.CORAL_OWNER_CAPTURE, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(${JSON.stringify(
+        `${JSON.stringify(maintenance)}\n`,
+      )});\nprocess.exit(1);\n`,
+    );
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-owner-routing' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: '1',
+        CORAL_OWNER_CAPTURE: capture,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    const args = JSON.parse(readFileSync(capture, 'utf-8')) as string[];
+    expect(args).toContain('--started-ns');
+    expect(args.slice(args.indexOf('--project-dir'), args.indexOf('--project-dir') + 2)).toEqual([
+      '--project-dir',
+      fixture.projectRoot,
+    ]);
+    expect(args).toContain('--create-symlink');
+    const additionalContext = expectHookOutput(result).hookSpecificOutput.additionalContext;
+    expect(additionalContext).toContain('Coral migration: retracted legacy coral ignore rule(s)');
+    expect(additionalContext).toContain(
+      'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access. Remedy: make the project .gitignore files and .git/info/exclude readable regular files, replace a symlink or non-directory .git/info with a real directory, and give an existing .git/info directory owner read, write, and execute access. This also applies if a prior Coral run was interrupted after creating that directory.\nCoral project-ignore maintenance made progress or retained Coral-owned staging but could not establish every required disposition.',
+    );
+    expect(additionalContext).toContain('An affected ignore file is not a readable regular file');
+  });
+
+  it('recognizes migration progress from either legacy retraction artifact', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'migration-artifacts');
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    for (const artifact of ['scopedIgnoreRetraction', 'rootIgnoreRetraction']) {
+      writeOwnerStub(hooksRoot, {
+        status: 0,
+        stdout: `${JSON.stringify(
+          projectIgnoreMaintenance('complete', {
+            [artifact]: {
+              state: 'published',
+              residue: 'none',
+              durability: { state: 'synced', reasons: [] },
+            },
+          }),
+        )}\n`,
+      });
+      const result = runHook(
+        hook,
+        { session_id: `sess-migration-${artifact}` },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          HOME: fixture.root,
+          TMPDIR: fixture.tmpRoot,
+        },
+      );
+
+      expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
+        'Coral migration: retracted legacy coral ignore rule(s)',
+      );
+    }
+  });
+
+  it('lets the owner finish after the aggregate child subprocess allowance', () => {
+    const fixture = createFixture();
+    const { hook, hooksRoot } = copiedSessionStartHook(fixture.root, 'owner-parent-margin');
+    const childAllowance = CONTEXT_PROBE_BUDGET_MS + 2_000;
+    expect(SPAWN_TIMEOUT_MS).toBeGreaterThan(childAllowance);
+    writeOwnerStub(hooksRoot, {
+      status: 0,
+      stdout: `${JSON.stringify(projectIgnoreMaintenance('complete'))}\n`,
+      delayMs: childAllowance + 50,
+    });
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-owner-parent-margin' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).not.toContain(
+      'Coral project-ignore maintenance',
+    );
+  }, 10_000);
+
   it('emits a flat, unwrapped payload and "Current host: copilot" under Copilot CLI', () => {
     const fixture = createFixture();
     writeInjectBundle(fixture.pluginRoot, 'Project instructions');
@@ -248,7 +549,7 @@ describe('session-start.mjs', () => {
     );
   });
 
-  it('ignores a newly created coral symlink from .claude/.gitignore', () => {
+  it('ignores a newly created coral symlink from the anchored .git/info/exclude entry', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -269,7 +570,10 @@ describe('session-start.mjs', () => {
     const link = join(fixture.projectRoot, '.claude', 'coral');
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readlinkSync(link)).toBe(coralProjectDir(fixture.root, 'acme/repo'));
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
+    const excludeLines = readFileSync(join(fixture.projectRoot, '.git', 'info', 'exclude'), 'utf-8').split(/\r?\n/u);
+    expect(excludeLines).toContain('/.claude/coral');
+    expect(excludeLines).not.toContain('coral');
+    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.gitignore'))).toBe(false);
   });
 
@@ -293,12 +597,10 @@ describe('session-start.mjs', () => {
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe(
-      'settings.local.json\ncoral\n*.coral-*.tmp\n',
-    );
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('settings.local.json');
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
     expect(expectHookOutput(first).hookSpecificOutput.additionalContext).toContain(
-      'Coral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.',
+      'Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.',
     );
     expect(expectHookOutput(second).hookSpecificOutput.additionalContext).not.toContain('Coral migration:');
   });
@@ -326,10 +628,10 @@ describe('session-start.mjs', () => {
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe(expected);
-    expect(readFileSync(join(nestedProject, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
+    expect(existsSync(join(nestedProject, '.claude', '.gitignore'))).toBe(false);
   });
 
-  it('adds the scoped ignore for an existing symlink without replacing it', () => {
+  it('adds the anchored exclude entry for an existing symlink without replacing it', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -352,7 +654,10 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readlinkSync(join(claudeDir, 'coral'))).toBe(existingTarget);
-    expect(readFileSync(join(claudeDir, '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
+    const excludeLines = readFileSync(join(fixture.projectRoot, '.git', 'info', 'exclude'), 'utf-8').split(/\r?\n/u);
+    expect(excludeLines).toContain('/.claude/coral');
+    expect(excludeLines).not.toContain('coral');
+    expect(existsSync(join(claudeDir, '.gitignore'))).toBe(false);
   });
 
   it('preserves the legacy protection when the scoped ignore is a symlink', () => {
@@ -386,6 +691,7 @@ describe('session-start.mjs', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
     const externalIgnore = join(fixture.root, 'external-root-ignore');
     writeFileSync(externalIgnore, '.claude/coral\nkeep/\n');
     symlinkSync(externalIgnore, join(fixture.projectRoot, '.gitignore'));
@@ -403,14 +709,17 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readFileSync(externalIgnore, 'utf-8')).toBe('.claude/coral\nkeep/\n');
-    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
+    expect(expectHookOutput(result).hookSpecificOutput.additionalContext).toContain(
+      'An affected ignore file is not a readable regular file, the existing .git/info path is a symlink or not a directory, or its real directory lacks owner access.',
+    );
   });
 
   it('rejects oversized root gitignore files before reading or mutating project ignores', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
     const oversized = Buffer.alloc(1024 * 1024 + 1, 0x61);
     writeFileSync(join(fixture.projectRoot, '.gitignore'), oversized);
 
@@ -427,18 +736,14 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'))).toEqual(oversized);
-    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
     expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
-    // The child ran, decided the root `.gitignore` was unsafe to touch, and reported `{ ok: false, ... }` — a
-    // real maintenance failure, not a transport one. Silently folding that into the bare `ok` outcome is exactly
-    // the defect this pins: the session must be told the same way it is told about a kill or a launch failure.
     expect(
       expectHookOutput(result).hookSpecificOutput.additionalContext,
-      'a maintenance pass that ran and reported ok:false must reach the session as a notice, not be dropped',
-    ).toContain('could not complete safely');
+      'a completed maintenance refusal must reach the session as a reason-specific notice',
+    ).toContain("An affected ignore file exceeds Coral's 1 MiB safety limit.");
   });
 
-  it('serializes concurrent migration outcomes without duplicate entries or temp residue', async () => {
+  it('serializes concurrent retractions without scoped entries or repository-arena residue', async () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
     writeInjectBundle(fixture.pluginRoot, 'inject content');
@@ -459,9 +764,8 @@ describe('session-start.mjs', () => {
 
     expect(results.every((result) => result.status === 0)).toBe(true);
     expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
-    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n*.coral-*.tmp\n');
-    expect(readdirSync(fixture.projectRoot).filter((name) => name.includes('.coral-'))).toEqual([]);
-    expect(readdirSync(join(fixture.projectRoot, '.claude')).filter((name) => name.includes('.coral-'))).toEqual([]);
+    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
+    expect(readdirSync(join(fixture.projectRoot, '.git', 'coral', 'staging', 'project-ignore'))).toEqual([]);
   });
 
   it('exits silently when session_id is missing (CORAL_CHILD guard would also catch this)', () => {

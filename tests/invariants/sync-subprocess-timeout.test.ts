@@ -288,7 +288,7 @@ describe('synchronous subprocess timeout invariant', () => {
     expect(importers, 'every file importing the primitives must be one the detector can see').toEqual([
       'clients/hooks/lib/hook-utils.mjs',
       'clients/hooks/lib/live-work-registry.mjs',
-      'clients/hooks/lib/project-ignore.mjs',
+      'clients/hooks/lib/project-ignore/index.mjs',
       'clients/hooks/session-start.mjs',
       'src/cli/commands/kb.ts',
       'src/infra/env-sanitize.ts',

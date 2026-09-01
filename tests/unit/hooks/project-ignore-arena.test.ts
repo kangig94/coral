@@ -1,0 +1,1034 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  projectIgnoreContextRefusal,
+  resolveProjectContext,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore/index.mjs';
+import {
+  ARENA_SWEEP_BUDGET_MS,
+  ARENA_SWEEP_MAX_RUNS,
+  arenaRunDir,
+  CONTEXT_PROBE_BUDGET_MS,
+  contextProbeDeadline,
+  isRepositoryArenaAuthorized,
+  LOCK_CONFLICT_EXIT_CODE,
+  LOCK_UNAVAILABLE_EXIT_CODE,
+  LOCK_WRAPPER_BUDGET_MS,
+  prepareRepositoryArena,
+  repositoryArenaDir,
+  SPAWN_TIMEOUT_MS,
+  STAGING_ARENA_MAX_AGE_MS,
+  sweepArenas,
+  // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+} from '../../../clients/hooks/lib/project-ignore/arena.mjs';
+
+let fixtureRoot: string;
+
+beforeEach(() => {
+  fixtureRoot = mkdtempSync(join(tmpdir(), 'coral-project-ignore-arena-'));
+});
+
+afterEach(() => {
+  rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+function initRepository(path: string): void {
+  mkdirSync(path, { recursive: true });
+  git(path, 'init', '--quiet');
+  git(path, 'config', 'user.name', 'Coral Test');
+  git(path, 'config', 'user.email', 'coral@example.invalid');
+  writeFileSync(join(path, 'tracked.txt'), 'tracked\n');
+  git(path, 'add', 'tracked.txt');
+  git(path, 'commit', '--quiet', '-m', 'fixture');
+}
+
+function hookScript(name: string): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'clients', 'hooks', name);
+}
+
+function initProjectApplyBlock(): string {
+  const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const skill = readFileSync(join(repositoryRoot, 'clients', 'skills', 'init-project', 'SKILL.md'), 'utf-8');
+  const block = [...skill.matchAll(/```bash\n([\s\S]*?)\n\s*```/gu)]
+    .map((match) => match[1])
+    .find((candidate) => candidate.includes('CORAL_PROJECT_IGNORE_SCRIPT='));
+  if (!block) throw new Error('init-project apply block not found');
+  return block
+    .replace(/^ {2}/gmu, '')
+    .replace(
+      /^CORAL_PROJECT_IGNORE_SCRIPT=.*$/mu,
+      `CORAL_PROJECT_IGNORE_SCRIPT=${JSON.stringify(hookScript('project-ignore.mjs'))}`,
+    )
+    .replace(/^CORAL_PROJECT_IGNORE_OWNER=.*$/mu, 'CORAL_PROJECT_IGNORE_OWNER="project-ignore-owner"');
+}
+
+function projectIgnoreResultFixture(status: 'complete' | 'partial' | 'refused'): string {
+  const completeArtifacts = {
+    arenaSweep: { state: 'unchanged' },
+    durabilityReconciliation: { state: 'reconciled' },
+    legacySweep: { state: 'unchanged' },
+    exclude: { state: 'not-needed', residue: 'none' },
+    symlink: { state: 'not-requested' },
+    scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+    rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+  };
+  if (status === 'complete') return JSON.stringify({ status, artifacts: completeArtifacts });
+  if (status === 'partial') {
+    return JSON.stringify({
+      status,
+      artifacts: {
+        ...completeArtifacts,
+        exclude: {
+          state: 'published',
+          residue: 'none',
+          durability: { state: 'synced', reasons: [] },
+        },
+        symlink: { state: 'refused', reason: 'publish-failed' },
+        scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+        rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+      },
+    });
+  }
+  return JSON.stringify({
+    status,
+    artifacts: {
+      ...completeArtifacts,
+      exclude: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+      symlink: { state: 'refused', reason: 'claude-directory-missing' },
+      scopedIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+      rootIgnoreRetraction: { state: 'skipped', reason: 'upstream-refusal', residue: 'none' },
+    },
+  });
+}
+
+function expectRepositoryArena(projectDir: string, expectedCommonGitDir: string): void {
+  const context = resolveProjectContext(projectDir);
+  expect(context).not.toBeNull();
+  expect(context.commonGitDir).toBe(realpathSync(expectedCommonGitDir));
+  expect(isRepositoryArenaAuthorized(context)).toBe(true);
+
+  const expected = repositoryArenaDir(context.commonGitDir);
+  const preparation = prepareRepositoryArena(context.commonGitDir);
+  expect(preparation).toEqual({ state: 'prepared', path: realpathSync(expected) });
+  const arena = preparation.path;
+  expect(relative(context.commonGitDir, arena)).toBe(join('coral', 'staging', 'project-ignore'));
+  expect(isAbsolute(relative(context.commonGitDir, arena))).toBe(false);
+  expect(relative(context.commonGitDir, arena).startsWith('..')).toBe(false);
+}
+
+describe('project-ignore repository arena', () => {
+  it('refuses a bare repository without classifying it as a no-repository working tree', () => {
+    const bareRepository = join(fixtureRoot, 'bare.git');
+    const plainDirectory = join(fixtureRoot, 'plain');
+    mkdirSync(bareRepository);
+    mkdirSync(plainDirectory);
+    git(bareRepository, 'init', '--bare', '--quiet');
+
+    const bareContext = resolveProjectContext(bareRepository);
+    const plainContext = resolveProjectContext(plainDirectory);
+
+    expect(bareContext).toBeNull();
+    expect(projectIgnoreContextRefusal(bareContext)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        symlink: { state: 'refused', reason: 'project-context-unresolvable' },
+      },
+    });
+    expect(plainContext).toMatchObject({
+      projectDir: realpathSync(plainDirectory),
+      gitDir: null,
+      gitRoot: realpathSync(plainDirectory),
+      commonGitDir: null,
+      excludePath: null,
+    });
+  });
+
+  it('places each invocation in its startedAt-pid directory', () => {
+    expect(arenaRunDir('/git/coral/staging/project-ignore', 1234, 5678)).toBe(
+      join('/git/coral/staging/project-ignore', '1234-5678'),
+    );
+  });
+
+  it('is contained by the common Git directory in an ordinary repository', () => {
+    const repository = join(fixtureRoot, 'ordinary');
+    initRepository(repository);
+
+    expectRepositoryArena(repository, join(repository, '.git'));
+  });
+
+  it('is contained by the common Git directory from a linked worktree', () => {
+    const repository = join(fixtureRoot, 'main');
+    const worktree = join(fixtureRoot, 'linked');
+    initRepository(repository);
+    git(repository, 'worktree', 'add', '--quiet', '--detach', worktree);
+
+    expectRepositoryArena(worktree, join(repository, '.git'));
+  });
+
+  it('is contained by the submodule common Git directory', () => {
+    const source = join(fixtureRoot, 'source');
+    const repository = join(fixtureRoot, 'parent');
+    initRepository(source);
+    initRepository(repository);
+    git(repository, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', source, 'module');
+
+    expectRepositoryArena(join(repository, 'module'), join(repository, '.git', 'modules', 'module'));
+  });
+
+  it('does not authorize a separate Git directory inside the working tree', () => {
+    const repository = join(fixtureRoot, 'separate');
+    mkdirSync(repository);
+    git(repository, 'init', '--quiet', '--separate-git-dir=.metadata');
+
+    const context = resolveProjectContext(repository);
+    expect(context).not.toBeNull();
+    expect(context.commonGitDir).toBe(realpathSync(join(repository, '.metadata')));
+    expect(isRepositoryArenaAuthorized(context)).toBe(false);
+    expect(existsSync(join(repository, '.metadata', 'coral'))).toBe(false);
+  });
+
+  it('rejects a symlink or non-directory arena component', () => {
+    const repository = join(fixtureRoot, 'unsafe');
+    const outside = join(fixtureRoot, 'outside');
+    initRepository(repository);
+    mkdirSync(outside);
+
+    const commonGitDir = realpathSync(join(repository, '.git'));
+    symlinkSync(outside, join(commonGitDir, 'coral'));
+    expect(prepareRepositoryArena(commonGitDir)).toEqual({
+      state: 'structural-conflict',
+      path: join(commonGitDir, 'coral'),
+      component: 'coral',
+    });
+
+    rmSync(join(commonGitDir, 'coral'));
+    writeFileSync(join(commonGitDir, 'coral'), 'not a directory');
+    expect(prepareRepositoryArena(commonGitDir)).toEqual({
+      state: 'structural-conflict',
+      path: join(commonGitDir, 'coral'),
+      component: 'coral',
+    });
+  });
+});
+
+describe('project-ignore arena reclamation', () => {
+  it('derives the cooperating residue age from the five-second owner lifetime', () => {
+    expect(STAGING_ARENA_MAX_AGE_MS).toBe(120 * SPAWN_TIMEOUT_MS);
+    expect(CONTEXT_PROBE_BUDGET_MS).toBe(1500);
+    expect(LOCK_WRAPPER_BUDGET_MS).toBe(250);
+    expect(ARENA_SWEEP_BUDGET_MS).toBe(250);
+    expect(ARENA_SWEEP_MAX_RUNS).toBe(32);
+  });
+
+  it('retains 599,999 ms and removes 600,000 ms after decisive ownership', () => {
+    const firstArena = join(fixtureRoot, 'first');
+    const secondArena = join(fixtureRoot, 'second');
+    mkdirSync(join(firstArena, '400000-1'), { recursive: true });
+    mkdirSync(join(secondArena, '400001-2'), { recursive: true });
+
+    const result = sweepArenas([firstArena, secondArena], {
+      now: 1_000_000,
+      monotonicNow: () => 0,
+    });
+
+    expect(result).toEqual({ inspected: 2, removed: 1, failures: [] });
+    expect(existsSync(join(firstArena, '400000-1'))).toBe(false);
+    expect(existsSync(join(secondArena, '400001-2'))).toBe(true);
+  });
+
+  it('repairs a retained young run directory before its age permits deletion', () => {
+    const arena = join(fixtureRoot, 'arena');
+    const runDir = join(arena, '400001-2');
+    mkdirSync(runDir, { recursive: true });
+    chmodSync(runDir, 0o300);
+
+    const result = sweepArenas([arena], {
+      now: 1_000_000,
+      monotonicNow: () => 0,
+    });
+
+    expect(result).toEqual({ inspected: 1, removed: 0, failures: [] });
+    expect(statSync(runDir).mode & 0o777).toBe(0o700);
+  });
+
+  it('inspects at most 32 parsed runs across both roots, oldest first', () => {
+    const firstArena = join(fixtureRoot, 'first');
+    const secondArena = join(fixtureRoot, 'second');
+    mkdirSync(firstArena);
+    mkdirSync(secondArena);
+    for (let startedAt = 1; startedAt <= 40; startedAt += 1) {
+      const arena = startedAt % 2 === 0 ? firstArena : secondArena;
+      mkdirSync(join(arena, `${startedAt}-${startedAt}`));
+    }
+
+    const result = sweepArenas([firstArena, secondArena], {
+      now: STAGING_ARENA_MAX_AGE_MS + 100,
+      monotonicNow: () => 0,
+    });
+
+    expect(result.inspected).toBe(ARENA_SWEEP_MAX_RUNS);
+    expect(result.removed).toBe(ARENA_SWEEP_MAX_RUNS);
+    for (let startedAt = 1; startedAt <= 32; startedAt += 1) {
+      const arena = startedAt % 2 === 0 ? firstArena : secondArena;
+      expect(existsSync(join(arena, `${startedAt}-${startedAt}`))).toBe(false);
+    }
+    for (let startedAt = 33; startedAt <= 40; startedAt += 1) {
+      const arena = startedAt % 2 === 0 ? firstArena : secondArena;
+      expect(existsSync(join(arena, `${startedAt}-${startedAt}`))).toBe(true);
+    }
+  });
+
+  it('stops before another run when the shared 250 ms budget is exhausted', () => {
+    const firstArena = join(fixtureRoot, 'first');
+    const secondArena = join(fixtureRoot, 'second');
+    mkdirSync(join(firstArena, '1-1'), { recursive: true });
+    mkdirSync(join(secondArena, '2-2'), { recursive: true });
+    const readings = [0, 0, ARENA_SWEEP_BUDGET_MS];
+
+    const result = sweepArenas([firstArena, secondArena], {
+      now: STAGING_ARENA_MAX_AGE_MS + 100,
+      monotonicNow: () => readings.shift() ?? ARENA_SWEEP_BUDGET_MS,
+    });
+
+    expect(result).toEqual({ inspected: 1, removed: 1, failures: [] });
+    expect(existsSync(join(firstArena, '1-1'))).toBe(false);
+    expect(existsSync(join(secondArena, '2-2'))).toBe(true);
+  });
+});
+
+describe('project-ignore maintenance ownership', () => {
+  it('derives one absolute context-probe deadline from the owner chain start', () => {
+    const chainStartedNs = 12_345_678_901n;
+    const expectedDeadlineNs = chainStartedNs + BigInt(CONTEXT_PROBE_BUDGET_MS) * 1_000_000n;
+
+    expect(contextProbeDeadline(chainStartedNs)).toBe(expectedDeadlineNs);
+    expect(contextProbeDeadline(chainStartedNs.toString())).toBe(expectedDeadlineNs);
+    expect(contextProbeDeadline('not-a-clock-reading')).toBeNull();
+  });
+
+  it('refuses an LF-bearing repository path through the real owner before creating lock state', () => {
+    const repositoryRoot = join(fixtureRoot, 'repository\nroot');
+    const projectDir = join(repositoryRoot, 'nested\nproject');
+    const home = join(fixtureRoot, 'fresh-home');
+    initRepository(repositoryRoot);
+    mkdirSync(join(projectDir, '.claude'), { recursive: true });
+    mkdirSync(home);
+
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+    const child = spawnSync(process.execPath, [ownerScript, '--project-dir', projectDir, '--create-symlink'], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(child.status).toBe(1);
+    const result = JSON.parse(child.stdout);
+    expect(result).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        exclude: { state: 'refused', reason: 'project-path-unrepresentable' },
+      },
+    });
+    expect(child.stdout.trim()).toBe(JSON.stringify(result));
+    expect(child.stderr).toContain(
+      'The project-relative path contains a carriage return or line feed, which .git/info/exclude cannot represent as one pattern.',
+    );
+    expect(child.stderr).toContain('Remedy: rename the affected project directory to remove CR and LF characters.');
+    expect(existsSync(join(home, '.coral'))).toBe(false);
+    expect(existsSync(join(repositoryRoot, '.git', 'coral'))).toBe(false);
+    expect(existsSync(join(projectDir, '.claude', 'coral'))).toBe(false);
+  });
+
+  it('refuses symlink creation when the real project has no .claude directory', () => {
+    const repository = join(fixtureRoot, 'missing-claude');
+    const home = join(fixtureRoot, 'missing-claude-home');
+    initRepository(repository);
+    mkdirSync(home);
+    const excludePath = join(repository, '.git', 'info', 'exclude');
+    const excludeBefore = readFileSync(excludePath, 'utf-8');
+    const parentBefore = readdirSync(repository).sort();
+
+    const child = spawnSync(
+      process.execPath,
+      [hookScript('project-ignore-owner.mjs'), '--project-dir', repository, '--create-symlink'],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        symlink: { state: 'refused', reason: 'claude-directory-missing' },
+      },
+    });
+    expect(existsSync(join(repository, '.claude'))).toBe(false);
+    expect(existsSync(join(repository, '.claude', 'coral'))).toBe(false);
+    expect(readFileSync(excludePath, 'utf-8')).toBe(excludeBefore);
+    expect(readdirSync(repository).sort()).toEqual(parentBefore);
+    expect(existsSync(join(home, '.coral', 'projects'))).toBe(false);
+  });
+
+  it('refuses symlink creation when the real project .claude path is not a directory', () => {
+    const repository = join(fixtureRoot, 'invalid-claude');
+    const home = join(fixtureRoot, 'invalid-claude-home');
+    initRepository(repository);
+    mkdirSync(home);
+    const claudePath = join(repository, '.claude');
+    const excludePath = join(repository, '.git', 'info', 'exclude');
+    writeFileSync(claudePath, 'operator-owned parent\n');
+    const excludeBefore = readFileSync(excludePath, 'utf-8');
+    const parentBefore = readdirSync(repository).sort();
+
+    const child = spawnSync(
+      process.execPath,
+      [hookScript('project-ignore-owner.mjs'), '--project-dir', repository, '--create-symlink'],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        symlink: { state: 'refused', reason: 'claude-directory-invalid' },
+      },
+    });
+    expect(readFileSync(claudePath, 'utf-8')).toBe('operator-owned parent\n');
+    expect(existsSync(join(claudePath, 'coral'))).toBe(false);
+    expect(readFileSync(excludePath, 'utf-8')).toBe(excludeBefore);
+    expect(readdirSync(repository).sort()).toEqual(parentBefore);
+    expect(existsSync(join(home, '.coral', 'projects'))).toBe(false);
+  });
+
+  it('normalizes every owned directory across fresh owner runs under an owner-read-masking umask', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(join(repository, '.claude'));
+    mkdirSync(home);
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+    const fallbackArena = join(home, '.coral', 'staging', 'project-ignore');
+    const repositoryArena = join(repository, '.git', 'coral', 'staging', 'project-ignore');
+    let privateDirectories = [
+      join(home, '.coral'),
+      join(home, '.coral', 'staging'),
+      fallbackArena,
+      join(repository, '.git', 'coral'),
+      join(repository, '.git', 'coral', 'staging'),
+      repositoryArena,
+    ];
+    const previousUmask = process.umask(0o400);
+    try {
+      const first = spawnSync(process.execPath, [ownerScript, '--project-dir', repository, '--create-symlink'], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(first.status).toBe(0);
+
+      const link = join(repository, '.claude', 'coral');
+      const projectLeaf = readlinkSync(link);
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        status: 'complete',
+        artifacts: { symlink: { state: 'created' } },
+      });
+      expect(statSync(dirname(projectLeaf)).mode & 0o777).toBe(0o700);
+      expect(statSync(projectLeaf).mode & 0o777).toBe(0o700);
+      chmodSync(dirname(projectLeaf), 0o300);
+      chmodSync(projectLeaf, 0o300);
+      const fallbackRun = join(fallbackArena, `${Date.now()}-900001`);
+      const repositoryRun = join(repositoryArena, `${Date.now()}-900002`);
+      mkdirSync(fallbackRun, { mode: 0o700 });
+      mkdirSync(repositoryRun, { mode: 0o700 });
+      const marker = join(fallbackArena, `.durability-${'0'.repeat(64)}.pending`);
+      writeFileSync(marker, 'not-an-absolute-path');
+      chmodSync(marker, 0o600);
+
+      const second = spawnSync(process.execPath, [ownerScript, '--project-dir', repository, '--create-symlink'], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const third = spawnSync(process.execPath, [ownerScript, '--project-dir', repository, '--create-symlink'], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      privateDirectories = [
+        join(home, '.coral'),
+        dirname(projectLeaf),
+        projectLeaf,
+        join(home, '.coral', 'staging'),
+        fallbackArena,
+        join(fallbackArena, 'quarantine'),
+        fallbackRun,
+        join(repository, '.git', 'coral'),
+        join(repository, '.git', 'coral', 'staging'),
+        repositoryArena,
+        repositoryRun,
+      ];
+
+      expect(second.status).toBe(1);
+      expect(JSON.parse(second.stdout)).toMatchObject({
+        status: 'refused',
+        artifacts: {
+          durabilityReconciliation: {
+            state: 'refused',
+            reasons: ['durability-evidence-quarantined'],
+          },
+        },
+      });
+      expect(third.status).toBe(0);
+      expect(JSON.parse(third.stdout)).toMatchObject({
+        status: 'complete',
+        artifacts: { durabilityReconciliation: { state: 'reconciled' } },
+      });
+      expect(existsSync(link)).toBe(true);
+      expect(statSync(join(home, '.coral', 'staging', 'project-ignore.maintenance.lock')).mode & 0o777).toBe(0o600);
+      for (const path of privateDirectories) {
+        expect(statSync(path).mode & 0o777).toBe(0o700);
+      }
+    } finally {
+      process.umask(previousUmask);
+      for (const path of privateDirectories) {
+        try {
+          chmodSync(path, 0o700);
+        } catch {
+          // A test that has already finished must not fail on its own teardown.
+        }
+      }
+    }
+  });
+
+  it('repairs an existing owner-write-only maintenance lock before opening it', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    const staging = join(home, '.coral', 'staging');
+    const lock = join(staging, 'project-ignore.maintenance.lock');
+    initRepository(repository);
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(lock, '');
+    chmodSync(lock, 0o200);
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+
+    const child = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout).status).toBe('complete');
+    expect(statSync(lock).mode & 0o777).toBe(0o600);
+  });
+
+  it('repairs an existing owner-write-and-execute-only repository arena component', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const component = join(repository, '.git', 'coral');
+    mkdirSync(join(component, 'staging', 'project-ignore'), { recursive: true });
+    chmodSync(component, 0o300);
+    const ownerScript = hookScript('project-ignore-owner.mjs');
+
+    const child = spawnSync(process.execPath, [ownerScript, '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const componentMode = statSync(component).mode & 0o777;
+    chmodSync(component, 0o700);
+
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout).status).toBe('complete');
+    expect(componentMode).toBe(0o700);
+  });
+
+  it('completes through the owner when no artifact needs the conflicting repository arena', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const conflict = join(repository, '.git', 'coral');
+    writeFileSync(conflict, 'not a directory');
+    const before = git(repository, 'status', '--porcelain');
+
+    const child = spawnSync(process.execPath, [hookScript('project-ignore-owner.mjs'), '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const result = JSON.parse(child.stdout);
+    expect(child.status).toBe(0);
+    expect(result).toEqual({
+      status: 'complete',
+      artifacts: {
+        arenaSweep: { state: 'unchanged' },
+        durabilityReconciliation: { state: 'reconciled' },
+        legacySweep: { state: 'unchanged' },
+        exclude: { state: 'not-needed', residue: 'none' },
+        symlink: { state: 'not-requested' },
+        scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      },
+    });
+    expect(child.stdout.trim()).toBe(JSON.stringify(result));
+    expect(child.stderr).toBe('');
+    expect(git(repository, 'status', '--porcelain')).toBe(before);
+    expect(readFileSync(conflict, 'utf-8')).toBe('not a directory');
+  });
+
+  it.each([
+    ['coral', 'coral'],
+    ['staging', 'coral/staging'],
+    ['project-ignore', 'coral/staging/project-ignore'],
+  ] as const)('refuses residue through the owner and names the conflicting %s component', (component, remedyPath) => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    initRepository(repository);
+    mkdirSync(home);
+    const components = ['coral', 'staging', 'project-ignore'];
+    const conflictIndex = components.indexOf(component);
+    const conflict = join(repository, '.git', ...components.slice(0, conflictIndex + 1));
+    mkdirSync(dirname(conflict), { recursive: true });
+    writeFileSync(conflict, 'not a directory');
+    const rootIgnore = join(repository, '.gitignore');
+    writeFileSync(rootIgnore, '.claude/coral\n');
+
+    const child = spawnSync(process.execPath, [hookScript('project-ignore-owner.mjs'), '--project-dir', repository], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const result = JSON.parse(child.stdout);
+    expect(child.status).toBe(1);
+    expect(result).toMatchObject({
+      status: 'refused',
+      artifacts: {
+        rootIgnoreRetraction: {
+          state: 'refused',
+          reason: 'repository-arena-conflict',
+          residue: 'none',
+          component,
+        },
+      },
+    });
+    expect(child.stdout.trim()).toBe(JSON.stringify(result));
+    expect(child.stderr).toContain(
+      `Remedy: run \`git rev-parse --git-common-dir\` in the project, then replace the ${remedyPath} component beneath the directory it prints with a real directory`,
+    );
+    expect(child.stderr).not.toContain('It is attempted again at the next session start.');
+    expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\n');
+    expect(readFileSync(conflict, 'utf-8')).toBe('not a directory');
+  });
+
+  it('runs the owner through non-blocking no-fork flock with the validated context', () => {
+    const repository = join(fixtureRoot, 'repository');
+    const home = join(fixtureRoot, 'home');
+    const hooksRoot = join(fixtureRoot, 'hooks');
+    const binDir = join(fixtureRoot, 'bin');
+    const flockCapture = join(fixtureRoot, 'flock-args');
+    const childCapture = join(fixtureRoot, 'child-args');
+    initRepository(repository);
+    mkdirSync(home);
+    mkdirSync(binDir);
+    cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+    const flockStub = join(binDir, 'flock');
+    writeFileSync(
+      flockStub,
+      [
+        '#!/bin/sh',
+        'printf \'%s\\n\' "$@" > "$CORAL_FLOCK_CAPTURE"',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --exclusive|--nonblock|--no-fork) shift ;;',
+        '    --conflict-exit-code) shift 2 ;;',
+        '    *) break ;;',
+        '  esac',
+        'done',
+        'shift',
+        'exec "$@"',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(flockStub, 0o700);
+    writeFileSync(
+      join(hooksRoot, 'project-ignore.mjs'),
+      `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.CORAL_CHILD_CAPTURE, JSON.stringify(process.argv.slice(2)));\n`,
+    );
+    const startedNs = process.hrtime.bigint().toString();
+
+    const owner = spawnSync(
+      process.execPath,
+      [join(hooksRoot, 'project-ignore-owner.mjs'), '--started-ns', startedNs, '--project-dir', repository],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+          CORAL_FLOCK_CAPTURE: flockCapture,
+          CORAL_CHILD_CAPTURE: childCapture,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(owner.status).toBe(0);
+    const flockArgs = readFileSync(flockCapture, 'utf-8').trim().split('\n');
+    expect(flockArgs).toContain('--exclusive');
+    expect(flockArgs).toContain('--nonblock');
+    expect(flockArgs).toContain('--no-fork');
+    expect(flockArgs).toContain('--conflict-exit-code');
+    expect(flockArgs).toContain('/dev/fd/0');
+    const childArgs = JSON.parse(readFileSync(childCapture, 'utf-8')) as string[];
+    expect(childArgs).toContain('--maintenance-locked');
+    expect(
+      childArgs.slice(
+        childArgs.indexOf('--lock-wrapper-started-ns'),
+        childArgs.indexOf('--lock-wrapper-started-ns') + 2,
+      ),
+    ).toEqual(['--lock-wrapper-started-ns', startedNs]);
+    expect(childArgs.slice(childArgs.indexOf('--project-dir'), childArgs.indexOf('--project-dir') + 2)).toEqual([
+      '--project-dir',
+      realpathSync(repository),
+    ]);
+    const context = JSON.parse(childArgs[childArgs.indexOf('--project-context') + 1]) as {
+      projectDir: string;
+      refusalReason: string | null;
+    };
+    expect(context.projectDir).toBe(realpathSync(repository));
+    expect(context.refusalReason).toBeNull();
+  });
+
+  it('makes the child reject an expired wrapper and pass the shared deadline to maintenance', () => {
+    const hooksRoot = join(fixtureRoot, 'child-hooks');
+    const capture = join(fixtureRoot, 'maintenance-input');
+    cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
+    writeFileSync(
+      join(hooksRoot, 'lib', 'project-ignore', 'index.mjs'),
+      [
+        "import { writeFileSync } from 'node:fs';",
+        'export function isProjectIgnoreContext(value) { return value?.refusalReason === null; }',
+        'export function maintainProjectIgnore(input) {',
+        '  writeFileSync(process.env.CORAL_MAINTENANCE_CAPTURE, JSON.stringify({',
+        '    projectDir: input.projectDir,',
+        '    context: input.context,',
+        '    contextProbeDeadlineNs: input.contextProbeDeadlineNs.toString(),',
+        '  }));',
+        '  return {',
+        "    status: 'complete',",
+        '    artifacts: {',
+        "      arenaSweep: { state: 'unchanged' },",
+        "      durabilityReconciliation: { state: 'reconciled' },",
+        "      legacySweep: { state: 'unchanged' },",
+        "      exclude: { state: 'not-needed', residue: 'none' },",
+        "      symlink: { state: 'not-requested' },",
+        "      scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },",
+        "      rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },",
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const childScript = join(hooksRoot, 'project-ignore.mjs');
+    const projectDir = join(fixtureRoot, 'project');
+    const context = { projectDir, refusalReason: null };
+    const startedNs = process.hrtime.bigint();
+    const args = [
+      childScript,
+      '--maintenance-locked',
+      '--lock-wrapper-started-ns',
+      startedNs.toString(),
+      '--project-dir',
+      projectDir,
+      '--project-context',
+      JSON.stringify(context),
+    ];
+
+    const accepted = spawnSync(process.execPath, args, {
+      encoding: 'utf-8',
+      env: { ...process.env, CORAL_MAINTENANCE_CAPTURE: capture },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(readFileSync(capture, 'utf-8'))).toEqual({
+      projectDir,
+      context,
+      contextProbeDeadlineNs: contextProbeDeadline(startedNs)?.toString(),
+    });
+
+    rmSync(capture);
+    const expiredStartedNs =
+      process.hrtime.bigint() - BigInt(CONTEXT_PROBE_BUDGET_MS + LOCK_WRAPPER_BUDGET_MS + 10) * 1_000_000n;
+    const rejected = spawnSync(
+      process.execPath,
+      [
+        childScript,
+        '--maintenance-locked',
+        '--lock-wrapper-started-ns',
+        expiredStartedNs.toString(),
+        '--project-dir',
+        projectDir,
+        '--project-context',
+        JSON.stringify(context),
+      ],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, CORAL_MAINTENANCE_CAPTURE: capture },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    expect(rejected.status).toBe(LOCK_UNAVAILABLE_EXIT_CODE);
+    expect(existsSync(capture)).toBe(false);
+  });
+
+  it('executes the real project-ignore result validator for valid and malformed stdin', () => {
+    const validator = hookScript('project-ignore.mjs');
+    const validResult = {
+      status: 'complete',
+      artifacts: {
+        arenaSweep: { state: 'unchanged' },
+        durabilityReconciliation: { state: 'reconciled' },
+        legacySweep: { state: 'unchanged' },
+        exclude: { state: 'not-needed', residue: 'none' },
+        symlink: { state: 'not-requested' },
+        scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+      },
+    };
+
+    const accepted = spawnSync(process.execPath, [validator, '--validate-result'], {
+      encoding: 'utf-8',
+      input: JSON.stringify(validResult),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const rejected = spawnSync(process.execPath, [validator, '--validate-result'], {
+      encoding: 'utf-8',
+      input: 'not-json',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    expect(accepted.status).toBe(0);
+    expect(accepted.stdout).toBe('');
+    expect(accepted.stderr).toBe('');
+    expect(rejected.status).toBe(1);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toBe('');
+  });
+
+  it.each([
+    [
+      'replacement with a legacy reason',
+      'exclude',
+      { state: 'refused', reason: 'legacy-sweep-observation-failed', residue: 'none' },
+    ],
+    [
+      'replacement with a symlink reason',
+      'exclude',
+      { state: 'refused', reason: 'symlink-observation-failed', residue: 'none' },
+    ],
+    ['symlink with a replacement reason', 'symlink', { state: 'refused', reason: 'artifact-changed' }],
+  ] as const)('rejects a %s through the real result validator', (_name, artifact, invalidArtifact) => {
+    const validator = hookScript('project-ignore.mjs');
+    const invalidResult = {
+      status: 'refused',
+      artifacts: {
+        arenaSweep: { state: 'unchanged' },
+        durabilityReconciliation: { state: 'reconciled' },
+        legacySweep: { state: 'unchanged' },
+        exclude: { state: 'not-needed', residue: 'none' },
+        symlink: { state: 'not-requested' },
+        scopedIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        rootIgnoreRetraction: { state: 'not-needed', residue: 'none' },
+        [artifact]: invalidArtifact,
+      },
+    };
+
+    const rejected = spawnSync(process.execPath, [validator, '--validate-result'], {
+      encoding: 'utf-8',
+      input: JSON.stringify(invalidResult),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    expect(rejected.status).toBe(1);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toBe('');
+  });
+
+  it('keeps the init-project exit-code literals aligned with the hook constants', () => {
+    const exitCodes = [...initProjectApplyBlock().matchAll(/CORAL_PROJECT_IGNORE_STATUS" -eq (\d+)/gu)].map((match) =>
+      Number(match[1]),
+    );
+
+    expect(exitCodes).toContain(LOCK_CONFLICT_EXIT_CODE);
+    expect(exitCodes).toContain(LOCK_UNAVAILABLE_EXIT_CODE);
+  });
+
+  it.each([
+    {
+      name: 'a lock conflict',
+      status: 75,
+      stdout: '',
+      diagnostic: 'owner conflict diagnostic',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=maintenance-busy',
+      remedy: 'Another Coral project-ignore maintainer owns the lock.',
+      exitCode: 1,
+    },
+    ...[LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].map((status) => ({
+      name: `lock-wrapper status ${status}`,
+      status,
+      stdout: '',
+      diagnostic: `owner status ${status} diagnostic`,
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=maintenance-lock-unavailable',
+      remedy: 'Ensure ~/.coral/staging is writable and flock is executable, then retry.',
+      exitCode: 1,
+    })),
+    {
+      name: 'a generic empty failure',
+      status: 2,
+      stdout: '',
+      diagnostic: 'owner generic diagnostic',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=no-output',
+      remedy: 'report a recurring failure as a Coral defect',
+      exitCode: 1,
+    },
+    {
+      name: 'a malformed result',
+      status: 1,
+      stdout: 'not-json',
+      diagnostic: 'owner malformed diagnostic',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=unparseable-output',
+      remedy: 'Coral project-ignore setup returned malformed result data.',
+      exitCode: 1,
+    },
+    {
+      name: 'a complete result',
+      status: 0,
+      stdout: projectIgnoreResultFixture('complete'),
+      diagnostic: '',
+      outcome: null,
+      remedy: null,
+      handoff: true,
+      exitCode: 0,
+    },
+    {
+      name: 'a partial result',
+      status: 1,
+      stdout: projectIgnoreResultFixture('partial'),
+      diagnostic: '',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=partial',
+      remedy: 'Coral project-ignore setup reported a partial result.',
+      handoff: true,
+      exitCode: 1,
+    },
+    {
+      name: 'a refused result',
+      status: 1,
+      stdout: projectIgnoreResultFixture('refused'),
+      diagnostic: '',
+      outcome: 'CORAL_PROJECT_IGNORE_OUTCOME=refused',
+      remedy: 'Coral project-ignore setup refused before making progress.',
+      handoff: true,
+      exitCode: 1,
+    },
+  ])('executes the init-project apply block for $name without a working-tree file', (scenario) => {
+    const binDir = join(fixtureRoot, `bin-${scenario.status}`);
+    const workingDir = join(fixtureRoot, `working-${scenario.status}`);
+    mkdirSync(binDir);
+    mkdirSync(workingDir);
+    const nodeStub = join(binDir, 'node');
+    const ownerStub = join(binDir, 'project-ignore-owner');
+    writeFileSync(
+      nodeStub,
+      ['#!/bin/sh', 'if [ "$1" = "$STUB_REAL_VALIDATOR" ]; then exec "$STUB_REAL_NODE" "$@"; fi', 'exec "$@"', ''].join(
+        '\n',
+      ),
+    );
+    writeFileSync(
+      ownerStub,
+      [
+        '#!/bin/sh',
+        'if [ -n "$(find "$PWD" -mindepth 1 -print -quit)" ]; then',
+        '  echo "STUB_OWNER_OBSERVED_WORKING_FILE=1" >&2',
+        'fi',
+        'if [ -n "$STUB_OWNER_STDERR" ]; then printf \'%s\\n\' "$STUB_OWNER_STDERR" >&2; fi',
+        'if [ -n "$STUB_OWNER_STDOUT" ]; then printf \'%s\\n\' "$STUB_OWNER_STDOUT"; fi',
+        'exit "$STUB_OWNER_STATUS"',
+        '',
+      ].join('\n'),
+    );
+    for (const path of [nodeStub, ownerStub]) chmodSync(path, 0o700);
+
+    const child = spawnSync('sh', ['-c', initProjectApplyBlock()], {
+      cwd: workingDir,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+        TMPDIR: workingDir,
+        STUB_OWNER_STATUS: String(scenario.status),
+        STUB_OWNER_STDOUT: scenario.stdout,
+        STUB_OWNER_STDERR: scenario.diagnostic,
+        STUB_REAL_NODE: process.execPath,
+        STUB_REAL_VALIDATOR: hookScript('project-ignore.mjs'),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    expect(child.status).toBe(scenario.exitCode);
+    expect(child.stderr).not.toContain('STUB_OWNER_OBSERVED_WORKING_FILE');
+    expect(readdirSync(workingDir)).toEqual([]);
+    const handoff = `CORAL_PROJECT_IGNORE_RESULT=${scenario.stdout}`;
+    const handoffCount = child.stderr.split(handoff).length - 1;
+    expect(handoffCount).toBe('handoff' in scenario && scenario.handoff ? 1 : 0);
+    if (scenario.outcome) {
+      expect(child.stderr).toContain(scenario.outcome);
+      expect(child.stderr).toContain(scenario.remedy);
+      if (scenario.diagnostic) {
+        expect(child.stderr.indexOf(scenario.diagnostic)).toBeLessThan(child.stderr.indexOf(scenario.outcome));
+      }
+    } else {
+      expect(child.stderr).not.toContain('CORAL_PROJECT_IGNORE_OUTCOME=');
+      expect(child.stderr).toBe(`${handoff}\n`);
+    }
+  });
+});

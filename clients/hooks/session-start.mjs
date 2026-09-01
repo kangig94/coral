@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -19,6 +28,16 @@ import {
 import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
+import {
+  projectIgnoreOutcomeNotice,
+  renderProjectIgnoreResultNotices,
+} from './lib/project-ignore/notices.mjs';
+import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
+import {
+  LOCK_CONFLICT_EXIT_CODE,
+  LOCK_UNAVAILABLE_EXIT_CODE,
+  SPAWN_TIMEOUT_MS,
+} from './lib/project-ignore/arena.mjs';
 
 // Unconditionally spawn coral-backend on session start. The daemon's own
 // socket-as-lock contention is the single source of truth for staleness:
@@ -32,48 +51,7 @@ import { renderInject } from './lib/inject-render.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
-const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
-/**
- * What the child is allowed, and why it is not the sum of what the child spends.
- *
- * `project-ignore.mjs` pays two bounded git forks on its ordinary path: `git rev-parse --show-toplevel`
- * (1500ms, to find the ignore root) and `git remote get-url origin` (2000ms, to derive the project directory
- * the symlink must point at). That is 3500ms of child work before its own Node startup. A budget equal to the
- * work it bounds is not a budget: a child doing nothing wrong, on a slow mount, would be SIGTERMed while its
- * own bounds were still running.
- *
- * The margin goes here rather than into shrinking either probe, because shortening those trades a correct
- * answer for headroom that belongs to the caller: a probe cut short reports "could not tell" for a machine
- * that was merely slow. This budget is not the only cost charged against the hook's registered timeout —
- * `renderInject` runs its own bounded git fork in this process rather than the child (see
- * `resolveProjectSource` in `clients/hooks/lib/hook-utils.mjs`) — so what is left for this file's own work is
- * well under half of that timeout, not half of it.
- *
- * `tests/unit/hooks/project-ignore-symlink.test.ts` pins the child's 3500ms sum by reading both mocks' actual
- * options, and separately asserts this constant is strictly greater than that sum; if either bound moves, one
- * of those tests fails and the number here has to be re-derived rather than guessed.
- */
-const PROJECT_IGNORE_SPAWN_TIMEOUT_MS = 5000;
-/**
- * What each non-`ok` maintenance outcome is told to the session as, keyed by the outcome itself.
- *
- * Splitting the outcomes apart only moves the defect if nobody reads the split: a child SIGTERMed on a slow
- * mount, a child that never launched, and a child that ran to completion but reported it could not finish
- * safely all leave `.claude/.gitignore` and the coral symlink exactly as they were, and silence is what made
- * that read as "there was nothing to do". Every outcome `runProjectIgnoreMaintenance` can return other than
- * `ok` has an entry here, and `tests/unit/hooks/project-ignore-symlink.test.ts` fails if a new one is added
- * without one.
- *
- * `no-project-dir` is absent deliberately — no project directory means there was no maintenance to attempt,
- * which is not a refusal to report.
- */
-const PROJECT_IGNORE_OUTCOME_NOTICES = {
-  killed: 'ran out of its time budget and was terminated',
-  'not-spawned': 'could not be started',
-  'no-output': 'exited without reporting a result',
-  'unparseable-output': 'reported a result Coral could not read',
-  failed: 'ran and reported it could not complete safely',
-};
+const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
@@ -217,21 +195,40 @@ try {
 
   const host = hostKind();
 
-  const migrationNotice = ignoreOutcome.maintenance?.migrated
-    ? 'Coral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
+  const migrationPublished = [
+    ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction,
+    ignoreOutcome.maintenance?.artifacts.rootIgnoreRetraction,
+  ].some((artifact) => artifact?.state === 'published');
+  const migrationNotice = migrationPublished
+    ? 'Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.'
     : null;
-  const ignoreFailure = PROJECT_IGNORE_OUTCOME_NOTICES[ignoreOutcome.outcome];
-  // The reason travels when the child got far enough to have one. Without it a notice that repeats every
-  // session says only that maintenance failed, which is the same sentence for a project directory that could
-  // not be resolved and a symlink that could not be placed.
-  const ignoreReason =
-    typeof ignoreOutcome.maintenance?.reason === 'string' ? ` (${ignoreOutcome.maintenance.reason})` : '';
-  const ignoreNotice = ignoreFailure
-    ? `Coral project-ignore maintenance ${ignoreFailure}${ignoreReason}; .claude/.gitignore and the coral symlink were left as they are. It is attempted again at the next session start.`
-    : null;
+  const legacySweep = ignoreOutcome.maintenance?.artifacts.legacySweep;
+  const legacySweepNotice =
+    ['cleaned', 'refused'].includes(legacySweep?.state) && legacySweep?.count > 0
+      ? `Coral project-ignore maintenance removed ${legacySweep.count} authorized legacy staging file(s): .gitignore.coral-<pid>-<timestamp>.tmp beside the Git-root .gitignore or project .claude/.gitignore, and coral.coral-<pid>-<timestamp>.tmp beside project .claude/coral.`
+      : null;
+  const ignoreFailure = projectIgnoreOutcomeNotice(ignoreOutcome.outcome);
+  const ignoreRefusalNotices = renderProjectIgnoreResultNotices(ignoreOutcome.maintenance);
+  const ignoreNotice =
+    ignoreRefusalNotices.length > 0
+      ? [
+          'Coral project-ignore maintenance:',
+          ...ignoreRefusalNotices,
+          ignoreFailure ? `Coral project-ignore maintenance ${ignoreFailure}.` : null,
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : ignoreFailure
+        ? `Coral project-ignore maintenance ${ignoreFailure}.`
+        : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
-  const variableContent = [startupFailureNotice, migrationNotice, ignoreNotice].filter(Boolean).join('\n\n');
+  const variableContent = [
+    startupFailureNotice,
+    migrationNotice,
+    legacySweepNotice,
+    ignoreNotice,
+  ].filter(Boolean).join('\n\n');
   const additionalContext = fitAdditionalContext({
     fixedContent,
     variableContent,
@@ -249,36 +246,44 @@ try {
   process.exit(0);
 }
 
-// A launch failure and a timeout kill both leave `result.status` null and set `result.error`, and `result.signal`
-// does not separate them either: this call also sets `maxBuffer`, and a buffer overflow can arrive with a signal
-// set or left null depending on a race this code does not control, so a signal by itself proves nothing about
-// which of the three happened. `result.error.code` is what `spawnSync` itself reports the reason as —
-// `'ETIMEDOUT'` for the timeout kill, whatever launch errno the OS gave otherwise — so the code is sorted on
-// below, not the signal.
 function runProjectIgnoreMaintenance(projectDir, createSymlink) {
   try {
-    const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
+    const args = [
+      PROJECT_IGNORE_OWNER_SCRIPT,
+      '--started-ns',
+      process.hrtime.bigint().toString(),
+      '--project-dir',
+      projectDir,
+    ];
     if (createSymlink) args.push('--create-symlink');
     const result = spawnSync(process.execPath, args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: PROJECT_IGNORE_SPAWN_TIMEOUT_MS,
+      timeout: SPAWN_TIMEOUT_MS,
       maxBuffer: 16 * 1024,
     });
     if (result.error) {
       if (result.error.code === 'ETIMEDOUT') return { outcome: 'killed', maintenance: null };
-      return { outcome: 'not-spawned', maintenance: null };
+      return { outcome: 'maintenance-lock-unavailable', maintenance: null };
+    }
+    if (result.status === LOCK_CONFLICT_EXIT_CODE) {
+      return { outcome: 'maintenance-busy', maintenance: null };
+    }
+    if (
+      !result.stdout &&
+      [LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)
+    ) {
+      return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }
     if (!result.stdout) return { outcome: 'no-output', maintenance: null };
-    // A parse that succeeds is not the same as a result Coral can act on: `maintainProjectIgnore`'s contract is
-    // an object carrying a boolean `ok`, and anything else reaching here — `null`, an array, a bare primitive, or
-    // an object whose `ok` is missing or not a boolean — is exactly as unusable as a parse failure, so it is
-    // reported the same way rather than silently passed through as a successful `ok` outcome with no data.
     const parsed = JSON.parse(result.stdout);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.ok !== 'boolean') {
+    if (!isProjectIgnoreResult(parsed)) {
       return { outcome: 'unparseable-output', maintenance: null };
     }
-    if (!parsed.ok) return { outcome: 'failed', maintenance: parsed };
+    const expectedExitCode = parsed.status === 'complete' ? 0 : 1;
+    if (result.status !== expectedExitCode) return { outcome: 'unparseable-output', maintenance: null };
+    if (parsed.status === 'partial') return { outcome: 'partial', maintenance: parsed };
+    if (parsed.status === 'refused') return { outcome: 'failed', maintenance: parsed };
     return { outcome: 'ok', maintenance: parsed };
   } catch {
     return { outcome: 'unparseable-output', maintenance: null };

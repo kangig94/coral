@@ -121,11 +121,37 @@ Hook SQLite access goes through the supported Node runtime's built-in `node:sqli
 
 It also:
 
-- adds `Bash(node *coral-cli*)` permission to `settings.json` under the Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`) — the permission is user-wide, not per project
-- on every valid project SessionStart, migrates Coral's exact legacy project entry out of the Git-root `.gitignore` when present, independent of `CORAL_AUTO_SYMLINK`; whenever that migration applies, or `CORAL_AUTO_SYMLINK=1`, also ensures the two entries Coral owns in `.claude/.gitignore` — `coral` for the symlink, and `*.coral-*.tmp` for the temp files its own atomic writes leave behind if interrupted. Both entries are appended only when absent, so a build that writes one of them and a build that writes both leave the same file usable to each other.
-- when `CORAL_AUTO_SYMLINK=1`, ensures the scoped ignore first and then creates `.claude/coral -> ~/.coral/projects/{slug}/`
-- runs ignore maintenance in a time-bounded child process; unsafe, oversized, changed-during-write, or non-regular ignore paths fail closed without removing legacy protection, and a maintenance pass that ran but reported it could not complete is reported to the session the same way a pass that never ran at all is, retried at the next SessionStart
+- adds `Bash(node *coral-cli*)` permission to `settings.json` under the Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`); the permission is user-wide, not per project
+- runs the [project-ignore maintenance](#project-ignore-maintenance) described below
 - refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
+
+## Project-ignore maintenance
+
+### Purpose and boundary
+
+Project-ignore maintenance keeps Coral's project link out of tracked ignore files while removing only exact Coral legacy entries. It runs for each valid project SessionStart and through `/coral:init-project`. `CORAL_AUTO_SYMLINK` controls only whether SessionStart requests creation of `.claude/coral`; migration and maintenance of an existing link do not depend on it.
+
+The fallback arena at `~/.coral/staging/project-ignore` holds durability evidence and transient run directories. When Coral may use the repository's common Git directory, `coral/staging/project-ignore` beneath that directory provides same-filesystem staging for atomic replacement. Run `git rev-parse --git-common-dir` in the project to resolve that repository path.
+
+### Ignore-rule migration
+
+Coral retracts the exact legacy `.claude/coral` entry from the Git-root `.gitignore` and the exact `coral` entry from an existing project `.claude/.gitignore`. When a link exists or creation is requested, Coral first publishes one literal-escaped, project-anchored rule in `.git/info/exclude`, then places the link, then retracts the legacy rules. The leading slash is load-bearing: a gitignore pattern without one matches at any depth below the file carrying it, so the same literal in the repository-wide exclude file would hide every `coral` path in the repository.
+
+The personal exclude keeps Coral's rule out of the working tree. The old working-tree placement could be overridden by a later `!coral` in the same file because the last matching pattern wins within that precedence level. After migration, a working-tree `.gitignore` still has higher precedence than `.git/info/exclude`, so a deliberate working-tree negation can override Coral's personal rule.
+
+### Symlink preconditions
+
+Coral observes `.claude` before `.claude/coral` and never creates the parent. When creation is requested, a missing `.claude` refuses with `claude-directory-missing`; a file, symlink, or other non-directory refuses with `claude-directory-invalid`. Both paths leave the link, ignore files, parent, and target untouched. With a real parent, Coral prepares the selected `~/.coral/projects` or `~/.coral/projects-dev` target and refuses any structural conflict before publishing `.git/info/exclude`.
+
+### Refusals and recovery
+
+The maintainer writes remedies to stderr before its result JSON on stdout. Retryable failures are attempted again at the next SessionStart; persistent structural refusals require the named repair. For a repository-arena conflict, run `git rev-parse --git-common-dir` in the project and repair the named `coral/...` component beneath the path it prints. A timeout, empty result, or unreadable result should be retried in a new session and reported with the diagnostic if it recurs.
+
+### Durability evidence and quarantine
+
+Before publishing an ignore artifact or symlink, Coral writes a mode-`0600` marker named `.durability-<sha256>.pending` in `~/.coral/staging/project-ignore`. A later run reconciles retained valid markers before planning new work. Owned directories, including both arenas and their run directories, are normalized to mode `0700`.
+
+Evidence whose filename and decoded target do not agree is moved to `~/.coral/staging/project-ignore/quarantine/`. Quarantined evidence is inspect-only: Coral preserves it indefinitely, never retries it, and never acts on a target it might contain. There is no automatic cleanup or clearing command.
 
 ## Backend Warm-start
 

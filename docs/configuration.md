@@ -41,14 +41,10 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_KB_ENABLE`                        | _(unset → enabled)_                            | Set `0` to boot the daemon without spawning the KB daemon — no corpus indexing, curate, retrieval, or KB content injected into sessions/agents. `1` or unset enables it; a malformed value warns once and leaves KB enabled. Read from the daemon's environment at startup like `CORAL_KB_IMPORT_MAX_BYTES`. Flipping `0`→`1` does **not** restart a running daemon: a `kb …` command warns on stderr that KB is off on the incumbent and then fails with `kb_disabled`, because a live coordinator is never evicted by a CLI invocation. KB comes on at the next idle restart (`CORAL_BACKEND_IDLE_MS`, default ~6h), or immediately after `coral-cli backend shutdown` when no other work is in flight                                                                                                                                                                                                                          |
 | `GEMINI_API_KEY`                         | _(none)_                                       | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
-Project ignore migration is independent of `CORAL_AUTO_SYMLINK`. On a valid project
-SessionStart, Coral checks the Git-root `.gitignore` for the exact legacy entry that
-older Coral versions generated (`.claude/coral` at the root, or the project-relative
-equivalent for a nested project). When found, Coral first establishes its own entries in
-`.claude/.gitignore` — see [Hooks](./hooks.md) for which — then atomically removes only the
-legacy line.
-The one-time migration is reported in SessionStart context. Unsafe or concurrently
-changed paths retain the legacy entry and fail open without blocking the session.
+`CORAL_AUTO_SYMLINK=1` asks SessionStart to create `.claude/coral` when its
+preconditions are satisfied. Unset or `0` does not request creation. The setting does not
+control legacy ignore-rule migration or maintenance of an existing Coral link; see
+[Project-ignore maintenance](./hooks.md#project-ignore-maintenance).
 
 ### Multi-Account Provider Routing
 
