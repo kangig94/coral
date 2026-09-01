@@ -39,6 +39,53 @@ describe('startup attempt lineage', () => {
     expect(resolveStartupAttemptLineage({ desiredIdentity })).toEqual({ kind: 'unknown' });
   });
 
+  it('does not let an attempt id that is not an identifier prove or exclude this attempt', () => {
+    const desiredIdentity = {
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod' as const,
+      namespace: 'test-namespace',
+    };
+    const otherIdentity = { ...desiredIdentity, bundleHash: 'other-hash' };
+
+    for (const nonIdentifier of ['', '   ']) {
+      expect(
+        resolveStartupAttemptLineage({
+          observedAttemptId: nonIdentifier,
+          expectedAttemptId: nonIdentifier,
+          observedIdentity: otherIdentity,
+          desiredIdentity,
+        }),
+      ).toEqual({ kind: 'unknown' });
+      expect(
+        resolveStartupAttemptLineage({
+          observedAttemptId: nonIdentifier,
+          expectedAttemptId: 'current-attempt',
+          observedIdentity: otherIdentity,
+          desiredIdentity,
+        }),
+      ).toEqual({ kind: 'unknown' });
+      expect(
+        resolveStartupAttemptLineage({
+          observedAttemptId: 'other-attempt',
+          expectedAttemptId: nonIdentifier,
+          observedIdentity: otherIdentity,
+          desiredIdentity,
+        }),
+      ).toEqual({ kind: 'unknown' });
+    }
+
+    // An unusable attempt id must not block the identity proof, only decline to add to it.
+    expect(
+      resolveStartupAttemptLineage({
+        observedAttemptId: '',
+        expectedAttemptId: '',
+        observedIdentity: desiredIdentity,
+        desiredIdentity,
+      }),
+    ).toMatchObject({ kind: 'proven-current-attempt', proof: 'desired-identity' });
+  });
+
   it('does not prove lineage from an identity that cannot state its namespace', () => {
     const observedIdentity = {
       version: '0.5.2',

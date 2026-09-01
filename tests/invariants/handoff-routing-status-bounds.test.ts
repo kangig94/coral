@@ -48,9 +48,9 @@ describe('handoff routing status bounds', () => {
     const generation = handoffRoutingStatusGeneration(schema);
     const { minimum, maximum } = HANDOFF_ROUTING_STATUS_GENERATION_BAND;
 
-    expect(fingerprint.toString('hex')).toBe('34523a0697fb95dff3fb38692cfcf7eac9a746c9086cd250b5d3c899b4ce1a62');
+    expect(fingerprint.toString('hex')).toBe('9a69e1820d2aecca7c88e26280da1dfc8493d07fea1696688c279f3c46c8cac0');
     expect(fingerprint.length).toBe(32);
-    expect(generation).toBe(1877804038);
+    expect(generation).toBe(1295662978);
     expect(generation).toBe((fingerprint.readUInt32BE(0) % (maximum - minimum + 1)) + minimum);
     expect(HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION).toBe(0);
     expect(

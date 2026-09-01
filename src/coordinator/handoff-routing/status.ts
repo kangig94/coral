@@ -89,6 +89,7 @@ const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
   'failed-without-selection': 'history',
   'finalized-without-selection': 'history',
   'terminal-without-retained-selection': 'history',
+  'operator-resolved-without-retained-selection': 'history',
   'terminal-after-operator-resolution': 'history',
   'selection-evicted-at-capacity': 'hold',
   'completed-pair-compaction': 'history',
@@ -402,6 +403,16 @@ const storedTerminalDispositionSchema = z.union([
     })
     .strict()
     .readonly(),
+  // A resolution receipt for a held terminal that had no selection to retire. The child it discharges must
+  // stay off the field `abandonedStartupChildIdentity` recurses through, or the receipt re-arms the hold.
+  z
+    .object({
+      kind: z.literal('operator-resolved-without-retained-selection'),
+      resolutionReason: resolutionReasonSchema,
+      resolvedChild: recordedProcessIdentitySchema,
+    })
+    .strict()
+    .readonly(),
   z
     .object({
       kind: z.literal('terminal-after-operator-resolution'),
@@ -466,10 +477,11 @@ function createHandoffRoutingRecordSchemaRegistry(generation: number) {
     .strict()
     .superRefine((event, context) => {
       const withoutSelection = event.selection.kind === 'without-selection';
-      const gapDisposition =
+      const selectionlessDisposition =
         event.disposition.kind === 'failed-without-selection' ||
-        event.disposition.kind === 'finalized-without-selection';
-      if (withoutSelection !== gapDisposition) {
+        event.disposition.kind === 'finalized-without-selection' ||
+        event.disposition.kind === 'operator-resolved-without-retained-selection';
+      if (withoutSelection !== selectionlessDisposition) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           message: 'terminal selection link does not match disposition',
@@ -891,6 +903,30 @@ function insertTerminal(
   return insertRecord(transaction, 'terminal', event);
 }
 
+function insertSelectionlessResolution(
+  transaction: HandoffRoutingStatusTransaction,
+  transition: OperatorResolvedMutation,
+  resolvedChild: RecordedProcessIdentity,
+): number {
+  const sequence = transaction.nextRecordSequence();
+  const event = terminalEventSchema.parse({
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    sequence,
+    eventId: transition.eventId,
+    invocationId: transition.invocationId,
+    observedAt: transition.observedAt,
+    eventKind: 'continuation-finalized',
+    phase: 'terminal',
+    selection: { kind: 'without-selection' },
+    disposition: {
+      kind: 'operator-resolved-without-retained-selection',
+      resolutionReason: transition.reason,
+      resolvedChild,
+    },
+  });
+  return insertRecord(transaction, 'terminal', event);
+}
+
 function insertTombstone(
   transaction: HandoffRoutingStatusTransaction,
   ids: Pick<IdPort, 'uuid'>,
@@ -1217,15 +1253,13 @@ function applyResolution(
   const selection = selectionForInvocation(transaction, transition.invocationId);
   const terminal = terminalForInvocation(transaction, transition.invocationId);
   if (selection === undefined) {
-    if (
-      transition.selectionSequence !== null ||
-      terminal === undefined ||
-      abandonedStartupChildIdentity(terminal.disposition) === null
-    ) {
+    const resolvedChild = terminal === undefined ? null : abandonedStartupChildIdentity(terminal.disposition);
+    if (transition.selectionSequence !== null || resolvedChild === null) {
       throw new RejectedTransitionError();
     }
     transaction.deleteInvocationRecords(transition.invocationId);
-    return terminal.sequence;
+    makeClosingAdmissionRoom(transaction, ids, transition.observedAt, 'unreserved');
+    return insertSelectionlessResolution(transaction, transition, resolvedChild);
   }
   if (selection.sequence !== transition.selectionSequence) throw new RejectedTransitionError();
   if (terminal !== undefined && abandonedStartupChildIdentity(terminal.disposition) === null) {
@@ -1429,7 +1463,12 @@ export type PersistedHandoffDisposition =
   | Extract<StoredTerminalDisposition, { kind: 'failed-without-selection' | 'finalized-without-selection' }>
   | Extract<
       StoredTerminalDisposition,
-      { kind: 'terminal-without-retained-selection' | 'terminal-after-operator-resolution' }
+      {
+        kind:
+          | 'terminal-without-retained-selection'
+          | 'operator-resolved-without-retained-selection'
+          | 'terminal-after-operator-resolution';
+      }
     >
   | Readonly<{ kind: RetirementTombstone['retirementCause']; terminalExisted: boolean }>
   | RetirementHistoryTruncated;
@@ -1594,6 +1633,7 @@ function unclassifiedPersistedDispositionPolicy(
         severity: 'info',
         exitContribution: 0,
       };
+    case 'operator-resolved-without-retained-selection':
     case 'retirement-history-truncated':
       return {
         durability: 'lifecycle-journal',
@@ -2572,6 +2612,21 @@ const MAX_RESOLVED_ABANDONED_STARTUP_TERMINAL = terminalEventSchema.parse({
     },
   },
 });
+const MAX_SELECTIONLESS_RESOLUTION_TERMINAL = terminalEventSchema.parse({
+  generation: HANDOFF_ROUTING_STATUS_GENERATION,
+  sequence: Number.MAX_SAFE_INTEGER,
+  eventId: MAX_ID,
+  invocationId: MAX_ID,
+  observedAt: MAX_OBSERVED_AT,
+  eventKind: 'continuation-finalized',
+  phase: 'terminal',
+  selection: { kind: 'without-selection' },
+  disposition: {
+    kind: 'operator-resolved-without-retained-selection',
+    resolutionReason: 'operator-abandoned-unobservable',
+    resolvedChild: { pid: Number.MAX_SAFE_INTEGER, incarnation: MAX_INCARNATION },
+  },
+});
 
 export const MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES = Math.max(
   encodedBytes(MAX_EXECUTION_TERMINAL),
@@ -2587,6 +2642,7 @@ export const MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
     encodedBytes(MAX_ABANDONED_STARTUP_TERMINAL),
     encodedBytes(MAX_RESOLVED_FINALIZED_TERMINAL),
     encodedBytes(MAX_RESOLVED_ABANDONED_STARTUP_TERMINAL),
+    encodedBytes(MAX_SELECTIONLESS_RESOLUTION_TERMINAL),
   ),
 });
 

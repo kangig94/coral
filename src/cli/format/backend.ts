@@ -531,6 +531,12 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
       return `${formatFinalizedDisposition(disposition.terminal)} without a retained selection`;
     case 'terminal-without-retained-selection':
       return `${formatStoredTerminalDisposition(disposition.terminal)} after its selection identity expired or was unavailable`;
+    case 'operator-resolved-without-retained-selection':
+      return (
+        `resolved by the operator (${disposition.resolutionReason}) without a retained selection; ` +
+        `detached child pid ${disposition.resolvedChild.pid} (incarnation ${disposition.resolvedChild.incarnation}) ` +
+        'was left running and unobserved'
+      );
     case 'terminal-after-operator-resolution':
       return `${formatStoredTerminalDisposition(disposition.terminal)} after operator resolution (${disposition.resolutionReason})`;
     default:

@@ -585,16 +585,15 @@ function endedChildOutcome(
   return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code === 0 ? 1 : (outcome.code ?? 1) });
 }
 
-function spawnedChildIdentity(child: ChildProcess, runtime: Runtime): RecordedProcessIdentity {
+function spawnedChildIdentity(child: ChildProcess, runtime: Runtime): RecordedProcessIdentity | null {
   const pid = child.pid;
-  if (pid === undefined) {
-    throw new Error('Spawned handoff child did not report a pid.');
+  if (pid === undefined) return null;
+  try {
+    const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+    return incarnation === null ? null : { pid, incarnation };
+  } catch {
+    return null;
   }
-  const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
-  if (incarnation === null) {
-    throw new Error(`Could not read the spawned handoff child incarnation (pid ${pid}).`);
-  }
-  return { pid, incarnation };
 }
 
 function liveBackendStartupReadiness(
@@ -702,19 +701,27 @@ async function waitForBackendStartupObservation(
   );
 
   if (signal !== undefined) {
+    // The child's durable identity must be read while the spawn is known live: an identity that could not be
+    // read is not evidence that there is no child, and by the abort the process may already be unreadable.
+    const spawnedChild = spawnedChildIdentity(child, runtime);
     const onAbort = (): void => {
-      try {
+      if (spawnedChild === null) {
         settleExternal({
-          kind: 'observed',
-          observation: {
-            kind: 'aborted',
-            child: spawnedChildIdentity(child, runtime),
-            childDisposition: 'left-running-and-unobserved',
-          },
+          kind: 'rejected',
+          error: new Error(
+            `Could not read the delegated startup child incarnation (pid ${child.pid ?? 'unknown'}) when it was spawned.`,
+          ),
         });
-      } catch (error: unknown) {
-        settleExternal({ kind: 'rejected', error });
+        return;
       }
+      settleExternal({
+        kind: 'observed',
+        observation: {
+          kind: 'aborted',
+          child: spawnedChild,
+          childDisposition: 'left-running-and-unobserved',
+        },
+      });
     };
     if (signal.aborted) {
       onAbort();

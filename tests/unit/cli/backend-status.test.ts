@@ -621,6 +621,25 @@ describe('backend routing status', () => {
           },
         },
         {
+          kind: 'terminal',
+          selection: null,
+          terminal: {
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
+            sequence: 4,
+            eventId: 'resolved-abandoned-terminal-event',
+            invocationId: 'resolved-abandoned-invocation',
+            observedAt: '2026-08-02T02:00:00.000Z',
+            eventKind: 'continuation-finalized',
+            phase: 'terminal',
+            selection: { kind: 'without-selection' },
+            disposition: {
+              kind: 'operator-resolved-without-retained-selection',
+              resolutionReason: 'operator-abandoned-unobservable',
+              resolvedChild: { pid: 4343, incarnation: testIncarnation('abandoned-backend') },
+            },
+          },
+        },
+        {
           kind: 'retired',
           tombstone: {
             generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -685,6 +704,7 @@ describe('backend routing status', () => {
       'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
       `Routing invocation abandoned-terminal-invocation: terminal; startup observation aborted after delegating to 0.11.0; detached child pid 4242 (incarnation ${testIncarnation('selected-backend')}) was left running and unobserved, and Coral will neither await nor terminate it.`,
+      `Routing invocation resolved-abandoned-invocation: terminal; resolved by the operator (operator-abandoned-unobservable) without a retained selection; detached child pid 4343 (incarnation ${testIncarnation('abandoned-backend')}) was left running and unobserved.`,
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
       'Routing invocation operator-resolved-invocation: retired (operator-resolved; reason: owner-absent). No action is needed.',
       'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',

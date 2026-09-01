@@ -252,6 +252,22 @@ describe('handoff routing status classification policy', () => {
     },
   );
 
+  it('discharges the hold once the operator resolution is recorded', () => {
+    const resolution = {
+      kind: 'operator-resolved-without-retained-selection',
+      resolutionReason: 'owner-absent',
+      resolvedChild: abandonedStartupChild.child,
+    } as const satisfies PersistedHandoffDisposition;
+
+    expect(persistedHandoffDispositionPolicy(resolution)).toEqual({
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'info',
+      classification: 'history',
+      exitContribution: 0,
+    });
+  });
+
   it('holds until the unobserved child is proven absent', () => {
     const contribution = (childLiveness: OwnerLiveness): 0 | 75 =>
       handoffRoutingStatusExitContribution({

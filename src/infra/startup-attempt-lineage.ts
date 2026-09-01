@@ -1,10 +1,10 @@
 /**
  * Startup ownership may be released while the exact child is live only when the coordinator or sentinel
- * is attributable to that attempt. Two present attempt ids that disagree must override matching build
+ * is attributable to that attempt. Two attempt identifiers that disagree must override matching build
  * identity; desired-build usability after the exact child terminates is a separate decision.
  *
- * The proof brand prevents callers from constructing `proven-current-attempt` without this module's
- * attribution rules.
+ * An attempt id that is not an identifier proves nothing in either direction: it is neither this attempt
+ * nor demonstrably another.
  */
 export type StartupAttemptIdentity = Readonly<{
   version: string;
@@ -39,23 +39,29 @@ export function startupAttemptIdentityMatches(
   );
 }
 
+/**
+ * An empty or whitespace-only value is not an identifier. An exported-but-empty variable and a health
+ * payload carrying the same are both strings, and two of them compare equal.
+ */
+function attemptIdentifier(raw: string | undefined): string | null {
+  return raw !== undefined && raw.trim().length > 0 ? raw : null;
+}
+
 export function resolveStartupAttemptLineage(evidence: {
   observedAttemptId?: string;
   expectedAttemptId?: string;
   observedIdentity?: StartupAttemptIdentity;
   desiredIdentity: StartupAttemptIdentity;
 }): StartupAttemptLineage {
-  // Two present ids that disagree must exclude this attempt even when the bundle identities match;
-  // a missing id excludes nothing and must not be read as someone else's.
-  if (
-    evidence.expectedAttemptId !== undefined &&
-    evidence.observedAttemptId !== undefined &&
-    evidence.observedAttemptId !== evidence.expectedAttemptId
-  ) {
-    return Object.freeze({ kind: 'proven-other-attempt', proof: 'different-startup-attempt-id' });
-  }
+  const observedAttemptId = attemptIdentifier(evidence.observedAttemptId);
+  const expectedAttemptId = attemptIdentifier(evidence.expectedAttemptId);
 
-  if (evidence.expectedAttemptId !== undefined && evidence.observedAttemptId === evidence.expectedAttemptId) {
+  // Two identifiers that disagree must exclude this attempt even when the bundle identities match; anything
+  // that is not an identifier excludes nothing and must not be read as someone else's.
+  if (observedAttemptId !== null && expectedAttemptId !== null) {
+    if (observedAttemptId !== expectedAttemptId) {
+      return Object.freeze({ kind: 'proven-other-attempt', proof: 'different-startup-attempt-id' });
+    }
     return Object.freeze({
       kind: 'proven-current-attempt',
       proof: 'startup-attempt-id',

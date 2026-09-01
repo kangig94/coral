@@ -976,8 +976,8 @@ describe('handoff-routing/runner', () => {
       sleep,
     };
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    // `childThatStaysAlive` emits 'spawn' from a microtask, so the child must be created inside the spawn
-    // call: built earlier, the event outruns the listener and the observation never starts.
+    // The child must be created inside the spawn call; one built earlier emits 'spawn' before the runner
+    // can observe it.
     let child!: ChildProcess;
     mockState.spawn.mockImplementationOnce(() => {
       child = childThatStaysAlive();
@@ -1014,6 +1014,55 @@ describe('handoff-routing/runner', () => {
     });
   });
 
+  it('abandons the child on the identity read while it was live, not one read after the abort', async () => {
+    const target = validatedTarget(roots[0]);
+    const controller = new AbortController();
+    const sleep = vi.fn<TimePort['sleep']>(
+      (_ms, options) =>
+        new Promise<void>((resolve) => {
+          if (options?.signal?.aborted === true) {
+            resolve();
+            return;
+          }
+          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
+        }),
+    );
+    let childIdentityReads = 0;
+    // The abort must use the identity already held: a later read can answer null for a child that is still
+    // running, and that answer must not be reachable from here.
+    readProcessIncarnation.mockImplementation((pid) => {
+      if (pid !== SPAWNED_CHILD_PID) return testIncarnation('handoff-runner');
+      childIdentityReads += 1;
+      return childIdentityReads === 1 ? testIncarnation('handoff-runner') : null;
+    });
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      {
+        pluginRoot: '/plugin/root',
+        activeSelectionTarget: target,
+        signal: controller.signal,
+        time: { ...runtime.time, sleep },
+      },
+    );
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(result).resolves.toEqual({
+      kind: 'delegated',
+      version: manifest.version,
+      outcome: {
+        kind: 'handoff-startup-observation-aborted',
+        version: manifest.version,
+        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
+        childDisposition: 'left-running-and-unobserved',
+      },
+    });
+    expect(childIdentityReads).toBe(1);
+  });
+
   it('attaches terminal and abort observers once across repeated startup polls', async () => {
     const target = validatedTarget(roots[0]);
     const controller = new AbortController();
@@ -1040,7 +1089,8 @@ describe('handoff-routing/runner', () => {
     );
     await vi.waitFor(() => expect(sleepCalls).toBeGreaterThan(20));
 
-    // Re-attaching per poll is what `Promise.race` would do; the poll count only has to exceed one.
+    // `Promise.race` subscribes to every promise it is given, so racing per poll re-attaches the terminal
+    // and abort observers on each pass.
     expect(race).not.toHaveBeenCalled();
     controller.abort();
     await expect(result).resolves.toMatchObject({
@@ -1718,6 +1768,71 @@ describe('handoff-routing/runner', () => {
     child.emit('exit', 0, null);
 
     await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
+  });
+
+  it('does not read an empty attempt id as proof that this attempt is serving', async () => {
+    const target = validatedTarget(roots[0]);
+    const attemptRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? '' : runtime.env.get(key)),
+        fullSnapshot: () => ({ ...runtime.env.fullSnapshot(), CORAL_STARTUP_ATTEMPT_ID: '' }),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    mockState.createRealRuntime.mockReturnValue(attemptRuntime);
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    // An unrelated coordinator under another namespace, exporting the same empty attempt id.
+    mockState.health.mockResolvedValue({ ...liveHealth(), env: { CORAL_STARTUP_ATTEMPT_ID: '' } });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    expect(settled).toBe(false);
+
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 1 } });
   });
 
   // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists

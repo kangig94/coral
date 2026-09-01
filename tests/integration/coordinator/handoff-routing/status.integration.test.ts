@@ -775,12 +775,29 @@ describe('handoff-routing/status', () => {
     await expect(
       resolveHandoffRoutingStatus(absentRuntime, path, { invocationId, forceUnobservable: false }),
     ).resolves.toMatchObject({ kind: 'resolved', invocationId, reason: 'owner-absent' });
+    // A resolution changes the subject, so it leaves a record of its own; the hold it discharged may not
+    // simply vanish from the store.
     expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
       kind: 'current',
-      statuses: expect.not.arrayContaining([
-        expect.objectContaining({ terminal: expect.objectContaining({ invocationId }) }),
+      statuses: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'terminal',
+          selection: null,
+          terminal: expect.objectContaining({
+            invocationId,
+            selection: { kind: 'without-selection' },
+            disposition: {
+              kind: 'operator-resolved-without-retained-selection',
+              resolutionReason: 'owner-absent',
+              resolvedChild: child,
+            },
+          }),
+        }),
       ]),
     });
+    await expect(
+      resolveHandoffRoutingStatus(absentRuntime, path, { invocationId, forceUnobservable: false }),
+    ).resolves.toEqual({ kind: 'already-terminal', invocationId });
   });
 
   it.each([
