@@ -30,7 +30,7 @@ import {
   type OperatorFacingCoralSetupError,
 } from '../../runtime/errors.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
-import { resolveStartupAttemptLineage, startupAttemptIdentityMatches } from '../../infra/startup-attempt-lineage.js';
+import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
 /** Time budget for the daemon to bind its socket / answer first health probe. */
 export const KERNEL_BIND_DEADLINE_MS = 5_000;
@@ -142,7 +142,6 @@ type StartupErrorSentinel = {
   readonly recordedAt?: number;
   readonly phase?: string;
   readonly state?: string;
-  readonly exitCode?: number;
   readonly diagnosticFile?: string;
   readonly socketPath: string;
   readonly bundleHash: string;
@@ -410,16 +409,18 @@ function childCoordinatorUnavailable(reason: string): BackendUnreachableError {
   );
 }
 
+/**
+ * The address and flavor a sentinel names are the invocation's own, whichever build wrote it: startup
+ * delegation ends at this socket under this flavor. A delegated build's own identity — its bundle hash and
+ * the namespace of its plugin root — is by construction not this build's, so neither may be part of the
+ * boundary that decides whether a sentinel is about this socket at all.
+ */
 function startupSentinelBoundaryMatches(
   sentinel: StartupErrorSentinel,
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
 ): boolean {
-  return (
-    sentinel.socketPath === paths.socketPath &&
-    sentinel.flavor === desired.flavor &&
-    sentinel.namespace === desired.namespace
-  );
+  return sentinel.socketPath === paths.socketPath && sentinel.flavor === desired.flavor;
 }
 
 function readStartupErrorSentinel(paths: CoordinatorPaths): { sentinel: StartupErrorSentinel; mtimeMs: number } | null {
@@ -472,7 +473,9 @@ function matchingStartupError(
     return readOperatorFacingCoralSetupError(sentinel.error);
   }
 
-  if (sentinel.bundleHash !== desired.bundleHash) {
+  // No attempt id ties this sentinel to the spawn being waited on, so build identity is the only remaining
+  // attribution: a record left by another build is not this invocation's to adopt or to retire.
+  if (sentinel.bundleHash !== desired.bundleHash || sentinel.namespace !== desired.namespace) {
     return null;
   }
   if (observedPid !== undefined && sentinel.pid !== observedPid) {
@@ -630,6 +633,7 @@ async function waitForBackendReady(
   while (currentAttempt || timePort.now() < (sawFirstHealth ? readyDeadline : bindDeadline)) {
     const info = readDiscoverySnapshot(paths);
     let observedPid: number | undefined = info?.pid;
+    let servingIncumbent: ReadyCoordinatorEvidence | null = null;
     if (info) {
       const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
       noteHealth(health);
@@ -642,11 +646,9 @@ async function waitForBackendReady(
           timePort,
         );
         if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
+          servingIncumbent = { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
           if (waitContext.kind !== 'current-attempt') {
-            return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
-          }
-          if (terminalOutcome !== null && startupAttemptIdentityMatches(authenticatedHealth, desired)) {
-            return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+            return servingIncumbent;
           }
           const lineage = resolveStartupAttemptLineage({
             observedAttemptId: authenticatedHealth.env?.CORAL_STARTUP_ATTEMPT_ID,
@@ -655,7 +657,7 @@ async function waitForBackendReady(
             desiredIdentity: desired,
           });
           if (lineage.kind === 'proven-current-attempt') {
-            return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+            return servingIncumbent;
           }
         }
       }
@@ -681,6 +683,14 @@ async function waitForBackendReady(
       }
     }
     if (terminalOutcome !== null) {
+      // Attempt lineage governs only a live child: while the exact child runs, a coordinator that cannot be
+      // tied to it may be someone else's and must not end the wait. Once that child is terminal and left no
+      // refusal of its own, the question is the one `reuseServingIncumbent` answers before any spawn — is an
+      // identity-checked, ready coordinator serving this address — and its answer does not depend on which
+      // build bound it. Conceding to an incumbent that outranks it is a normal way for the child to exit.
+      if (servingIncumbent !== null) {
+        return servingIncumbent;
+      }
       throw new BackendUnreachableError(
         'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
       );

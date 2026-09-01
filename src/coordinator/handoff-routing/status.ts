@@ -65,8 +65,18 @@ export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'execution-failed': 2_345,
   'continuation-finalized': 3_341,
 });
-// A retained selection closes as a direct terminal or a retirement tombstone, never as a wrapped late terminal.
+// What a retained selection reserves at admission, and only that: it closes as a direct terminal or a
+// retirement tombstone, never as a wrapped late terminal. It is part of the durable format, so its value is
+// fixed by the generation it addresses and may not be widened to cover some other caller's record.
 export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_170;
+// Admission for a closing record that redeems no reserve must fit the widest record such a caller inserts.
+// A selection already retired, never retained, or resolved by an operator closes as a wrapped late terminal,
+// which is larger than either reserved form.
+export const MAX_UNRESERVED_CLOSING_RECORD_BYTES = Math.max(
+  MAX_LEGAL_CLOSING_RECORD_BYTES,
+  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+);
 
 // A hold must retain an observable or operator-controlled exit; history contributes zero to status.
 const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
@@ -1100,7 +1110,7 @@ function makeClosingAdmissionRoom(
   while (transaction.boundedTerminalCount() >= MAX_BOUNDED_TERMINAL_HISTORY) {
     transaction.deleteOldestBoundedTerminal();
   }
-  while (!transaction.hasAdmissionCapacity(MAX_LEGAL_CLOSING_RECORD_BYTES)) {
+  while (!transaction.hasAdmissionCapacity(MAX_UNRESERVED_CLOSING_RECORD_BYTES)) {
     if (reclaimBoundedHistoryForAdmission(transaction, ids, observedAt)) continue;
     throw new CapacityExhaustedError();
   }

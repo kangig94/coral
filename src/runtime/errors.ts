@@ -1275,19 +1275,12 @@ const OPERATOR_FACING_FILESYSTEM_CONTEXT_KEYS: ReadonlySet<string> = new Set([
   'socketPath',
 ]);
 
-const OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS: CoralSetupErrorContext = Object.freeze({
-  stage: 'before-signal',
-  pid: '<pid>',
-  signal: '<signal>',
-  requestedSignal: '<signal>',
-  previousSignal: '<signal>',
-  graceMs: '<grace-ms>',
-  ageMs: '<age-ms>',
-  retryInMs: '<retry-ms>',
-  missingFields: ['<signal-capability-field>'],
-  socketPath: '<coordinator-socket>',
-  policy: '<handoff-policy>',
-});
+/**
+ * An elapsed measurement spanning two clock reads may come back negative when the wall clock steps
+ * backward, and that sign is the evidence of the step. Every other operator-facing number is a count, a
+ * duration, or a bound and may not be negative.
+ */
+const OPERATOR_FACING_SIGNED_CONTEXT_KEYS: ReadonlySet<string> = new Set(['ageMs']);
 
 const OPERATOR_FACING_CLOSED_CONTEXT_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   stage: new Set<HandoffRefusalContextByCode[HandoffRefusalCode]['stage']>([
@@ -1363,13 +1356,11 @@ function canonicalOperatorFacingContextValue(key: string, value: unknown): unkno
     return closedValues === undefined || closedValues.has(value) ? value : undefined;
   }
 
-  if (
-    typeof value === 'number' &&
-    Number.isSafeInteger(value) &&
-    value >= 0 &&
-    value <= MAX_OPERATOR_FACING_CONTEXT_NUMBER
-  ) {
-    return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    const lowerBound = OPERATOR_FACING_SIGNED_CONTEXT_KEYS.has(key) ? -MAX_OPERATOR_FACING_CONTEXT_NUMBER : 0;
+    if (value >= lowerBound && value <= MAX_OPERATOR_FACING_CONTEXT_NUMBER) {
+      return value;
+    }
   }
 
   return undefined;
@@ -1569,12 +1560,7 @@ export function readOperatorFacingCoralSetupError(error: unknown): OperatorFacin
   }
   let authored: CoralSetupError;
   try {
-    authored = documentedCoralSetupError(
-      code,
-      isHandoffRefusalCode(code)
-        ? canonicalContext
-        : { ...OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS, ...canonicalContext },
-    );
+    authored = documentedCoralSetupError(code, canonicalContext);
   } catch {
     return { kind: 'invalid_diagnostic' };
   }

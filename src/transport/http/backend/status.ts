@@ -41,9 +41,6 @@ type BackendStatus =
       status: 'shutting_down';
     };
 
-/** Persisted diagnostic text and context must not cross this operator-facing boundary. */
-export type PublicSetupErrorSummary = OperatorFacingCoralSetupError;
-
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' }
@@ -89,7 +86,8 @@ export type BackendStatusFull =
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
       retryable: boolean;
-      setupError?: PublicSetupErrorSummary;
+      /** Persisted diagnostic text and context must not cross this operator-facing boundary. */
+      setupError?: OperatorFacingCoralSetupError;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -132,7 +130,7 @@ export function statusFromStartupDiagnostic(
   }
 
   const error = value.error;
-  const setupError: PublicSetupErrorSummary | null =
+  const setupError: OperatorFacingCoralSetupError | null =
     error.kind === 'coral_setup_error' ? readOperatorFacingCoralSetupError(error) : null;
 
   return {

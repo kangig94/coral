@@ -319,10 +319,26 @@ type BackendStartupObservationAbort = Readonly<{
   childDisposition: 'left-running-and-unobserved';
 }>;
 
+/**
+ * The abort left a child running that this build cannot name durably: the incarnation half of its
+ * `RecordedProcessIdentity` was already unreadable while the spawn was known live, and a hold keyed by the
+ * pid alone would fence whatever process next holds that number. No hold is recorded for this child, so what
+ * ends the state is not an operator command: the child is a coordinator, so it either binds the coordinator
+ * socket and answers `coral-cli backend status`, or it is gone.
+ */
+type BackendStartupObservationUnattributableAbort = Readonly<{
+  kind: 'aborted-child-unattributable';
+  observedPid: number | null;
+  childDisposition: 'left-running-and-unobserved';
+  hold: 'unavailable-without-child-incarnation';
+  until: 'child-answers-backend-status-or-is-gone';
+}>;
+
 type BackendStartupObservation =
   | Readonly<{ kind: 'ready' }>
   | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>
-  | BackendStartupObservationAbort;
+  | BackendStartupObservationAbort
+  | BackendStartupObservationUnattributableAbort;
 
 type BackendStartupReadiness =
   | Readonly<{ kind: 'ready' }>
@@ -690,7 +706,9 @@ async function waitForBackendStartupObservation(
     external: ExternalObservation,
     reading?: Promise<LiveIncumbentReading>,
   ): Promise<BackendStartupObservation> => {
-    if (external.kind === 'aborted') return external;
+    // An abort leaves a live child nobody is watching. A coordinator answering at the address afterwards is
+    // not proof that it is that child, so it may not convert an abandonment into a success.
+    if (external.kind === 'aborted' || external.kind === 'aborted-child-unattributable') return external;
     const finalHealth = reading === undefined ? await readLiveCoordinatorHealth(runtime, time) : await reading;
     return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? external;
   };
@@ -705,22 +723,22 @@ async function waitForBackendStartupObservation(
     // read is not evidence that there is no child, and by the abort the process may already be unreadable.
     const spawnedChild = spawnedChildIdentity(child, runtime);
     const onAbort = (): void => {
-      if (spawnedChild === null) {
-        settleExternal({
-          kind: 'rejected',
-          error: new Error(
-            `Could not read the delegated startup child incarnation (pid ${child.pid ?? 'unknown'}) when it was spawned.`,
-          ),
-        });
-        return;
-      }
       settleExternal({
         kind: 'observed',
-        observation: {
-          kind: 'aborted',
-          child: spawnedChild,
-          childDisposition: 'left-running-and-unobserved',
-        },
+        observation:
+          spawnedChild === null
+            ? {
+                kind: 'aborted-child-unattributable',
+                observedPid: child.pid ?? null,
+                childDisposition: 'left-running-and-unobserved',
+                hold: 'unavailable-without-child-incarnation',
+                until: 'child-answers-backend-status-or-is-gone',
+              }
+            : {
+                kind: 'aborted',
+                child: spawnedChild,
+                childDisposition: 'left-running-and-unobserved',
+              },
       });
     };
     if (signal.aborted) {
@@ -1157,6 +1175,12 @@ async function executeResolvedHandoff(
               childDisposition: startupObservation.childDisposition,
             });
             break;
+          case 'aborted-child-unattributable':
+            // No durable record can name this child, so this message is the only place its pid survives. It
+            // must keep naming that pid and the one command that settles what became of the child.
+            throw new Error(
+              `Delegated Coral startup was abandoned while its child (pid ${startupObservation.observedPid ?? 'unknown'}) was still running, and that child's process incarnation could not be read when it was spawned, so no routing-status hold can name it. Run 'coral-cli backend status': the delegated coordinator either bound the coordinator socket or is gone.`,
+            );
           case 'terminal':
             outcome = endedChildOutcome(startupObservation.outcome);
             break;

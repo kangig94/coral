@@ -436,6 +436,62 @@ describe('CoralSetupError', () => {
     },
   );
 
+  it('renders a missing context value with the placeholder its own template names', () => {
+    // The template that reads `socketPath` owns the word shown when a diagnostic did not carry it.
+    const documented = documentedCoralSetupError('coordinator_socket_bind_failed');
+    const restored = readOperatorFacingCoralSetupError({
+      code: 'coordinator_socket_bind_failed',
+      userMessage: 'persisted user message',
+      remediation: 'persisted remediation',
+    });
+
+    expect(restored).toEqual({
+      kind: 'documented',
+      code: 'coordinator_socket_bind_failed',
+      userMessage: documented.userMessage,
+      remediation: documented.remediation,
+    });
+    expect(documented.userMessage).toContain('<socket-path>');
+  });
+
+  it('keeps a cooldown refusal documented when a backwards clock step makes the age negative', () => {
+    const context = {
+      stage: 'before-signal',
+      pid: 4242,
+      requestedSignal: 'SIGKILL',
+      previousSignal: 'SIGTERM',
+      ageMs: -9_000,
+      retryInMs: 69_000,
+    } as const;
+    const documented = documentedCoralSetupError('handoff_signal_cooldown_active', context);
+
+    expect(
+      readOperatorFacingCoralSetupError({
+        code: 'handoff_signal_cooldown_active',
+        userMessage: 'persisted user message',
+        remediation: 'persisted remediation',
+        context,
+      }),
+    ).toEqual({
+      kind: 'documented',
+      code: 'handoff_signal_cooldown_active',
+      userMessage: documented.userMessage,
+      remediation: documented.remediation,
+    });
+    expect(documented.userMessage).toContain('-9000ms ago');
+  });
+
+  it('still drops a negative value on a context key that measures no elapsed span', () => {
+    expect(
+      readOperatorFacingCoralSetupError({
+        code: 'handoff_sigkill_grace_target_alive',
+        userMessage: 'persisted user message',
+        remediation: 'persisted remediation',
+        context: { stage: 'after-sigkill-grace', pid: 4242, signal: 'SIGKILL', graceMs: -15_000 },
+      }),
+    ).toEqual({ kind: 'invalid_diagnostic' });
+  });
+
   it('restores a handoff socket-holder refusal for a non-ASCII canonical path', () => {
     const socketPath = '/home/김/.coral/run/coordinator.sock';
 

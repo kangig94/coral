@@ -1063,6 +1063,49 @@ describe('handoff-routing/runner', () => {
     expect(childIdentityReads).toBe(1);
   });
 
+  it('records a terminal and names the pid when the abandoned child cannot be attributed', async () => {
+    const target = validatedTarget(roots[0]);
+    const controller = new AbortController();
+    const sleep = vi.fn<TimePort['sleep']>(
+      (_ms, options) =>
+        new Promise<void>((resolve) => {
+          if (options?.signal?.aborted === true) {
+            resolve();
+            return;
+          }
+          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
+        }),
+    );
+    // No incarnation is readable for the child at any point, so a durable hold has no key to be filed under.
+    readProcessIncarnation.mockImplementation((pid) =>
+      pid === SPAWNED_CHILD_PID ? null : testIncarnation('handoff-runner'),
+    );
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
+
+    const result = runHandoffResult(
+      { kind: 'backend-startup' },
+      {
+        pluginRoot: '/plugin/root',
+        activeSelectionTarget: target,
+        signal: controller.signal,
+        time: { ...runtime.time, sleep },
+      },
+    );
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
+    controller.abort();
+
+    const error = await result.catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(`pid ${SPAWNED_CHILD_PID}`);
+    expect((error as Error).message).toContain('no routing-status hold can name it');
+    expect((error as Error).message).toContain("Run 'coral-cli backend status'");
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'execution-failed',
+      disposition: { kind: 'execution-failed', throwPhase: 'child-outcome-wait' },
+    });
+  });
+
   it('attaches terminal and abort observers once across repeated startup polls', async () => {
     const target = validatedTarget(roots[0]);
     const controller = new AbortController();

@@ -1,13 +1,14 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { handoffRoutingStatusStoreSchema, readHandoffRoutingStatus } from '#src/coordinator/handoff-routing/status.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { handoffRoutingStatusPathForRunDir } from '#src/infra/path/coordinator.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { encodeActiveStoreSelection, resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
@@ -61,15 +62,14 @@ function nextPatchVersion(version: string): string {
   return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
 }
 
-function installBundle(
-  pluginRoot: string,
-  directory: string,
-  version: string,
-  bundleHashMarker: string,
-): InstalledBundle {
+/**
+ * A delegated build must be installed at its own plugin root, as a real one is: a bundle parked beside the
+ * invoking build's `bridge/` inherits that build's plugin root, and with it the namespace and the manifest a
+ * delegated build must not share.
+ */
+function installBundle(version: string, bundleHashMarker: string): InstalledBundle {
   const fixture = createPluginFixture(roots, { flavor: 'prod', version, bundleHash: bundleHashMarker });
-  const bundleDir = join(pluginRoot, directory);
-  renameSync(join(fixture.root, 'bridge'), bundleDir);
+  const bundleDir = join(fixture.root, 'bridge');
   const manifest = JSON.parse(readFileSync(join(bundleDir, 'manifest.json'), 'utf-8')) as FixtureManifest;
   return { bundleDir, manifest };
 }
@@ -202,14 +202,10 @@ describe('real backend-startup delegation', () => {
       const directManifest = JSON.parse(
         readFileSync(join(direct.root, 'bridge', 'manifest.json'), 'utf-8'),
       ) as Readonly<{ version: string; bundleHash: string; storeFormatFingerprint: string }>;
-      const selected = installBundle(
-        direct.root,
-        'selected-bridge',
-        nextPatchVersion(directManifest.version),
-        'delegated-backend',
-      );
+      const selected = installBundle(nextPatchVersion(directManifest.version), 'delegated-backend');
       const { bundleDir: selectedBundleDir, manifest: selectedManifest } = selected;
       expect(selectedManifest.bundleHash).not.toBe(directManifest.bundleHash);
+      expect(pluginRootNamespace(dirname(selectedBundleDir))).not.toBe(pluginRootNamespace(direct.root));
 
       const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
       const selectionPaths = resolveActiveStoreRecordPaths(runtime);
@@ -288,27 +284,19 @@ describe('real backend-startup delegation', () => {
     const directManifest = JSON.parse(
       readFileSync(join(direct.root, 'bridge', 'manifest.json'), 'utf-8'),
     ) as FixtureManifest;
-    const selected = installBundle(
-      direct.root,
-      'selected-bridge',
-      nextPatchVersion(directManifest.version),
-      'transitive-selected-backend',
-    );
-    const terminal = installBundle(
-      direct.root,
-      'terminal-bridge',
-      nextPatchVersion(selected.manifest.version),
-      'transitive-terminal-backend',
-    );
-    const ambient = installBundle(
-      direct.root,
-      'ambient-bridge',
-      nextPatchVersion(terminal.manifest.version),
-      'transitive-ambient-backend',
-    );
+    const selected = installBundle(nextPatchVersion(directManifest.version), 'transitive-selected-backend');
+    const terminal = installBundle(nextPatchVersion(selected.manifest.version), 'transitive-terminal-backend');
+    const ambient = installBundle(nextPatchVersion(terminal.manifest.version), 'transitive-ambient-backend');
     expect(selected.manifest.bundleHash).not.toBe(directManifest.bundleHash);
     expect(terminal.manifest.bundleHash).not.toBe(selected.manifest.bundleHash);
     expect(ambient.manifest.bundleHash).not.toBe(terminal.manifest.bundleHash);
+    const namespaces = [
+      direct.root,
+      dirname(selected.bundleDir),
+      dirname(terminal.bundleDir),
+      dirname(ambient.bundleDir),
+    ].map(pluginRootNamespace);
+    expect(new Set(namespaces).size).toBe(namespaces.length);
 
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const selectionPaths = resolveActiveStoreRecordPaths(runtime);

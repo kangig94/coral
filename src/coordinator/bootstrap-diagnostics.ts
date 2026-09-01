@@ -150,6 +150,10 @@ export function auditBootstrapFailure(
   }
 }
 
+/**
+ * A startup exit code has one home, and it is the diagnostic named by `diagnosticFile`. A second copy in
+ * the sentinel is not redundancy — it is a record that can disagree with the code the process exits with.
+ */
 export function writeStartupErrorSentinel(
   pluginRoot: string,
   error: unknown,
@@ -174,7 +178,6 @@ export function writeStartupErrorSentinel(
       recordedAt: Date.now(),
       phase: 'startup_failed',
       state: 'stopped_with_diagnostic',
-      exitCode: 1,
       diagnosticFile,
       socketPath: runtime.paths.coral.coordinator.socketPath,
       bundleHash: readBundleHash(pluginRoot),

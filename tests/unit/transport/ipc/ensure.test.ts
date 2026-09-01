@@ -138,6 +138,7 @@ function writeStartupSentinel(
   overrides: Partial<{
     pid: number;
     bundleHash: string;
+    namespace: string;
     code: string;
     userMessage: string;
     remediation: string;
@@ -161,7 +162,7 @@ function writeStartupSentinel(
       socketPath: paths.socketPath,
       bundleHash: overrides.bundleHash ?? 'test-hash',
       flavor: 'prod',
-      namespace: pluginRootNamespace(root),
+      namespace: overrides.namespace ?? pluginRootNamespace(root),
       error:
         'error' in overrides
           ? overrides.error
@@ -1009,6 +1010,64 @@ describe('ipc ensure', () => {
     expect(child.unref).toHaveBeenCalledOnce();
   });
 
+  it('adopts a sentinel written by a delegated build at another plugin root', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const child = spawnedChild();
+    mockState.spawn.mockReturnValue(child);
+    const context = { stage: 'handoff-deadline', socketPath: socketPath(root) } as const;
+    const expected = documentedCoralSetupError('handoff_socket_holder_unverified', context);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    // A delegated build runs from its own plugin root, so both halves of its build identity differ from the
+    // invoking build's. Only the exact attempt id ties this record to the spawn being waited on.
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      bundleHash: 'delegated-build-hash',
+      namespace: 'delegated-plugin-root-namespace',
+      code: 'handoff_socket_holder_unverified',
+      userMessage: 'Handoff refused at the startup deadline.',
+      remediation: 'Inspect the socket holder, then retry.',
+      context,
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(ensuredPromise).resolves.toMatchObject({
+      code: expected.code,
+      userMessage: expected.userMessage,
+      remediation: expected.remediation,
+    });
+  });
+
+  it('leaves a foreign-namespace sentinel to its own build when no attempt id attributes it', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    mockState.health.mockResolvedValue({
+      status: 'starting',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'starting-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+    // A live pid, so nothing but the namespace can stop this record from being adopted and retired.
+    writeStartupSentinel(root, 'foreign-attempt', { pid: process.pid, namespace: 'other-plugin-root-namespace' });
+
+    const { ensure, KERNEL_READY_DEADLINE_MS, STARTUP_POLL_MS } = await importEnsure();
+    const result = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(KERNEL_READY_DEADLINE_MS + STARTUP_POLL_MS);
+    const error = await result;
+
+    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator startup');
+    expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('other-plugin-root-namespace');
+  });
+
   it('reports an unrecognized current-attempt setup-error code without exposing persisted prose', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -1264,6 +1323,59 @@ describe('ipc ensure', () => {
 
     expect(ensured.instanceId).toBe('winning-coordinator');
     expect(ensured.bundleHash).toBe('test-hash');
+  });
+
+  it('returns the serving incumbent the child conceded to instead of calling it a failed startup', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    let spawned = false;
+    // The pre-spawn probe lost its round trip, so this invocation spawned against a live incumbent. The
+    // child then found the incumbent outranked it and exited 0 without writing a sentinel or a diagnostic.
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'rebuilt-in-place-hash',
+        flavor: 'prod',
+        instanceId: 'serving-incumbent',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, { bundleHash: 'rebuilt-in-place-hash', instanceId: 'serving-incumbent' });
+      return child;
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // While the exact child is live, nothing ties this coordinator to it, so the wait must not end here.
+    let settled = false;
+    void ensuredPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('serving-incumbent');
+    expect(ensured.bundleHash).toBe('rebuilt-in-place-hash');
+    expect(existsSync(coordinatorPaths('prod').startupErrorFile)).toBe(false);
   });
 
   it('treats child error without exit as terminal without exposing its text', async () => {

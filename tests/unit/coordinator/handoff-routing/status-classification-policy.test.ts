@@ -4,7 +4,12 @@ import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationFailureSuccessor } from '#src/cli/format/handoff-publication.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  MAX_LEGAL_CLOSING_RECORD_BYTES,
   MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
+  MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES,
+  MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES,
+  MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
+  MAX_UNRESERVED_CLOSING_RECORD_BYTES,
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   persistedHandoffDispositionPolicy,
@@ -314,6 +319,23 @@ describe('handoff routing status classification policy', () => {
       contribution({ kind: 'unobservable', cause: 'probe-failed' }),
       contribution({ kind: 'absent' }),
     ]).toEqual([75, 75, 0]);
+  });
+
+  it('reserves for the direct close and admits the wider wrapped close', () => {
+    // The reserve a retained selection allocates is redeemed only by a direct terminal or a tombstone, so it
+    // is fitted to those. Admission that redeems no reserve inserts the wrapped late terminals too, and
+    // reserving their width would make the durable format's own bound wrong for what it names.
+    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBe(
+      Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES),
+    );
+    expect(MAX_UNRESERVED_CLOSING_RECORD_BYTES).toBe(
+      Math.max(
+        MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
+        MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+        MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+      ),
+    );
+    expect(MAX_UNRESERVED_CLOSING_RECORD_BYTES).toBeGreaterThan(MAX_LEGAL_CLOSING_RECORD_BYTES);
   });
 
   it('matches every independent policy fixture and no additional classification arm', () => {
