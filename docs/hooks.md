@@ -135,7 +135,7 @@ The fallback arena at `~/.coral/staging/project-ignore` holds durability evidenc
 
 ### Ignore-rule migration
 
-Coral retracts the exact legacy `.claude/coral` entry from the Git-root `.gitignore` and the exact `coral` entry from an existing project `.claude/.gitignore`. When a link exists or creation is requested, Coral first publishes one literal-escaped, project-anchored rule in `.git/info/exclude`, then places the link, then retracts the legacy rules.
+Coral retracts the exact legacy `.claude/coral` entry from the Git-root `.gitignore` and the exact `coral` entry from an existing project `.claude/.gitignore`. When a link exists or creation is requested, Coral first publishes one literal-escaped, project-anchored rule in `.git/info/exclude`, then places the link, then retracts the legacy rules. The leading slash is load-bearing: a gitignore pattern without one matches at any depth below the file carrying it, so the same literal in the repository-wide exclude file would hide every `coral` path in the repository.
 
 The personal exclude keeps Coral's rule out of the working tree. The old working-tree placement could be overridden by a later `!coral` in the same file because the last matching pattern wins within that precedence level. After migration, a working-tree `.gitignore` still has higher precedence than `.git/info/exclude`, so a deliberate working-tree negation can override Coral's personal rule.
 
