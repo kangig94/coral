@@ -1155,6 +1155,12 @@ describe('project-ignore symlink maintenance', () => {
     expect(readFileSync(join(durabilityArena(), durabilityMarkers()[0]), 'utf-8')).toBe(excludePath);
     expect(readdirSync(repositoryArena()).filter((name) => name.startsWith('.durability-'))).toEqual([]);
 
+    const foreignParent = join(root, 'foreign-parent');
+    const foreignTarget = join(foreignParent, 'artifact');
+    const foreignMarker = durabilityMarker(foreignTarget);
+    mkdirSync(foreignParent);
+    writeFileSync(foreignMarker, foreignTarget);
+    fixture.directoryFsyncFailures.set(foreignParent, 'EIO');
     rmSync(link());
     fixture.failDirectoryFsyncPath = null;
     fixture.failDirectoryFsyncCode = null;
@@ -1164,12 +1170,16 @@ describe('project-ignore symlink maintenance', () => {
     expect(durable.status).toBe('complete');
     expect(durable.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
     expect(durable.artifacts.symlink).toEqual({ state: 'not-requested' });
+    expect(durable.artifacts.scopedIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(durable.artifacts.rootIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
     expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
-    expect(durabilityMarkers()).toEqual([]);
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(foreignParent);
+    expect(existsSync(foreignMarker)).toBe(true);
+    expect(durabilityMarkers()).toEqual([basename(foreignMarker)]);
     expect(isProjectIgnoreResult(durable)).toBe(true);
   });
 
-  it('reconciles an interrupted publication after the repository identity changes', async () => {
+  it('leaves a marker from a previous repository identity untouched', async () => {
     const commonBefore = join(root, 'common-before');
     const commonAfter = join(root, 'common-after');
     mkdirSync(join(commonBefore, 'info'), { recursive: true });
@@ -1195,11 +1205,58 @@ describe('project-ignore symlink maintenance', () => {
 
     expect(durable.status).toBe('complete');
     expect(durable.artifacts.exclude).toEqual({ state: 'not-needed', residue: 'none' });
-    expect(fixture.fsyncedDirectoryPaths).toContain(join(commonBefore, 'info'));
+    expect(durable.artifacts.durabilityReconciliation).toEqual({ state: 'reconciled' });
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(join(commonBefore, 'info'));
     expect(durabilityMarker(join(commonAfter, 'info', 'exclude'))).not.toBe(oldMarker);
     expect(existsSync(join(commonAfter, 'coral', 'staging', 'project-ignore'))).toBe(true);
-    expect(existsSync(oldMarker)).toBe(false);
-    expect(durabilityMarkers()).toEqual([]);
+    expect(readFileSync(oldMarker, 'utf-8')).toBe(oldExcludePath);
+    expect(JSON.stringify(durable)).not.toContain(oldExcludePath);
+    expect(durabilityMarkers()).toEqual([basename(oldMarker)]);
+  });
+
+  it('reconciles project and common Git markers in the same run', async () => {
+    await maintain('prod');
+    const projectTarget = link();
+    const gitTarget = join(fixture.gitDir, 'info', 'exclude');
+    const foreignParent = join(root, 'other-project');
+    const foreignTarget = join(foreignParent, 'artifact');
+    const projectMarker = durabilityMarker(projectTarget);
+    const gitMarker = durabilityMarker(gitTarget);
+    const foreignMarker = durabilityMarker(foreignTarget);
+    mkdirSync(foreignParent);
+    writeFileSync(projectMarker, projectTarget);
+    writeFileSync(gitMarker, gitTarget);
+    writeFileSync(foreignMarker, foreignTarget);
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.durabilityReconciliation).toEqual({ state: 'reconciled' });
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(projectDir, '.claude'));
+    expect(fixture.fsyncedDirectoryPaths).toContain(join(fixture.gitDir, 'info'));
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(foreignParent);
+    expect(existsSync(projectMarker)).toBe(false);
+    expect(existsSync(gitMarker)).toBe(false);
+    expect(readFileSync(foreignMarker, 'utf-8')).toBe(foreignTarget);
+  });
+
+  it('does not let a foreign marker sync failure refuse this run', async () => {
+    await maintain('prod');
+    const foreignParent = join(root, 'unreachable-project');
+    const foreignTarget = join(foreignParent, 'artifact');
+    const foreignMarker = durabilityMarker(foreignTarget);
+    mkdirSync(foreignParent);
+    writeFileSync(foreignMarker, foreignTarget);
+    fixture.directoryFsyncFailures.set(foreignParent, 'EIO');
+    fixture.fsyncedDirectoryPaths.length = 0;
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.durabilityReconciliation).toEqual({ state: 'reconciled' });
+    expect(fixture.fsyncedDirectoryPaths).not.toContain(foreignParent);
+    expect(readFileSync(foreignMarker, 'utf-8')).toBe(foreignTarget);
   });
 
   it('retains a marker and refuses planning when reconciliation cannot sync its parent', async () => {
@@ -1237,7 +1294,7 @@ describe('project-ignore symlink maintenance', () => {
     await maintain('prod');
     const obligations = ['first', 'second', 'third']
       .map((name) => {
-        const parent = join(root, `${name}-parent`);
+        const parent = join(projectDir, `${name}-parent`);
         const target = join(parent, 'artifact');
         return { parent, target, marker: durabilityMarker(target) };
       })
@@ -1272,7 +1329,7 @@ describe('project-ignore symlink maintenance', () => {
     await maintain('prod');
     const obligations = ['earlier', 'later-one', 'later-two']
       .map((name) => {
-        const parent = join(root, `${name}-parent`);
+        const parent = join(projectDir, `${name}-parent`);
         const target = join(parent, 'artifact');
         return { parent, target, marker: durabilityMarker(target) };
       })
@@ -1462,10 +1519,10 @@ describe('project-ignore symlink maintenance', () => {
 
   it('quarantines a marker whose valid target does not match its filename', async () => {
     await maintain('prod');
-    const boundTarget = join(root, 'bound-parent', 'artifact');
-    const namedParent = join(root, 'named-parent');
+    const boundTarget = join(projectDir, 'bound-parent', 'artifact');
+    const namedParent = join(projectDir, 'named-parent');
     const namedTarget = join(namedParent, 'artifact');
-    mkdirSync(join(root, 'bound-parent'));
+    mkdirSync(join(projectDir, 'bound-parent'));
     mkdirSync(namedParent);
     const marker = durabilityMarker(boundTarget);
     writeFileSync(marker, namedTarget);
@@ -1545,7 +1602,7 @@ describe('project-ignore symlink maintenance', () => {
 
   it('removes a marker whose named parent no longer exists', async () => {
     await maintain('prod');
-    const target = join(root, 'removed-parent', 'artifact');
+    const target = join(projectDir, 'removed-parent', 'artifact');
     const marker = durabilityMarker(target);
     writeFileSync(marker, target);
 
@@ -1590,7 +1647,7 @@ describe('project-ignore symlink maintenance', () => {
 
   it('refuses to sync a regular-file parent and reconciles it as unreachable', async () => {
     await maintain('prod');
-    const parent = join(root, 'former-parent');
+    const parent = join(projectDir, 'former-parent');
     const target = join(parent, 'artifact');
     writeFileSync(parent, 'not a directory');
     // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.

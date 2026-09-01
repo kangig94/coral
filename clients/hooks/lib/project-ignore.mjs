@@ -382,7 +382,19 @@ function readDurabilityMarker(path) {
   }
 }
 
-function reconcileDurabilityMarkers(durabilityDir) {
+function isRunOwnedDurabilityTarget(context, target) {
+  return [context.projectDir, context.commonGitDir].filter(Boolean).some((directory) => {
+    const containment = relative(directory, target);
+    return (
+      containment.length > 0 &&
+      !isAbsolute(containment) &&
+      containment !== '..' &&
+      !containment.startsWith(`..${sep}`)
+    );
+  });
+}
+
+function reconcileDurabilityMarkers(durabilityDir, context) {
   if (!durabilityDir) {
     return { state: 'refused', reasons: ['durability-evidence-unavailable'] };
   }
@@ -412,6 +424,7 @@ function reconcileDurabilityMarkers(durabilityDir) {
       );
       continue;
     }
+    if (!isRunOwnedDurabilityTarget(context, marker.target)) continue;
     const durability = fsyncParent(marker.target, { missingParentIsSynced: true });
     if (durability.state === 'failed') {
       for (const reason of durability.reasons) reasons.add(reason);
@@ -1705,7 +1718,7 @@ export function maintainProjectIgnore({
         : { state: 'unchanged' };
 
   let artifacts;
-  const reconciliation = reconcileDurabilityMarkers(fallbackArena);
+  const reconciliation = reconcileDurabilityMarkers(fallbackArena, context);
   if (reconciliation.state === 'refused') {
     artifacts = refusedDurabilityReconciliation(arenaSweep, reconciliation);
   } else {
