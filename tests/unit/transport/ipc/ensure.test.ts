@@ -1283,7 +1283,9 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
+    expect((error as Error).message).toBe(
+      'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
+    );
     expect((error as Error).message).not.toContain(lifecycleSecret);
   });
 
@@ -1307,7 +1309,9 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
+    expect((error as Error).message).toBe(
+      'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
+    );
   });
 
   it('rejects a wrong-attempt sentinel after the exact child becomes terminal', async () => {
@@ -1327,7 +1331,9 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
+    expect((error as Error).message).toBe(
+      'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
+    );
     expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('another-attempt');
   });
 

@@ -23,6 +23,7 @@ import {
   handoffRoutingRecordSchemaRegistry,
   handoffRoutingStatusStoreSchema,
   type HandoffRoutingStatusReadResult,
+  type OwnerLiveness,
 } from '#src/coordinator/handoff-routing/status.js';
 import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -60,6 +61,60 @@ function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatus
       status: 'ok',
       skippedProviderProxySetRows: parsed.skippedProviderProxySetRows,
       skippedProviderProxySetTokens: parsed.skippedProviderProxySetTokens,
+    },
+  };
+}
+
+function unobservedStartupChildStatus(childLiveness: OwnerLiveness): HandoffRoutingStatusReadResult {
+  const invocationId = '123e4567-e89b-42d3-a456-426614174099';
+  return {
+    kind: 'current',
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    statuses: [
+      {
+        kind: 'terminal',
+        selection: {
+          generation: HANDOFF_ROUTING_STATUS_GENERATION,
+          sequence: 1,
+          eventId: 'selection-event',
+          invocationId,
+          observedAt: '2026-08-02T00:00:00.000Z',
+          eventKind: 'routing-selected',
+          phase: 'selection',
+          owner: { pid: 4000, incarnation: testIncarnation('routing-owner') },
+          disposition: { kind: 'continue-current', basis: { kind: 'incumbent-absent' } },
+        },
+        childLiveness,
+        terminal: {
+          generation: HANDOFF_ROUTING_STATUS_GENERATION,
+          sequence: 2,
+          eventId: 'terminal-event',
+          invocationId,
+          observedAt: '2026-08-02T00:00:01.000Z',
+          eventKind: 'continuation-finalized',
+          phase: 'terminal',
+          selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+          disposition: {
+            kind: 'delegated-startup-observation-aborted',
+            version: '2.3.4',
+            child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+            childDisposition: 'left-running-and-unobserved',
+          },
+        },
+      },
+    ],
+    retirementHistoryTruncated: {
+      kind: 'retirement-history-truncated',
+      expiredIdentityCount: 0,
+      causes: {
+        'selection-evicted-at-capacity': 0,
+        'completed-pair-compaction': 0,
+        'operator-resolved': 0,
+      },
+      minSelectionSequence: null,
+      maxSelectionSequence: null,
+      earliestSelectedAt: null,
+      latestSelectedAt: null,
     },
   };
 }
@@ -813,6 +868,44 @@ describe('backend routing status', () => {
     expect(stdout).toContain(`backend routing-status resolve --invocation ${invocationId}`);
     expect(process.exitCode).toBe(75);
   });
+
+  it.each([
+    {
+      childLiveness: { kind: 'alive' } as const,
+      expectedExit: 75,
+      expectedSuccessor: 'wait for that exact child to exit, then rerun coral-cli backend status',
+    },
+    {
+      childLiveness: { kind: 'absent' } as const,
+      expectedExit: 0,
+      expectedSuccessor: 'backend routing-status resolve --invocation 123e4567-e89b-42d3-a456-426614174099',
+    },
+    {
+      childLiveness: { kind: 'unobservable', cause: 'probe-failed' } as const,
+      expectedExit: 75,
+      expectedSuccessor:
+        'backend routing-status resolve --invocation 123e4567-e89b-42d3-a456-426614174099 --force-unobservable',
+    },
+  ])(
+    'renders the exact successor and exits $expectedExit when an unobserved child is $childLiveness.kind',
+    async ({ childLiveness, expectedExit, expectedSuccessor }) => {
+      const status: BackendStatusCommandOperations = {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus: async () => ({ status: 'no_record_no_socket' }),
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => unobservedStartupChildStatus(childLiveness),
+      };
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, { storeReset, backendStatus: status });
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+      expect(stdout).toContain('Detached startup child pid 4242');
+      expect(stdout).toContain(expectedSuccessor);
+      expect(process.exitCode).toBe(expectedExit);
+    },
+  );
 
   it('renders aggregate-only retirement history without keeping the expired capacity gate', async () => {
     const status: BackendStatusCommandOperations = {

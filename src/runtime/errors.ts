@@ -6,6 +6,8 @@
 // (helpers.ts, utils.ts); a registry growing as new codes land is the
 // expected shape of a canonical home, not drift.
 
+import { isAbsolute, normalize } from 'node:path';
+
 import { isRecord } from '../infra/json.js';
 import { HANDOFF_SIGNAL_POLICY_ENV } from '../infra/process-constants.js';
 
@@ -1257,8 +1259,21 @@ const MAX_OPERATOR_FACING_CONTEXT_NUMBER = 1_000_000_000_000;
 const SETUP_ERROR_IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const OPERATOR_FACING_CONTEXT_KEY_PATTERN = /^[a-z][A-Za-z0-9]*$/;
 const OPERATOR_FACING_CONTEXT_STRING_PATTERN = /^[A-Za-z0-9 ._/:@+,=()[\]{}%#&!?~-]+$/;
+const OPERATOR_FACING_FILESYSTEM_CONTEXT_UNSAFE_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const MAX_SETUP_ERROR_IDENTIFIER_LENGTH = 128;
 const MAX_OPERATOR_FACING_CONTEXT_KEY_LENGTH = 128;
+
+const OPERATOR_FACING_FILESYSTEM_CONTEXT_KEYS: ReadonlySet<string> = new Set([
+  'baseDir',
+  'coordinationRoot',
+  'directory',
+  'legacyPath',
+  'path',
+  'pluginRoot',
+  'quarantineDir',
+  'recordPath',
+  'socketPath',
+]);
 
 const OPERATOR_FACING_SETUP_ERROR_CONTEXT_FALLBACKS: CoralSetupErrorContext = Object.freeze({
   stage: 'before-signal',
@@ -1333,14 +1348,17 @@ function canonicalOperatorFacingContextValue(key: string, value: unknown): unkno
   }
 
   if (typeof value === 'string') {
-    if (
-      value.length === 0 ||
-      value.length > MAX_OPERATOR_FACING_CONTEXT_STRING_LENGTH ||
-      value !== value.trim() ||
-      !OPERATOR_FACING_CONTEXT_STRING_PATTERN.test(value)
-    ) {
+    if (value.length === 0 || value.length > MAX_OPERATOR_FACING_CONTEXT_STRING_LENGTH) {
       return undefined;
     }
+    if (OPERATOR_FACING_FILESYSTEM_CONTEXT_KEYS.has(key)) {
+      return OPERATOR_FACING_FILESYSTEM_CONTEXT_UNSAFE_PATTERN.test(value) ||
+        !isAbsolute(value) ||
+        normalize(value) !== value
+        ? undefined
+        : value;
+    }
+    if (value !== value.trim() || !OPERATOR_FACING_CONTEXT_STRING_PATTERN.test(value)) return undefined;
     const closedValues = OPERATOR_FACING_CLOSED_CONTEXT_VALUES[key];
     return closedValues === undefined || closedValues.has(value) ? value : undefined;
   }

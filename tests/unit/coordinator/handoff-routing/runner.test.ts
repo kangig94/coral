@@ -1014,6 +1014,41 @@ describe('handoff-routing/runner', () => {
     });
   });
 
+  it('attaches terminal and abort observers once across repeated startup polls', async () => {
+    const target = validatedTarget(roots[0]);
+    const controller = new AbortController();
+    let sleepCalls = 0;
+    const sleep = vi.fn<TimePort['sleep']>((_ms, options) => {
+      sleepCalls += 1;
+      if (sleepCalls <= 20) return Promise.resolve();
+      return new Promise<void>((resolve) =>
+        options?.signal?.addEventListener('abort', () => resolve(), { once: true }),
+      );
+    });
+    const race = vi.spyOn(Promise, 'race');
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      {
+        pluginRoot: '/plugin/root',
+        activeSelectionTarget: target,
+        signal: controller.signal,
+        time: { ...runtime.time, sleep },
+      },
+    );
+    await vi.waitFor(() => expect(sleepCalls).toBeGreaterThan(20));
+
+    // Re-attaching per poll is what `Promise.race` would do; the poll count only has to exceed one.
+    expect(race).not.toHaveBeenCalled();
+    controller.abort();
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-startup-observation-aborted' },
+    });
+  });
+
   it('should produce the active-selection source before backend startup delegation', async () => {
     const target = validatedTarget(roots[0]);
 

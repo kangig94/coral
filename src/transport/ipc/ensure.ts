@@ -682,9 +682,7 @@ async function waitForBackendReady(
     }
     if (terminalOutcome !== null) {
       throw new BackendUnreachableError(
-        sawFirstHealth
-          ? 'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.'
-          : 'Timed out waiting for Coral coordinator bind. Run `coral-cli backend status` to check coordinator health.',
+        'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
       );
     }
 

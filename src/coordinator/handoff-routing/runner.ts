@@ -638,61 +638,112 @@ async function waitForBackendStartupObservation(
   child: ChildProcess,
   signal: AbortSignal | undefined,
 ): Promise<BackendStartupObservation> {
-  const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
+  type ExternalObservation = Exclude<BackendStartupObservation, { kind: 'ready' }>;
+  type ExternalSettlement =
+    | Readonly<{ kind: 'observed'; observation: ExternalObservation }>
+    | Readonly<{ kind: 'rejected'; error: unknown }>;
+
+  let externalSettlement: ExternalSettlement | null = null;
+  let wakeForExternalSettlement: (() => void) | null = null;
   let removeAbortListener = (): void => undefined;
-  const aborted =
-    signal === undefined
-      ? new Promise<never>(() => undefined)
-      : new Promise<BackendStartupObservationAbort>((resolveAborted, rejectAborted) => {
-          const onAbort = (): void => {
-            try {
-              resolveAborted({
-                kind: 'aborted',
-                child: spawnedChildIdentity(child, runtime),
-                childDisposition: 'left-running-and-unobserved',
-              });
-            } catch (error: unknown) {
-              rejectAborted(error instanceof Error ? error : new Error(errorMessage(error), { cause: error }));
-            }
-          };
-          if (signal.aborted) {
-            onAbort();
-            return;
-          }
-          signal.addEventListener('abort', onAbort, { once: true });
-          removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+
+  const settleExternal = (settlement: ExternalSettlement): void => {
+    if (externalSettlement !== null) return;
+    externalSettlement = settlement;
+    wakeForExternalSettlement?.();
+  };
+  const readExternal = (): ExternalObservation | null => {
+    if (externalSettlement === null) return null;
+    if (externalSettlement.kind === 'rejected') throw externalSettlement.error;
+    return externalSettlement.observation;
+  };
+  const waitForExternalOr = <Value>(pending: Promise<Value>): Promise<Value | null> => {
+    if (externalSettlement !== null) return Promise.resolve(null);
+    return new Promise<Value | null>((resolvePending, rejectPending) => {
+      let waiting = true;
+      const wake = (): void => {
+        if (!waiting) return;
+        waiting = false;
+        resolvePending(null);
+      };
+      wakeForExternalSettlement = wake;
+      if (externalSettlement !== null) {
+        wake();
+        return;
+      }
+      void pending.then(
+        (value) => {
+          if (!waiting) return;
+          waiting = false;
+          if (wakeForExternalSettlement === wake) wakeForExternalSettlement = null;
+          resolvePending(value);
+        },
+        (error: unknown) => {
+          if (!waiting) return;
+          waiting = false;
+          if (wakeForExternalSettlement === wake) wakeForExternalSettlement = null;
+          rejectPending(error instanceof Error ? error : new Error(errorMessage(error), { cause: error }));
+        },
+      );
+    });
+  };
+  const finishExternal = async (
+    external: ExternalObservation,
+    reading?: Promise<LiveIncumbentReading>,
+  ): Promise<BackendStartupObservation> => {
+    if (external.kind === 'aborted') return external;
+    const finalHealth = reading === undefined ? await readLiveCoordinatorHealth(runtime, time) : await reading;
+    return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? external;
+  };
+
+  void observation.outcome.then(
+    (outcome) => settleExternal({ kind: 'observed', observation: { kind: 'terminal', outcome } }),
+    (error: unknown) => settleExternal({ kind: 'rejected', error }),
+  );
+
+  if (signal !== undefined) {
+    const onAbort = (): void => {
+      try {
+        settleExternal({
+          kind: 'observed',
+          observation: {
+            kind: 'aborted',
+            child: spawnedChildIdentity(child, runtime),
+            childDisposition: 'left-running-and-unobserved',
+          },
         });
+      } catch (error: unknown) {
+        settleExternal({ kind: 'rejected', error });
+      }
+    };
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+    }
+  }
 
   try {
     while (true) {
+      const externalBeforeRead = readExternal();
+      if (externalBeforeRead !== null) return await finishExternal(externalBeforeRead);
+
       const reading = readLiveCoordinatorHealth(runtime, time);
       const readiness = reading.then((health) =>
         liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId),
       );
-      const observed = await Promise.race([terminal, readiness, aborted]);
-      if (observed !== null) {
-        if (observed.kind === 'ready' || observed.kind === 'aborted') {
-          return observed;
-        }
-        if (observed.kind === 'terminal') {
-          return terminalBackendStartupReadiness(await reading, desiredIdentity) ?? observed;
-        }
-      }
+      const observed = await waitForExternalOr(readiness);
+      const externalDuringRead = readExternal();
+      if (externalDuringRead !== null) return await finishExternal(externalDuringRead, reading);
+      if (observed?.kind === 'ready') return observed;
 
-      const terminalDuringPoll = await Promise.race([
-        terminal,
-        aborted,
-        time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS, { signal }).then(() => null),
-      ]);
-      if (terminalDuringPoll !== null) {
-        if (terminalDuringPoll.kind === 'aborted') {
-          return terminalDuringPoll;
-        }
-        const finalHealth = await readLiveCoordinatorHealth(runtime, time);
-        return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? terminalDuringPoll;
-      }
+      await waitForExternalOr(time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS, { signal }));
+      const externalDuringPoll = readExternal();
+      if (externalDuringPoll !== null) return await finishExternal(externalDuringPoll);
     }
   } finally {
+    wakeForExternalSettlement = null;
     removeAbortListener();
   }
 }

@@ -436,6 +436,111 @@ describe('CoralSetupError', () => {
     },
   );
 
+  it('restores a handoff socket-holder refusal for a non-ASCII canonical path', () => {
+    const socketPath = '/home/김/.coral/run/coordinator.sock';
+
+    expect(
+      readOperatorFacingCoralSetupError({
+        code: 'handoff_socket_holder_unverified',
+        userMessage: 'persisted user message',
+        remediation: 'persisted remediation',
+        context: { stage: 'handoff-deadline', socketPath },
+      }),
+    ).toEqual({
+      kind: 'documented',
+      code: 'handoff_socket_holder_unverified',
+      userMessage: `Handoff refused at the startup deadline for socket ${socketPath}: the socket remained bound but no verified holder pid was available.`,
+      remediation:
+        'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff.',
+    });
+  });
+
+  it.each([
+    {
+      field: 'pluginRoot',
+      code: 'startup_bundle_unresolvable' as const,
+      context: { pluginRoot: '/home/김/플러그인' },
+      expected: '/home/김/플러그인',
+    },
+    {
+      field: 'socketPath',
+      code: 'coordinator_socket_bind_failed' as const,
+      context: { socketPath: '/home/김/run/coordinator.sock' },
+      expected: '/home/김/run/coordinator.sock',
+    },
+    {
+      field: 'directory',
+      code: 'coordinator_socket_dir_insecure' as const,
+      context: { directory: '/tmp/사용자', reason: 'unusable' },
+      expected: '/tmp/사용자',
+    },
+    {
+      field: 'legacyPath',
+      code: 'legacy_foreign_generation' as const,
+      context: { operation: 'discard', legacyPath: '/home/김/legacy' },
+      expected: '/home/김/legacy',
+    },
+    {
+      field: 'baseDir',
+      code: 'legacy_foreign_generation' as const,
+      context: { operation: 'discard', legacyPath: '/legacy', baseDir: '/home/김/state' },
+      expected: '/home/김/state',
+    },
+    {
+      field: 'path',
+      code: 'store_open_contended' as const,
+      context: { path: '/home/김/store.db' },
+      expected: '/home/김/store.db',
+    },
+    {
+      field: 'quarantineDir',
+      code: 'kb_commit_already_quarantined' as const,
+      context: { quarantineDir: '/home/김/quarantine' },
+      expected: '/home/김/quarantine',
+    },
+    {
+      field: 'recordPath',
+      code: 'active_store_coordination_invalid' as const,
+      context: { recordPath: '/home/김/record', failureCode: 'record_changed' },
+      expected: '/home/김/record',
+    },
+    {
+      field: 'coordinationRoot',
+      code: 'active_store_coordination_invalid' as const,
+      context: { coordinationRoot: '/home/김/coordination', failureCode: 'coordination_directory_mode' },
+      expected: '/home/김/coordination',
+    },
+  ])('preserves non-ASCII filesystem field $field', ({ code, context, expected }) => {
+    const result = readOperatorFacingCoralSetupError({
+      code,
+      userMessage: 'persisted user message',
+      remediation: 'persisted remediation',
+      context,
+    });
+
+    expect(result.kind).toBe('documented');
+    if (result.kind === 'documented') expect(`${result.userMessage}\n${result.remediation}`).toContain(expected);
+  });
+
+  it('rejects noncanonical and terminal-unsafe filesystem context values', () => {
+    for (const socketPath of [
+      'relative/coordinator.sock',
+      '/home/user/../other/coordinator.sock',
+      '/home/김/.coral/run/coordinator.sock\nNext step: forged',
+      '/home/김/.coral/run/\u001b[2Jcoordinator.sock',
+      '/home/김/.coral/run/\u202ecoordinator.sock',
+    ]) {
+      expect(
+        readOperatorFacingCoralSetupError({
+          code: 'handoff_socket_holder_unverified',
+          userMessage: 'persisted user message',
+          remediation: 'persisted remediation',
+          context: { stage: 'handoff-deadline', socketPath },
+        }),
+      ).toEqual({ kind: 'invalid_diagnostic' });
+    }
+  });
+
   it.each([
     {
       failure: 'a discriminator owned by another refusal',

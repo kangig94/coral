@@ -168,12 +168,7 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
   no_record_socket_present: 75,
 };
 
-/**
- * Every daemon status must be assigned an explicit exit contribution.
- *
- * `0` reports only that this read completed and must not authorize mutation. `75` marks evidence that requires
- * operator resolution or another observation before startup can proceed.
- */
+// Every daemon status must declare its shell exit contribution explicitly.
 export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['status'], 0 | 75>> = {
   ok: 0,
   no_record_no_socket: 0,
@@ -403,6 +398,43 @@ function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0
     (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0
     ? 75
     : 0;
+}
+
+function formatUnobservedStartupChildSuccessors(result: HandoffRoutingStatusReadResult): string[] {
+  if (result.kind !== 'current') return [];
+  return result.statuses.flatMap((status) => {
+    if (status.kind !== 'terminal' || status.terminal.disposition.kind !== 'delegated-startup-observation-aborted') {
+      return [];
+    }
+    const invocationId = status.terminal.invocationId;
+    const child = status.terminal.disposition.child;
+    const childLiveness = status.childLiveness;
+    const subject = `Detached startup child pid ${child.pid} (incarnation ${child.incarnation})`;
+    switch (childLiveness?.kind) {
+      case 'alive':
+        return [
+          `Current observation: ${subject} for routing invocation ${invocationId} is still alive. Next step: wait for that exact child to exit, then rerun coral-cli backend status.`,
+        ];
+      case 'absent':
+        return [
+          `Current observation: ${subject} for routing invocation ${invocationId} is absent. Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`,
+        ];
+      case 'unobservable':
+        return childLiveness.cause === 'deadline-expired'
+          ? [
+              `Current observation: ${subject} for routing invocation ${invocationId} could not be observed before the sweep deadline. Next step: rerun coral-cli backend status; an expired sweep cannot authorize resolution.`,
+            ]
+          : [
+              `Current observation: ${subject} for routing invocation ${invocationId} is unobservable (${childLiveness.cause}). Next step: verify that exact process externally, then run coral-cli backend routing-status resolve --invocation ${invocationId} --force-unobservable.`,
+            ];
+      case undefined:
+        return [
+          `Current observation: ${subject} for routing invocation ${invocationId} has not been re-observed. Next step: rerun coral-cli backend status.`,
+        ];
+      default:
+        return assertNever(childLiveness);
+    }
+  });
 }
 
 const OFFLINE_OPERATOR_FLAVOR_HELP =
@@ -935,7 +967,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       ]);
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
+      const output = [
+        formatBackendStatus(status, routingStatusRead, liveHandoffResult),
+        ...formatUnobservedStartupChildSuccessors(routingStatusRead),
+      ];
+      process.stdout.write(`${output.join('\n')}\n`);
       const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
         BACKEND_STATUS_EXIT_CODES[status.status],
         liveHandoffObligation.exitContribution,
@@ -952,7 +988,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
   const resolveRoutingStatusCommand = routingStatusCommand
     .command('resolve')
-    .description('Resolve one retained opening or acknowledge one retained capacity eviction')
+    .description('Resolve one retained opening or unobserved startup child, or acknowledge one capacity eviction')
     .requiredOption('--invocation <id>', 'Canonical invocation ID shown by backend status', commanderInvocationId)
     .option(
       '--force-unobservable',

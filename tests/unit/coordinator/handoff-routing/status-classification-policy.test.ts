@@ -4,10 +4,13 @@ import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationFailureSuccessor } from '#src/cli/format/handoff-publication.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
+  handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   persistedHandoffDispositionPolicy,
   type HandoffRoutingStatusClassification,
   type HandoffRoutingStatusClassificationPolicy,
+  type OwnerLiveness,
 } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -191,7 +194,19 @@ const policyFixtures = [
 ] as const satisfies readonly PolicyFixture[];
 
 describe('handoff routing status classification policy', () => {
-  it('classifies an abandoned startup child as bounded warning history', () => {
+  it('keeps the maximum compactable terminal in bounded history', () => {
+    expect(
+      persistedHandoffDispositionPolicy(MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION.disposition),
+    ).toEqual({
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'warning',
+      classification: 'history',
+      exitContribution: 0,
+    });
+  });
+
+  it('classifies an abandoned startup child as a warning hold', () => {
     expect(
       persistedHandoffDispositionPolicy({
         kind: 'delegated-startup-observation-aborted',
@@ -201,11 +216,59 @@ describe('handoff routing status classification policy', () => {
       }),
     ).toEqual({
       durability: 'lifecycle-journal',
-      retention: 'bounded-history',
+      retention: 'until-resolved',
       severity: 'warning',
-      classification: 'history',
-      exitContribution: 0,
+      classification: 'hold',
+      exitContribution: 75,
     });
+  });
+
+  it('holds until the unobserved child is proven absent', () => {
+    const contribution = (childLiveness: OwnerLiveness): 0 | 75 =>
+      handoffRoutingStatusExitContribution({
+        kind: 'current',
+        generation,
+        statuses: [
+          {
+            kind: 'terminal',
+            selection: {
+              generation,
+              sequence: 1,
+              eventId: 'selection-event',
+              invocationId: 'routing-invocation',
+              observedAt: '2026-09-01T00:00:00.000Z',
+              eventKind: 'routing-selected',
+              phase: 'selection',
+              owner: { pid: 4000, incarnation: testIncarnation('routing-owner') },
+              disposition: { kind: 'continue-current', basis: { kind: 'incumbent-absent' } },
+            },
+            childLiveness,
+            terminal: {
+              generation,
+              sequence: 2,
+              eventId: 'terminal-event',
+              invocationId: 'routing-invocation',
+              observedAt: '2026-09-01T00:00:00.000Z',
+              eventKind: 'continuation-finalized',
+              phase: 'terminal',
+              selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+              disposition: {
+                kind: 'delegated-startup-observation-aborted',
+                version: '2.3.4',
+                child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
+                childDisposition: 'left-running-and-unobserved',
+              },
+            },
+          },
+        ],
+        retirementHistoryTruncated: emptyRetirementHistory,
+      });
+
+    expect([
+      contribution({ kind: 'alive' }),
+      contribution({ kind: 'unobservable', cause: 'probe-failed' }),
+      contribution({ kind: 'absent' }),
+    ]).toEqual([75, 75, 0]);
   });
 
   it('matches every independent policy fixture and no additional classification arm', () => {
