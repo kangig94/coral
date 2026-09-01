@@ -168,14 +168,16 @@ export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75
 };
 
 /**
- * Every new daemon status must be assigned an explicit exit contribution.
+ * Every daemon status must be assigned an explicit exit contribution.
  *
- * `75`, not `1`, for the statuses that did not settle: this command is a read-only inspection, so none of them
- * is an observed refusal the way `backend shutdown`'s are — they mean only "ask again".
+ * `0` reports only that this read completed and must not authorize mutation. `75` marks evidence that requires
+ * operator resolution or another observation before startup can proceed.
  */
 export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['status'], 0 | 75>> = {
   ok: 0,
-  not_running: 0,
+  no_record_no_socket: 0,
+  recorded_process_absent: 0,
+  foreign_coordinator: 75,
   shutting_down: 0,
   unauthorized: 0,
   recent_failure: 0,

@@ -220,7 +220,7 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
       return [
         `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
         basis.cause === 'health-shape-rejected'
-          ? 'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session) to relaunch the backend from the current installation.'
+          ? 'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff from the current installation.'
           : 'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
       ].join('\n');
     case 'incumbent-unusable':
@@ -233,7 +233,7 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
     case 'incumbent-identity-unavailable':
       return [
         `Handoff: continuing current build — incumbent ${basis.incumbent.version} did not report a complete bundle identity.`,
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
       ].join('\n');
     case 'same-build-set':
       return `Handoff: continuing current build — invoking and incumbent builds share build set ${basis.buildSetId}.`;
@@ -250,7 +250,7 @@ function formatInvokingBuildNotOlder(
   basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
 ): string {
   const nextStep =
-    'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.';
+    'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.';
   switch (basis.comparison) {
     case 'same-version':
       return [
@@ -376,8 +376,12 @@ function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
       return formatRunningStatus(result.health);
-    case 'not_running':
-      return 'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.';
+    case 'no_record_no_socket':
+      return 'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.';
+    case 'recorded_process_absent':
+      return `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.`;
+    case 'foreign_coordinator':
+      return `The recorded coordinator address is held by a coordinator for namespace=${result.observed.namespace} flavor=${result.observed.flavor}, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it, or run this build's own coral-cli backend shutdown.`;
     case 'undecodable_record':
       return formatUndecodableRecordStatus(result);
     case 'unreachable':
@@ -389,7 +393,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
-      return 'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.';
+      return 'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry a coral-cli mutating command; it attempts startup or handoff with a fresh token.';
     default:
       return assertNever(result);
   }
@@ -688,7 +692,7 @@ function formatUndecodableRecordStatus(result: Extract<BackendStatusFull, { stat
   return [
     `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
     'A coordinator may still be running; this is not a report that none is.',
-    `Next step: no coral-cli command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run a coral-cli mutating command to relaunch.`,
+    `Next step: no coral-cli command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run a coral-cli mutating command; it attempts startup or handoff.`,
   ].join('\n');
 }
 
@@ -727,7 +731,7 @@ function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 
     case 'no_response':
       return 'Next step: retry, and check the coordinator logs if it persists.';
     case 'refused':
-      return `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: run 'ps -p ${result.pid}' (or check your process manager), and if that is not Coral, delete ${result.recordPath} and run a coral-cli mutating command to relaunch.`;
+      return `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: run 'ps -p ${result.pid}' (or check your process manager), and if that is not Coral, delete ${result.recordPath} and run a coral-cli mutating command; it attempts startup or handoff.`;
     default:
       return assertNever(result);
   }
@@ -743,13 +747,13 @@ function formatNoRecordSocketPresentStatus(
     'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
     `Socket: ${result.socketPath}`,
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
-    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, and if it instead reports the backend unreachable, the coordinator log is what says why.',
+    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way; it attempts startup or handoff. If it reports the backend unreachable, the coordinator log is what says why.',
   ].join('\n');
 }
 
 function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 'recent_failure' }>): string {
   const lines = [
-    'Backend is not running after a recent coordinator failure.',
+    'Coral recorded a recent coordinator failure.',
     `Phase: ${result.phase}`,
     `Retryable: ${result.retryable ? 'yes' : 'no'}`,
   ];
@@ -757,7 +761,7 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
     // Undocumented failures have no authored remediation, and their raw message can carry provider payloads or
     // credentials, so the log stays the only place it is rendered.
     lines.push(
-      'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+      'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
     );
   } else {
     lines.push(`Cause: ${result.setupError.userMessage} [code=${result.setupError.code}]`);
