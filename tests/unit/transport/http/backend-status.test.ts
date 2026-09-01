@@ -1,11 +1,5 @@
-// `getBackendStatusFull` has two independent ways to fail to reach an answer, and for a while both arrived as
-// `not_running` — a status an operator reads as "nothing is there, start one".
-//
-// The process axis was split first: only an observed `'absent'` reports not-running. The record axis was
-// missed, because both consumers reach it through `readBackendInfo`, whose `null` covers a missing file, an
-// undecodable one, *and* a record lacking `version`/`instanceId`. So a `coordinator.json` truncated mid-write,
-// or written by a build whose shape this one rejects, reported a confident absence while a coordinator was
-// serving on the socket.
+// A missing record, an absent recorded process, and a decoded foreign identity are distinct observations;
+// none may be widened into a claim that no coordinator exists.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
@@ -81,16 +75,24 @@ describe('getBackendStatusFull record disposition', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reports not_running when the record is genuinely missing', async () => {
+  it('reports no_record_no_socket when neither discovery evidence nor a socket exists', async () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
-  // A missing record alone used to report `not_running` unconditionally — including for a coordinator caught
-  // between binding its IPC socket and publishing this discovery record (`observeCoordinator`'s
-  // `no-record-socket-present`). That window must not read as a confident absence.
-  it('reports no_record_socket_present, not not_running, when the coordinator socket exists without a record', async () => {
+  it('lets a fresh diagnostic supersede the no-record fallback', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+    });
+  });
+
+  it('reports no_record_socket_present when the coordinator socket exists without a record', async () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -131,8 +133,7 @@ describe('getBackendStatusFull record disposition', () => {
     // What this change establishes: the daemon is asked at all. Before it, `readBackendInfo` answered `null`
     // for this record and the function short-circuited to a not-running report without dialling anything.
     expect(fetchMock, 'the record carries host, port and bootToken, so the daemon can be asked').toHaveBeenCalled();
-    // And the answer is now `unreachable` rather than `not_running`: the 500 came from something listening at
-    // the recorded address.
+    // The 500 came from something listening at the recorded address.
     expect(result.status).toBe('unreachable');
   });
 
@@ -154,7 +155,7 @@ describe('getBackendStatusFull record disposition', () => {
   // `pid` alongside the foreign `namespace`. A payload missing those fails the shape check first, so the `||`
   // in `probeUnauthenticatedPing` used to short-circuit before the namespace comparison ever ran, and this
   // test passed for a reason it did not describe.
-  it('still reports not_running for a peer whose namespace says it is not this backend', async () => {
+  it('reports the decoded foreign namespace from the unauthenticated probe', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' } as Record<string, unknown>;
     vi.stubGlobal(
@@ -164,13 +165,16 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'foreign_coordinator',
+      observed: { namespace: 'someone-else', flavor: 'prod' },
+    });
   });
 
   // `probeUnauthenticatedPing`'s guard is `namespace !== ... || flavor !== ...`: a namespace-only mismatch
   // exercises just the left side. Deleting `|| body.flavor !== info.flavor` left this suite green until this
   // test existed, because nothing sent a body agreeing on namespace and disagreeing only on flavor.
-  it('reports not_running for a peer whose flavor disagrees, even with a matching namespace', async () => {
+  it('reports the decoded foreign flavor from the unauthenticated probe', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     const foreignFlavorPing = { ...JSON.parse(ping('ok')), flavor: 'dev' } as Record<string, unknown>;
     vi.stubGlobal(
@@ -180,13 +184,33 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'foreign_coordinator',
+      observed: { namespace: 'test-namespace', flavor: 'dev' },
+    });
+  });
+
+  it('lets a matching diagnostic supersede the foreign-identity fallback', async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 12345);
+    const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+    });
   });
 
   // This is the payload the test above used to send: it fails `isBackendPing` (no `version`, `bundleHash`,
   // `instanceId`, or `pid`), so it is a shape rejection, not a namespace disagreement — and proves nothing
-  // about whose coordinator answered. Must not fall into `notOurCoordinator`'s `not_running`.
-  it('reports unreachable, not not_running, for a 200 ping body this build cannot decode', async () => {
+  // about whose coordinator answered.
+  it('reports unreachable for a 200 ping body this build cannot decode', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
       'fetch',
@@ -209,7 +233,7 @@ describe('getBackendStatusFull record disposition', () => {
     async (reason) => {
       mockState.observed = { kind: 'unreadable-record', reason, path: '/run/coral/coordinator.json' };
       // The record-derived view is still populated here, so a consumer reading only that would fall through to
-      // the liveness check and report `not_running` — the collapse this branch exists to stop.
+      // the liveness check and manufacture an absence — the collapse this branch exists to stop.
 
       const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -264,7 +288,10 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'recorded_process_absent',
+      pid: PID,
+    });
   });
 
   it('ignores one recorded during this run by a different pid', async () => {
@@ -272,7 +299,10 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'recorded_process_absent',
+      pid: PID,
+    });
   });
 });
 
@@ -433,9 +463,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
   });
 
-  // `probeDetailedHealth`'s own not-our-coordinator branch had no test: every namespace-mismatch case above
-  // exercised only the unauthenticated ping, which returns before the detailed probe is ever asked.
-  it('reports not_running for a peer whose namespace disagrees only at the detailed probe', async () => {
+  it('reports the decoded foreign namespace from the detailed probe', async () => {
     const foreignDetailed = { ...JSON.parse(detailed('ok')), namespace: 'someone-else' } as Record<string, unknown>;
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
@@ -444,12 +472,15 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'foreign_coordinator',
+      observed: { namespace: 'someone-else', flavor: 'prod' },
+    });
   });
 
   // Same gap as the ping probe, one level down: `probeDetailedHealth`'s guard is also `namespace !== ... ||
   // flavor !== ...`, and nothing exercised the flavor-only side of it here either.
-  it('reports not_running for a peer whose flavor disagrees only at the detailed probe', async () => {
+  it('reports the decoded foreign flavor from the detailed probe', async () => {
     const foreignFlavorDetailed = { ...JSON.parse(detailed('ok')), flavor: 'dev' } as Record<string, unknown>;
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
@@ -458,12 +489,15 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'foreign_coordinator',
+      observed: { namespace: 'test-namespace', flavor: 'dev' },
+    });
   });
 
   // Same split as the ping probe: a detailed body this build cannot decode proves nothing about whose
-  // coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
-  it('reports unreachable, not not_running, for a 200 detailed body this build cannot decode', async () => {
+  // coordinator answered, so it must not become a foreign-identity verdict.
+  it('reports unreachable for a 200 detailed body this build cannot decode', async () => {
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
       new Response(JSON.stringify({ status: 'ok' }), { status: 200 }),

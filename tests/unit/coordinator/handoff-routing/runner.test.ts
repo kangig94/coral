@@ -223,6 +223,16 @@ function childThatErrors(error: Error): ChildProcess {
   return child;
 }
 
+function childThatSpawnsThenErrors(error: Error): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  child.unref = vi.fn();
+  queueMicrotask(() => {
+    child.emit('spawn');
+    queueMicrotask(() => child.emit('error', error));
+  });
+  return child;
+}
+
 function childThatStaysAlive(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
   child.unref = vi.fn();
@@ -851,27 +861,27 @@ describe('handoff-routing/runner', () => {
     });
   });
 
-  it('should bypass the CLI guard for monotone backend startup delegation and confirm liveness without exit', async () => {
+  it('keeps backend-startup delegation pending past the former liveness point until authenticated readiness', async () => {
     process.env[GUARD_ENV] = 'not-a-cli-guard';
     const bundleDir = roots[0];
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
-    const confirmationTimer = {};
-    const confirmationDelays: number[] = [];
-    let confirmAlive: (() => void) | undefined;
+    let releasePoll: (() => void) | undefined;
+    const pollDelays: number[] = [];
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: async () => {},
-      setTimeout: vi.fn((fn: () => void, ms: number) => {
-        confirmationDelays.push(ms);
-        confirmAlive = fn;
-        return confirmationTimer;
-      }),
+      sleep: (ms) =>
+        new Promise<void>((resolve) => {
+          pollDelays.push(ms);
+          releasePoll = resolve;
+        }),
+      setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
-      setInterval: vi.fn(() => confirmationTimer),
+      setInterval: vi.fn(() => ({})),
       clearInterval: vi.fn(),
     };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     mockState.spawn.mockImplementationOnce(() => {
       child = childThatStaysAlive();
       return child;
@@ -885,7 +895,7 @@ describe('handoff-routing/runner', () => {
     );
     await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
 
-    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+    expect(mockState.probeCoordinator).toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
     expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
       cwd: '/handoff/cwd',
@@ -893,10 +903,8 @@ describe('handoff-routing/runner', () => {
       stdio: 'inherit',
       detached: true,
     });
-    expect(time.setTimeout).toHaveBeenCalledOnce();
-    expect(confirmationDelays).toHaveLength(1);
-    expect(Number.isFinite(confirmationDelays[0])).toBe(true);
-    expect(confirmationDelays[0]).toBeGreaterThan(0);
+    expect(pollDelays).toHaveLength(1);
+    expect(pollDelays[0]).toBe(100);
 
     let settled = false;
     void result.then(() => {
@@ -904,31 +912,18 @@ describe('handoff-routing/runner', () => {
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    confirmAlive?.();
+    configureNewerIncumbent(bundleDir);
+    releasePoll?.();
     await expect(result).resolves.toMatchObject({
       kind: 'delegated',
       outcome: { kind: 'handoff-success', version: manifest.version },
     });
-    expect(time.clearTimeout).toHaveBeenCalledWith(confirmationTimer);
   });
 
   it('refuses to continue-current for a startup handoff whose stdout drain would fail', async () => {
     const bundleDir = roots[0];
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
-    let confirmAlive: (() => void) | undefined;
-    const time: TimePort = {
-      now: () => 0,
-      monotonicNow: () => 0n,
-      sleep: async () => {},
-      setTimeout: vi.fn((fn: () => void) => {
-        confirmAlive = fn;
-        return {};
-      }),
-      clearTimeout: vi.fn(),
-      setInterval: vi.fn(() => ({})),
-      clearInterval: vi.fn(),
-    };
     mockState.spawn.mockImplementationOnce(() => {
       child = childThatStaysAlive();
       return child;
@@ -937,12 +932,14 @@ describe('handoff-routing/runner', () => {
     const aborted = AbortSignal.abort();
     const result = runHandoff(
       { kind: 'backend-startup' },
-      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time, signal: aborted },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted },
     );
     await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
-    confirmAlive?.();
 
-    await expect(result).resolves.toMatchObject({ kind: 'delegated' });
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success' },
+    });
 
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     await expect(
@@ -1294,6 +1291,133 @@ describe('handoff-routing/runner', () => {
       expect(child?.unref).toHaveBeenCalledOnce();
     },
   );
+
+  it('should report a signalled backend startup child as terminal before readiness', async () => {
+    const target = validatedTarget(roots[0]);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatExits(null, 'SIGTERM'));
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).resolves.toEqual({
+      kind: 'delegated',
+      version: manifest.version,
+      outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
+    });
+  });
+
+  it('should propagate a backend startup child error without waiting for exit', async () => {
+    const target = validatedTarget(roots[0]);
+    const failure = new Error('backend lifecycle error');
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatSpawnsThenErrors(failure));
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).rejects.toBe(failure);
+  });
+
+  it('keeps both delegators pending until the final backend publishes authenticated readiness', async () => {
+    const firstTarget = validatedTarget(roots[0]);
+    const secondTarget = validatedTarget(roots[0]);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => childThatStaysAlive());
+
+    const first = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: firstTarget, time },
+    );
+    void first.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    const second = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: secondTarget, time },
+    );
+    void second.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+
+    let firstSettled = false;
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+
+    configureNewerIncumbent(roots[0]);
+    for (const release of releasePolls.splice(0)) release();
+
+    await expect(second).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
+    await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
+  });
+
+  it('keeps the first delegator pending until a terminal descendant propagates', async () => {
+    const firstTarget = validatedTarget(roots[0]);
+    const secondTarget = validatedTarget(roots[0]);
+    let firstChild: ChildProcess | undefined;
+    let finalChild: ChildProcess | undefined;
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn
+      .mockImplementationOnce(() => {
+        firstChild = childThatStaysAlive();
+        return firstChild;
+      })
+      .mockImplementationOnce(() => {
+        finalChild = childThatStaysAlive();
+        return finalChild;
+      });
+
+    const first = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: firstTarget, time },
+    );
+    void first.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    const second = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: secondTarget, time },
+    );
+    void second.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    const spawnedFirstChild = firstChild;
+    const spawnedFinalChild = finalChild;
+    if (spawnedFirstChild === undefined || spawnedFinalChild === undefined) {
+      throw new Error('Expected both delegated backend children to spawn.');
+    }
+    void second.then(
+      () => spawnedFirstChild.emit('exit', 23, null),
+      () => undefined,
+    );
+
+    spawnedFinalChild.emit('exit', 23, null);
+
+    await expect(second).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+    await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+  });
 
   // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists
   // and health could not be resolved from it. Reporting success here would be exactly the finalization this

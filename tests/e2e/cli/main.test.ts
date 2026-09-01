@@ -249,7 +249,7 @@ describe('cli main — backend status without daemon', () => {
 
     expect(status).toBe(0);
     expect(stdout.trim().split('\n')).toEqual([
-      'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
       expect.stringMatching(
         /^Routing invocation [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}: terminal; continued current \(incumbent-absent\)\.$/,
       ),

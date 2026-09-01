@@ -2,6 +2,8 @@ import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,9 +13,7 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 
 const mockState = vi.hoisted(() => ({
-  spawn: vi.fn<(command: string, args?: readonly string[], options?: unknown) => { pid: number; unref: () => void }>(
-    () => ({ pid: 12_345, unref: vi.fn() }),
-  ),
+  spawn: vi.fn<(command: string, args?: readonly string[], options?: unknown) => ChildProcess>(),
   health: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   shutdown: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   bindSocket: vi.fn<() => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>>(),
@@ -61,6 +61,13 @@ function makeHome(): string {
   tempRoots.push(root);
   mockState.home = root;
   return root;
+}
+
+function spawnedChild(pid = 12_345): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.defineProperty(child, 'pid', { value: pid, configurable: true });
+  child.unref = vi.fn();
+  return child;
 }
 
 function createPluginRoot(flavor: 'prod' | 'dev' = 'prod', version = '0.5.2'): string {
@@ -124,6 +131,47 @@ function writeDiscovery(
   );
 }
 
+function writeStartupSentinel(
+  root: string,
+  attemptId: string,
+  overrides: Partial<{ pid: number; code: string; userMessage: string; remediation: string }> = {},
+): void {
+  const paths = coordinatorPaths(readBuildFlavor(root));
+  mkdirSync(paths.runDir, { recursive: true });
+  writeFileSync(
+    paths.startupErrorFile,
+    JSON.stringify({
+      version: 1,
+      attemptId,
+      pid: overrides.pid ?? 12_345,
+      startedAt: Date.now(),
+      recordedAt: Date.now(),
+      phase: 'startup_failed',
+      state: 'stopped_with_diagnostic',
+      exitCode: 1,
+      socketPath: paths.socketPath,
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      namespace: pluginRootNamespace(root),
+      error: {
+        code: overrides.code ?? 'handoff_socket_holder_unverified',
+        userMessage: overrides.userMessage ?? 'Handoff refused after observing a socket-only holder.',
+        remediation: overrides.remediation ?? 'Inspect the socket holder, then retry.',
+      },
+    }),
+    'utf-8',
+  );
+}
+
+function spawnedAttemptId(): string {
+  const options = mockState.spawn.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+  const attemptId = options?.env?.CORAL_STARTUP_ATTEMPT_ID;
+  if (attemptId === undefined) {
+    throw new Error('Expected the spawned coordinator attempt id.');
+  }
+  return attemptId;
+}
+
 function createErrnoError(code: string): NodeJS.ErrnoException {
   const error = new Error(code) as NodeJS.ErrnoException;
   error.code = code;
@@ -153,6 +201,7 @@ const savedChildEnv = new Map(childEnvKeys.map((key) => [key, process.env[key]])
 beforeEach(() => {
   delete process.env.CLAUDE_CONFIG_DIR;
   for (const key of childEnvKeys) delete process.env[key];
+  mockState.spawn.mockImplementation(() => spawnedChild());
 });
 
 afterEach(() => {
@@ -614,6 +663,29 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
+  it('keeps the existing-starting wait bounded without spawning another coordinator', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    mockState.health.mockResolvedValue({
+      status: 'starting',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'starting-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensure, KERNEL_READY_DEADLINE_MS, STARTUP_POLL_MS } = await importEnsure();
+    const result = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(KERNEL_READY_DEADLINE_MS + STARTUP_POLL_MS);
+    const error = await result;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator startup');
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
   it('should wait for a draining incumbent to release the socket before spawning', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -660,7 +732,7 @@ describe('ipc ensure', () => {
         token: 'replacement-token',
         instanceId: 'replacement-coordinator',
       });
-      return { pid: 12_345, unref: vi.fn() };
+      return spawnedChild();
     });
 
     const { ensure } = await importEnsure();
@@ -795,7 +867,7 @@ describe('ipc ensure', () => {
         token: 'replacement-token',
         instanceId: 'replacement-coordinator',
       });
-      return { pid: 12_345, unref: vi.fn() };
+      return spawnedChild();
     });
 
     const { ensure } = await importEnsure();
@@ -842,7 +914,7 @@ describe('ipc ensure', () => {
         bundleHash: 'bundle-dir-hash',
         instanceId: 'bundle-dir-coordinator',
       });
-      return { pid: 12_345, unref: vi.fn() };
+      return spawnedChild();
     });
 
     const { ensure } = await importEnsure();
@@ -855,22 +927,234 @@ describe('ipc ensure', () => {
     expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([join(bundleDir, 'coral-backend.cjs')]);
   });
 
-  it('uses the bind deadline while a freshly spawned coordinator has not answered health', async () => {
+  it('adopts a no-health socket-holder refusal after the drain deadline while its child remains alive', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
 
     mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
-    mockState.spawn.mockReturnValue({ pid: 12_345, unref: vi.fn() });
+    const child = spawnedChild();
+    mockState.spawn.mockReturnValue(child);
 
-    const { ensure, KERNEL_BIND_DEADLINE_MS, STARTUP_POLL_MS } = await importEnsure();
+    const { ensure } = await importEnsure();
     const ensuredPromise = ensure(root).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(KERNEL_BIND_DEADLINE_MS + STARTUP_POLL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockState.spawn).toHaveBeenCalledOnce();
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), 30_400);
+    await vi.advanceTimersByTimeAsync(30_800);
+    const error = await ensuredPromise;
+
+    expect(error).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it('adopts an exact-attempt sentinel after the former 60.8 second ceiling while the child remains alive', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    const child = spawnedChild();
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(
+      () =>
+        writeStartupSentinel(root, spawnedAttemptId(), {
+          pid: 99_999,
+          code: 'handoff_sigkill_grace_target_alive',
+          userMessage: 'The verified target remained alive after accepted SIGKILL.',
+          remediation: 'Wait for the target to exit, then retry.',
+        }),
+      61_000,
+    );
+    await vi.advanceTimersByTimeAsync(61_400);
+    const error = await ensuredPromise;
+
+    expect(error).toMatchObject({
+      code: 'handoff_sigkill_grace_target_alive',
+      userMessage: 'The verified target remained alive after accepted SIGKILL.',
+    });
+    expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it('performs a final sentinel read when the child exits during the poll sleep', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockState.spawn).toHaveBeenCalledOnce();
+
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      code: 'handoff_accepted_signal_target_alive_after_failure',
+      userMessage: 'Handoff failed after an accepted signal.',
+      remediation: 'Wait for shutdown to finish, then retry.',
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(ensuredPromise).resolves.toMatchObject({
+      code: 'handoff_accepted_signal_target_alive_after_failure',
+    });
+  });
+
+  it('does not adopt a foreign-build incumbent as the ready result of the current attempt', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    let spawned = false;
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.1',
+        bundleHash: 'old-hash',
+        flavor: 'prod',
+        instanceId: 'foreign-incumbent',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, {
+        version: '0.5.1',
+        bundleHash: 'old-hash',
+        instanceId: 'foreign-incumbent',
+      });
+      return child;
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockState.spawn).toHaveBeenCalledOnce();
+
+    writeStartupSentinel(root, spawnedAttemptId(), {
+      code: 'handoff_accepted_signal_target_alive_after_failure',
+      userMessage: 'Handoff failed after an accepted signal.',
+      remediation: 'Wait for shutdown to finish, then retry.',
+    });
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(ensuredPromise).resolves.toMatchObject({
+      code: 'handoff_accepted_signal_target_alive_after_failure',
+    });
+  });
+
+  it('adopts a different-identity coordinator reached through the current attempt delegation chain', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    let spawned = false;
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.3',
+        bundleHash: 'selected-hash',
+        flavor: 'prod',
+        instanceId: 'selected-coordinator',
+        namespace: pluginRootNamespace(root),
+        env: { CORAL_STARTUP_ATTEMPT_ID: spawnedAttemptId() },
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, {
+        version: '0.5.3',
+        bundleHash: 'selected-hash',
+        instanceId: 'selected-coordinator',
+      });
+      return spawnedChild();
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    await vi.advanceTimersByTimeAsync(800);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('selected-coordinator');
+    expect(ensured.bundleHash).toBe('selected-hash');
+    expect(mockState.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('treats child error without exit as terminal without exposing its text', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    const lifecycleSecret = 'private spawn lifecycle failure';
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    child.emit('error', new Error(lifecycleSecret));
+    await vi.advanceTimersByTimeAsync(0);
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
-    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    expect((error as Error).message).not.toContain(lifecycleSecret);
+  });
+
+  it.each([
+    { code: 0, signal: null },
+    { code: 23, signal: null },
+    { code: null, signal: 'SIGTERM' as const },
+  ])('treats child exit code=$code signal=$signal without a sentinel as terminal', async ({ code, signal }) => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    child.emit('exit', code, signal);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
+  });
+
+  it('rejects a wrong-attempt sentinel after the exact child becomes terminal', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStartupSentinel(root, 'another-attempt');
+    child.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Timed out waiting for Coral coordinator bind');
+    expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('another-attempt');
   });
 
   it('switches to the ready deadline after the first health response from a fresh spawn', async () => {
@@ -903,7 +1187,7 @@ describe('ipc ensure', () => {
         namespace: pluginRootNamespace(root),
       };
     });
-    mockState.spawn.mockReturnValue({ pid: 12_345, unref: vi.fn() });
+    mockState.spawn.mockReturnValue(spawnedChild());
     setTimeout(() => {
       writeDiscovery(root, {
         port: 4255,
@@ -967,7 +1251,7 @@ describe('ipc ensure', () => {
         token: 'replacement-token',
         instanceId: 'replacement-coordinator',
       });
-      return { pid: 12_345, unref: vi.fn() };
+      return spawnedChild();
     });
 
     const { ensure } = await importEnsure();
@@ -1043,7 +1327,7 @@ describe('ipc ensure', () => {
       });
       mockState.spawn.mockImplementation(() => {
         writeDiscovery(root, { instanceId: 'replacement-coordinator' });
-        return { pid: 12_345, unref: vi.fn() };
+        return spawnedChild();
       });
 
       const { ensure } = await importEnsure();

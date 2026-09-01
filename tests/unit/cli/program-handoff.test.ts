@@ -83,7 +83,7 @@ async function loadProgramFresh(): Promise<ProgramModule> {
 
 beforeEach(() => {
   process.exitCode = undefined;
-  mockState.getBackendStatusFull.mockReset().mockResolvedValue({ status: 'not_running' });
+  mockState.getBackendStatusFull.mockReset().mockResolvedValue({ status: 'no_record_no_socket' });
   mockState.inspectGenerationReadiness.mockReset().mockReturnValue({ kind: 'no-legacy' });
   mockState.renderHandoffNotice.mockReset();
   mockState.readHandoffRoutingStatusWithOwnerObservations.mockReset().mockResolvedValue({ kind: 'absent' });
@@ -108,7 +108,7 @@ describe('program', () => {
     await buildProgram().parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout.join('')).toBe(
-      'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.\n',
     );
   });
 
@@ -139,9 +139,9 @@ describe('program', () => {
 
     expect(stdout.join('')).toBe(
       [
-        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
         '',
       ].join('\n'),
     );

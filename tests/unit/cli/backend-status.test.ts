@@ -121,7 +121,7 @@ describe('backend status generation readiness', () => {
         generatedPath: '/state/gen2/data',
         storedProductVersion: '0.9.16',
       }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({ kind: 'absent' }),
     };
@@ -134,7 +134,7 @@ describe('backend status generation readiness', () => {
     expect(stderr).toBe(
       'Legacy Coral history remains at /state/data (stored Coral version 0.9.16) and is left untouched. This generation initializes its own state at /state/gen2/data.\n',
     );
-    expect(stdout).toContain('Backend not running.');
+    expect(stdout).toContain('No coordinator discovery record and no coordinator socket');
   });
 
   it('prints a recent startup failure returned by the read-only status probe', async () => {
@@ -157,10 +157,10 @@ describe('backend status generation readiness', () => {
     expect(stderr).toBe('');
     expect(stdout).toBe(
       [
-        'Backend is not running after a recent coordinator failure.',
+        'Coral recorded a recent coordinator failure.',
         'Phase: startup_failed',
         'Retryable: no',
-        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
         '',
       ].join('\n'),
     );
@@ -171,7 +171,7 @@ describe('backend status live handoff disposition', () => {
   it('renders and exits 75 for a same-version incumbent from a different build set', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -205,9 +205,9 @@ describe('backend status live handoff disposition', () => {
 
     expect(stdout).toBe(
       [
-        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — the CLI and running backend are both version 0.10.9 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
         '',
       ].join('\n'),
     );
@@ -217,7 +217,7 @@ describe('backend status live handoff disposition', () => {
   it('suppresses an informational same-build-set disposition', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -238,7 +238,7 @@ describe('backend status live handoff disposition', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toBe(
-      'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.\n',
     );
     expect(process.exitCode).toBe(0);
   });
@@ -246,7 +246,7 @@ describe('backend status live handoff disposition', () => {
   it('renders the live-incumbent newer-build line exactly', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -487,7 +487,7 @@ describe('backend status local exit combination', () => {
         getStatus: async () =>
           daemonContribution === 75
             ? { status: 'undecodable_record', reason: 'corrupt-json', path: '/run/coordinator.json' }
-            : { status: 'not_running' },
+            : { status: 'no_record_no_socket' },
         getLiveHandoffResult: () => live,
         getRoutingStatus: async () =>
           routingContribution === 75 ? { kind: 'unreadable', reason: 'invalid-json' } : { kind: 'absent' },
@@ -768,7 +768,7 @@ describe('backend routing status', () => {
     };
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => routingStatus,
     };
@@ -786,7 +786,7 @@ describe('backend routing status', () => {
   it('renders aggregate-only retirement history without keeping the expired capacity gate', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
@@ -823,7 +823,7 @@ describe('backend routing status', () => {
     const finalizedInvocationId = '123e4567-e89b-42d3-a456-426614174011';
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
@@ -896,7 +896,7 @@ describe('backend routing status', () => {
   it('keeps the capacity gate while the exact retirement tombstone is retained', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
@@ -972,7 +972,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
-        'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session) to relaunch the backend from the current installation.',
+        'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
       ].join('\n'),
     },
     {
@@ -1035,7 +1035,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — incumbent 2.1.0 did not report a complete bundle identity.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
       ].join('\n'),
     },
     {
@@ -1061,7 +1061,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the CLI and running backend are both version 2.1.0 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
       ].join('\n'),
     },
     {
@@ -1112,6 +1112,8 @@ describe('handoff continuation remediation', () => {
 
     expect(rendered).toBe(expected);
     expect(RAW_ENUM_TOKENS.filter((token) => rendered.includes(token))).toEqual([]);
+    expect(rendered).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
+    expect(rendered).not.toContain('Backend not running');
   });
 });
 

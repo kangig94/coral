@@ -997,9 +997,20 @@ describe('cli format', () => {
       expect(formatBackendStatus(status)).not.toContain('Queue depth');
     });
 
-    it('formats a not-running backend status with a recovery hint', () => {
-      expect(formatBackendStatus({ status: 'not_running' })).toBe(
-        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+    it('formats the three distinct no-daemon observations without inventing a general absence', () => {
+      expect(formatBackendStatus({ status: 'no_record_no_socket' })).toBe(
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
+      );
+      expect(formatBackendStatus({ status: 'recorded_process_absent', pid: 4242 })).toBe(
+        'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.',
+      );
+      expect(
+        formatBackendStatus({
+          status: 'foreign_coordinator',
+          observed: { namespace: 'another-installation', flavor: 'dev' },
+        }),
+      ).toBe(
+        "The recorded coordinator address is held by a coordinator for namespace=another-installation flavor=dev, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it, or run this build's own coral-cli backend shutdown.",
       );
     });
 
@@ -1070,7 +1081,7 @@ describe('cli format', () => {
 
       expect(text).toMatch(/ps -p 4242/u);
       expect(text).toContain('/run/coral/coordinator.json');
-      expect(text).toMatch(/coral-cli mutating command to relaunch/u);
+      expect(text).toMatch(/coral-cli mutating command; it attempts startup or handoff/u);
     });
 
     // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in
@@ -1095,10 +1106,10 @@ describe('cli format', () => {
         }),
       ).toBe(
         [
-          'Backend is not running after a recent coordinator failure.',
+          'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
-          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
         ].join('\n'),
       );
     });
@@ -1129,7 +1140,7 @@ describe('cli format', () => {
         }),
       ).toBe(
         [
-          'Backend is not running after a recent coordinator failure.',
+          'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
           'Cause: The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build. [code=store_newer_incompatible]',
@@ -1144,8 +1155,35 @@ describe('cli format', () => {
 
     it('formats an unauthorized backend status with a recovery hint', () => {
       expect(formatBackendStatus({ status: 'unauthorized' })).toBe(
-        'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.',
+        'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry a coral-cli mutating command; it attempts startup or handoff with a fresh token.',
       );
+    });
+
+    it.each([
+      { status: 'ok', health: { ...baseHealth, components: [] } },
+      { status: 'no_record_no_socket' },
+      { status: 'recorded_process_absent', pid: 4242 },
+      { status: 'foreign_coordinator', observed: { namespace: 'foreign', flavor: 'prod' as const } },
+      { status: 'undecodable_record', reason: 'corrupt-json' as const, path: '/run/coordinator.json' },
+      { status: 'unreachable', detail: '500', cause: 'responded' as const },
+      {
+        status: 'unreachable',
+        detail: 'ECONNREFUSED',
+        cause: 'refused' as const,
+        pidLiveness: 'alive' as const,
+        pid: 4242,
+        recordPath: '/run/coordinator.json',
+      },
+      { status: 'unreachable', detail: 'ETIMEDOUT', cause: 'no_response' as const },
+      { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
+      { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
+      { status: 'shutting_down' },
+      { status: 'unauthorized' },
+    ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {
+      const text = formatBackendStatus(status);
+
+      expect(text).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
+      expect(text).not.toContain('Backend not running');
     });
 
     it('formats a successful shutdown result', () => {

@@ -23,7 +23,15 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
 const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli.cjs');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
-const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
+const sourceManifestPath = join(process.cwd(), 'clients', 'build', 'manifest.json');
+const requiredBuildArtifacts = [
+  sourceBackendBundle,
+  sourceCliBundle,
+  sourceClaudeAppserverBundle,
+  sourceManifestPath,
+] as const;
+
+type SourceManifest = {
   version: string;
   buildSetId: string;
   bundleHash: string;
@@ -32,6 +40,11 @@ const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'b
   flavor: BuildFlavor;
   storeFormatFingerprint: string;
 };
+
+function readSourceManifest(): SourceManifest {
+  assertBuildArtifactsAvailable();
+  return JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as SourceManifest;
+}
 
 export type PluginFixture = {
   root: string;
@@ -47,7 +60,16 @@ export type SpawnedCoordinator = {
 };
 
 export function buildArtifactsAvailable(): boolean {
-  return existsSync(sourceBackendBundle);
+  return requiredBuildArtifacts.every((path) => existsSync(path));
+}
+
+export function assertBuildArtifactsAvailable(): void {
+  const missing = requiredBuildArtifacts.filter((path) => !existsSync(path));
+  if (missing.length > 0) {
+    throw new Error(
+      `Required clients/build artifacts are missing. Run npm run build first. Missing: ${missing.join(', ')}`,
+    );
+  }
 }
 
 export function createPluginFixture(
@@ -55,28 +77,46 @@ export function createPluginFixture(
   options: {
     flavor: BuildFlavor;
     bundleHash?: string;
+    version?: string;
   },
 ): PluginFixture {
+  const sourceManifest = readSourceManifest();
   const root = mkdtempSync(join(tmpdir(), `coral-coordinator-${options.flavor}-`));
   tempRoots.push(root);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   const backendPath = join(root, 'bridge', 'coral-backend.cjs');
-  copyFileSync(sourceBackendBundle, backendPath);
+  const cliPath = join(root, 'bridge', 'coral-cli.cjs');
+  const claudeAppserverPath = join(root, 'bridge', 'coral-claude-appserver.cjs');
+  const copyBundle = (source: string, destination: string): void => {
+    if (options.version === undefined) {
+      copyFileSync(source, destination);
+      return;
+    }
+    writeFileSync(
+      destination,
+      readFileSync(source, 'utf-8').replaceAll(sourceManifest.version, options.version),
+      'utf-8',
+    );
+  };
+  copyBundle(sourceBackendBundle, backendPath);
   if (options.bundleHash !== undefined) {
     appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
   }
+  copyBundle(sourceCliBundle, cliPath);
+  copyBundle(sourceClaudeAppserverBundle, claudeAppserverPath);
   const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
-  copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli.cjs'));
-  copyFileSync(sourceClaudeAppserverBundle, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
     JSON.stringify({
-      version: sourceManifest.version,
+      version: options.version ?? sourceManifest.version,
       buildSetId: sourceManifest.buildSetId,
       bundleHash,
-      cliBundleHash: sourceManifest.cliBundleHash,
-      claudeAppserverBundleHash: sourceManifest.claudeAppserverBundleHash,
+      cliBundleHash: createHash('sha256').update(readFileSync(cliPath)).digest('hex').slice(0, 16),
+      claudeAppserverBundleHash: createHash('sha256')
+        .update(readFileSync(claudeAppserverPath))
+        .digest('hex')
+        .slice(0, 16),
       flavor: options.flavor,
       storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     }) + '\n',
@@ -98,6 +138,7 @@ export function createPluginFixture(
 }
 
 export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {
+  const sourceManifest = readSourceManifest();
   const backendPath = join(fixture.root, 'bridge', 'coral-backend.cjs');
   appendFileSync(backendPath, `\n// fixture ${bundleHash}\n`);
   const effectiveBundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);

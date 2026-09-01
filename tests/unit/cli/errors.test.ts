@@ -394,6 +394,12 @@ describe('cli errors', () => {
         'coordinator_record_unreadable',
         'coordinator_socket_dir_unverified',
         'legacy_source_writer_observation_unknown',
+        'handoff_fresh_discovery_unavailable',
+        'handoff_legacy_signal_attempt_indeterminate',
+        'handoff_process_identity_unavailable',
+        'handoff_process_liveness_unknown',
+        'handoff_signal_anchor_missing',
+        'handoff_socket_holder_unverified',
       ];
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { expansionExitCode } = await import('#src/cli/commands/expansion.js');

@@ -622,12 +622,14 @@ describe('cli main routing', () => {
 
     // `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
     // outcome — including "state is unknown" — as permission to proceed. Only the two statuses that mean the
-    // state genuinely could not be determined get a non-zero exit; every confidently observed answer, even bad
-    // news like `not_running`, stays exit 0. `ok` needs a full `BackendHealth` fixture that adds
+    // state genuinely could not be determined get a non-zero exit; a completed read alone does not authorize
+    // a later mutation. `ok` needs a full `BackendHealth` fixture that adds
     // nothing here — the lookup is a plain object index, so proving the wiring works for one exit-0 and one
     // exit-75 status is what the completeness test below cannot itself prove.
     it.each([
-      [{ status: 'not_running' }, 0],
+      [{ status: 'no_record_no_socket' }, 0],
+      [{ status: 'recorded_process_absent', pid: 4242 }, 0],
+      [{ status: 'foreign_coordinator', observed: { namespace: 'foreign', flavor: 'dev' } }, 75],
       [{ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' }, 75],
     ] as const)('exits %j with %s', async (status, expected) => {
       const program = statusProgram(async () => status);
@@ -643,7 +645,9 @@ describe('cli main routing', () => {
     // every "the list is exhaustive" claim this branch found to be stale.
     const BACKEND_STATUS_EXIT_EXPECTATIONS = [
       ['ok', 0],
-      ['not_running', 0],
+      ['no_record_no_socket', 0],
+      ['recorded_process_absent', 0],
+      ['foreign_coordinator', 75],
       ['shutting_down', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],

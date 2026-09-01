@@ -1,11 +1,306 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import {
+  type AssertHandoffRefusalCodesCoverContext,
+  type AssertHandoffRefusalContextCoversCodes,
   CoralSetupError,
+  NOT_OBSERVED_CORAL_SETUP_ERROR_CODES,
   documentedCoralSetupError,
   documentedCoralSetupErrorExitCode,
   isRetryableCoralSetupError,
   type DocumentedCoralSetupErrorCode,
+  type HandoffRefusalCode,
+  type HandoffRefusalContextByCode,
+  type HandoffRefusalInit,
 } from '#src/runtime/errors.js';
+
+type HandoffRefusalCase = Readonly<{
+  init: HandoffRefusalInit;
+  userMessage: string;
+  remediation: string;
+  exitCode: number;
+  observation: 'not_observed' | undefined;
+  retryable: boolean;
+}>;
+
+const HANDOFF_REFUSAL_CASES = [
+  {
+    init: {
+      code: 'handoff_fresh_discovery_unavailable',
+      context: { stage: 'after-sigterm-grace', pid: 4242, signal: 'SIGTERM', graceMs: 15_000 },
+    },
+    userMessage:
+      'Handoff refused after accepted SIGTERM for incumbent pid=4242 and its 15000ms grace elapsed: fresh coordinator discovery was unavailable.',
+    remediation: 'Retry when verified discovery is available.',
+    exitCode: 75,
+    observation: 'not_observed',
+    retryable: true,
+  },
+  {
+    init: { code: 'handoff_fresh_discovery_changed', context: { stage: 'before-signal', pid: 4242 } },
+    userMessage: 'Handoff refused before signaling incumbent pid=4242: fresh coordinator discovery changed.',
+    remediation: 'Retry handoff against the newly discovered incumbent.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_signal_capability_unavailable',
+      context: {
+        stage: 'after-sigterm-grace',
+        pid: 4242,
+        signal: 'SIGTERM',
+        graceMs: 15_000,
+        missingFields: ['instanceId', 'bootToken'],
+      },
+    },
+    userMessage:
+      'Handoff refused after accepted SIGTERM for incumbent pid=4242 and its 15000ms grace elapsed: verified discovery lacks required signal-capability fields (instanceId, bootToken).',
+    remediation:
+      'Repair or replace the coordinator discovery record, or stop the target through its host service, then retry handoff.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: {
+      code: 'handoff_signal_cooldown_active',
+      context: {
+        stage: 'before-signal',
+        pid: 4242,
+        requestedSignal: 'SIGKILL',
+        previousSignal: 'SIGTERM',
+        ageMs: 1_000,
+        retryInMs: 59_000,
+      },
+    },
+    userMessage:
+      'Handoff refused before repeated SIGKILL for incumbent pid=4242: the previous SIGTERM was 1000ms ago; retry in 59000ms.',
+    remediation: 'Wait 59000ms for the handoff signal cooldown to elapse, then retry handoff.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_legacy_signal_attempt_indeterminate',
+      context: {
+        stage: 'before-signal',
+        pid: 4242,
+        requestedSignal: 'SIGKILL',
+        previousSignal: 'SIGTERM',
+        ageMs: 1_000,
+        retryInMs: 59_000,
+      },
+    },
+    userMessage:
+      'Handoff refused before SIGKILL for incumbent pid=4242: the legacy record proves only that SIGTERM was attempted 1000ms ago, not that it was accepted; retry in 59000ms.',
+    remediation:
+      'Inspect the identified target and wait 59000ms for the legacy attempt cooldown to elapse, then retry handoff.',
+    exitCode: 75,
+    observation: 'not_observed',
+    retryable: true,
+  },
+  {
+    init: { code: 'handoff_shutdown_capability_rejected', context: { stage: 'shutdown-request', pid: 'unknown' } },
+    userMessage:
+      'Handoff refused during the shutdown request for incumbent pid=unknown: the incumbent rejected the shutdown capability.',
+    remediation:
+      'Stop the incumbent that owns the coordinator socket through the service or account that owns it, then retry handoff.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: { code: 'handoff_shutdown_credential_unavailable', context: { stage: 'shutdown-request', pid: 4242 } },
+    userMessage:
+      'Handoff refused during the shutdown request for incumbent pid=4242: verified discovery had no boot credential for shutdown.',
+    remediation: 'Stop the identified incumbent through the service or account that owns it, then retry handoff.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: {
+      code: 'handoff_socket_holder_unverified',
+      context: { stage: 'handoff-deadline', socketPath: '/run/coral/coordinator.sock' },
+    },
+    userMessage:
+      'Handoff refused at the startup deadline for socket /run/coral/coordinator.sock: the socket remained bound but no verified holder pid was available.',
+    remediation:
+      'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff.',
+    exitCode: 75,
+    observation: 'not_observed',
+    retryable: false,
+  },
+  {
+    init: { code: 'handoff_manual_policy', context: { stage: 'before-signal', pid: 4242, policy: 'manual' } },
+    userMessage:
+      'Handoff refused before signaling incumbent pid=4242: CORAL_HANDOFF_SIGNAL_POLICY=manual forbids automated handoff signals.',
+    remediation:
+      'Stop the target through the service or account that owns it, then retry handoff; or deliberately change CORAL_HANDOFF_SIGNAL_POLICY and retry.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: {
+      code: 'handoff_term_only_policy',
+      context: { stage: 'after-sigterm-grace', pid: 4242, graceMs: 15_000, policy: 'term-only' },
+    },
+    userMessage:
+      'Handoff refused after accepted SIGTERM for incumbent pid=4242 and its 15000ms grace elapsed: CORAL_HANDOFF_SIGNAL_POLICY=term-only forbids SIGKILL.',
+    remediation:
+      "Wait for the target's own shutdown to finish or stop it through the service or account that owns it, then retry handoff; or deliberately change CORAL_HANDOFF_SIGNAL_POLICY and retry.",
+    exitCode: 77,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_process_identity_unavailable',
+      context: { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGTERM' },
+    },
+    userMessage:
+      'Handoff failed after accepted SIGTERM for incumbent pid=4242: the process incarnation was unavailable and pid absence was not established.',
+    remediation:
+      'Retry when a fresh process-identity observation for this pid succeeds; if it remains unavailable, inspect and stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    observation: 'not_observed',
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_process_liveness_unknown',
+      context: { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGKILL' },
+    },
+    userMessage:
+      'Handoff failed after accepted SIGKILL for incumbent pid=4242: the target identity matched but its current liveness could not be observed.',
+    remediation:
+      'Retry when a process-liveness observation for this pid succeeds; if it remains unavailable, inspect and stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    observation: 'not_observed',
+    retryable: true,
+  },
+  {
+    init: { code: 'handoff_platform_identity_insufficient', context: { stage: 'before-signal', pid: 4242 } },
+    userMessage:
+      'Handoff refused before signaling incumbent pid=4242: this platform cannot produce a process identity strong enough to authorize a signal.',
+    remediation: 'Stop the Coral backend through its service or socket, not by pid, then retry handoff.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: { code: 'handoff_published_incarnation_missing', context: { stage: 'before-signal', pid: 4242 } },
+    userMessage:
+      'Handoff refused before signaling incumbent pid=4242: the incumbent published no incarnation, so this pid cannot be proven to be it.',
+    remediation: 'Stop the Coral backend through its service or socket, not by this pid, then retry handoff.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: {
+      code: 'handoff_published_incarnation_mismatch',
+      context: { stage: 'after-sigterm-grace', pid: 4242, signal: 'SIGTERM', graceMs: 15_000 },
+    },
+    userMessage:
+      'Handoff refused after accepted SIGTERM for incumbent pid=4242 and its 15000ms grace elapsed: this pid is not the process the incumbent published.',
+    remediation:
+      'Retry handoff against a freshly discovered incumbent; if the mismatch persists, stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: { code: 'handoff_signal_anchor_missing', context: { stage: 'before-signal', pid: 4242 } },
+    userMessage:
+      'Handoff refused before signaling incumbent pid=4242: no baseline was observed for this pid while it was authenticated.',
+    remediation:
+      'Retry handoff so a new attempt can establish an authenticated baseline; if it cannot, stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    observation: 'not_observed',
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_pid_recycled',
+      context: { stage: 'after-accepted-signal-bind', pid: 4242, signal: 'SIGTERM' },
+    },
+    userMessage:
+      'Handoff refused after the socket became bindable following accepted SIGTERM for incumbent pid=4242: the pid was recycled after this coordinator observed it.',
+    remediation:
+      'Retry handoff against the current incumbent; if ownership remains unclear, stop it through its host service before retrying handoff.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_signal_rejected_live',
+      context: { stage: 'after-rejected-signal', pid: 4242, signal: 'SIGTERM' },
+    },
+    userMessage:
+      'Handoff refused after SIGTERM was rejected for incumbent pid=4242: the verified target remained alive; this process may lack permission or the target may be outside its signal reach.',
+    remediation: 'Stop the target through the service or account that owns it, then retry handoff.',
+    exitCode: 77,
+    observation: undefined,
+    retryable: false,
+  },
+  {
+    init: {
+      code: 'handoff_accepted_signal_target_alive_after_failure',
+      context: { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGTERM' },
+    },
+    userMessage:
+      'Handoff failed after accepted SIGTERM for incumbent pid=4242: the target was not observed gone before another handoff operation failed.',
+    remediation:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup.',
+    exitCode: 69,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_accepted_signal_target_alive_after_bind',
+      context: { stage: 'after-accepted-signal-bind', pid: 4242, signal: 'SIGKILL' },
+    },
+    userMessage:
+      'Handoff refused after the socket became bindable following accepted SIGKILL for incumbent pid=4242: the verified target remained alive.',
+    remediation:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup.',
+    exitCode: 69,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_sigkill_grace_target_gone_socket_still_bound',
+      context: { stage: 'after-sigkill-grace', pid: 4242, signal: 'SIGKILL', graceMs: 5_000 },
+    },
+    userMessage:
+      'Handoff refused after accepted SIGKILL for incumbent pid=4242 and its 5000ms grace elapsed: the target is gone, but the coordinator socket remained bound.',
+    remediation:
+      'Retry the original coral-cli mutating command so Coral re-observes ownership and removes the socket only if it proves stale.',
+    exitCode: 75,
+    observation: undefined,
+    retryable: true,
+  },
+  {
+    init: {
+      code: 'handoff_sigkill_grace_target_alive',
+      context: { stage: 'after-sigkill-grace', pid: 4242, signal: 'SIGKILL', graceMs: 5_000 },
+    },
+    userMessage:
+      'Handoff refused after accepted SIGKILL for incumbent pid=4242 and its 5000ms grace elapsed: the verified target remained alive.',
+    remediation:
+      'Wait for uninterruptible I/O to finish or stop pid=4242 through its host service, then retry startup.',
+    exitCode: 69,
+    observation: undefined,
+    retryable: true,
+  },
+] satisfies readonly HandoffRefusalCase[];
 
 function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Readonly<{
   userMessage: string;
@@ -19,6 +314,36 @@ function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Rea
 }
 
 describe('CoralSetupError', () => {
+  it('keeps the prefix-derived handoff codes and context keys mutually exhaustive', () => {
+    expectTypeOf<Exclude<HandoffRefusalCode, keyof HandoffRefusalContextByCode>>().toEqualTypeOf<never>();
+    expectTypeOf<Exclude<keyof HandoffRefusalContextByCode, HandoffRefusalCode>>().toEqualTypeOf<never>();
+    expectTypeOf<AssertHandoffRefusalContextCoversCodes>().toEqualTypeOf<never>();
+    expectTypeOf<AssertHandoffRefusalCodesCoverContext>().toEqualTypeOf<never>();
+  });
+
+  it.each(HANDOFF_REFUSAL_CASES)(
+    'pins the documented handoff catalog row for $init.code',
+    ({ init, userMessage, remediation, exitCode, observation, retryable }) => {
+      const error = documentedCoralSetupError(init.code, init.context);
+
+      expect(error).toMatchObject({ code: init.code, userMessage, remediation, context: init.context });
+      expect(error.message).toBe(userMessage);
+      expect(documentedCoralSetupErrorExitCode(init.code)).toBe(exitCode);
+      expect(NOT_OBSERVED_CORAL_SETUP_ERROR_CODES.has(init.code)).toBe(observation === 'not_observed');
+      expect(isRetryableCoralSetupError(error)).toBe(retryable);
+    },
+  );
+
+  it('distinguishes retryability after accepted SIGTERM from a manual pre-signal refusal', () => {
+    const retryability = Object.fromEntries(
+      HANDOFF_REFUSAL_CASES.filter(({ init }) =>
+        ['handoff_term_only_policy', 'handoff_manual_policy'].includes(init.code),
+      ).map(({ init, retryable }) => [init.code, retryable]),
+    );
+
+    expect(retryability).toEqual({ handoff_manual_policy: false, handoff_term_only_policy: true });
+  });
+
   it('owns documented exit and retryability policy in the setup-error registry', () => {
     const contended = documentedCoralSetupError('store_open_contended');
 

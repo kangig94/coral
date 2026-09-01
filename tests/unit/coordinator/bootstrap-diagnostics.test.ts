@@ -24,13 +24,34 @@ vi.mock('#src/infra/bundle-manifest.js', () => ({ readBundleHash: () => 'bundle-
 vi.mock('#src/infra/plugin-identity.js', () => ({ pluginRootNamespace: () => 'namespace' }));
 
 import { serializeBootstrapError, writeBootstrapDiagnostic } from '#src/coordinator/bootstrap-diagnostics.js';
-import { documentedCoralSetupError } from '#src/runtime/errors.js';
+import { HandoffEscalationError } from '#src/coordinator/handoff.js';
+import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
 describe('serializeBootstrapError', () => {
+  it('keeps a setup error cause in the private diagnostic without adding it to the public projection', () => {
+    const secret = 'private bind failure';
+    const error = new HandoffEscalationError(
+      {
+        code: 'handoff_accepted_signal_target_alive_after_failure',
+        context: { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGTERM' },
+      },
+      { cause: new Error(secret) },
+    );
+
+    expect(serializeBootstrapError(error)).toMatchObject({
+      kind: 'coral_setup_error',
+      code: 'handoff_accepted_signal_target_alive_after_failure',
+      cause: { kind: 'error', message: secret },
+    });
+    const publicProjection = serializeCoralSetupError(error);
+    expect(publicProjection).not.toHaveProperty('cause');
+    expect(JSON.stringify(publicProjection)).not.toContain(secret);
+  });
+
   it('preserves a nested Error cause chain', () => {
     const error = new Error('coordinator startup failed', {
       cause: new Error('runtime initialization failed', {

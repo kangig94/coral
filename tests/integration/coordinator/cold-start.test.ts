@@ -20,9 +20,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
 
-// Replacement bind acquires within HANDOFF_DRAIN_TIMEOUT_MS + SIGTERM_GRACE_MS +
-// SIGKILL_GRACE_MS = 40_000. Cold start has no incumbent, so acquisition is
-// near-instant; the upper bound here is just a safety ceiling.
+// This cold-start safety ceiling must not be used to bound a current-attempt handoff reader.
 const STARTUP_HARD_BOUND_MS = 30_000;
 
 afterEach(async () => {
