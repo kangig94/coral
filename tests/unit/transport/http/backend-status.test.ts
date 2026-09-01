@@ -305,7 +305,7 @@ describe('getBackendStatusFull record disposition', () => {
     async (reason) => {
       mockState.observed = { kind: 'unreadable-record', reason, path: '/run/coral/coordinator.json' };
       // The record-derived view is still populated here, so a consumer reading only that would fall through to
-      // the liveness check and manufacture an absence — the collapse this branch exists to stop.
+      // the liveness check and manufacture an absence.
 
       const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 

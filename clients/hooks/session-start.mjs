@@ -55,6 +55,8 @@ const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url))
 // Long enough to still catch the failure when a session starts minutes after the
 // user's last attempt, short enough that a cured problem stops being reported.
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
+const STARTUP_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const MAX_STARTUP_FAILURE_CODE_LENGTH = 128;
 
 function rotateLogIfLarge(runDir) {
   const path = join(runDir, 'coordinator.log');
@@ -119,8 +121,7 @@ function isCoordinatorAlive(runDir) {
 // know: the spawn issued moments ago has not had time to bind, so no daemon is
 // answering yet on every session start, and nothing ever deletes the diagnostic.
 // Predicting from those signals is wrong exactly on the recovery path — someone
-// who just fixed the cause would be told it is still broken. Reporting the last
-// failure and its remedy is true whether or not it has since been resolved.
+// who just fixed the cause would be told it is still broken.
 //
 // The recency and liveness filters remain, as noise control rather than proof: an
 // answering daemon or an old diagnostic means the report is not worth making. The
@@ -138,11 +139,17 @@ function readRecentStartupFailureNotice(runDir) {
     const age = Date.now() - recordedAt;
     if (age < 0 || age > STARTUP_FAILURE_NOTICE_WINDOW_MS) return null;
     const error = diagnostic.error;
-    // Only documented setup errors carry authored, user-safe text; an arbitrary
-    // bootstrap exception's message stays in the coordinator log.
     if (error?.kind !== 'coral_setup_error') return null;
-    if (typeof error.userMessage !== 'string' || typeof error.remediation !== 'string') return null;
-    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. If Coral turns out to be unavailable this session, this is the cause and the remedy — it may already be resolved.\nCause: ${error.userMessage}\nRemedy: ${error.remediation}`;
+    const code = error.code;
+    if (
+      typeof code !== 'string' ||
+      code.length === 0 ||
+      code.length > MAX_STARTUP_FAILURE_CODE_LENGTH ||
+      !STARTUP_FAILURE_CODE_PATTERN.test(code)
+    ) {
+      return null;
+    }
+    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nRun 'coral-cli backend status' for current, code-indexed details and remediation.`;
   } catch {
     return null;
   }

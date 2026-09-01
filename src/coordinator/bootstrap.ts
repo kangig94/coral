@@ -77,7 +77,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 export async function handoffStartupToSelectedBuild(
   pluginRoot: string,
   startupError: StartupStoreHandoffError,
-): Promise<Readonly<{ kind: 'started' }> | Readonly<{ kind: 'failed'; error: unknown }>> {
+): Promise<Readonly<{ kind: 'started' }> | Readonly<{ kind: 'failed'; error: unknown; exitCode?: number }>> {
   try {
     const result = await runHandoff(
       { kind: 'backend-startup' },
@@ -105,6 +105,7 @@ export async function handoffStartupToSelectedBuild(
           error: new Error(
             `Selected backend exited during startup handoff with code ${continuation.outcome.exitCode}.`,
           ),
+          exitCode: continuation.outcome.exitCode,
         };
       case 'handoff-signal':
         return {
@@ -226,24 +227,26 @@ export async function main(): Promise<number> {
     }
 
     let startupError = error;
+    let startupExitCode = 1;
     if (error instanceof StartupStoreHandoffError) {
       const handoff = await handoffStartupToSelectedBuild(__PLUGIN_ROOT__, error);
       if (handoff.kind === 'started') return 0;
       startupError = handoff.error;
+      startupExitCode = handoff.exitCode ?? 1;
     }
 
     backendLog.error('Fatal startup error', startupError);
-    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, 1);
+    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, startupExitCode);
     writeStartupErrorSentinel(__PLUGIN_ROOT__, startupError, diagnosticFile);
     auditBootstrapFailure(
       'bootstrap_startup_failed',
       __PLUGIN_ROOT__,
       'startup_failed',
       startupError,
-      1,
+      startupExitCode,
       diagnosticFile,
     );
-    return 1;
+    return startupExitCode;
   } finally {
     clearInterval(startupKeepalive);
   }

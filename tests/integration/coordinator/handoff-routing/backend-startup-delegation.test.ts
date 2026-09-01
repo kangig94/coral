@@ -5,9 +5,12 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { handoffRoutingStatusStoreSchema, readHandoffRoutingStatus } from '#src/coordinator/handoff-routing/status.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
+import { handoffRoutingStatusPathForRunDir } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { encodeActiveStoreSelection, resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
+import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import {
   assertBuildArtifactsAvailable,
   coordinatorFilesForHome,
@@ -18,6 +21,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 const roots: string[] = [];
 const children = new Set<ChildProcess>();
 const observedPids = new Set<number>();
+const observedPidPaths: string[] = [];
 const preloadPath = join(process.cwd(), 'tests', 'fixtures', 'backend-startup-delegation-preload.cjs');
 
 type DelegationMode = 'ready' | 'refusal' | 'crash' | 'signal';
@@ -36,10 +40,47 @@ type Observation = Readonly<{
   requestedAddress: string;
 }>;
 
+type FixtureManifest = Readonly<{
+  version: string;
+  buildSetId: string;
+  bundleHash: string;
+  cliBundleHash: string;
+  claudeAppserverBundleHash: string;
+  flavor: 'prod';
+  storeFormatFingerprint: string;
+}>;
+
+type InstalledBundle = Readonly<{
+  bundleDir: string;
+  manifest: FixtureManifest;
+}>;
+
 function nextPatchVersion(version: string): string {
   const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version);
   if (match === null) throw new Error(`Expected a semantic product version, received ${version}`);
   return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+function installBundle(
+  pluginRoot: string,
+  directory: string,
+  version: string,
+  bundleHashMarker: string,
+): InstalledBundle {
+  const fixture = createPluginFixture(roots, { flavor: 'prod', version, bundleHash: bundleHashMarker });
+  const bundleDir = join(pluginRoot, directory);
+  renameSync(join(fixture.root, 'bridge'), bundleDir);
+  const manifest = JSON.parse(readFileSync(join(bundleDir, 'manifest.json'), 'utf-8')) as FixtureManifest;
+  return { bundleDir, manifest };
+}
+
+function encodedSelection(bundle: InstalledBundle): Uint8Array {
+  return encodeActiveStoreSelection({
+    version: 1,
+    manifest: bundle.manifest,
+    bundleDir: bundle.bundleDir,
+    activeStoreFingerprint: bundle.manifest.storeFormatFingerprint,
+  });
 }
 
 function observations(path: string): Observation[] {
@@ -125,6 +166,10 @@ afterEach(async () => {
   );
   children.clear();
 
+  for (const path of observedPidPaths.splice(0)) {
+    if (existsSync(path)) observedPids.add(Number(readFileSync(path, 'utf-8')));
+  }
+
   for (const pid of observedPids) {
     if (observeProcessLiveness(pid) !== 'absent') {
       try {
@@ -157,39 +202,22 @@ describe('real backend-startup delegation', () => {
       const directManifest = JSON.parse(
         readFileSync(join(direct.root, 'bridge', 'manifest.json'), 'utf-8'),
       ) as Readonly<{ version: string; bundleHash: string; storeFormatFingerprint: string }>;
-      const selectedFixture = createPluginFixture(roots, {
-        flavor: 'prod',
-        version: nextPatchVersion(directManifest.version),
-        bundleHash: 'delegated-backend',
-      });
-      const selectedBundleDir = join(direct.root, 'selected-bridge');
-      renameSync(join(selectedFixture.root, 'bridge'), selectedBundleDir);
-      const selectedManifestPath = join(selectedBundleDir, 'manifest.json');
-      const selectedManifest = JSON.parse(readFileSync(selectedManifestPath, 'utf-8')) as Readonly<{
-        version: string;
-        buildSetId: string;
-        bundleHash: string;
-        cliBundleHash: string;
-        claudeAppserverBundleHash: string;
-        flavor: 'prod';
-        storeFormatFingerprint: string;
-      }>;
+      const selected = installBundle(
+        direct.root,
+        'selected-bridge',
+        nextPatchVersion(directManifest.version),
+        'delegated-backend',
+      );
+      const { bundleDir: selectedBundleDir, manifest: selectedManifest } = selected;
       expect(selectedManifest.bundleHash).not.toBe(directManifest.bundleHash);
 
       const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
       const selectionPaths = resolveActiveStoreRecordPaths(runtime);
       mkdirSync(selectionPaths.coordinationRoot, { recursive: true, mode: 0o700 });
       expect(
-        runtime.storage.writeAtomicDurableSync(
-          selectionPaths.selectionFile,
-          encodeActiveStoreSelection({
-            version: 1,
-            manifest: selectedManifest,
-            bundleDir: selectedBundleDir,
-            activeStoreFingerprint: selectedManifest.storeFormatFingerprint,
-          }),
-          { mode: 0o600 },
-        ),
+        runtime.storage.writeAtomicDurableSync(selectionPaths.selectionFile, encodedSelection(selected), {
+          mode: 0o600,
+        }),
       ).toBe(true);
 
       const files = coordinatorFilesForHome(home, 'prod');
@@ -251,4 +279,136 @@ describe('real backend-startup delegation', () => {
     },
     120_000,
   );
+
+  it('keeps the original delegation pending until a second-hop refusal reaches the operator', async () => {
+    assertBuildArtifactsAvailable();
+    const home = mkdtempSync(join(tmpdir(), 'coral-transitive-delegation-home-'));
+    roots.push(home);
+    const direct = createPluginFixture(roots, { flavor: 'prod' });
+    const directManifest = JSON.parse(
+      readFileSync(join(direct.root, 'bridge', 'manifest.json'), 'utf-8'),
+    ) as FixtureManifest;
+    const selected = installBundle(
+      direct.root,
+      'selected-bridge',
+      nextPatchVersion(directManifest.version),
+      'transitive-selected-backend',
+    );
+    const terminal = installBundle(
+      direct.root,
+      'terminal-bridge',
+      nextPatchVersion(selected.manifest.version),
+      'transitive-terminal-backend',
+    );
+    const ambient = installBundle(
+      direct.root,
+      'ambient-bridge',
+      nextPatchVersion(terminal.manifest.version),
+      'transitive-ambient-backend',
+    );
+    expect(selected.manifest.bundleHash).not.toBe(directManifest.bundleHash);
+    expect(terminal.manifest.bundleHash).not.toBe(selected.manifest.bundleHash);
+    expect(ambient.manifest.bundleHash).not.toBe(terminal.manifest.bundleHash);
+
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const selectionPaths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(selectionPaths.coordinationRoot, { recursive: true, mode: 0o700 });
+    expect(
+      runtime.storage.writeAtomicDurableSync(selectionPaths.selectionFile, encodedSelection(selected), {
+        mode: 0o600,
+      }),
+    ).toBe(true);
+    const terminalSelectionPath = join(home, 'terminal-selection.json');
+    const ambientSelectionPath = join(home, 'ambient-selection.json');
+    writeFileSync(terminalSelectionPath, encodedSelection(terminal), { encoding: 'utf-8', mode: 0o600 });
+    writeFileSync(ambientSelectionPath, encodedSelection(ambient), { encoding: 'utf-8', mode: 0o600 });
+
+    const files = coordinatorFilesForHome(home, 'prod');
+    const gatePath = join(home, 'transitive-refusal.gate');
+    const observationPath = join(home, 'transitive-refusal.jsonl');
+    const ambientPidPath = join(home, 'ambient.pid');
+    observedPidPaths.push(ambientPidPath);
+    const selectedBackendPath = join(selected.bundleDir, 'coral-backend.cjs');
+    const terminalBackendPath = join(terminal.bundleDir, 'coral-backend.cjs');
+    const ambientBackendPath = join(ambient.bundleDir, 'coral-backend.cjs');
+    const nodeOptions = [process.env.NODE_OPTIONS, `--require=${preloadPath}`].filter(Boolean).join(' ');
+    const run = startCli(direct.root, {
+      ...topLevelEnvironment(),
+      HOME: home,
+      TMPDIR: home,
+      NODE_OPTIONS: nodeOptions,
+      CORAL_DELEGATION_SELECTED_BACKEND: terminalBackendPath,
+      CORAL_DELEGATION_EXPECTED_SOCKET: files.socketPath,
+      CORAL_DELEGATION_GATE: gatePath,
+      CORAL_DELEGATION_OBSERVATION: observationPath,
+      CORAL_DELEGATION_MODE: 'refusal',
+      CORAL_DELEGATION_SELECTION_SWITCH_BACKEND: selectedBackendPath,
+      CORAL_DELEGATION_NEXT_SELECTION: terminalSelectionPath,
+      CORAL_DELEGATION_SELECTION: selectionPaths.selectionFile,
+      CORAL_DELEGATION_AMBIENT_BACKEND: ambientBackendPath,
+      CORAL_DELEGATION_AMBIENT_SELECTION: ambientSelectionPath,
+      CORAL_DELEGATION_AMBIENT_INFO: files.infoFile,
+      CORAL_DELEGATION_AMBIENT_PID: ambientPidPath,
+    });
+
+    await Promise.race([
+      waitForCondition(() => observations(observationPath).some((entry) => entry.event === 'entered'), 30_000),
+      run.completed.then((status) => {
+        throw new Error(
+          `CLI exited with ${status} before the second-hop refusal reached the fixture\nstdout:\n${run.stdout()}\nstderr:\n${run.stderr()}`,
+        );
+      }),
+    ]);
+    const entered = observations(observationPath).find((entry) => entry.event === 'entered');
+    if (entered !== undefined) observedPids.add(entered.pid);
+    const ambientDiscovery = JSON.parse(readFileSync(files.infoFile, 'utf-8')) as Readonly<{ pid: number }>;
+    observedPids.add(ambientDiscovery.pid);
+    expect(entered).toMatchObject({ mode: 'refusal', requestedAddress: files.socketPath });
+    expect(ambientDiscovery.pid).not.toBe(entered?.pid);
+    expect(observeProcessLiveness(ambientDiscovery.pid)).toBe('alive');
+
+    await expectPending(run, 250);
+    writeFileSync(gatePath, 'release', 'utf-8');
+    const status = await run.completed;
+    expect(observations(observationPath)).toContainEqual(
+      expect.objectContaining({ event: 'released', mode: 'refusal', requestedAddress: files.socketPath }),
+    );
+    expect(status).toBe(75);
+    expect(run.stderr()).toContain('[code=handoff_socket_holder_unverified]');
+    expect(run.stderr()).toContain(
+      `Handoff refused at the startup deadline for socket ${files.socketPath}: the socket remained bound but no verified holder pid was available.`,
+    );
+
+    const routingStatus = readHandoffRoutingStatus(
+      runtime,
+      handoffRoutingStatusPathForRunDir(
+        files.runDir,
+        handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
+      ),
+    );
+    expect(routingStatus.kind).toBe('current');
+    if (routingStatus.kind !== 'current') {
+      throw new Error(`Expected current handoff routing status, received ${routingStatus.kind}`);
+    }
+    const originalDisposition = routingStatus.statuses.find((entry) => {
+      if (entry.kind !== 'terminal' || entry.selection === null) return false;
+      const disposition = entry.selection.disposition;
+      return (
+        disposition.kind === 'handoff-selected' && disposition.target.build.bundleHash === selected.manifest.bundleHash
+      );
+    });
+    // A backend that refuses startup exits 1: only the CLI envelope maps a documented code to its exit
+    // code, so the refusal's class travels in the sentinel, not in the child's process status. What this
+    // record must show is that the first hop ended on its child's terminal outcome rather than being
+    // finalized as a success by some other coordinator.
+    expect(originalDisposition).toMatchObject({
+      kind: 'terminal',
+      terminal: {
+        disposition: {
+          kind: 'delegated-exit',
+          version: selected.manifest.version,
+        },
+      },
+    });
+  }, 120_000);
 });
