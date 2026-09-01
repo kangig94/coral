@@ -7,6 +7,7 @@
 // expected shape of a canonical home, not drift.
 
 import { isRecord } from '../infra/json.js';
+import { HANDOFF_SIGNAL_POLICY_ENV } from '../infra/process-constants.js';
 
 export interface CoralSetupErrorInit {
   code: string;
@@ -104,14 +105,172 @@ export type DocumentedCoralSetupErrorCode =
   | 'role_id_occupied'
   | 'role_descriptor_mismatch'
   | 'role_descriptor_unregistered'
+  | 'handoff_fresh_discovery_unavailable'
+  | 'handoff_fresh_discovery_changed'
+  | 'handoff_signal_capability_unavailable'
+  | 'handoff_signal_cooldown_active'
+  | 'handoff_legacy_signal_attempt_indeterminate'
+  | 'handoff_shutdown_capability_rejected'
+  | 'handoff_shutdown_credential_unavailable'
+  | 'handoff_socket_holder_unverified'
+  | 'handoff_manual_policy'
+  | 'handoff_term_only_policy'
+  | 'handoff_process_identity_unavailable'
+  | 'handoff_process_liveness_unknown'
+  | 'handoff_platform_identity_insufficient'
+  | 'handoff_published_incarnation_missing'
+  | 'handoff_published_incarnation_mismatch'
+  | 'handoff_signal_anchor_missing'
+  | 'handoff_pid_recycled'
+  | 'handoff_signal_rejected_live'
+  | 'handoff_accepted_signal_target_alive_after_failure'
+  | 'handoff_accepted_signal_target_alive_after_bind'
+  | 'handoff_sigkill_grace_target_gone_socket_still_bound'
+  | 'handoff_sigkill_grace_target_alive'
   | 'user_cancelled';
 
-type DocumentedCoralSetupErrorSpec = {
-  readonly userMessage: string | ((context?: CoralSetupErrorContext) => string);
-  readonly remediation: string | ((context?: CoralSetupErrorContext) => string);
+export type HandoffRefusalCode = Extract<DocumentedCoralSetupErrorCode, `handoff_${string}`>;
+
+export type MissingSignalCapabilityField = 'instanceId' | 'token' | 'bootToken';
+
+export type HandoffVerificationContext =
+  | { readonly stage: 'before-signal'; readonly pid: number }
+  | {
+      readonly stage: 'after-rejected-signal';
+      readonly pid: number;
+      readonly signal: 'SIGTERM' | 'SIGKILL';
+    }
+  | {
+      readonly stage: 'after-accepted-signal-bind';
+      readonly pid: number;
+      readonly signal: 'SIGTERM' | 'SIGKILL';
+    }
+  | {
+      readonly stage: 'after-accepted-signal-failure';
+      readonly pid: number;
+      readonly signal: 'SIGTERM' | 'SIGKILL';
+    }
+  | {
+      readonly stage: 'after-sigterm-grace';
+      readonly pid: number;
+      readonly signal: 'SIGTERM';
+      readonly graceMs: number;
+    }
+  | {
+      readonly stage: 'after-sigkill-grace';
+      readonly pid: number;
+      readonly signal: 'SIGKILL';
+      readonly graceMs: number;
+    };
+
+type HandoffSignalCooldownContext = Readonly<{
+  stage: 'before-signal';
+  pid: number;
+  requestedSignal: 'SIGTERM' | 'SIGKILL';
+  previousSignal: 'SIGTERM' | 'SIGKILL';
+  ageMs: number;
+  retryInMs: number;
+}>;
+
+export type HandoffRefusalContextByCode = {
+  readonly handoff_fresh_discovery_unavailable: HandoffVerificationContext;
+  readonly handoff_fresh_discovery_changed: HandoffVerificationContext;
+  readonly handoff_signal_capability_unavailable: HandoffVerificationContext & {
+    readonly missingFields: readonly MissingSignalCapabilityField[];
+  };
+  readonly handoff_signal_cooldown_active: HandoffSignalCooldownContext;
+  readonly handoff_legacy_signal_attempt_indeterminate: HandoffSignalCooldownContext;
+  readonly handoff_shutdown_capability_rejected: Readonly<{
+    stage: 'shutdown-request';
+    pid: number | 'unknown';
+  }>;
+  readonly handoff_shutdown_credential_unavailable: Readonly<{
+    stage: 'shutdown-request';
+    pid: number;
+  }>;
+  readonly handoff_socket_holder_unverified: Readonly<{
+    stage: 'handoff-deadline';
+    socketPath: string;
+  }>;
+  readonly handoff_manual_policy: Readonly<{
+    stage: 'before-signal';
+    pid: number;
+    policy: 'manual';
+  }>;
+  readonly handoff_term_only_policy: Readonly<{
+    stage: 'after-sigterm-grace';
+    pid: number;
+    graceMs: number;
+    policy: 'term-only';
+  }>;
+  readonly handoff_process_identity_unavailable: HandoffVerificationContext;
+  readonly handoff_process_liveness_unknown: HandoffVerificationContext;
+  readonly handoff_platform_identity_insufficient: HandoffVerificationContext;
+  readonly handoff_published_incarnation_missing: HandoffVerificationContext;
+  readonly handoff_published_incarnation_mismatch: HandoffVerificationContext;
+  readonly handoff_signal_anchor_missing: HandoffVerificationContext;
+  readonly handoff_pid_recycled: HandoffVerificationContext;
+  readonly handoff_signal_rejected_live: Readonly<{
+    stage: 'after-rejected-signal';
+    pid: number;
+    signal: 'SIGTERM' | 'SIGKILL';
+  }>;
+  readonly handoff_accepted_signal_target_alive_after_failure: Readonly<{
+    stage: 'after-accepted-signal-failure';
+    pid: number;
+    signal: 'SIGTERM' | 'SIGKILL';
+  }>;
+  readonly handoff_accepted_signal_target_alive_after_bind: Readonly<{
+    stage: 'after-accepted-signal-bind';
+    pid: number;
+    signal: 'SIGTERM' | 'SIGKILL';
+  }>;
+  readonly handoff_sigkill_grace_target_gone_socket_still_bound: Readonly<{
+    stage: 'after-sigkill-grace';
+    pid: number;
+    signal: 'SIGKILL';
+    graceMs: number;
+  }>;
+  readonly handoff_sigkill_grace_target_alive: Readonly<{
+    stage: 'after-sigkill-grace';
+    pid: number;
+    signal: 'SIGKILL';
+    graceMs: number;
+  }>;
+};
+
+export type HandoffRefusalInit = {
+  [Code in HandoffRefusalCode]: Readonly<{
+    code: Code;
+    context: HandoffRefusalContextByCode[Code];
+  }>;
+}[HandoffRefusalCode];
+
+type AssertNever<Value extends never> = Value;
+
+export type AssertHandoffRefusalContextCoversCodes = AssertNever<
+  Exclude<HandoffRefusalCode, keyof HandoffRefusalContextByCode>
+>;
+
+export type AssertHandoffRefusalCodesCoverContext = AssertNever<
+  Exclude<keyof HandoffRefusalContextByCode, HandoffRefusalCode>
+>;
+
+type DocumentedCoralSetupErrorContext<Code extends DocumentedCoralSetupErrorCode> =
+  Code extends keyof HandoffRefusalContextByCode
+    ? HandoffRefusalContextByCode[Code]
+    : CoralSetupErrorContext | undefined;
+
+type DocumentedCoralSetupErrorSpec<Code extends DocumentedCoralSetupErrorCode> = {
+  readonly userMessage: string | ((context: DocumentedCoralSetupErrorContext<Code>) => string);
+  readonly remediation: string | ((context: DocumentedCoralSetupErrorContext<Code>) => string);
   readonly exitCode?: number;
   readonly retryable?: true;
   readonly observation?: 'not_observed';
+};
+
+type DocumentedCoralSetupErrorCatalog = {
+  readonly [Code in DocumentedCoralSetupErrorCode]: DocumentedCoralSetupErrorSpec<Code>;
 };
 
 function stringContextValue(context: CoralSetupErrorContext | undefined, key: string, fallback: string): string {
@@ -141,6 +300,23 @@ function activeStoreCoordinationRemediation(context?: CoralSetupErrorContext): s
     return `${stop} Verify that ${recordPath} is stable and both readable and writable by the current user, then retry the command. If it still fails, preserve the record and store files and report failureCode=${failureCode}.`;
   }
   return `${stop} Preserve ${recordPath} and the store files, then report this error with failureCode=${failureCode}; do not edit or delete the evidence.`;
+}
+
+function verificationLead(context: HandoffVerificationContext): string {
+  switch (context.stage) {
+    case 'before-signal':
+      return `Handoff refused before signaling incumbent pid=${context.pid}`;
+    case 'after-rejected-signal':
+      return `Handoff refused after ${context.signal} was rejected for incumbent pid=${context.pid}`;
+    case 'after-accepted-signal-bind':
+      return `Handoff refused after the socket became bindable following accepted ${context.signal} for incumbent pid=${context.pid}`;
+    case 'after-accepted-signal-failure':
+      return `Handoff failed after accepted ${context.signal} for incumbent pid=${context.pid}`;
+    case 'after-sigterm-grace':
+      return `Handoff refused after accepted SIGTERM for incumbent pid=${context.pid} and its ${context.graceMs}ms grace elapsed`;
+    case 'after-sigkill-grace':
+      return `Handoff refused after accepted SIGKILL for incumbent pid=${context.pid} and its ${context.graceMs}ms grace elapsed`;
+  }
 }
 
 const DOCUMENTED_CORAL_SETUP_ERRORS = {
@@ -718,6 +894,168 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation:
       'Update the expansion to register every retrieval role declared in manifest.provides during startup, or remove the stale descriptor from the manifest.',
   },
+  handoff_fresh_discovery_unavailable: {
+    userMessage: (context) => `${verificationLead(context)}: fresh coordinator discovery was unavailable.`,
+    remediation: 'Retry when verified discovery is available.',
+    exitCode: 75,
+    retryable: true,
+    observation: 'not_observed',
+  },
+  handoff_fresh_discovery_changed: {
+    userMessage: (context) => `${verificationLead(context)}: fresh coordinator discovery changed.`,
+    remediation: 'Retry handoff against the newly discovered incumbent.',
+    exitCode: 75,
+    retryable: true,
+  },
+  handoff_signal_capability_unavailable: {
+    userMessage: (context) =>
+      `${verificationLead(context)}: verified discovery lacks required signal-capability fields (${context.missingFields.join(', ')}).`,
+    remediation:
+      'Repair or replace the coordinator discovery record, or stop the target through its host service, then retry handoff.',
+    exitCode: 77,
+  },
+  handoff_signal_cooldown_active: {
+    userMessage: (context) =>
+      `Handoff refused before repeated ${context.requestedSignal} for incumbent pid=${context.pid}: the previous ${context.previousSignal} was ${context.ageMs}ms ago; retry in ${context.retryInMs}ms.`,
+    remediation: (context) =>
+      `Wait ${context.retryInMs}ms for the handoff signal cooldown to elapse, then retry handoff.`,
+    exitCode: 75,
+    retryable: true,
+  },
+  handoff_legacy_signal_attempt_indeterminate: {
+    userMessage: (context) =>
+      `Handoff refused before ${context.requestedSignal} for incumbent pid=${context.pid}: the legacy record proves only that ${context.previousSignal} was attempted ${context.ageMs}ms ago, not that it was accepted; retry in ${context.retryInMs}ms.`,
+    remediation: (context) =>
+      `Inspect the identified target and wait ${context.retryInMs}ms for the legacy attempt cooldown to elapse, then retry handoff.`,
+    exitCode: 75,
+    retryable: true,
+    observation: 'not_observed',
+  },
+  handoff_shutdown_capability_rejected: {
+    userMessage: (context) =>
+      `Handoff refused during the shutdown request for incumbent pid=${context.pid}: the incumbent rejected the shutdown capability.`,
+    remediation:
+      'Stop the incumbent that owns the coordinator socket through the service or account that owns it, then retry handoff.',
+    exitCode: 77,
+  },
+  handoff_shutdown_credential_unavailable: {
+    userMessage: (context) =>
+      `Handoff refused during the shutdown request for incumbent pid=${context.pid}: verified discovery had no boot credential for shutdown.`,
+    remediation: 'Stop the identified incumbent through the service or account that owns it, then retry handoff.',
+    exitCode: 77,
+  },
+  handoff_socket_holder_unverified: {
+    userMessage: (context) =>
+      `Handoff refused at the startup deadline for socket ${context.socketPath}: the socket remained bound but no verified holder pid was available.`,
+    remediation:
+      'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff.',
+    exitCode: 75,
+    observation: 'not_observed',
+  },
+  handoff_manual_policy: {
+    userMessage: (context) =>
+      `Handoff refused before signaling incumbent pid=${context.pid}: ${HANDOFF_SIGNAL_POLICY_ENV}=manual forbids automated handoff signals.`,
+    remediation: `Stop the target through the service or account that owns it, then retry handoff; or deliberately change ${HANDOFF_SIGNAL_POLICY_ENV} and retry.`,
+    exitCode: 77,
+  },
+  handoff_term_only_policy: {
+    userMessage: (context) =>
+      `Handoff refused after accepted SIGTERM for incumbent pid=${context.pid} and its ${context.graceMs}ms grace elapsed: ${HANDOFF_SIGNAL_POLICY_ENV}=term-only forbids SIGKILL.`,
+    remediation: `Wait for the target's own shutdown to finish or stop it through the service or account that owns it, then retry handoff; or deliberately change ${HANDOFF_SIGNAL_POLICY_ENV} and retry.`,
+    exitCode: 77,
+    retryable: true,
+  },
+  handoff_process_identity_unavailable: {
+    userMessage: (context) =>
+      `${verificationLead(context)}: the process incarnation was unavailable and pid absence was not established.`,
+    remediation:
+      'Retry when a fresh process-identity observation for this pid succeeds; if it remains unavailable, inspect and stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    retryable: true,
+    observation: 'not_observed',
+  },
+  handoff_process_liveness_unknown: {
+    userMessage: (context) =>
+      `${verificationLead(context)}: the target identity matched but its current liveness could not be observed.`,
+    remediation:
+      'Retry when a process-liveness observation for this pid succeeds; if it remains unavailable, inspect and stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    retryable: true,
+    observation: 'not_observed',
+  },
+  handoff_platform_identity_insufficient: {
+    userMessage: (context) =>
+      `${verificationLead(context)}: this platform cannot produce a process identity strong enough to authorize a signal.`,
+    remediation: 'Stop the Coral backend through its service or socket, not by pid, then retry handoff.',
+    exitCode: 77,
+  },
+  handoff_published_incarnation_missing: {
+    userMessage: (context) =>
+      `${verificationLead(context)}: the incumbent published no incarnation, so this pid cannot be proven to be it.`,
+    remediation: 'Stop the Coral backend through its service or socket, not by this pid, then retry handoff.',
+    exitCode: 77,
+  },
+  handoff_published_incarnation_mismatch: {
+    userMessage: (context) => `${verificationLead(context)}: this pid is not the process the incumbent published.`,
+    remediation:
+      'Retry handoff against a freshly discovered incumbent; if the mismatch persists, stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    retryable: true,
+  },
+  handoff_signal_anchor_missing: {
+    userMessage: (context) =>
+      `${verificationLead(context)}: no baseline was observed for this pid while it was authenticated.`,
+    remediation:
+      'Retry handoff so a new attempt can establish an authenticated baseline; if it cannot, stop the target through its host service before retrying handoff.',
+    exitCode: 75,
+    retryable: true,
+    observation: 'not_observed',
+  },
+  handoff_pid_recycled: {
+    userMessage: (context) => `${verificationLead(context)}: the pid was recycled after this coordinator observed it.`,
+    remediation:
+      'Retry handoff against the current incumbent; if ownership remains unclear, stop it through its host service before retrying handoff.',
+    exitCode: 75,
+    retryable: true,
+  },
+  handoff_signal_rejected_live: {
+    userMessage: (context) =>
+      `Handoff refused after ${context.signal} was rejected for incumbent pid=${context.pid}: the verified target remained alive; this process may lack permission or the target may be outside its signal reach.`,
+    remediation: 'Stop the target through the service or account that owns it, then retry handoff.',
+    exitCode: 77,
+  },
+  handoff_accepted_signal_target_alive_after_failure: {
+    userMessage: (context) =>
+      `Handoff failed after accepted ${context.signal} for incumbent pid=${context.pid}: the target was not observed gone before another handoff operation failed.`,
+    remediation:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup.',
+    exitCode: 69,
+    retryable: true,
+  },
+  handoff_accepted_signal_target_alive_after_bind: {
+    userMessage: (context) =>
+      `Handoff refused after the socket became bindable following accepted ${context.signal} for incumbent pid=${context.pid}: the verified target remained alive.`,
+    remediation:
+      'Wait for the identified target to finish shutting down or stop it through the service or account that owns it, then retry startup.',
+    exitCode: 69,
+    retryable: true,
+  },
+  handoff_sigkill_grace_target_gone_socket_still_bound: {
+    userMessage: (context) =>
+      `Handoff refused after accepted SIGKILL for incumbent pid=${context.pid} and its ${context.graceMs}ms grace elapsed: the target is gone, but the coordinator socket remained bound.`,
+    remediation:
+      'Retry the original coral-cli mutating command so Coral re-observes ownership and removes the socket only if it proves stale.',
+    exitCode: 75,
+    retryable: true,
+  },
+  handoff_sigkill_grace_target_alive: {
+    userMessage: (context) =>
+      `Handoff refused after accepted SIGKILL for incumbent pid=${context.pid} and its ${context.graceMs}ms grace elapsed: the verified target remained alive.`,
+    remediation: (context) =>
+      `Wait for uninterruptible I/O to finish or stop pid=${context.pid} through its host service, then retry startup.`,
+    exitCode: 69,
+    retryable: true,
+  },
   user_cancelled: {
     userMessage: (context) => `User cancelled '${stringContextValue(context, 'during', 'the operation')}'.`,
     remediation: (context) => {
@@ -728,9 +1066,18 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       return 'Retry the operation when ready.';
     },
   },
-} satisfies Record<DocumentedCoralSetupErrorCode, DocumentedCoralSetupErrorSpec>;
+} satisfies DocumentedCoralSetupErrorCatalog;
 
-function documentedCoralSetupErrorSpec(code: string): DocumentedCoralSetupErrorSpec | undefined {
+type DocumentedCoralSetupErrorDisposition = Readonly<{
+  exitCode?: number;
+  retryable?: true;
+  observation?: 'not_observed';
+}>;
+
+function documentedCoralSetupErrorSpec(code: string): DocumentedCoralSetupErrorDisposition | undefined;
+function documentedCoralSetupErrorSpec(
+  code: string,
+): DocumentedCoralSetupErrorCatalog[DocumentedCoralSetupErrorCode] | undefined {
   if (!Object.hasOwn(DOCUMENTED_CORAL_SETUP_ERRORS, code)) {
     return undefined;
   }
@@ -756,11 +1103,31 @@ export function isRetryableCoralSetupError(error: unknown): boolean {
   return setupError !== null && documentedCoralSetupErrorSpec(setupError.code)?.retryable === true;
 }
 
-function renderDocumentedSpec(
-  value: string | ((context?: CoralSetupErrorContext) => string),
-  context?: CoralSetupErrorContext,
+function renderDocumentedSpec<Code extends DocumentedCoralSetupErrorCode>(
+  value: string | ((context: DocumentedCoralSetupErrorContext<Code>) => string),
+  context: DocumentedCoralSetupErrorContext<Code>,
 ): string {
   return typeof value === 'function' ? value(context) : value;
+}
+
+function renderDocumentedCoralSetupError<Code extends DocumentedCoralSetupErrorCode>(
+  code: Code,
+  context: DocumentedCoralSetupErrorContext<Code>,
+): Pick<CoralSetupErrorInit, 'userMessage' | 'remediation'> {
+  const spec = DOCUMENTED_CORAL_SETUP_ERRORS[code] as DocumentedCoralSetupErrorSpec<Code>;
+  return {
+    userMessage: renderDocumentedSpec(spec.userMessage, context),
+    remediation: renderDocumentedSpec(spec.remediation, context),
+  };
+}
+
+export function renderHandoffRefusal(init: HandoffRefusalInit): CoralSetupErrorInit {
+  const rendered = renderDocumentedCoralSetupError(init.code, init.context);
+  return {
+    code: init.code,
+    ...rendered,
+    context: init.context,
+  };
 }
 
 export type DocumentedCoralSetupErrorObjectInit = {
@@ -785,12 +1152,12 @@ export function documentedCoralSetupError(
     typeof codeOrInit === 'string'
       ? { code: codeOrInit, effectiveContext: context, effectiveOverrides: overrides }
       : normalizeDocumentedSetupErrorInit(codeOrInit);
-  const spec = DOCUMENTED_CORAL_SETUP_ERRORS[code];
+  const rendered = renderDocumentedCoralSetupError(code, effectiveContext);
 
   return new CoralSetupError({
     code,
-    userMessage: effectiveOverrides.userMessage ?? renderDocumentedSpec(spec.userMessage, effectiveContext),
-    remediation: effectiveOverrides.remediation ?? renderDocumentedSpec(spec.remediation, effectiveContext),
+    userMessage: effectiveOverrides.userMessage ?? rendered.userMessage,
+    remediation: effectiveOverrides.remediation ?? rendered.remediation,
     ...(effectiveContext === undefined ? {} : { context: effectiveContext }),
   });
 }
@@ -821,14 +1188,14 @@ export class CoralSetupError extends Error {
   readonly remediation: string;
   readonly context?: Record<string, unknown>;
 
-  constructor(init: CoralSetupErrorInit) {
-    super(init.userMessage);
+  constructor(init: CoralSetupErrorInit, options?: ErrorOptions) {
+    super(init.userMessage, options);
     this.name = 'CoralSetupError';
     this.code = init.code;
     this.userMessage = init.userMessage;
     this.remediation = init.remediation;
     this.context = init.context;
-    Object.setPrototypeOf(this, CoralSetupError.prototype);
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
