@@ -19,9 +19,16 @@ function startupStartedAt(): number {
 }
 
 export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<string, unknown> {
+  const nestedCause = error instanceof Error ? error.cause : undefined;
   const setupError = serializeCoralSetupError(error);
   if (setupError) {
-    return { kind: 'coral_setup_error', ...setupError };
+    return {
+      kind: 'coral_setup_error',
+      ...setupError,
+      ...(nestedCause === undefined || nestedCause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
+        ? {}
+        : { cause: serializeBootstrapError(nestedCause, causeDepth + 1) }),
+    };
   }
   if (error instanceof Error) {
     return {
@@ -30,9 +37,9 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
       message: error.message,
       ...(error.stack === undefined ? {} : { stack: error.stack }),
       // Nested causes must remain inspectable in the structured diagnostic; they never enter default public text.
-      ...(error.cause === undefined || error.cause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
+      ...(nestedCause === undefined || nestedCause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
         ? {}
-        : { cause: serializeBootstrapError(error.cause, causeDepth + 1) }),
+        : { cause: serializeBootstrapError(nestedCause, causeDepth + 1) }),
     };
   }
   return {
