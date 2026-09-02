@@ -41,6 +41,15 @@ current source `heartbeat-failed` requires `terminalReason: 'teardown-latched' |
 **It is not enough for this requirement, by that entry's own admission**: it "does not save work through a
 multi-minute coordinator stall".
 
+The skew is wider than one field. `v0.10.9` is dated 2026-08-17, and every correction this entry cites
+landed after it: the 2026-08-24 and 2026-08-26 corrections, and `df08df54` (#338), which `git merge-base
+--is-ancestor` reports is not an ancestor of the tag. The tolerant path those corrections added — an
+unanswered heartbeat becoming a retrying incident and a bounded hold instead of a latched fault — did not
+exist in the build that produced these lines. So the fault-kind counts above say which faults that build
+latched, and nothing about whether the hold now fires; a log in which only the decisive path ran is what a
+build with no tolerant path looks like, not evidence of a defect in one. Only a measurement taken on
+current source can speak to that.
+
 ## The number current source actually tolerates
 
 `providerProxyAdoptionWindowMs` (`src/provider-proxy/orphan-deadline.ts`) is
@@ -85,9 +94,16 @@ measurement, and none was chosen:
    its own scheduler lateness and already computes `materialSchedulerLatenessMs` from the window; the
    arrow could point the other way, so a host under load earns tolerance and an idle host does not.
    Needs a rule for what a starved process may conclude from its own clock.
-3. **Take the deadline off the starved event loop.** The deadline that kills the work runs on the process
-   the stall is happening to. This is `wedged-coordinator-self-drain`'s broader problem — external
-   supervision — and it is the only one of the four that also survives a stall longer than any constant.
+3. **Change what the off-process deadline accepts as evidence.** This was recorded as "take the deadline
+   off the starved event loop", and that was already false when it was written. `createArmedEnforcer`
+   (`src/provider-proxy/enforcement.ts`) is constructed in exactly two places — `createGuardian` and the
+   reaper — which are separate processes that stay healthy through a coordinator stall, and its tick is
+   clock arithmetic that never asks whether the coordinator still exists. There is nothing to relocate.
+   What is open is the input: the tick counts wall-clock silence on a host where both parties share a
+   kernel, so it cannot tell a coordinator that died from one that was descheduled. Replacing that input
+   with an observation of the tenancy holder is the only one of the four that survives a stall longer than
+   any constant, and it owes the third answer an exit — a holder that cannot be observed must become
+   neither a demolition nor a hold with nothing to end it.
 4. **Separate "did not answer" from "is gone" at this boundary.** A heartbeat RPC that missed its budget
    is the third answer, not evidence the provider died; the branch that produced this entry spent sixteen
    review rounds removing exactly that collapse elsewhere. Current source no longer latches on the RPC
@@ -95,6 +111,15 @@ measurement, and none was chosen:
 
 The four are not exclusive. 1 is a stopgap that 2 or 3 would replace; 4 is a property any of them should
 preserve.
+
+**A pioneer reviewed this on 2026-09-02.** It rejected all four shapes as recorded and proposed anchoring
+the demolition verdict on an identity-bound liveness observation of the tenancy holder rather than on
+elapsed silence — the dual of the rule `.claude/rules/validation.md` already carries in the other
+direction, that escalation requires observed life. **The proposal is not accepted.** `#338` decided the
+opposite deliberately and said so: "Starvation past that still ends claim-bearing work; the authority over
+silence is now one deadline owned by the party that also executes and reports the consequence." Making
+silence insufficient takes that authority back out again, and that reversal has not been reviewed. The
+design behind the proposal is not recorded here; this entry records the open question, not an answer.
 
 ## What is explicitly out of scope
 
@@ -105,15 +130,20 @@ a host it does not control.
 
 ## Start condition
 
-Pick between 1–4 first; each writes different code, and 1 is a constant while 3 is a process. Whichever
-is chosen, the acceptance test is the same and should be written first: a coordinator whose event loop is
-blocked for 60 seconds keeps its live claims, and one whose provider is genuinely gone still reaps.
+Pick between 1–4 first; each writes different code, and 1 is a constant while 3 changes what an already
+external process is allowed to conclude. Whichever is chosen, the acceptance test is the same and should be
+written first: a coordinator whose event loop is blocked for 60 seconds keeps its live claims, and one
+whose provider is genuinely gone still reaps.
 
 ## Interacts with
 
 - `wedged-coordinator-self-drain` — same mechanism, opposite blast radius. That entry records the wedge
-  killing healthy work and carries the 2026-08-24 and 2026-08-26 corrections this one builds on; option 3
-  above **is** its external-supervision half. They close together only if 3 is chosen.
+  killing healthy work and carries the 2026-08-24 and 2026-08-26 corrections this one builds on. This line
+  used to say option 3 above **is** that entry's external-supervision half, and that the two close together
+  if 3 is chosen. They are separate. What remains there is a coordinator that never retires and what would
+  restart it, which wants a supervisor that does not exist yet. The external supervisors for this blast
+  radius already exist — the guardian and the reaper — and what they need is better evidence, not a new
+  home. Neither entry closes the other.
 - `containment-observation-deadline` — observation cost sitting outside the deadlines that bound
   containment. A wider adoption window changes that arithmetic's inputs.
 - `provider-proxy-heartbeat-hold-status` — the hold this entry wants to last longer is the one that entry
