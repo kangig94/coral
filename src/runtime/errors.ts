@@ -60,9 +60,6 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
   | 'startup_bundle_unresolvable'
-  | 'backend_remote_bind_requires_opt_in'
-  | 'backend_remote_bind_invalid_allowlist'
-  | 'backend_remote_bind_requires_access_policy'
   | 'system_provider_scope_invalid'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
@@ -394,24 +391,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
     remediation: (context) =>
       `Reinstall or update the Coral plugin at ${stringContextValue(context, 'pluginRoot', '<plugin-root>')} so its bridge bundle and manifest are present, then start Coral again.`,
-  },
-  backend_remote_bind_requires_opt_in: {
-    userMessage: (context) =>
-      `Refusing to bind Coral backend to non-loopback host '${stringContextValue(context, 'bindHost', '<bind-host>')}' without CORAL_BACKEND_ALLOW_REMOTE=1.`,
-    remediation:
-      'Use loopback-only CORAL_BACKEND_BIND (127.0.0.1, ::1, or localhost), or set CORAL_BACKEND_ALLOW_REMOTE=1 only when remote backend exposure is intentional and protected by a trusted network boundary.',
-  },
-  backend_remote_bind_invalid_allowlist: {
-    userMessage: (context) =>
-      `Invalid CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST entry '${stringContextValue(context, 'invalidEntry', '<invalid-address>')}'.`,
-    remediation:
-      'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST currently accepts comma-separated IP address literals only; use CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
-  },
-  backend_remote_bind_requires_access_policy: {
-    userMessage: (context) =>
-      `Refusing to bind Coral backend to non-loopback host '${stringContextValue(context, 'bindHost', '<bind-host>')}' without a remote access policy.`,
-    remediation:
-      'Set CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST to a comma-separated list of trusted client IP addresses, or set CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
   },
   system_provider_scope_invalid: {
     userMessage: (context) => {

@@ -893,24 +893,6 @@ describe('CoralSetupError', () => {
       "This build cannot read this store's format. To deliberately destroy its history, run 'coral-cli backend store-reset discard --target gen2 --flavor dev'; this build can then initialize an empty store.",
     ],
     [
-      'backend_remote_bind_requires_opt_in',
-      { bindHost: '0.0.0.0' },
-      "Refusing to bind Coral backend to non-loopback host '0.0.0.0' without CORAL_BACKEND_ALLOW_REMOTE=1.",
-      'Use loopback-only CORAL_BACKEND_BIND (127.0.0.1, ::1, or localhost), or set CORAL_BACKEND_ALLOW_REMOTE=1 only when remote backend exposure is intentional and protected by a trusted network boundary.',
-    ],
-    [
-      'backend_remote_bind_invalid_allowlist',
-      { invalidEntry: 'example.com' },
-      "Invalid CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST entry 'example.com'.",
-      'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST currently accepts comma-separated IP address literals only; use CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
-    ],
-    [
-      'backend_remote_bind_requires_access_policy',
-      { bindHost: '0.0.0.0' },
-      "Refusing to bind Coral backend to non-loopback host '0.0.0.0' without a remote access policy.",
-      'Set CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST to a comma-separated list of trusted client IP addresses, or set CORAL_BACKEND_REMOTE_UNRESTRICTED=1 only behind a trusted network boundary.',
-    ],
-    [
       'system_provider_scope_invalid',
       { scopeName: 'internal' },
       "Named system provider scope 'internal' is invalid.",

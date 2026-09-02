@@ -41,7 +41,7 @@ import {
 } from '../services/provider-proxy-set/inheritance.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { documentedCoralSetupError } from '../../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
@@ -70,9 +70,11 @@ function isLoopbackBindHost(bindHost: string): boolean {
 function assertRemoteBindHostAllowed(bindHost: string, allowRemote: string | undefined): void {
   if (isLoopbackBindHost(bindHost) || allowRemote === '1') return;
 
-  throw documentedCoralSetupError('backend_remote_bind_requires_opt_in', {
-    bindHost,
-    optInEnv: REMOTE_BIND_OPT_IN_ENV,
+  throw new CoralSetupError({
+    code: 'backend_remote_bind_requires_opt_in',
+    userMessage: `Refusing to bind Coral backend to non-loopback host '${bindHost}' without ${REMOTE_BIND_OPT_IN_ENV}=1.`,
+    remediation: `Use loopback-only CORAL_BACKEND_BIND (127.0.0.1, ::1, or localhost), or set ${REMOTE_BIND_OPT_IN_ENV}=1 only when remote backend exposure is intentional and protected by a trusted network boundary.`,
+    context: { bindHost, optInEnv: REMOTE_BIND_OPT_IN_ENV },
   });
 }
 
@@ -92,9 +94,15 @@ function parseRemoteAddressAllowlist(raw: string | undefined): readonly string[]
     try {
       normalized = assertRemoteAddressLiteral(trimmed, REMOTE_BIND_ADDRESS_ALLOWLIST_ENV);
     } catch (error) {
-      throw documentedCoralSetupError('backend_remote_bind_invalid_allowlist', {
-        invalidEntry: trimmed,
-        cause: error instanceof Error ? error.message : String(error),
+      throw new CoralSetupError({
+        code: 'backend_remote_bind_invalid_allowlist',
+        userMessage: `Invalid ${REMOTE_BIND_ADDRESS_ALLOWLIST_ENV} entry '${trimmed}'.`,
+        remediation: `${REMOTE_BIND_ADDRESS_ALLOWLIST_ENV} currently accepts comma-separated IP address literals only; use ${REMOTE_BIND_UNRESTRICTED_ENV}=1 only behind a trusted network boundary.`,
+        context: {
+          allowlistEnv: REMOTE_BIND_ADDRESS_ALLOWLIST_ENV,
+          invalidEntry: trimmed,
+          cause: error instanceof Error ? error.message : String(error),
+        },
       });
     }
     if (seen.has(normalized)) {
@@ -127,7 +135,17 @@ function resolveRemoteAccessPolicy(params: {
     return { mode: 'unrestricted' };
   }
 
-  throw documentedCoralSetupError('backend_remote_bind_requires_access_policy', { bindHost });
+  throw new CoralSetupError({
+    code: 'backend_remote_bind_requires_access_policy',
+    userMessage: `Refusing to bind Coral backend to non-loopback host '${bindHost}' without a remote access policy.`,
+    remediation: `Set ${REMOTE_BIND_ADDRESS_ALLOWLIST_ENV} to a comma-separated list of trusted client IP addresses, or set ${REMOTE_BIND_UNRESTRICTED_ENV}=1 only behind a trusted network boundary.`,
+    context: {
+      bindHost,
+      optInEnv: REMOTE_BIND_OPT_IN_ENV,
+      allowlistEnv: REMOTE_BIND_ADDRESS_ALLOWLIST_ENV,
+      unrestrictedEnv: REMOTE_BIND_UNRESTRICTED_ENV,
+    },
+  });
 }
 
 function readConfiguredSystemProviderScope(

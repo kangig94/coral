@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const storage = vi.hoisted(() => ({
   readFileSync: vi.fn(),
@@ -34,6 +34,29 @@ beforeEach(() => {
     throw Object.assign(new Error('missing diagnostic'), { code: 'ENOENT' });
   });
 });
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+/** A documented startup refusal already on disk, recorded just now by a different pid unless overridden. */
+function recordedSetupRefusal(overrides: Readonly<Record<string, unknown>> = {}): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    phase: 'startup_failed',
+    state: 'stopped_with_diagnostic',
+    retryable: false,
+    pid: process.pid + 1,
+    recordedAt: new Date().toISOString(),
+    error: {
+      kind: 'coral_setup_error',
+      code: 'handoff_manual_policy',
+      userMessage: 'authored refusal',
+      remediation: 'authored recovery',
+    },
+    ...overrides,
+  });
+}
 
 describe('serializeBootstrapError', () => {
   it('keeps a setup error cause in the private diagnostic without adding it to the public projection', () => {
@@ -103,36 +126,40 @@ describe('writeBootstrapDiagnostic', () => {
     expect(nonRetryable.retryable).toBe(false);
   });
 
-  it('does not replace a same-attempt setup refusal with an ancestor generic startup error', () => {
-    const previousAttemptId = process.env.CORAL_STARTUP_ATTEMPT_ID;
-    process.env.CORAL_STARTUP_ATTEMPT_ID = 'delegated-attempt';
-    storage.readFileSync.mockReturnValue(
-      JSON.stringify({
-        schemaVersion: 1,
-        phase: 'startup_failed',
-        attemptId: 'delegated-attempt',
-        error: {
-          kind: 'coral_setup_error',
-          code: 'handoff_manual_policy',
-          userMessage: 'authored refusal',
-          remediation: 'authored recovery',
-        },
-      }),
-    );
+  // The guard may not depend on CORAL_STARTUP_ATTEMPT_ID being exported: a backend spawned without one must
+  // still keep the code and remediation the build it delegated to recorded.
+  it.each<[string, string | undefined]>([
+    ['a CLI spawn that exported an attempt id', 'delegated-attempt'],
+    ['a session hook that exported none', undefined],
+  ])(
+    'keeps the setup refusal a delegated build recorded when an ancestor from %s fails generically',
+    (_path, attemptId) => {
+      vi.stubEnv('CORAL_STARTUP_ATTEMPT_ID', attemptId);
+      storage.readFileSync.mockReturnValue(recordedSetupRefusal({ attemptId }));
 
-    try {
       expect(writeBootstrapDiagnostic('/plugin', 'startup_failed', new Error('generic ancestor error'), 1)).toBe(
         '/state/startup-diagnostic.json',
       );
-    } finally {
-      if (previousAttemptId === undefined) {
-        delete process.env.CORAL_STARTUP_ATTEMPT_ID;
-      } else {
-        process.env.CORAL_STARTUP_ATTEMPT_ID = previousAttemptId;
-      }
-    }
 
-    expect(storage.writeFileSync).not.toHaveBeenCalled();
-    expect(storage.renameSync).not.toHaveBeenCalled();
+      expect(storage.writeFileSync).not.toHaveBeenCalled();
+      expect(storage.renameSync).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each<[string, Readonly<Record<string, unknown>>]>([
+    ['recorded before this process started', { recordedAt: new Date(0).toISOString() }],
+    ['recorded by this process itself', { pid: process.pid }],
+    ['recorded without a readable pid', { pid: 'not-a-pid' }],
+  ])('replaces a setup refusal %s', (_reason, overrides) => {
+    vi.stubEnv('CORAL_STARTUP_ATTEMPT_ID', undefined);
+    storage.readFileSync.mockReturnValue(recordedSetupRefusal(overrides));
+
+    expect(writeBootstrapDiagnostic('/plugin', 'startup_failed', new Error('generic ancestor error'), 1)).toBe(
+      '/state/startup-diagnostic.json',
+    );
+
+    const written = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;
+    expect(written.error).toMatchObject({ kind: 'error', message: 'generic ancestor error' });
+    expect(storage.renameSync).toHaveBeenCalledTimes(1);
   });
 });

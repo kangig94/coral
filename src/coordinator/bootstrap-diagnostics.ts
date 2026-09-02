@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { dirname } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
@@ -14,6 +15,14 @@ import { isRetryableCoralSetupError, serializeCoralSetupError } from '../runtime
 export type BootstrapDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
 const MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH = 8;
+
+/**
+ * Wall-clock instant this process began, in ms, so it is comparable with the `recordedAt` another process
+ * wrote. `performance.timeOrigin` is a wall-clock reading and not a monotonic one, which is what makes that
+ * comparison meaningful. `CORAL_STARTUP_STARTED_AT` may not stand in: it names the *attempt's* start, which
+ * a delegating ancestor and the build it delegates to share, and which a spawn exporting none leaves absent.
+ */
+const PROCESS_STARTED_AT_MS = performance.timeOrigin;
 
 function startupStartedAt(): number {
   const startedAt = Number(process.env.CORAL_STARTUP_STARTED_AT);
@@ -50,15 +59,34 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
   };
 }
 
-function isSameAttemptSetupErrorDiagnostic(value: unknown, attemptId: string): boolean {
-  return (
-    isRecord(value) &&
-    value.schemaVersion === 1 &&
-    value.phase === 'startup_failed' &&
-    value.attemptId === attemptId &&
-    isRecord(value.error) &&
-    value.error.kind === 'coral_setup_error'
-  );
+/**
+ * A documented refusal this process may not overwrite with a generic startup failure of its own.
+ *
+ * Attribution may not rest on `CORAL_STARTUP_ATTEMPT_ID`: not every spawn path exports one (see
+ * `spawnCoordinator` in `src/transport/ipc/ensure.ts`), so a backend started without it has none on either
+ * side of a delegation, and comparing two absent ids either skips the guard or matches every record ever
+ * written. What holds without it is that the record was written by a *different process* during *this*
+ * process's life: a build this process delegated to satisfies both halves, and a record from an attempt that
+ * ended before this process started satisfies neither.
+ *
+ * A record with no readable pid is not preserved. This writer always stamps one, so a `startup_failed` record
+ * without one did not come from here and its prose is not this build's.
+ */
+function isSetupRefusalFromAnotherProcessSinceStartup(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.phase !== 'startup_failed' ||
+    !isRecord(value.error) ||
+    value.error.kind !== 'coral_setup_error'
+  ) {
+    return false;
+  }
+  if (typeof value.pid !== 'number' || value.pid === process.pid) {
+    return false;
+  }
+  const recordedAt = typeof value.recordedAt === 'string' ? Date.parse(value.recordedAt) : Number.NaN;
+  return Number.isFinite(recordedAt) && recordedAt >= PROCESS_STARTED_AT_MS;
 }
 
 export function writeBootstrapDiagnostic(
@@ -89,10 +117,10 @@ export function writeBootstrapDiagnostic(
       exitCode,
       error: serializedError,
     };
-    if (phase === 'startup_failed' && serializedError.kind !== 'coral_setup_error' && attemptId !== undefined) {
+    if (phase === 'startup_failed' && serializedError.kind !== 'coral_setup_error') {
       try {
         const existing: unknown = JSON.parse(runtime.storage.readFileSync(diagnosticFile, 'utf-8'));
-        if (isSameAttemptSetupErrorDiagnostic(existing, attemptId)) {
+        if (isSetupRefusalFromAnotherProcessSinceStartup(existing)) {
           return diagnosticFile;
         }
       } catch (readError: unknown) {

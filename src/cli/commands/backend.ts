@@ -946,7 +946,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const routingStatusCommand = backend.command('routing-status').description('Inspect and repair routing status');
   const resolveRoutingStatusCommand = routingStatusCommand
     .command('resolve')
-    .description('Resolve one retained opening or unobserved startup child, or acknowledge one capacity eviction')
+    .description(
+      'Resolve one unresolved selection whose recorded owner is gone, or acknowledge one retained capacity eviction',
+    )
     .requiredOption('--invocation <id>', 'Canonical invocation ID shown by backend status', commanderInvocationId)
     .option(
       '--force-unobservable',
