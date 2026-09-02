@@ -1,4 +1,5 @@
 import type { AsyncRecordedProcessObserver } from '../infra/node-process.js';
+import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import { sameControlTenancyHolder, type ControlEpoch, type ControlTenancyHolder } from './control-endpoint.js';
 
 /**
@@ -74,10 +75,20 @@ export function createControlHolderAuthority(): ControlHolderAuthority {
  */
 export type HolderDisposition = 'alive' | 'absent' | 'unobservable';
 
-export type HolderObservation =
-  | Readonly<{ disposition: 'alive' }>
-  | Readonly<{ disposition: 'unobservable' }>
-  | Readonly<{ disposition: 'absent'; authorization: ObservedHolderAbsenceAuthorization }>;
+/**
+ * `observedAt` is the instant the identity evidence was actually obtained — when the probe's own liveness
+ * and incarnation reads resolved — never the later instant a caller gets around to consuming the result. A
+ * caller that renews a schedule from this timestamp cannot silently borrow extra tolerance a queued or
+ * not-before-gated consumption never earned.
+ */
+export type HolderObservation<Scope extends symbol> =
+  | Readonly<{ disposition: 'alive'; observedAt: MonotonicInstant<Scope> }>
+  | Readonly<{ disposition: 'unobservable'; observedAt: MonotonicInstant<Scope> }>
+  | Readonly<{
+      disposition: 'absent';
+      observedAt: MonotonicInstant<Scope>;
+      authorization: ObservedHolderAbsenceAuthorization;
+    }>;
 
 /**
  * Unforgeable: the branding symbol below is module-private, so no object literal built from `controlEpoch`
@@ -126,21 +137,24 @@ export type OperatorTeardownAuthorization = Readonly<{ readonly [operatorTeardow
  * `controlHolderAuthorizationIsCurrent` is the separate, later check that catches exactly that race (and any
  * later one) at consumption time.
  */
-export async function observeControlHolder(
+export async function observeControlHolder<Scope extends symbol>(
   authority: ControlHolderAuthority,
   observe: AsyncRecordedProcessObserver,
-): Promise<HolderObservation> {
+  clock: MonotonicClock<Scope>,
+): Promise<HolderObservation<Scope>> {
   const admitted = authority.current();
   if (admitted === null) {
     // Nothing has ever been admitted: a caller that asks anyway gets the answer that authorizes nothing,
     // not a throw.
-    return { disposition: 'unobservable' };
+    return { disposition: 'unobservable', observedAt: clock.now() };
   }
   const liveness = await observe({ pid: admitted.holder.pid, incarnation: admitted.holder.incarnation });
-  if (liveness === 'alive') return { disposition: 'alive' };
-  if (liveness === 'unknown') return { disposition: 'unobservable' };
+  const observedAt = clock.now();
+  if (liveness === 'alive') return { disposition: 'alive', observedAt };
+  if (liveness === 'unknown') return { disposition: 'unobservable', observedAt };
   return {
     disposition: 'absent',
+    observedAt,
     authorization: {
       controlEpoch: admitted.controlEpoch,
       holder: admitted.holder,

@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
+import type { AsyncRecordedProcessObserver, ProcessIncarnation } from '../infra/node-process.js';
 import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
@@ -55,7 +55,7 @@ import {
   reaperHandoffRotateParamsSchema,
   reaperOpenParamsSchema as openParamsSchema,
 } from './protocol.js';
-import { createControlHolderAuthority } from './holder-lifecycle.js';
+import { mintExplicitTeardownAuthorization, type ControlHolderAuthority } from './holder-lifecycle.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
 /**
@@ -97,16 +97,22 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   mintReceipt(): string;
   /** The reaper's own pid/start identity, reported in `ReaperIdentity`. */
   self: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
+  /** The one home for this reaper process's holder identity (§7) — constructed once by the composer and
+   *  shared with the deadline machine already injected into `createControlEndpoint`'s `challenges`. This
+   *  module must not construct a second instance. */
+  holderAuthority: ControlHolderAuthority;
+  /** The non-blocking identity-bound observer the reaper's own enforcer schedules holder checks through. */
+  observeHolder: AsyncRecordedProcessObserver;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
 }>;
 
-export interface Reaper<Scope extends symbol> {
+export interface Reaper {
   listen(): Promise<void>;
   close(): Promise<void>;
   /** Null until the guardian has recorded the containment this reaper is to enforce. */
-  enforcer(): ArmedEnforcer<Scope> | null;
+  enforcer(): ArmedEnforcer | null;
 }
 
 /**
@@ -121,15 +127,10 @@ export interface Reaper<Scope extends symbol> {
  * reaper be told to enforce a containment nobody verified. The guardian is the one party that observes the
  * group being created, so it is the one party that may name it.
  */
-export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>): Reaper<Scope> {
-  const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self } = options;
+export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>): Reaper {
+  const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self, holderAuthority, observeHolder } = options;
   let recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null = null;
-  let enforcer: ArmedEnforcer<Scope> | null = null;
-
-  // One `ControlHolderAuthority` per process (§7) — the one home for this reaper's holder identity. Held
-  // here so the same instance is available to every internal composition that needs it, rather than each
-  // building its own.
-  const holderAuthority = createControlHolderAuthority();
+  let enforcer: ArmedEnforcer | null = null;
 
   /** Every field a grant is bound to except the orphan timeout, mirroring `guardian.ts`'s own `setIdentity`:
    *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
@@ -150,7 +151,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     redemptionReceipt: string;
   }> | null = null;
 
-  const requireEnforcer = (): ArmedEnforcer<Scope> => {
+  const requireEnforcer = (): ArmedEnforcer => {
     if (enforcer === null) {
       throw new ProxyControlProtocolError('invalid_state', 'This reaper has not been given a containment to hold.');
     }
@@ -237,6 +238,12 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             containment: request,
             containmentEnvironment: options.containmentEnvironment,
             scheduler,
+            holderAuthority,
+            observeHolder,
+            // The reaper's pairing peer is the guardian — the redemption linearizer. Its loss means no
+            // successor can still be in flight, so the reaper may consume a decisive result at an
+            // accelerated check, unlike the guardian's own stricter rule.
+            acceleratedCheckMayAuthorizeAbsence: true,
             onOutcome: options.onOutcome,
             onProgressViolation: options.onProgressViolation,
           });
@@ -426,7 +433,16 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           assertNamedReaperIdentity(request.reaper, identityOf(containment));
           assertNamedProxyIdentity('reaper', request.proxy, capsule);
           assertRecordedSetAgreement('reaper', request.providerRoots, armed.recordedRoots());
-          const outcome = await armed.stopAndReap(deadlines.bounds().exitDeadline);
+          // Minted from this reaper's own current holder, synchronously in this same handler turn: the
+          // endpoint's active-control gate already revalidated the tenancy immediately before dispatch.
+          const authorization = mintExplicitTeardownAuthorization(holderAuthority);
+          if (authorization === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds no admitted holder to tear down.');
+          }
+          const outcome = await armed.stopAndReap(authorization);
+          if (outcome === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
+          }
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError('invalid_state', `Reaper teardown did not complete: ${outcome.kind}.`);
           }
@@ -475,7 +491,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       enforcer?.disarm();
       await endpoint.close();
     },
-    enforcer(): ArmedEnforcer<Scope> | null {
+    enforcer(): ArmedEnforcer | null {
       return enforcer;
     },
   };

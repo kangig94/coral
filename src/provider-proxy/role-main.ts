@@ -7,6 +7,7 @@ import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-cl
 import {
   incarnationMayAuthorizeSignal,
   probeProcessIncarnation,
+  type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
   type ProcessLiveness,
 } from '../infra/node-process.js';
@@ -31,10 +32,12 @@ import {
 } from './bootstrap-capsule.js';
 import {
   MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+  mintLocalSignalTeardownAuthorization,
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from './enforcement.js';
 import { DETACHED_CONTAINMENT_KIND, createGuardian, type Guardian } from './guardian.js';
+import { createControlHolderAuthority, type ControlHolderAuthority } from './holder-lifecycle.js';
 import type { ProviderOperationKey } from './ledger.js';
 import {
   createEnforcerDeadlineStateMachine,
@@ -113,6 +116,9 @@ export type ProviderRoleMainPorts = Readonly<{
   resolveStrictIdentity?(): StrictBundleIdentityResult;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
+  /** Injected for tests; defaults to the runtime's own non-blocking identity-bound observer
+   *  (`runtime.process.observeRecordedProcessAsync`). */
+  observeRecordedProcessAsync?: AsyncRecordedProcessObserver;
   /** Injected for tests; defaults to the real `process.exit`. Called once a guardian or reaper's enforcement
    *  outcome has settled and its own control has closed — its only reason to keep running was bounding one
    *  containment, and there is nothing left to bound once teardown is done. */
@@ -155,8 +161,18 @@ function buildDeadlines<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   configuration: ProviderProxyDeadlineConfiguration,
   ports: ProviderRoleMainPorts,
+  holderAuthority: ControlHolderAuthority,
 ): EnforcerDeadlineStateMachine<Scope> {
-  return createEnforcerDeadlineStateMachine(clock, configuration, { mintChallenge: () => ports.runtime.ids.uuid() });
+  return createEnforcerDeadlineStateMachine(
+    clock,
+    configuration,
+    { mintChallenge: () => ports.runtime.ids.uuid() },
+    holderAuthority,
+  );
+}
+
+function buildHolderObserver(ports: ProviderRoleMainPorts): AsyncRecordedProcessObserver {
+  return ports.observeRecordedProcessAsync ?? ports.runtime.process.observeRecordedProcessAsync;
 }
 
 function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
@@ -219,7 +235,7 @@ function proxyCapsulePathFrom(capsule: GuardianBootstrapCapsule, baseDir: string
 
 export type GuardianRoleHandle = Readonly<{
   role: 'guardian';
-  guardian: Guardian<symbol>;
+  guardian: Guardian;
   reaperSpawn: SpawnedRoleProcess;
   proxySpawn: SpawnedRoleProcess;
   close(): Promise<void>;
@@ -233,7 +249,7 @@ export type GuardianRoleHandle = Readonly<{
 
 export type ReaperRoleHandle = Readonly<{
   role: 'reaper';
-  reaper: Reaper<symbol>;
+  reaper: Reaper;
   close(): Promise<void>;
   /** The reaper's own half of `GuardianRoleHandle.giveUp`: reaps the same containment its enforcer was
    *  independently armed on, so a SIGTERM reaching this process (it shares the guardian's process group)
@@ -535,7 +551,10 @@ export async function startProviderGuardianRole(
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'guardian', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(guardianRoleClockScope);
   const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(ports.runtime.env);
-  const deadlines = buildDeadlines(clock, deadlineConfiguration, ports);
+  // One `ControlHolderAuthority` per process (§7), constructed once here and shared with both the deadline
+  // machine and the guardian's own control endpoint/enforcer — never a second instance built by either.
+  const holderAuthority = createControlHolderAuthority();
+  const deadlines = buildDeadlines(clock, deadlineConfiguration, ports, holderAuthority);
   const containmentEnvironment = buildContainmentEnvironment(clock, ports);
   const timer = runtimeControlTimer(ports.runtime);
   const spawnPorts = buildSpawnPorts(ports);
@@ -580,7 +599,7 @@ export async function startProviderGuardianRole(
     // Forward-referenced by `close` below (assigned into `createGuardian`'s own `onOutcome` before the
     // guardian it closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
     // eslint-disable-next-line prefer-const
-    let guardianRef!: Guardian<symbol>;
+    let guardianRef!: Guardian;
     close = async (): Promise<void> => {
       pairedReaperChannel.close();
       await guardianRef.close();
@@ -606,6 +625,8 @@ export async function startProviderGuardianRole(
       reaperChannel: pairedReaperChannel,
       self: readSelfIdentity(ports),
       reaperSelf: { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
+      holderAuthority,
+      observeHolder: buildHolderObserver(ports),
       onOutcome,
       onProgressViolation,
     });
@@ -643,7 +664,9 @@ export async function startProviderGuardianRole(
           await closeGuardian();
           return { kind: 'reap-failed', reason: 'no containment was recorded to reap' };
         }
-        return armed.stopAndReap(deadlines.bounds().exitDeadline);
+        // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
+        // no remote peer or autonomous observation could construct this authority.
+        return armed.giveUp(mintLocalSignalTeardownAuthorization());
       },
     };
   } catch (error: unknown) {
@@ -660,13 +683,21 @@ export async function startProviderReaperRole(
 ): Promise<ReaperRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'reaper', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(reaperRoleClockScope);
-  const deadlines = buildDeadlines(clock, resolveProviderProxyDeadlineConfiguration(ports.runtime.env), ports);
+  // One `ControlHolderAuthority` per process (§7), constructed once here and shared with both the deadline
+  // machine and the reaper's own control endpoint/enforcer — never a second instance built by either.
+  const holderAuthority = createControlHolderAuthority();
+  const deadlines = buildDeadlines(
+    clock,
+    resolveProviderProxyDeadlineConfiguration(ports.runtime.env),
+    ports,
+    holderAuthority,
+  );
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
 
   // Forward-referenced by `close` below (assigned into `createReaper`'s own `onOutcome` before the reaper it
   // closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
   // eslint-disable-next-line prefer-const
-  let reaperRef!: Reaper<symbol>;
+  let reaperRef!: Reaper;
   const close = (): Promise<void> => reaperRef.close();
   const { onOutcome, onProgressViolation } = buildEnforcementOutcomeHandlers({
     role: 'reaper',
@@ -685,6 +716,8 @@ export async function startProviderReaperRole(
     timer: runtimeControlTimer(ports.runtime),
     mintReceipt: () => ports.runtime.ids.uuid(),
     self: readSelfIdentity(ports),
+    holderAuthority,
+    observeHolder: buildHolderObserver(ports),
     onOutcome,
     onProgressViolation,
   });
@@ -702,7 +735,9 @@ export async function startProviderReaperRole(
         await close();
         return { kind: 'reap-failed', reason: 'no containment was recorded to reap' };
       }
-      return armed.stopAndReap(deadlines.bounds().exitDeadline);
+      // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
+      // no remote peer or autonomous observation could construct this authority.
+      return armed.giveUp(mintLocalSignalTeardownAuthorization());
     },
   };
 }

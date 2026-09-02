@@ -1,4 +1,4 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
+import type { AsyncRecordedProcessObserver, ProcessIncarnation } from '../infra/node-process.js';
 import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
@@ -19,7 +19,7 @@ import {
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from './enforcement.js';
-import { createControlHolderAuthority } from './holder-lifecycle.js';
+import { mintExplicitTeardownAuthorization, type ControlHolderAuthority } from './holder-lifecycle.js';
 import {
   createGrantRegistry,
   grantBindingFromCapsule,
@@ -230,6 +230,12 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
    *  identity the guardian observed directly at spawn time, mirroring how it already checks `self` for its
    *  own claim and the capsule for the proxy's. */
   reaperSelf: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
+  /** The one home for this guardian process's holder identity (§7) — constructed once by the composer and
+   *  shared with the deadline machine already injected into `createControlEndpoint`'s `challenges`. This
+   *  module must not construct a second instance. */
+  holderAuthority: ControlHolderAuthority;
+  /** The non-blocking identity-bound observer the guardian's own enforcer schedules holder checks through. */
+  observeHolder: AsyncRecordedProcessObserver;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -239,11 +245,11 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
  *  identity vocabulary for what kind of containment this is. */
 export type GuardianContainmentIdentity = RecordedContainmentIdentity & Readonly<{ containmentKind: string }>;
 
-export interface Guardian<Scope extends symbol> {
+export interface Guardian {
   listen(): Promise<void>;
   close(): Promise<void>;
   /** Null until `recordContainment` has been called. */
-  enforcer(): ArmedEnforcer<Scope> | null;
+  enforcer(): ArmedEnforcer | null;
   /**
    * Records the proxy containment this guardian watched being created, arms its own enforcer on it, and only
    * then forwards the same identity to the paired reaper over `reaper.record-containment.v1`. Idempotent for
@@ -257,21 +263,16 @@ export interface Guardian<Scope extends symbol> {
  * The guardian owns recovery-credential redemption admission. It mirrors the reaper's recorded set so
  * it can enforce the same disappearance condition, but it can neither move nor extend the reaper's deadline.
  */
-export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian<Scope> {
-  const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self } = options;
-
-  // One `ControlHolderAuthority` per process (§7) — the one home for this guardian's holder identity. Held
-  // here so the same instance is available to every internal composition that needs it, rather than each
-  // building its own.
-  const holderAuthority = createControlHolderAuthority();
+export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian {
+  const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self, holderAuthority, observeHolder } = options;
 
   // The guardian creates the containment by spawning the proxy — it cannot know what to enforce until
   // `recordContainment` reports what it watched being created. Until then there is nothing to enforce, so
   // there is no enforcer, exactly as the reaper holds none before `reaper.record-containment.v1`.
   let recordedContainment: GuardianContainmentIdentity | null = null;
-  let enforcer: ArmedEnforcer<Scope> | null = null;
+  let enforcer: ArmedEnforcer | null = null;
 
-  const requireEnforcer = (): ArmedEnforcer<Scope> => {
+  const requireEnforcer = (): ArmedEnforcer => {
     if (enforcer === null) {
       throw new ProxyControlProtocolError('invalid_state', 'This guardian has not recorded a containment to hold.');
     }
@@ -618,7 +619,20 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
           assertRecordedSetAgreement('guardian', request.providerRoots, armed.recordedRoots());
-          const outcome = await armed.stopAndReap(deadlines.bounds().exitDeadline);
+          // Minted from this guardian's own current holder, synchronously in this same handler turn: the
+          // endpoint's active-control gate already revalidated the tenancy immediately before dispatch, so
+          // the capability names exactly the holder that gate just confirmed.
+          const authorization = mintExplicitTeardownAuthorization(holderAuthority);
+          if (authorization === null) {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'This guardian holds no admitted holder to tear down.',
+            );
+          }
+          const outcome = await armed.stopAndReap(authorization);
+          if (outcome === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
+          }
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError(
               'invalid_state',
@@ -665,7 +679,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       options.reaperChannel.close();
       await endpoint.close();
     },
-    enforcer(): ArmedEnforcer<Scope> | null {
+    enforcer(): ArmedEnforcer | null {
       return enforcer;
     },
     async recordContainment(containment: GuardianContainmentIdentity): Promise<void> {
@@ -694,6 +708,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         containment,
         containmentEnvironment: options.containmentEnvironment,
         scheduler,
+        holderAuthority,
+        observeHolder,
+        // The guardian's pairing peer is the proxy, not the redemption linearizer — the guardian itself
+        // linearizes redemption and may still be installing a valid successor when its own pairing is lost,
+        // so an accelerated check may prefetch but must not authorize absence.
+        acceleratedCheckMayAuthorizeAbsence: false,
         onOutcome: options.onOutcome,
         onProgressViolation: options.onProgressViolation,
       });

@@ -116,9 +116,13 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
   const socketPath = join(directory, 'g.sock');
   let elapsed = 0n;
   const clock = createMonotonicClock(Symbol('successor-evidence'), { readMilliseconds: () => elapsed });
-  const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
-    mintChallenge: () => randomUUID(),
-  });
+  const holderAuthority = createControlHolderAuthority();
+  const deadlines = createEnforcerDeadlineStateMachine(
+    clock,
+    configuration,
+    { mintChallenge: () => randomUUID() },
+    holderAuthority,
+  );
   const endpoint = createControlEndpoint({
     socketPath,
     role: {
@@ -149,7 +153,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
     challenges: deadlines,
     observer: { onControlLost: () => deadlines.observeEof() },
     timer,
-    holderAuthority: createControlHolderAuthority(),
+    holderAuthority,
     requestTimeoutMs: 5_000,
   });
   await endpoint.listen();
@@ -258,9 +262,13 @@ describe('control heartbeats reach the deadline machine', () => {
     let elapsed = 0n;
     const clock = createMonotonicClock(Symbol('evidence'), { readMilliseconds: () => elapsed });
     const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
-    const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
-      mintChallenge: () => randomUUID(),
-    });
+    const holderAuthority = createControlHolderAuthority();
+    const deadlines = createEnforcerDeadlineStateMachine(
+      clock,
+      configuration,
+      { mintChallenge: () => randomUUID() },
+      holderAuthority,
+    );
     const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 
     const endpoint = createControlEndpoint({
@@ -284,7 +292,7 @@ describe('control heartbeats reach the deadline machine', () => {
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },
       timer,
-      holderAuthority: createControlHolderAuthority(),
+      holderAuthority,
       requestTimeoutMs: 5_000,
     });
     await endpoint.listen();
@@ -321,10 +329,12 @@ describe('control heartbeats reach the deadline machine', () => {
 
     let elapsed = 0n;
     const clock = createMonotonicClock(Symbol('evidence-replay'), { readMilliseconds: () => elapsed });
+    const holderAuthority = createControlHolderAuthority();
     const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
       { mintChallenge: () => randomUUID() },
+      holderAuthority,
     );
     const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 
@@ -348,7 +358,7 @@ describe('control heartbeats reach the deadline machine', () => {
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },
       timer,
-      holderAuthority: createControlHolderAuthority(),
+      holderAuthority,
       requestTimeoutMs: 5_000,
     });
     await endpoint.listen();
@@ -446,9 +456,13 @@ describe('successor control reaches the deadline machine through production esta
       const configuration = providerProxyDeadlineConfigurationSchema.parse({
         orphanTimeoutMs: String(orphanTimeoutMs),
       });
-      const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
-        mintChallenge: () => randomUUID(),
-      });
+      const holderAuthority = createControlHolderAuthority();
+      const deadlines = createEnforcerDeadlineStateMachine(
+        clock,
+        configuration,
+        { mintChallenge: () => randomUUID() },
+        holderAuthority,
+      );
       const endpoint = createControlEndpoint({
         socketPath,
         role: {
@@ -473,7 +487,7 @@ describe('successor control reaches the deadline machine through production esta
         challenges: deadlines,
         observer: { onControlLost: () => deadlines.observeEof() },
         timer,
-        holderAuthority: createControlHolderAuthority(),
+        holderAuthority,
         requestTimeoutMs: 5_000,
       });
       await endpoint.listen();

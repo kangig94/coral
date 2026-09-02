@@ -1,4 +1,4 @@
-import type { ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
+import type { AsyncRecordedProcessObserver, ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
 import type {
@@ -98,6 +98,11 @@ export interface ProcessPort {
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   observeLiveness(pid: number): ProcessLiveness;
   readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
+  /** The non-blocking sibling of `observeLiveness`/`readProcessIncarnation`, bound to one already-recorded
+   *  `{ pid, incarnation }` pair: the same stricter three-answer question `AsyncRecordedProcessObserver`
+   *  names, composed once here so a guardian/reaper answering loop never imports the probe functions
+   *  directly (see `infra/node-process.js`'s `createAsyncRecordedProcessObserver`). */
+  observeRecordedProcessAsync: AsyncRecordedProcessObserver;
   observeProcessIdentities(
     owners: readonly RecordedProcessIdentity[],
     deadlineMs: number,

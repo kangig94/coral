@@ -28,7 +28,7 @@ import { z } from 'zod';
  * make an equality check newly pass. That is narrower than "it cannot authorize a signal" — not every signal
  * is equality-gated — so it is the only claim to rely on.
  */
-const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
+export const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
 
 /**
  * The one exec shape the incarnation probes share. Named so the three call sites cannot drift apart on it —

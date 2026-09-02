@@ -316,9 +316,7 @@ describe('provider-proxy handoff capsule', () => {
     };
     const incumbent = registry.redeem(request);
 
-    expect(() => registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR })).toThrow(
-      /control epoch remains live/u,
-    );
+    expect(() => registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR })).toThrow(/control epoch remains live/u);
     // The incumbent's own retry must still see exactly what it earned, undisturbed by the refused impostor.
     expect(registry.redeem(request)).toEqual(incumbent);
     expect(registry.redemption()?.successor).toEqual(SUCCESSOR);

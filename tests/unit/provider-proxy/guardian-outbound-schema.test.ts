@@ -21,6 +21,7 @@ import {
   guardianHandoffRedeemParamsSchema,
   guardianReaperHandoffInstallParamsSchema,
 } from '#src/provider-proxy/handoff-capsule.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import type { EnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
 import {
   guardianOperationActivateParamsSchema,
@@ -78,12 +79,15 @@ function deadlinesFor<Scope extends symbol>(clock: MonotonicClock<Scope>): Enfor
     latchTeardown: () => {},
     markContainmentAbsent: () => {},
     markExited: () => {},
+    renewHolderCheck: () => {},
     bounds: () => ({
       lastRoundTripEvidenceAt: clock.now(),
       eofAt: null,
       controlLossAt: clock.now(),
       adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
       exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
+      holderCheckAt: clock.shiftMilliseconds(clock.now(), 60_000),
+      holderCheckAccelerated: false,
     }),
     state: () => 'accepting-control' as const,
   };
@@ -190,6 +194,8 @@ function createGuardianHarness() {
     reaperChannel,
     self: { pid: 5_102, incarnation: testIncarnation(902) },
     reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
+    holderAuthority: createControlHolderAuthority(),
+    observeHolder: () => Promise.resolve('unknown' as const),
     onOutcome: () => {},
     onProgressViolation: () => {},
   });

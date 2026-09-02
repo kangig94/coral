@@ -9,6 +9,7 @@ import {
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from '../infra/process-constants.js';
+import type { ControlHolderAuthority } from './holder-lifecycle.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from './protocol.js';
 
 export const CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV = 'CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS';
@@ -55,35 +56,17 @@ export type ProviderProxyDeadlineTiming = Readonly<{
   orphanTimeoutMs: number;
 }>;
 
-/**
- * How long a role's own enforcer tolerates silence before its adoption deadline can fire, derived from the
- * same two configuration fields `adoptionDeadline()` (below) itself subtracts. Exported so a consumer that
- * needs to agree with this tolerance — the coordinator's own bounded heartbeat-hold escalation
- * (`providerProxyHeartbeatHoldBound`, below) — derives it from this one formula instead of restating it as an
- * independently chosen number.
- */
 export function providerProxyAdoptionWindowMs(
   configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
 ): number {
   return configuration.orphanTimeoutMs - configuration.teardownReserveMs;
 }
 
-/**
- * `spanMs` is `providerProxyAdoptionWindowMs`'s own tolerance. `materialSchedulerLatenessMs` is one quarter of
- * that span: a hold window with at least that much observed scheduler delay cannot authorize the coordinator's
- * own bounded escalation. The established set carries this result beside the deadline agreement it came from.
- */
 export type ProviderProxyHeartbeatHoldBound = Readonly<{
   spanMs: number;
   materialSchedulerLatenessMs: number;
 }>;
 
-/**
- * A quarter-span scheduler delay is material: below it, at least three quarters of the window remains evidence
- * about unanswered heartbeats; at or above it, scheduler starvation is too large a competing explanation for
- * that window. The allowance derives here from the adoption window instead of becoming another independently
- * configured duration.
- */
 export function providerProxyHeartbeatHoldBound(
   configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
 ): ProviderProxyHeartbeatHoldBound {
@@ -198,6 +181,20 @@ export type ProviderProxyEnforcerBounds<Scope extends symbol> = Readonly<{
   controlLossAt: MonotonicInstant<Scope>;
   exitDeadline: MonotonicInstant<Scope>;
   adoptionDeadline: MonotonicInstant<Scope>;
+  /**
+   * The deadline by which a holder's identity must next be observed. Independent of `adoptionDeadline`: a
+   * positive observation renews only this one, from the observation's own `observedAt` rather than from
+   * round-trip heartbeat evidence, so it keeps advancing through a coordinator stall that starves every
+   * heartbeat. Whether a caller consults this field or `adoptionDeadline` is the caller's own decision, based
+   * on facts this type does not itself carry.
+   */
+  holderCheckAt: MonotonicInstant<Scope>;
+  /**
+   * Whether `holderCheckAt` is currently pulled earlier than its ordinary `observedAt + A` cadence by a
+   * pairing-loss or EOF report that has not yet been superseded by a completed check. One accelerated check,
+   * never a floor on every later one.
+   */
+  holderCheckAccelerated: boolean;
 }>;
 
 export type EnforcerDeadlineState = 'accepting-control' | 'teardown-latched' | 'containment-absent' | 'exited';
@@ -249,14 +246,16 @@ export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
    * also consume.
    */
   admitSuccessor(): DeadlineChallengeIssueResult;
-  /**
-   * Records that the paired peer channel closed. The party that linearizes an ordered redemption is gone,
-   * so admitting a successor can now only ever fail — `adoptionDeadline` collapses to (at most) this
-   * instant to stop trying. `exitDeadline` is untouched: teardown still gets its full reserve regardless of
-   * which authority failed first, and `eofAt`/`controlLossAt` are untouched too, because this is not
-   * evidence about the coordinator's control — a live coordinator keeps heartbeating through it.
-   */
   observePairingLoss(): void;
+  /**
+   * Records that a holder was actually observed at `at`, with whatever disposition the caller's own
+   * observation produced. Re-anchors `bounds().holderCheckAt` to `at + A`, going forward, and clears a
+   * still-pending acceleration once `at` reaches or passes it — one accelerated check consumed, not a floor
+   * on every later one. `at` must be the instant the identity evidence was actually obtained
+   * (`HolderObservation.observedAt`), never a later consumption or gate instant: renewing from consumption
+   * time would silently advance the schedule further than the observation itself earned.
+   */
+  renewHolderCheck(at: MonotonicInstant<Scope>): void;
   latchTeardown(): void;
   markContainmentAbsent(): void;
   markExited(): void;
@@ -288,6 +287,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   configuration: ProviderProxyDeadlineConfiguration,
   policy: EnforcerChallengePolicy,
+  holderAuthority: ControlHolderAuthority,
 ): EnforcerDeadlineStateMachine<Scope> {
   if (configuration[providerProxyDeadlineConfigurationBrand] !== true) {
     throw new Error('Provider proxy deadline configuration must be validated before use.');
@@ -297,11 +297,46 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   // tenancy, and the standalone proxy holds it with no `adoptionDeadline` of its own to accelerate.
   // Pairing loss is a third, independent input — this machine's own state, not the lease's.
   let pairingLossAt: MonotonicInstant<Scope> | null = null;
+  // `holderCheckAt`'s own acceleration input, independent of `pairingLossAt` above: that field keeps
+  // flooring `adoptionDeadline()` every tick once pairing is lost, while this one accelerates the
+  // holder-check schedule by exactly one check and then lets the ordinary `observedAt + A` cadence resume.
+  // A single field cannot serve both rules — reusing `pairingLossAt` here would re-clamp every check
+  // forever, an unbounded `kill(pid, 0)` loop.
+  let holderCheckAccelerationAt: MonotonicInstant<Scope> | null = null;
+  // The most recent instant a holder check actually completed at, of any disposition. `null` until the
+  // first one, in which case the schedule derives from round-trip evidence instead.
+  let holderCheckAnchor: MonotonicInstant<Scope> | null = null;
 
   function adoptionDeadline(): MonotonicInstant<Scope> {
     const exit = clock.shiftMilliseconds(evidence.lastRoundTripEvidenceAt(), configuration.orphanTimeoutMs);
     const derived = clock.shiftMilliseconds(exit, -configuration.teardownReserveMs);
     return pairingLossAt === null ? derived : clock.earlier(derived, pairingLossAt);
+  }
+
+  function naturalHolderCheckAt(): MonotonicInstant<Scope> {
+    const anchor = holderCheckAnchor ?? evidence.lastRoundTripEvidenceAt();
+    return clock.shiftMilliseconds(anchor, configuration.orphanTimeoutMs - configuration.teardownReserveMs);
+  }
+
+  function holderCheckAt(): MonotonicInstant<Scope> {
+    const natural = naturalHolderCheckAt();
+    if (holderCheckAccelerationAt === null) return natural;
+    // A completed check at or after the accelerated instant has already consumed the acceleration; the
+    // clamp must not keep re-applying to every later cadence.
+    if (holderCheckAnchor !== null && clock.compare(holderCheckAnchor, holderCheckAccelerationAt) >= 0) {
+      return natural;
+    }
+    return clock.earlier(natural, holderCheckAccelerationAt);
+  }
+
+  function isHolderCheckAccelerated(): boolean {
+    return clock.compare(holderCheckAt(), naturalHolderCheckAt()) < 0;
+  }
+
+  function accelerateHolderCheck(now: MonotonicInstant<Scope>): void {
+    // Earliest wins, matching `pairingLossAt` below: a second report cannot walk the acceleration back out.
+    holderCheckAccelerationAt =
+      holderCheckAccelerationAt === null ? now : clock.earlier(holderCheckAccelerationAt, now);
   }
 
   const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs, clock.now());
@@ -319,6 +354,8 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       controlLossAt: evidence.controlLossAt(),
       exitDeadline: clock.shiftMilliseconds(lastRoundTripEvidenceAt, configuration.orphanTimeoutMs),
       adoptionDeadline: adoptionDeadline(),
+      holderCheckAt: holderCheckAt(),
+      holderCheckAccelerated: isHolderCheckAccelerated(),
     });
   };
 
@@ -328,8 +365,14 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   const sampleBeforeQueuedWork = (): MonotonicInstant<Scope> | null => {
     const now = clock.now();
     // Sampling before any queued work is what makes equality and processed-after lose: a handler that was
-    // enqueued while the set was still adoptable must not act on that stale belief.
-    if (clock.compare(now, adoptionDeadline()) >= 0) latchTeardown();
+    // enqueued while the set was still adoptable must not act on that stale belief. Once a holder has been
+    // published, this stops being the site that decides teardown from elapsed time — `runTeardown`
+    // (enforcement.ts) latches synchronously before its first await, and this only samples that latch. A
+    // late but genuine heartbeat from a recovering coordinator is therefore not refused on the strength of
+    // silence alone. Before publication the pure clock bound remains authoritative.
+    if (holderAuthority.phase() === 'acquisition-provisional' && clock.compare(now, adoptionDeadline()) >= 0) {
+      latchTeardown();
+    }
     return state === 'accepting-control' ? now : null;
   };
 
@@ -366,7 +409,11 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     },
     observeEof: (): void => {
       const now = sampleBeforeQueuedWork();
-      if (now !== null) evidence.observeEof(now);
+      if (now === null) return;
+      evidence.observeEof(now);
+      // EOF is not a holder verdict: it records transport loss and accelerates the next identity-bound
+      // observation, but mints no authorization and never floors the cadence beyond that one check.
+      accelerateHolderCheck(now);
     },
     observePairingLoss: (): void => {
       const now = sampleBeforeQueuedWork();
@@ -374,6 +421,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       // Earliest wins, matching `observeEof`: a second report of the same loss cannot walk the collapse
       // back out.
       pairingLossAt = pairingLossAt === null ? now : clock.earlier(pairingLossAt, now);
+      accelerateHolderCheck(now);
     },
     admitSuccessor: (): DeadlineChallengeIssueResult => {
       const now = sampleBeforeQueuedWork();
@@ -394,5 +442,26 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       assertExitedTransition(state);
       state = 'exited';
     },
+    renewHolderCheck: (at: MonotonicInstant<Scope>): void => {
+      // Monotonic forward only: a renewal never walks the anchor backward, so an out-of-order call (a
+      // slower probe resolving after a faster later one already renewed) cannot undo the later evidence.
+      holderCheckAnchor =
+        holderCheckAnchor === null || clock.compare(holderCheckAnchor, at) < 0 ? at : holderCheckAnchor;
+    },
   });
+}
+
+/**
+ * The post-authorization containment budget: granted once, at the instant a holder-absence or explicit
+ * teardown capability is consumed. `PROXY_TEARDOWN_RESERVE_MS` already includes the enforcer's own
+ * not-before wake allowance (`PROXY_ENFORCER_MAX_WAKE_LATENCY_MS`), so spending up to that much before
+ * consuming a capability leaves the remainder for the reap itself — spending the full reserve again after
+ * the wake would count that allowance twice. A local-signal teardown has no not-before wake to have already
+ * spent, so it is granted the full `PROXY_TEARDOWN_RESERVE_MS` instead, computed at its own call site.
+ */
+export function containmentExecutionDeadline<Scope extends symbol>(
+  clock: MonotonicClock<Scope>,
+  authorizedAt: MonotonicInstant<Scope>,
+): MonotonicInstant<Scope> {
+  return clock.shiftMilliseconds(authorizedAt, PROXY_TEARDOWN_RESERVE_MS - PROXY_ENFORCER_MAX_WAKE_LATENCY_MS);
 }

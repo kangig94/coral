@@ -19,6 +19,7 @@ import {
 } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import {
   MAX_PROXY_RECORDED_PROVIDER_ROOTS,
   type EnforcementOutcome,
@@ -158,8 +159,15 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
       controlLossAt: start,
       adoptionDeadline: clock.shiftMilliseconds(start, 60_000),
       exitDeadline: clock.shiftMilliseconds(start, 74_000),
+      holderCheckAt: clock.shiftMilliseconds(start, 60_000),
+      holderCheckAccelerated: false,
     };
   };
+  // Each role owns its own authority in production (§7); these fakes never publish, so the fake `deadlines`
+  // above stays authoritative for these tests.
+  const guardianHolderAuthority = createControlHolderAuthority();
+  const reaperHolderAuthority = createControlHolderAuthority();
+  const observeHolder = (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const);
   let controlLive = true;
   let challengeCount = 0;
   const mintRoleChallenge = (): string => {
@@ -181,6 +189,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     latchTeardown: () => {},
     markContainmentAbsent: () => {},
     markExited: () => {},
+    renewHolderCheck: () => {},
   };
 
   let receipts = 0;
@@ -211,6 +220,8 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     timer,
     mintReceipt,
     self: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
+    holderAuthority: reaperHolderAuthority,
+    observeHolder,
     onOutcome: (outcome) => reaperOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -249,6 +260,8 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     reaperChannel,
     self: { pid: guardianIdentity.pid, incarnation: guardianIdentity.incarnation },
     reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
+    holderAuthority: guardianHolderAuthority,
+    observeHolder,
     onOutcome: (outcome) => guardianOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -499,12 +512,15 @@ function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): Enfo
     latchTeardown: () => {},
     markContainmentAbsent: () => {},
     markExited: () => {},
+    renewHolderCheck: () => {},
     bounds: () => ({
       lastRoundTripEvidenceAt: clock.now(),
       eofAt: null,
       controlLossAt: clock.now(),
       adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
       exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
+      holderCheckAt: clock.shiftMilliseconds(clock.now(), 60_000),
+      holderCheckAccelerated: false,
     }),
     state: () => 'accepting-control' as const,
   };
@@ -516,7 +532,8 @@ async function startBareReaper<Scope extends symbol>(
   shared: BareSharedIdentity,
   clock: MonotonicClock<Scope>,
   deadlines: EnforcerDeadlineStateMachine<Scope>,
-): Promise<{ reaperEndpoint: string; reaper: Reaper<Scope> }> {
+  holderAuthority: ReturnType<typeof createControlHolderAuthority> = createControlHolderAuthority(),
+): Promise<{ reaperEndpoint: string; reaper: Reaper }> {
   const reaperEndpoint = join(directory, 'r.sock');
   const reaper = createReaper({
     capsule: {
@@ -540,6 +557,8 @@ async function startBareReaper<Scope extends symbol>(
     timer,
     mintReceipt: () => randomUUID(),
     self: { pid: 5_101, incarnation: testIncarnation(901) },
+    holderAuthority,
+    observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -740,6 +759,8 @@ describe('provider-proxy guardian and reaper', () => {
       reaperChannel: unreachableReaperChannel,
       self: { pid: 5_102, incarnation: testIncarnation(902) },
       reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
+      holderAuthority: createControlHolderAuthority(),
+      observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -1104,6 +1125,8 @@ describe('provider-proxy guardian and reaper', () => {
       },
       self: { pid: 5_102, incarnation: testIncarnation(902) },
       reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
+      holderAuthority: createControlHolderAuthority(),
+      observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -1979,12 +2002,15 @@ describe('provider-proxy guardian and reaper', () => {
         latchTeardown: () => {},
         markContainmentAbsent: () => {},
         markExited: () => {},
+        renewHolderCheck: () => {},
         bounds: () => ({
           lastRoundTripEvidenceAt: clock.now(),
           eofAt: null,
           controlLossAt: clock.now(),
           adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
           exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
+          holderCheckAt: clock.shiftMilliseconds(clock.now(), 60_000),
+          holderCheckAccelerated: false,
         }),
         state: () => 'accepting-control' as const,
       },
@@ -1999,6 +2025,8 @@ describe('provider-proxy guardian and reaper', () => {
       timer,
       mintReceipt: () => randomUUID(),
       self: { pid: 5_101, incarnation: testIncarnation(901) },
+      holderAuthority: createControlHolderAuthority(),
+      observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -2117,9 +2145,13 @@ describe('provider-proxy guardian and reaper', () => {
       },
     });
     const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
-    const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
-      mintChallenge: () => randomUUID(),
-    });
+    const holderAuthority = createControlHolderAuthority();
+    const deadlines = createEnforcerDeadlineStateMachine(
+      clock,
+      configuration,
+      { mintChallenge: () => randomUUID() },
+      holderAuthority,
+    );
     let teardownLatchedAt: bigint | null = null;
     const watchedDeadlines = {
       ...deadlines,
@@ -2213,6 +2245,8 @@ describe('provider-proxy guardian and reaper', () => {
       },
       self: { pid: 5_102, incarnation: testIncarnation(902) },
       reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
+      holderAuthority,
+      observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -2319,10 +2353,12 @@ describe('provider-proxy guardian and reaper', () => {
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
     const shared = bareSharedIdentity();
     const clock = createMonotonicClock(Symbol('pairing-loss'), { readMilliseconds: () => 0n });
+    const holderAuthority = createControlHolderAuthority();
     const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
       { mintChallenge: () => randomUUID() },
+      holderAuthority,
     );
     // Whichever of these two the reaper's pairing-close observer actually calls resolves this — the
     // assertions below are what tell the fixed wiring apart from the defect, so the synchronization itself
@@ -2343,7 +2379,13 @@ describe('provider-proxy guardian and reaper', () => {
       },
     };
 
-    const { reaperEndpoint, reaper } = await startBareReaper(directory, shared, clock, watchedDeadlines);
+    const { reaperEndpoint, reaper } = await startBareReaper(
+      directory,
+      shared,
+      clock,
+      watchedDeadlines,
+      holderAuthority,
+    );
     cleanups.push(() => reaper.close());
 
     const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);

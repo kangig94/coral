@@ -2,16 +2,28 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import type { ProcessLiveness } from '#src/infra/node-process.js';
 import type { RecordedProcessIdentity } from '#src/infra/process-containment.js';
 import {
   createArmedEnforcer,
   EnforcementError,
   MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+  mintLocalSignalTeardownAuthorization,
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from '#src/provider-proxy/enforcement.js';
+import {
+  controlHolderAuthorizationIsCurrent,
+  createControlHolderAuthority,
+  mintExplicitTeardownAuthorization,
+  observeControlHolder,
+  type ExplicitTeardownAuthorization,
+  type ObservedHolderAbsenceAuthorization,
+} from '#src/provider-proxy/holder-lifecycle.js';
+import { PROXY_ENFORCER_MAX_WAKE_LATENCY_MS } from '#src/provider-proxy/orphan-deadline.js';
 
 const CONTAINMENT = { pid: 4_242, incarnation: testIncarnation(1_000), processGroupId: 4_242 } as const;
+const HOLDER = { instanceId: 'coordinator', pid: 4_000, incarnation: testIncarnation('coordinator') } as const;
 const enforcementClockScope: unique symbol = Symbol('enforcement-clock');
 
 function root(pid: number): RecordedProcessIdentity {
@@ -40,7 +52,18 @@ function createManualScheduler(): EnforcementScheduler & { runDue(): void; pendi
   };
 }
 
-function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stubborn?: ReadonlySet<number> }) {
+function createHarness(options: {
+  adoptionInMs: number;
+  alive?: Set<number>;
+  stubborn?: ReadonlySet<number>;
+  /** `false` (the default) leaves the holder authority unpublished, so the tick decides from the pure
+   *  clock bound alone. */
+  published?: boolean;
+  observeHolder?: () => Promise<ProcessLiveness>;
+  acceleratedCheckMayAuthorizeAbsence?: boolean;
+  /** Forces the fake `bounds().holderCheckAccelerated` this test observes, independent of `adoptionInMs`. */
+  accelerated?: boolean;
+}) {
   let elapsedMs = 0n;
   const clock = createMonotonicClock(enforcementClockScope, {
     readMilliseconds: () => elapsedMs,
@@ -61,18 +84,27 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
     controlLossAt: start,
     adoptionDeadline: clock.shiftMilliseconds(start, options.adoptionInMs),
     exitDeadline: clock.shiftMilliseconds(start, options.adoptionInMs + 14_000),
+    holderCheckAt: clock.shiftMilliseconds(start, options.adoptionInMs),
+    holderCheckAccelerated: options.accelerated ?? false,
   };
   const latchTeardown = vi.fn();
   const markContainmentAbsent = vi.fn();
+  const renewHolderCheck = vi.fn();
   const alive = options.alive ?? new Set<number>();
   const stubborn = options.stubborn ?? new Set<number>();
   const scheduler = createManualScheduler();
   const outcomes: EnforcementOutcome[] = [];
   const violations: number[] = [];
 
+  const holderAuthority = createControlHolderAuthority();
+  holderAuthority.install({ controlEpoch: 1, holder: HOLDER });
+  if (options.published ?? false) holderAuthority.publish();
+
+  const observeHolder = options.observeHolder ?? ((): Promise<ProcessLiveness> => Promise.resolve('unknown'));
+
   const enforcer = createArmedEnforcer({
     clock,
-    deadlines: { bounds: () => bounds, latchTeardown, markContainmentAbsent },
+    deadlines: { bounds: () => bounds, latchTeardown, markContainmentAbsent, renewHolderCheck },
     containment: CONTAINMENT,
     containmentEnvironment: {
       clock,
@@ -97,14 +129,57 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
       },
     },
     scheduler,
+    holderAuthority,
+    observeHolder,
+    acceleratedCheckMayAuthorizeAbsence: options.acceleratedCheckMayAuthorizeAbsence ?? false,
     onOutcome: (outcome) => outcomes.push(outcome),
     onProgressViolation: (lateness) => violations.push(lateness),
   });
 
-  return { clock, advance, enforcer, scheduler, outcomes, violations, latchTeardown, markContainmentAbsent, alive };
+  return {
+    clock,
+    advance,
+    enforcer,
+    scheduler,
+    outcomes,
+    violations,
+    latchTeardown,
+    markContainmentAbsent,
+    renewHolderCheck,
+    alive,
+    holderAuthority,
+    /** Mints a fresh `ExplicitTeardownAuthorization` from this harness's own current holder. */
+    mintExplicit(): ExplicitTeardownAuthorization {
+      const authorization = mintExplicitTeardownAuthorization(holderAuthority);
+      if (authorization === null) throw new Error('harness holder authority has nothing installed');
+      return authorization;
+    },
+    /** Observes the harness's own holder through `observeControlHolder`, the only real constructor of
+     *  `ObservedHolderAbsenceAuthorization`. */
+    async observeAbsence(): Promise<ObservedHolderAbsenceAuthorization> {
+      const observation = await observeControlHolder(holderAuthority, () => Promise.resolve('absent'), clock);
+      if (observation.disposition !== 'absent') throw new Error('expected an absent disposition');
+      return observation.authorization;
+    },
+  };
 }
 
-describe('armed provider-proxy enforcer', () => {
+/** Advances the fake clock and pumps the manual scheduler until either it settles or `maxSteps` is spent. */
+async function pump(
+  harness: Pick<ReturnType<typeof createHarness>, 'advance' | 'scheduler' | 'outcomes'>,
+  stepMs: number,
+  maxSteps = 80,
+): Promise<void> {
+  for (let step = 0; step < maxSteps; step += 1) {
+    harness.scheduler.runDue();
+    await Promise.resolve();
+    await Promise.resolve();
+    if (harness.outcomes.length > 0 && harness.scheduler.pending() === 0) return;
+    harness.advance(stepMs);
+  }
+}
+
+describe('armed provider-proxy enforcer — pre-publication clock bound (unchanged by this batch)', () => {
   it('reaps the recorded set once the adoption deadline arrives', async () => {
     const alive = new Set([CONTAINMENT.pid, 7_001]);
     const harness = createHarness({ adoptionInMs: 0, alive });
@@ -125,9 +200,9 @@ describe('armed provider-proxy enforcer', () => {
     harness.enforcer.registerProviderRoot(root(7_001));
     harness.enforcer.registerProviderRoot(root(7_002));
 
-    const outcome = await harness.enforcer.stopAndReap(harness.clock.shiftMilliseconds(harness.clock.now(), 14_000));
+    const outcome = await harness.enforcer.stopAndReap(harness.mintExplicit());
 
-    expect(outcome.kind).toBe('containment-absent');
+    expect(outcome?.kind).toBe('containment-absent');
     // Leader exit alone is never absence evidence, so the receipt must account for each target separately.
     expect(outcome).toMatchObject({
       disappearanceReceipt: `group:4242,leader:4242@linux:00000000-0000-4000-8000-000000000000:1000,root:7001@linux:00000000-0000-4000-8000-000000000000:2000,root:7002@linux:00000000-0000-4000-8000-000000000000:2000`,
@@ -163,13 +238,13 @@ describe('armed provider-proxy enforcer', () => {
 
   it('is idempotent across a repeat and a concurrent stop-and-reap', async () => {
     const harness = createHarness({ adoptionInMs: 0 });
-    const deadline = harness.clock.shiftMilliseconds(harness.clock.now(), 14_000);
+    const authorization = harness.mintExplicit();
 
     const [first, second] = await Promise.all([
-      harness.enforcer.stopAndReap(deadline),
-      harness.enforcer.stopAndReap(deadline),
+      harness.enforcer.stopAndReap(authorization),
+      harness.enforcer.stopAndReap(authorization),
     ]);
-    const third = await harness.enforcer.stopAndReap(deadline);
+    const third = await harness.enforcer.stopAndReap(authorization);
 
     // A retry after a successful reap must report that success, not throw — the shutdown step that
     // retries would otherwise record a failure for work that completed.
@@ -193,7 +268,7 @@ describe('armed provider-proxy enforcer', () => {
   it('latches teardown before the awaited reap so no concurrent path sees an adoptable set', async () => {
     const harness = createHarness({ adoptionInMs: 0 });
 
-    const pending = harness.enforcer.stopAndReap(harness.clock.shiftMilliseconds(harness.clock.now(), 14_000));
+    const pending = harness.enforcer.stopAndReap(harness.mintExplicit());
 
     expect(harness.latchTeardown).toHaveBeenCalledOnce();
     expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
@@ -230,9 +305,9 @@ describe('armed provider-proxy enforcer', () => {
     });
     harness.enforcer.registerProviderRoot(root(7_001));
 
-    const outcome = await harness.enforcer.stopAndReap(harness.clock.shiftMilliseconds(harness.clock.now(), 14_000));
+    const outcome = await harness.enforcer.stopAndReap(harness.mintExplicit());
 
-    expect(outcome.kind).toBe('reap-failed');
+    expect(outcome?.kind).toBe('reap-failed');
     expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
   });
 
@@ -245,5 +320,212 @@ describe('armed provider-proxy enforcer', () => {
 
     expect(harness.scheduler.pending()).toBe(0);
     expect(harness.outcomes).toHaveLength(0);
+  });
+});
+
+describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', () => {
+  it('stopAndReap returns null, and reaps nothing, once the authorization no longer names the current holder', async () => {
+    const harness = createHarness({ adoptionInMs: 60_000 });
+    const stale = harness.mintExplicit();
+    harness.holderAuthority.install({
+      controlEpoch: 2,
+      holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
+    });
+
+    const outcome = await harness.enforcer.stopAndReap(stale);
+
+    expect(outcome).toBeNull();
+    expect(harness.latchTeardown).not.toHaveBeenCalled();
+    expect(harness.outcomes).toHaveLength(0);
+  });
+
+  it('reapAbsentHolder returns null, and reaps nothing, once a successor has been installed', async () => {
+    const harness = createHarness({ adoptionInMs: 60_000, published: true });
+    const absence = await harness.observeAbsence();
+    harness.holderAuthority.install({
+      controlEpoch: 2,
+      holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
+    });
+
+    const outcome = await harness.enforcer.reapAbsentHolder(absence);
+
+    expect(outcome).toBeNull();
+    expect(harness.latchTeardown).not.toHaveBeenCalled();
+  });
+
+  it('reapAbsentHolder reaps when the capability still names the current holder and epoch', async () => {
+    const alive = new Set([CONTAINMENT.pid]);
+    const harness = createHarness({ adoptionInMs: 60_000, published: true, alive });
+    const absence = await harness.observeAbsence();
+    expect(controlHolderAuthorizationIsCurrent(harness.holderAuthority, absence)).toBe(true);
+
+    const outcome = await harness.enforcer.reapAbsentHolder(absence);
+
+    expect(outcome?.kind).toBe('containment-absent');
+    expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
+  });
+});
+
+describe('giveUp — the local-signal capability (AC2, Phase 3)', () => {
+  it('tears down unconditionally, regardless of holder phase or disposition', async () => {
+    const alive = new Set([CONTAINMENT.pid]);
+    // Deliberately unpublished and with no observer wired to say anything useful: an OS signal to this
+    // process is not a claim any holder observation can refuse.
+    const harness = createHarness({ adoptionInMs: 60_000, alive, published: false });
+
+    const outcome = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
+
+    expect(outcome.kind).toBe('containment-absent');
+    expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
+  });
+
+  it('never returns null: it is not a capability a successor’s epoch can revoke', async () => {
+    const harness = createHarness({ adoptionInMs: 60_000 });
+    harness.holderAuthority.install({
+      controlEpoch: 2,
+      holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
+    });
+
+    const outcome = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
+
+    expect(outcome.kind).toBe('containment-absent');
+  });
+});
+
+describe('published holder observation — the enforcer tick (AC3, AC4)', () => {
+  it('an alive result renews the schedule and never reaps, across repeated cycles', async () => {
+    const harness = createHarness({
+      adoptionInMs: 5_000,
+      published: true,
+      observeHolder: () => Promise.resolve('alive'),
+    });
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 40);
+
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.latchTeardown).not.toHaveBeenCalled();
+    expect(harness.renewHolderCheck).toHaveBeenCalled();
+  });
+
+  it('an unobservable result holds — retries, authorizes nothing, and never stalls forever', async () => {
+    const harness = createHarness({
+      adoptionInMs: 5_000,
+      published: true,
+      observeHolder: () => Promise.resolve('unknown'),
+    });
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 40);
+
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.latchTeardown).not.toHaveBeenCalled();
+    expect(harness.renewHolderCheck).toHaveBeenCalled();
+    // The loop is still alive — it did not park forever with nothing scheduled.
+    expect(harness.scheduler.pending()).toBeGreaterThan(0);
+  });
+
+  it('an absent result mints a current-epoch absence authorization and reaps', async () => {
+    const alive = new Set([CONTAINMENT.pid]);
+    const harness = createHarness({
+      adoptionInMs: 5_000,
+      published: true,
+      alive,
+      observeHolder: () => Promise.resolve('absent'),
+    });
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 40);
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
+
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+  });
+
+  it('a successor installed while the probe is in flight revokes the absence result before consumption', async () => {
+    let resolveObserve!: (liveness: ProcessLiveness) => void;
+    const observeHolder = (): Promise<ProcessLiveness> =>
+      new Promise((resolve) => {
+        resolveObserve = resolve;
+      });
+    const harness = createHarness({ adoptionInMs: 5_000, published: true, observeHolder });
+
+    harness.enforcer.arm();
+    // First wake: still before `observationStartAt` (holderCheckAt(5000) - P(2000) - W(1000) = 2000), so it
+    // only reschedules.
+    harness.scheduler.runDue();
+    harness.advance(20_000);
+    // Second wake: past `observationStartAt` — starts the probe (unresolved) and reschedules once more.
+    harness.scheduler.runDue();
+    await Promise.resolve();
+
+    // A successor is admitted before the probe (of the incumbent) ever resolves.
+    harness.holderAuthority.install({
+      controlEpoch: 2,
+      holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
+    });
+    resolveObserve('absent');
+    // Third wake: past `holderCheckAt` — commits to consuming the (already-resolved) probe.
+    harness.scheduler.runDue();
+    // Every hop from here is a microtask (the fake clock's own `sleep` resolves via `Promise.resolve()`,
+    // never a real timer), so draining a generous number of turns is deterministic, not a race.
+    for (let flush = 0; flush < 10; flush += 1) {
+      await Promise.resolve();
+    }
+
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.latchTeardown).not.toHaveBeenCalled();
+  });
+
+  it('guardian-mode: an accelerated check may not consume an incumbent absence result', async () => {
+    const harness = createHarness({
+      adoptionInMs: 5_000,
+      published: true,
+      accelerated: true,
+      observeHolder: () => Promise.resolve('absent'),
+      acceleratedCheckMayAuthorizeAbsence: false,
+    });
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 20);
+
+    // Deferred, not reaped: the accelerated result is treated like an inconclusive one and the schedule is
+    // renewed rather than authorizing absence.
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.renewHolderCheck).toHaveBeenCalled();
+  });
+
+  it('reaper-mode: an accelerated check may consume a decisive absence result', async () => {
+    const alive = new Set([CONTAINMENT.pid]);
+    const harness = createHarness({
+      adoptionInMs: 5_000,
+      published: true,
+      accelerated: true,
+      alive,
+      observeHolder: () => Promise.resolve('absent'),
+      acceleratedCheckMayAuthorizeAbsence: true,
+    });
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 20);
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
+
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+  });
+});
+
+describe('holder-teardown-authorization type currency (AC2)', () => {
+  it('controlHolderAuthorizationIsCurrent is false once a successor has been installed', async () => {
+    const authority = createControlHolderAuthority();
+    authority.install({ controlEpoch: 1, holder: HOLDER });
+    const clock = createMonotonicClock(enforcementClockScope, { readMilliseconds: () => 0n });
+    const observation = await observeControlHolder(authority, () => Promise.resolve('absent'), clock);
+    if (observation.disposition !== 'absent') throw new Error('expected an absent disposition');
+
+    authority.install({
+      controlEpoch: 2,
+      holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
+    });
+
+    expect(controlHolderAuthorizationIsCurrent(authority, observation.authorization)).toBe(false);
   });
 });

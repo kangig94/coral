@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.js';
 import {
   controlHolderAuthorizationIsCurrent,
@@ -21,6 +22,15 @@ import {
 import type { AsyncRecordedProcessObserver, ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
+const observationClockScope: unique symbol = Symbol('holder-lifecycle-test-observation');
+
+function testClock(startMs = 0): MonotonicClock<typeof observationClockScope> {
+  let ms = BigInt(startMs);
+  return createMonotonicClock(observationClockScope, {
+    readMilliseconds: () => ms++,
+  });
+}
+
 function holder(instanceId: string, pid = 1): ControlTenancyHolder {
   return { instanceId, pid, incarnation: testIncarnation(`${instanceId}:${pid}`) };
 }
@@ -33,7 +43,10 @@ function observerAnswering(liveness: ProcessLiveness): AsyncRecordedProcessObser
   return vi.fn(() => Promise.resolve(liveness));
 }
 
-function assertDisposition(observation: HolderObservation, expected: HolderDisposition): void {
+function assertDisposition(
+  observation: HolderObservation<typeof observationClockScope>,
+  expected: HolderDisposition,
+): void {
   expect(observation.disposition).toBe(expected);
 }
 
@@ -42,10 +55,10 @@ function assertPhase(authority: ControlHolderAuthority, expected: AcquisitionPha
 }
 
 /**
- * `OperatorTeardownAuthorization` has no constructor in this batch — Batch D mints it at the direct
- * operator-force boundary. Its non-substitutability is proven statically in
- * holder-teardown-authorization-boundary.test-d.ts; this signature keeps the type reachable from a real
- * (`.test.ts`) knip entry too, since a `.test-d.ts` file is not one.
+ * `OperatorTeardownAuthorization` has no constructor here — it is minted only at the direct operator-force
+ * boundary. Its non-substitutability is proven statically in holder-teardown-authorization-boundary.test-d.ts;
+ * this signature keeps the type reachable from a real (`.test.ts`) knip entry too, since a `.test-d.ts` file
+ * is not one.
  */
 function acceptsOperatorTeardown(_authorization: OperatorTeardownAuthorization): void {}
 void acceptsOperatorTeardown;
@@ -101,7 +114,7 @@ describe('observeControlHolder', () => {
     const authority = createControlHolderAuthority();
     const observe = observerAnswering('alive');
 
-    assertDisposition(await observeControlHolder(authority, observe), 'unobservable');
+    assertDisposition(await observeControlHolder(authority, observe, testClock()), 'unobservable');
     expect(observe).not.toHaveBeenCalled();
   });
 
@@ -111,7 +124,7 @@ describe('observeControlHolder', () => {
     authority.install({ controlEpoch: 1, holder: incumbent });
     const observe = observerAnswering('alive');
 
-    const result = await observeControlHolder(authority, observe);
+    const result = await observeControlHolder(authority, observe, testClock());
 
     assertDisposition(result, 'alive');
     expect(observe).toHaveBeenCalledWith({ pid: incumbent.pid, incarnation: incumbent.incarnation });
@@ -121,7 +134,7 @@ describe('observeControlHolder', () => {
     const authority = createControlHolderAuthority();
     authority.install({ controlEpoch: 1, holder: holder('coordinator') });
 
-    const result = await observeControlHolder(authority, observerAnswering('unknown'));
+    const result = await observeControlHolder(authority, observerAnswering('unknown'), testClock());
 
     assertDisposition(result, 'unobservable');
   });
@@ -131,7 +144,7 @@ describe('observeControlHolder', () => {
     const incumbent = holder('coordinator');
     authority.install({ controlEpoch: 1, holder: incumbent });
 
-    const result = await observeControlHolder(authority, observerAnswering('absent'));
+    const result = await observeControlHolder(authority, observerAnswering('absent'), testClock());
 
     if (result.disposition !== 'absent') throw new Error('expected an absent disposition');
     expect(result.authorization.controlEpoch).toBe(1);
@@ -149,7 +162,7 @@ describe('observeControlHolder', () => {
         resolveObservation = resolve;
       });
 
-    const pending = observeControlHolder(authority, observe);
+    const pending = observeControlHolder(authority, observe, testClock());
     // A successor is admitted while the probe of the incumbent is still in flight.
     const successor = holder('successor', 2);
     authority.install({ controlEpoch: 2, holder: successor });
@@ -160,13 +173,27 @@ describe('observeControlHolder', () => {
     expect(result.authorization.holder).toEqual(incumbent);
     expect(result.authorization.controlEpoch).toBe(1);
   });
+
+  it('carries observedAt as the instant the evidence resolved, not a later consumption time', async () => {
+    const authority = createControlHolderAuthority();
+    authority.install({ controlEpoch: 1, holder: holder('coordinator') });
+    const clock = testClock(500);
+    const evidenceResolvedAt = clock.now();
+
+    const result = await observeControlHolder(authority, observerAnswering('alive'), clock);
+
+    // The clock advances (ticks) on every `now()` read; a caller that consumed the result later must still
+    // see the instant `observeControlHolder` itself sampled, not whatever the clock reads at assertion time.
+    expect(clock.compare(result.observedAt, evidenceResolvedAt)).toBeGreaterThanOrEqual(0);
+    expect(clock.compare(result.observedAt, clock.now())).toBeLessThan(0);
+  });
 });
 
 describe('controlHolderAuthorizationIsCurrent', () => {
   it('is true while the authority still holds the epoch and holder the capability names', async () => {
     const authority = createControlHolderAuthority();
     authority.install({ controlEpoch: 1, holder: holder('coordinator') });
-    const observation = await observeControlHolder(authority, observerAnswering('absent'));
+    const observation = await observeControlHolder(authority, observerAnswering('absent'), testClock());
     if (observation.disposition !== 'absent') throw new Error('expected an absent disposition');
 
     expect(controlHolderAuthorizationIsCurrent(authority, observation.authorization)).toBe(true);
@@ -175,7 +202,7 @@ describe('controlHolderAuthorizationIsCurrent', () => {
   it('is revoked the instant a successor is installed, before any consumption', async () => {
     const authority = createControlHolderAuthority();
     authority.install({ controlEpoch: 1, holder: holder('incumbent') });
-    const observation = await observeControlHolder(authority, observerAnswering('absent'));
+    const observation = await observeControlHolder(authority, observerAnswering('absent'), testClock());
     if (observation.disposition !== 'absent') throw new Error('expected an absent disposition');
 
     authority.install({ controlEpoch: 2, holder: holder('successor', 2) });

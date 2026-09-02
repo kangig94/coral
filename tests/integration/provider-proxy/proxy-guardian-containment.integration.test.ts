@@ -102,6 +102,7 @@ import { readProviderOperation } from '#src/store/provider-operation-journal.js'
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import type { EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { createOperationLedger, operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
 import {
   guardianProxyOperationReleaseParamsSchema,
@@ -300,7 +301,8 @@ async function startGuardianAndReaper() {
     latchTeardown: () => {},
     markContainmentAbsent: () => {},
     markExited: () => {},
-    bounds: boundsOf,
+    renewHolderCheck: () => {},
+    bounds: () => ({ ...boundsOf(), holderCheckAt: boundsOf().adoptionDeadline, holderCheckAccelerated: false }),
     state: () => 'accepting-control' as const,
   };
 
@@ -309,6 +311,11 @@ async function startGuardianAndReaper() {
     receipts += 1;
     return `receipt-${receipts}`;
   };
+  // Each role owns its own authority in production (§7); these fakes never publish, so the hand-built
+  // `deadlines` above stays authoritative for these tests.
+  const guardianHolderAuthority = createControlHolderAuthority();
+  const reaperHolderAuthority = createControlHolderAuthority();
+  const observeHolder = (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const);
 
   const reaper = createReaper({
     capsule: {
@@ -326,6 +333,8 @@ async function startGuardianAndReaper() {
     timer,
     mintReceipt,
     self: { pid: 5_101, incarnation: testIncarnation(901) },
+    holderAuthority: reaperHolderAuthority,
+    observeHolder,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -358,6 +367,8 @@ async function startGuardianAndReaper() {
     reaperChannel,
     self: { pid: 5_102, incarnation: testIncarnation(902) },
     reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
+    holderAuthority: guardianHolderAuthority,
+    observeHolder,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });

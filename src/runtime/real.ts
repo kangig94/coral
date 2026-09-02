@@ -65,9 +65,11 @@ import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessE
 import { buildExecPromise } from './exec-builder.js';
 import { createRealTimePort } from '../infra/time.js';
 import {
+  createAsyncRecordedProcessObserver,
   observeProcessLiveness,
   parseLinuxProcessIncarnation,
   probeProcessIncarnation,
+  probeProcessIncarnationAsync,
 } from '../infra/node-process.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
 
@@ -490,6 +492,13 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     },
   };
 
+  // Composed once, here, so no other module needs to import the probe functions directly (see
+  // `ProcessPort.observeRecordedProcessAsync`'s own doc comment for why).
+  const observeRecordedProcessAsync = createAsyncRecordedProcessObserver({
+    readIncarnation: (pid) => probeProcessIncarnationAsync(pid, capturedEnv.platform),
+    observeLiveness: observeProcessLiveness,
+  });
+
   const runtimeProcess = {
     spawn: (options) => {
       const spawnEnv = options.env
@@ -517,6 +526,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     },
     observeLiveness: (pid) => observeProcessLiveness(pid),
     readProcessIncarnation: (pid, platform) => probeProcessIncarnation(pid, platform),
+    observeRecordedProcessAsync,
     observeProcessIdentities: (owners, deadlineMs) =>
       observeProcessIdentitiesWithoutSubprocesses(owners, deadlineMs, {
         platform: capturedEnv.platform,
