@@ -584,6 +584,7 @@ async function launchThroughRoute(
     controlReattachment: {} as never,
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+    commitContainment: async () => ({ kind: 'containment-absent' as const, disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
   } as const;

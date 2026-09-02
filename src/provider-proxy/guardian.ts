@@ -1,4 +1,5 @@
 import type { AsyncRecordedProcessObserver, ProcessIncarnation } from '../infra/node-process.js';
+import { truncate } from '../infra/text.js';
 import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
@@ -26,6 +27,7 @@ import {
   guardianHandoffRedeemFieldsSchema,
   guardianReaperHandoffInstallParamsSchema,
   guardianHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
+  holderStatusParamsSchema,
   reaperRecordRedemptionParamsSchema,
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
@@ -34,24 +36,38 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
+  acquisitionPublicationCertificateSchema,
+  assertExactRecordedSetAgreement,
   assertNamedCoordinatorBuild,
   assertNamedOrphanTimeout,
   assertNamedProxyIdentity,
   assertNamedReaperIdentity,
   assertNamedTeardownReserve,
-  assertRecordedSetAgreement,
+  guardianAcquisitionAbortParamsSchema,
+  guardianAcquisitionAbortResultSchema,
+  guardianAcquisitionPublishParamsSchema,
+  guardianAcquisitionPublishResultSchema,
+  guardianContainmentCommitParamsSchema as containmentCommitParamsSchema,
+  guardianContainmentCommitResultSchema,
   guardianOperationActivateParamsSchema as operationActivateParamsSchema,
   guardianOpenParamsSchema as openParamsSchema,
   guardianOperationActivateResultSchema,
   guardianProxyOperationReleaseParamsSchema as proxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema as registerProviderRootParamsSchema,
-  guardianStopAndReapParamsSchema as stopAndReapParamsSchema,
-  guardianStopAndReapResultSchema,
+  holderStatusResultSchema,
   jointContainmentReceiptSchema,
+  reaperAcquisitionPublishParamsSchema,
+  reaperAcquisitionPublishResultSchema,
   reaperConfirmProviderRootParamsSchema,
   reaperConfirmProviderRootResultSchema,
+  reaperContainmentAbortParamsSchema,
+  reaperContainmentAbortResultSchema,
+  reaperContainmentPrepareParamsSchema,
+  reaperContainmentPrepareResultSchema,
   recordedContainmentSchema,
+  type AcquisitionPublicationCertificate,
+  type ContainmentPrepareToken,
   reaperRecordContainmentResultSchema,
   reaperRecordRedemptionResultSchema,
   reaperRegisterProviderRootParamsSchema,
@@ -321,6 +337,54 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const staged = new Map<string, StagedMembership>();
   const activating = new Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>();
 
+  // The reversible half of `guardian.containment-commit.v1`'s membership barrier: closing this gate refuses
+  // a new `guardian.register-provider-root.v1` admission outright, and draining lets one already forwarding a
+  // root to the reaper finish before this guardian asks the reaper to snapshot its own cumulative roots.
+  let stagingGateOpen = true;
+  let inFlightStagingRegistrations = 0;
+  let stagingDrainWaiters: Array<() => void> = [];
+
+  const noteStagingRegistrationStart = (): void => {
+    inFlightStagingRegistrations += 1;
+  };
+  const noteStagingRegistrationEnd = (): void => {
+    inFlightStagingRegistrations -= 1;
+    if (inFlightStagingRegistrations === 0) {
+      const waiters = stagingDrainWaiters;
+      stagingDrainWaiters = [];
+      for (const resolve of waiters) resolve();
+    }
+  };
+  const drainStagingRegistrations = (): Promise<void> =>
+    inFlightStagingRegistrations === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          stagingDrainWaiters.push(resolve);
+        });
+
+  /** Best-effort reopen of the reaper's own prepared gate after a pre-commit refusal or fault. Its own
+   *  failure never overrides the caller's original error: `guardian.containment-commit.v1`'s catch always
+   *  re-throws what it caught, so a lost abort surfaces as the commit's own refusal rather than a masked one. */
+  const abortReaperContainmentPrepare = async (token: ContainmentPrepareToken): Promise<void> => {
+    try {
+      reaperContainmentAbortResultSchema.parse(
+        requireReaperResult(
+          'reaper.containment-abort.v1',
+          await options.reaperChannel.exchange(
+            'reaper.containment-abort.v1',
+            reaperContainmentAbortParamsSchema.parse({ token }),
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          ),
+        ),
+      );
+    } catch {
+      // The reaper's own gate then waits for this guardian's next successful prepare to supersede it, or for
+      // the coordinator to observe this commit's refusal and retry.
+    }
+  };
+
+  let acquisitionCertificate: AcquisitionPublicationCertificate | null = null;
+
   const methods = new Map<string, ControlMethod>([
     [
       'guardian.open.v1',
@@ -438,72 +502,86 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         // its own capsule-authenticated channel — not the coordinator's control tenancy.
         authority: 'pairing',
         handle: async (params) => {
-          const request = registerProviderRootParamsSchema.parse(params);
-          const armed = requireEnforcer();
-          assertNamedProxyIdentity('guardian', request.proxy, capsule);
-          const root = { pid: request.providerPid, incarnation: request.providerIncarnation };
-          // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
-          // already holds, rather than a fresh one that silently invalidates it.
-          const key = membershipKey(request.operation);
-          const already = staged.get(key);
-          if (already !== undefined) {
-            if (
-              !sameOperationIdentity(already.operation, request.operation) ||
-              already.reservation !== request.reservation ||
-              already.root.pid !== root.pid ||
-              already.root.incarnation !== root.incarnation
-            ) {
-              throw new ProxyControlProtocolError(
-                'identity_mismatch',
-                'This operation already reported a different provider root.',
-              );
-            }
-            return {
-              state: 'staged-contained',
-              providerRoot: already.root,
-              jointContainmentReceipt: already.jointContainmentReceipt,
-            };
-          }
-          if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
-            throw new ProxyControlProtocolError('invalid_state', 'This guardian holds its maximum staged operations.');
-          }
-          // Checked before the reaper round trip, not after: this guardian's own enforcer can refuse a root
-          // on its own cap too, and finding that out only after the reaper has already staged it would leave
-          // the two authorities disagreeing about what this containment holds.
-          if (armed.wouldExceedProviderRootCap(root)) {
+          if (!stagingGateOpen) {
             throw new ProxyControlProtocolError(
               'invalid_state',
-              'This guardian holds its maximum recorded provider roots.',
+              'Provider-root staging is closed for a containment commit in progress.',
             );
           }
-          // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
-          // identity, so neither can be talked into containing something the other never recorded. The
-          // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
-          const reaperParams = reaperRegisterProviderRootParamsSchema.parse({ providerRoot: root });
-          const acknowledgement = acknowledgeReaperRoot(
-            requireReaperResult(
-              'reaper.register-provider-root.v1',
-              await options.reaperChannel.exchange(
+          noteStagingRegistrationStart();
+          try {
+            const request = registerProviderRootParamsSchema.parse(params);
+            const armed = requireEnforcer();
+            assertNamedProxyIdentity('guardian', request.proxy, capsule);
+            const root = { pid: request.providerPid, incarnation: request.providerIncarnation };
+            // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
+            // already holds, rather than a fresh one that silently invalidates it.
+            const key = membershipKey(request.operation);
+            const already = staged.get(key);
+            if (already !== undefined) {
+              if (
+                !sameOperationIdentity(already.operation, request.operation) ||
+                already.reservation !== request.reservation ||
+                already.root.pid !== root.pid ||
+                already.root.incarnation !== root.incarnation
+              ) {
+                throw new ProxyControlProtocolError(
+                  'identity_mismatch',
+                  'This operation already reported a different provider root.',
+                );
+              }
+              return {
+                state: 'staged-contained',
+                providerRoot: already.root,
+                jointContainmentReceipt: already.jointContainmentReceipt,
+              };
+            }
+            if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
+              throw new ProxyControlProtocolError(
+                'invalid_state',
+                'This guardian holds its maximum staged operations.',
+              );
+            }
+            // Checked before the reaper round trip, not after: this guardian's own enforcer can refuse a root
+            // on its own cap too, and finding that out only after the reaper has already staged it would leave
+            // the two authorities disagreeing about what this containment holds.
+            if (armed.wouldExceedProviderRootCap(root)) {
+              throw new ProxyControlProtocolError(
+                'invalid_state',
+                'This guardian holds its maximum recorded provider roots.',
+              );
+            }
+            // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
+            // identity, so neither can be talked into containing something the other never recorded. The
+            // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
+            const reaperParams = reaperRegisterProviderRootParamsSchema.parse({ providerRoot: root });
+            const acknowledgement = acknowledgeReaperRoot(
+              requireReaperResult(
                 'reaper.register-provider-root.v1',
-                reaperParams,
-                PROXY_CONTROL_RPC_TIMEOUT_MS,
+                await options.reaperChannel.exchange(
+                  'reaper.register-provider-root.v1',
+                  reaperParams,
+                  PROXY_CONTROL_RPC_TIMEOUT_MS,
+                ),
               ),
-            ),
-            root,
-          );
-          const record = recordGuardianRoot(armed, acknowledgement);
-          // Minted here and nowhere else, and only from both authorities' evidence — which is what makes
-          // "after both recorded the same root" a thing the compiler checks rather than a thing this
-          // handler's statement order happens to arrange.
-          const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, record, mintReceipt);
-          staged.set(key, {
-            operation: request.operation,
-            jointContainmentReceipt,
-            jointActivationReceipt: null,
-            reservation: request.reservation,
-            root: record.root,
-          });
-          return { state: 'staged-contained', providerRoot: record.root, jointContainmentReceipt };
+              root,
+            );
+            const record = recordGuardianRoot(armed, acknowledgement);
+            // Minted here and nowhere else, and only from both authorities' evidence — which is what makes
+            // "after both recorded the same root" a thing the compiler checks rather than a thing this
+            // handler's statement order happens to arrange.
+            const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, record, mintReceipt);
+            staged.set(key, {
+              operation: request.operation,
+              jointContainmentReceipt,
+              jointActivationReceipt: null,
+              reservation: request.reservation,
+              root: record.root,
+            });
+            return { state: 'staged-contained', providerRoot: record.root, jointContainmentReceipt };
+          } finally {
+            noteStagingRegistrationEnd();
+          }
         },
       },
     ],
@@ -604,32 +682,68 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       },
     ],
     [
-      'guardian.stop-and-reap.v1',
+      'guardian.containment-commit.v1',
       {
         authority: 'active',
         budgetMs: 'caller-deadline',
-        handle: async (params) => {
-          const request = stopAndReapParamsSchema.parse(params);
+        handle: async (params, authorization) => {
+          const request = containmentCommitParamsSchema.parse(params);
           const armed = requireEnforcer();
-          // The caller must be naming this exact guardian, the reaper it itself spawned and paired with, this
-          // guardian's own proxy, and this containment's own recorded roots — so a teardown request either
-          // authority would refuse can never be accepted by the other, and this guardian is never talked into
-          // reaping a set some other process spawned.
+          // The caller must be naming this exact guardian, the reaper it itself spawned and paired with, and
+          // this guardian's own proxy — so a commit request either authority would refuse can never be
+          // accepted by the other, and this guardian is never talked into reaping a set some other process
+          // spawned.
           assertNamedGuardianIdentity(request.guardian, identity);
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
-          assertRecordedSetAgreement('guardian', request.providerRoots, armed.recordedRoots());
-          // Minted from this guardian's own current holder, synchronously in this same handler turn: the
-          // endpoint's active-control gate already revalidated the tenancy immediately before dispatch, so
-          // the capability names exactly the holder that gate just confirmed.
-          const authorization = mintExplicitTeardownAuthorization(holderAuthority);
-          if (authorization === null) {
+
+          if (!stagingGateOpen) {
+            throw new ProxyControlProtocolError('invalid_state', 'A containment commit is already in progress.');
+          }
+          stagingGateOpen = false;
+          await drainStagingRegistrations();
+
+          let prepared: z.infer<typeof reaperContainmentPrepareResultSchema> | null = null;
+          try {
+            prepared = reaperContainmentPrepareResultSchema.parse(
+              requireReaperResult(
+                'reaper.containment-prepare.v1',
+                await options.reaperChannel.exchange(
+                  'reaper.containment-prepare.v1',
+                  reaperContainmentPrepareParamsSchema.parse({}),
+                  PROXY_CONTROL_RPC_TIMEOUT_MS,
+                ),
+              ),
+            );
+            // Only after both drains: this guardian's own gate closed and drained above, the reaper's
+            // closed and drained inside `reaper.containment-prepare.v1` before it returned this snapshot.
+            assertExactRecordedSetAgreement('guardian', armed.recordedRoots(), prepared.providerRoots);
+            if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+              throw new ProxyControlProtocolError(
+                'unauthorized_control',
+                'Active control changed before this commit could latch.',
+              );
+            }
+          } catch (error: unknown) {
+            stagingGateOpen = true;
+            if (prepared !== null) await abortReaperContainmentPrepare(prepared.token);
+            throw error;
+          }
+
+          // Minted from this guardian's own current holder: the revalidation immediately above just
+          // confirmed the socket, holder, and epoch dispatch admitted this call under are still current.
+          const teardown = mintExplicitTeardownAuthorization(holderAuthority);
+          if (teardown === null) {
             throw new ProxyControlProtocolError(
               'invalid_state',
               'This guardian holds no admitted holder to tear down.',
             );
           }
-          const outcome = await armed.stopAndReap(authorization);
+          // Past this point the enforcer's own teardown latches synchronously before its first await
+          // (`enforcement.ts`'s `runTeardown`), so neither a stale nor a failed outcome below reopens
+          // registration: the containment is being destroyed either way, and reopening staging against a
+          // set mid-teardown would not help a coordinator that can no longer reach this guardian.
+          const outcome = await armed.stopAndReap(teardown);
           if (outcome === null) {
             throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
           }
@@ -639,9 +753,125 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               `Guardian teardown did not complete: ${outcome.kind}.`,
             );
           }
-          return guardianStopAndReapResultSchema.parse({
+          return guardianContainmentCommitResultSchema.parse({
             state: 'containment-absent',
             disappearanceReceipt: outcome.disappearanceReceipt,
+          });
+        },
+      },
+    ],
+    [
+      'guardian.acquisition-publish.v1',
+      {
+        authority: 'active',
+        handle: async (params) => {
+          const request = guardianAcquisitionPublishParamsSchema.parse(params);
+          assertNamedGuardianIdentity(request.guardian, identity);
+          assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
+          assertNamedProxyIdentity('guardian', request.proxy, capsule);
+
+          if (acquisitionCertificate !== null) {
+            return guardianAcquisitionPublishResultSchema.parse({
+              state: 'acquisition-published',
+              certificate: acquisitionCertificate,
+              guardian: identity,
+              reaper: reaperSelfIdentity,
+            });
+          }
+
+          try {
+            reaperAcquisitionPublishResultSchema.parse(
+              requireReaperResult(
+                'reaper.acquisition-publish.v1',
+                await options.reaperChannel.exchange(
+                  'reaper.acquisition-publish.v1',
+                  reaperAcquisitionPublishParamsSchema.parse({}),
+                  PROXY_CONTROL_RPC_TIMEOUT_MS,
+                ),
+              ),
+            );
+          } catch (error: unknown) {
+            // Both a refused/undecodable reply and a `requireReaperResult` failure land here identically: the
+            // reaper's own handler already ran `holderAuthority.publish()` before either could happen, so
+            // neither proves the reaper is unpublished — only that this exchange could not confirm it. The
+            // shared, exported schema (not a shape private to this handler) is what lets the coordinator read
+            // this as a real outcome instead of inferring it from a parse failure.
+            // Truncated: a ZodError's own `.message` is an unbounded JSON dump of every issue, and this parse
+            // must not itself throw and escape as the very refusal this branch exists to avoid.
+            const reason =
+              error instanceof Error ? error.message : 'reaper.acquisition-publish.v1 could not be confirmed';
+            return guardianAcquisitionPublishResultSchema.parse({
+              state: 'acquisition-publication-unknown',
+              reason: truncate(reason, 500),
+            });
+          }
+          holderAuthority.publish();
+          acquisitionCertificate = acquisitionPublicationCertificateSchema.parse(mintReceipt());
+          return guardianAcquisitionPublishResultSchema.parse({
+            state: 'acquisition-published',
+            certificate: acquisitionCertificate,
+            guardian: identity,
+            reaper: reaperSelfIdentity,
+          });
+        },
+      },
+    ],
+    [
+      'guardian.acquisition-abort.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = guardianAcquisitionAbortParamsSchema.parse(params);
+          assertNamedGuardianIdentity(request.guardian, identity);
+          assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
+          assertNamedProxyIdentity('guardian', request.proxy, capsule);
+          // Publication is one-way and idempotent, and this guardian keeps no state that a not-yet-published
+          // acquisition needs undone — the catch that sends this is a belt-and-suspenders assurance sent
+          // before publish is ever attempted, not a rollback of anything already recorded.
+          return guardianAcquisitionAbortResultSchema.parse({
+            state: holderAuthority.phase() === 'published' ? 'already-published' : 'acquisition-aborted',
+          });
+        },
+      },
+    ],
+    [
+      'guardian.holder-status.v1',
+      {
+        authority: 'observation',
+        handle: (params) => {
+          const request = holderStatusParamsSchema.parse(params);
+          const verified = grants.verifyInstalledGrant({
+            grantId: request.grantId,
+            secret: request.secret,
+            binding: {
+              generation: request.generation,
+              flavor: request.flavor,
+              buildSetId: request.buildSetId,
+              hostFingerprint: request.hostFingerprint,
+              guardianInstanceId: request.guardianInstanceId,
+              reaperInstanceId: request.reaperInstanceId,
+              proxyInstanceId: request.proxyInstanceId,
+            },
+          });
+          if (!verified) {
+            throw new ProxyControlProtocolError('grant_invalid', 'Status did not present the installed grant.');
+          }
+          const admitted = holderAuthority.current();
+          const current = holderAuthority.status();
+          if (admitted === null || current === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'This guardian holds no observed holder yet.');
+          }
+          return holderStatusResultSchema.parse({
+            disposition: current.disposition,
+            phase: holderAuthority.phase(),
+            holder: {
+              instanceId: admitted.holder.instanceId,
+              pid: admitted.holder.pid,
+              incarnation: admitted.holder.incarnation,
+            },
+            controlEpoch: admitted.controlEpoch,
+            transitionSequence: current.transitionSequence,
+            changedAtMs: current.changedAtMs,
           });
         },
       },

@@ -15,6 +15,7 @@ import {
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import {
   createControlEndpoint,
+  type ActiveControlAuthorization,
   type ControlChallenge,
   type ControlChallengeAuthority,
   type ControlEndpoint,
@@ -70,6 +71,9 @@ async function startEndpoint(
     pairing?: ControlEndpointRole['pairing'];
     /** When present, the role serves `role.status.v1` under `authority: 'observation'`. */
     observation?: (params: unknown) => unknown;
+    /** When present, the role serves `role.authorized.v1` under `authority: 'active'`, and every dispatched
+     *  call's freshly minted `ActiveControlAuthorization` is forwarded here. */
+    onActiveAuthorization?: (authorization: ActiveControlAuthorization) => void;
   } = {},
 ): Promise<{
   endpoint: ControlEndpoint;
@@ -218,6 +222,18 @@ async function startEndpoint(
     // Present only when a test opts in, so the roles every other test builds stay exactly what they were —
     // a role with no observation method, for which accept-time refusal is still the whole story.
     methodEntries.push(['role.status.v1', { authority: 'observation', handle: options.observation }]);
+  }
+  if (options.onActiveAuthorization !== undefined) {
+    methodEntries.push([
+      'role.authorized.v1',
+      {
+        authority: 'active',
+        handle: (params, authorization) => {
+          options.onActiveAuthorization?.(authorization);
+          return { state: 'worked' };
+        },
+      },
+    ]);
   }
 
   const endpoint = createControlEndpoint({
@@ -810,6 +826,88 @@ describe('provider-proxy control endpoint', () => {
     expect(first.socket.destroyed).toBe(false);
   });
 
+  it(
+    'binds a third connection to one bounded observation frame once control and pairing are both taken, ' +
+      'and closes it either way',
+    async () => {
+      const { socketPath } = await startEndpoint({
+        pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },
+        observation: () => ({ seen: true }),
+      });
+      const control = await connect(socketPath);
+      await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+      const pairing = await connect(socketPath);
+      await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+
+      const third = await connect(socketPath);
+      const status = await third.call('role.status.v1', {});
+      expect(status.result).toEqual({ seen: true });
+      await vi.waitFor(() => expect(third.socket.destroyed).toBe(true));
+      expect(control.socket.destroyed).toBe(false);
+      expect(pairing.socket.destroyed).toBe(false);
+    },
+  );
+
+  it('refuses and closes a third connection that asks anything other than an observation method', async () => {
+    const { socketPath } = await startEndpoint({
+      pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },
+      observation: () => ({ seen: true }),
+    });
+    const control = await connect(socketPath);
+    await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    const pairing = await connect(socketPath);
+    await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+
+    const third = await connect(socketPath);
+    const refused = await third.call('role.work.v1', {});
+    expect(refused.error?.data?.code).toBe('unauthorized_control');
+    await vi.waitFor(() => expect(third.socket.destroyed).toBe(true));
+  });
+
+  it('closes a third connection that never sends a first frame, once the request budget elapses', async () => {
+    const { socketPath } = await startEndpoint({
+      pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },
+      observation: () => ({ seen: true }),
+    });
+    const control = await connect(socketPath);
+    await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    const pairing = await connect(socketPath);
+    await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+
+    const third = await connect(socketPath);
+    // Sends nothing — the endpoint was constructed with `requestTimeoutMs: 5_000`, so the idle socket must
+    // close on its own rather than being held open indefinitely.
+    await vi.waitFor(() => expect(third.socket.destroyed).toBe(true), { timeout: 7_000, interval: 100 });
+  });
+
+  it('serves only the first of two frames sent back to back on a provisional third connection', async () => {
+    const { socketPath } = await startEndpoint({
+      pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },
+      observation: () => ({ seen: true }),
+    });
+    const control = await connect(socketPath);
+    await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    const pairing = await connect(socketPath);
+    await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+
+    const third = await connect(socketPath);
+    // Two frames written in the same synchronous burst, before either can be answered.
+    const first = third.call('role.status.v1', {});
+    const second = third.call('role.status.v1', {});
+    const firstReply = await Promise.race([
+      first,
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 3_000)),
+    ]);
+    expect(firstReply).toEqual({ result: { seen: true } });
+    const secondReply = await Promise.race([
+      second,
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+    // The connection is destroyed after the first frame, so the second call's promise never resolves.
+    expect(secondReply).toBe('timeout');
+    await vi.waitFor(() => expect(third.socket.destroyed).toBe(true));
+  });
+
   it('does not hang close() on a connection that was accepted but never claimed a slot', async () => {
     const { socketPath, endpoint } = await startEndpoint();
     // Connects and sends nothing: never opens, never pairs.
@@ -837,6 +935,62 @@ describe('provider-proxy control endpoint', () => {
     expect(opened.error?.message).toContain('may not also open control');
     expect(opened.error?.data?.code).toBe('unauthorized_control');
   });
+
+  it('mints an ActiveControlAuthorization current at dispatch time', async () => {
+    const authorizations: ActiveControlAuthorization[] = [];
+    const { socketPath, endpoint } = await startEndpoint({
+      onActiveAuthorization: (authorization) => authorizations.push(authorization),
+    });
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    // `active` requires this tenancy's first round-trip evidence, not merely an established one.
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+    await incumbent.call('role.authorized.v1', {});
+
+    expect(authorizations).toHaveLength(1);
+    expect(endpoint.activeControlAuthorizationIsCurrent(authorizations[0])).toBe(true);
+  });
+
+  it(
+    'ActiveControlAuthorization is revoked the instant a successor is admitted, and a value this endpoint ' +
+      'never minted never verifies',
+    async () => {
+      const authorizations: ActiveControlAuthorization[] = [];
+      const { socketPath, endpoint, lapseControl } = await startEndpoint({
+        onActiveAuthorization: (authorization) => authorizations.push(authorization),
+      });
+      const incumbent = await connect(socketPath);
+      await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+      await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+      await incumbent.call('role.authorized.v1', {});
+      const incumbentAuthorization = authorizations.at(-1) as ActiveControlAuthorization;
+      expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization)).toBe(true);
+
+      // A value this endpoint never minted is never current, regardless of its shape.
+      const foreign = {} as ActiveControlAuthorization;
+      expect(endpoint.activeControlAuthorizationIsCurrent(foreign)).toBe(false);
+
+      // A genuine successor (a different holder, admitted after the lease lapses — not a same-holder retry)
+      // revokes the incumbent's authorization even though it was minted only moments before.
+      lapseControl();
+      const successor = await connect(socketPath);
+      const redeemed = (await successor.call('role.redeem.v1', { successorId: 'a-different-instance' })).result as {
+        controlEpoch: number;
+        heartbeatChallenge: string;
+      };
+      await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
+      expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization)).toBe(false);
+
+      // The successor's own freshly minted authorization is current in its place.
+      await successor.call('role.heartbeat.v1', {
+        controlEpoch: redeemed.controlEpoch,
+        heartbeatChallenge: redeemed.heartbeatChallenge,
+      });
+      await successor.call('role.authorized.v1', {});
+      const successorAuthorization = authorizations.at(-1) as ActiveControlAuthorization;
+      expect(endpoint.activeControlAuthorizationIsCurrent(successorAuthorization)).toBe(true);
+    },
+  );
 
   it('reports control loss with the epoch that ended', async () => {
     const { socketPath, observer } = await startEndpoint();

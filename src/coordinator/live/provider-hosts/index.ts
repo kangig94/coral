@@ -43,6 +43,7 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set/lifecycle-ref.js';
+import type { ProviderProxySetProtection } from '../../services/provider-proxy-set/identity.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -89,8 +90,10 @@ export interface ProviderHostAdministrationAuthority {
  */
 export interface ProviderProxySetRegistration {
   /** Folds an already-redeemed set into this manager's own live sets (`liveSets()`), so it participates in
-   *  this coordinator's later shutdown — including a second handoff — exactly as an acquired set would. */
-  registerInheritedSet(set: ProviderProxyOperationAuthority): void;
+   *  this coordinator's later shutdown — including a second handoff — exactly as an acquired set would.
+   *  `protection` carries the discovery-time `legacy-unprotected`/`protected` classification through and
+   *  defaults to `protected`, matching every caller that has no legacy classification to report. */
+  registerInheritedSet(set: ProviderProxyOperationAuthority, protection?: ProviderProxySetProtection): void;
 }
 
 export type ManagedAppServerSession = Readonly<{
@@ -294,7 +297,10 @@ export class DefaultProviderHostManager
   }
 
   /** See `ProviderProxySetRegistration.registerInheritedSet()`'s interface doc for this seam's full contract. */
-  registerInheritedSet(set: ProviderProxyOperationAuthority): void {
+  registerInheritedSet(
+    set: ProviderProxyOperationAuthority,
+    protection: ProviderProxySetProtection = 'protected',
+  ): void {
     const lifecycle = this.providerProxyLifecycleRef?.get();
     if (lifecycle === null || lifecycle === undefined) {
       throw new Error('provider_proxy_set_lifecycle_not_connected');
@@ -302,7 +308,7 @@ export class DefaultProviderHostManager
     if (!isProviderProxyOperationAuthority(set)) {
       throw new Error('provider_proxy_set_inherited_authority_not_durable');
     }
-    lifecycle.registerInheritedSet(set);
+    lifecycle.registerInheritedSet(set, null, protection);
   }
 
   /** See the `ProviderHostManager.routeAppServerOperation()` interface doc for this seam's full contract. */

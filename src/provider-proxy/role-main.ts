@@ -241,8 +241,8 @@ export type GuardianRoleHandle = Readonly<{
   close(): Promise<void>;
   /** What a SIGTERM asks for: give up and reap the proxy containment this guardian's enforcer was armed on,
    *  rather than merely disarm and disappear — the same close-and-exit path a cooperative
-   *  `guardian.stop-and-reap.v1` RPC takes, reached here directly instead of over the wire. Falls back to a
-   *  plain close on the (unreachable in production) window before any containment was ever recorded, since
+   *  `guardian.containment-commit.v1` RPC takes, reached here directly instead of over the wire. Falls back to
+   *  a plain close on the (unreachable in production) window before any containment was ever recorded, since
    *  there is nothing yet to reap. */
   giveUp(): Promise<EnforcementOutcome>;
 }>;
@@ -417,9 +417,9 @@ export type RoleEnforcementOutcomeOptions<Scope extends symbol> = Readonly<{
  *
  * The close-and-exit is deferred past the current synchronous continuation, not run inline: `onOutcome` is
  * invoked from *inside* `enforcement.ts`'s own `settle()`, which runs before a caller's own in-flight
- * `*.stop-and-reap.v1` RPC handler ever resumes from its `await` — closing sockets here synchronously would
- * destroy that caller's connection before its own response reaches the wire. Deferring lets every microtask
- * already queued, including that response's `write()`, run first.
+ * `guardian.containment-commit.v1` RPC handler ever resumes from its `await` — closing sockets here
+ * synchronously would destroy that caller's connection before its own response reaches the wire. Deferring
+ * lets every microtask already queued, including that response's `write()`, run first.
  */
 export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   options: RoleEnforcementOutcomeOptions<Scope>,
@@ -553,7 +553,7 @@ export async function startProviderGuardianRole(
   const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(ports.runtime.env);
   // One `ControlHolderAuthority` per process (§7), constructed once here and shared with both the deadline
   // machine and the guardian's own control endpoint/enforcer — never a second instance built by either.
-  const holderAuthority = createControlHolderAuthority();
+  const holderAuthority = createControlHolderAuthority({ wallClockNow: ports.runtime.time.now });
   const deadlines = buildDeadlines(clock, deadlineConfiguration, ports, holderAuthority);
   const containmentEnvironment = buildContainmentEnvironment(clock, ports);
   const timer = runtimeControlTimer(ports.runtime);
@@ -685,7 +685,7 @@ export async function startProviderReaperRole(
   const clock = createMonotonicClock(reaperRoleClockScope);
   // One `ControlHolderAuthority` per process (§7), constructed once here and shared with both the deadline
   // machine and the reaper's own control endpoint/enforcer — never a second instance built by either.
-  const holderAuthority = createControlHolderAuthority();
+  const holderAuthority = createControlHolderAuthority({ wallClockNow: ports.runtime.time.now });
   const deadlines = buildDeadlines(
     clock,
     resolveProviderProxyDeadlineConfiguration(ports.runtime.env),
@@ -1040,8 +1040,8 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
 
   const shutdown = (): void => {
     // SIGTERM/SIGINT here means give up entirely — `buildGuardianSpawnUndo`'s acquisition-cleanup path is
-    // the production sender — never a negotiated handoff (that goes through `*.stop-and-reap.v1` over
-    // control, or a clean `initiateControlClose`). A guardian or reaper holds a proxy containment its own
+    // the production sender — never a negotiated handoff (that goes through `guardian.containment-commit.v1`
+    // over control, or a clean `initiateControlClose`). A guardian or reaper holds a proxy containment its own
     // enforcer was armed on; `close()` alone only disarms it, and the proxy is a separate detached
     // process-group leader outside this signal's own reach, so leaving it merely disarmed strands it
     // forever. `giveUp()` reaps it first, through the same close-and-exit path a cooperative RPC teardown

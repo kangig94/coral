@@ -440,6 +440,10 @@ function fakeSet(
       callLog.push(`reap:${proxyInstanceId}`);
       return { disappearanceReceipt: `gone:${proxyInstanceId}` };
     },
+    commitContainment: async () => {
+      callLog.push(`reap:${proxyInstanceId}`);
+      return { kind: 'containment-absent', disappearanceReceipt: `gone:${proxyInstanceId}` };
+    },
     stopHeartbeats: () => {
       callLog.push(`heartbeats:${proxyInstanceId}`);
     },

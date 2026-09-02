@@ -102,6 +102,25 @@ class ControlHeartbeatRefusedError extends ProxyControlProtocolError {
 
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
 
+declare const activeControlAuthorizationBrand: unique symbol;
+/**
+ * Bound to the exact tenancy socket, holder, and epoch active at the instant dispatch admitted the call.
+ * `dispatch` mints this fresh for every `active` call and hands it to the handler; a handler that starts a
+ * multi-step commit (a paired-peer round trip in between) must revalidate it, through
+ * `ControlEndpoint.activeControlAuthorizationIsCurrent`, synchronously immediately before its own
+ * irreversible latch — an `await` inside that handler can let control change hands before the commit, and
+ * trusting the dispatch-time snapshot alone would let a stale caller finish what a successor already
+ * superseded.
+ */
+export type ActiveControlAuthorization = Readonly<{ readonly [activeControlAuthorizationBrand]: true }>;
+
+/** `active`-authority methods receive the freshly minted authorization as a second argument; every other
+ *  authority tier keeps the plain single-argument `ControlMethodHandler`. */
+export type ActiveControlMethodHandler = (
+  params: unknown,
+  authorization: ActiveControlAuthorization,
+) => Promise<unknown> | unknown;
+
 /**
  * Who holds a control tenancy: the complete process identity an opening method already parsed off the wire.
  * Two opens naming the same instance id, pid, and incarnation are one tenancy re-reported, not two — the same
@@ -156,7 +175,8 @@ export type ControlMethod = Readonly<
     budgetMs?: number | 'caller-deadline';
   } & (
     | { authority: 'establishes-control'; handle: ControlOpenHandler }
-    | { authority: 'active' | 'pairing' | 'observation'; handle: ControlMethodHandler }
+    | { authority: 'active'; handle: ActiveControlMethodHandler }
+    | { authority: 'pairing' | 'observation'; handle: ControlMethodHandler }
   )
 >;
 
@@ -257,6 +277,10 @@ export interface ControlEndpoint {
    */
   pushOnTenancy(frame: string, timeoutMs: number): ControlTenancyPush;
   faultControlTenancy(expectedControlEpoch: ControlEpoch): void;
+  /** Whether an `ActiveControlAuthorization` this endpoint minted still names the exact socket, holder, and
+   *  epoch currently active. See `ActiveControlAuthorization`'s own doc for why a handler must call this
+   *  again immediately before an irreversible latch rather than trust the value dispatch handed it. */
+  activeControlAuthorizationIsCurrent(authorization: ActiveControlAuthorization): boolean;
 }
 
 type Tenancy = {
@@ -340,6 +364,45 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
 
 function success(id: string | number, result: unknown): ProxyControlJsonRpcMessage {
   return { jsonrpc: '2.0', id, result };
+}
+
+/**
+ * The record behind an opaque `ActiveControlAuthorization`, held in a `WeakMap` rather than on the branded
+ * object itself — the same pattern `infra/monotonic-clock.ts` uses for its own opaque instants — so the
+ * capability's public shape carries nothing a caller could read or forge from.
+ */
+type ActiveControlAuthorizationRecord = Readonly<{
+  socket: Socket;
+  controlEpoch: ControlEpoch;
+  holder: ControlTenancyHolder;
+}>;
+
+const activeControlAuthorizationRecords = new WeakMap<object, ActiveControlAuthorizationRecord>();
+
+function mintActiveControlAuthorization(
+  socket: Socket,
+  controlEpoch: ControlEpoch,
+  holder: ControlTenancyHolder,
+): ActiveControlAuthorization {
+  const authorization = Object.freeze({}) as unknown as ActiveControlAuthorization;
+  activeControlAuthorizationRecords.set(authorization, { socket, controlEpoch, holder });
+  return authorization;
+}
+
+/**
+ * Mints an `ActiveControlAuthorization` outside `dispatch`'s own admission flow. Production code never calls
+ * this — every real call is minted by `dispatch`, bound to the socket, holder, and epoch it just admitted.
+ * This exists for a harness that drives a role's `active` handler directly, without a live tenancy of its
+ * own to admit one: it stores the identical `WeakMap` record `mintActiveControlAuthorization` would, so
+ * `activeControlAuthorizationIsCurrent` answers truthfully about the result rather than being bypassed by a
+ * value that only carries the brand.
+ */
+export function mintActiveControlAuthorizationForTesting(
+  socket: Socket,
+  controlEpoch: ControlEpoch,
+  holder: ControlTenancyHolder,
+): ActiveControlAuthorization {
+  return mintActiveControlAuthorization(socket, controlEpoch, holder);
 }
 
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {
@@ -492,7 +555,13 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     if (live === null || live.socket !== socket || !live.active || !challenges.controlIsLive()) {
       throw new ProxyControlProtocolError('unauthorized_control', `${method} requires active control.`);
     }
-    return entry.handle(params);
+    const admittedHolder = holderAuthority.current();
+    if (admittedHolder === null) {
+      // Unreachable by construction: `establishControl` always installs into `holderAuthority` in the same
+      // synchronous turn it creates `tenancy`, so a live tenancy never exists without an admitted holder.
+      throw new ProxyControlProtocolError('invalid_state', `${method} found no admitted holder for a live tenancy.`);
+    }
+    return entry.handle(params, mintActiveControlAuthorization(socket, live.epoch, admittedHolder.holder));
   };
 
   const serveRequest = async (socket: Socket, message: ProxyControlJsonRpcMessage): Promise<void> => {
@@ -546,6 +615,85 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   // for — a live tenancy is the *normal* state, not an edge case, for whoever wants to ask about it.
   const hasObservationMethod = [...role.methods.values()].some((method) => method.authority === 'observation');
 
+  /**
+   * Admits a connection that earns no tenancy of its own because both authority slots are already filled: it
+   * may read exactly one bounded frame, and is destroyed once that frame is served or refused — never held
+   * open for a second request, and never left waiting past `requestTimeoutMs` for a first one. This is what
+   * keeps an observation method from turning `hasObservationMethod`'s accept-time exception into an
+   * unbounded-lifetime third socket.
+   */
+  const acceptProvisionalObservationConnection = (socket: Socket): void => {
+    let settled = false;
+    const idle = timer.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+    }, requestTimeoutMs);
+    idle.unref?.();
+
+    const serveOneFrame = async (message: ProxyControlJsonRpcMessage): Promise<void> => {
+      if (!('method' in message)) {
+        write(socket, failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
+        return;
+      }
+      const { id, method, params } = message;
+      const entry = role.methods.get(method);
+      if (entry === undefined) {
+        write(socket, handlerFailure(id, new UnknownControlMethodError(method)));
+        return;
+      }
+      if (entry.authority !== 'observation') {
+        write(
+          socket,
+          handlerFailure(
+            id,
+            new ProxyControlProtocolError(
+              'unauthorized_control',
+              'This connection holds no tenancy and may only ask an observation method.',
+            ),
+          ),
+        );
+        return;
+      }
+      try {
+        write(socket, success(id, await entry.handle(params)));
+      } catch (error: unknown) {
+        write(socket, handlerFailure(id, error));
+      }
+    };
+
+    const read = createFrameReader(
+      (frame) => {
+        if (settled) return;
+        settled = true;
+        timer.clearTimeout(idle);
+        let message: ProxyControlJsonRpcMessage;
+        try {
+          message = decodeProxyControlFrame(frame);
+        } catch {
+          write(socket, failure(null, JSON_RPC_INVALID_REQUEST, 'Control frame failed strict validation.'));
+          socket.destroy();
+          return;
+        }
+        void serveOneFrame(message).finally(() => socket.destroy());
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        timer.clearTimeout(idle);
+        write(socket, failure(null, JSON_RPC_INVALID_REQUEST, 'Control frame exceeded the frame cap.'));
+        socket.destroy();
+      },
+    );
+    socket.on('data', read);
+    socket.on('error', () => socket.destroy());
+    socket.on('close', () => {
+      settled = true;
+      timer.clearTimeout(idle);
+      sockets.delete(socket);
+    });
+  };
+
   const acceptConnection = (socket: Socket): void => {
     // One connection holds control and, when the role has a peer, one more may hold pairing. A third
     // connection is refused only once both slots are already filled — before the peer has ever paired, or
@@ -554,11 +702,23 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     // endpoint: close() still reaches it even if it never claims a slot.
     const controlTaken = tenancy !== null && !tenancy.socket.destroyed && challenges.controlIsLive();
     const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
-    if (!hasObservationMethod && controlTaken && (role.pairing === undefined || pairingTaken)) {
+    const noSlotAvailable = controlTaken && (role.pairing === undefined || pairingTaken);
+    if (!hasObservationMethod && noSlotAvailable) {
       socket.destroy();
       return;
     }
     sockets.add(socket);
+    // Bounded provisional admission applies only when this role actually has two authorities and both are
+    // genuinely occupied — a role with no pairing concept at all (the proxy) has only ever had one slot to
+    // exhaust, and its existing observation methods keep the unconditional, unbounded wiring below exactly as
+    // before; narrowing that too would regress a connection this batch was never asked to change.
+    if (role.pairing !== undefined && controlTaken && pairingTaken) {
+      // `hasObservationMethod` is true here — the branch above already destroyed the socket otherwise — so
+      // this connection may still ask an observation method, but it earns no tenancy: bound its admission to
+      // one frame instead of the unconditional, unbounded wiring below.
+      acceptProvisionalObservationConnection(socket);
+      return;
+    }
     const read = createFrameReader(
       (frame) => {
         let message: ProxyControlJsonRpcMessage;
@@ -741,6 +901,22 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       live.active = false;
       observer.onControlLost(live.epoch);
       live.socket.destroy();
+    },
+    activeControlAuthorizationIsCurrent(authorization: ActiveControlAuthorization): boolean {
+      const record = activeControlAuthorizationRecords.get(authorization);
+      if (record === undefined) return false;
+      const live = tenancy;
+      const admitted = holderAuthority.current();
+      return (
+        live !== null &&
+        live.socket === record.socket &&
+        live.active &&
+        live.epoch === record.controlEpoch &&
+        admitted !== null &&
+        admitted.controlEpoch === record.controlEpoch &&
+        sameControlTenancyHolder(admitted.holder, record.holder) &&
+        challenges.controlIsLive()
+      );
     },
   };
 }

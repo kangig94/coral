@@ -195,7 +195,7 @@ describe('createProviderProxySetAuthority: stopAndReap budget', () => {
     const time = new VirtualTime();
     // The minimum time a legitimate hard reap takes when the target does not die on the first signal: SIGTERM
     // grace, then SIGKILL grace, then the disappearance confirmation window — the exact floor
-    // `guardian.stop-and-reap.v1`'s `budgetMs: 'caller-deadline'` exists to protect, and exclusive of any
+    // `guardian.containment-commit.v1`'s `budgetMs: 'caller-deadline'` exists to protect, and exclusive of any
     // per-syscall overhead. A budget below this floor cannot ever succeed against a stubborn process, so this
     // is deliberately the value under test rather than an arbitrary number that merely exceeds the bug's
     // 5s budget.
@@ -212,7 +212,7 @@ describe('createProviderProxySetAuthority: stopAndReap budget', () => {
     const pending = authority.stopAndReap(new AbortController().signal);
     time.tick(stubbornReapFloorMs);
 
-    await expect(pending).resolves.toEqual({ disappearanceReceipt: 'guardian:gone;reaper:gone' });
+    await expect(pending).resolves.toEqual({ disappearanceReceipt: 'gone' });
   });
 
   it('still reports unconfirmed when the caller signal aborts before the reap answers', async () => {
@@ -297,12 +297,12 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
   });
 });
 
-describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
-  it('names this coordinator’s own recorded provider roots, not an empty claim the guardian would refuse', async () => {
+describe('createProviderProxySetAuthority: commitContainment', () => {
+  it('sends guardian.containment-commit.v1 alone, naming no providerRoots and never touching the reaper client', async () => {
     const calls: unknown[] = [];
-    const client: ControlClient = {
-      exchange: (_method, params) => {
-        calls.push(params);
+    const guardianClient: ControlClient = {
+      exchange: (method, params) => {
+        calls.push({ method, params });
         return Promise.resolve(
           controlExchangeForTest({
             kind: 'response',
@@ -314,45 +314,127 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
       onFault: () => () => undefined,
       close: () => {},
     };
-    const root = { pid: 9_001, incarnation: testIncarnation(700) };
-    const authority = authorityWithGuardianClient(client, [root]);
+    const deps: ProviderProxySetAuthorityDependencies = {
+      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+      guardianClient,
+      proxyClient: unreachableClient(),
+      reaperClient: unreachableClient(),
+      guardianIdentity: GUARDIAN_IDENTITY,
+      reaperIdentity: REAPER_IDENTITY,
+      proxyIdentityFields: PROXY_IDENTITY,
+      heartbeats: inactiveHeartbeats(),
+      coordinatorIdentity: COORDINATOR_IDENTITY,
+      handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
+      runtime: unusedRuntimePorts(),
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+    };
+    const authority = createProviderProxySetAuthority(deps);
+
+    const outcome = await authority.commitContainment(new AbortController().signal);
+
+    expect(calls).toEqual([
+      {
+        method: 'guardian.containment-commit.v1',
+        params: { guardian: GUARDIAN_IDENTITY, reaper: REAPER_IDENTITY, proxy: PROXY_IDENTITY },
+      },
+    ]);
+    expect(outcome).toEqual({ kind: 'containment-absent', disappearanceReceipt: 'gone' });
+  });
+
+  it('reports not-sent for a structured refusal, proving the guardian never latched', async () => {
+    const remoteFailure: ControlClientRemoteFailure = {
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32000,
+      protocolCode: 'invalid_state',
+      admissionReason: 'invalid-state',
+      heartbeatRefusal: null,
+    };
+    const guardianClient: ControlClient = {
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'refusal',
+              failure: remoteFailure,
+              error: new ControlClientError(
+                'control_call_failed',
+                'A containment commit is already in progress.',
+                'remote-response',
+                remoteFailure,
+              ),
+            },
+          }),
+        ),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const authority = authorityWithGuardianClient(guardianClient);
+
+    const outcome = await authority.commitContainment(new AbortController().signal);
+
+    expect(outcome.kind).toBe('not-sent');
+  });
+
+  it('reports outcome-unknown when the response is lost after the request may have reached the guardian', async () => {
+    const guardianClient: ControlClient = {
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'no-response',
+            cause: 'connection-closed-after-write',
+            error: new ControlClientError('control_client_closed', 'closed after write', 'closed'),
+          }),
+        ),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const authority = authorityWithGuardianClient(guardianClient);
+
+    const outcome = await authority.commitContainment(new AbortController().signal);
+
+    expect(outcome.kind).toBe('outcome-unknown');
+  });
+
+  it('reports outcome-unknown, not not-sent, when the caller deadline races an in-flight exchange', async () => {
+    const time = new VirtualTime();
+    const guardianClient = fakeControlClient(time, PROXY_TEARDOWN_RESERVE_MS - 1, {
+      state: 'containment-absent',
+      disappearanceReceipt: 'gone',
+    });
+    const authority = authorityWithGuardianClient(guardianClient);
+    const deadline = new AbortController();
+
+    const pending = authority.commitContainment(deadline.signal);
+    deadline.abort();
+    const outcome = await pending;
+
+    // A lost race cannot prove the request never reached the guardian — it is a lost response, not a proven
+    // non-latch, and must not be treated as one.
+    expect(outcome.kind).toBe('outcome-unknown');
+  });
+
+  it('collapses both unconfirmed outcomes into stopAndReap’s coarse contract identically', async () => {
+    const guardianClient: ControlClient = {
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'no-response',
+            cause: 'timeout',
+            error: new ControlClientError('control_client_connect_failed', 'no reply', 'timeout'),
+          }),
+        ),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const authority = authorityWithGuardianClient(guardianClient);
 
     const result = await authority.stopAndReap(new AbortController().signal);
 
-    // Hardcoding `providerRoots: []` here is exactly the defect: both enforcers refuse a teardown that
-    // disagrees with what they actually recorded, so an empty claim against a set with a real staged root
-    // always fails — this asserts the actual wire params carried the registry's own roots instead.
-    expect(calls).toEqual([
-      expect.objectContaining({ providerRoots: [root], guardian: GUARDIAN_IDENTITY }),
-      expect.objectContaining({ providerRoots: [root], reaper: REAPER_IDENTITY }),
-    ]);
-    expect(result).toEqual({ disappearanceReceipt: 'guardian:gone;reaper:gone' });
-  });
-
-  it('names an empty set when this coordinator holds no live operations against the proxy', async () => {
-    const calls: unknown[] = [];
-    const client: ControlClient = {
-      exchange: (_method, params) => {
-        calls.push(params);
-        return Promise.resolve(
-          controlExchangeForTest({
-            kind: 'response',
-            response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
-          }),
-        );
-      },
-      faulted: new Promise<never>(() => undefined),
-      onFault: () => () => undefined,
-      close: () => {},
-    };
-    const authority = authorityWithGuardianClient(client, []);
-
-    await authority.stopAndReap(new AbortController().signal);
-
-    expect(calls).toEqual([
-      expect.objectContaining({ providerRoots: [], guardian: GUARDIAN_IDENTITY }),
-      expect.objectContaining({ providerRoots: [], reaper: REAPER_IDENTITY }),
-    ]);
+    expect(result).toHaveProperty('unconfirmed');
   });
 });
 

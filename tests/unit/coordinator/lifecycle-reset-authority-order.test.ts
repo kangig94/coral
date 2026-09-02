@@ -707,6 +707,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const fakeSet: ProviderProxySetAuthority = {
       proxyInstanceId: 'proxy-under-test',
       stopAndReap,
+      commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'r' }),
       stopHeartbeats: vi.fn(),
       initiateControlClose: async () => {},
     };

@@ -573,6 +573,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     },
     stopHeartbeats: () => undefined,
     stopAndReap: () => new Promise<never>(() => undefined),
+    commitContainment: () => new Promise<never>(() => undefined),
     initiateControlClose: async () => undefined,
   } as unknown as DurableProviderProxyOperationAuthority;
   const admission = lifecycle.beginFreshAcquisition('activation-route');
@@ -1356,6 +1357,11 @@ describe('provider proxy cumulative root rotation', () => {
                   stopAndReap: async (signal: AbortSignal) => {
                     const outcome = await set.authority.stopAndReap(signal);
                     if ('disappearanceReceipt' in outcome) rotationOrder.push('joint-absence');
+                    return outcome;
+                  },
+                  commitContainment: async (signal: AbortSignal) => {
+                    const outcome = await set.authority.commitContainment(signal);
+                    if (outcome.kind === 'containment-absent') rotationOrder.push('joint-absence');
                     return outcome;
                   },
                 }

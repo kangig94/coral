@@ -141,6 +141,12 @@ function connectLifecycleAuthority(
       return () => listeners.delete(listener);
     },
     stopAndReap: () => proof.promise,
+    commitContainment: async () => {
+      const result = await proof.promise;
+      return 'disappearanceReceipt' in result
+        ? ({ kind: 'containment-absent', disappearanceReceipt: result.disappearanceReceipt } as const)
+        : ({ kind: 'outcome-unknown', error: result.unconfirmed } as const);
+    },
   });
   return (fault) => {
     for (const listener of listeners) listener(fault);
@@ -539,6 +545,7 @@ function createHarness(
     registerSuccessionOperation:
       overrides.registerSuccessionOperation ?? (async () => ({ kind: 'registered' as const })),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+    commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
     prepareOperation:

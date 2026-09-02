@@ -18,6 +18,32 @@ export type ControlHolderIdentity = Readonly<{ controlEpoch: ControlEpoch; holde
 export type AcquisitionPhase = 'acquisition-provisional' | 'published';
 
 /**
+ * The starvation-readable disposition `*.holder-status.v1` serves — deliberately not this module's own
+ * `HolderDisposition`: `absent` is the word an observation spends to construct teardown authority, and a
+ * status read must never carry a word that could be mistaken for that capability. `departed` names the same
+ * canonical evidence without minting anything.
+ */
+export type HolderStatusDisposition = 'alive' | 'unobservable' | 'departed';
+
+/** One `*.holder-status.v1` reading: what changed, how many disposition changes preceded it, and when the
+ *  current one was recorded. `changedAtMs` is wall-clock epoch milliseconds — never the monotonic scope a
+ *  `HolderObservation` carries, which by construction cannot be serialized onto the wire this crosses. */
+export type HolderStatusSnapshot = Readonly<{
+  disposition: HolderStatusDisposition;
+  transitionSequence: number;
+  changedAtMs: number;
+}>;
+
+export type ControlHolderAuthorityOptions = Readonly<{
+  /** Wall-clock source for `changedAtMs`. Defaults to `Date.now`, matching `createMonotonicClock`'s own
+   *  default ambient reader — production composition (`role-main.ts`) supplies the runtime's own port. */
+  wallClockNow?: () => number;
+  /** Fired synchronously, exactly once per recorded transition — never on a repeated identical observation,
+   *  and never batched. */
+  onTransition?: (transition: HolderStatusSnapshot) => void;
+}>;
+
+/**
  * The one home for a guardian/reaper/proxy process's own holder identity (§7). `createControlEndpoint`
  * installs it on every admission; a future enforcer reads it to decide what it is observing. Nothing else in
  * either caller may keep a second copy of `{ controlEpoch, holder }` — a comparison that reads one copy while
@@ -42,13 +68,33 @@ export interface ControlHolderAuthority {
   /** One-way `acquisition-provisional` -> `published`. Idempotent: publishing an already-published authority
    *  changes nothing. */
   publish(): void;
+  /**
+   * Records what an identity-bound observation most recently found, mapping this module's own
+   * `alive|absent|unobservable` onto the starvation-readable `alive|unobservable|departed` vocabulary.
+   * Advances `transitionSequence` and updates `changedAtMs` — and fires `onTransition` — only when the
+   * mapped disposition differs from what is currently recorded; a repeated identical observation does
+   * neither.
+   */
+  recordObservation(disposition: HolderStatusDisposition): void;
+  /** The starvation-readable surface `*.holder-status.v1` serves: `null` only before any holder has ever
+   *  been admitted, the one case the pure clock bound still decides on its own. */
+  status(): HolderStatusSnapshot | null;
 }
 
 /** Exactly one instance per guardian/reaper/proxy process. Every internal composition inside that process
  *  which needs holder identity reads this same instance; none may construct a second one. */
-export function createControlHolderAuthority(): ControlHolderAuthority {
+export function createControlHolderAuthority(options: ControlHolderAuthorityOptions = {}): ControlHolderAuthority {
+  const wallClockNow = options.wallClockNow ?? Date.now;
   let installed: ControlHolderIdentity | null = null;
   let phase: AcquisitionPhase = 'acquisition-provisional';
+  let transitionSequence = 0;
+  let status: HolderStatusSnapshot | null = null;
+
+  const transitionTo = (disposition: HolderStatusDisposition): void => {
+    transitionSequence += 1;
+    status = { disposition, transitionSequence, changedAtMs: wallClockNow() };
+    options.onTransition?.(status);
+  };
 
   return Object.freeze({
     install(identity: ControlHolderIdentity): void {
@@ -59,12 +105,20 @@ export function createControlHolderAuthority(): ControlHolderAuthority {
         );
       }
       installed = identity;
+      // A successor's own liveness is unobserved until this authority's own next check confirms it — never
+      // inherited from the predecessor's last recorded disposition.
+      transitionTo('unobservable');
     },
     current: (): ControlHolderIdentity | null => installed,
     phase: (): AcquisitionPhase => phase,
     publish: (): void => {
       phase = 'published';
     },
+    recordObservation(disposition: HolderStatusDisposition): void {
+      if (status !== null && status.disposition === disposition) return;
+      transitionTo(disposition);
+    },
+    status: (): HolderStatusSnapshot | null => status,
   });
 }
 
@@ -150,8 +204,15 @@ export async function observeControlHolder<Scope extends symbol>(
   }
   const liveness = await observe({ pid: admitted.holder.pid, incarnation: admitted.holder.incarnation });
   const observedAt = clock.now();
-  if (liveness === 'alive') return { disposition: 'alive', observedAt };
-  if (liveness === 'unknown') return { disposition: 'unobservable', observedAt };
+  if (liveness === 'alive') {
+    authority.recordObservation('alive');
+    return { disposition: 'alive', observedAt };
+  }
+  if (liveness === 'unknown') {
+    authority.recordObservation('unobservable');
+    return { disposition: 'unobservable', observedAt };
+  }
+  authority.recordObservation('departed');
   return {
     disposition: 'absent',
     observedAt,

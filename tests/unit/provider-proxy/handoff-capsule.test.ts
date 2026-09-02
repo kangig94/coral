@@ -218,6 +218,43 @@ describe('provider-proxy handoff capsule', () => {
     expect(() => registry.install(other)).toThrow(/different grant/u);
   });
 
+  it('verifyInstalledGrant is a non-consuming read check: it never mutates redemption state', () => {
+    const registry = createGrantRegistry(mintReceipt());
+
+    // Nothing installed yet: never true, however the caller phrases it.
+    expect(
+      registry.verifyInstalledGrant({
+        grantId: randomUUID(),
+        secret: SECRET,
+        binding: bindingOf(installedGrantFor([])),
+      }),
+    ).toBe(false);
+
+    const grant = installedGrantFor(ORDERED);
+    registry.install(grant);
+    const binding = bindingOf(grant);
+
+    expect(registry.verifyInstalledGrant({ grantId: grant.grantId, secret: SECRET, binding })).toBe(true);
+    // A wrong secret in the correct digest format refuses — never partial credit for a matching grantId.
+    expect(registry.verifyInstalledGrant({ grantId: grant.grantId, secret: 'a'.repeat(64), binding })).toBe(false);
+    // A binding field naming a different set refuses too.
+    expect(
+      registry.verifyInstalledGrant({
+        grantId: grant.grantId,
+        secret: SECRET,
+        binding: { ...binding, buildSetId: randomUUID() },
+      }),
+    ).toBe(false);
+    // A grantId that does not match the installed one refuses, even with the right secret and binding.
+    expect(registry.verifyInstalledGrant({ grantId: randomUUID(), secret: SECRET, binding })).toBe(false);
+
+    // Repeated checks never spend or install a redemption — `redeem` still runs its own first genuine
+    // redemption afterward, unaffected by any of the reads above.
+    expect(registry.redemption()).toBeNull();
+    const redeemed = registry.redeem({ grantId: grant.grantId, secret: SECRET, successor: SUCCESSOR, binding });
+    expect(redeemed.redemptionReceipt).toBe('receipt-1');
+  });
+
   it('redeems once, and returns that same redemption — including the installed operation set — to the same successor retrying', () => {
     const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFor(ORDERED);

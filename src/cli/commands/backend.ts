@@ -1,4 +1,5 @@
 import { InvalidArgumentError, type Command } from 'commander';
+import type { z } from 'zod';
 
 import {
   decodeProviderProxySetAddress,
@@ -35,11 +36,20 @@ import type {
 } from '../../coordinator/handoff-routing/status-operator.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
-import { assertNever } from '../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
+import { discoverProviderHandoffCapsules } from '../../coordinator/services/provider-proxy-capsule-discovery.js';
+import {
+  connectControlClient,
+  type ControlClient,
+  type ControlClientTimer,
+} from '../../provider-proxy/control-client.js';
+import { holderStatusParamsSchema, type HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
+import { holderStatusResultSchema } from '../../provider-proxy/protocol.js';
+import { runtimeControlTimer } from '../../provider-proxy/role-spawn.js';
 import {
   decodeRecoveryQuarantineKey,
   encodeRecoveryQuarantineKey,
@@ -502,6 +512,143 @@ function routingStatusPath(runtime: Runtime): string {
   );
 }
 
+/** Bounds this CLI's own direct role dial so a starved-*and*-unreachable role cannot hang the fallback read
+ *  the coordinator's own unreachability already triggered. */
+const DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS = 3_000;
+
+/** One role's direct `*.holder-status.v1` reading. `holder-status-unavailable` covers both v0.10.9 failure
+ *  shapes named by AC6 — `method_not_found` and a bare connection close — never rendered as absence or
+ *  containment authority. */
+export type DirectHolderStatusReading =
+  | Readonly<{ kind: 'answered'; status: z.infer<typeof holderStatusResultSchema> }>
+  | Readonly<{ kind: 'holder-status-unavailable'; reason: string }>
+  | Readonly<{ kind: 'unreachable'; reason: string }>;
+
+export type DirectProviderProxySetHolderStatus = Readonly<{
+  buildSetId: string;
+  hostFingerprint: string;
+  proxyInstanceId: string;
+  guardian: DirectHolderStatusReading;
+  reaper: DirectHolderStatusReading;
+}>;
+
+async function readDirectHolderStatus(
+  endpoint: string,
+  method: 'guardian.holder-status.v1' | 'reaper.holder-status.v1',
+  capsule: HandoffCapsuleV3,
+  timer: ControlClientTimer,
+): Promise<DirectHolderStatusReading> {
+  let client: ControlClient;
+  try {
+    client = await connectControlClient(endpoint, timer, DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS);
+  } catch (error: unknown) {
+    return { kind: 'unreachable', reason: errorMessage(error) };
+  }
+  try {
+    const params = holderStatusParamsSchema.parse({
+      grantId: capsule.grantId,
+      secret: capsule.secret,
+      generation: capsule.generation,
+      flavor: capsule.flavor,
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+      guardianInstanceId: capsule.guardianInstanceId,
+      reaperInstanceId: capsule.reaperInstanceId,
+      proxyInstanceId: capsule.proxyInstanceId,
+    });
+    const exchange = await client.exchange(method, params, DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS);
+    if (exchange.kind === 'response') {
+      if (exchange.response.kind === 'result') {
+        // Display, not authority: an undecodable "result" is not one of AC6's two named v0.10.9 shapes, so
+        // it renders `unreachable` rather than throwing out of this reading and blanking every other role's
+        // row along with it.
+        const parsed = holderStatusResultSchema.safeParse(exchange.response.value);
+        if (!parsed.success) {
+          return { kind: 'unreachable', reason: `undecodable result: ${parsed.error.message}` };
+        }
+        return { kind: 'answered', status: parsed.data };
+      }
+      // `ControlClientRemoteFailure` is a union: a structured `method_not_found` refusal is the named
+      // v0.10.9 method-table shape, and an unattributable `invalid-frame` reply is not decodable as anything
+      // else either — both are answers this reader cannot use, so both render `holder-status-unavailable`
+      // rather than one of them silently falling into the generic `unreachable` branch.
+      const failure = exchange.response.failure;
+      if (failure.kind === 'json-rpc-error' && failure.protocolCode === 'method_not_found') {
+        return { kind: 'holder-status-unavailable', reason: 'method_not_found' };
+      }
+      if (failure.kind === 'invalid-frame') {
+        return { kind: 'holder-status-unavailable', reason: 'invalid-frame' };
+      }
+      return { kind: 'unreachable', reason: exchange.response.error.message };
+    }
+    if (exchange.kind === 'no-response' && exchange.cause === 'connection-closed-after-write') {
+      return { kind: 'holder-status-unavailable', reason: 'connection closed without a reply' };
+    }
+    return { kind: 'unreachable', reason: errorMessage(exchange.error) };
+  } finally {
+    client.close();
+  }
+}
+
+/**
+ * `coral-cli backend status`'s fallback surface while coordinator IPC is starved: reads every mode-0600
+ * handoff capsule directly and queries both role endpoints over their own control framing, never through the
+ * coordinator. An older role's `method_not_found` or bare close is `holder-status-unavailable`, and this
+ * reader never treats either as absence or containment authority — only the roles' own enforcers may.
+ */
+export async function readProviderProxySetHolderStatusDirect(
+  runtime: Runtime,
+): Promise<readonly DirectProviderProxySetHolderStatus[]> {
+  const discovered = discoverProviderHandoffCapsules({
+    runDir: runtime.paths.coral.coordinator.runDir,
+    generationRoot: runtime.paths.coral.generation.root,
+    storage: runtime.storage,
+    uid: process.getuid?.() ?? 0,
+  });
+  const timer = runtimeControlTimer(runtime);
+  const readings: DirectProviderProxySetHolderStatus[] = [];
+  for (const { capsule } of discovered) {
+    if (capsule.version !== 3) continue;
+    const [guardian, reaper] = await Promise.all([
+      readDirectHolderStatus(capsule.guardianControlEndpoint, 'guardian.holder-status.v1', capsule, timer),
+      readDirectHolderStatus(capsule.reaperControlEndpoint, 'reaper.holder-status.v1', capsule, timer),
+    ]);
+    readings.push({
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+      proxyInstanceId: capsule.proxyInstanceId,
+      guardian,
+      reaper,
+    });
+  }
+  return readings;
+}
+
+function formatDirectHolderStatusReading(reading: DirectHolderStatusReading): string {
+  switch (reading.kind) {
+    case 'answered':
+      return `${reading.status.disposition} (phase=${reading.status.phase}, epoch=${reading.status.controlEpoch})`;
+    case 'holder-status-unavailable':
+      return `unavailable (${reading.reason})`;
+    case 'unreachable':
+      return `unreachable (${reading.reason})`;
+  }
+}
+
+export function formatProviderProxySetHolderStatusDirect(
+  readings: readonly DirectProviderProxySetHolderStatus[],
+): string {
+  if (readings.length === 0) return 'No provider proxy sets discovered on disk.';
+  return readings
+    .map(
+      (reading) =>
+        `set proxy=${reading.proxyInstanceId} build=${reading.buildSetId} host=${reading.hostFingerprint}\n` +
+        `  guardian: ${formatDirectHolderStatusReading(reading.guardian)}\n` +
+        `  reaper:   ${formatDirectHolderStatusReading(reading.reaper)}`,
+    )
+    .join('\n');
+}
+
 export function createBackendStatusCommandOperations(
   getLiveHandoffResult: BackendStatusCommandOperations['getLiveHandoffResult'] = () => null,
 ): BackendStatusCommandOperations {
@@ -938,6 +1085,22 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
+      if (error instanceof BackendUnreachableError) {
+        // Coordinator IPC is starved or absent: fall back to reading the mode-0600 handoff capsule and
+        // querying both role endpoints directly, so this command remains useful for exactly the failure this
+        // batch exists to survive. A v0.10.9 role's `method_not_found` or bare close is rendered
+        // `holder-status-unavailable`, never as absence or containment authority.
+        try {
+          const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+          const direct = await readProviderProxySetHolderStatusDirect(runtime);
+          process.stderr.write('Backend is unreachable over IPC.\n');
+          process.stdout.write(`${formatProviderProxySetHolderStatusDirect(direct)}\n`);
+          process.exitCode = BACKEND_STATUS_EXIT_CODES.unreachable;
+        } catch (directError) {
+          emitError(directError);
+        }
+        return;
+      }
       emitError(error);
     }
   });

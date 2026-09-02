@@ -20,6 +20,7 @@ const SET: ProviderProxyOperationAuthority = {
   },
   registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
   stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+  commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'gone' }),
   stopHeartbeats: () => {},
   initiateControlClose: async () => {},
   setIdentity: {

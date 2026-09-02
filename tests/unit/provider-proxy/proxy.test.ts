@@ -30,6 +30,8 @@ import {
 import type { ProxyBootstrapCapsule } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  proxyAcquisitionAbortParamsSchema,
+  proxyAcquisitionPublishParamsSchema,
   proxyOperationActivationOutcomeSchema,
   proxyOperationAttachParamsSchema,
   proxyOperationAttachResultSchema,
@@ -207,7 +209,12 @@ async function startProxy(
     releaseMembership?: (input: Readonly<{ key: ProviderOperationKey; reservation: Reservation }>) => Promise<void>;
     wallClockNow?: () => number;
   } = {},
-): Promise<{ control: ControlClient; operation: PreparedOperation; proxy: ReturnType<typeof createProxy> }> {
+): Promise<{
+  control: ControlClient;
+  operation: PreparedOperation;
+  proxy: ReturnType<typeof createProxy>;
+  capsule: ProxyBootstrapCapsule;
+}> {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-test-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const endpoint = join(directory, 'p.sock');
@@ -328,7 +335,7 @@ async function startProxy(
     proxyInstanceId: capsule.proxyInstanceId,
     buildSetId,
   };
-  return { control, operation, proxy };
+  return { control, operation, proxy, capsule };
 }
 
 describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)', () => {
@@ -1149,5 +1156,101 @@ describe('provider-proxy proxy: operation.prepare.v1 budget (BLOCKING B5)', () =
     expect(prepareBudgets[0]).toBeGreaterThan(0);
     expect(prepareBudgets[0]).toBeLessThanOrEqual(PROXY_PENDING_ACTIVATION_LEASE_MS);
     expect(prepareBudgets).not.toContain(PROXY_CONTROL_RPC_TIMEOUT_MS);
+  });
+});
+
+describe('provider-proxy proxy: proxy.acquisition-publish.v1 / proxy.acquisition-abort.v1', () => {
+  /** A `guardian`/`reaper` binding this proxy's own capsule accepts — every field the proxy actually checks
+   *  matches the capsule, and the rest of each identity's shape is filled in arbitrarily. */
+  function bindingFor(capsule: ProxyBootstrapCapsule): { guardian: unknown; reaper: unknown } {
+    return {
+      guardian: {
+        guardianInstanceId: capsule.guardianInstanceId,
+        pid: 1,
+        incarnation: testIncarnation(1),
+        generation: capsule.generation,
+        flavor: capsule.flavor,
+        buildSetId: capsule.buildSetId,
+        hostFingerprint: capsule.hostFingerprint,
+        canonicalControlEndpoint: capsule.guardianControlEndpoint,
+      },
+      reaper: {
+        reaperInstanceId: capsule.reaperInstanceId,
+        pid: 2,
+        incarnation: testIncarnation(2),
+        guardianInstanceId: capsule.guardianInstanceId,
+        generation: capsule.generation,
+        flavor: capsule.flavor,
+        buildSetId: capsule.buildSetId,
+        hostFingerprint: capsule.hostFingerprint,
+        canonicalControlEndpoint: capsule.guardianControlEndpoint,
+        containmentKind: 'posix-group',
+      },
+    };
+  }
+
+  it('publishes on a matching certificate binding, idempotently, and abort reports which side it observed', async () => {
+    const { control, capsule } = await startProxy(fakeHost());
+    const { guardian, reaper } = bindingFor(capsule);
+
+    const beforePublish = await strictTestExchange(
+      control,
+      'proxy.acquisition-abort.v1',
+      proxyAcquisitionAbortParamsSchema.parse({}),
+      5_000,
+    );
+    expect(beforePublish).toEqual({ state: 'acquisition-aborted' });
+
+    const request = proxyAcquisitionPublishParamsSchema.parse({ certificate: 'cert-1', guardian, reaper });
+    const first = await strictTestExchange(control, 'proxy.acquisition-publish.v1', request, 5_000);
+    expect(first).toEqual({ state: 'acquisition-published' });
+
+    // Idempotent: a retry with the same (or a different, still-valid) certificate still succeeds.
+    const second = await strictTestExchange(
+      control,
+      'proxy.acquisition-publish.v1',
+      proxyAcquisitionPublishParamsSchema.parse({ certificate: 'cert-2', guardian, reaper }),
+      5_000,
+    );
+    expect(second).toEqual({ state: 'acquisition-published' });
+
+    const afterPublish = await strictTestExchange(
+      control,
+      'proxy.acquisition-abort.v1',
+      proxyAcquisitionAbortParamsSchema.parse({}),
+      5_000,
+    );
+    expect(afterPublish).toEqual({ state: 'already-published' });
+  });
+
+  it('refuses a certificate binding naming a different guardian or reaper', async () => {
+    const { control, capsule } = await startProxy(fakeHost());
+    const { guardian, reaper } = bindingFor(capsule);
+
+    await expect(
+      strictTestExchange(
+        control,
+        'proxy.acquisition-publish.v1',
+        proxyAcquisitionPublishParamsSchema.parse({
+          certificate: 'cert-1',
+          guardian: { ...(guardian as Record<string, unknown>), buildSetId: randomUUID() },
+          reaper,
+        }),
+        5_000,
+      ),
+    ).rejects.toThrow(/different guardian\/reaper set/u);
+
+    await expect(
+      strictTestExchange(
+        control,
+        'proxy.acquisition-publish.v1',
+        proxyAcquisitionPublishParamsSchema.parse({
+          certificate: 'cert-1',
+          guardian,
+          reaper: { ...(reaper as Record<string, unknown>), reaperInstanceId: randomUUID() },
+        }),
+        5_000,
+      ),
+    ).rejects.toThrow(/different guardian\/reaper set/u);
   });
 });

@@ -28,7 +28,22 @@ export type ProviderProxyAcquisitionFailure = Readonly<{
 
 export type ProviderProxyAcquisitionResult =
   | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
-  | ProviderProxyAcquisitionFailure;
+  | ProviderProxyAcquisitionFailure
+  | Readonly<{ kind: 'acquisition-publication-unknown'; reason: string }>;
+
+/**
+ * Thrown only when an acquisition publication stage's response was lost after the request may have reached
+ * its role. The catch that would otherwise unwind capsules and kill the guardian must not run for this error:
+ * an idempotent publish that already latched would be converted into an uncredentialed orphan by deleting the
+ * capsule that names it, while the role itself stays alive and possibly published.
+ */
+export class ProviderProxyAcquisitionPublicationUnknownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderProxyAcquisitionPublicationUnknownError';
+    Object.setPrototypeOf(this, ProviderProxyAcquisitionPublicationUnknownError.prototype);
+  }
+}
 
 /**
  * One acquisition attempt's steps, in order. Each returns the undo for what it created, so the record is
@@ -134,11 +149,24 @@ export async function acquireProviderProxySet(
     strandedArtifacts: await unwind(undos, options.deadlineSignal, options.onCleanupFailure),
   });
 
-  const runCut = async <T>(cut: string, step: () => Promise<T>): Promise<T | ProviderProxyAcquisitionFailure> => {
+  const runCut = async <T>(
+    cut: string,
+    step: () => Promise<T>,
+  ): Promise<
+    | T
+    | ProviderProxyAcquisitionFailure
+    | Extract<ProviderProxyAcquisitionResult, { kind: 'acquisition-publication-unknown' }>
+  > => {
     if (options.deadlineSignal.aborted) return fail(cut, 'the acquisition deadline elapsed');
     try {
       return await step();
     } catch (error: unknown) {
+      if (error instanceof ProviderProxyAcquisitionPublicationUnknownError) {
+        // Not a failure this attempt may unwind: the capsule and every open client (and the possibly
+        // already-published guardian/reaper/proxy) stay exactly as `establishControl`'s own catch left them —
+        // see that class's doc for why deleting the capsule here would orphan a published role.
+        return { kind: 'acquisition-publication-unknown', reason: error.message };
+      }
       return fail(cut, failureReason(error));
     }
   };

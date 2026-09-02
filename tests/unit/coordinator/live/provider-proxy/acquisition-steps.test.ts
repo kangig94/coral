@@ -26,7 +26,15 @@ vi.mock('#src/coordinator/live/provider-proxy/set-authority.js', () => ({
   createProviderProxySetAuthority: vi.fn(),
 }));
 
-import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import {
+  createProviderProxyAcquisitionSteps,
+  exchangeAcquisitionStage,
+} from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import {
+  acquisitionPublicationUnknownResultSchema,
+  guardianAcquisitionPublishResultSchema,
+} from '#src/provider-proxy/protocol.js';
+import { ProviderProxyAcquisitionPublicationUnknownError } from '#src/coordinator/live/provider-proxy/index.js';
 import {
   isProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
@@ -66,6 +74,31 @@ import {
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
+/** Schema-valid but otherwise unchecked identities for `guardian.acquisition-publish.v1`'s faked reply — the
+ *  fixture proxy below does not verify the certificate binding, so these need only satisfy the strict schema. */
+const ACQUISITION_PUBLISH_GUARDIAN_IDENTITY = {
+  guardianInstanceId: '99999999-9999-4999-8999-999999999991',
+  pid: 9_001,
+  incarnation: testIncarnation(9_001),
+  generation: 'gen2' as const,
+  flavor: 'prod' as const,
+  buildSetId: '99999999-9999-4999-8999-999999999999',
+  hostFingerprint: 'a'.repeat(64),
+  canonicalControlEndpoint: '/tmp/coral-acquisition-test-guardian.sock',
+};
+const ACQUISITION_PUBLISH_REAPER_IDENTITY = {
+  reaperInstanceId: '99999999-9999-4999-8999-999999999992',
+  pid: 9_002,
+  incarnation: testIncarnation(9_002),
+  guardianInstanceId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.guardianInstanceId,
+  generation: 'gen2' as const,
+  flavor: 'prod' as const,
+  buildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
+  hostFingerprint: 'a'.repeat(64),
+  canonicalControlEndpoint: '/tmp/coral-acquisition-test-reaper.sock',
+  containmentKind: 'detached-process-group',
+};
+
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
 const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
 const containmentProofDb = newRawDatabase(':memory:');
@@ -74,11 +107,32 @@ afterAll(() => containmentProofDb.close());
 
 function passiveClient(): ControlClient {
   return {
-    exchange: async () =>
-      controlExchangeForTest({
+    exchange: async (method) => {
+      if (method === 'guardian.acquisition-publish.v1') {
+        return controlExchangeForTest({
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: {
+              state: 'acquisition-published',
+              certificate: 'test-acquisition-certificate',
+              guardian: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY,
+              reaper: ACQUISITION_PUBLISH_REAPER_IDENTITY,
+            },
+          },
+        });
+      }
+      if (method === 'proxy.acquisition-publish.v1') {
+        return controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'acquisition-published' } },
+        });
+      }
+      return controlExchangeForTest({
         kind: 'response',
         response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
-      }),
+      });
+    },
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
     close: () => undefined,
@@ -124,6 +178,15 @@ async function proxyLeaseSession(time: VirtualTime) {
               holder: { instanceId: 'coordinator', pid: 1, incarnation: testIncarnation(1) },
               fields: {},
             }),
+          },
+        ],
+        [
+          'proxy.acquisition-publish.v1',
+          {
+            // The real `proxy.acquisition-publish.v1` verifies the certificate binding structurally; this
+            // fixture proxy is not under test for that check, so it accepts unconditionally.
+            authority: 'active' as const,
+            handle: () => ({ state: 'acquisition-published' }),
           },
         ],
       ]),
@@ -179,6 +242,71 @@ async function advanceEndpointClock(
   }
 }
 
+describe('exchangeAcquisitionStage', () => {
+  function clientAnswering(value: unknown): ControlClient {
+    return {
+      exchange: async () => controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } }),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => undefined,
+    };
+  }
+
+  it('classifies an explicit acquisition-publication-unknown reply as unknown, never not-attempted, never ok', async () => {
+    // The guardian's own reply schema for this stage is a discriminated union that includes this exact
+    // shape — proving the check fires before `resultSchema.safeParse` would otherwise read it as `'ok'`.
+    const client = clientAnswering({
+      state: 'acquisition-publication-unknown',
+      reason: 'reaper.acquisition-publish.v1 could not be confirmed',
+    });
+
+    const outcome = await exchangeAcquisitionStage(
+      client,
+      'guardian.acquisition-publish.v1',
+      {},
+      guardianAcquisitionPublishResultSchema,
+    );
+
+    expect(outcome).toEqual({
+      kind: 'unknown',
+      reason: 'reaper.acquisition-publish.v1 could not be confirmed',
+    });
+  });
+
+  it(
+    'still classifies a confirmed published reply as ok, and an undecodable reply as unknown via the ' +
+      'untouched safeParse fallback',
+    async () => {
+      const published = {
+        state: 'acquisition-published',
+        certificate: 'cert-1',
+        guardian: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY,
+        reaper: ACQUISITION_PUBLISH_REAPER_IDENTITY,
+      };
+      const publishedOutcome = await exchangeAcquisitionStage(
+        clientAnswering(published),
+        'guardian.acquisition-publish.v1',
+        {},
+        guardianAcquisitionPublishResultSchema,
+      );
+      expect(publishedOutcome).toEqual({ kind: 'ok', value: published });
+
+      const undecodableOutcome = await exchangeAcquisitionStage(
+        clientAnswering({ state: 'something-else' }),
+        'guardian.acquisition-publish.v1',
+        {},
+        guardianAcquisitionPublishResultSchema,
+      );
+      expect(undecodableOutcome.kind).toBe('unknown');
+    },
+  );
+
+  it('parses the same acquisition-publication-unknown shape via its own standalone schema', () => {
+    const value = { state: 'acquisition-publication-unknown', reason: 'x' };
+    expect(acquisitionPublicationUnknownResultSchema.safeParse(value).success).toBe(true);
+  });
+});
+
 describe('createProviderProxyAcquisitionSteps', () => {
   it('keeps proxy control live while guardian and reaper each consume 8500ms', async () => {
     const time = new VirtualTime();
@@ -233,6 +361,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
         options.heartbeats.reaper.stop();
       },
       stopAndReap: () => new Promise<never>(() => undefined),
+      commitContainment: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
       controlReattachment: {} as never,
       installRecoveryCredential: async () =>
@@ -340,6 +469,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
         options.heartbeats.reaper.stop();
       },
       stopAndReap: () => new Promise<never>(() => undefined),
+      commitContainment: () => new Promise<never>(() => undefined),
       initiateControlClose: async () => undefined,
       controlReattachment: {} as never,
       installRecoveryCredential: async () =>
@@ -419,5 +549,97 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await set.initiateControlClose();
     unsubscribe();
     expect(observation).toEqual({ reaperHeartbeats: 1, routeAvailable: false });
+  });
+
+  it('preserves the capsule and every open client when a publication stage response is lost, never unwinding as an ordinary failure', async () => {
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod'), time };
+    const guardianClosed = { value: false };
+    const guardian: ControlClient = {
+      exchange: async (method: string) => {
+        if (method === 'guardian.acquisition-publish.v1') {
+          // The response is lost after the request may have reached the guardian — the exact ambiguity
+          // `ProviderProxyAcquisitionPublicationUnknownError` exists to preserve everything through.
+          return controlExchangeForTest({
+            kind: 'no-response',
+            cause: 'connection-closed-after-write',
+            error: new ControlClientError('control_client_closed', 'closed after write', 'closed'),
+          });
+        }
+        return controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'active', nextHeartbeatChallenge: 'next' } },
+        });
+      },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {
+        guardianClosed.value = true;
+      },
+    };
+    const reaper = passiveClient();
+    const proxy = passiveClient();
+    mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
+      const role = plan.role;
+      const client = role === 'proxy' ? proxy : role === 'guardian' ? guardian : reaper;
+      opened.push(client);
+      const identity =
+        role === 'proxy'
+          ? { ...plan.expectedIdentity, pid: 201, incarnation: testIncarnation(21), processGroupId: 201 }
+          : role === 'reaper'
+            ? { ...plan.expectedIdentity, pid: 301, incarnation: testIncarnation(31) }
+            : plan.expectedIdentity;
+      return {
+        client,
+        opened: { controlEpoch: 1, heartbeatChallenge: `${role}-first`, [role]: identity },
+        nextHeartbeatChallenge: `${role}-next`,
+      } as never;
+    });
+    mockedCreateSetAuthority.mockImplementation((options) => ({
+      proxyInstanceId: options.proxyInstanceId,
+      autonomousDeadline: {
+        orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+        heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
+      },
+      stopHeartbeats: () => {
+        options.heartbeats.proxy.stop();
+        options.heartbeats.guardian.stop();
+        options.heartbeats.reaper.stop();
+      },
+      stopAndReap: () => new Promise<never>(() => undefined),
+      commitContainment: () => new Promise<never>(() => undefined),
+      initiateControlClose: async () => undefined,
+      controlReattachment: {} as never,
+      installRecoveryCredential: async () =>
+        ({
+          kind: 'installed',
+          receipt: { kind: 'installed-recovery-credential', grantId: randomUUID() },
+        }) as never,
+      registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
+    }));
+    const coordinatorIdentity: CoordinatorIdentity = {
+      instanceId: randomUUID(),
+      pid: 1,
+      incarnation: testIncarnation(1),
+      generation: 'gen2',
+      flavor: 'prod',
+      buildSetId: randomUUID(),
+    };
+    const steps = createProviderProxyAcquisitionSteps({
+      runtime,
+      pluginRoot: '/tmp/coral-acquisition-test',
+      baseDir: '/tmp/coral-acquisition-test',
+      coordinatorIdentity,
+      hostFingerprint: 'a'.repeat(64),
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+    });
+    await steps.createCapsules();
+    await steps.spawnGuardian();
+
+    await expect(steps.establishControl()).rejects.toBeInstanceOf(ProviderProxyAcquisitionPublicationUnknownError);
+    // Not unwound: the catch that would close every opened client and delete the capsule must not run for
+    // this specific error, since the guardian may already be published.
+    expect(guardianClosed.value).toBe(false);
   });
 });

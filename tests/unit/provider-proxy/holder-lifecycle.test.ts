@@ -109,6 +109,110 @@ describe('createControlHolderAuthority', () => {
   });
 });
 
+describe('ControlHolderAuthority: the *.holder-status.v1 disposition surface', () => {
+  it('reports no status before any holder has ever been admitted', () => {
+    const authority = createControlHolderAuthority();
+
+    expect(authority.status()).toBeNull();
+  });
+
+  it('install() seeds unobservable at transitionSequence 1 — a fresh admission has no evidence yet', () => {
+    const authority = createControlHolderAuthority({ wallClockNow: () => 1_000 });
+
+    authority.install(identity(1, holder('coordinator')));
+
+    expect(authority.status()).toEqual({ disposition: 'unobservable', transitionSequence: 1, changedAtMs: 1_000 });
+  });
+
+  it('recordObservation advances the sequence and changedAtMs only when the disposition actually changes', () => {
+    let now = 1_000;
+    const authority = createControlHolderAuthority({ wallClockNow: () => now });
+    authority.install(identity(1, holder('coordinator')));
+
+    now = 2_000;
+    authority.recordObservation('alive');
+    expect(authority.status()).toEqual({ disposition: 'alive', transitionSequence: 2, changedAtMs: 2_000 });
+
+    // A repeated identical observation is silent: no sequence bump, no changedAtMs move.
+    now = 3_000;
+    authority.recordObservation('alive');
+    expect(authority.status()).toEqual({ disposition: 'alive', transitionSequence: 2, changedAtMs: 2_000 });
+
+    now = 4_000;
+    authority.recordObservation('unobservable');
+    expect(authority.status()).toEqual({
+      disposition: 'unobservable',
+      transitionSequence: 3,
+      changedAtMs: 4_000,
+    });
+  });
+
+  it(
+    'recordObservation(departed) is the only disposition install() never seeds — reachable only from an ' +
+      'actual absence observation',
+    () => {
+      const authority = createControlHolderAuthority();
+      authority.install(identity(1, holder('coordinator')));
+
+      authority.recordObservation('departed');
+
+      expect(authority.status()?.disposition).toBe('departed');
+    },
+  );
+
+  it(
+    'a successor admission is itself a transition, even though it resets to the same unobservable ' +
+      'disposition a fresh admission always starts at',
+    () => {
+      const authority = createControlHolderAuthority();
+      authority.install(identity(1, holder('incumbent')));
+      authority.recordObservation('alive');
+      const beforeSequence = authority.status()?.transitionSequence;
+
+      authority.install(identity(2, holder('successor', 2)));
+
+      expect(authority.status()?.disposition).toBe('unobservable');
+      expect(authority.status()?.transitionSequence).toBe((beforeSequence ?? 0) + 1);
+    },
+  );
+
+  it('onTransition fires exactly once per recorded transition, and never on a deduplicated repeat', () => {
+    const transitions: string[] = [];
+    const authority = createControlHolderAuthority({
+      onTransition: (transition) => transitions.push(transition.disposition),
+    });
+
+    authority.install(identity(1, holder('coordinator')));
+    authority.recordObservation('alive');
+    authority.recordObservation('alive');
+    authority.recordObservation('alive');
+    authority.recordObservation('unobservable');
+
+    expect(transitions).toEqual(['unobservable', 'alive', 'unobservable']);
+  });
+
+  it(
+    'observeControlHolder itself drives status through the authority it was handed — alive, unobservable, ' +
+      'and departed each land on their own status word',
+    async () => {
+      const aliveAuthority = createControlHolderAuthority();
+      aliveAuthority.install(identity(1, holder('coordinator')));
+      await observeControlHolder(aliveAuthority, observerAnswering('alive'), testClock());
+      expect(aliveAuthority.status()?.disposition).toBe('alive');
+
+      const unknownAuthority = createControlHolderAuthority();
+      unknownAuthority.install(identity(1, holder('coordinator')));
+      await observeControlHolder(unknownAuthority, observerAnswering('unknown'), testClock());
+      expect(unknownAuthority.status()?.disposition).toBe('unobservable');
+
+      const absentAuthority = createControlHolderAuthority();
+      absentAuthority.install(identity(1, holder('coordinator')));
+      await observeControlHolder(absentAuthority, observerAnswering('absent'), testClock());
+      expect(absentAuthority.status()?.disposition).toBe('departed');
+    },
+  );
+});
+
 describe('observeControlHolder', () => {
   it('answers unobservable when nothing has ever been admitted, and asks nothing', async () => {
     const authority = createControlHolderAuthority();

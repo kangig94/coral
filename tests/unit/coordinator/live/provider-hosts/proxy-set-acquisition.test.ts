@@ -48,6 +48,7 @@ function fakeSet(): ProviderProxySetAuthority {
   return {
     proxyInstanceId: 'proxy-1',
     stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
+    commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'r' }),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},
   };

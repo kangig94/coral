@@ -51,10 +51,26 @@ afterAll(() => containmentProofDb.close());
 
 const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
+/** `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap` — derived from whatever `stopAndReap`
+ *  a fixture configures, so every layer built on top of this one stays observable through the surface
+ *  production code actually calls without a second, parallel mock at each layer. */
+function commitContainmentFrom(
+  stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'],
+): DurableProviderProxyOperationAuthority['commitContainment'] {
+  return async (signal) => {
+    const result = await stopAndReap(signal);
+    return 'disappearanceReceipt' in result
+      ? { kind: 'containment-absent', disappearanceReceipt: result.disappearanceReceipt }
+      : { kind: 'outcome-unknown', error: result.unconfirmed };
+  };
+}
+
 function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
+  const stopAndReap: ProviderProxySetAuthority['stopAndReap'] = async () => ({ disappearanceReceipt: 'r' });
   return {
     proxyInstanceId: /^[0-9a-f]{8}-/u.test(proxyInstanceId) ? proxyInstanceId : randomUUID(),
-    stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
+    stopAndReap,
+    commitContainment: commitContainmentFrom(stopAndReap),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},
   };
@@ -101,11 +117,13 @@ function fakeDurableProxySet(
   options: {
     prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
     stopAndReap?: DurableProviderProxyOperationAuthority['stopAndReap'];
+    commitContainment?: DurableProviderProxyOperationAuthority['commitContainment'];
     stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
     initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
   } = {},
 ): DurableProviderProxyOperationAuthority {
   const inherited = fakeInheritedProxySet(proxyInstanceId);
+  const stopAndReap = options.stopAndReap ?? inherited.stopAndReap;
   return {
     ...inherited,
     faulted: new Promise<never>(() => {}),
@@ -139,7 +157,8 @@ function fakeDurableProxySet(
       throw new Error('unused settleOperation');
     },
     buildOperationControl: () => ({ stop: async () => {} }),
-    stopAndReap: options.stopAndReap ?? inherited.stopAndReap,
+    stopAndReap,
+    commitContainment: options.commitContainment ?? commitContainmentFrom(stopAndReap),
     stopHeartbeats: options.stopHeartbeats ?? inherited.stopHeartbeats,
     initiateControlClose: options.initiateControlClose ?? inherited.initiateControlClose,
   };

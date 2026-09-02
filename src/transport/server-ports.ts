@@ -194,7 +194,9 @@ export type HealthSnapshot = {
         | 'ordinary-drain'
         | 'set-adoption-deadline'
         | 'operator-abandonment'
-        | 'store-repair';
+        | 'store-repair'
+        | 'containment-authorization'
+        | 'containment-outcome-unknown';
     }>;
   };
 };

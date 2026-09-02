@@ -373,26 +373,27 @@ export function assertNamedCoordinatorBuild(
   }
 }
 
-/** The caller names the roots it believes are recorded. This is a subset check, not an equality check: the
- *  enforcer's recorded set is a superset of the caller's claim by construction. The coordinator can only ever
- *  claim roots its own live registry still tracks (`LocalOperationRegistry.providerRootsFor`), and an
- *  operation's root drops out of that live registry the instant its terminal commits (`settled()`) — which can
- *  race a concurrent teardown reading the enforcer's own, still-recorded set. A claim that undershoots what the
- *  enforcer recorded is exactly what that race looks like, not a fault. What teardown must still surface is the
- *  other direction: a claim naming a root the enforcer never recorded means one side is reasoning about a
- *  different containment — the same check both the guardian and the reaper perform on their own half of the
- *  same stop-and-reap request. */
-export function assertRecordedSetAgreement(
+/**
+ * Bidirectional membership equality between the guardian's own post-drain cumulative enforcer roots and the
+ * reaper's immutable prepare snapshot. Unlike a coordinator's live claim — which may legitimately undershoot
+ * an enforcer's recorded set, because a settled operation can release its registry entry before its guardian
+ * membership finishes releasing — two enforcers that both closed and drained their own registration gates
+ * before snapshotting have no such race left to explain a mismatch: any difference means the two are holding
+ * different containments, and neither side's undershoot is legitimate here.
+ */
+export function assertExactRecordedSetAgreement(
   role: 'guardian' | 'reaper',
-  claimed: readonly { pid: number; incarnation: ProcessIncarnation }[],
-  recorded: readonly { pid: number; incarnation: ProcessIncarnation }[],
+  guardianRoots: readonly { pid: number; incarnation: ProcessIncarnation }[],
+  reaperRoots: readonly { pid: number; incarnation: ProcessIncarnation }[],
 ): void {
   const key = (root: { pid: number; incarnation: ProcessIncarnation }): string => `${root.pid}@${root.incarnation}`;
-  const recordedKeys = new Set(recorded.map(key));
-  if (claimed.some((root) => !recordedKeys.has(key(root)))) {
+  const guardianKeys = new Set(guardianRoots.map(key));
+  const reaperKeys = new Set(reaperRoots.map(key));
+  const exact = guardianKeys.size === reaperKeys.size && [...guardianKeys].every((k) => reaperKeys.has(k));
+  if (!exact) {
     throw new ProxyControlProtocolError(
       'identity_mismatch',
-      `Teardown named a different provider-root set than this ${role} recorded.`,
+      `The guardian and reaper recorded a different provider-root set (checked by ${role}).`,
     );
   }
 }
@@ -534,24 +535,41 @@ export const guardianProxyOperationReleaseParamsSchema = z
   })
   .strict();
 
-/** `guardian.stop-and-reap.v1`'s request. Sent by `set-authority.ts`'s `stopAndReap`. */
-export const guardianStopAndReapParamsSchema = z
+/** `guardian.containment-commit.v1`'s request. No `providerRoots`: the guardian's own enforcer supplies the
+ *  authoritative cumulative set to destroy, compared against the reaper's own immutable prepare snapshot
+ *  through `assertExactRecordedSetAgreement` — a coordinator's live claim is not consulted for this commit. */
+export const guardianContainmentCommitParamsSchema = z
   .object({
     guardian: guardianIdentitySchema,
     reaper: reaperIdentitySchema,
     proxy: proxyIdentitySchema,
+  })
+  .strict();
+
+/** `reaper.containment-prepare.v1`'s request: empty, since the guardian's own paired channel already
+ *  authenticates the caller and nothing further needs naming to close the reaper's registration gate. */
+export const reaperContainmentPrepareParamsSchema = z.object({}).strict();
+
+/** One reversible membership-barrier token, minted by `reaper.containment-prepare.v1` and consumed only by
+ *  `reaper.containment-abort.v1` — never forwarded any further, since a successful guardian commit latches
+ *  without a second round trip. */
+export const containmentPrepareTokenSchema = z.string().min(1).brand<'ContainmentPrepareToken'>();
+export type ContainmentPrepareToken = z.infer<typeof containmentPrepareTokenSchema>;
+
+export const reaperContainmentPrepareResultSchema = z
+  .object({
+    state: z.literal('containment-prepared'),
+    token: containmentPrepareTokenSchema,
     providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
   })
   .strict();
 
-/** `reaper.stop-and-reap.v1`'s request. The coordinator sends this beside the guardian request and requires
- *  both replies before it may release the set slot. */
-export const reaperStopAndReapParamsSchema = z
-  .object({
-    reaper: reaperIdentitySchema,
-    proxy: proxyIdentitySchema,
-    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
-  })
+/** `reaper.containment-abort.v1`'s request: the token a prior `reaper.containment-prepare.v1` minted, so a
+ *  stale or replayed abort cannot reopen a gate some other prepare currently owns. */
+export const reaperContainmentAbortParamsSchema = z.object({ token: containmentPrepareTokenSchema }).strict();
+
+export const reaperContainmentAbortResultSchema = z
+  .object({ state: z.literal('containment-registration-reopened') })
   .strict();
 
 /**
@@ -571,13 +589,104 @@ export const guardianProxyOperationReleaseResultSchema = z
   .object({ state: z.enum(['membership-released', 'membership-absent']) })
   .strict();
 
-/** `guardian.stop-and-reap.v1`'s result. */
-export const guardianStopAndReapResultSchema = z
+/** `guardian.containment-commit.v1`'s result. */
+export const guardianContainmentCommitResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
 
-export const reaperStopAndReapResultSchema = z
-  .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
+/**
+ * The idempotent three-role initial-acquisition publication transaction. `guardian.acquisition-publish.v1`
+ * prepares and publishes the guardian and reaper, returning a certificate the coordinator then presents to
+ * `proxy.acquisition-publish.v1`. The certificate is opaque; the proxy checks the accompanying `guardian`/
+ * `reaper` binding fields structurally, the same way every other identity claim in this protocol is checked,
+ * rather than decoding the certificate itself.
+ */
+export const acquisitionPublicationCertificateSchema = z.string().min(1).brand<'AcquisitionPublicationCertificate'>();
+export type AcquisitionPublicationCertificate = z.infer<typeof acquisitionPublicationCertificateSchema>;
+
+export const guardianAcquisitionPublishParamsSchema = z
+  .object({ guardian: guardianIdentitySchema, reaper: reaperIdentitySchema, proxy: proxyIdentitySchema })
+  .strict();
+
+const guardianAcquisitionPublishedResultSchema = z
+  .object({
+    state: z.literal('acquisition-published'),
+    certificate: acquisitionPublicationCertificateSchema,
+    guardian: guardianIdentitySchema,
+    reaper: reaperIdentitySchema,
+  })
+  .strict();
+
+/**
+ * The wire-visible escape hatch for an acquisition-publish stage whose request may have reached its role but
+ * whose outcome this reply cannot confirm. Standalone (not folded only into `guardianAcquisitionPublishResultSchema`'s
+ * union below) so a caller can recognise it without needing to know which role's own result shape it travels
+ * beside — the disposition is a value the role states explicitly, not one a caller infers from a parse
+ * failure against a schema it does not own.
+ */
+export const acquisitionPublicationUnknownResultSchema = z
+  .object({ state: z.literal('acquisition-publication-unknown'), reason: z.string().min(1).max(500) })
+  .strict();
+
+/** `guardian.acquisition-publish.v1`'s reply: either the guardian and reaper are confirmed published, or the
+ *  guardian is explicitly saying it could not confirm `reaper.acquisition-publish.v1`'s own outcome — the
+ *  reaper's handler publishes before it replies, so an ordinary refusal here would misread as proof that
+ *  nothing happened. One exported schema is the single home both the guardian and its coordinator caller
+ *  share for this contract. */
+export const guardianAcquisitionPublishResultSchema = z.discriminatedUnion('state', [
+  guardianAcquisitionPublishedResultSchema,
+  acquisitionPublicationUnknownResultSchema,
+]);
+
+export const guardianAcquisitionAbortParamsSchema = z
+  .object({ guardian: guardianIdentitySchema, reaper: reaperIdentitySchema, proxy: proxyIdentitySchema })
+  .strict();
+
+export const guardianAcquisitionAbortResultSchema = z
+  .object({ state: z.enum(['acquisition-aborted', 'already-published']) })
+  .strict();
+
+/** `reaper.acquisition-publish.v1`'s request: the guardian's own forward over the paired channel, carrying
+ *  nothing further to name — mirrors `reaperContainmentPrepareParamsSchema`'s own empty shape and reasoning. */
+export const reaperAcquisitionPublishParamsSchema = z.object({}).strict();
+export const reaperAcquisitionPublishResultSchema = z.object({ state: z.literal('acquisition-published') }).strict();
+
+export const proxyAcquisitionPublishParamsSchema = z
+  .object({
+    certificate: acquisitionPublicationCertificateSchema,
+    guardian: guardianIdentitySchema,
+    reaper: reaperIdentitySchema,
+  })
+  .strict();
+
+export const proxyAcquisitionPublishResultSchema = z.object({ state: z.literal('acquisition-published') }).strict();
+
+export const proxyAcquisitionAbortParamsSchema = z.object({}).strict();
+export const proxyAcquisitionAbortResultSchema = z
+  .object({ state: z.enum(['acquisition-aborted', 'already-published']) })
+  .strict();
+
+/**
+ * `guardian.holder-status.v1` and `reaper.holder-status.v1` share this exact result shape. The complete
+ * holder identity is the same three fields `ControlTenancyHolder` (`control-endpoint.ts`) compares — derived
+ * here through `.pick()` rather than imported directly, since `control-endpoint.ts` imports this module and a
+ * reverse import would close a cycle.
+ */
+export const holderStatusDispositionSchema = z.enum(['alive', 'unobservable', 'departed']);
+export const holderLifecyclePhaseSchema = z.enum(['acquisition-provisional', 'published']);
+export const controlTenancyHolderWireSchema = coordinatorIdentitySchema
+  .pick({ instanceId: true, pid: true, incarnation: true })
+  .strict();
+
+export const holderStatusResultSchema = z
+  .object({
+    disposition: holderStatusDispositionSchema,
+    phase: holderLifecyclePhaseSchema,
+    holder: controlTenancyHolderWireSchema,
+    controlEpoch: controlEpochSchema,
+    transitionSequence: nonNegativeSafeIntegerSchema,
+    changedAtMs: nonNegativeSafeIntegerSchema,
+  })
   .strict();
 
 /** The process-group containment a `reaper.open.v1` claims, and the one the reaper then holds for its whole

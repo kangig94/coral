@@ -175,15 +175,11 @@ export class LocalOperationRegistry {
   }
 
   /**
-   * Every distinct provider root this coordinator's own live operations hold against one proxy set —
-   * `guardian.stop-and-reap.v1`/`reaper.stop-and-reap.v1`'s own `providerRoots` argument
-   * (`provider-proxy/set-authority.ts`'s `stopAndReap`): both enforcers refuse a teardown that claims a root
-   * they never recorded (`assertRecordedSetAgreement`), so this is the coordinator's own half of that
-   * agreement. An empty (or partial) claim against an enforcer that has actually staged a root is not itself a
-   * disagreement — `settled()` drops an operation's root from here the moment its terminal commits, which can
-   * race a concurrent teardown reading the enforcer's own, still-recorded set, and `assertRecordedSetAgreement`
-   * accepts exactly that undershoot. Deduped by process identity, mirroring `ArmedEnforcer.recordedRoots()`: a
-   * shared host serving more than one activated operation is one teardown target, not one per operation.
+   * Every distinct provider root this coordinator's own live operations hold against one proxy set. Deduped
+   * by process identity: a shared host serving more than one activated operation is one target, not one per
+   * operation. `guardian.containment-commit.v1` carries no `providerRoots` argument of its own — the
+   * guardian's enforcer supplies the authoritative cumulative set from its own recorded state instead — so
+   * this coordinator-local view is not that agreement's input.
    */
   providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; incarnation: ProcessIncarnation }>[] {
     const seen = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
@@ -197,8 +193,9 @@ export class LocalOperationRegistry {
 }
 
 /**
- * What a set authority needs from the live registry for `stopAndReap`. `operationsFor` remains optional for
- * callers that also expose the diagnostic live view; handoff membership never reads it.
+ * The live-registry read surface threaded into the acquisition/inheritance/set-authority family.
+ * `operationsFor` remains optional for callers that also expose the diagnostic live view; handoff membership
+ * never reads it.
  */
 export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'providerRootsFor'> &
   Partial<Pick<LocalOperationRegistry, 'operationsFor'>>;

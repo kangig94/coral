@@ -38,6 +38,10 @@ import {
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
+  proxyAcquisitionAbortParamsSchema,
+  proxyAcquisitionAbortResultSchema,
+  proxyAcquisitionPublishParamsSchema,
+  proxyAcquisitionPublishResultSchema,
   proxyOperationActivateParamsSchema as activateParamsSchema,
   proxyOperationAttachParamsSchema as attachParamsSchema,
   proxyOperationAttachResultSchema as attachResultSchema,
@@ -455,6 +459,49 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               operations: redemption.grant.operations,
             }),
           };
+        },
+      },
+    ],
+    [
+      'proxy.acquisition-publish.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = proxyAcquisitionPublishParamsSchema.parse(params);
+          // The certificate itself is opaque; the binding it travels with is checked structurally, the same
+          // way every other identity claim on this protocol is — never by decoding the certificate.
+          if (
+            request.guardian.guardianInstanceId !== capsule.guardianInstanceId ||
+            request.guardian.buildSetId !== capsule.buildSetId ||
+            request.guardian.generation !== capsule.generation ||
+            request.guardian.flavor !== capsule.flavor ||
+            request.guardian.hostFingerprint !== capsule.hostFingerprint ||
+            request.reaper.reaperInstanceId !== capsule.reaperInstanceId ||
+            request.reaper.guardianInstanceId !== capsule.guardianInstanceId ||
+            request.reaper.buildSetId !== capsule.buildSetId
+          ) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'The acquisition certificate names a different guardian/reaper set.',
+            );
+          }
+          holderAuthority.publish();
+          return proxyAcquisitionPublishResultSchema.parse({ state: 'acquisition-published' });
+        },
+      },
+    ],
+    [
+      'proxy.acquisition-abort.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          proxyAcquisitionAbortParamsSchema.parse(params);
+          // Publication is one-way and idempotent, and this proxy keeps no state that a not-yet-published
+          // acquisition needs undone — the catch that sends this is a belt-and-suspenders assurance sent
+          // before publish is ever attempted, not a rollback of anything already recorded.
+          return proxyAcquisitionAbortResultSchema.parse({
+            state: holderAuthority.phase() === 'published' ? 'already-published' : 'acquisition-aborted',
+          });
         },
       },
     ],

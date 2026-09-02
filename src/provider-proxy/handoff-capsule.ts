@@ -144,6 +144,26 @@ export const proxyHandoffRedeemParamsSchema = z
   })
   .strict();
 
+/**
+ * `guardian.holder-status.v1`/`reaper.holder-status.v1`'s shared request: the exact credential a prior
+ * `*.handoff-install.v1` installed on this role, presented for a non-consuming read check
+ * (`GrantRegistry.verifyInstalledGrant`) rather than `redeem`. A CLI that has read the mode-0600 handoff
+ * capsule already holds every one of these fields under their own names.
+ */
+export const holderStatusParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secret: grantSecretSchema,
+    generation: generationSchema,
+    flavor: flavorSchema,
+    buildSetId: canonicalUuidSchema,
+    hostFingerprint: hostFingerprintSchema,
+    guardianInstanceId: canonicalUuidSchema,
+    reaperInstanceId: canonicalUuidSchema,
+    proxyInstanceId: canonicalUuidSchema,
+  })
+  .strict();
+
 /** A strict full-tuple boundary prevents succession membership from degrading to operation-id authority. */
 export const successionOperationRegisterParamsSchema = z.object({ operation: operationIdentitySchema }).strict();
 
@@ -613,6 +633,10 @@ export interface GrantRegistry {
     binding: GrantBinding;
   }): GrantRedemption;
   redemption(): GrantRedemption | null;
+  /** A non-consuming read check for `*.holder-status.v1`: whether an installed grant exists matching this
+   *  exact `grantId`, secret, and binding. Never spends, mutates, or redeems — `redeem` is the only method
+   *  that does that. */
+  verifyInstalledGrant(input: { grantId: string; secret: string; binding: GrantBinding }): boolean;
 }
 
 export function createGrantRegistry(
@@ -723,6 +747,14 @@ export function createGrantRegistry(
 
     redemption(): GrantRedemption | null {
       return redemption;
+    },
+
+    verifyInstalledGrant({ grantId, secret, binding }): boolean {
+      if (installed === null) return false;
+      if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
+        return false;
+      }
+      return sameBinding(installed, { ...installed, ...binding });
     },
   };
 }

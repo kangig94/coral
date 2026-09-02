@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { errorMessage } from '../../../infra/error-format.js';
 import {
   guardianReaperHandoffInstallParamsSchema,
   handoffSecretDigest,
@@ -22,16 +23,14 @@ import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   canonicalUuidSchema,
-  guardianStopAndReapParamsSchema,
-  guardianStopAndReapResultSchema,
+  guardianContainmentCommitParamsSchema,
+  guardianContainmentCommitResultSchema,
   providerHostEvictParamsSchema,
   providerHostEvictResultSchema,
   providerHostInspectParamsSchema,
   providerHostInspectResultSchema,
   providerHostListParamsSchema,
   providerHostListResultSchema,
-  reaperStopAndReapParamsSchema,
-  reaperStopAndReapResultSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -49,7 +48,11 @@ import {
   type RedeemedProviderProxyControl,
 } from './control-redemption.js';
 import type { ProviderProxyRoleHeartbeats } from './heartbeat.js';
-import type { ProviderProxyAutonomousDeadline, ProviderProxySetAuthority } from './authority.js';
+import type {
+  ContainmentCommitOutcome,
+  ProviderProxyAutonomousDeadline,
+  ProviderProxySetAuthority,
+} from './authority.js';
 
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
@@ -145,11 +148,12 @@ function requireControlResult(method: string, exchange: ControlExchange): unknow
 
 /** Lets `signal` cut a pending exchange short without requiring `ControlClient.exchange` itself to understand
  *  `AbortSignal` — it only ever takes a millisecond budget. If the signal wins the race the pending exchange is
- *  left to settle on its own; `stopAndReap`'s caller treats a lost race and a refused exchange identically
- *  (both become `{ unconfirmed }`), so there is nothing further to do with it either way. */
+ *  left to settle on its own; a lost race can never distinguish a request that never reached the guardian from
+ *  one whose response is merely delayed, so `commitContainment` treats it the same as a lost response —
+ *  `outcome-unknown`, never a proof that no latch occurred. */
 function raceAgainstAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(new Error('the caller deadline elapsed before stop-and-reap confirmed absence'));
+    const onAbort = (): void => reject(new Error('the caller deadline elapsed before the containment commit resolved'));
     if (signal.aborted) {
       onAbort();
       return;
@@ -178,7 +182,8 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Runtime;
   onProviderEvent?(): ProviderEventHandler;
-  /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
+  /** `guardian.containment-commit.v1` carries no `providerRoots` argument, so `commitContainment` does not
+   *  read this; `promote()` still forwards it into the reconstructed authority it builds on redemption. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
 
@@ -444,6 +449,61 @@ export function createProviderProxySetAuthority(
     },
   };
 
+  const commitContainment = async (signal: AbortSignal): Promise<ContainmentCommitOutcome> => {
+    // Parsed against the exact schema `guardian.ts` parses this request with on receipt, so a malformed
+    // payload fails at this sender rather than at the guardian's own `.strict()` refusal. The guardian's own
+    // enforcer supplies the authoritative cumulative root set to destroy; this coordinator nominates none.
+    const guardianContainmentCommitPayload = guardianContainmentCommitParamsSchema.parse({
+      guardian: guardianIdentity,
+      reaper: reaperIdentity,
+      proxy: proxyIdentityFields,
+    });
+    let exchange: ControlExchange;
+    try {
+      exchange = await raceAgainstAbort(
+        guardianClient.exchange(
+          'guardian.containment-commit.v1',
+          guardianContainmentCommitPayload,
+          // A legitimate commit can spend the TERM and KILL graces plus disappearance confirmation; the
+          // caller signal remains the actual bound.
+          PROXY_TEARDOWN_RESERVE_MS,
+        ),
+        signal,
+      );
+    } catch (error: unknown) {
+      // The caller's own deadline elapsed before the exchange settled. That proves nothing about whether the
+      // request reached the guardian — it cannot be un-sent by racing against it.
+      return { kind: 'outcome-unknown', error: error instanceof Error ? error.message : String(error) };
+    }
+    if (exchange.kind === 'not-sent') {
+      // Proven never to have left this process: no latch could have occurred.
+      return { kind: 'not-sent', error: errorMessage(exchange.error) };
+    }
+    if (exchange.kind === 'response') {
+      if (exchange.response.kind === 'refusal') {
+        // A structured reply from the guardian, decisive by construction: its own handler reopens both
+        // membership gates and re-throws before ever minting `ExplicitTeardownAuthorization`, so an answer
+        // reaching this sender at all proves the commit did not latch.
+        return { kind: 'not-sent', error: exchange.response.error.message };
+      }
+      // A decoded `result` response proves the guardian answered, not what it did: an undecodable shape is
+      // not a disposition about the peer (validation.md), and this process cannot mint `not-sent` from a
+      // reply that reached it — the commit may already have latched. That makes this `outcome-unknown`, the
+      // same as any other reply this sender cannot use.
+      const parsed = guardianContainmentCommitResultSchema.safeParse(exchange.response.value);
+      if (!parsed.success) {
+        return {
+          kind: 'outcome-unknown',
+          error: `guardian.containment-commit.v1 replied with an undecodable result: ${parsed.error.message}`,
+        };
+      }
+      return { kind: 'containment-absent', disappearanceReceipt: parsed.data.disappearanceReceipt };
+    }
+    // 'no-response' | 'delivery-unconfirmed' | 'channel-fault': the request may have reached the guardian and
+    // its answer is what is missing, not the request.
+    return { kind: 'outcome-unknown', error: errorMessage(exchange.error) };
+  };
+
   return {
     proxyInstanceId,
     get autonomousDeadline() {
@@ -479,58 +539,14 @@ export function createProviderProxySetAuthority(
     }),
     installRecoveryCredential,
     registerSuccessionOperation,
+    commitContainment,
+    // Collapses `not-sent` and `outcome-unknown` into the same `unconfirmed` a caller that does not
+    // distinguish "proven not to have started" from "may have started" already treats identically.
     stopAndReap: async (signal) => {
-      try {
-        // The coordinator's own half of the set-agreement both enforcers check
-        // (`assertRecordedSetAgreement`): every provider root this coordinator's own live operations still
-        // hold against this proxy. Claiming fewer
-        // than the enforcer recorded is legitimate and expected — an operation that settled released its
-        // registry entry and may still be releasing its guardian membership — so the check is a subset test.
-        // What it refuses is a root this coordinator names that the enforcer never staged, which means the
-        // two are reasoning about different containments.
-        const providerRoots = operationRegistry.providerRootsFor(proxyInstanceId);
-        // Parsed against the exact schema `guardian.ts` parses this request with on receipt, so a malformed
-        // payload fails at this sender rather than at the guardian's own `.strict()` refusal. It does not
-        // check the set itself — an undershooting claim is legitimate, and only the enforcer holds what it
-        // would have to be checked against.
-        const guardianStopAndReapPayload = guardianStopAndReapParamsSchema.parse({
-          guardian: guardianIdentity,
-          reaper: reaperIdentity,
-          proxy: proxyIdentityFields,
-          providerRoots,
-        });
-        const reaperStopAndReapPayload = reaperStopAndReapParamsSchema.parse({
-          reaper: reaperIdentity,
-          proxy: proxyIdentityFields,
-          providerRoots,
-        });
-        const [rawGuardian, rawReaper] = await Promise.all([
-          raceAgainstAbort(
-            guardianClient.exchange(
-              'guardian.stop-and-reap.v1',
-              guardianStopAndReapPayload,
-              // Both role methods are declared `budgetMs: 'caller-deadline'`: a legitimate hard reap can
-              // spend the TERM and KILL graces plus disappearance confirmation. The caller signal remains
-              // the actual bound on the joined proof.
-              PROXY_TEARDOWN_RESERVE_MS,
-            ),
-            signal,
-          ),
-          raceAgainstAbort(
-            reaperClient.exchange('reaper.stop-and-reap.v1', reaperStopAndReapPayload, PROXY_TEARDOWN_RESERVE_MS),
-            signal,
-          ),
-        ]);
-        const guardianReceipt = guardianStopAndReapResultSchema.parse(
-          requireControlResult('guardian.stop-and-reap.v1', rawGuardian),
-        ).disappearanceReceipt;
-        const reaperReceipt = reaperStopAndReapResultSchema.parse(
-          requireControlResult('reaper.stop-and-reap.v1', rawReaper),
-        ).disappearanceReceipt;
-        return { disappearanceReceipt: `guardian:${guardianReceipt};reaper:${reaperReceipt}` };
-      } catch (error: unknown) {
-        return { unconfirmed: error instanceof Error ? error.message : 'stop-and-reap did not confirm absence' };
-      }
+      const outcome = await commitContainment(signal);
+      return outcome.kind === 'containment-absent'
+        ? { disappearanceReceipt: outcome.disappearanceReceipt }
+        : { unconfirmed: outcome.error };
     },
     stopHeartbeats: () => {
       heartbeats.proxy.stop();

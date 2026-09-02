@@ -1,11 +1,18 @@
+import { errorMessage } from '../../../infra/error-format.js';
 import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import {
   currentHandoffCapsulePath,
+  holderStatusParamsSchema,
   readHandoffCapsuleFile,
   type HandoffCapsuleV3,
 } from '../../../provider-proxy/handoff-capsule.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../../provider-proxy/protocol.js';
-import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import {
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_STATUS_RPC_TIMEOUT_MS,
+  holderStatusResultSchema,
+  type CoordinatorIdentity,
+} from '../../../provider-proxy/protocol.js';
+import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
@@ -34,6 +41,7 @@ import {
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
   type ProviderProxySetIdentity,
+  type ProviderProxySetProtection,
 } from './identity.js';
 import type { ProviderProxyOperationSnapshot } from '../operation-registry.js';
 import {
@@ -70,6 +78,61 @@ import type { ProviderProxySetRecordedContainmentReaper } from './recorded-conta
 
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
 
+/**
+ * AC10's discovery-time classification: probes the mandatory `guardian.holder-status.v1` this build's own
+ * guardian always answers, using the just-installed grant this redemption's own capsule already carries. A
+ * v0.10.9 guardian has never heard of this method, so it answers the wire's own `method_not_found` refusal or
+ * closes the connection bare — both are `legacy-unprotected`, a running role whose autonomous enforcer and
+ * proxy deadline code this coordinator cannot retrofit and which does not satisfy the 60-second overload
+ * floor regardless of wire compatibility. Anything else this probe cannot resolve is left an error: silently
+ * calling an unclassifiable answer `protected` would let a genuinely unprotected set escape marked safe.
+ */
+async function probeCurrentGenerationProtection(
+  guardianClient: ControlClient,
+  capsule: HandoffCapsuleV3,
+): Promise<ProviderProxySetProtection> {
+  const params = holderStatusParamsSchema.parse({
+    grantId: capsule.grantId,
+    secret: capsule.secret,
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+  const exchange = await guardianClient.exchange('guardian.holder-status.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+  if (exchange.kind === 'response') {
+    if (exchange.response.kind === 'result') {
+      // A read-only observation, not a commit: an undecodable "result" carries no latch ambiguity to
+      // preserve, so it takes this probe's own already-declared exit for anything it cannot classify —
+      // thrown here by name rather than as a bare `ZodError`, matching its sibling throws below.
+      const parsed = holderStatusResultSchema.safeParse(exchange.response.value);
+      if (!parsed.success) {
+        throw new Error(`guardian.holder-status.v1 replied with an undecodable result: ${parsed.error.message}`);
+      }
+      return 'protected';
+    }
+    // `ControlClientRemoteFailure` is a union; only its `json-rpc-error` member carries `protocolCode` at
+    // all, so `invalid-frame` — an unattributable reply, not a structured refusal — is not this probe's
+    // named v0.10.9 signature and falls through to the same throw as any other unclassifiable answer.
+    const failure = exchange.response.failure;
+    if (failure.kind === 'json-rpc-error' && failure.protocolCode === 'method_not_found') {
+      return 'legacy-unprotected';
+    }
+    throw new Error(
+      `guardian.holder-status.v1 was refused for a reason other than method_not_found: ${exchange.response.error.message}`,
+    );
+  }
+  if (exchange.kind === 'no-response' && exchange.cause === 'connection-closed-after-write') {
+    return 'legacy-unprotected';
+  }
+  throw new Error(
+    `guardian.holder-status.v1 could not be classified: ${exchange.kind} (${errorMessage(exchange.error)})`,
+  );
+}
+
 export type ProviderProxySetLocator = Readonly<{
   operation: ProviderOperationIdentity;
   locator: ProviderOperationRecord['locator'];
@@ -87,18 +150,18 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   onProviderEvent?(): ProviderEventHandler;
   collectContainmentProof: ProviderProxySetContainmentProver['collectContainmentProof'];
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
-  registerInheritedSet?(set: ProviderProxyOperationAuthority): void;
+  registerInheritedSet?(set: ProviderProxyOperationAuthority, protection: ProviderProxySetProtection): void;
 }>;
 
 export type ProviderProxySetInheritanceOutcome =
-  | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority }>
+  | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
 export type ProviderProxySetRedemptionOutcome =
-  | Readonly<{ kind: 'redeemed'; set: DurableProviderProxyOperationAuthority }>
+  | Readonly<{ kind: 'redeemed'; set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>
   | Readonly<{
       kind: 'protocol-incompatible';
       role: Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-heartbeat-indeterminate' }>['role'];
@@ -305,7 +368,7 @@ async function buildInheritedAuthority(
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
-): Promise<DurableProviderProxyOperationAuthority> {
+): Promise<Readonly<{ set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>> {
   const bundle = providerProxyControlRedemptionBundle(redemption);
   try {
     if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, bundle.setIdentity)) {
@@ -349,8 +412,9 @@ async function buildInheritedAuthority(
       faults: bundle.faults,
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
-    deps.registerInheritedSet?.(set);
-    return set;
+    const protection = await probeCurrentGenerationProtection(bundle.clients.guardian, capsule);
+    deps.registerInheritedSet?.(set, protection);
+    return { set, protection };
   } catch (error: unknown) {
     closeRedeemedProviderProxyControl(redemption);
     throw error;
@@ -363,7 +427,7 @@ async function redeemCapsule(
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
-): Promise<DurableProviderProxyOperationAuthority> {
+): Promise<Readonly<{ set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>> {
   const redemption = await redeemProviderProxyControl(
     capsule,
     providerProxySetIdentityFromCapsule(capsule),
@@ -414,14 +478,14 @@ async function redeem(
   if (!capsuleMatchesLocator(inheritableCapsule, reference, deps.coordinatorIdentity)) {
     return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
   }
-  const set = await redeemCapsule(
+  const { set, protection } = await redeemCapsule(
     capsulePath,
     inheritableCapsule,
     providerProxySetIdentityFromRecord(reference),
     deps,
     signal,
   );
-  return { kind: 'inherited', set };
+  return { kind: 'inherited', set, protection };
 }
 
 export async function attemptProviderProxySetInheritance(
@@ -494,8 +558,8 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
-   *  shutdown. */
-  registerInheritedSet(set: ProviderProxyOperationAuthority): void;
+   *  shutdown. `protection` carries `probeCurrentGenerationProtection`'s own verdict through unchanged. */
+  registerInheritedSet(set: ProviderProxyOperationAuthority, protection: ProviderProxySetProtection): void;
 }>;
 
 /**
@@ -509,7 +573,7 @@ export function createProviderProxySetInheritance(
   const inFlightByIdentity = new Map<string, Promise<ProviderProxySetInheritanceOutcome>>();
 
   const deps = (
-    registerInheritedSet?: (set: ProviderProxyOperationAuthority) => void,
+    registerInheritedSet?: (set: ProviderProxyOperationAuthority, protection: ProviderProxySetProtection) => void,
   ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
@@ -588,7 +652,7 @@ export function createProviderProxySetInheritance(
         };
       }
       return deadline.kind === 'settled'
-        ? { kind: 'redeemed', set: deadline.value }
+        ? { kind: 'redeemed', set: deadline.value.set, protection: deadline.value.protection }
         : { kind: 'temporarily-unavailable', incident: deadline.incident };
     },
   };

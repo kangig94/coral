@@ -99,6 +99,7 @@ function authority(): DurableProviderProxyOperationAuthority {
     },
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+    commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
     prepareOperation: vi.fn(),

@@ -487,8 +487,8 @@ describe('buildEnforcementOutcomeHandlers', () => {
 
     handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'receipt' });
 
-    // Deferred, not run inline: an in-flight `*.stop-and-reap.v1` caller's own response has to reach the
-    // wire before this closes anything out from under it.
+    // Deferred, not run inline: an in-flight `guardian.containment-commit.v1` caller's own response has to
+    // reach the wire before this closes anything out from under it.
     expect(markExited).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(exitProcess).not.toHaveBeenCalled();

@@ -50,6 +50,7 @@ import {
   type ProviderProxySetLifecycleProgressViolation,
   type ProviderProxySetOperatorExitCapability,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
+import type { OperatorTeardownAuthorization } from '#src/provider-proxy/holder-lifecycle.js';
 import {
   createProviderProxySetRecordedContainmentReaper,
   type ProviderProxySetRecordedContainmentReaper,
@@ -442,6 +443,7 @@ function fakeAuthority(
     fault?: ReturnType<typeof deferred<ProviderProxyAuthorityFault>>;
     faults?: ProviderProxyAuthorityFaultLatch;
     stopAndReap?: DurableProviderProxyOperationAuthority['stopAndReap'];
+    commitContainment?: DurableProviderProxyOperationAuthority['commitContainment'];
     stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
     initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
     heartbeatHoldBound?: ProviderProxyHeartbeatHoldBound;
@@ -453,6 +455,19 @@ function fakeAuthority(
   const record = options.record ?? providerOperationRecord('executing');
   const fault = options.fault;
   const faults = options.faults ?? (fault === undefined ? createProviderProxyAuthorityFaultLatch() : undefined);
+  const stopAndReap = options.stopAndReap ?? (async () => ({ unconfirmed: 'not proved' }) as const);
+  // Every existing fixture configures `stopAndReap`; `#runContainmentAttempt` now calls `commitContainment`
+  // instead. Deriving the default from `stopAndReap` keeps every fixture that supplies only the coarse
+  // contract observably called, translated into the three-way shape production code now consumes, rather than
+  // requiring every call site across this file to be rewritten to a second, parallel mock.
+  const commitContainment =
+    options.commitContainment ??
+    (async (signal: AbortSignal) => {
+      const result = await stopAndReap(signal);
+      return 'disappearanceReceipt' in result
+        ? ({ kind: 'containment-absent', disappearanceReceipt: result.disappearanceReceipt } as const)
+        : ({ kind: 'outcome-unknown', error: result.unconfirmed } as const);
+    });
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     autonomousDeadline: {
@@ -479,7 +494,8 @@ function fakeAuthority(
         throw new Error('unused');
       }),
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
-    stopAndReap: options.stopAndReap ?? (async () => ({ unconfirmed: 'not proved' })),
+    stopAndReap,
+    commitContainment,
     stopHeartbeats: options.stopHeartbeats ?? (() => undefined),
     initiateControlClose: options.initiateControlClose ?? (async () => undefined),
     prepareOperation: async () => {
@@ -3111,7 +3127,7 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
-      redeemCapsule: async () => ({ kind: 'redeemed', set: authority }),
+      redeemCapsule: async () => ({ kind: 'redeemed', set: authority, protection: 'protected' }),
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
@@ -3157,7 +3173,7 @@ describe('ProviderProxySetLifecycle', () => {
       retainsEveryCapsule,
     );
     claims.applyMutation({ kind: 'upserted', record });
-    redemption.resolve({ kind: 'redeemed', set: authority });
+    redemption.resolve({ kind: 'redeemed', set: authority, protection: 'protected' });
     await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
 
     expect(stopAndReap).not.toHaveBeenCalled();
@@ -3310,7 +3326,7 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
-      redeemCapsule: async () => ({ kind: 'redeemed', set: corrupted }),
+      redeemCapsule: async () => ({ kind: 'redeemed', set: corrupted, protection: 'protected' }),
       onFatal: fatals,
     });
     lifecycle.initializeClaimSlots();
@@ -3365,7 +3381,7 @@ describe('ProviderProxySetLifecycle', () => {
       setIdentity: { ...authority.setIdentity, guardianPid: authority.setIdentity.guardianPid + 1 },
     };
 
-    redemption.resolve({ kind: 'redeemed', set: corrupted });
+    redemption.resolve({ kind: 'redeemed', set: corrupted, protection: 'protected' });
     await drainMicrotasks();
 
     expect({
@@ -3412,7 +3428,7 @@ describe('ProviderProxySetLifecycle', () => {
       setIdentity: { ...authority.setIdentity, guardianInstanceId: randomUUID() },
     };
 
-    redemption.resolve({ kind: 'redeemed', set: corrupted });
+    redemption.resolve({ kind: 'redeemed', set: corrupted, protection: 'protected' });
     await drainMicrotasks();
 
     expect({
@@ -3539,7 +3555,9 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(lifecycle.routeFor('codex-route')).toBeNull();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
-    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    // The commit is unconfirmed here, and an unconfirmed commit may not give up the lease: without a live
+    // heartbeat there is no way to retry the commit or redeem control, and the set would be stranded.
+    expect(stopHeartbeats).not.toHaveBeenCalled();
     expect(stopAndReap).toHaveBeenCalledOnce();
     expect(reportLifecycle.mock.calls).toEqual([
       [
@@ -4078,7 +4096,9 @@ describe('ProviderProxySetLifecycle', () => {
         stopped: false,
       },
     ]);
-    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    // Retirement crosses the destructive boundary the same way a fault does, so it keeps the lease until the
+    // commit confirms: this fixture's commit never does.
+    expect(stopHeartbeats).not.toHaveBeenCalled();
   });
 
   it('discards a heartbeat hold when the set enters graceful drain', () => {
@@ -4132,7 +4152,11 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority();
     const identity = authority.setIdentity;
     const redeemCapsule = vi.fn(
-      async (): Promise<ProviderProxySetRedemptionOutcome> => ({ kind: 'redeemed', set: authority }),
+      async (): Promise<ProviderProxySetRedemptionOutcome> => ({
+        kind: 'redeemed',
+        set: authority,
+        protection: 'protected',
+      }),
     );
     const lifecycle = lifecycleFor({
       claims,
@@ -4891,5 +4915,124 @@ describe('ProviderProxySetLifecycle', () => {
     } finally {
       kill.mockRestore();
     }
+  });
+});
+
+describe('AC10: legacy-unprotected rollout', () => {
+  it('reports the overload floor not ready while a legacy-unprotected set is established, and keeps it held rather than retiring it while claims remain', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must not run' }) as const);
+    const authority = fakeAuthority({ record, stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+
+    expect(lifecycle.overloadFloorReady()).toBe(true);
+
+    lifecycle.registerInheritedSet(authority, null, 'legacy-unprotected');
+
+    expect(lifecycle.overloadFloorReady()).toBe(false);
+    expect(lifecycle.snapshot().states).toEqual(['available']);
+    // A v0.10.9 role's autonomous enforcer is what protects a live claim, never this coordinator's commit —
+    // the whole reason the floor is reported not ready. It must not be torn down for having live work.
+    expect(stopAndReap).not.toHaveBeenCalled();
+  });
+
+  it('admits no new claims to a legacy-unprotected slot and drains it once its claims reach zero', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'legacy-drained' }) as const);
+    const authority = fakeAuthority({ stopAndReap });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+
+    lifecycle.registerInheritedSet(authority, null, 'legacy-unprotected');
+
+    // No live claims: an admitted current-generation set would stay `available` and routable, but a
+    // legacy-unprotected one is drain-only and reaches zero claims immediately, so it retires on sight
+    // instead of standing by to accept new work.
+    await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(lifecycle.overloadFloorReady()).toBe(true));
+  });
+});
+
+describe('AC3: forceProviderProxySetContainment', () => {
+  const fakeOperatorTeardownAuthorization = Object.freeze({}) as unknown as OperatorTeardownAuthorization;
+
+  it('reaps the recorded containment and finalizes representation once both enforcers are already observed absent', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'forced-containment-absent',
+    }));
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('forced-containment-absent'));
+
+    await expect(
+      harness.lifecycle.forceProviderProxySetContainment(harness.capability, fakeOperatorTeardownAuthorization, proof),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        kind: 'contained',
+        setIdentity,
+        disappearanceReceipt: 'forced-containment-absent',
+      }),
+    );
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+  });
+
+  it('names the exit that exists rather than fabricating a signal when an enforcer is still alive or unobservable', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => {
+      throw new Error('force path must not attempt a reap while an enforcer is alive or unobservable');
+    });
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const proof = await operatorContainmentProof(harness.capability, enforcersUnobservable);
+
+    await expect(
+      harness.lifecycle.forceProviderProxySetContainment(harness.capability, fakeOperatorTeardownAuthorization, proof),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        kind: 'enforcer-signal-unavailable',
+        enforcerObservations: enforcersUnobservable.observations,
+      }),
+    );
+    expect(reapRecordedContainment).not.toHaveBeenCalled();
+  });
+
+  it('refuses a capability this lifecycle never minted', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => {
+      throw new Error('unused');
+    });
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const otherLifecycleHarness = await authorizedOperatorExitForProof(
+      providerOperationRecord('executing'),
+      reapRecordedContainment,
+    );
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('unused'));
+
+    await expect(
+      otherLifecycleHarness.lifecycle.forceProviderProxySetContainment(
+        harness.capability,
+        fakeOperatorTeardownAuthorization,
+        proof,
+      ),
+    ).rejects.toThrow('provider_proxy_operator_exit_capability_invalid');
   });
 });

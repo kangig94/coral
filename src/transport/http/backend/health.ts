@@ -149,7 +149,9 @@ export interface BackendHealth {
         | 'ordinary-drain'
         | 'set-adoption-deadline'
         | 'operator-abandonment'
-        | 'store-repair';
+        | 'store-repair'
+        | 'containment-authorization'
+        | 'containment-outcome-unknown';
     }>;
   };
 }
@@ -276,7 +278,9 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
         entry.waitingFor === 'ordinary-drain' ||
         entry.waitingFor === 'set-adoption-deadline' ||
         entry.waitingFor === 'operator-abandonment' ||
-        entry.waitingFor === 'store-repair');
+        entry.waitingFor === 'store-repair' ||
+        entry.waitingFor === 'containment-authorization' ||
+        entry.waitingFor === 'containment-outcome-unknown');
     if (!understandsEnums) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);

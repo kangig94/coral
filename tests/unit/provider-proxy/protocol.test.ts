@@ -3,7 +3,8 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import {
-  assertRecordedSetAgreement,
+  acquisitionPublicationUnknownResultSchema,
+  assertExactRecordedSetAgreement,
   controlHeartbeatParamsSchema,
   controlPairParamsSchema,
   controlPairResultSchema,
@@ -11,12 +12,14 @@ import {
   decodeProxyControlFrame,
   encodedProxyControlFrameByteLength,
   encodeProxyControlFrame,
+  guardianAcquisitionPublishResultSchema,
+  guardianContainmentCommitParamsSchema,
   guardianIdentitySchema,
   guardianOperationActivateParamsSchema,
   guardianProxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema,
-  guardianStopAndReapParamsSchema,
+  holderStatusResultSchema,
   MAX_PROXY_CONTROL_FRAME_BYTES,
   operationIdentitySchema,
   providerRootSchema,
@@ -29,6 +32,7 @@ import {
   PROXY_OPERATION_STATUS_MAX_OPERATIONS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
+  proxyAcquisitionPublishParamsSchema,
   proxyIdentitySchema,
   proxyOperationActivateParamsSchema,
   proxyOperationActivateResultSchema,
@@ -50,6 +54,8 @@ import {
   reaperIdentitySchema,
   reaperConfirmProviderRootParamsSchema,
   reaperConfirmProviderRootResultSchema,
+  reaperContainmentAbortParamsSchema,
+  reaperContainmentPrepareResultSchema,
   recordedContainmentSchema,
   reaperRecordContainmentResultSchema,
   reaperRecordRedemptionResultSchema,
@@ -63,9 +69,6 @@ import {
   providerProxyFailureMessages,
   type ProviderProxyReplayFailureReason,
 } from '#src/providers/proxy-failure.js';
-import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
-import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const UUID_A = '11111111-1111-4111-8111-111111111111';
 const UUID_B = '22222222-2222-4222-8222-222222222222';
@@ -447,7 +450,7 @@ describe('guardian control-method request schemas, shared with their one coordin
     }
   });
 
-  it('guardian.stop-and-reap.v1: rejects a payload missing providerRoots, and one with an extra field', () => {
+  it('guardian.containment-commit.v1: rejects a payload missing a role identity, and one with an extra field', () => {
     const guardianIdentityFixture = { ...guardianIdentity };
     const reaperIdentityFixture = { ...reaperIdentity };
     const proxyIdentityFixture = { ...proxyIdentity };
@@ -455,15 +458,90 @@ describe('guardian control-method request schemas, shared with their one coordin
       guardian: guardianIdentityFixture,
       reaper: reaperIdentityFixture,
       proxy: proxyIdentityFixture,
-      providerRoots: [providerRoot],
     };
-    expect(guardianStopAndReapParamsSchema.safeParse(valid).success).toBe(true);
+    expect(guardianContainmentCommitParamsSchema.safeParse(valid).success).toBe(true);
 
-    const { providerRoots: _omitted, ...missingRoots } = valid;
-    expect(guardianStopAndReapParamsSchema.safeParse(missingRoots).success).toBe(false);
+    const { proxy: _omitted, ...missingProxy } = valid;
+    expect(guardianContainmentCommitParamsSchema.safeParse(missingProxy).success).toBe(false);
 
-    expect(guardianStopAndReapParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+    // No `providerRoots` field: the guardian's own enforcer supplies the authoritative cumulative set, so a
+    // caller naming one is presenting a field this schema has no place for.
+    expect(guardianContainmentCommitParamsSchema.safeParse({ ...valid, providerRoots: [providerRoot] }).success).toBe(
+      false,
+    );
   });
+
+  it('reaper.containment-prepare.v1: the reply carries a token and the reaper cumulative-root snapshot', () => {
+    const valid = { state: 'containment-prepared', token: 'prepare-token', providerRoots: [providerRoot] };
+    expect(reaperContainmentPrepareResultSchema.safeParse(valid).success).toBe(true);
+    expect(reaperContainmentPrepareResultSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+    const { token: _omitted, ...missingToken } = valid;
+    expect(reaperContainmentPrepareResultSchema.safeParse(missingToken).success).toBe(false);
+  });
+
+  it('reaper.containment-abort.v1: requires the prepared token and nothing else', () => {
+    expect(reaperContainmentAbortParamsSchema.safeParse({ token: 'prepare-token' }).success).toBe(true);
+    expect(reaperContainmentAbortParamsSchema.safeParse({}).success).toBe(false);
+    expect(reaperContainmentAbortParamsSchema.safeParse({ token: 'prepare-token', extra: true }).success).toBe(false);
+  });
+
+  it('guardian.acquisition-publish.v1: the reply carries an opaque certificate bound to guardian and reaper', () => {
+    const valid = {
+      state: 'acquisition-published',
+      certificate: 'acquisition-certificate',
+      guardian: guardianIdentity,
+      reaper: reaperIdentity,
+    };
+    expect(guardianAcquisitionPublishResultSchema.safeParse(valid).success).toBe(true);
+    expect(guardianAcquisitionPublishResultSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+  });
+
+  it(
+    'guardian.acquisition-publish.v1: the reply is a discriminated union, and its other member names an ' +
+      'explicit, undecodable-proof outcome rather than a certificate',
+    () => {
+      const unknownOutcome = { state: 'acquisition-publication-unknown', reason: 'reaper reply was undecodable' };
+      expect(guardianAcquisitionPublishResultSchema.safeParse(unknownOutcome).success).toBe(true);
+      expect(acquisitionPublicationUnknownResultSchema.safeParse(unknownOutcome).success).toBe(true);
+      // Neither member's shape satisfies the other: a published reply names no `reason`, and an unknown-outcome
+      // reply names no `certificate` — the discriminant alone must decide which one this is.
+      expect(guardianAcquisitionPublishResultSchema.safeParse({ ...unknownOutcome, unexpected: true }).success).toBe(
+        false,
+      );
+      expect(
+        guardianAcquisitionPublishResultSchema.safeParse({ state: 'acquisition-publication-unknown' }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('proxy.acquisition-publish.v1: requires the certificate and its guardian/reaper binding', () => {
+    const valid = { certificate: 'acquisition-certificate', guardian: guardianIdentity, reaper: reaperIdentity };
+    expect(proxyAcquisitionPublishParamsSchema.safeParse(valid).success).toBe(true);
+    const { certificate: _omitted, ...missingCertificate } = valid;
+    expect(proxyAcquisitionPublishParamsSchema.safeParse(missingCertificate).success).toBe(false);
+  });
+
+  it(
+    'guardian.holder-status.v1/reaper.holder-status.v1: the shared result names disposition, phase, holder, ' +
+      'epoch, sequence, and change time',
+    () => {
+      const valid = {
+        disposition: 'alive',
+        phase: 'published',
+        holder: {
+          instanceId: coordinatorIdentity.instanceId,
+          pid: coordinatorIdentity.pid,
+          incarnation: coordinatorIdentity.incarnation,
+        },
+        controlEpoch: 1,
+        transitionSequence: 3,
+        changedAtMs: 1000,
+      };
+      expect(holderStatusResultSchema.safeParse(valid).success).toBe(true);
+      expect(holderStatusResultSchema.safeParse({ ...valid, disposition: 'absent' }).success).toBe(false);
+      expect(holderStatusResultSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+    },
+  );
 
   it('guardian.register-provider-root.v1: rejects a payload missing the reservation, and one with an extra field', () => {
     const valid = {
@@ -657,48 +735,39 @@ describe('operation.status.v1 wire contract', () => {
   });
 });
 
-describe('assertRecordedSetAgreement', () => {
+describe('assertExactRecordedSetAgreement', () => {
   const ROOT_A = { pid: 5_001, incarnation: testIncarnation(900) };
   const ROOT_B = { pid: 5_002, incarnation: testIncarnation(901) };
 
-  it('accepts an exact match between claimed and recorded roots', () => {
-    expect(() => assertRecordedSetAgreement('guardian', [ROOT_A], [ROOT_A])).not.toThrow();
+  it('accepts an exact match between the guardian and reaper snapshots', () => {
+    expect(() => assertExactRecordedSetAgreement('guardian', [ROOT_A], [ROOT_A])).not.toThrow();
+    expect(() => assertExactRecordedSetAgreement('guardian', [ROOT_A, ROOT_B], [ROOT_B, ROOT_A])).not.toThrow();
   });
 
-  it('accepts a claimed set that undershoots what this role recorded — the enforcer is a superset by construction', () => {
-    expect(() => assertRecordedSetAgreement('guardian', [], [ROOT_A])).not.toThrow();
-    expect(() => assertRecordedSetAgreement('reaper', [ROOT_A], [ROOT_A, ROOT_B])).not.toThrow();
+  it('accepts two empty snapshots', () => {
+    expect(() => assertExactRecordedSetAgreement('reaper', [], [])).not.toThrow();
   });
 
-  it('rejects a claimed root the enforcer never recorded, regardless of what else it claims', () => {
-    expect(() => assertRecordedSetAgreement('guardian', [ROOT_B], [ROOT_A])).toThrow(/different provider-root set/u);
-    expect(() => assertRecordedSetAgreement('guardian', [ROOT_A, ROOT_B], [ROOT_A])).toThrow(
+  it(
+    'rejects the guardian holding a root the reaper snapshot omits — unlike the coordinator subset check this ' +
+      'replaced, an undershoot is not legitimate here: both sides drained before snapshotting',
+    () => {
+      expect(() => assertExactRecordedSetAgreement('guardian', [ROOT_A, ROOT_B], [ROOT_A])).toThrow(
+        /different provider-root set/u,
+      );
+    },
+  );
+
+  it('rejects the reaper holding a root the guardian snapshot omits', () => {
+    expect(() => assertExactRecordedSetAgreement('reaper', [ROOT_A], [ROOT_A, ROOT_B])).toThrow(
       /different provider-root set/u,
     );
   });
 
-  it('drives a real LocalOperationRegistry through settle-then-teardown — the coordinator claim a settle racing teardown produces', () => {
-    // Not a fake `providerRootsFor: () => []` held in artificial agreement with a guardian that staged
-    // nothing: this is the actual write path (`activate` then `settled`) an operation's terminal drives
-    // (`provider-event-application.ts`), read back through the actual read path (`providerRootsFor`) teardown
-    // uses (`set-authority.ts`'s `stopAndReap`) — proving the two are reconciled by this function, not by
-    // holding them in lockstep by construction.
-    const registry = new LocalOperationRegistry();
-    const identity = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
-    const executing = providerOperationRecord('executing', { operation: identity });
-    const record = providerOperationRecordSchema.parse({ ...executing, providerRoot: ROOT_A });
-    if (record.phase !== 'executing') throw new Error('expected executing provider operation');
-
-    registry.activate(record, { stop: async () => {} }, { jobId: record.operation.jobId, pool: 'default' });
-    // The operation's terminal commits and the registry forgets it — concurrently, from teardown's own view,
-    // with the enforcer that still recorded `ROOT_A` (a released membership does not remove the enforcer's own
-    // recorded root — only teardown itself may conclude absence).
-    registry.settled(identity);
-
-    const claimed = registry.providerRootsFor(identity.proxyInstanceId);
-    expect(claimed).toEqual([]);
-
-    expect(() => assertRecordedSetAgreement('guardian', claimed, [ROOT_A])).not.toThrow();
+  it('rejects equal-size sets that name different roots', () => {
+    expect(() => assertExactRecordedSetAgreement('guardian', [ROOT_A], [ROOT_B])).toThrow(
+      /different provider-root set/u,
+    );
   });
 });
 

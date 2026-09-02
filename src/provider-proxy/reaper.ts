@@ -23,6 +23,7 @@ import {
   grantBindingFromCapsule,
   guardianReaperHandoffInstallParamsSchema,
   handoffOperationSetSchema,
+  holderStatusParamsSchema,
   reaperHandoffRotateFieldsSchema,
   reaperRecordRedemptionParamsSchema,
   sameOperations,
@@ -36,26 +37,31 @@ import {
   assertNamedCoordinatorBuild,
   assertNamedOrphanTimeout,
   assertNamedProxyIdentity,
-  assertNamedReaperIdentity,
   assertNamedTeardownReserve,
-  assertRecordedSetAgreement,
+  containmentPrepareTokenSchema,
+  holderStatusResultSchema,
+  reaperAcquisitionPublishParamsSchema,
+  reaperAcquisitionPublishResultSchema,
   type guardianIdentitySchema,
   reaperConfirmProviderRootParamsSchema,
   reaperConfirmProviderRootResultSchema,
+  reaperContainmentAbortParamsSchema,
+  reaperContainmentAbortResultSchema,
+  reaperContainmentPrepareParamsSchema,
+  reaperContainmentPrepareResultSchema,
   type reaperIdentitySchema,
   recordedContainmentSchema,
   reaperRecordContainmentResultSchema,
   reaperRecordRedemptionResultSchema,
   reaperRegisterProviderRootParamsSchema,
   reaperRegisterProviderRootResultSchema,
-  reaperStopAndReapParamsSchema as stopAndReapParamsSchema,
-  reaperStopAndReapResultSchema,
   sameRecordedContainment,
+  type ContainmentPrepareToken,
   type OperationIdentity,
   reaperHandoffRotateParamsSchema,
   reaperOpenParamsSchema as openParamsSchema,
 } from './protocol.js';
-import { mintExplicitTeardownAuthorization, type ControlHolderAuthority } from './holder-lifecycle.js';
+import type { ControlHolderAuthority } from './holder-lifecycle.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
 /**
@@ -176,6 +182,13 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
 
+  // The reaper's own half of `guardian.containment-commit.v1`'s reversible membership barrier: closing this
+  // gate refuses a new `reaper.register-provider-root.v1` admission outright. Nothing drains it — that
+  // handler contains no `await`, so no call can still be running when a later `reaper.containment-prepare.v1`
+  // takes its snapshot — but the gate itself is real and load-bearing.
+  let registrationGateOpen = true;
+  let preparedToken: ContainmentPrepareToken | null = null;
+
   // Staging arrives over the guardian pairing channel, not the coordinator's control connection: the
   // guardian must be able to stage a root while the coordinator's own control is still provisional.
   const methods = new Map<string, ControlMethod>([
@@ -262,6 +275,12 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       {
         authority: 'pairing',
         handle: (params) => {
+          if (!registrationGateOpen) {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'Provider-root registration is closed for a containment commit in progress.',
+            );
+          }
           const request = reaperRegisterProviderRootParamsSchema.parse(params);
           try {
             // Idempotent by construction, not by a receipt this handler manages: the enforcer's own record
@@ -418,37 +437,98 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       },
     ],
     [
-      'reaper.stop-and-reap.v1',
+      'reaper.containment-prepare.v1',
       {
-        authority: 'active',
-        // Teardown spends the TERM and KILL graces plus a disappearance confirmation, which is longer than
-        // a mutation RPC's budget; the caller's own deadline governs instead.
-        budgetMs: 'caller-deadline',
-        handle: async (params) => {
-          const request = stopAndReapParamsSchema.parse(params);
+        // The guardian's own channel: it is the sole destructive containment owner and the sole caller of
+        // this method, closing this reaper's registration gate before asking it to snapshot its own
+        // cumulative roots.
+        authority: 'pairing',
+        handle: (params) => {
+          reaperContainmentPrepareParamsSchema.parse(params);
           const armed = requireEnforcer();
-          // `recorded` and `enforcer` are set together in `reaper.record-containment.v1`, so a live enforcer
-          // guarantees a recorded identity to name the claimed reaper and proxy against.
-          const containment = recorded as RecordedContainmentIdentity & { readonly containmentKind: string };
-          assertNamedReaperIdentity(request.reaper, identityOf(containment));
-          assertNamedProxyIdentity('reaper', request.proxy, capsule);
-          assertRecordedSetAgreement('reaper', request.providerRoots, armed.recordedRoots());
-          // Minted from this reaper's own current holder, synchronously in this same handler turn: the
-          // endpoint's active-control gate already revalidated the tenancy immediately before dispatch.
-          const authorization = mintExplicitTeardownAuthorization(holderAuthority);
-          if (authorization === null) {
-            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds no admitted holder to tear down.');
+          registrationGateOpen = false;
+          const token = containmentPrepareTokenSchema.parse(mintReceipt());
+          preparedToken = token;
+          return reaperContainmentPrepareResultSchema.parse({
+            state: 'containment-prepared',
+            token,
+            providerRoots: armed.recordedRoots(),
+          });
+        },
+      },
+    ],
+    [
+      'reaper.containment-abort.v1',
+      {
+        authority: 'pairing',
+        handle: (params) => {
+          const request = reaperContainmentAbortParamsSchema.parse(params);
+          if (preparedToken === request.token) {
+            preparedToken = null;
+            registrationGateOpen = true;
+          } else if (preparedToken !== null) {
+            // A stale or replayed token names a prepare this reaper has already superseded — refused rather
+            // than silently reopening the *current* one out from under it.
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'This reaper holds a different prepared containment token.',
+            );
           }
-          const outcome = await armed.stopAndReap(authorization);
-          if (outcome === null) {
-            throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
+          // `preparedToken === null` and the presented token matches nothing current: idempotent no-op,
+          // either an already-aborted retry or a gate that was never closed.
+          return reaperContainmentAbortResultSchema.parse({ state: 'containment-registration-reopened' });
+        },
+      },
+    ],
+    [
+      'reaper.acquisition-publish.v1',
+      {
+        authority: 'pairing',
+        handle: (params) => {
+          reaperAcquisitionPublishParamsSchema.parse(params);
+          holderAuthority.publish();
+          return reaperAcquisitionPublishResultSchema.parse({ state: 'acquisition-published' });
+        },
+      },
+    ],
+    [
+      'reaper.holder-status.v1',
+      {
+        authority: 'observation',
+        handle: (params) => {
+          const request = holderStatusParamsSchema.parse(params);
+          const verified = grants.verifyInstalledGrant({
+            grantId: request.grantId,
+            secret: request.secret,
+            binding: {
+              generation: request.generation,
+              flavor: request.flavor,
+              buildSetId: request.buildSetId,
+              hostFingerprint: request.hostFingerprint,
+              guardianInstanceId: request.guardianInstanceId,
+              reaperInstanceId: request.reaperInstanceId,
+              proxyInstanceId: request.proxyInstanceId,
+            },
+          });
+          if (!verified) {
+            throw new ProxyControlProtocolError('grant_invalid', 'Status did not present the installed grant.');
           }
-          if (outcome.kind !== 'containment-absent') {
-            throw new ProxyControlProtocolError('invalid_state', `Reaper teardown did not complete: ${outcome.kind}.`);
+          const admitted = holderAuthority.current();
+          const current = holderAuthority.status();
+          if (admitted === null || current === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds no observed holder yet.');
           }
-          return reaperStopAndReapResultSchema.parse({
-            state: 'containment-absent',
-            disappearanceReceipt: outcome.disappearanceReceipt,
+          return holderStatusResultSchema.parse({
+            disposition: current.disposition,
+            phase: holderAuthority.phase(),
+            holder: {
+              instanceId: admitted.holder.instanceId,
+              pid: admitted.holder.pid,
+              incarnation: admitted.holder.incarnation,
+            },
+            controlEpoch: admitted.controlEpoch,
+            transitionSequence: current.transitionSequence,
+            changedAtMs: current.changedAtMs,
           });
         },
       },

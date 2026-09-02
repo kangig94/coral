@@ -16,6 +16,8 @@ import {
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
+import type { ContainmentCommitOutcome } from '../../live/provider-proxy/authority.js';
+import type { OperatorTeardownAuthorization } from '../../../provider-proxy/holder-lifecycle.js';
 import type {
   ProviderProxyControlRedemptionOutcome,
   RedeemedProviderProxyControl,
@@ -82,6 +84,7 @@ import {
   providerProxySetReference,
   type ProviderProxySetIdentity,
   type ProviderProxySetKey,
+  type ProviderProxySetProtection,
 } from './identity.js';
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
@@ -178,6 +181,11 @@ type EstablishedSlot = {
   controlReattachmentBoundMs: number;
   controlReattachmentWindow: ControlReattachmentWindow | null;
   operatorExitNotBeforeMonotonicMs: bigint | null;
+  protection: ProviderProxySetProtection;
+  /** Set only while this slot is `containing`/`containment-wait` for a `stop-and-reap` decision, and cleared
+   *  once containment absence is confirmed. Distinguishes the two AC3 holds for status reporting; the retry
+   *  cadence itself is the same `#runContainmentAttempt` loop for both. */
+  containmentCommitStatus: 'not-sent' | 'outcome-unknown' | null;
 };
 
 type PendingReleaseSlot = {
@@ -339,7 +347,15 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
     | 'ordinary-drain'
     | 'set-adoption-deadline'
     | 'operator-abandonment'
-    | 'store-repair';
+    | 'store-repair'
+    /** The guardian commit was proven not to have latched: a local `not-sent` result, or a structured
+     *  pre-commit refusal. Exits: a current active-control retry, decisive holder/containment absence,
+     *  accepted successor, or the operator override. */
+    | 'containment-authorization'
+    /** The guardian commit may have reached the guardian and its response was lost. Exits are the same as
+     *  `containment-authorization`'s — this subject differs only in what it asserts happened, never in what
+     *  ends it. */
+    | 'containment-outcome-unknown';
 }>;
 
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
@@ -439,6 +455,30 @@ export type ProviderProxySetOperatorExitResult = (
   | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>
 ) &
   Readonly<{ effect: ProviderProxySetOperatorExitEffect }>;
+
+/**
+ * `forceProviderProxySetContainment`'s verdict. `enforcer-signal-unavailable` names the exit that exists
+ * without pretending this override signalled anything: representation stays held, and an operator retains
+ * `completeOperatorExit`'s representation-only abandonment, a retry once the enforcer becomes independently
+ * observed absent, or waiting for that enforcer's own holder-check verdict to resolve it autonomously.
+ */
+export type ProviderProxySetForceContainmentResult =
+  | Readonly<{
+      kind: 'contained';
+      setIdentity: ProviderProxySetAddress;
+      disappearanceReceipt: string;
+      claimDischarge: ProviderProxySetOperatorClaimDischarge;
+    }>
+  | Readonly<{ kind: 'set-not-found'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'not-held'; setIdentity: ProviderProxySetAddress; state: ProviderProxySetLifecycleState }>
+  | Readonly<{ kind: 'authorization-stale'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'recorded-group-unattributable'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{
+      kind: 'enforcer-signal-unavailable';
+      setIdentity: ProviderProxySetAddress;
+      enforcerObservations: ProviderProxySetEnforcerObservations;
+    }>;
 
 type InitialDispositionLatch = {
   state: InitialDispositionState;
@@ -721,15 +761,42 @@ export class ProviderProxySetLifecycle {
     this.#establish(authority, acquiring.routeKey, capsulePath, 'serve');
   }
 
-  registerInheritedSet(authority: DurableProviderProxyOperationAuthority, capsulePath: string | null = null): void {
-    this.#establish(authority, null, capsulePath, 'serve');
+  registerInheritedSet(
+    authority: DurableProviderProxyOperationAuthority,
+    capsulePath: string | null = null,
+    protection: ProviderProxySetProtection = 'protected',
+  ): void {
+    this.#establish(authority, null, capsulePath, 'serve', protection);
   }
 
   routeFor(routeKey: string): DurableProviderProxyOperationAuthority | null {
     const key = this.#routeIndex.get(routeKey);
     if (key === undefined) return null;
     const slot = this.#slots.get(key);
-    return slot?.kind === 'available' && slot.capacityClass === 'retained' ? slot.authority : null;
+    return slot?.kind === 'available' && slot.capacityClass === 'retained' && slot.protection === 'protected'
+      ? slot.authority
+      : null;
+  }
+
+  /**
+   * False while any currently established slot is `legacy-unprotected`: a running v0.10.9 role whose
+   * autonomous enforcer and proxy deadline code this coordinator cannot retrofit. AC10's floor readiness is
+   * reported false until that set drains to zero claims and is replaced by current roles.
+   */
+  overloadFloorReady(): boolean {
+    for (const slot of this.#slots.values()) {
+      if (
+        (slot.kind === 'available' ||
+          slot.kind === 'draining' ||
+          slot.kind === 'reattaching' ||
+          slot.kind === 'containing' ||
+          slot.kind === 'containment-wait') &&
+        slot.protection === 'legacy-unprotected'
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   authorityFor(identity: ProviderProxySetIdentity): DurableProviderProxyOperationAuthority | null {
@@ -1099,6 +1166,109 @@ export class ProviderProxySetLifecycle {
     };
   }
 
+  /**
+   * The exact-set direct operator force path (AC3's uncertainty override). Separate from `completeOperatorExit`:
+   * that method's `abandonWithoutAbsence` refusal/abandonment split is not this override, and this override
+   * never passes `OperatorTeardownAuthorization` to either enforcer — it consumes it only at this boundary,
+   * revalidating the slot and the ordinary operator-exit capability before it acts.
+   *
+   * `authorization`'s only role is the type-level one its own doc states: proving the caller reached this
+   * exact boundary rather than an ordinary exit path. It carries no fields of its own to check.
+   *
+   * Target order is containment (the proxy process group and its recorded provider roots) first, then reaper,
+   * then guardian — but reaper and guardian can be force-signalled only once they are already independently
+   * observed absent (`evidence.kind === 'reap-required'`): this coordinator holds no raw process-control port
+   * for signalling a still-alive or unobservable enforcer directly, so that half of the target order names an
+   * exit — `enforcer-signal-unavailable` — rather than a signal this call cannot send.
+   */
+  async forceProviderProxySetContainment(
+    capability: ProviderProxySetOperatorExitCapability,
+    _authorization: OperatorTeardownAuthorization,
+    proof: ProviderProxySetContainmentProof,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<ProviderProxySetForceContainmentResult> {
+    const address = providerProxySetAddress(capability.setIdentity);
+    if (capability[operatorExitCapabilityBrand] !== this) {
+      throw new Error('provider_proxy_operator_exit_capability_invalid');
+    }
+    const evidence = providerProxySetContainmentEvidenceFor(
+      proof,
+      capability.setIdentity,
+      capability.containmentProofAuthorization,
+    );
+    const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
+    if (slot === undefined) return { kind: 'set-not-found', setIdentity: address };
+    if (
+      (slot.kind !== 'containing' && slot.kind !== 'containment-wait' && slot.kind !== 'reattaching') ||
+      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
+    ) {
+      return { kind: 'not-held', setIdentity: address, state: slot.kind };
+    }
+    const assertCapabilityCurrent = (): void => {
+      const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+      if (
+        current !== slot ||
+        current.attemptToken !== capability.attemptToken ||
+        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+        this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
+      ) {
+        throw new Error('provider_proxy_operator_force_containment_authorization_stale');
+      }
+    };
+    try {
+      assertCapabilityCurrent();
+    } catch {
+      return { kind: 'authorization-stale', setIdentity: address };
+    }
+    if (evidence.kind === 'store-unreadable') return { kind: 'store-unreadable', setIdentity: address };
+    if (evidence.kind !== 'reap-required') {
+      return {
+        kind: 'enforcer-signal-unavailable',
+        setIdentity: address,
+        enforcerObservations: evidence.observations,
+      };
+    }
+    let reapResult: ProviderProxySetRecordedContainmentReapResult;
+    try {
+      reapResult = await this.#reapRecordedContainment(
+        capability.setIdentity,
+        proof,
+        signal,
+        () => undefined,
+        assertCapabilityCurrent,
+      );
+    } catch (error: unknown) {
+      const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+      const authorizationMoved =
+        current !== slot ||
+        current.attemptToken !== capability.attemptToken ||
+        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs;
+      if (authorizationMoved) return { kind: 'authorization-stale', setIdentity: address };
+      throw error;
+    }
+    assertCapabilityCurrent();
+    if (reapResult.kind === 'recorded-group-unattributable') {
+      return { kind: 'recorded-group-unattributable', setIdentity: address };
+    }
+    const decision: ProviderProxySetOperatorContainmentDecision = {
+      action: 'operator-contain',
+      reason: 'operator_exact_set_containment',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+    };
+    this.#recordDecision(slot, decision);
+    if (slot.kind === 'reattaching' && slot.controlReattachmentWindow !== null) {
+      this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
+    }
+    const accepted = this.containmentAbsent(slot.identity, reapResult.disappearanceReceipt);
+    return {
+      kind: 'contained',
+      setIdentity: address,
+      disappearanceReceipt: reapResult.disappearanceReceipt,
+      claimDischarge: await operatorExitClaimDischarge(accepted),
+    };
+  }
+
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): ContainmentAbsenceAcceptance {
     const processEvidence = this.#processContainmentEvidence(disappearanceReceipt);
     const commit = this.#commitContainmentAbsence(identity, processEvidence);
@@ -1110,6 +1280,10 @@ export class ProviderProxySetLifecycle {
     );
 
     if (authorityToClose !== null) {
+      // Deferred to confirmed absence rather than the containment attempt's own start: a `stop-and-reap`
+      // decision keeps its heartbeat lease live for as long as the guardian commit is unconfirmed, so a
+      // retry always has a current lease to commit against instead of one this coordinator tore down itself.
+      authorityToClose.stopHeartbeats();
       void authorityToClose
         .initiateControlClose()
         .catch((error: unknown) =>
@@ -1577,7 +1751,7 @@ export class ProviderProxySetLifecycle {
             }
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
-            this.#establish(outcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery');
+            this.#establish(outcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery', outcome.protection);
             return;
           }
           const proof = value as ProviderProxySetContainmentProof;
@@ -1662,6 +1836,7 @@ export class ProviderProxySetLifecycle {
     routeKey: string | null,
     capsulePath: string | null,
     intent: EstablishmentIntent,
+    protection: ProviderProxySetProtection = 'protected',
   ): void {
     const identity = authority.setIdentity;
     const key = this.#identityIndex.add(identity);
@@ -1699,11 +1874,16 @@ export class ProviderProxySetLifecycle {
       controlReattachmentBoundMs: authority.autonomousDeadline.adoptionWindowMs,
       controlReattachmentWindow: null,
       operatorExitNotBeforeMonotonicMs: null,
+      protection,
+      containmentCommitStatus: null,
     };
     this.#slots.set(key, slot);
     this.#subscribeAuthority(slot, authority, slot.attemptToken);
     this.#classifyCapacity();
-    if (intent === 'contain-unclaimed-discovery' && slot.kind === 'available') {
+    if (
+      (intent === 'contain-unclaimed-discovery' || protection === 'legacy-unprotected') &&
+      slot.kind === 'available'
+    ) {
       const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
       if (liveClaims === 0) {
         this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, 'unclaimed_discovery', liveClaims));
@@ -2039,15 +2219,59 @@ export class ProviderProxySetLifecycle {
     slot.retirementDecision = null;
     this.#removeRoute(slot);
     slot.kind = 'containing';
-    slot.authority.stopHeartbeats();
-    void this.#runContainmentAttempt(slot, decision);
     if (decision.action === 'await-containment-absence') {
+      // Sends no containment command: this hold is resolved only by an independently observed absence, an
+      // accepted successor, or the operator override, never by anything this close accelerates. Heartbeats and
+      // control are given up immediately because there is no commit in flight whose ownership this coordinator
+      // must retain.
+      slot.authority.stopHeartbeats();
+      void this.#runContainmentAttempt(slot, decision);
       void slot.authority.initiateControlClose().catch((error: unknown) => {
         this.#deps.onError?.(
           `Provider proxy control close before containment wait failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
+      return;
     }
+    this.#commitContainmentThenBegin(slot, decision);
+  }
+
+  /**
+   * The single coordinator ingress to the guardian's destructive `guardian.containment-commit.v1`. Heartbeats
+   * and control stay untouched until a confirmed result — `containment-absent` — arrives: an unconfirmed sent
+   * request (`outcome-unknown`) or a proven non-latch (`not-sent`) both retain full reconciliation ownership,
+   * which needs a live heartbeat lease to keep retrying against, not a torn-down one.
+   */
+  #commitContainmentThenBegin(
+    slot: EstablishedSlot,
+    decision: ProviderProxySetAuthorityStopDecision | ProviderProxySetRetirementStopDecision,
+  ): void {
+    void this.#runContainmentAttempt(slot, decision);
+  }
+
+  /**
+   * Narrows the same `awaiting-containment-absence` disposition `#recordOperatorDisposition` already recorded
+   * for this `stop-and-reap` decision from the generic `independent-containment-absence` to the specific AC3
+   * hold this commit attempt actually observed. The subject key mirrors `#recordOperatorDisposition`'s own so
+   * both update the identical map entry rather than creating a second one for the same subject.
+   */
+  #recordContainmentCommitOutcome(
+    slot: EstablishedSlot,
+    decision: ProviderProxySetAuthorityStopDecision | ProviderProxySetRetirementStopDecision,
+    outcome: 'not-sent' | 'outcome-unknown',
+  ): void {
+    const setKey = providerProxySetKey(decision.setIdentity);
+    const dispositions = this.#operatorDispositions.get(setKey);
+    if (dispositions === undefined) return;
+    const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
+    const method = 'method' in decision && typeof decision.method === 'string' ? decision.method : undefined;
+    const subjectKey = JSON.stringify([role ?? null, method ?? null]);
+    const current = dispositions.get(subjectKey);
+    if (current === undefined || current.disposition !== 'awaiting-containment-absence') return;
+    dispositions.set(subjectKey, {
+      ...current,
+      waitingFor: outcome === 'not-sent' ? 'containment-authorization' : 'containment-outcome-unknown',
+    });
   }
 
   #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision, errorIdentity?: string): void {
@@ -2528,14 +2752,19 @@ export class ProviderProxySetLifecycle {
         evidence: (value, sourceId) => {
           if (this.#slots.get(slot.key) !== slot || token !== slot.attemptToken) return;
           if (sourceId === 'stop-and-reap') {
-            if (typeof value === 'object' && value !== null && 'disappearanceReceipt' in value) {
-              this.#finishContainmentAttempt(
-                slot,
-                decision,
-                token,
-                abort,
-                (value as { disappearanceReceipt: string }).disappearanceReceipt,
-              );
+            const outcome = value as ContainmentCommitOutcome;
+            if (outcome.kind === 'containment-absent') {
+              if (slot.kind !== 'capsule-recovering') slot.containmentCommitStatus = null;
+              this.#finishContainmentAttempt(slot, decision, token, abort, outcome.disappearanceReceipt);
+              return;
+            }
+            // `not-sent` proves the commit did not latch; `outcome-unknown` proves only that it may have.
+            // Neither ends this attempt: the retry above and the independent `absence` source both keep
+            // running, and this coordinator retains reconciliation ownership until one of them, an accepted
+            // successor, or the operator override resolves it.
+            if (slot.kind !== 'capsule-recovering' && decision.action === 'stop-and-reap') {
+              slot.containmentCommitStatus = outcome.kind;
+              this.#recordContainmentCommitOutcome(slot, decision, outcome.kind);
             }
             return;
           }
@@ -2582,7 +2811,7 @@ export class ProviderProxySetLifecycle {
       turn.start({
         sourceId: 'stop-and-reap',
         producerId: 'role-control',
-        input: { signal: abort.signal, run: (signal) => slot.authority.stopAndReap(signal) },
+        input: { signal: abort.signal, run: (signal) => slot.authority.commitContainment(signal) },
         abort: (reason) => abort.abort(reason),
       });
     }

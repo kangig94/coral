@@ -460,8 +460,8 @@ export function createCoordinatorWorld(
       ...(options.buildProviderEventHandler === undefined
         ? {}
         : { onProviderEvent: options.buildProviderEventHandler }),
-      registerInheritedSet: (set) => {
-        created.registerInheritedSet(set);
+      registerInheritedSet: (set, protection) => {
+        created.registerInheritedSet(set, protection);
       },
     });
   }

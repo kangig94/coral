@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { vi } from 'vitest';
 
-import { createProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import {
+  createProviderProxyOperationAuthority,
+  type DurableProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -164,7 +167,9 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
   const terminalFaults: ProviderProxyAuthorityFault[] = [];
   faults.onIncident((observation) => incidents.push(observation));
   faults.onFault((fault) => terminalFaults.push(fault));
-  const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not requested' }) as const);
+  const stopAndReap = vi.fn<DurableProviderProxyOperationAuthority['stopAndReap']>(async () => ({
+    unconfirmed: 'not requested',
+  }));
   const idleClient = {
     exchange: async (controlMethod: string): Promise<never> => {
       throw new Error(`unexpected role control exchange: ${controlMethod}`);
@@ -182,6 +187,12 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
         heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
       },
       stopAndReap,
+      commitContainment: async (signal: AbortSignal) => {
+        const result = await stopAndReap(signal);
+        return 'disappearanceReceipt' in result
+          ? ({ kind: 'containment-absent', disappearanceReceipt: result.disappearanceReceipt } as const)
+          : ({ kind: 'outcome-unknown', error: result.unconfirmed } as const);
+      },
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
       controlReattachment: {} as never,

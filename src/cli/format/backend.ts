@@ -1158,7 +1158,9 @@ function formatRunningStatus(health: RunningHealth): string {
             waitingFor === 'independent-containment-absence' ||
             waitingFor === 'set-adoption-deadline' ||
             waitingFor === 'operator-abandonment' ||
-            waitingFor === 'store-repair',
+            waitingFor === 'store-repair' ||
+            waitingFor === 'containment-authorization' ||
+            waitingFor === 'containment-outcome-unknown',
         )
       ) {
         lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);

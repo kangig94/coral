@@ -162,6 +162,7 @@ describe('provider proxy operation routing', () => {
         return deadline;
       },
       stopAndReap: async () => ({ unconfirmed: 'unused' }) as const,
+      commitContainment: async () => ({ kind: 'outcome-unknown', error: 'unused' }) as const,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
       controlReattachment: {} as never,
@@ -277,17 +278,26 @@ async function createSharedSetHarness(control: SharedSetControl) {
     onFault: () => () => undefined,
     close: () => undefined,
   } satisfies ControlClient;
-  const stopAndReap = vi.fn(async () =>
+  const stopAndReap = vi.fn<DurableProviderProxyOperationAuthority['stopAndReap']>(async () =>
     control === 'settlement-timeout'
-      ? ({ unconfirmed: 'unexpected settlement containment' } as const)
-      : ({ disappearanceReceipt: `${control}-containment-absent` } as const),
+      ? { unconfirmed: 'unexpected settlement containment' }
+      : { disappearanceReceipt: `${control}-containment-absent` },
   );
+  // `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap`; deriving it from the same mock
+  // keeps every `stopAndReap`-observing assertion below meaningful without a second, parallel spy.
+  const commitContainment: DurableProviderProxyOperationAuthority['commitContainment'] = async (signal) => {
+    const result = await stopAndReap(signal);
+    return 'disappearanceReceipt' in result
+      ? { kind: 'containment-absent', disappearanceReceipt: result.disappearanceReceipt }
+      : { kind: 'outcome-unknown', error: result.unconfirmed };
+  };
   const faults = createProviderProxyAuthorityFaultLatch();
   const authority = createProviderProxyOperationAuthority({
     base: {
       proxyInstanceId: setIdentity.proxyInstanceId,
       autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       stopAndReap,
+      commitContainment,
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
       controlReattachment: {} as never,
@@ -702,6 +712,7 @@ describe('execution services provider-proxy proof composition', () => {
       onIncident: () => () => undefined,
       attachOperation,
       stopAndReap: async () => ({ unconfirmed: 'stored fault' }),
+      commitContainment: async () => ({ kind: 'outcome-unknown', error: 'stored fault' }),
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
@@ -785,6 +796,7 @@ describe('execution services provider-proxy proof composition', () => {
       onIncident: () => () => undefined,
       attachOperation,
       stopAndReap: async () => ({ unconfirmed: 'not requested' }),
+      commitContainment: async () => ({ kind: 'outcome-unknown', error: 'not requested' }),
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
@@ -1199,7 +1211,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
             },
           });
         }
-        if (method === 'guardian.stop-and-reap.v1' || method === 'reaper.stop-and-reap.v1') {
+        if (method === 'guardian.containment-commit.v1') {
           return controlExchangeForTest({
             kind: 'response',
             response: {
@@ -1278,14 +1290,23 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     });
     const installation = await base.installRecoveryCredential(new AbortController().signal);
     if (installation.kind !== 'installed') throw new Error(`recovery credential ${installation.kind}`);
-    const stopAndReap = vi.fn(base.stopAndReap);
+    // `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap` — `stopAndReap` is now only a
+    // thin wrapper over it (see `set-authority.ts`). Spying on `commitContainment` is what actually observes
+    // production code's call; `stopAndReap` is wired to call through it too, so either surface reflects it.
+    const commitContainment = vi.fn(base.commitContainment);
     const authority = createProviderProxyOperationAuthority({
       base: {
         ...base,
         get autonomousDeadline() {
           return base.autonomousDeadline;
         },
-        stopAndReap,
+        commitContainment,
+        stopAndReap: async (signal) => {
+          const outcome = await commitContainment(signal);
+          return outcome.kind === 'containment-absent'
+            ? { disappearanceReceipt: outcome.disappearanceReceipt }
+            : { unconfirmed: outcome.error };
+        },
       },
       setIdentity,
       clients: { proxy: proxyClient, guardian: guardianClient, reaper: reaperClient },
@@ -1296,7 +1317,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
 
-    return { time, faults, stopAndReap, redeemedDeadline: base.autonomousDeadline, services };
+    return { time, faults, stopAndReap: commitContainment, redeemedDeadline: base.autonomousDeadline, services };
   }
 
   it("uses a redeemed set's capsule deadline instead of the successor coordinator's environment", async () => {
