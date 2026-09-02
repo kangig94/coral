@@ -121,13 +121,21 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `handoff_sigkill_grace_target_gone_socket_still_bound` | The verified target was gone after accepted SIGKILL and its grace, but the socket remained bound. Exit `75`; settled ownership evidence; retryable. Retry the original mutating command so Coral re-observes ownership and removes the socket only if it proves stale. `backend status` prints `Retryable: yes`; SessionStart suppresses the notice while the incumbent is alive and after it is absent                                                                                                                                                                                                                                                        |
 | `handoff_sigkill_grace_target_alive`          | The verified target remained alive after accepted SIGKILL and its grace, as can occur during uninterruptible I/O. Exit `69`; settled backend-unavailable refusal; retryable because SIGKILL can take effect once that I/O finishes. `backend status` prints `Retryable: yes`; SessionStart suppresses the notice while the incumbent is alive and after it is absent                                                                                                                                                                                                                                                                                           |
 
-Socket-handoff refusals are documented `CoralSetupError` instances whose code names the observed cause. Catalog-backed
-public projections such as `backend status` ignore persisted prose and regenerate the code-indexed, authored message
-and remediation. SessionStart cannot import that catalog, so it validates and prints only the bounded error code, and
-its exit is the diagnostic file it read: the notice names that path as where the failed attempt recorded the cause and
-the next step, and stays silent unless it observed both there. It names no command, because whether any command can
-still attribute that diagnostic turns on discovery state the hook never observed. Arbitrary exception text and
-persisted diagnostic prose remain private evidence, including a nested cause attached to a handoff failure.
+Socket-handoff refusals are documented `CoralSetupError` instances whose code names the observed cause. Both surfaces
+promised in the rows above are recency-bounded: `backend status` and the SessionStart notice render a recorded refusal
+only within five minutes of its `recordedAt`, after which the diagnostic file and the coordinator log remain the
+evidence. For a documented code, catalog-backed public projections such as `backend status` ignore persisted prose and
+regenerate the code-indexed, authored message and remediation. SessionStart cannot import that catalog, so it validates
+and prints only the bounded error code, and its exit is the diagnostic file it read: the notice names that path as
+where the failed attempt recorded the cause and the next step, and stays silent unless it observed both there. It names
+no command, because whether any command can still attribute that diagnostic turns on discovery state the hook never
+observed. Arbitrary exception text remains private evidence, including a nested cause attached to a handoff failure.
+Recorded prose crosses to an operator only for a code this build proved it wrote, and only within
+`canonicalSelfAuthoredProse`'s charset and length bounds; recorded context never crosses. An undocumented code has no
+catalog text to regenerate, so its recorded prose is the only text there is: `backend_remote_bind_requires_opt_in` —
+thrown on the boot path when `CORAL_BACKEND_BIND` names a non-loopback host without `CORAL_BACKEND_ALLOW_REMOTE=1` — is
+such a code, and when this build wrote the record `backend status` renders its `userMessage` and `remediation` as
+`Cause:` and `Next step:`.
 
 Provider endpoint construction reports a settled ownership, entry-type, or parent-permission refusal as `proxy_endpoint_insecure`, with `refusal` set to `foreign`, `unusable`, or `unsecurable`. It reports no settled verdict as `proxy_endpoint_unverified`, with `refusal` set to `unverified`: an operation may have failed, a successful observation may have reported no owner, or the fallback address may have named an unusable uid. Consumers must not interpret that code as an insecure-directory verdict.
 
