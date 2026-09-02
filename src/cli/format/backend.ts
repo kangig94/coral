@@ -13,7 +13,6 @@ import {
 import {
   liveHandoffResultObligation,
   type HandoffContinuationReason,
-  type HandoffStartupObservationAborted,
   type LiveHandoffResult,
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
@@ -470,23 +469,8 @@ function formatRoutingOwnerLiveness(
 
 type FinalizedDisposition = Extract<
   StoredTerminalDisposition,
-  {
-    kind:
-      | 'continued-current'
-      | 'delegated-success'
-      | 'delegated-startup-observation-aborted'
-      | 'delegated-exit'
-      | 'delegated-signal';
-  }
+  { kind: 'continued-current' | 'delegated-success' | 'delegated-exit' | 'delegated-signal' }
 >;
-
-export function formatHandoffStartupObservationAborted(outcome: HandoffStartupObservationAborted): string {
-  return (
-    `Handoff startup observation for Coral ${outcome.version} was aborted; detached child pid ` +
-    `${outcome.child.pid} (incarnation ${outcome.child.incarnation}) was left running and unobserved. ` +
-    'Coral will neither await nor terminate it.'
-  );
-}
 
 function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
   switch (disposition.kind) {
@@ -501,12 +485,6 @@ function formatFinalizedDisposition(disposition: FinalizedDisposition): string {
       }
     case 'delegated-success':
       return `delegated successfully to ${disposition.version}`;
-    case 'delegated-startup-observation-aborted':
-      return (
-        `startup observation aborted after delegating to ${disposition.version}; detached child pid ` +
-        `${disposition.child.pid} (incarnation ${disposition.child.incarnation}) was left running and unobserved, ` +
-        'and Coral will neither await nor terminate it'
-      );
     case 'delegated-exit':
       return `delegated to ${disposition.version}, which exited ${disposition.exitCode}`;
     case 'delegated-signal':
@@ -522,7 +500,6 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
       return `execution failed during ${disposition.throwPhase}`;
     case 'continued-current':
     case 'delegated-success':
-    case 'delegated-startup-observation-aborted':
     case 'delegated-exit':
     case 'delegated-signal':
       return formatFinalizedDisposition(disposition);
@@ -532,12 +509,6 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
       return `${formatFinalizedDisposition(disposition.terminal)} without a retained selection`;
     case 'terminal-without-retained-selection':
       return `${formatStoredTerminalDisposition(disposition.terminal)} after its selection identity expired or was unavailable`;
-    case 'operator-resolved-without-retained-selection':
-      return (
-        `resolved by the operator (${disposition.resolutionReason}) without a retained selection; ` +
-        `detached child pid ${disposition.resolvedChild.pid} (incarnation ${disposition.resolvedChild.incarnation}) ` +
-        'was left running and unobserved'
-      );
     case 'terminal-after-operator-resolution':
       return `${formatStoredTerminalDisposition(disposition.terminal)} after operator resolution (${disposition.resolutionReason})`;
     default:
@@ -673,15 +644,6 @@ function formatRoutingResolutionPublicationSuccessor(
   });
 }
 
-export function formatAbandonedStartupChildSuccessor(invocationId: string): string {
-  return (
-    'Stop that exact child through the service or account that owns it. ' +
-    'If it is the coordinator addressed by this Coral installation, run coral-cli backend shutdown. ' +
-    'After that exact PID and incarnation are absent, rerun coral-cli backend status, then run ' +
-    `coral-cli backend routing-status resolve --invocation ${invocationId}`
-  );
-}
-
 export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveResult): string {
   switch (result.kind) {
     case 'resolved':
@@ -693,9 +655,7 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
     case 'already-terminal':
       return `Routing invocation ${result.invocationId} is already terminal. No resolution is needed.\nNext step: no action is needed.`;
     case 'live-owner':
-      return result.abandonedChild === undefined
-        ? `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`
-        : `Refusing to resolve routing invocation ${result.invocationId}: detached startup child pid ${result.abandonedChild.pid} (incarnation ${result.abandonedChild.incarnation}) is alive.\nNext step: ${formatAbandonedStartupChildSuccessor(result.invocationId)}.`;
+      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`;
     case 'unauthorized-unobservable':
       return result.cause === 'deadline-expired'
         ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then retry without --force-unobservable; the flag cannot override an expired observation budget.`

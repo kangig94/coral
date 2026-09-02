@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
@@ -278,36 +277,6 @@ describe('cli follow handoff', () => {
     const { launchAndFollow } = await import('#src/cli/follow.js');
     await expect(launchAndFollow(makeOptions())).resolves.toBe(75);
 
-    expect(mockState.renderHandoffNotice).not.toHaveBeenCalled();
-  });
-
-  it('should report an abandoned startup child as a transient wait outcome', async () => {
-    const emitError = vi.fn();
-    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
-    mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.runHandoff.mockResolvedValue(
-      recorded({
-        kind: 'delegated',
-        version: '2.0.0',
-        outcome: {
-          kind: 'handoff-startup-observation-aborted',
-          version: '2.0.0',
-          child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-          childDisposition: 'left-running-and-unobserved',
-        },
-      }),
-    );
-
-    const { launchAndFollow } = await import('#src/cli/follow.js');
-    await expect(launchAndFollow(makeOptions({ emitError }))).resolves.toBe(75);
-
-    expect(emitError).toHaveBeenCalledOnce();
-    expect(emitError.mock.calls[0]?.[0]).toMatchObject({
-      message: expect.stringContaining('detached child pid 4242'),
-    });
-    expect(emitError.mock.calls[0]?.[0]).toMatchObject({
-      message: expect.stringContaining('left running and unobserved'),
-    });
     expect(mockState.renderHandoffNotice).not.toHaveBeenCalled();
   });
 

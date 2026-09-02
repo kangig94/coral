@@ -10,16 +10,12 @@ import {
   MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
   MAX_UNRESERVED_CLOSING_RECORD_BYTES,
-  handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   persistedHandoffDispositionPolicy,
   type HandoffRoutingStatusClassification,
   type HandoffRoutingStatusClassificationPolicy,
-  type OwnerLiveness,
-  type PersistedHandoffDisposition,
 } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const generation = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const emptyRetirementHistory = {
@@ -210,115 +206,6 @@ describe('handoff routing status classification policy', () => {
       classification: 'history',
       exitContribution: 0,
     });
-  });
-
-  const abandonedStartupChild = {
-    kind: 'delegated-startup-observation-aborted',
-    version: '2.3.4',
-    child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-    childDisposition: 'left-running-and-unobserved',
-  } as const;
-
-  it.each([
-    ['retained selection', abandonedStartupChild],
-    ['missing selection', { kind: 'finalized-without-selection', terminal: abandonedStartupChild }],
-    [
-      'evicted selection',
-      {
-        kind: 'terminal-without-retained-selection',
-        knowledge: 'identity-expired-or-selection-unavailable',
-        terminal: abandonedStartupChild,
-      },
-    ],
-    [
-      'resolved selection',
-      {
-        kind: 'terminal-after-operator-resolution',
-        resolutionReason: 'owner-absent',
-        retiredSelection: {
-          selectionSequence: 1,
-          selectedAt: '2026-09-01T00:00:00.000Z',
-          owner: { pid: 4000, incarnation: testIncarnation('routing-owner') },
-          selectedDisposition: { kind: 'continue-current', basis: { kind: 'incumbent-absent' } },
-        },
-        terminal: abandonedStartupChild,
-      },
-    ],
-  ] as const satisfies readonly (readonly [string, PersistedHandoffDisposition])[])(
-    'classifies an abandoned startup child with a %s as a warning hold',
-    (_selectionState, disposition) => {
-      expect(persistedHandoffDispositionPolicy(disposition)).toEqual({
-        durability: 'lifecycle-journal',
-        retention: 'until-resolved',
-        severity: 'warning',
-        classification: 'hold',
-        exitContribution: 75,
-      });
-    },
-  );
-
-  it('discharges the hold once the operator resolution is recorded', () => {
-    const resolution = {
-      kind: 'operator-resolved-without-retained-selection',
-      resolutionReason: 'owner-absent',
-      resolvedChild: abandonedStartupChild.child,
-    } as const satisfies PersistedHandoffDisposition;
-
-    expect(persistedHandoffDispositionPolicy(resolution)).toEqual({
-      durability: 'lifecycle-journal',
-      retention: 'bounded-history',
-      severity: 'info',
-      classification: 'history',
-      exitContribution: 0,
-    });
-  });
-
-  it('holds until the unobserved child is proven absent', () => {
-    const contribution = (childLiveness: OwnerLiveness): 0 | 75 =>
-      handoffRoutingStatusExitContribution({
-        kind: 'current',
-        generation,
-        statuses: [
-          {
-            kind: 'terminal',
-            selection: {
-              generation,
-              sequence: 1,
-              eventId: 'selection-event',
-              invocationId: 'routing-invocation',
-              observedAt: '2026-09-01T00:00:00.000Z',
-              eventKind: 'routing-selected',
-              phase: 'selection',
-              owner: { pid: 4000, incarnation: testIncarnation('routing-owner') },
-              disposition: { kind: 'continue-current', basis: { kind: 'incumbent-absent' } },
-            },
-            childLiveness,
-            terminal: {
-              generation,
-              sequence: 2,
-              eventId: 'terminal-event',
-              invocationId: 'routing-invocation',
-              observedAt: '2026-09-01T00:00:00.000Z',
-              eventKind: 'continuation-finalized',
-              phase: 'terminal',
-              selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
-              disposition: {
-                kind: 'delegated-startup-observation-aborted',
-                version: '2.3.4',
-                child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-                childDisposition: 'left-running-and-unobserved',
-              },
-            },
-          },
-        ],
-        retirementHistoryTruncated: emptyRetirementHistory,
-      });
-
-    expect([
-      contribution({ kind: 'alive' }),
-      contribution({ kind: 'unobservable', cause: 'probe-failed' }),
-      contribution({ kind: 'absent' }),
-    ]).toEqual([75, 75, 0]);
   });
 
   it('reserves for the direct close and admits the wider wrapped close', () => {

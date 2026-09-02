@@ -6,7 +6,6 @@ import { HandoffRunError } from '#src/coordinator/handoff-routing/runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const mockState = vi.hoisted(() => ({
   runHandoff: vi.fn(),
@@ -75,36 +74,6 @@ describe('backend bootstrap store handoff', () => {
     const result = await handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target));
 
     expect(result).toMatchObject({ kind: 'failed', error: { message } });
-  });
-
-  it('should fail startup when observation leaves the selected child running and unobserved', async () => {
-    mockState.runHandoff.mockResolvedValue({
-      kind: 'recorded',
-      continuation: {
-        kind: 'delegated',
-        version: '2.0.0',
-        outcome: {
-          kind: 'handoff-startup-observation-aborted',
-          version: '2.0.0',
-          child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-          childDisposition: 'left-running-and-unobserved',
-        },
-      },
-      publicationIncidents: [],
-    });
-
-    await expect(
-      handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target)),
-    ).resolves.toMatchObject({
-      kind: 'failed',
-      exitCode: 75,
-      error: {
-        message:
-          'Selected backend startup observation was aborted for Coral 2.0.0; detached child pid 4242 ' +
-          `(incarnation ${testIncarnation('selected-backend')}) was left running and unobserved. ` +
-          'Coral will neither await nor terminate it.',
-      },
-    });
   });
 
   it('should never expose a failed startup handoff as exit code zero', async () => {

@@ -3,11 +3,13 @@ import {
   type AssertHandoffRefusalCodesCoverContext,
   type AssertHandoffRefusalContextCoversCodes,
   CoralSetupError,
+  DOCUMENTED_CORAL_SETUP_ERROR_CODES,
   NOT_OBSERVED_CORAL_SETUP_ERROR_CODES,
   documentedCoralSetupError,
   documentedCoralSetupErrorExitCode,
   isRetryableCoralSetupError,
   readOperatorFacingCoralSetupError,
+  renderHandoffRefusal,
   resolveSetupErrorAuthorship,
   type DocumentedCoralSetupErrorCode,
   type HandoffRefusalCode,
@@ -373,6 +375,29 @@ describe('CoralSetupError', () => {
     );
 
     expect(retryability).toEqual({ handoff_manual_policy: false, handoff_term_only_policy: true });
+  });
+
+  // A coordinator-side refusal reaches `startup-diagnostic.json`, and `backend status` re-renders its
+  // remediation from this registry, so no documented remediation may promise that a command relaunches the
+  // backend: `backend status` never observed that one is absent, and the command it names attempts startup
+  // or handoff without guaranteeing either.
+  it('authors no documented remediation that promises a relaunch', () => {
+    // A handoff code's remediation is a function of a context it requires, so its own case supplies one.
+    const handoffRemediations = new Map<string, string>(
+      HANDOFF_REFUSAL_CASES.map(({ init }) => [init.code, renderHandoffRefusal(init).remediation]),
+    );
+
+    // Checked before the sweep: a handoff code with no case would otherwise reach the context-free render
+    // below and throw, instead of reporting that its remediation was never checked.
+    expect(DOCUMENTED_CORAL_SETUP_ERROR_CODES.filter((code) => code.startsWith('handoff_')).sort()).toEqual(
+      [...handoffRemediations.keys()].sort(),
+    );
+    expect(DOCUMENTED_CORAL_SETUP_ERROR_CODES).toContain('coordinator_record_unreadable');
+    expect(
+      DOCUMENTED_CORAL_SETUP_ERROR_CODES.filter((code) =>
+        /\brelaunch(?:es|ing)?\b/iu.test(handoffRemediations.get(code) ?? documentedCoralSetupError(code).remediation),
+      ),
+    ).toEqual([]);
   });
 
   it('owns documented exit and retryability policy in the setup-error registry', () => {
@@ -981,7 +1006,7 @@ describe('CoralSetupError', () => {
       'engine_env_var_missing',
       { engine: 'gemini', envVar: 'GEMINI_API_KEY' },
       "Engine 'gemini' needs environment variable 'GEMINI_API_KEY'.",
-      "Set GEMINI_API_KEY in the backend's environment (e.g. the `env` block of ~/.claude/settings.json), run 'coral-cli backend shutdown' so the next command relaunches with it, then rerun `coral-cli expansion equip gemini`.",
+      "Set GEMINI_API_KEY in the backend's environment (e.g. the `env` block of ~/.claude/settings.json), run 'coral-cli backend shutdown', then rerun `coral-cli expansion equip gemini`; it attempts startup or handoff with that environment.",
     ],
     [
       'expansion_embedding_provider_missing',

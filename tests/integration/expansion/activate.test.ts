@@ -220,7 +220,7 @@ describe('expansion activation', () => {
         code: 'engine_env_var_missing',
         userMessage: "Engine 'gemini' needs environment variable 'GEMINI_API_KEY'.",
         remediation:
-          "Set GEMINI_API_KEY in the backend's environment (e.g. the `env` block of ~/.claude/settings.json), run 'coral-cli backend shutdown' so the next command relaunches with it, then rerun `coral-cli expansion equip gemini`.",
+          "Set GEMINI_API_KEY in the backend's environment (e.g. the `env` block of ~/.claude/settings.json), run 'coral-cli backend shutdown', then rerun `coral-cli expansion equip gemini`; it attempts startup or handoff with that environment.",
         context: { engine: 'gemini', envVar: 'GEMINI_API_KEY' },
       });
       expect(mockState.ensure).not.toHaveBeenCalled();

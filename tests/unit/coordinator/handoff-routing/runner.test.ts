@@ -923,230 +923,20 @@ describe('handoff-routing/runner', () => {
     });
   });
 
-  it('refuses to continue-current for an aborted startup handoff', async () => {
-    const bundleDir = roots[0];
-    const target = validatedTarget(bundleDir);
-    let child: ChildProcess | undefined;
-    mockState.spawn.mockImplementationOnce(() => {
-      child = childThatStaysAlive();
-      return child;
-    });
+  it('abandons a delegated CLI invocation whose signal is already aborted before any spawn', async () => {
+    const target = validatedTarget(roots[0]);
 
-    const aborted = AbortSignal.abort();
-    const result = runHandoff(
-      { kind: 'backend-startup' },
-      { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted },
-    );
-    await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
-
-    await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: {
-        kind: 'handoff-startup-observation-aborted',
-        version: manifest.version,
-        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
-        childDisposition: 'left-running-and-unobserved',
-      },
-    });
-
-    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     await expect(
-      runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted }),
+      runHandoff(cliOperation('run'), {
+        pluginRoot: '/plugin/root',
+        activeSelectionTarget: target,
+        signal: AbortSignal.abort(),
+      }),
     ).resolves.toEqual({
       kind: 'run-current',
       reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
     });
-  });
-
-  it('returns and records abandonment when startup observation is aborted', async () => {
-    const target = validatedTarget(roots[0]);
-    const controller = new AbortController();
-    const sleep = vi.fn<TimePort['sleep']>(
-      (_ms, options) =>
-        new Promise<void>((resolve) => {
-          if (options?.signal?.aborted === true) {
-            resolve();
-            return;
-          }
-          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
-        }),
-    );
-    const time: TimePort = {
-      ...runtime.time,
-      sleep,
-    };
-    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    // The child must be created inside the spawn call; one built earlier emits 'spawn' before the runner
-    // can observe it.
-    let child!: ChildProcess;
-    mockState.spawn.mockImplementationOnce(() => {
-      child = childThatStaysAlive();
-      return child;
-    });
-
-    const result = runHandoff(
-      { kind: 'backend-startup' },
-      { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: controller.signal, time },
-    );
-    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
-    controller.abort();
-
-    await expect(result).resolves.toEqual({
-      kind: 'delegated',
-      version: manifest.version,
-      outcome: {
-        kind: 'handoff-startup-observation-aborted',
-        version: manifest.version,
-        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
-        childDisposition: 'left-running-and-unobserved',
-      },
-    });
-    expect(mockState.probeCoordinator).toHaveBeenCalledOnce();
-    expect(child.unref).toHaveBeenCalledOnce();
-    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
-      kind: 'continuation-finalized',
-      disposition: {
-        kind: 'delegated-startup-observation-aborted',
-        version: manifest.version,
-        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
-        childDisposition: 'left-running-and-unobserved',
-      },
-    });
-  });
-
-  it('abandons the child on the identity read while it was live, not one read after the abort', async () => {
-    const target = validatedTarget(roots[0]);
-    const controller = new AbortController();
-    const sleep = vi.fn<TimePort['sleep']>(
-      (_ms, options) =>
-        new Promise<void>((resolve) => {
-          if (options?.signal?.aborted === true) {
-            resolve();
-            return;
-          }
-          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
-        }),
-    );
-    let childIdentityReads = 0;
-    // The abort must use the identity already held: a later read can answer null for a child that is still
-    // running, and that answer must not be reachable from here.
-    readProcessIncarnation.mockImplementation((pid) => {
-      if (pid !== SPAWNED_CHILD_PID) return testIncarnation('handoff-runner');
-      childIdentityReads += 1;
-      return childIdentityReads === 1 ? testIncarnation('handoff-runner') : null;
-    });
-    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
-
-    const result = runHandoff(
-      { kind: 'backend-startup' },
-      {
-        pluginRoot: '/plugin/root',
-        activeSelectionTarget: target,
-        signal: controller.signal,
-        time: { ...runtime.time, sleep },
-      },
-    );
-    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
-    controller.abort();
-
-    await expect(result).resolves.toEqual({
-      kind: 'delegated',
-      version: manifest.version,
-      outcome: {
-        kind: 'handoff-startup-observation-aborted',
-        version: manifest.version,
-        child: { pid: SPAWNED_CHILD_PID, incarnation: testIncarnation('handoff-runner') },
-        childDisposition: 'left-running-and-unobserved',
-      },
-    });
-    expect(childIdentityReads).toBe(1);
-  });
-
-  it('records a terminal and names the pid when the abandoned child cannot be attributed', async () => {
-    const target = validatedTarget(roots[0]);
-    const controller = new AbortController();
-    const sleep = vi.fn<TimePort['sleep']>(
-      (_ms, options) =>
-        new Promise<void>((resolve) => {
-          if (options?.signal?.aborted === true) {
-            resolve();
-            return;
-          }
-          options?.signal?.addEventListener('abort', () => resolve(), { once: true });
-        }),
-    );
-    // No incarnation is readable for the child at any point, so a durable hold has no key to be filed under.
-    readProcessIncarnation.mockImplementation((pid) =>
-      pid === SPAWNED_CHILD_PID ? null : testIncarnation('handoff-runner'),
-    );
-    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
-
-    const result = runHandoffResult(
-      { kind: 'backend-startup' },
-      {
-        pluginRoot: '/plugin/root',
-        activeSelectionTarget: target,
-        signal: controller.signal,
-        time: { ...runtime.time, sleep },
-      },
-    );
-    await vi.waitFor(() => expect(sleep).toHaveBeenCalledOnce());
-    controller.abort();
-
-    const error = await result.catch((thrown: unknown) => thrown);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(`pid ${SPAWNED_CHILD_PID}`);
-    expect((error as Error).message).toContain('no routing-status hold can name it');
-    expect((error as Error).message).toContain("Run 'coral-cli backend status'");
-    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
-      kind: 'execution-failed',
-      disposition: { kind: 'execution-failed', throwPhase: 'child-outcome-wait' },
-    });
-  });
-
-  it('attaches terminal and abort observers once across repeated startup polls', async () => {
-    const target = validatedTarget(roots[0]);
-    const controller = new AbortController();
-    // Counted on this controller's own signal, not on a global: the original still runs, so the abort below
-    // reaches the observer.
-    const subscribe = vi.spyOn(controller.signal, 'addEventListener');
-    const abortSubscriptions = (): number => subscribe.mock.calls.filter(([type]) => type === 'abort').length;
-    let sleepCalls = 0;
-    let subscribedEarly = -1;
-    // The sleep parks rather than subscribing to the abort, so every abort subscription counted here is one the
-    // observer under test made. The abort still ends the run: the observer's own listener wakes the poll. The
-    // early sample is taken inside the third poll, because polls one to twenty resolve without yielding to a
-    // timer and a sample taken from the outside can land after all of them.
-    const sleep = vi.fn<TimePort['sleep']>(() => {
-      sleepCalls += 1;
-      if (sleepCalls === 3) subscribedEarly = abortSubscriptions();
-      return sleepCalls <= 20 ? Promise.resolve() : new Promise<void>(() => undefined);
-    });
-    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
-    mockState.spawn.mockImplementationOnce(() => childThatStaysAlive());
-
-    const result = runHandoff(
-      { kind: 'backend-startup' },
-      {
-        pluginRoot: '/plugin/root',
-        activeSelectionTarget: target,
-        signal: controller.signal,
-        time: { ...runtime.time, sleep },
-      },
-    );
-    await vi.waitFor(() => expect(sleepCalls).toBeGreaterThan(20));
-
-    // Two samples eighteen polls apart, compared against each other rather than against a fixed count: a
-    // per-poll re-subscription grows between them, and no unrelated subscription can make them differ.
-    expect(subscribedEarly).toBeGreaterThanOrEqual(0);
-    expect(abortSubscriptions()).toBe(subscribedEarly);
-    controller.abort();
-    await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-startup-observation-aborted' },
-    });
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   it('should produce the active-selection source before backend startup delegation', async () => {
@@ -1818,6 +1608,78 @@ describe('handoff-routing/runner', () => {
     child.emit('exit', 0, null);
 
     await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
+  });
+
+  it('accepts a third build reached through this attempt when its own child terminates first', async () => {
+    const target = validatedTarget(roots[0]);
+    const currentAttemptId = 'current-attempt';
+    // The second hop delegated again, so the coordinator that bound is a third build. It carries this
+    // attempt's inherited id, which the identity comparison alone cannot recognise.
+    const transitiveNamespace = 'transitively-delegated-plugin-root';
+    const attemptRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? currentAttemptId : runtime.env.get(key)),
+        fullSnapshot: () => ({
+          ...runtime.env.fullSnapshot(),
+          CORAL_STARTUP_ATTEMPT_ID: currentAttemptId,
+        }),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    mockState.createRealRuntime.mockReturnValue(attemptRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: transitiveNamespace,
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      ...liveHealth(undefined, transitiveNamespace),
+      env: { CORAL_STARTUP_ATTEMPT_ID: currentAttemptId },
+    });
+
+    // The exact child exits while this observer is inside its poll sleep, so the only readiness read that
+    // sees the third build is the one terminality triggers.
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success', version: manifest.version },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-success', version: manifest.version },
+    });
   });
 
   it('does not read an empty attempt id as proof that this attempt is serving', async () => {

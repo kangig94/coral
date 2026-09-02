@@ -27,7 +27,6 @@ import {
   handoffRoutingRecordSchemaRegistry,
   handoffRoutingStatusStoreSchema,
   type HandoffRoutingStatusReadResult,
-  type OwnerLiveness,
 } from '#src/coordinator/handoff-routing/status.js';
 import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -65,53 +64,6 @@ function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatus
       status: 'ok',
       skippedProviderProxySetRows: parsed.skippedProviderProxySetRows,
       skippedProviderProxySetTokens: parsed.skippedProviderProxySetTokens,
-    },
-  };
-}
-
-function unobservedStartupChildStatus(childLiveness: OwnerLiveness): HandoffRoutingStatusReadResult {
-  const invocationId = '123e4567-e89b-42d3-a456-426614174099';
-  return {
-    kind: 'current',
-    generation: HANDOFF_ROUTING_STATUS_GENERATION,
-    statuses: [
-      {
-        kind: 'terminal',
-        selection: null,
-        childLiveness,
-        terminal: {
-          generation: HANDOFF_ROUTING_STATUS_GENERATION,
-          sequence: 2,
-          eventId: 'terminal-event',
-          invocationId,
-          observedAt: '2026-08-02T00:00:01.000Z',
-          eventKind: 'continuation-finalized',
-          phase: 'terminal',
-          selection: { kind: 'without-selection' },
-          disposition: {
-            kind: 'finalized-without-selection',
-            terminal: {
-              kind: 'delegated-startup-observation-aborted',
-              version: '2.3.4',
-              child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-              childDisposition: 'left-running-and-unobserved',
-            },
-          },
-        },
-      },
-    ],
-    retirementHistoryTruncated: {
-      kind: 'retirement-history-truncated',
-      expiredIdentityCount: 0,
-      causes: {
-        'selection-evicted-at-capacity': 0,
-        'completed-pair-compaction': 0,
-        'operator-resolved': 0,
-      },
-      minSelectionSequence: null,
-      maxSelectionSequence: null,
-      earliestSelectedAt: null,
-      latestSelectedAt: null,
     },
   };
 }
@@ -425,15 +377,6 @@ describe('backend status local exit combination', () => {
       { kind: 'delegated-signal', version: '2.3.4', signal: 'SIGTERM' } as const,
       "The delegated child ended from signal SIGTERM; use the child's output to diagnose the operation",
     ],
-    [
-      {
-        kind: 'delegated-startup-observation-aborted',
-        version: '2.3.4',
-        child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-        childDisposition: 'left-running-and-unobserved',
-      } as const,
-      'The detached Coral 2.3.4 child pid 4242',
-    ],
   ])(
     'describes the recorded delegated outcome without generalizing it as finished',
     (terminalDisposition, expected) => {
@@ -605,45 +548,6 @@ describe('backend routing status', () => {
           },
         },
         {
-          kind: 'terminal',
-          selection: null,
-          terminal: {
-            generation: HANDOFF_ROUTING_STATUS_GENERATION,
-            sequence: 3,
-            eventId: 'abandoned-terminal-event',
-            invocationId: 'abandoned-terminal-invocation',
-            observedAt: '2026-08-02T01:00:00.000Z',
-            eventKind: 'continuation-finalized',
-            phase: 'terminal',
-            selection: { kind: 'with-selection-sequence', selectionSequence: 2 },
-            disposition: {
-              kind: 'delegated-startup-observation-aborted',
-              version: '0.11.0',
-              child: { pid: 4242, incarnation: testIncarnation('selected-backend') },
-              childDisposition: 'left-running-and-unobserved',
-            },
-          },
-        },
-        {
-          kind: 'terminal',
-          selection: null,
-          terminal: {
-            generation: HANDOFF_ROUTING_STATUS_GENERATION,
-            sequence: 4,
-            eventId: 'resolved-abandoned-terminal-event',
-            invocationId: 'resolved-abandoned-invocation',
-            observedAt: '2026-08-02T02:00:00.000Z',
-            eventKind: 'continuation-finalized',
-            phase: 'terminal',
-            selection: { kind: 'without-selection' },
-            disposition: {
-              kind: 'operator-resolved-without-retained-selection',
-              resolutionReason: 'operator-abandoned-unobservable',
-              resolvedChild: { pid: 4343, incarnation: testIncarnation('abandoned-backend') },
-            },
-          },
-        },
-        {
           kind: 'retired',
           tombstone: {
             generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -707,8 +611,6 @@ describe('backend routing status', () => {
       'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
       'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
-      `Routing invocation abandoned-terminal-invocation: terminal; startup observation aborted after delegating to 0.11.0; detached child pid 4242 (incarnation ${testIncarnation('selected-backend')}) was left running and unobserved, and Coral will neither await nor terminate it.`,
-      `Routing invocation resolved-abandoned-invocation: terminal; resolved by the operator (operator-abandoned-unobservable) without a retained selection; detached child pid 4343 (incarnation ${testIncarnation('abandoned-backend')}) was left running and unobserved.`,
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
       'Routing invocation operator-resolved-invocation: retired (operator-resolved; reason: owner-absent). No action is needed.',
       'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',
@@ -885,45 +787,6 @@ describe('backend routing status', () => {
     expect(stdout).toContain(`backend routing-status resolve --invocation ${invocationId}`);
     expect(process.exitCode).toBe(75);
   });
-
-  it.each([
-    {
-      childLiveness: { kind: 'alive' } as const,
-      expectedExit: 75,
-      expectedSuccessor:
-        'Stop that exact child through the service or account that owns it. If it is the coordinator addressed by this Coral installation, run coral-cli backend shutdown. After that exact PID and incarnation are absent, rerun coral-cli backend status, then run coral-cli backend routing-status resolve --invocation 123e4567-e89b-42d3-a456-426614174099',
-    },
-    {
-      childLiveness: { kind: 'absent' } as const,
-      expectedExit: 0,
-      expectedSuccessor: 'backend routing-status resolve --invocation 123e4567-e89b-42d3-a456-426614174099',
-    },
-    {
-      childLiveness: { kind: 'unobservable', cause: 'probe-failed' } as const,
-      expectedExit: 75,
-      expectedSuccessor:
-        'backend routing-status resolve --invocation 123e4567-e89b-42d3-a456-426614174099 --force-unobservable',
-    },
-  ])(
-    'renders the exact successor and exits $expectedExit when an unobserved child is $childLiveness.kind',
-    async ({ childLiveness, expectedExit, expectedSuccessor }) => {
-      const status: BackendStatusCommandOperations = {
-        inspectReadiness: () => ({ kind: 'no-legacy' }),
-        getStatus: async () => ({ status: 'no_record_no_socket' }),
-        getLiveHandoffResult: () => null,
-        getRoutingStatus: async () => unobservedStartupChildStatus(childLiveness),
-      };
-      const program = new Command();
-      program.exitOverride();
-      registerBackendCommands(program, { storeReset, backendStatus: status });
-
-      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
-
-      expect(stdout).toContain('Detached startup child pid 4242');
-      expect(stdout).toContain(expectedSuccessor);
-      expect(process.exitCode).toBe(expectedExit);
-    },
-  );
 
   it('renders aggregate-only retirement history without keeping the expired capacity gate', async () => {
     const status: BackendStatusCommandOperations = {

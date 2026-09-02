@@ -20,7 +20,6 @@ import {
 } from '../../coordinator/handoff-routing/repair-operation.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
-  abandonedStartupChildIdentity,
   handoffRoutingStatusExitContribution,
   handoffRoutingStatusStoreSchema,
   readHandoffRoutingStatusWithOwnerObservations,
@@ -110,9 +109,7 @@ import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
-  formatAbandonedStartupChildSuccessor,
   formatBackendStatus,
-  formatHandoffStartupObservationAborted,
   formatHandoffRoutingResolveResult,
   formatRecoveryQuarantineClear,
   formatRecoveryQuarantineList,
@@ -400,42 +397,6 @@ function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0
     (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0
     ? 75
     : 0;
-}
-
-function formatUnobservedStartupChildSuccessors(result: HandoffRoutingStatusReadResult): string[] {
-  if (result.kind !== 'current') return [];
-  return result.statuses.flatMap((status) => {
-    if (status.kind !== 'terminal') return [];
-    const child = abandonedStartupChildIdentity(status.terminal.disposition);
-    if (child === null) return [];
-    const invocationId = status.terminal.invocationId;
-    const childLiveness = status.childLiveness;
-    const subject = `Detached startup child pid ${child.pid} (incarnation ${child.incarnation})`;
-    switch (childLiveness?.kind) {
-      case 'alive':
-        return [
-          `Current observation: ${subject} for routing invocation ${invocationId} is still alive. Next step: ${formatAbandonedStartupChildSuccessor(invocationId)}.`,
-        ];
-      case 'absent':
-        return [
-          `Current observation: ${subject} for routing invocation ${invocationId} is absent. Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`,
-        ];
-      case 'unobservable':
-        return childLiveness.cause === 'deadline-expired'
-          ? [
-              `Current observation: ${subject} for routing invocation ${invocationId} could not be observed before the sweep deadline. Next step: rerun coral-cli backend status; an expired sweep cannot authorize resolution.`,
-            ]
-          : [
-              `Current observation: ${subject} for routing invocation ${invocationId} is unobservable (${childLiveness.cause}). Next step: verify that exact process externally, then run coral-cli backend routing-status resolve --invocation ${invocationId} --force-unobservable.`,
-            ];
-      case undefined:
-        return [
-          `Current observation: ${subject} for routing invocation ${invocationId} has not been re-observed. Next step: rerun coral-cli backend status.`,
-        ];
-      default:
-        return assertNever(childLiveness);
-    }
-  });
 }
 
 const OFFLINE_OPERATOR_FLAVOR_HELP =
@@ -968,11 +929,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       ]);
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-      const output = [
-        formatBackendStatus(status, routingStatusRead, liveHandoffResult),
-        ...formatUnobservedStartupChildSuccessors(routingStatusRead),
-      ];
-      process.stdout.write(`${output.join('\n')}\n`);
+      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
       const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
         BACKEND_STATUS_EXIT_CODES[status.status],
         liveHandoffObligation.exitContribution,
@@ -1378,10 +1335,6 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           switch (continuation.outcome.kind) {
             case 'handoff-success':
               renderHandoffNotice(continuation.outcome);
-              return;
-            case 'handoff-startup-observation-aborted':
-              process.stderr.write(`${formatHandoffStartupObservationAborted(continuation.outcome)}\n`);
-              process.exitCode = errorCodeToExit('transient');
               return;
             case 'handoff-exit':
               process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);

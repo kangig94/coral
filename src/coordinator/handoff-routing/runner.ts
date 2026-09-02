@@ -21,7 +21,7 @@ import {
   type ValidatedHandoffTarget,
 } from '../../infra/handoff-target.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
-import { assertNever, errorMessage } from '../../infra/error-format.js';
+import { assertNever } from '../../infra/error-format.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
@@ -141,16 +141,8 @@ export type HandoffSuccess = Readonly<{
   [handoffSuccessBrand]: true;
 }>;
 
-export type HandoffStartupObservationAborted = Readonly<{
-  kind: 'handoff-startup-observation-aborted';
-  version: string;
-  child: RecordedProcessIdentity;
-  childDisposition: 'left-running-and-unobserved';
-}>;
-
 export type HandoffOutcome =
   | HandoffSuccess
-  | HandoffStartupObservationAborted
   | Readonly<{ kind: 'handoff-exit'; exitCode: number }>
   | Readonly<{ kind: 'handoff-signal'; signal: NodeJS.Signals }>;
 
@@ -313,32 +305,7 @@ type ObservedChild = Readonly<{
   outcome: Promise<ChildOutcome>;
 }>;
 
-type BackendStartupObservationAbort = Readonly<{
-  kind: 'aborted';
-  child: RecordedProcessIdentity;
-  childDisposition: 'left-running-and-unobserved';
-}>;
-
-/**
- * The abort left a child running that this build cannot name durably: the incarnation half of its
- * `RecordedProcessIdentity` was already unreadable while the spawn was known live, and a hold keyed by the
- * pid alone would fence whatever process next holds that number. No hold is recorded for this child, so what
- * ends the state is not an operator command: the child is a coordinator, so it either binds the coordinator
- * socket and answers `coral-cli backend status`, or it is gone.
- */
-type BackendStartupObservationUnattributableAbort = Readonly<{
-  kind: 'aborted-child-unattributable';
-  observedPid: number | null;
-  childDisposition: 'left-running-and-unobserved';
-  hold: 'unavailable-without-child-incarnation';
-  until: 'child-answers-backend-status-or-is-gone';
-}>;
-
-type BackendStartupObservation =
-  | Readonly<{ kind: 'ready' }>
-  | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>
-  | BackendStartupObservationAbort
-  | BackendStartupObservationUnattributableAbort;
+type BackendStartupObservation = Readonly<{ kind: 'ready' }> | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>;
 
 type BackendStartupReadiness =
   | Readonly<{ kind: 'ready' }>
@@ -592,24 +559,24 @@ function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome 
   });
 }
 
-function endedChildOutcome(
-  outcome: ChildOutcome,
-): Exclude<HandoffOutcome, HandoffSuccess | HandoffStartupObservationAborted> {
+function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, HandoffSuccess> {
   if (outcome.signal !== null) {
     return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
   }
   return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code === 0 ? 1 : (outcome.code ?? 1) });
 }
 
-function spawnedChildIdentity(child: ChildProcess, runtime: Runtime): RecordedProcessIdentity | null {
-  const pid = child.pid;
-  if (pid === undefined) return null;
-  try {
-    const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
-    return incarnation === null ? null : { pid, incarnation };
-  } catch {
-    return null;
-  }
+function startupAttemptLineage(
+  health: LiveIncumbentHealth,
+  desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string | undefined,
+): StartupAttemptLineage {
+  return resolveStartupAttemptLineage({
+    observedAttemptId: health.env?.CORAL_STARTUP_ATTEMPT_ID,
+    expectedAttemptId,
+    observedIdentity: health,
+    desiredIdentity,
+  });
 }
 
 function liveBackendStartupReadiness(
@@ -620,12 +587,7 @@ function liveBackendStartupReadiness(
   if (reading.kind !== 'observed') {
     return null;
   }
-  const lineage = resolveStartupAttemptLineage({
-    observedAttemptId: reading.health.env?.CORAL_STARTUP_ATTEMPT_ID,
-    expectedAttemptId,
-    observedIdentity: reading.health,
-    desiredIdentity,
-  });
+  const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);
   return lineage.kind === 'proven-current-attempt'
     ? { kind: 'ready' }
     : {
@@ -635,11 +597,22 @@ function liveBackendStartupReadiness(
       };
 }
 
+/**
+ * Terminality retires lineage's veto over a bare identity match; it does not retire lineage as a proof. The
+ * inherited attempt id is the only one of the two that survives further delegation — a transitively delegated
+ * coordinator carries this attempt's id while its build identity is a third build's — so accepting the
+ * identity match alone records a startup that succeeded as a delegated exit.
+ */
 function terminalBackendStartupReadiness(
   reading: LiveIncumbentReading,
   desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string | undefined,
 ): Readonly<{ kind: 'ready' }> | null {
-  return reading.kind === 'observed' && startupAttemptIdentityMatches(reading.health, desiredIdentity)
+  if (reading.kind !== 'observed') {
+    return null;
+  }
+  const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);
+  return lineage.kind === 'proven-current-attempt' || startupAttemptIdentityMatches(reading.health, desiredIdentity)
     ? { kind: 'ready' }
     : null;
 }
@@ -650,126 +623,30 @@ async function waitForBackendStartupObservation(
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
-  child: ChildProcess,
-  signal: AbortSignal | undefined,
 ): Promise<BackendStartupObservation> {
-  type ExternalObservation = Exclude<BackendStartupObservation, { kind: 'ready' }>;
-  type ExternalSettlement =
-    | Readonly<{ kind: 'observed'; observation: ExternalObservation }>
-    | Readonly<{ kind: 'rejected'; error: unknown }>;
+  const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
 
-  let externalSettlement: ExternalSettlement | null = null;
-  let wakeForExternalSettlement: (() => void) | null = null;
-  let removeAbortListener = (): void => undefined;
-
-  const settleExternal = (settlement: ExternalSettlement): void => {
-    if (externalSettlement !== null) return;
-    externalSettlement = settlement;
-    wakeForExternalSettlement?.();
-  };
-  const readExternal = (): ExternalObservation | null => {
-    if (externalSettlement === null) return null;
-    if (externalSettlement.kind === 'rejected') throw externalSettlement.error;
-    return externalSettlement.observation;
-  };
-  const waitForExternalOr = <Value>(pending: Promise<Value>): Promise<Value | null> => {
-    if (externalSettlement !== null) return Promise.resolve(null);
-    return new Promise<Value | null>((resolvePending, rejectPending) => {
-      let waiting = true;
-      const wake = (): void => {
-        if (!waiting) return;
-        waiting = false;
-        resolvePending(null);
-      };
-      wakeForExternalSettlement = wake;
-      if (externalSettlement !== null) {
-        wake();
-        return;
+  while (true) {
+    const reading = readLiveCoordinatorHealth(runtime, time);
+    const readiness = reading.then((health) => liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId));
+    const observed = await Promise.race([terminal, readiness]);
+    if (observed !== null) {
+      if (observed.kind === 'ready') {
+        return observed;
       }
-      void pending.then(
-        (value) => {
-          if (!waiting) return;
-          waiting = false;
-          if (wakeForExternalSettlement === wake) wakeForExternalSettlement = null;
-          resolvePending(value);
-        },
-        (error: unknown) => {
-          if (!waiting) return;
-          waiting = false;
-          if (wakeForExternalSettlement === wake) wakeForExternalSettlement = null;
-          rejectPending(error instanceof Error ? error : new Error(errorMessage(error), { cause: error }));
-        },
-      );
-    });
-  };
-  const finishExternal = async (
-    external: ExternalObservation,
-    reading?: Promise<LiveIncumbentReading>,
-  ): Promise<BackendStartupObservation> => {
-    // An abort leaves a live child nobody is watching. A coordinator answering at the address afterwards is
-    // not proof that it is that child, so it may not convert an abandonment into a success.
-    if (external.kind === 'aborted' || external.kind === 'aborted-child-unattributable') return external;
-    const finalHealth = reading === undefined ? await readLiveCoordinatorHealth(runtime, time) : await reading;
-    return terminalBackendStartupReadiness(finalHealth, desiredIdentity) ?? external;
-  };
-
-  void observation.outcome.then(
-    (outcome) => settleExternal({ kind: 'observed', observation: { kind: 'terminal', outcome } }),
-    (error: unknown) => settleExternal({ kind: 'rejected', error }),
-  );
-
-  if (signal !== undefined) {
-    // The child's durable identity must be read while the spawn is known live: an identity that could not be
-    // read is not evidence that there is no child, and by the abort the process may already be unreadable.
-    const spawnedChild = spawnedChildIdentity(child, runtime);
-    const onAbort = (): void => {
-      settleExternal({
-        kind: 'observed',
-        observation:
-          spawnedChild === null
-            ? {
-                kind: 'aborted-child-unattributable',
-                observedPid: child.pid ?? null,
-                childDisposition: 'left-running-and-unobserved',
-                hold: 'unavailable-without-child-incarnation',
-                until: 'child-answers-backend-status-or-is-gone',
-              }
-            : {
-                kind: 'aborted',
-                child: spawnedChild,
-                childDisposition: 'left-running-and-unobserved',
-              },
-      });
-    };
-    if (signal.aborted) {
-      onAbort();
-    } else {
-      signal.addEventListener('abort', onAbort, { once: true });
-      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+      if (observed.kind === 'terminal') {
+        return terminalBackendStartupReadiness(await reading, desiredIdentity, expectedAttemptId) ?? observed;
+      }
     }
-  }
 
-  try {
-    while (true) {
-      const externalBeforeRead = readExternal();
-      if (externalBeforeRead !== null) return await finishExternal(externalBeforeRead);
-
-      const reading = readLiveCoordinatorHealth(runtime, time);
-      const readiness = reading.then((health) =>
-        liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId),
-      );
-      const observed = await waitForExternalOr(readiness);
-      const externalDuringRead = readExternal();
-      if (externalDuringRead !== null) return await finishExternal(externalDuringRead, reading);
-      if (observed?.kind === 'ready') return observed;
-
-      await waitForExternalOr(time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS, { signal }));
-      const externalDuringPoll = readExternal();
-      if (externalDuringPoll !== null) return await finishExternal(externalDuringPoll);
+    const terminalDuringPoll = await Promise.race([
+      terminal,
+      time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS).then(() => null),
+    ]);
+    if (terminalDuringPoll !== null) {
+      const finalHealth = await readLiveCoordinatorHealth(runtime, time);
+      return terminalBackendStartupReadiness(finalHealth, desiredIdentity, expectedAttemptId) ?? terminalDuringPoll;
     }
-  } finally {
-    wakeForExternalSettlement = null;
-    removeAbortListener();
   }
 }
 
@@ -1036,13 +913,6 @@ function finalizedDisposition(continuation: HandoffContinuationResult): DirectTe
       switch (continuation.outcome.kind) {
         case 'handoff-success':
           return { kind: 'delegated-success', version: continuation.version };
-        case 'handoff-startup-observation-aborted':
-          return {
-            kind: 'delegated-startup-observation-aborted',
-            version: continuation.outcome.version,
-            child: continuation.outcome.child,
-            childDisposition: continuation.outcome.childDisposition,
-          };
         case 'handoff-exit':
           return { kind: 'delegated-exit', version: continuation.version, exitCode: continuation.outcome.exitCode };
         case 'handoff-signal':
@@ -1153,41 +1023,24 @@ async function executeResolvedHandoff(
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {
         child.unref();
+        // A cancellation may not be threaded into this observation: it would have to return while the
+        // detached child is still live, and `HandoffOutcome` has no variant that names an unobserved child,
+        // so the abandonment would be reported as a success or an exit. Both are false.
         const startupObservation = await waitForBackendStartupObservation(
           childObservation,
           runtime,
           time,
           startup.identity,
           startup.expectedAttemptId,
-          child,
-          signal,
         );
-        let outcome: HandoffOutcome;
-        switch (startupObservation.kind) {
-          case 'ready':
-            outcome = handoffOutcome(execution.manifest.version, { code: 0, signal: null });
-            break;
-          case 'aborted':
-            outcome = Object.freeze({
-              kind: 'handoff-startup-observation-aborted',
-              version: execution.manifest.version,
-              child: startupObservation.child,
-              childDisposition: startupObservation.childDisposition,
-            });
-            break;
-          case 'aborted-child-unattributable':
-            // No durable record can name this child, so this message is the only place its pid survives. It
-            // must keep naming that pid and the one command that settles what became of the child.
-            throw new Error(
-              `Delegated Coral startup was abandoned while its child (pid ${startupObservation.observedPid ?? 'unknown'}) was still running, and that child's process incarnation could not be read when it was spawned, so no routing-status hold can name it. Run 'coral-cli backend status': the delegated coordinator either bound the coordinator socket or is gone.`,
-            );
-          case 'terminal':
-            outcome = endedChildOutcome(startupObservation.outcome);
-            break;
-          default:
-            return assertNever(startupObservation);
-        }
-        return { kind: 'delegated', version: execution.manifest.version, outcome };
+        return {
+          kind: 'delegated',
+          version: execution.manifest.version,
+          outcome:
+            startupObservation.kind === 'ready'
+              ? handoffOutcome(execution.manifest.version, { code: 0, signal: null })
+              : endedChildOutcome(startupObservation.outcome),
+        };
       }
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
       return { kind: 'delegated', version: execution.manifest.version, outcome };

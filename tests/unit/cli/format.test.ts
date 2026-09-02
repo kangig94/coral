@@ -13,6 +13,11 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
+import {
+  documentedCoralSetupError,
+  type DocumentedCoralSetupErrorCode,
+  type OperatorFacingCoralSetupError,
+} from '#src/runtime/errors.js';
 import { formatBackendStatus as formatComposedBackendStatus, formatShutdown } from '#src/cli/format/backend.js';
 import {
   formatDiscussAbort,
@@ -1233,6 +1238,13 @@ describe('cli format', () => {
       );
     });
 
+    // A documented refusal is re-rendered from the setup-error registry, so `recent_failure` displays text
+    // this formatter never authored; a sweep that omits it checks only the formatter's own sentences.
+    const documentedSetupError = (code: DocumentedCoralSetupErrorCode): OperatorFacingCoralSetupError => {
+      const authored = documentedCoralSetupError(code);
+      return { kind: 'documented', code, userMessage: authored.userMessage, remediation: authored.remediation };
+    };
+
     it.each([
       { status: 'ok', health: { ...baseHealth, components: [] } },
       { status: 'no_record_no_socket' },
@@ -1251,6 +1263,18 @@ describe('cli format', () => {
       { status: 'unreachable', detail: 'ETIMEDOUT', cause: 'no_response' as const },
       { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
       { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        setupError: documentedSetupError('coordinator_record_unreadable'),
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        setupError: { kind: 'invalid_diagnostic' as const },
+      },
       { status: 'shutting_down' },
       { status: 'unauthorized' },
     ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {

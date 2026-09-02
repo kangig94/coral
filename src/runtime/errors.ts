@@ -706,7 +706,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record at ${stringContextValue(context, 'path', '<record-path>')} could not be read (${stringContextValue(context, 'detail', 'unknown')}). This does not mean no coordinator is running.`,
     remediation: (context) =>
-      `Fix the permissions on ${stringContextValue(context, 'path', '<record-path>')}, or delete it if its content is corrupt — a running coordinator never rewrites it, and a fresh one recreates it safely. Then run any coral-cli mutating command (or start a Claude Code session) to relaunch. Retrying this exact command re-reads the same file and will not resolve on its own.`,
+      `Fix the permissions on ${stringContextValue(context, 'path', '<record-path>')}, or delete it if its content is corrupt — a running coordinator never rewrites it, and a fresh one recreates it safely. Then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff. Retrying this exact command re-reads the same file and will not resolve on its own.`,
     exitCode: 75,
     observation: 'not_observed',
   },
@@ -723,7 +723,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator recorded itself at ${stringContextValue(context, 'path', '<record-path>')} but did not answer (${stringContextValue(context, 'detail', 'unknown')}).`,
     remediation: (context) =>
-      `Retry shortly in case the coordinator is only busy. If it persists, run 'ps -p ${stringContextValue(context, 'pid', '<pid>')}' or check your process manager to see whether that process is actually Coral's coordinator; if it is not, or you cannot tell, delete ${stringContextValue(context, 'path', '<record-path>')} yourself and run any coral-cli mutating command (or start a Claude Code session) to relaunch.`,
+      `Retry shortly in case the coordinator is only busy. If it persists, run 'ps -p ${stringContextValue(context, 'pid', '<pid>')}' or check your process manager to see whether that process is actually Coral's coordinator; if it is not, or you cannot tell, delete ${stringContextValue(context, 'path', '<record-path>')} yourself and run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff.`,
     exitCode: 75,
     observation: 'not_observed',
   },
@@ -754,7 +754,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Engine '${stringContextValue(context, 'engine', 'this engine')}' needs environment variable '${stringContextValue(context, 'envVar', '<UNSET>')}'.`,
     remediation: (context) =>
-      `Set ${stringContextValue(context, 'envVar', '<ENV>')} in the backend's environment (e.g. the \`env\` block of ~/.claude/settings.json), run 'coral-cli backend shutdown' so the next command relaunches with it, then rerun \`coral-cli expansion equip ${stringContextValue(context, 'engine', '<engine>')}\`.`,
+      `Set ${stringContextValue(context, 'envVar', '<ENV>')} in the backend's environment (e.g. the \`env\` block of ~/.claude/settings.json), run 'coral-cli backend shutdown', then rerun \`coral-cli expansion equip ${stringContextValue(context, 'engine', '<engine>')}\`; it attempts startup or handoff with that environment.`,
   },
   expansion_embedding_provider_missing: {
     userMessage: (context) =>
@@ -1153,9 +1153,17 @@ function documentedCoralSetupErrorSpec(
   return DOCUMENTED_CORAL_SETUP_ERRORS[code as DocumentedCoralSetupErrorCode];
 }
 
+/**
+ * Any documented code may be recorded in a coordinator startup diagnostic and re-rendered from this registry
+ * by `backend status`, so a consumer that must decide about every remediation cannot enumerate them itself.
+ */
+export const DOCUMENTED_CORAL_SETUP_ERROR_CODES: readonly DocumentedCoralSetupErrorCode[] = Object.freeze(
+  Object.keys(DOCUMENTED_CORAL_SETUP_ERRORS) as DocumentedCoralSetupErrorCode[],
+);
+
 /** Exit 75 must not be read as a settled negative verdict or as a promise that retrying will resolve it. */
 export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<DocumentedCoralSetupErrorCode>(
-  (Object.keys(DOCUMENTED_CORAL_SETUP_ERRORS) as DocumentedCoralSetupErrorCode[]).filter(
+  DOCUMENTED_CORAL_SETUP_ERROR_CODES.filter(
     (code) => documentedCoralSetupErrorSpec(code)?.observation === 'not_observed',
   ),
 );

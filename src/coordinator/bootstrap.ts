@@ -100,17 +100,6 @@ export async function handoffStartupToSelectedBuild(
     switch (continuation.outcome.kind) {
       case 'handoff-success':
         return { kind: 'started' };
-      case 'handoff-startup-observation-aborted':
-        return {
-          kind: 'failed',
-          error: new Error(
-            `Selected backend startup observation was aborted for Coral ${continuation.outcome.version}; ` +
-              `detached child pid ${continuation.outcome.child.pid} (incarnation ` +
-              `${continuation.outcome.child.incarnation}) was left running and unobserved. ` +
-              'Coral will neither await nor terminate it.',
-          ),
-          exitCode: 75,
-        };
       case 'handoff-exit':
         return {
           kind: 'failed',

@@ -35,9 +35,11 @@ import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
-/** Time budget for the daemon to bind its socket / answer first health probe. */
-export const KERNEL_BIND_DEADLINE_MS = 5_000;
-/** Time budget for the daemon to reach a usable lifecycle phase (kernel-ready or running). */
+/**
+ * Time budget for an already-starting incumbent to reach a usable lifecycle phase (kernel-ready or running).
+ * A coordinator spawned by this invocation is bounded by its own child process instead, so no elapsed-time
+ * budget may cut that wait short.
+ */
 export const KERNEL_READY_DEADLINE_MS = 15_000;
 /**
  * Time budget for the previous daemon to release the socket after shutdown
@@ -652,26 +654,17 @@ async function waitForBackendReady(
   expectedSocketPath: string = paths.socketPath,
 ): Promise<ReadyCoordinatorEvidence> {
   const currentAttempt = waitContext.kind === 'current-attempt';
-  const bindDeadline = timePort.now() + KERNEL_BIND_DEADLINE_MS;
-  let sawFirstHealth = !currentAttempt;
-  let readyDeadline = timePort.now() + timeoutMs;
+  const readyDeadline = timePort.now() + timeoutMs;
   let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
 
-  const noteHealth = (health: RawCoordinatorHealth | null): void => {
-    if (health === null || sawFirstHealth) {
-      return;
-    }
-    sawFirstHealth = true;
-    readyDeadline = timePort.now() + timeoutMs;
-  };
-
-  while (currentAttempt || timePort.now() < (sawFirstHealth ? readyDeadline : bindDeadline)) {
+  while (currentAttempt || timePort.now() < readyDeadline) {
     const info = readDiscoverySnapshot(paths);
     let observedPid: number | undefined = info?.pid;
+    let observedHealth: RawCoordinatorHealth | null = null;
     let servingIncumbent: ReadyCoordinatorEvidence | null = null;
     if (info) {
       const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
-      noteHealth(health);
+      observedHealth = health;
       observedPid = health?.pid ?? observedPid;
       if (mayInvocationBeServedByIncumbent(health) && isReadyStatus(health.status)) {
         const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
@@ -698,7 +691,7 @@ async function waitForBackendReady(
       }
     } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
       const health = await readRawCoordinatorHealth(createIpcClient(expectedSocketPath, timePort));
-      noteHealth(health);
+      observedHealth = health;
       observedPid = health?.pid;
     }
 
@@ -727,6 +720,20 @@ async function waitForBackendReady(
       if (servingIncumbent !== null) {
         return servingIncumbent;
       }
+      // A terminal child that left no refusal is not evidence the address is dead: the incumbent it conceded
+      // to may still be in `starting`, which is not a ready status and so cannot produce a serving incumbent
+      // here. Only a probe that no coordinator answered — or one answered by a coordinator that named its own
+      // shutdown — may finalize this wait as a failed startup.
+      if (mayInvocationBeServedByIncumbent(observedHealth)) {
+        return waitForBackendReady(
+          paths,
+          desired,
+          timeoutMs,
+          timePort,
+          { kind: 'existing-starting' },
+          expectedSocketPath,
+        );
+      }
       throw new BackendUnreachableError(
         'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
       );
@@ -739,9 +746,7 @@ async function waitForBackendReady(
     }
   }
   throw new BackendUnreachableError(
-    sawFirstHealth
-      ? 'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.'
-      : 'Timed out waiting for Coral coordinator bind. Run `coral-cli backend status` to check coordinator health.',
+    'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
   );
 }
 

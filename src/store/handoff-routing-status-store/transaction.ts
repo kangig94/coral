@@ -12,10 +12,7 @@ const boundedTerminalPredicate = `terminal.record_kind = 'terminal'
   AND NOT EXISTS (
     SELECT 1 FROM handoff_routing_records AS selection
     WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
-  )
-  AND json_extract(terminal.body_json, '$.disposition.kind') != 'delegated-startup-observation-aborted'
-  AND COALESCE(json_extract(terminal.body_json, '$.disposition.terminal.kind'), '') !=
-    'delegated-startup-observation-aborted'`;
+  )`;
 
 export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
 

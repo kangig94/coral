@@ -1470,6 +1470,62 @@ describe('ipc ensure', () => {
     expect(existsSync(coordinatorPaths('prod').startupErrorFile)).toBe(false);
   });
 
+  it('waits out a starting incumbent the child conceded to instead of failing the invocation', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const child = spawnedChild();
+    let spawned = false;
+    let incumbentReady = false;
+    // Two invocations found no socket and both spawned. The incumbent bound first and is still running its
+    // boot eras, so it answers `starting`; this invocation's own child saw that it was outranked and exited 0
+    // without writing a sentinel. `starting` is not a ready status, so no serving incumbent exists to adopt.
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      return {
+        status: incumbentReady ? 'ok' : 'starting',
+        version: '0.5.2',
+        bundleHash: 'incumbent-hash',
+        flavor: 'prod',
+        instanceId: 'starting-incumbent',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, { bundleHash: 'incumbent-hash', instanceId: 'starting-incumbent' });
+      return child;
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    let settled = false;
+    void ensuredPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    child.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(settled).toBe(false);
+
+    incumbentReady = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('starting-incumbent');
+    expect(ensured.bundleHash).toBe('incumbent-hash');
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it('treats child error without exit as terminal without exposing its text', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -1541,7 +1597,7 @@ describe('ipc ensure', () => {
     expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('another-attempt');
   });
 
-  it('switches to the ready deadline after the first health response from a fresh spawn', async () => {
+  it('keeps a live current attempt waiting past every elapsed-time budget without spawning a competitor', async () => {
     makeHome();
     vi.useFakeTimers();
     const startMs = Date.now();
