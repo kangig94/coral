@@ -20,6 +20,7 @@ import {
   type ControlClient,
 } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -162,6 +163,7 @@ async function openLeaseEndpoint(
     challenges,
     observer: { onControlLost: () => undefined },
     timer: options.time ?? realTimer,
+    holderAuthority: createControlHolderAuthority(),
     requestTimeoutMs: 5_000,
   });
   await endpoint.listen();

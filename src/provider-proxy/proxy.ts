@@ -3,6 +3,7 @@ import type { ProviderEventBody } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
+  controlTenancyHolderOf,
   createControlEndpoint,
   type ControlChallengeAuthority,
   type ControlEndpoint,
@@ -18,6 +19,7 @@ import {
   proxyHandoffInstallParamsSchema as handoffInstallParamsSchema,
   proxyHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
 } from './handoff-capsule.js';
+import { createControlHolderAuthority } from './holder-lifecycle.js';
 import {
   operationActivationFingerprint,
   operationPrepareAttemptKey,
@@ -103,6 +105,9 @@ function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
  */
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
+  // The proxy has no enforcer to share this with, but still needs the one home for its own holder identity
+  // (§7) — the same instance every admission this endpoint accepts installs into.
+  const holderAuthority = createControlHolderAuthority();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const startedAt = clock.now();
   const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
@@ -199,11 +204,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           bootstrapNonce.spend(request.bootstrapNonce);
           assertNamedCoordinatorBuild(request.coordinator);
           return {
-            holder: {
-              instanceId: request.coordinator.instanceId,
-              pid: request.coordinator.pid,
-              incarnation: request.coordinator.incarnation,
-            },
+            holder: controlTenancyHolderOf(request.coordinator),
             fields: { proxy: identity },
           };
         },
@@ -442,19 +443,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successor: {
-              instanceId: request.successor.instanceId,
-              pid: request.successor.pid,
-              incarnation: request.successor.incarnation,
-            },
+            successor: controlTenancyHolderOf(request.successor),
             binding: setIdentity,
           });
           return {
-            holder: {
-              instanceId: request.successor.instanceId,
-              pid: request.successor.pid,
-              incarnation: request.successor.incarnation,
-            },
+            holder: controlTenancyHolderOf(request.successor),
             fields: proxyHandoffRedeemFieldsSchema.parse({
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,
@@ -476,6 +469,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       onControlLost: () => evidence.observeEof(clock.now()),
     },
     timer,
+    holderAuthority,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
   });
 

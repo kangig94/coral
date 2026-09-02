@@ -6,6 +6,7 @@ import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from 
 import { createBootstrapNonceCredential, type GuardianBootstrapCapsule } from './bootstrap-capsule.js';
 import type { ControlClient, ControlExchange } from './control-client.js';
 import {
+  controlTenancyHolderOf,
   createControlEndpoint,
   type ControlEndpoint,
   type ControlEndpointTimer,
@@ -18,6 +19,7 @@ import {
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from './enforcement.js';
+import { createControlHolderAuthority } from './holder-lifecycle.js';
 import {
   createGrantRegistry,
   grantBindingFromCapsule,
@@ -258,6 +260,11 @@ export interface Guardian<Scope extends symbol> {
 export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian<Scope> {
   const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self } = options;
 
+  // One `ControlHolderAuthority` per process (§7) — the one home for this guardian's holder identity. Held
+  // here so the same instance is available to every internal composition that needs it, rather than each
+  // building its own.
+  const holderAuthority = createControlHolderAuthority();
+
   // The guardian creates the containment by spawning the proxy — it cannot know what to enforce until
   // `recordContainment` reports what it watched being created. Until then there is nothing to enforce, so
   // there is no enforcer, exactly as the reaper holds none before `reaper.record-containment.v1`.
@@ -332,11 +339,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // The result names the proxy this guardian was issued for, so a coordinator that opened against
           // the wrong set learns it from the response rather than from a later staging failure.
           return {
-            holder: {
-              instanceId: request.coordinator.instanceId,
-              pid: request.coordinator.pid,
-              incarnation: request.coordinator.incarnation,
-            },
+            holder: controlTenancyHolderOf(request.coordinator),
             fields: { guardian: identity, proxy: request.proxy },
           };
         },
@@ -374,11 +377,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successor: {
-              instanceId: request.successor.instanceId,
-              pid: request.successor.pid,
-              incarnation: request.successor.incarnation,
-            },
+            successor: controlTenancyHolderOf(request.successor),
             binding: setIdentity,
           });
           // The guardian is the sole linearization point: it is the only party that ever sees the plaintext
@@ -408,11 +407,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           );
           reaperRecordRedemptionResultSchema.parse(reaperResult);
           return {
-            holder: {
-              instanceId: request.successor.instanceId,
-              pid: request.successor.pid,
-              incarnation: request.successor.incarnation,
-            },
+            holder: controlTenancyHolderOf(request.successor),
             fields: guardianHandoffRedeemFieldsSchema.parse({
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,
@@ -653,6 +648,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       onPairingLost: () => deadlines.observePairingLoss(),
     },
     timer,
+    holderAuthority,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
     // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.

@@ -39,6 +39,7 @@ import {
   type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import {
   PROXY_CONTROL_HEARTBEAT_MS,
@@ -488,6 +489,7 @@ async function guardianLeaseClient(
     challenges,
     observer: { onControlLost: () => undefined },
     timer: time,
+    holderAuthority: createControlHolderAuthority(),
     requestTimeoutMs: 5_000,
   });
   await endpoint.listen();

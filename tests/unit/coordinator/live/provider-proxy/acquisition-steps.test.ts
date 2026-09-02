@@ -43,6 +43,7 @@ import {
   controlExchangeForTest,
 } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import {
@@ -130,6 +131,7 @@ async function proxyLeaseSession(time: VirtualTime) {
     challenges,
     observer: { onControlLost: () => undefined },
     timer: time,
+    holderAuthority: createControlHolderAuthority(),
     requestTimeoutMs: 5_000,
   });
   await endpoint.listen();

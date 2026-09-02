@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
 import { truncate } from '../infra/text.js';
+import type { ControlHolderAuthority } from './holder-lifecycle.js';
 import {
   ProxyControlProtocolError,
   controlHeartbeatParamsSchema,
@@ -111,6 +112,18 @@ export type ControlTenancyHolder = Readonly<Pick<CoordinatorIdentity, 'instanceI
 /** Whether two holder identities name the same process, not merely the same coordinator instance id. */
 export function sameControlTenancyHolder(left: ControlTenancyHolder, right: ControlTenancyHolder): boolean {
   return left.instanceId === right.instanceId && left.pid === right.pid && left.incarnation === right.incarnation;
+}
+
+/**
+ * The tenancy-holder projection every opening method takes off its already-parsed coordinator/successor
+ * identity: the three fields `sameControlTenancyHolder` compares, and nothing else `CoordinatorIdentity`
+ * carries. One owner for a shape guardian, reaper, and proxy would otherwise each re-write by hand at every
+ * `establishes-control` handler.
+ */
+export function controlTenancyHolderOf(
+  identity: Pick<CoordinatorIdentity, 'instanceId' | 'pid' | 'incarnation'>,
+): ControlTenancyHolder {
+  return { instanceId: identity.instanceId, pid: identity.pid, incarnation: identity.incarnation };
 }
 
 /**
@@ -226,6 +239,10 @@ export type ControlEndpointOptions = Readonly<{
   challenges: ControlChallengeAuthority;
   timer: ControlEndpointTimer;
   requestTimeoutMs: number;
+  /** The one home for this process's holder identity (§7). Every admission this endpoint accepts installs
+   *  into it; reattachment validates against it instead of a second copy kept on this endpoint's own tenancy
+   *  record. */
+  holderAuthority: ControlHolderAuthority;
 }>;
 
 export interface ControlEndpoint {
@@ -244,7 +261,6 @@ export interface ControlEndpoint {
 
 type Tenancy = {
   readonly epoch: ControlEpoch;
-  readonly holder: ControlTenancyHolder;
   /** Identity and admission fields are stable across retries of the opening that earned this tenancy. */
   readonly opening: Record<string, unknown>;
   socket: Socket; // one tenancy, successive connections
@@ -327,7 +343,7 @@ function success(id: string | number, result: unknown): ProxyControlJsonRpcMessa
 }
 
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {
-  const { socketPath, role, observer, challenges, timer, requestTimeoutMs } = options;
+  const { socketPath, role, observer, challenges, timer, requestTimeoutMs, holderAuthority } = options;
   let server: NetServer | null = null;
   let tenancy: Tenancy | null = null;
   let nextEpoch: ControlEpoch = 1;
@@ -358,7 +374,8 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   const establishControl = async (socket: Socket, handle: ControlOpenHandler, params: unknown): Promise<unknown> => {
     const { holder, fields } = await handle(params);
     const live = tenancy;
-    if (live !== null && sameControlTenancyHolder(live.holder, holder)) {
+    const installed = holderAuthority.current();
+    if (live !== null && installed !== null && sameControlTenancyHolder(installed.holder, holder)) {
       // The same tenancy earned again, on this socket or a new one — not a second tenancy to admit.
       const admitted = challenges.reattachControl();
       if (!admitted.accepted) throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');
@@ -393,10 +410,14 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const epoch = nextEpoch;
     nextEpoch += 1;
     const opening = { ...fields, controlEpoch: epoch, heartbeatChallenge: issued.challenge };
+    // Installed before the tenancy record and before the displaced socket is destroyed, with no `await`
+    // between any of the three: a teardown authorization already bound to the predecessor must see this
+    // successor's identity the instant its epoch exists, not after the predecessor's own close is reported.
+    holderAuthority.install({ controlEpoch: epoch, holder });
     // Record the replacement before destroying the predecessor: its `close` handler then sees a tenancy that
     // is not its own and reports no control loss. Reporting one would hand the deadline machine an EOF for
     // the tenancy that just began, and the successor would inherit its predecessor's death.
-    tenancy = { epoch, holder, opening, socket, active: false };
+    tenancy = { epoch, opening, socket, active: false };
     displaced?.socket.destroy();
     return opening;
   };

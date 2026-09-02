@@ -1,5 +1,11 @@
-import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
+import {
+  execFile,
+  execFileSync,
+  type ExecFileOptionsWithStringEncoding,
+  type ExecFileSyncOptionsWithStringEncoding,
+} from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import { z } from 'zod';
 
 /**
@@ -292,6 +298,179 @@ export function createRecordedProcessObserver(
         return readers.observeLiveness(recorded.pid);
       }
       return observed === recorded.incarnation ? 'alive' : 'absent';
+    } catch {
+      return 'unknown';
+    }
+  };
+}
+
+// -------------------------------------------------------------------------------------------------------
+// The non-blocking sibling of everything above: identity evidence obtained without ever calling
+// `execFileSync`/`readFileSync`, for a guardian/reaper answering loop that cannot afford either to stall.
+// -------------------------------------------------------------------------------------------------------
+
+/** The async sibling of `PROBE_EXEC_OPTIONS`: the same encoding and the same `P` bound, spent through
+ *  `execFile`'s own non-blocking `timeout` handling rather than by blocking the caller. */
+const ASYNC_PROBE_EXEC_OPTIONS: ExecFileOptionsWithStringEncoding = {
+  encoding: 'utf-8',
+  timeout: PROCESS_INCARNATION_PROBE_TIMEOUT_MS,
+};
+
+/** A plain callback-to-promise wrapper, not `util.promisify(execFile)`: `execFile`'s multi-value callback
+ *  only resolves to `{ stdout, stderr }` through a promisify-custom implementation Node supplies internally,
+ *  and this stays independent of that. */
+function execFileAsync(
+  file: string,
+  args: readonly string[],
+  options: ExecFileOptionsWithStringEncoding,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args as string[], options, (error, stdout, stderr) => {
+      if (error) {
+        // `@types/node` builds `ExecFileException` as `Omit<ExecException, 'code'> & Omit<NodeJS.ErrnoException,
+        // 'code'>`, and `Omit` drops the `Error` base, so this value is not statically an `Error` however
+        // reliably Node supplies one. The wrap is what the type says, not defensive padding.
+        reject(error instanceof Error ? error : new Error(error.message));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+/** A fresh `P`-second bound for one non-blocking file read. Minted per call: an `AbortSignal.timeout` fires
+ *  once, so the two Linux reads below each need their own rather than sharing one that could already be
+ *  spent by the time the second read starts. */
+function freshReadTimeoutSignal(): AbortSignal {
+  return AbortSignal.timeout(PROCESS_INCARNATION_PROBE_TIMEOUT_MS);
+}
+
+async function readLinuxBootIdAsync(): Promise<string | null> {
+  try {
+    const raw = (
+      await readFileAsync('/proc/sys/kernel/random/boot_id', { encoding: 'utf-8', signal: freshReadTimeoutSignal() })
+    ).trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+async function probeLinuxProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
+  const bootId = await readLinuxBootIdAsync();
+  if (bootId === null) {
+    return null;
+  }
+
+  try {
+    const stat = await readFileAsync(`/proc/${pid}/stat`, { encoding: 'utf-8', signal: freshReadTimeoutSignal() });
+    return parseLinuxProcessIncarnation(bootId, stat);
+  } catch {
+    return null;
+  }
+}
+
+async function readMacBootSessionIdAsync(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('sysctl', ['-n', 'kern.bootsessionuuid'], ASYNC_PROBE_EXEC_OPTIONS);
+    const raw = stdout.trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+async function probeMacProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
+  try {
+    const bootSessionId = await readMacBootSessionIdAsync();
+    if (bootSessionId === null) {
+      return null;
+    }
+
+    const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], ASYNC_PROBE_EXEC_OPTIONS);
+    const raw = stdout.trim();
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? (`darwin:${bootSessionId}:${parsed}` as ProcessIncarnation) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function probeWindowsProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'wmic',
+      ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
+      ASYNC_PROBE_EXEC_OPTIONS,
+    );
+    const match = stdout.match(/CreationDate=(\d{14}\.\d+[+-]\d+)/) ?? stdout.match(/CreationDate=(\d{14})/);
+    const value = match?.[1];
+    return value === undefined ? null : (`win32:${value}` as ProcessIncarnation);
+  } catch {
+    return null;
+  }
+}
+
+const ASYNC_PROCESS_INCARNATION_PROBES: ReadonlyMap<string, (pid: number) => Promise<ProcessIncarnation | null>> =
+  new Map([
+    ['linux', probeLinuxProcessIncarnationAsync],
+    ['darwin', probeMacProcessIncarnationAsync],
+    ['win32', probeWindowsProcessIncarnationAsync],
+  ]);
+
+/** The non-blocking sibling of `probeProcessIncarnation`: same null-on-unreadable contract, same per-platform
+ *  probes, none of them synchronous. */
+export async function probeProcessIncarnationAsync(
+  pid: number,
+  platform: string = process.platform,
+): Promise<ProcessIncarnation | null> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return null;
+  }
+
+  const probe = ASYNC_PROCESS_INCARNATION_PROBES.get(platform);
+  return probe === undefined ? null : probe(pid);
+}
+
+/** The asynchronous three-answer question: the same shape as `RecordedProcessObserver`, resolved instead of
+ *  returned, so a caller can await it without blocking the loop it answers on. */
+export type AsyncRecordedProcessObserver = (
+  recorded: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
+) => Promise<ProcessLiveness>;
+
+/**
+ * The stricter, non-blocking sibling of `createRecordedProcessObserver`. `incarnation` is required here, not
+ * optional: there is no call this function accepts that names a record with no incarnation, so there is
+ * nothing for a pid-only fallback to apply to — pid-only life cannot prove the admitted holder still owns
+ * the pid, which is the whole reason a stricter sibling exists.
+ *
+ * Liveness (`kill(pid, 0)`, synchronous and free of I/O) is checked first: a genuine `ESRCH` is decisive on
+ * its own and short-circuits the identity read, which is bounded but never free. Otherwise the token is read
+ * and compared. An unreadable token answers `unknown` outright — never the sync sibling's pid-only `alive`
+ * fallback, including when the read failure is a probe timeout. A readable, mismatched token answers `absent`
+ * (pid reuse) regardless of what the liveness check believed. And a liveness check that could not itself
+ * conclude alive-or-absent keeps the overall answer `unknown` even when the token happens to read back a
+ * match: "liveness ... cannot be observed" is its own trigger for `unknown`, independent of whether identity
+ * could be.
+ */
+export function createAsyncRecordedProcessObserver(
+  readers: Readonly<{
+    readIncarnation: (pid: number) => Promise<ProcessIncarnation | null>;
+    observeLiveness: (pid: number) => ProcessLiveness;
+  }>,
+): AsyncRecordedProcessObserver {
+  return async (recorded) => {
+    try {
+      const liveness = readers.observeLiveness(recorded.pid);
+      if (liveness === 'absent') return 'absent';
+      const observed = await readers.readIncarnation(recorded.pid);
+      if (observed === null) return 'unknown';
+      if (observed !== recorded.incarnation) return 'absent';
+      return liveness === 'unknown' ? 'unknown' : 'alive';
     } catch {
       return 'unknown';
     }

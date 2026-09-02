@@ -5,6 +5,7 @@ import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
 import { createBootstrapNonceCredential, type ReaperBootstrapCapsule } from './bootstrap-capsule.js';
 import {
+  controlTenancyHolderOf,
   createControlEndpoint,
   type ControlEndpoint,
   type ControlEndpointTimer,
@@ -54,6 +55,7 @@ import {
   reaperHandoffRotateParamsSchema,
   reaperOpenParamsSchema as openParamsSchema,
 } from './protocol.js';
+import { createControlHolderAuthority } from './holder-lifecycle.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
 /**
@@ -123,6 +125,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self } = options;
   let recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null = null;
   let enforcer: ArmedEnforcer<Scope> | null = null;
+
+  // One `ControlHolderAuthority` per process (§7) — the one home for this reaper's holder identity. Held
+  // here so the same instance is available to every internal composition that needs it, rather than each
+  // building its own.
+  const holderAuthority = createControlHolderAuthority();
 
   /** Every field a grant is bound to except the orphan timeout, mirroring `guardian.ts`'s own `setIdentity`:
    *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
@@ -199,11 +206,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           assertNamedGuardianCapsuleIdentity(request.guardian, capsule);
           assertNamedProxyIdentity('reaper', request.proxy, capsule);
           return {
-            holder: {
-              instanceId: request.coordinator.instanceId,
-              pid: request.coordinator.pid,
-              incarnation: request.coordinator.incarnation,
-            },
+            holder: controlTenancyHolderOf(request.coordinator),
             fields: { reaper: identityOf(recorded) },
           };
         },
@@ -393,11 +396,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             );
           }
           return {
-            holder: {
-              instanceId: request.successor.instanceId,
-              pid: request.successor.pid,
-              incarnation: request.successor.incarnation,
-            },
+            holder: controlTenancyHolderOf(request.successor),
             fields: reaperHandoffRotateFieldsSchema.parse({
               // A wire result describing what this call did, not a deadline-model state — the deadline
               // machine this endpoint shares with the guardian has exactly one enum, and this is not a
@@ -460,6 +459,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       onPairingLost: () => deadlines.observePairingLoss(),
     },
     timer,
+    holderAuthority,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
     // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.

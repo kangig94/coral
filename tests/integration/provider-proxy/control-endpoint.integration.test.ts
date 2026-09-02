@@ -22,6 +22,7 @@ import {
   type ControlMethod,
   type ControlTenancyHolder,
 } from '#src/provider-proxy/control-endpoint.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
 
@@ -229,6 +230,7 @@ async function startEndpoint(
     challenges: challengeAuthority,
     observer,
     timer: realTimer(),
+    holderAuthority: createControlHolderAuthority(),
     requestTimeoutMs: 5_000,
   });
 

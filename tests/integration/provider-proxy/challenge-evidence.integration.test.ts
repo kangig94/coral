@@ -17,6 +17,7 @@ import {
   type ControlMethod,
   type ControlTenancyHolder,
 } from '#src/provider-proxy/control-endpoint.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import {
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
@@ -148,6 +149,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
     challenges: deadlines,
     observer: { onControlLost: () => deadlines.observeEof() },
     timer,
+    holderAuthority: createControlHolderAuthority(),
     requestTimeoutMs: 5_000,
   });
   await endpoint.listen();
@@ -282,6 +284,7 @@ describe('control heartbeats reach the deadline machine', () => {
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },
       timer,
+      holderAuthority: createControlHolderAuthority(),
       requestTimeoutMs: 5_000,
     });
     await endpoint.listen();
@@ -345,6 +348,7 @@ describe('control heartbeats reach the deadline machine', () => {
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },
       timer,
+      holderAuthority: createControlHolderAuthority(),
       requestTimeoutMs: 5_000,
     });
     await endpoint.listen();
@@ -469,6 +473,7 @@ describe('successor control reaches the deadline machine through production esta
         challenges: deadlines,
         observer: { onControlLost: () => deadlines.observeEof() },
         timer,
+        holderAuthority: createControlHolderAuthority(),
         requestTimeoutMs: 5_000,
       });
       await endpoint.listen();

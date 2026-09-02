@@ -44,6 +44,7 @@ import {
 import type { HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
+import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import type { StorageBigIntStat, StorageEntryKind, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
@@ -634,6 +635,7 @@ async function startRoleEndpoint(
     challenges,
     observer: { onControlLost: () => undefined },
     timer: options.time,
+    holderAuthority: createControlHolderAuthority(),
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS + 1_000,
   });
   await endpoint.listen();
