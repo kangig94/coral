@@ -63,7 +63,7 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
  * A documented refusal this process may not overwrite with a generic startup failure of its own.
  *
  * Attribution may not rest on `CORAL_STARTUP_ATTEMPT_ID`: not every spawn path exports one (see
- * `spawnCoordinator` in `src/transport/ipc/ensure.ts`), so a backend started without it has none on either
+ * `spawnBackend` in `clients/hooks/session-start.mjs`), so a backend started without it has none on either
  * side of a delegation, and comparing two absent ids either skips the guard or matches every record ever
  * written. What holds without it is that the record was written by a *different process* during *this*
  * process's life: a build this process delegated to satisfies both halves, and a record from an attempt that

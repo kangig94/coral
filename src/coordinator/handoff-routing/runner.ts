@@ -56,9 +56,6 @@ import type {
   SelectedHandoffDisposition,
 } from './status.js';
 
-// The pre-flight's own probe budget. Not `HEALTH_TIMEOUT_MS` from `transport/http/sse.ts`: the coordinator
-// topology invariant forbids a coordinator module depending on the HTTP transport, and this bound answers a
-// different question — how long a CLI may wait before dispatching without an incumbent.
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
 const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;
@@ -552,6 +549,14 @@ function observeChild(child: ChildProcess): ObservedChild {
   return { spawned: spawnedPromise, outcome: outcomePromise };
 }
 
+function handoffSuccess(version: string): HandoffSuccess {
+  return Object.freeze({
+    kind: 'handoff-success',
+    version,
+    [handoffSuccessBrand]: true as const,
+  });
+}
+
 function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome {
   if (outcome.signal !== null) {
     return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
@@ -559,11 +564,7 @@ function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome 
   if (outcome.code !== 0) {
     return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code ?? 1 });
   }
-  return Object.freeze({
-    kind: 'handoff-success',
-    version,
-    [handoffSuccessBrand]: true as const,
-  });
+  return handoffSuccess(version);
 }
 
 function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, HandoffSuccess> {
@@ -610,17 +611,25 @@ function liveBackendStartupReadiness(
 }
 
 /**
+ * The reading is taken here rather than accepted from the caller, because a reading raced against the
+ * terminal was issued while the child was still alive and reports only pre-terminal state: it can neither
+ * withdraw an `ok` the coordinator has since lost, nor see the publication a transitively delegated
+ * coordinator made after the probe landed. Classifying a terminal against one records a dead coordinator as
+ * a started one, and a started one as a delegated exit.
+ *
  * Terminality retires lineage's veto over a bare identity match; it does not retire lineage as a proof. The
  * inherited attempt id is the only one of the two that survives further delegation — a transitively delegated
  * coordinator carries this attempt's id while its build identity is a third build's — so accepting the
  * identity match alone records a startup that succeeded as a delegated exit. Terminality retires neither
  * half of the serving proof: a coordinator still starting has not answered whether it will serve at all.
  */
-function terminalBackendStartupReadiness(
-  reading: LiveIncumbentReading,
+async function readinessAfterChildTerminal(
+  runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
+  time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
-): Readonly<{ kind: 'ready' }> | null {
+): Promise<Readonly<{ kind: 'ready' }> | null> {
+  const reading = await readLiveCoordinatorHealth(runtime, time);
   if (reading.kind !== 'observed' || reading.health.status !== 'ok') {
     return null;
   }
@@ -640,15 +649,16 @@ async function waitForBackendStartupObservation(
   const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
 
   while (true) {
-    const reading = readLiveCoordinatorHealth(runtime, time);
-    const readiness = reading.then((health) => liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId));
+    const readiness = readLiveCoordinatorHealth(runtime, time).then((health) =>
+      liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId),
+    );
     const observed = await Promise.race([terminal, readiness]);
     if (observed !== null) {
       if (observed.kind === 'ready') {
         return observed;
       }
       if (observed.kind === 'terminal') {
-        return terminalBackendStartupReadiness(await reading, desiredIdentity, expectedAttemptId) ?? observed;
+        return (await readinessAfterChildTerminal(runtime, time, desiredIdentity, expectedAttemptId)) ?? observed;
       }
     }
 
@@ -657,8 +667,9 @@ async function waitForBackendStartupObservation(
       time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS).then(() => null),
     ]);
     if (terminalDuringPoll !== null) {
-      const finalHealth = await readLiveCoordinatorHealth(runtime, time);
-      return terminalBackendStartupReadiness(finalHealth, desiredIdentity, expectedAttemptId) ?? terminalDuringPoll;
+      return (
+        (await readinessAfterChildTerminal(runtime, time, desiredIdentity, expectedAttemptId)) ?? terminalDuringPoll
+      );
     }
   }
 }
@@ -1051,7 +1062,7 @@ async function executeResolvedHandoff(
           version: execution.manifest.version,
           outcome:
             startupObservation.kind === 'ready'
-              ? handoffOutcome(execution.manifest.version, { code: 0, signal: null })
+              ? handoffSuccess(execution.manifest.version)
               : endedChildOutcome(startupObservation.outcome),
         };
       }

@@ -52,9 +52,11 @@ import {
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');
-// Long enough to still catch the failure when a session starts minutes after the
-// user's last attempt, short enough that a cured problem stops being reported.
-const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
+// The notice hands the operator a bare code and one place to resolve it, and that place stops reporting a
+// diagnostic once it is older than its own recency horizon. This window may not exceed that one, or the
+// notice names an exit that answers nothing for the part of its range the horizon has already dropped.
+// See `RECENT_STARTUP_DIAGNOSTIC_MS` in src/transport/http/backend/status.ts.
+const STARTUP_FAILURE_NOTICE_WINDOW_MS = 5 * 60 * 1000;
 const STARTUP_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const MAX_STARTUP_FAILURE_CODE_LENGTH = 128;
 
@@ -124,10 +126,7 @@ function isCoordinatorAlive(runDir) {
 // who just fixed the cause would be told it is still broken.
 //
 // The recency and liveness filters remain, as noise control rather than proof: an
-// answering daemon or an old diagnostic means the report is not worth making. The
-// window is deliberately wider than the daemon's own 5-minute probe horizon
-// (`statusFromStartupDiagnostic`) because a session may start minutes after the
-// user's last attempt; that divergence is intended, not drift.
+// answering daemon or an old diagnostic means the report is not worth making.
 function readRecentStartupFailureNotice(runDir) {
   try {
     if (isCoordinatorAlive(runDir) !== false) return null;

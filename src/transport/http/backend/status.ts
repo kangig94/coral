@@ -22,9 +22,6 @@ type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootst
 
 type BackendStatus =
   | {
-      // CLI-level verdict. The daemon-side coarse lifecycle field
-      // (`'starting' | 'ok' | 'draining'`) is preserved as `health.status`
-      // inside the nested `BackendHealth` payload via `BackendStatusFull`.
       status: 'ok';
       version: string;
       bundleHash: string;

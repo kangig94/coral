@@ -1021,9 +1021,84 @@ describe('handoff-routing/runner', () => {
       version: manifest.version,
       outcome: { kind: 'handoff-success', version: manifest.version },
     });
-    expect(mockState.probeCoordinator).toHaveBeenCalledOnce();
-    expect(mockState.health).toHaveBeenCalledOnce();
+    expect(
+      mockState.probeCoordinator,
+      'the terminal is classified by a probe issued after it, never by the reading raced against it',
+    ).toHaveBeenCalledTimes(2);
+    expect(mockState.health).toHaveBeenCalledTimes(2);
     expect(child?.unref).toHaveBeenCalledOnce();
+  });
+
+  // Both directions of the same defect: a reading issued while the child was alive cannot classify that
+  // child's terminal. Reverting either path to the raced-against reading turns one of these red.
+  it('refuses a pre-terminal ok as proof of startup once the coordinator is gone', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    let answerFirstProbe!: (health: LiveIncumbentHealth) => void;
+    mockState.health.mockImplementationOnce(
+      () =>
+        new Promise<LiveIncumbentHealth>((resolve) => {
+          answerFirstProbe = resolve;
+        }),
+    );
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalledOnce());
+
+    // The coordinator dies while that first probe is still in flight, so the reply it eventually gives
+    // describes a coordinator that no longer exists.
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    child.emit('exit', 7, null);
+    answerFirstProbe(liveHealth(bundleDir, namespace));
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-exit', exitCode: 7 },
+    });
+  });
+
+  it('refuses a pre-terminal unresolved probe as proof of failure once the coordinator answers', async () => {
+    const target = validatedTarget(roots[0]);
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    let refuseFirstProbe!: (error: Error) => void;
+    mockState.health.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          refuseFirstProbe = reject;
+        }),
+    );
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalledOnce());
+
+    // A transitively delegated coordinator publishes only once the build that spawned it has exited, so the
+    // probe raced against that exit could not have seen it.
+    child.emit('exit', 0, null);
+    refuseFirstProbe(new Error('ECONNREFUSED'));
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success', version: manifest.version },
+    });
   });
 
   it('refuses a backend startup terminal that leaves the selected coordinator still starting', async () => {
@@ -1824,8 +1899,9 @@ describe('handoff-routing/runner', () => {
   // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists
   // and health could not be resolved from it. Reporting success here would be exactly the finalization this
   // branch's design rules forbid — an early exit-shaped outcome plus a probe that could not confirm life is
-  // not evidence the backend is up. `liveCoordinator.kind === 'observed'` is what this test would catch a
-  // regression to `!== null` (or similar) from failing to guard: both compile, only one refuses correctly.
+  // not evidence the backend is up. `reading.kind !== 'observed'` in `readinessAfterChildTerminal` is what
+  // this test would catch a regression to `!== null` (or similar) from failing to guard: both compile, only
+  // one refuses correctly.
   it('should report an immediate backend startup exit, not a false success, when health cannot be reached', async () => {
     const target = validatedTarget(roots[0]);
     let child: ChildProcess | undefined;

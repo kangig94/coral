@@ -192,14 +192,17 @@ describe('session-start.mjs startup failure notice', () => {
   );
 
   it(
-    'stays silent once the diagnostic is no longer recent',
+    'stays silent once the diagnostic is older than the horizon its own remediation reads',
     async () => {
       const fixture = setupFixture();
-      writeDiagnostic(fixture, documentedFailure(new Date(Date.now() - 60 * 60 * 1000).toISOString()));
+      writeDiagnostic(fixture, documentedFailure(new Date(Date.now() - 7 * 60 * 1000).toISOString()));
 
       const context = await contextFor(fixture, 'test-session-stale');
 
-      expect(context).not.toContain('the most recent start attempt failed');
+      expect(
+        context,
+        "`backend status` is the notice's only remediation and drops a diagnostic five minutes old; a wider notice window hands out a code nothing will explain",
+      ).not.toContain('the most recent start attempt failed');
     },
     WARM_START_TIMEOUT_MS,
   );
