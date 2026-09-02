@@ -49,17 +49,16 @@ export type BackendStatusFull =
   | { status: 'shutting_down' | 'unauthorized' }
   | { status: 'no_record_no_socket' }
   | { status: 'recorded_process_absent'; pid: number }
-  | { status: 'foreign_coordinator'; observed: { namespace: string; flavor: 'prod' | 'dev' } }
   /**
    * An unreadable discovery record must not imply whether a coordinator is running: a truncated write or a
    * record shaped by a build this one rejects can both exist while a coordinator is serving.
    */
   | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }
   /**
-   * Something answers at the recorded address and did not give a usable answer — a non-2xx that is not a
-   * drain, a request that never completed, or a 200 whose body this build cannot decode (shape rejection).
-   * A shape rejection proves neither absence nor a foreign identity; only a decoded namespace/flavor mismatch
-   * may produce `foreign_coordinator`.
+   * The recorded address did not yield this coordinator's state — a non-2xx that is not a drain, a request that
+   * never completed, a 200 whose body this build cannot decode (shape rejection), or a coordinator that
+   * decoded and is not this one. A shape rejection proves neither absence nor a foreign identity; only a
+   * decoded namespace/flavor mismatch may produce `'foreign_peer'`.
    *
    * `cause` is the one thing that decides what may be claimed about the address: `'responded'` is an actual
    * HTTP response (any status, any body) — the one thing that proves something is listening. `'refused'` is a
@@ -69,6 +68,14 @@ export type BackendStatusFull =
    * refusal that keeps refusing is a record naming a pid something else now holds, and neither checking that
    * pid nor clearing that record is possible from a status that names neither. `'no_response'` is everything else that keeps a
    * request from completing (timeout, DNS failure, ...), which proves neither way.
+   *
+   * `'foreign_peer'` is a Coral coordinator that answered and named a namespace or flavor the discovery record
+   * did not. The comparison is against that record's own identity, and the recorded HTTP port is ephemeral —
+   * the coordinator binds port 0 — so the evidence supports one claim and no more: the recorded port is now
+   * answered by a coordinator that did not write the record. It is not an ownership conflict over startup,
+   * because this installation's coordinator is addressed by its own scoped IPC socket rather than by that
+   * port, so it carries the same `pid`/`recordPath` as `'refused'` — the evidence a reader needs to settle a
+   * record whose address something else now holds.
    */
   | { status: 'unreachable'; detail: string; cause: 'responded' }
   | {
@@ -80,6 +87,13 @@ export type BackendStatusFull =
       recordPath: string;
     }
   | { status: 'unreachable'; detail: string; cause: 'no_response' }
+  | {
+      status: 'unreachable';
+      cause: 'foreign_peer';
+      observed: { namespace: string; flavor: 'prod' | 'dev' };
+      pid: number;
+      recordPath: string;
+    }
   /**
    * A surviving coordinator socket must not become an absence result: it may belong to a boot in progress or
    * be a stale leftover.
@@ -183,7 +197,7 @@ function noDaemonStatus(
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   fallback: Extract<
     BackendStatusFull,
-    { status: 'no_record_no_socket' | 'recorded_process_absent' | 'foreign_coordinator' }
+    { status: 'no_record_no_socket' | 'recorded_process_absent' } | { cause: 'foreign_peer' }
   >,
   earliestRecordedAt?: number,
   expectedPid?: number,
@@ -323,7 +337,13 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       runtime.paths.coral.coordinator.startupDiagnosticFile,
       runtime.time.now(),
       provenSelfIdentity,
-      { status: 'foreign_coordinator', observed: observedIdentity },
+      {
+        status: 'unreachable',
+        cause: 'foreign_peer',
+        observed: observedIdentity,
+        pid: info.pid,
+        recordPath: runtime.paths.coral.coordinator.infoFile,
+      },
       info.startedAt,
       info.pid,
     );

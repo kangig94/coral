@@ -1107,33 +1107,120 @@ describe('handoff-routing/runner', () => {
     });
   });
 
-  it('refuses a backend startup terminal that leaves the selected coordinator still starting', async () => {
+  // A child that ended while the coordinator it started is still starting has settled nothing. That is the
+  // shape two-hop delegation always takes: the first hop ends as soon as the second is alive, and the
+  // coordinator that finally binds answers `starting` until its own recovery finishes. Reading that as a
+  // decided no published a `delegated-exit` terminal and a startup failure for a delegation that was
+  // succeeding.
+  it('holds a delegated startup whose coordinator has not yet said whether it will serve', async () => {
     const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
     const target = validatedTarget(bundleDir);
-    mockState.health.mockResolvedValue({
-      ...liveHealth(bundleDir, pluginRootNamespace(dirname(bundleDir))),
-      status: 'starting',
-    });
-    let child: ChildProcess | undefined;
-    mockState.spawn.mockImplementationOnce(() => {
-      child = childThatExits(0, null);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
       return child;
     });
 
-    await expect(
-      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
-    ).resolves.toMatchObject({
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    child.emit('exit', 0, null);
+    // A second poll is the hold: it comes from the probe taken after the child ended, which found the
+    // coordinator still starting and recorded nothing.
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(
+      mockState.publishGenerationCoordinatedHandoffRoutingTransitions,
+      'only the selection: a terminal would finalize what nothing has observed',
+    ).toHaveBeenCalledOnce();
+
+    mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
+    for (const release of releasePolls.splice(0)) release();
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-success', version: manifest.version },
+    });
+  });
+
+  // The hold's other exit, and the one that must still reach a terminal: the coordinator that was starting is
+  // gone, so the child's ending is this delegation's outcome after all. Its code reaches the record unchanged
+  // — exiting 0 without taking over is an ordinary way to fail, and the forced `code === 0 ? 1` this replaces
+  // made the record claim an exit the child never took.
+  it('ends the hold with the child ending once the coordinator that was starting is gone', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    child.emit('exit', 0, null);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    for (const release of releasePolls.splice(0)) release();
+
+    await expect(result).resolves.toMatchObject({
       kind: 'delegated-startup',
       version: manifest.version,
       observation: { kind: 'not-serving', childEnding: { code: 0, signal: null } },
     });
-    // The forced `code === 0 ? 1` this replaces made the record claim an exit the child never took.
     expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'continuation-finalized',
       disposition: { kind: 'delegated-exit', version: manifest.version, exitCode: 0 },
     });
-    expect(mockState.health).toHaveBeenCalled();
-    expect(child?.unref).toHaveBeenCalledOnce();
+    expect(child.unref).toHaveBeenCalledOnce();
   });
 
   it('holds a selected coordinator that published its record before it finished starting', async () => {

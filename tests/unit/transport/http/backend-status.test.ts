@@ -331,8 +331,11 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'foreign_coordinator',
+      status: 'unreachable',
+      cause: 'foreign_peer',
       observed: { namespace: 'someone-else', flavor: 'prod' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 
@@ -358,6 +361,11 @@ describe('getBackendStatusFull record disposition', () => {
     expect(JSON.stringify(result)).not.toContain('forged');
   });
 
+  // The decoded mismatch says which process answers the recorded port, and that port is ephemeral: it is not
+  // evidence about whether this installation's coordinator is running, and nothing about startup is held while
+  // it is true. So it belongs under `unreachable` — the not-observed status — carrying the pid and record path
+  // a stale record is settled with, rather than under a status of its own that claimed an ownership conflict
+  // over startup and named no way to end it.
   it('reports the decoded foreign flavor from the unauthenticated probe', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     const foreignFlavorPing = { ...JSON.parse(ping('ok')), flavor: 'dev' } as Record<string, unknown>;
@@ -369,8 +377,11 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'foreign_coordinator',
+      status: 'unreachable',
+      cause: 'foreign_peer',
       observed: { namespace: 'test-namespace', flavor: 'dev' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 
@@ -660,8 +671,11 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'foreign_coordinator',
+      status: 'unreachable',
+      cause: 'foreign_peer',
       observed: { namespace: 'someone-else', flavor: 'prod' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 
@@ -696,8 +710,11 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'foreign_coordinator',
+      status: 'unreachable',
+      cause: 'foreign_peer',
       observed: { namespace: 'test-namespace', flavor: 'dev' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
     });
   });
 

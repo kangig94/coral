@@ -623,7 +623,16 @@ describe('cli main routing', () => {
     it.each([
       [{ status: 'no_record_no_socket' }, 0],
       [{ status: 'recorded_process_absent', pid: 4242 }, 0],
-      [{ status: 'foreign_coordinator', observed: { namespace: 'foreign', flavor: 'dev' } }, 75],
+      [
+        {
+          status: 'unreachable',
+          cause: 'foreign_peer',
+          observed: { namespace: 'foreign', flavor: 'dev' },
+          pid: 4242,
+          recordPath: '/run/coral/coordinator.json',
+        },
+        75,
+      ],
       [{ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' }, 75],
     ] as const)('exits %j with %s', async (status, expected) => {
       const program = statusProgram(async () => status);
@@ -637,7 +646,6 @@ describe('cli main routing', () => {
       ['ok', 0],
       ['no_record_no_socket', 0],
       ['recorded_process_absent', 0],
-      ['foreign_coordinator', 75],
       ['shutting_down', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],
@@ -646,12 +654,12 @@ describe('cli main routing', () => {
       ['no_record_socket_present', 75],
     ] as const;
 
-    it('has a row for every status the command can produce', async () => {
+    // Both halves of the mapping, not just its keys: the codes above were carried alongside the statuses and
+    // never compared to anything, so a status could have changed its contribution with every row still green.
+    it('states the exit contribution of every status the command can produce', async () => {
       const { BACKEND_STATUS_EXIT_CODES } = await import('#src/cli/commands/backend.js');
 
-      expect(BACKEND_STATUS_EXIT_EXPECTATIONS.map(([status]) => status).sort()).toEqual(
-        Object.keys(BACKEND_STATUS_EXIT_CODES).sort(),
-      );
+      expect(Object.fromEntries(BACKEND_STATUS_EXIT_EXPECTATIONS)).toEqual(BACKEND_STATUS_EXIT_CODES);
     });
   });
 

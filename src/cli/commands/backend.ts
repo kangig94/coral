@@ -172,7 +172,6 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   ok: 0,
   no_record_no_socket: 0,
   recorded_process_absent: 0,
-  foreign_coordinator: 75,
   shutting_down: 0,
   unauthorized: 0,
   recent_failure: 0,

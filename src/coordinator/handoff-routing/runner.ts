@@ -346,11 +346,20 @@ export type DelegatedStartupObservation =
 
 /**
  * `undetermined` is not a weaker `not-serving`: it may neither end a hold nor finalize a delegation.
+ *
+ * `still-starting` is not a weaker `undetermined` either. A coordinator that has bound its address and proven
+ * its lineage, and has not yet said whether it will serve, was observed successfully; what separates the two
+ * is what ends them. This one is ended by the coordinator itself, so it is waited out rather than reported as
+ * a question that could not be answered.
  */
 type CoordinatorServingAnswer =
   | Readonly<{ kind: 'serving' }>
+  | Readonly<{ kind: 'still-starting' }>
   | Readonly<{ kind: 'not-serving' }>
   | Readonly<{ kind: 'undetermined'; cause: UnresolvedIncumbentCause }>;
+
+/** The answers a delegated startup may end on. `still-starting` ends nothing, so it is not one of them. */
+type DecidedServingAnswer = Exclude<CoordinatorServingAnswer, { kind: 'still-starting' }>;
 
 type RoutingResolution = Readonly<{
   routing: HandoffRoutingResult;
@@ -625,7 +634,7 @@ function startupAttemptLineage(
 /** A reading that produced no health answers the same way whichever question was asked of it. */
 function servingAnswerWithoutHealth(
   reading: Exclude<LiveIncumbentReading, { kind: 'observed' }>,
-): Exclude<CoordinatorServingAnswer, { kind: 'serving' }> {
+): Exclude<DecidedServingAnswer, { kind: 'serving' }> {
   switch (reading.kind) {
     case 'observed-unusable':
       return { kind: 'not-serving' };
@@ -636,8 +645,13 @@ function servingAnswerWithoutHealth(
   }
 }
 
+/**
+ * A coordinator that named its own shutdown is refused before this point (see `readLiveCoordinatorHealth`), so
+ * a non-`ok` status here is a coordinator that has not decided yet, and a decided no may not be minted from
+ * one.
+ */
 function servingAnswerForStatus(status: LiveIncumbentHealth['status']): CoordinatorServingAnswer {
-  return status === 'ok' ? { kind: 'serving' } : { kind: 'not-serving' };
+  return status === 'ok' ? { kind: 'serving' } : { kind: 'still-starting' };
 }
 
 /**
@@ -692,14 +706,14 @@ async function coordinatorServingThisAddress(
     : { kind: 'not-serving' };
 }
 
-async function startupObservationAfterChildEnded(
-  runtime: Runtime,
-  time: TimePort,
-  desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string,
+/**
+ * The child's ending belongs only to `not-serving`: an exit code is evidence about the child, never about a
+ * coordinator that has answered for itself.
+ */
+function delegatedStartupObservationFor(
+  answer: DecidedServingAnswer,
   childEnding: ChildEnding,
-): Promise<DelegatedStartupObservation> {
-  const answer = await coordinatorServingThisAddress(runtime, time, desiredIdentity, expectedAttemptId);
+): DelegatedStartupObservation {
   switch (answer.kind) {
     case 'serving':
       return { kind: 'serving' };
@@ -713,6 +727,46 @@ async function startupObservationAfterChildEnded(
       return { kind: 'undetermined', cause: answer.cause };
     default:
       return assertNever(answer);
+  }
+}
+
+/**
+ * A child that ended while the coordinator it started is still starting has settled nothing, so this holds
+ * rather than recording that ending as the delegation's outcome.
+ *
+ * Every exit from the hold is reached by the coordinator itself: `ok` records success; an address that is no
+ * longer this attempt's — absent, draining, or another lineage — records the child's ending; a probe that
+ * stops resolving returns `undetermined`, whose successor is the `coral-cli backend status` its caller is told
+ * to run. A coordinator that never serves stops answering once its process ends, so the hold cannot outlive
+ * the process it waits on.
+ *
+ * The one case left — alive, answering, and still starting — is deliberately not bounded. A deadline short
+ * enough to catch a coordinator that is stuck also expires on recovery work that was going to finish, and that
+ * expiry would mint the unobserved verdict this hold exists to avoid. Nothing is recorded meanwhile and
+ * nothing needs to be: the selection is already published, so the hold is visible as an unresolved invocation
+ * that `coral-cli backend routing-status resolve` settles.
+ */
+async function startupObservationAfterChildEnded(
+  runtime: Runtime,
+  time: TimePort,
+  desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string,
+  childEnding: ChildEnding,
+): Promise<DelegatedStartupObservation> {
+  let holdReported = false;
+  while (true) {
+    const answer = await coordinatorServingThisAddress(runtime, time, desiredIdentity, expectedAttemptId);
+    if (answer.kind !== 'still-starting') {
+      return delegatedStartupObservationFor(answer, childEnding);
+    }
+    if (!holdReported) {
+      holdReported = true;
+      backendLog.info(
+        `The spawned child ended with ${describeChildEnding(childEnding)}; the coordinator it started is still ` +
+          'starting. Nothing is recorded until that coordinator says whether it will serve.',
+      );
+    }
+    await time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS);
   }
 }
 

@@ -1002,22 +1002,40 @@ describe('cli format', () => {
       expect(formatBackendStatus(status)).not.toContain('Queue depth');
     });
 
-    it('formats the three distinct no-daemon observations without inventing a general absence', () => {
+    it('formats each no-daemon observation without inventing a general absence', () => {
       expect(formatBackendStatus({ status: 'no_record_no_socket' })).toBe(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
       );
       expect(formatBackendStatus({ status: 'recorded_process_absent', pid: 4242 })).toBe(
         'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.',
       );
-      // The peer at the recorded address did not write that record, so no credential this build holds can
-      // stop it. Offering `backend shutdown` as a second remedy names an exit that cannot be taken.
-      expect(
-        formatBackendStatus({
-          status: 'foreign_coordinator',
-          observed: { namespace: 'another-installation', flavor: 'dev' },
-        }),
-      ).toBe(
-        'The recorded coordinator address is held by a coordinator for namespace=another-installation flavor=dev, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it. coral-cli backend shutdown cannot: it presents the boot token from a record that coordinator never wrote, and is rejected.',
+    });
+
+    // What the evidence supports and nothing more: a Coral coordinator answers the recorded port and did not
+    // write that record. The port is ephemeral, so this says nothing about whether this installation's
+    // coordinator is running and nothing about startup is held — the earlier wording claimed a startup
+    // conflict and told an operator to stop a live, unrelated coordinator. The peer did not write the record,
+    // so no credential this build holds can stop it either; offering `backend shutdown` as a remedy would name
+    // an exit that cannot be taken.
+    it('reports a foreign peer at the recorded port as unknown state, not as a hold over startup', () => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        cause: 'foreign_peer',
+        observed: { namespace: 'another-installation', flavor: 'dev' },
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+
+      expect(text).toBe(
+        [
+          'Backend state is unknown: the recorded coordinator address is answered by a Coral coordinator for namespace=another-installation flavor=dev, which is not the identity the discovery record carries.',
+          'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A coral-cli mutating command (or a Claude Code session start) still attempts startup or handoff.',
+          "Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: run 'ps -p 4242' (or check your process manager), and if that is not Coral, delete /run/coral/coordinator.json and run a coral-cli mutating command; it attempts startup or handoff. coral-cli backend shutdown cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.",
+        ].join('\n'),
+      );
+      expect(text, 'nothing observed here says startup cannot proceed').not.toMatch(/stays held|remains held/u);
+      expect(text, 'no credential this build holds can stop that peer').not.toMatch(
+        /stop that coordinator through the service or account/u,
       );
     });
 
@@ -1251,7 +1269,13 @@ describe('cli format', () => {
       { status: 'ok', health: { ...baseHealth, components: [] } },
       { status: 'no_record_no_socket' },
       { status: 'recorded_process_absent', pid: 4242 },
-      { status: 'foreign_coordinator', observed: { namespace: 'foreign', flavor: 'prod' as const } },
+      {
+        status: 'unreachable',
+        cause: 'foreign_peer' as const,
+        observed: { namespace: 'foreign', flavor: 'prod' as const },
+        pid: 4242,
+        recordPath: '/run/coordinator.json',
+      },
       { status: 'undecodable_record', reason: 'corrupt-json' as const, path: '/run/coordinator.json' },
       { status: 'unreachable', detail: '500', cause: 'responded' as const },
       {
