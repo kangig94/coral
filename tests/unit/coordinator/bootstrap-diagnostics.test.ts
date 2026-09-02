@@ -126,11 +126,12 @@ describe('writeBootstrapDiagnostic', () => {
     expect(nonRetryable.retryable).toBe(false);
   });
 
-  // The guard may not depend on CORAL_STARTUP_ATTEMPT_ID being exported: a backend spawned without one must
-  // still keep the code and remediation the build it delegated to recorded.
+  // The guard may not depend on CORAL_STARTUP_ATTEMPT_ID: an ancestor and the build it delegates to carry the
+  // same one, so it separates neither of them from the other, and a spawn exporting none leaves both sides
+  // absent. Either way the refusal the delegated build recorded keeps its code and remediation.
   it.each<[string, string | undefined]>([
-    ['a CLI spawn that exported an attempt id', 'delegated-attempt'],
-    ['a session hook that exported none', undefined],
+    ['a spawn that exported an attempt id', 'delegated-attempt'],
+    ['a spawn that exported none', undefined],
   ])(
     'keeps the setup refusal a delegated build recorded when an ancestor from %s fails generically',
     (_path, attemptId) => {
@@ -145,6 +146,25 @@ describe('writeBootstrapDiagnostic', () => {
       expect(storage.renameSync).not.toHaveBeenCalled();
     },
   );
+
+  // Reading the existing record can fail for reasons that are neither "no record" nor "unusable record":
+  // EACCES, EISDIR, EIO. The guard exists to keep a record that is better than this one, and a record that
+  // cannot be read is not known to be one — while a generic startup failure writes no sentinel, so declining
+  // to write here would leave the failure this process did observe on no durable surface at all.
+  it('records its own generic failure when the existing diagnostic cannot be read', () => {
+    vi.stubEnv('CORAL_STARTUP_ATTEMPT_ID', undefined);
+    storage.readFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+
+    expect(writeBootstrapDiagnostic('/plugin', 'startup_failed', new Error('generic ancestor error'), 1)).toBe(
+      '/state/startup-diagnostic.json',
+    );
+
+    const written = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;
+    expect(written.error).toMatchObject({ kind: 'error', message: 'generic ancestor error' });
+    expect(storage.renameSync).toHaveBeenCalledTimes(1);
+  });
 
   it.each<[string, Readonly<Record<string, unknown>>]>([
     ['recorded before this process started', { recordedAt: new Date(0).toISOString() }],

@@ -43,7 +43,7 @@ export function startupAttemptIdentityMatches(
  * An empty or whitespace-only value is not an identifier. An exported-but-empty variable and a health
  * payload carrying the same are both strings, and two of them compare equal.
  */
-function attemptIdentifier(raw: string | undefined): string | null {
+export function startupAttemptIdentifier(raw: string | undefined): string | null {
   return raw !== undefined && raw.trim().length > 0 ? raw : null;
 }
 
@@ -53,8 +53,8 @@ export function resolveStartupAttemptLineage(evidence: {
   observedIdentity?: StartupAttemptIdentity;
   desiredIdentity: StartupAttemptIdentity;
 }): StartupAttemptLineage {
-  const observedAttemptId = attemptIdentifier(evidence.observedAttemptId);
-  const expectedAttemptId = attemptIdentifier(evidence.expectedAttemptId);
+  const observedAttemptId = startupAttemptIdentifier(evidence.observedAttemptId);
+  const expectedAttemptId = startupAttemptIdentifier(evidence.expectedAttemptId);
 
   // Two identifiers that disagree must exclude this attempt even when the bundle identities match; anything
   // that is not an identifier excludes nothing and must not be read as someone else's.

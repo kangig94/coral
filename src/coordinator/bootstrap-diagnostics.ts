@@ -62,12 +62,11 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
 /**
  * A documented refusal this process may not overwrite with a generic startup failure of its own.
  *
- * Attribution may not rest on `CORAL_STARTUP_ATTEMPT_ID`: not every spawn path exports one (see
- * `spawnBackend` in `clients/hooks/session-start.mjs`), so a backend started without it has none on either
- * side of a delegation, and comparing two absent ids either skips the guard or matches every record ever
- * written. What holds without it is that the record was written by a *different process* during *this*
- * process's life: a build this process delegated to satisfies both halves, and a record from an attempt that
- * ended before this process started satisfies neither.
+ * Attribution may not rest on `CORAL_STARTUP_ATTEMPT_ID`: it names the attempt, which a delegating ancestor
+ * and every build it delegates to share, so it cannot answer either half of the question this guard asks — a
+ * matching id neither proves the record came from another process nor that it was written during this
+ * process's life. Those two halves are what hold: a build this process delegated to satisfies both, and a
+ * record from an attempt that ended before this process started satisfies neither.
  *
  * A record with no readable pid is not preserved. This writer always stamps one, so a `startup_failed` record
  * without one did not come from here and its prose is not this build's.
@@ -124,8 +123,15 @@ export function writeBootstrapDiagnostic(
           return diagnosticFile;
         }
       } catch (readError: unknown) {
+        // A record that could not be read is not known to be the better one, and this process may not pay
+        // for that uncertainty with its own: a generic startup failure writes no sentinel, so declining to
+        // write here would leave the failure this process did observe on no durable surface at all.
         if (!(isNoEntryError(readError) || readError instanceof SyntaxError)) {
-          throw readError;
+          backendLog.warn(
+            `Could not read the existing startup diagnostic at ${diagnosticFile} (${errorMessage(readError)}); ` +
+              'it is replaced unchecked, so a documented refusal another process recorded there is not ' +
+              "preserved. Run 'coral-cli backend status' for what this build recorded in its place.",
+          );
         }
       }
     }

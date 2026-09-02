@@ -31,6 +31,7 @@ import { handoffRoutingStatusGeneration } from '../../store/handoff-routing-stat
 import { createIpcClient } from '../../transport/ipc/client.js';
 import {
   resolveStartupAttemptLineage,
+  startupAttemptIdentifier,
   startupAttemptIdentityMatches,
   type StartupAttemptIdentity,
   type StartupAttemptLineage,
@@ -599,10 +600,19 @@ function handoffOutcome(version: string, ending: ChildEnding): HandoffOutcome {
   return handoffSuccess(version);
 }
 
+/**
+ * The attempt id this delegation must hand its child. A process that inherited none mints one rather than
+ * delegating anonymously: attempt lineage is the only proof that survives a second hop, and it survives only
+ * while every hop carries an id, so an anonymous hop leaves a two-hop startup unattributable at both ends.
+ */
+function startupAttemptIdForDelegation(runtime: Pick<Runtime, 'env' | 'ids'>): string {
+  return startupAttemptIdentifier(runtime.env.get('CORAL_STARTUP_ATTEMPT_ID')) ?? runtime.ids.uuid();
+}
+
 function startupAttemptLineage(
   health: LiveIncumbentHealth,
   desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string | undefined,
+  expectedAttemptId: string,
 ): StartupAttemptLineage {
   return resolveStartupAttemptLineage({
     observedAttemptId: health.env?.CORAL_STARTUP_ATTEMPT_ID,
@@ -640,7 +650,7 @@ async function coordinatorStartedByThisAttempt(
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string | undefined,
+  expectedAttemptId: string,
 ): Promise<CoordinatorServingAnswer> {
   const reading = await readLiveCoordinatorHealth(runtime, time);
   if (reading.kind !== 'observed') {
@@ -659,16 +669,18 @@ async function coordinatorStartedByThisAttempt(
  * probe landed.
  *
  * The one question this asks that `coordinatorStartedByThisAttempt` does not: a bare build-identity match
- * counts once the child is gone. Attempt lineage still counts too, and must — the inherited attempt id is the
- * only one of the two that survives further delegation, since a transitively delegated coordinator carries
- * this attempt's id while its build identity is a third build's. Neither half of the serving proof is
- * retired: a coordinator still starting has not answered whether it will serve at all.
+ * counts once the child is gone. Attempt lineage still counts too, and must — it is the only one of the two
+ * proofs that survives a second hop, where the coordinator that finally binds is a third build whose identity
+ * matches neither end. That survival is not free: it holds only while every hop hands its child an attempt id
+ * (see `startupAttemptIdForDelegation`), and an anonymous hop would make a two-hop startup unattributable.
+ * Neither half of the serving proof is retired: a coordinator still starting has not answered whether it will
+ * serve at all.
  */
 async function coordinatorServingThisAddress(
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string | undefined,
+  expectedAttemptId: string,
 ): Promise<CoordinatorServingAnswer> {
   const reading = await readLiveCoordinatorHealth(runtime, time);
   if (reading.kind !== 'observed') {
@@ -684,7 +696,7 @@ async function startupObservationAfterChildEnded(
   runtime: Runtime,
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string | undefined,
+  expectedAttemptId: string,
   childEnding: ChildEnding,
 ): Promise<DelegatedStartupObservation> {
   const answer = await coordinatorServingThisAddress(runtime, time, desiredIdentity, expectedAttemptId);
@@ -709,7 +721,7 @@ async function waitForBackendStartupObservation(
   runtime: Runtime,
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string | undefined,
+  expectedAttemptId: string,
 ): Promise<DelegatedStartupObservation> {
   const ended = child.ending.then((childEnding) => ({ kind: 'child-ended', childEnding }) as const);
 
@@ -1155,14 +1167,18 @@ async function executeResolvedHandoff(
                 flavor: execution.manifest.flavor,
                 namespace: pluginRootNamespace(dirname(execution.bundleDir)),
               } satisfies StartupAttemptIdentity,
-              expectedAttemptId: runtime.env.get('CORAL_STARTUP_ATTEMPT_ID'),
+              expectedAttemptId: startupAttemptIdForDelegation(runtime),
             }
           : undefined;
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : 'coral-cli.cjs';
       const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
       const spawnOptions: SpawnOptions = {
         cwd: runtime.env.cwd(),
-        env: { ...runtime.env.fullSnapshot(), [CLI_HANDOFF_GUARD_ENV]: '1' },
+        env: {
+          ...runtime.env.fullSnapshot(),
+          [CLI_HANDOFF_GUARD_ENV]: '1',
+          ...(startup === undefined ? {} : { CORAL_STARTUP_ATTEMPT_ID: startup.expectedAttemptId }),
+        },
         stdio: 'inherit',
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };

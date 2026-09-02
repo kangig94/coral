@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -96,9 +97,15 @@ function spawnBackend(pluginRoot) {
     stderr = openSync(join(runDir, 'coordinator.log'), 'a');
   } catch {}
   try {
+    // A backend spawned without an attempt id cannot be told apart from anyone else's once it delegates: the
+    // coordinator that finally binds may be a third build, and then the id is the only evidence tying it back
+    // to this spawn. Every minter of this variable draws from one namespace in which no two attempts may
+    // collide, so it has to be unique across processes without coordination — `randomUUID` is CSPRNG-backed
+    // and satisfies that. See `spawnCoordinator` in `src/transport/ipc/ensure.ts`.
     const child = spawn(process.execPath, [backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
+      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID() },
     });
     child.unref();
   } catch {}

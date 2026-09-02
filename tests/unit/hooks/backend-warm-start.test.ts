@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -35,9 +35,17 @@ describe('session-start.mjs daemon spawn', () => {
       JSON.stringify({ bundleHash: 'test-hash', flavor: 'prod' }),
       'utf-8',
     );
+    // Renamed into place so the marker never exists half-written: `waitForFile` only proves existence, and
+    // this fixture's content is read back.
     writeFileSync(
       join(fixture.pluginRoot, 'bridge', 'coral-backend.cjs'),
-      `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'spawned')\n`,
+      [
+        "const fs = require('node:fs');",
+        `const marker = ${JSON.stringify(markerPath)};`,
+        'fs.writeFileSync(`${marker}.tmp`, String(process.env.CORAL_STARTUP_ATTEMPT_ID));',
+        'fs.renameSync(`${marker}.tmp`, marker);',
+        '',
+      ].join('\n'),
       'utf-8',
     );
 
@@ -60,6 +68,11 @@ describe('session-start.mjs daemon spawn', () => {
 
       expect(result.status).toBe(0);
       expect(await waitForFile(markerPath)).toBe(true);
+      // A backend spawned without an attempt id cannot be tied to this spawn once it delegates: the
+      // coordinator that finally binds may be a third build, whose own identity matches neither end.
+      expect(readFileSync(markerPath, 'utf-8')).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+      );
     },
     WARM_START_TIMEOUT_MS,
   );

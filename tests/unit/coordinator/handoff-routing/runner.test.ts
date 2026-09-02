@@ -888,6 +888,7 @@ describe('handoff-routing/runner', () => {
       setInterval: vi.fn(() => ({})),
       clearInterval: vi.fn(),
     };
+    runtimeUuid.mockReturnValue('delegation-attempt');
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     mockState.spawn.mockImplementationOnce(() => {
       child = childThatStaysAlive();
@@ -906,7 +907,7 @@ describe('handoff-routing/runner', () => {
     expect(mockState.health).not.toHaveBeenCalled();
     expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
       cwd: '/handoff/cwd',
-      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1' },
+      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1', CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt' },
       stdio: 'inherit',
       detached: true,
     });
@@ -1840,6 +1841,79 @@ describe('handoff-routing/runner', () => {
 
     // The exact child exits while this observer is inside its poll sleep, so the only readiness read that
     // sees the third build is the one terminality triggers.
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-success', version: manifest.version },
+    });
+  });
+
+  // The hook spawn path leaves no attempt id, so the whole chain used to be anonymous: a second hop put a
+  // third build on the address, its identity matched neither end, and a startup that worked was recorded as
+  // `delegated-exit{0}` with a `startup_failed` diagnostic beside it. Minting one here is what makes the
+  // grandchild attributable; without it this observation is `not-serving` and the terminal is an exit.
+  it('attributes a two-hop delegation when this process inherited no attempt id', async () => {
+    const target = validatedTarget(roots[0]);
+    const mintedAttemptId = 'minted-attempt';
+    const transitiveNamespace = 'transitively-delegated-plugin-root';
+    const anonymousRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? undefined : runtime.env.get(key)),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    runtimeUuid.mockReturnValue(mintedAttemptId);
+    mockState.createRealRuntime.mockReturnValue(anonymousRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    // The id only proves lineage if the child it was minted for actually receives it and passes it on.
+    expect(mockState.spawn.mock.calls[0]?.[2]?.env).toMatchObject({ CORAL_STARTUP_ATTEMPT_ID: mintedAttemptId });
+
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: transitiveNamespace,
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      ...liveHealth(undefined, transitiveNamespace),
+      env: { CORAL_STARTUP_ATTEMPT_ID: mintedAttemptId },
+    });
+
     child.emit('exit', 0, null);
 
     await expect(result).resolves.toMatchObject({
