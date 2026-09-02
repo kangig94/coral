@@ -745,9 +745,12 @@ function delegatedStartupObservationFor(
  *
  * The one case left — alive, answering, and still starting — is deliberately not bounded. A deadline short
  * enough to catch a coordinator that is stuck also expires on recovery work that was going to finish, and that
- * expiry would mint the unobserved verdict this hold exists to avoid. Nothing is recorded meanwhile and
- * nothing needs to be: the selection is already published, so the hold is visible as an unresolved invocation
- * that `coral-cli backend routing-status resolve` settles.
+ * expiry would mint the unobserved verdict this hold exists to avoid. Nothing is recorded meanwhile, and no
+ * routing-status command settles the published selection while the hold lasts: this process is that
+ * selection's recorded owner and stays alive for exactly as long as it waits, so resolving it is refused as a
+ * live owner (see `resolveHandoffRoutingStatus` in `src/coordinator/handoff-routing/status.ts`). What ends
+ * this wait is the coordinator itself — its own progress, or an operator stopping it, which returns the hold
+ * to the exits above.
  */
 async function startupObservationAfterChildEnded(
   runtime: Runtime,
