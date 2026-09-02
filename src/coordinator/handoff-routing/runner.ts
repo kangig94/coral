@@ -1170,6 +1170,7 @@ async function executeResolvedHandoff(
       executionPhase.current = 'executable-check';
       execution.assertExecutable();
       executionPhase.current = 'child-spawn';
+      // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       await childObservation.spawned;

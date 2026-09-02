@@ -382,7 +382,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'recorded_process_absent':
       return `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.`;
     case 'foreign_coordinator':
-      return `The recorded coordinator address is held by a coordinator for namespace=${result.observed.namespace} flavor=${result.observed.flavor}, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it, or run this build's own coral-cli backend shutdown.`;
+      return `The recorded coordinator address is held by a coordinator for namespace=${result.observed.namespace} flavor=${result.observed.flavor}, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it. coral-cli backend shutdown cannot: it presents the boot token from a record that coordinator never wrote, and is rejected.`;
     case 'undecodable_record':
       return formatUndecodableRecordStatus(result);
     case 'unreachable':

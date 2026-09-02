@@ -1009,13 +1009,15 @@ describe('cli format', () => {
       expect(formatBackendStatus({ status: 'recorded_process_absent', pid: 4242 })).toBe(
         'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.',
       );
+      // The peer at the recorded address did not write that record, so no credential this build holds can
+      // stop it. Offering `backend shutdown` as a second remedy names an exit that cannot be taken.
       expect(
         formatBackendStatus({
           status: 'foreign_coordinator',
           observed: { namespace: 'another-installation', flavor: 'dev' },
         }),
       ).toBe(
-        "The recorded coordinator address is held by a coordinator for namespace=another-installation flavor=dev, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it, or run this build's own coral-cli backend shutdown.",
+        'The recorded coordinator address is held by a coordinator for namespace=another-installation flavor=dev, not this one. Startup stays held until that conflict is resolved: stop that coordinator through the service or account that owns it. coral-cli backend shutdown cannot: it presents the boot token from a record that coordinator never wrote, and is rejected.',
       );
     });
 
