@@ -198,7 +198,14 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = openParamsSchema.parse(params);
           bootstrapNonce.spend(request.bootstrapNonce);
           assertNamedCoordinatorBuild(request.coordinator);
-          return { holder: request.coordinator.instanceId, fields: { proxy: identity } };
+          return {
+            holder: {
+              instanceId: request.coordinator.instanceId,
+              pid: request.coordinator.pid,
+              incarnation: request.coordinator.incarnation,
+            },
+            fields: { proxy: identity },
+          };
         },
       },
     ],
@@ -435,11 +442,19 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successorInstanceId: request.successor.instanceId,
+            successor: {
+              instanceId: request.successor.instanceId,
+              pid: request.successor.pid,
+              incarnation: request.successor.incarnation,
+            },
             binding: setIdentity,
           });
           return {
-            holder: request.successor.instanceId,
+            holder: {
+              instanceId: request.successor.instanceId,
+              pid: request.successor.pid,
+              incarnation: request.successor.incarnation,
+            },
             fields: proxyHandoffRedeemFieldsSchema.parse({
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,

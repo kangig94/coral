@@ -622,7 +622,10 @@ async function startRoleEndpoint(
             authority: 'establishes-control' as const,
             handle: async (params: unknown) => {
               await options.open(params);
-              return { holder: 'startup-successor', fields: options.fields };
+              return {
+                holder: { instanceId: 'startup-successor', pid: 1, incarnation: testIncarnation(1) },
+                fields: options.fields,
+              };
             },
           },
         ],

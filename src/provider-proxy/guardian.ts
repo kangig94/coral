@@ -331,7 +331,14 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedCoordinatorBuild(request.coordinator, capsule);
           // The result names the proxy this guardian was issued for, so a coordinator that opened against
           // the wrong set learns it from the response rather than from a later staging failure.
-          return { holder: request.coordinator.instanceId, fields: { guardian: identity, proxy: request.proxy } };
+          return {
+            holder: {
+              instanceId: request.coordinator.instanceId,
+              pid: request.coordinator.pid,
+              incarnation: request.coordinator.incarnation,
+            },
+            fields: { guardian: identity, proxy: request.proxy },
+          };
         },
       },
     ],
@@ -367,7 +374,11 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successorInstanceId: request.successor.instanceId,
+            successor: {
+              instanceId: request.successor.instanceId,
+              pid: request.successor.pid,
+              incarnation: request.successor.incarnation,
+            },
             binding: setIdentity,
           });
           // The guardian is the sole linearization point: it is the only party that ever sees the plaintext
@@ -397,7 +408,11 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           );
           reaperRecordRedemptionResultSchema.parse(reaperResult);
           return {
-            holder: request.successor.instanceId,
+            holder: {
+              instanceId: request.successor.instanceId,
+              pid: request.successor.pid,
+              incarnation: request.successor.incarnation,
+            },
             fields: guardianHandoffRedeemFieldsSchema.parse({
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,

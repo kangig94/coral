@@ -10,6 +10,7 @@ import {
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
+  type CoordinatorIdentity,
   type ProxyControlJsonRpcMessage,
 } from './protocol.js';
 import { acceptedHeartbeatResult } from './heartbeat-observation.js';
@@ -100,15 +101,25 @@ class ControlHeartbeatRefusedError extends ProxyControlProtocolError {
 
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
 
-/** Who holds a control tenancy. Two opens naming the same holder are one tenancy re-reported, not two. */
-export type ControlTenancyHolder = string;
+/**
+ * Who holds a control tenancy: the complete process identity an opening method already parsed off the wire.
+ * Two opens naming the same instance id, pid, and incarnation are one tenancy re-reported, not two — the same
+ * instance id under a different pid or incarnation is a different process and never a retry of this one.
+ */
+export type ControlTenancyHolder = Readonly<Pick<CoordinatorIdentity, 'instanceId' | 'pid' | 'incarnation'>>;
+
+/** Whether two holder identities name the same process, not merely the same coordinator instance id. */
+export function sameControlTenancyHolder(left: ControlTenancyHolder, right: ControlTenancyHolder): boolean {
+  return left.instanceId === right.instanceId && left.pid === right.pid && left.incarnation === right.incarnation;
+}
 
 /**
  * What an opening method answers: who earned the tenancy, and the role-specific result fields. The endpoint
  * merges the epoch and the first challenge into `fields`; a role that supplied those itself would be naming
  * a tenancy it has not been granted. `holder` is what lets a retry be recognised as the same tenancy rather
- * than refused or silently re-minted — every opening method already derives it from `coordinator.instanceId`
- * or `successor.instanceId`, so naming it here costs nothing the credential check did not already establish.
+ * than refused or silently re-minted — every opening method already derives it from `coordinator` or
+ * `successor`'s complete identity, so naming it here costs nothing the credential check did not already
+ * establish.
  */
 export type ControlOpening = Readonly<{ holder: ControlTenancyHolder; fields: Record<string, unknown> }>;
 export type ControlOpenHandler = (params: unknown) => Promise<ControlOpening> | ControlOpening;
@@ -347,7 +358,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   const establishControl = async (socket: Socket, handle: ControlOpenHandler, params: unknown): Promise<unknown> => {
     const { holder, fields } = await handle(params);
     const live = tenancy;
-    if (live !== null && live.holder === holder) {
+    if (live !== null && sameControlTenancyHolder(live.holder, holder)) {
       // The same tenancy earned again, on this socket or a new one — not a second tenancy to admit.
       const admitted = challenges.reattachControl();
       if (!admitted.accepted) throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');

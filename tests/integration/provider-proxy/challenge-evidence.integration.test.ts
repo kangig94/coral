@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createConnection, Socket } from 'node:net';
@@ -11,7 +12,11 @@ import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-
 import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
-import { createControlEndpoint, type ControlMethod } from '#src/provider-proxy/control-endpoint.js';
+import {
+  createControlEndpoint,
+  type ControlMethod,
+  type ControlTenancyHolder,
+} from '#src/provider-proxy/control-endpoint.js';
 import {
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
@@ -28,6 +33,12 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const NONCE = 'a'.repeat(64);
+
+/** A deterministic `ControlTenancyHolder` for a fixture's own credential name. Two distinct names are two
+ *  distinct processes, mirroring a real `coordinatorIdentitySchema` parse. */
+function holderFor(instanceId: string): ControlTenancyHolder {
+  return { instanceId, pid: 1, incarnation: testIncarnation(instanceId) };
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -118,7 +129,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
             authority: 'establishes-control',
             handle: (params) => {
               predecessorOpenParamsSchema.parse(params);
-              return { holder: 'predecessor', fields: { identity: 'predecessor' } };
+              return { holder: holderFor('predecessor'), fields: { identity: 'predecessor' } };
             },
           },
         ],
@@ -128,7 +139,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
             authority: 'establishes-control',
             handle: (params) => {
               successorOpenParamsSchema.parse(params);
-              return { holder: 'successor', fields: { identity: 'successor' } };
+              return { holder: holderFor('successor'), fields: { identity: 'successor' } };
             },
           },
         ],
@@ -261,7 +272,7 @@ describe('control heartbeats reach the deadline machine', () => {
               authority: 'establishes-control',
               handle: (params) => {
                 bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-                return { holder: 'coordinator', fields: {} };
+                return { holder: holderFor('coordinator'), fields: {} };
               },
             },
           ],
@@ -325,7 +336,7 @@ describe('control heartbeats reach the deadline machine', () => {
               authority: 'establishes-control',
               handle: (params) => {
                 bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-                return { holder: 'coordinator', fields: {} };
+                return { holder: holderFor('coordinator'), fields: {} };
               },
             },
           ],
@@ -443,14 +454,14 @@ describe('successor control reaches the deadline machine through production esta
               'predecessor.open.v1',
               {
                 authority: 'establishes-control',
-                handle: () => ({ holder: 'predecessor', fields: {} }),
+                handle: () => ({ holder: holderFor('predecessor'), fields: {} }),
               },
             ],
             [
               'successor.open.v1',
               {
                 authority: 'establishes-control',
-                handle: () => ({ holder: 'successor', fields: {} }),
+                handle: () => ({ holder: holderFor('successor'), fields: {} }),
               },
             ],
           ]),

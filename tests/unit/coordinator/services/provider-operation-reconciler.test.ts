@@ -1925,7 +1925,11 @@ describe('ProviderOperationReconciler publication', () => {
       modeledProxyState.redeem({
         grantId: capsule.grantId,
         secret: capsule.secret,
-        successorInstanceId: '88888888-8888-4888-8888-888888888888',
+        successor: {
+          instanceId: '88888888-8888-4888-8888-888888888888',
+          pid: 999,
+          incarnation: testIncarnation(999),
+        },
         binding: {
           generation: capsule.generation,
           flavor: capsule.flavor,

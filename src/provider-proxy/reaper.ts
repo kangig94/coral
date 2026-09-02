@@ -198,7 +198,14 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           }
           assertNamedGuardianCapsuleIdentity(request.guardian, capsule);
           assertNamedProxyIdentity('reaper', request.proxy, capsule);
-          return { holder: request.coordinator.instanceId, fields: { reaper: identityOf(recorded) } };
+          return {
+            holder: {
+              instanceId: request.coordinator.instanceId,
+              pid: request.coordinator.pid,
+              incarnation: request.coordinator.incarnation,
+            },
+            fields: { reaper: identityOf(recorded) },
+          };
         },
       },
     ],
@@ -386,7 +393,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             );
           }
           return {
-            holder: request.successor.instanceId,
+            holder: {
+              instanceId: request.successor.instanceId,
+              pid: request.successor.pid,
+              incarnation: request.successor.incarnation,
+            },
             fields: reaperHandoffRotateFieldsSchema.parse({
               // A wire result describing what this call did, not a deadline-model state — the deadline
               // machine this endpoint shares with the guardian has exactly one enum, and this is not a

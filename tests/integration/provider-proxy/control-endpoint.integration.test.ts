@@ -20,9 +20,18 @@ import {
   type ControlEndpoint,
   type ControlEndpointRole,
   type ControlMethod,
+  type ControlTenancyHolder,
 } from '#src/provider-proxy/control-endpoint.js';
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
+
+/** A deterministic `ControlTenancyHolder` for a given instance id and pid: the same pair always yields the
+ *  same incarnation, so two calls naming the same pair are the same process and a differing pid is a
+ *  distinct one — mirroring how a real `coordinatorIdentitySchema` parse carries pid and incarnation
+ *  together. */
+function holderFor(instanceId: string, pid = 1): ControlTenancyHolder {
+  return { instanceId, pid, incarnation: testIncarnation(`${instanceId}:${pid}`) };
+}
 
 type EndpointReply = {
   result?: unknown;
@@ -144,25 +153,30 @@ async function startEndpoint(
         authority: 'establishes-control',
         handle: (params) => {
           bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-          return { holder: 'incumbent', fields: { role: 'guardian' } };
+          return { holder: holderFor('incumbent'), fields: { role: 'guardian' } };
         },
       },
     ],
     ['role.work.v1', { authority: 'active', handle: () => ({ state: 'worked' }) }],
     // A second opening method with its own credential — the successor's analogue of a handoff grant.
-    // `holder` is named by the caller, mirroring how a real grant derives it from `successor.instanceId`.
+    // `holder` is named by the caller, mirroring how a real grant derives it from `successor`'s complete
+    // identity. `pid` defaults to 1 so most tests need only vary `successorId`; a test proving the
+    // same-instance/different-process distinction supplies a different `pid` under the same `successorId`.
     [
       'role.redeem.v1',
       {
         authority: 'establishes-control',
         handle: (params) => {
-          const named = (params as { successorId?: unknown } | null)?.successorId;
-          const holder = typeof named === 'string' ? named : 'successor';
-          const existing = redemptions.get(holder);
+          const request = (params as { successorId?: unknown; pid?: unknown } | null) ?? {};
+          const instanceId = typeof request.successorId === 'string' ? request.successorId : 'successor';
+          const pid = typeof request.pid === 'number' ? request.pid : 1;
+          const holder = holderFor(instanceId, pid);
+          const key = `${holder.instanceId}:${holder.pid}:${holder.incarnation}`;
+          const existing = redemptions.get(key);
           if (existing !== undefined) return { holder, fields: existing };
           redemptionReceipts += 1;
           const fields = { role: 'successor', redemptionReceipt: `receipt-${redemptionReceipts}` };
-          redemptions.set(holder, fields);
+          redemptions.set(key, fields);
           return { holder, fields };
         },
       },
@@ -700,6 +714,45 @@ describe('provider-proxy control endpoint', () => {
     // A holder that never earned this tenancy is not let in just because *a* tenancy happens to be open.
     expect(refused.error?.data?.code).toBe('invalid_state');
     expect(refused.error?.data?.reason).toBe('control-active');
+  });
+
+  it('refuses a same-instance different-process holder while control is live, not the reattach shortcut', async () => {
+    const set = await startEndpoint();
+    const { socketPath } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+    const impostor = await connect(socketPath);
+    // The incumbent's heartbeat lands first, reasserting live control before the redeem below arrives.
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    // The same instance id the incumbent opened with ('incumbent'), but a different pid: a different
+    // process claiming the identical tenancy is not a retry, however identical its instance id, and must
+    // not reach the reattach shortcut while the incumbent is still live.
+    const refused = await impostor.call('role.redeem.v1', { successorId: 'incumbent', pid: 2 });
+
+    expect(refused.error?.data?.code).toBe('invalid_state');
+    expect(refused.error?.data?.reason).toBe('control-active');
+  });
+
+  it('admits a same-instance different-process holder as a new epoch once the lease lapses, displacing the incumbent', async () => {
+    const set = await startEndpoint();
+    const { socketPath, observer } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+    set.lapseControl();
+
+    const successor = await connect(socketPath);
+    // Same instance id as the incumbent, but a restarted process's own pid: this is deliberate successor
+    // admission, not silent tenancy re-minting, so it advances the epoch exactly as a genuinely different
+    // instance id would.
+    const redeemed = await successor.call('role.redeem.v1', { successorId: 'incumbent', pid: 2 });
+
+    expect(redeemed.result).toMatchObject({ role: 'successor', controlEpoch: 2 });
+    await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
+    // The displaced predecessor's own close must not be read as a loss of the tenancy that replaced it.
+    expect(observer.onControlLost).not.toHaveBeenCalled();
   });
 
   it('refuses reattachment once teardown has latched, and the reason reaches error.data', async () => {

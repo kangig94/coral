@@ -19,6 +19,7 @@ import {
   type HandoffCapsuleFileEnvironment,
   type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
+import type { ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.js';
 import type { OperationIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -113,8 +114,19 @@ function mintReceipt(): () => string {
   };
 }
 
-const SUCCESSOR = 'c3333333-3333-4333-8333-333333333333';
-const OTHER_SUCCESSOR = 'd4444444-4444-4444-8444-444444444444';
+const SUCCESSOR: ControlTenancyHolder = {
+  instanceId: 'c3333333-3333-4333-8333-333333333333',
+  pid: 201,
+  incarnation: testIncarnation(9_001),
+};
+const OTHER_SUCCESSOR: ControlTenancyHolder = {
+  instanceId: 'd4444444-4444-4444-8444-444444444444',
+  pid: 202,
+  incarnation: testIncarnation(9_002),
+};
+/** The same coordinator instance id as `SUCCESSOR`, but a different process: what a restarted or replaced
+ *  successor looks like on the wire, and the exact shape a memoized redemption must not answer for. */
+const IMPOSTOR_SUCCESSOR: ControlTenancyHolder = { ...SUCCESSOR, pid: 203, incarnation: testIncarnation(9_003) };
 
 function encode(capsule: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(capsule));
@@ -213,7 +225,7 @@ describe('provider-proxy handoff capsule', () => {
     const request = {
       grantId: grant.grantId,
       secret: SECRET,
-      successorInstanceId: SUCCESSOR,
+      successor: SUCCESSOR,
       binding: bindingOf(grant),
     };
 
@@ -223,6 +235,8 @@ describe('provider-proxy handoff capsule', () => {
     // The set was never presented in `request` above — it comes back only because `install` recorded it.
     expect(redeemed.grant.operations).toEqual(ORDERED);
     expect(redeemed.redemptionReceipt).toBe('receipt-1');
+    // The complete identity that redeemed the grant, not merely its instance id.
+    expect(redeemed.successor).toEqual(SUCCESSOR);
     // A successor whose reply was lost retries with the identical request. Refusing it would hand the set
     // to a teardown it had already earned the right to prevent, so it gets back exactly what it earned —
     // the same receipt, not a fresh one that would invalidate the first.
@@ -239,7 +253,7 @@ describe('provider-proxy handoff capsule', () => {
     registry.redeem({
       grantId: first.grantId,
       secret: SECRET,
-      successorInstanceId: SUCCESSOR,
+      successor: SUCCESSOR,
       binding: bindingOf(first),
     });
 
@@ -258,7 +272,7 @@ describe('provider-proxy handoff capsule', () => {
     const redeemedAgain = registry.redeem({
       grantId: next.grantId,
       secret: nextSecret,
-      successorInstanceId: OTHER_SUCCESSOR,
+      successor: OTHER_SUCCESSOR,
       binding: bindingOf(next),
     });
     expect(redeemedAgain.grant.grantId).toBe(next.grantId);
@@ -271,23 +285,43 @@ describe('provider-proxy handoff capsule', () => {
     const request = {
       grantId: grant.grantId,
       secret: SECRET,
-      successorInstanceId: SUCCESSOR,
+      successor: SUCCESSOR,
       binding: bindingOf(grant),
     };
     registry.redeem(request);
 
     // Two racing coordinators reading the same capsule must not both come away believing they own the set.
-    expect(() => registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR })).toThrow(
-      /control epoch remains live/u,
-    );
+    expect(() => registry.redeem({ ...request, successor: OTHER_SUCCESSOR })).toThrow(/control epoch remains live/u);
     // A caller branches on the discriminated code, never on message text — `control-endpoint.ts` documents
     // `grant_replayed` as the code that means "give up", distinct from a retryable `grant_invalid`.
     try {
-      registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR });
+      registry.redeem({ ...request, successor: OTHER_SUCCESSOR });
     } catch (error: unknown) {
       expect(error).toMatchObject({ code: 'grant_replayed' });
     }
-    expect(registry.redemption()?.successorInstanceId).toBe(SUCCESSOR);
+    expect(registry.redemption()?.successor).toEqual(SUCCESSOR);
+  });
+
+  it('refuses a different process presenting the incumbent’s own instance id, and does not hand it the memoized receipt', () => {
+    // Same instance id as `SUCCESSOR`, different pid/incarnation: a restarted or replaced process, not a
+    // retry of the redemption `SUCCESSOR` already earned.
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFor(ORDERED);
+    registry.install(grant);
+    const request = {
+      grantId: grant.grantId,
+      secret: SECRET,
+      successor: SUCCESSOR,
+      binding: bindingOf(grant),
+    };
+    const incumbent = registry.redeem(request);
+
+    expect(() => registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR })).toThrow(
+      /control epoch remains live/u,
+    );
+    // The incumbent's own retry must still see exactly what it earned, undisturbed by the refused impostor.
+    expect(registry.redeem(request)).toEqual(incumbent);
+    expect(registry.redemption()?.successor).toEqual(SUCCESSOR);
   });
 
   it('carries exact-set membership into later epochs only after incumbent liveness ends', () => {
@@ -299,29 +333,48 @@ describe('provider-proxy handoff capsule', () => {
     const request = {
       grantId: grant.grantId,
       secret: SECRET,
-      successorInstanceId: SUCCESSOR,
+      successor: SUCCESSOR,
       binding: bindingOf(grant),
     };
 
     const incumbent = registry.redeem(request);
     expect(incumbent.grant.operations).toEqual([OPERATION_A]);
-    expect(() => registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR })).toThrow(
-      /control epoch remains live/u,
-    );
+    expect(() => registry.redeem({ ...request, successor: OTHER_SUCCESSOR })).toThrow(/control epoch remains live/u);
     expect(() =>
       registry.redeem({
         ...request,
-        successorInstanceId: OTHER_SUCCESSOR,
+        successor: OTHER_SUCCESSOR,
         binding: { ...request.binding, proxyInstanceId: randomUUID() },
       }),
     ).toThrow(/different guardian\/reaper\/proxy set/u);
 
     incumbentLive = false;
-    const successor = registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR });
+    const rotated = registry.redeem({ ...request, successor: OTHER_SUCCESSOR });
 
-    expect(successor.successorInstanceId).toBe(OTHER_SUCCESSOR);
-    expect(successor.redemptionReceipt).toBe('receipt-2');
-    expect(successor.grant.operations).toEqual([OPERATION_A]);
+    expect(rotated.successor).toEqual(OTHER_SUCCESSOR);
+    expect(rotated.redemptionReceipt).toBe('receipt-2');
+    expect(rotated.grant.operations).toEqual([OPERATION_A]);
+  });
+
+  it('gives a genuinely different process its own redemption after incumbent liveness ends, not the prior receipt', () => {
+    // The same instance id as `SUCCESSOR` throughout — only the process changes — so a check keyed on
+    // instance id alone would wrongly treat the impostor below as the incumbent's own retry.
+    let incumbentLive = true;
+    const registry = createGrantRegistry(mintReceipt(), { mayReplaceRedemption: () => !incumbentLive });
+    const grant = installedGrantFor([]);
+    registry.install(grant);
+    const request = { grantId: grant.grantId, secret: SECRET, successor: SUCCESSOR, binding: bindingOf(grant) };
+
+    const incumbent = registry.redeem(request);
+    expect(incumbent.redemptionReceipt).toBe('receipt-1');
+
+    incumbentLive = false;
+    const displaced = registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR });
+
+    // A fresh receipt for the fresh process, not the incumbent's memoized one.
+    expect(displaced.redemptionReceipt).toBe('receipt-2');
+    expect(displaced.redemptionReceipt).not.toBe(incumbent.redemptionReceipt);
+    expect(displaced.successor).toEqual(IMPOSTOR_SUCCESSOR);
   });
 
   it('refuses redemption presenting the wrong secret', () => {
@@ -333,7 +386,7 @@ describe('provider-proxy handoff capsule', () => {
       registry.redeem({
         grantId: grant.grantId,
         secret: 'e'.repeat(64),
-        successorInstanceId: SUCCESSOR,
+        successor: SUCCESSOR,
         binding: bindingOf(grant),
       }),
     ).toThrow(/did not present the installed grant/u);
@@ -350,7 +403,7 @@ describe('provider-proxy handoff capsule', () => {
       registry.redeem({
         grantId: grant.grantId,
         secret: SECRET,
-        successorInstanceId: SUCCESSOR,
+        successor: SUCCESSOR,
         binding: { ...bindingOf(grant), buildSetId: '99999999-9999-4999-8999-999999999999' },
       }),
     ).toThrow(/different guardian\/reaper\/proxy set/u);
@@ -372,7 +425,7 @@ describe('provider-proxy handoff capsule', () => {
       registry.redeem({
         grantId: randomUUID(),
         secret: SECRET,
-        successorInstanceId: SUCCESSOR,
+        successor: SUCCESSOR,
         binding: bindingOf(installedGrantFor(ORDERED)),
       }),
     ).toThrow(/No grant is installed/u);

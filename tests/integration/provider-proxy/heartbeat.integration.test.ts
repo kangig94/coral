@@ -1,3 +1,4 @@
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -150,7 +151,10 @@ async function openLeaseEndpoint(
           'role.open.v1',
           {
             authority: 'establishes-control' as const,
-            handle: async () => ({ holder: 'coordinator', fields: {} }),
+            handle: async () => ({
+              holder: { instanceId: 'coordinator', pid: 1, incarnation: testIncarnation(1) },
+              fields: {},
+            }),
           },
         ],
       ]),

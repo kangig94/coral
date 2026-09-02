@@ -475,7 +475,13 @@ async function guardianLeaseClient(
       methods: new Map([
         [
           'role.open.v1',
-          { authority: 'establishes-control' as const, handle: async () => ({ holder: 'coordinator', fields: {} }) },
+          {
+            authority: 'establishes-control' as const,
+            handle: async () => ({
+              holder: { instanceId: 'coordinator', pid: 1, incarnation: testIncarnation(1) },
+              fields: {},
+            }),
+          },
         ],
       ]),
     },

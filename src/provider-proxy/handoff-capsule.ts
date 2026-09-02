@@ -11,6 +11,7 @@ import {
   type ProviderProxyEndpointIdentity,
 } from '../infra/path/index.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
+import { sameControlTenancyHolder, type ControlTenancyHolder } from './control-endpoint.js';
 import {
   PERMISSION_BITS_MASK,
   ProxyControlProtocolError,
@@ -534,7 +535,7 @@ function digestsMatch(left: string, right: string): boolean {
 export type GrantRedemption = Readonly<{
   grant: InstalledGrant;
   redemptionReceipt: string;
-  successorInstanceId: string;
+  successor: ControlTenancyHolder;
 }>;
 
 /**
@@ -606,8 +607,9 @@ export interface GrantRegistry {
   redeem(input: {
     grantId: string;
     secret: string;
-    /** Identifies same-epoch retries; a different value requires the replacement policy to admit it. */
-    successorInstanceId: string;
+    /** Identifies same-epoch retries; a different complete identity requires the replacement policy to
+     *  admit it — the same instance id under a different pid or incarnation is a different process. */
+    successor: ControlTenancyHolder;
     binding: GrantBinding;
   }): GrantRedemption;
   redemption(): GrantRedemption | null;
@@ -686,7 +688,7 @@ export function createGrantRegistry(
       return { state: 'succession-registered', operation };
     },
 
-    redeem({ grantId, secret, successorInstanceId, binding }): GrantRedemption {
+    redeem({ grantId, secret, successor, binding }): GrantRedemption {
       if (installed === null)
         throw new ProxyControlProtocolError('grant_invalid', 'No grant is installed for this set.');
       if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
@@ -700,7 +702,7 @@ export function createGrantRegistry(
         );
       }
       if (redemption !== null) {
-        if (redemption.successorInstanceId !== successorInstanceId) {
+        if (!sameControlTenancyHolder(redemption.successor, successor)) {
           if (policy.mayReplaceRedemption?.() !== true) {
             throw new ProxyControlProtocolError(
               'grant_replayed',
@@ -710,12 +712,12 @@ export function createGrantRegistry(
           redemption = Object.freeze({
             grant: installed,
             redemptionReceipt: mintReceipt(),
-            successorInstanceId,
+            successor,
           });
         }
         return redemption;
       }
-      redemption = Object.freeze({ grant: installed, redemptionReceipt: mintReceipt(), successorInstanceId });
+      redemption = Object.freeze({ grant: installed, redemptionReceipt: mintReceipt(), successor });
       return redemption;
     },
 
