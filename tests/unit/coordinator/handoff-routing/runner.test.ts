@@ -154,7 +154,7 @@ async function createHandoffRuntime(baseDir?: string): Promise<Runtime> {
   };
 }
 
-function observedContinuation(result: HandoffRunResult): HandoffContinuationResult {
+function observedContinuation(result: HandoffRunResult<HandoffContinuationResult>): HandoffContinuationResult {
   return consumeHandoffRunResult(result, () => undefined);
 }
 
@@ -162,7 +162,11 @@ async function runHandoff(
   operation: HandoffOperation,
   options?: RunHandoffOptions,
 ): Promise<HandoffContinuationResult> {
-  return observedContinuation(await runHandoffResult(operation, options));
+  const result: HandoffRunResult<HandoffContinuationResult> =
+    operation.kind === 'backend-startup'
+      ? await runHandoffResult(operation, options)
+      : await runHandoffResult(operation, options);
+  return observedContinuation(result);
 }
 
 function createBundle(): string {
@@ -205,7 +209,7 @@ function configureNewerIncumbent(bundleDir = createBundle()): string {
   return bundleDir;
 }
 
-function cliOperation(...args: string[]): HandoffOperation {
+function cliOperation(...args: string[]): Extract<HandoffOperation, { kind: 'cli-invocation' }> {
   return { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...args] };
 }
 
@@ -918,8 +922,9 @@ describe('handoff-routing/runner', () => {
     configureNewerIncumbent(bundleDir);
     releasePoll?.();
     await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
     });
   });
 
@@ -1017,9 +1022,9 @@ describe('handoff-routing/runner', () => {
     await expect(
       runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
     ).resolves.toMatchObject({
-      kind: 'delegated',
+      kind: 'delegated-startup',
       version: manifest.version,
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      observation: { kind: 'serving' },
     });
     expect(
       mockState.probeCoordinator,
@@ -1062,8 +1067,8 @@ describe('handoff-routing/runner', () => {
     answerFirstProbe(liveHealth(bundleDir, namespace));
 
     await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-exit', exitCode: 7 },
+      kind: 'delegated-startup',
+      observation: { kind: 'not-serving', childEnding: { code: 7, signal: null } },
     });
   });
 
@@ -1096,8 +1101,8 @@ describe('handoff-routing/runner', () => {
     refuseFirstProbe(new Error('ECONNREFUSED'));
 
     await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      kind: 'delegated-startup',
+      observation: { kind: 'serving' },
     });
   });
 
@@ -1117,9 +1122,14 @@ describe('handoff-routing/runner', () => {
     await expect(
       runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
     ).resolves.toMatchObject({
-      kind: 'delegated',
+      kind: 'delegated-startup',
       version: manifest.version,
-      outcome: { kind: 'handoff-exit', exitCode: 1 },
+      observation: { kind: 'not-serving', childEnding: { code: 0, signal: null } },
+    });
+    // The forced `code === 0 ? 1` this replaces made the record claim an exit the child never took.
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-exit', version: manifest.version, exitCode: 0 },
     });
     expect(mockState.health).toHaveBeenCalled();
     expect(child?.unref).toHaveBeenCalledOnce();
@@ -1170,8 +1180,8 @@ describe('handoff-routing/runner', () => {
     mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
     for (const release of releasePolls.splice(0)) release();
     await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      kind: 'delegated-startup',
+      observation: { kind: 'serving' },
     });
   });
 
@@ -1237,7 +1247,9 @@ describe('handoff-routing/runner', () => {
 
     child.emit('exit', 23, null);
     for (const release of releasePolls.splice(0)) release();
-    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+    await expect(result).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 23, signal: null } },
+    });
   });
 
   it('holds matching build health from a different plugin-root namespace until the spawned backend ends', async () => {
@@ -1297,7 +1309,9 @@ describe('handoff-routing/runner', () => {
 
     child.emit('exit', 23, null);
     for (const release of releasePolls.splice(0)) release();
-    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+    await expect(result).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 23, signal: null } },
+    });
   });
 
   // The behaviour `5ad55ded` exists to produce, and the one nothing asserted: an unobservable pid is not an
@@ -1533,12 +1547,9 @@ describe('handoff-routing/runner', () => {
     );
   });
 
-  it.each([
-    { childExitCode: 0, handoffExitCode: 1 },
-    { childExitCode: 23, handoffExitCode: 23 },
-  ])(
-    'should report an immediate backend startup exit with code $handoffExitCode for child code $childExitCode when no coordinator is live',
-    async ({ childExitCode, handoffExitCode }) => {
+  it.each([{ childExitCode: 0 }, { childExitCode: 23 }])(
+    'should record child code $childExitCode as itself when no coordinator is live',
+    async ({ childExitCode }) => {
       const target = validatedTarget(roots[0]);
       let child: ChildProcess | undefined;
       mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
@@ -1550,9 +1561,15 @@ describe('handoff-routing/runner', () => {
       await expect(
         runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
       ).resolves.toEqual({
-        kind: 'delegated',
+        kind: 'delegated-startup',
         version: manifest.version,
-        outcome: { kind: 'handoff-exit', exitCode: handoffExitCode },
+        observation: { kind: 'not-serving', childEnding: { code: childExitCode, signal: null } },
+      });
+      // Nobody mirrors this code into an exit here, so 0 must arrive as 0. Restoring the proxy vocabulary
+      // reintroduces the `0 -> 1` rewrite and turns the first row red.
+      expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+        kind: 'continuation-finalized',
+        disposition: { kind: 'delegated-exit', version: manifest.version, exitCode: childExitCode },
       });
       expect(child?.unref).toHaveBeenCalledOnce();
     },
@@ -1566,9 +1583,9 @@ describe('handoff-routing/runner', () => {
     await expect(
       runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
     ).resolves.toEqual({
-      kind: 'delegated',
+      kind: 'delegated-startup',
       version: manifest.version,
-      outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
+      observation: { kind: 'not-serving', childEnding: { code: null, signal: 'SIGTERM' } },
     });
   });
 
@@ -1627,8 +1644,8 @@ describe('handoff-routing/runner', () => {
     configureNewerIncumbent(roots[0]);
     for (const release of releasePolls.splice(0)) release();
 
-    await expect(second).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
-    await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
+    await expect(second).resolves.toMatchObject({ observation: { kind: 'serving' } });
+    await expect(first).resolves.toMatchObject({ observation: { kind: 'serving' } });
   });
 
   it('keeps concurrent backend startup attempts isolated until each child terminates', async () => {
@@ -1676,7 +1693,9 @@ describe('handoff-routing/runner', () => {
     }
     spawnedSecondChild.emit('exit', 17, null);
 
-    await expect(second).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 17 } });
+    await expect(second).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 17, signal: null } },
+    });
 
     let firstSettled = false;
     void first.then(
@@ -1692,7 +1711,9 @@ describe('handoff-routing/runner', () => {
 
     spawnedFirstChild.emit('exit', 23, null);
 
-    await expect(first).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 23 } });
+    await expect(first).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 23, signal: null } },
+    });
   });
 
   it('accepts the desired build from another attempt only after the exact child terminates', async () => {
@@ -1756,7 +1777,7 @@ describe('handoff-routing/runner', () => {
 
     child.emit('exit', 0, null);
 
-    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-success' } });
+    await expect(result).resolves.toMatchObject({ observation: { kind: 'serving' } });
   });
 
   it('accepts a third build reached through this attempt when its own child terminates first', async () => {
@@ -1822,8 +1843,9 @@ describe('handoff-routing/runner', () => {
     child.emit('exit', 0, null);
 
     await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
     });
     expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
       kind: 'continuation-finalized',
@@ -1893,16 +1915,17 @@ describe('handoff-routing/runner', () => {
 
     child.emit('exit', 0, null);
 
-    await expect(result).resolves.toMatchObject({ outcome: { kind: 'handoff-exit', exitCode: 1 } });
+    await expect(result).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 0, signal: null } },
+    });
   });
 
-  // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists
-  // and health could not be resolved from it. Reporting success here would be exactly the finalization this
-  // branch's design rules forbid — an early exit-shaped outcome plus a probe that could not confirm life is
-  // not evidence the backend is up. `reading.kind !== 'observed'` in `readinessAfterChildTerminal` is what
-  // this test would catch a regression to `!== null` (or similar) from failing to guard: both compile, only
-  // one refuses correctly.
-  it('should report an immediate backend startup exit, not a false success, when health cannot be reached', async () => {
+  // A discovery record exists and health could not be resolved from it: the third answer, and the only one
+  // that decides nothing. Success and exit are both finalizations here, and the child's own code is evidence
+  // about the child, never about whether a coordinator is serving. Collapsing `undetermined` into either
+  // neighbour turns this red twice — once on the observation, once on the withheld terminal.
+  it("withholds every terminal when the selected build's startup could not be observed", async () => {
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const target = validatedTarget(roots[0]);
     let child: ChildProcess | undefined;
     mockState.probeCoordinator.mockReturnValue({
@@ -1922,12 +1945,36 @@ describe('handoff-routing/runner', () => {
       return child;
     });
 
-    await expect(
-      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
-    ).resolves.toEqual({
-      kind: 'delegated',
-      version: manifest.version,
-      outcome: { kind: 'handoff-exit', exitCode: 1 },
+    const result = await runHandoffResult(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+
+    expect(result).toEqual({
+      kind: 'recording-incidents',
+      observedWork: {
+        kind: 'delegated-startup',
+        version: manifest.version,
+        observation: { kind: 'undetermined', cause: 'health-request-failed' },
+      },
+      publicationIncidents: [
+        {
+          phase: 'terminal',
+          invocationId: '123e4567-e89b-42d3-a456-426614174000',
+          kind: 'refused',
+          refusal: {
+            reason: 'startup-readiness-unobserved',
+            remediation: 'inspect-backend-status-before-repair',
+            attemptedPhase: 'terminal',
+          },
+        },
+      ],
+    });
+    // Exactly one publication: the selection. A terminal would finalize an invocation nothing observed, and
+    // the selection is the durable hold an operator resolves.
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledOnce();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+      kind: 'routing-selected',
     });
     expect(child?.unref).toHaveBeenCalledOnce();
   });

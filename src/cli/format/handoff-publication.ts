@@ -69,6 +69,8 @@ function formatHandoffRecordingRefusalDiagnostic(
       return 'live target authority was unavailable';
     case 'selection-publication-outcome-unknown':
       return 'selection publication could not be determined';
+    case 'startup-readiness-unobserved':
+      return 'whether the selected build took over startup could not be observed';
     default:
       return assertNever(refusal);
   }
@@ -85,6 +87,12 @@ function formatHandoffRecordingRefusalSuccessor(
       return 'Next step: wait until live target authority is available, then rerun coral-cli backend status before retrying the operation.';
     case 'selection-publication-outcome-unknown':
       return `Next step: ${formatPublicationNextAction({ kind: 'incident', incident })}`;
+    case 'startup-readiness-unobserved':
+      return (
+        `Next step: rerun coral-cli backend status to see whether the selected build is serving. No terminal was ` +
+        `recorded, because none was observed, so routing invocation ${incident.invocationId} stays unresolved ` +
+        `until coral-cli backend routing-status resolve --invocation ${incident.invocationId} settles it.`
+      );
     default:
       return assertNever(refusal);
   }
@@ -104,6 +112,9 @@ function formatPublicationAfterStatus(input: HandoffPublicationActionContext): s
   const resolveOpening =
     `if routing invocation ${incident.invocationId} is still unresolved, run coral-cli backend routing-status ` +
     `resolve --invocation ${incident.invocationId}`;
+  if (!('terminalDisposition' in incident)) {
+    return `${resolveOpening}. Whether the delegated work ran was not observed; do not assume it did or did not`;
+  }
   switch (incident.terminalDisposition.kind) {
     case 'execution-failed':
       return `${resolveOpening}. The operation failed; follow the original error's remediation, then retry it`;

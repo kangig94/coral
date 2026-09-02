@@ -115,9 +115,13 @@ type SpawnedCoordinator = {
   readonly terminal: Promise<SpawnedCoordinatorTerminal>;
 };
 
-type SpawnedCoordinatorTerminal =
-  | Readonly<{ kind: 'exit'; code: number | null; signal: NodeJS.Signals | null }>
-  | Readonly<{ kind: 'error'; error: Error }>;
+/**
+ * No code and no signal: an exit code is not evidence about whether a coordinator is serving, and the only
+ * consumer must not be handed one to reason from. `reason` is safe to surface because it is authored here —
+ * `spawnCoordinator` gives the child `stdio: ['ignore', 'ignore', <coordinator.log fd>]`, so no child-authored
+ * text can reach this process.
+ */
+type SpawnedCoordinatorTerminal = Readonly<{ kind: 'exited' }> | Readonly<{ kind: 'never-started'; reason: string }>;
 
 type BackendReadyWaitContext =
   | {
@@ -263,11 +267,6 @@ const verifiedBackendInfoSchema = z
   // make this build's own read of the record it just wrote fail.
   .passthrough();
 
-function parseRawCoordinatorHealth(value: unknown): RawCoordinatorHealth | null {
-  const parsed = rawCoordinatorHealthSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
-
 /**
  * Treat both coarse `'ok'` and lifecycle phases (`'kernel-ready'`,
  * `'running'`) as "the daemon is ready to serve requests".
@@ -297,19 +296,38 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
   );
 }
 
+/**
+ * A probe that did not complete is not a probe that found nothing. `unanswered` is the third answer and may
+ * not stand in for either other one; in particular it is not evidence that the address is dead.
+ */
+type CoordinatorHealthReading =
+  | Readonly<{ kind: 'answered'; health: RawCoordinatorHealth }>
+  | Readonly<{ kind: 'unusable'; cause: 'health-shape-rejected' }>
+  | Readonly<{ kind: 'unanswered'; cause: 'health-request-failed' }>;
+
 async function readRawCoordinatorHealth(
   client: IpcClient,
   request: 'ping' | 'health' = 'ping',
-): Promise<RawCoordinatorHealth | null> {
+): Promise<CoordinatorHealthReading> {
+  let reply: unknown;
   try {
-    const health =
+    reply =
       request === 'ping'
         ? await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS })
         : await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
-    return parseRawCoordinatorHealth(health);
   } catch {
-    return null;
+    return { kind: 'unanswered', cause: 'health-request-failed' };
   }
+
+  const parsed = rawCoordinatorHealthSchema.safeParse(reply);
+  return parsed.success
+    ? { kind: 'answered', health: parsed.data }
+    : { kind: 'unusable', cause: 'health-shape-rejected' };
+}
+
+/** `null` is this invocation's lack of a usable reading, never proof that no coordinator is serving. */
+function answeredHealth(reading: CoordinatorHealthReading): RawCoordinatorHealth | null {
+  return reading.kind === 'answered' ? reading.health : null;
 }
 
 function readDiscoverySnapshot(paths: CoordinatorPaths): VerifiedBackendInfo | null {
@@ -396,7 +414,7 @@ async function readIdentityCheckedAuthenticatedHealth(
   }
 
   const client = createIpcClient(info.socketPath, timePort, { kind: 'boot', token: info.bootToken });
-  const authenticatedHealth = await readRawCoordinatorHealth(client, 'health');
+  const authenticatedHealth = answeredHealth(await readRawCoordinatorHealth(client, 'health'));
   if (
     authenticatedHealth === null ||
     !identityMatchesExistingIncumbent(authenticatedHealth, observedIdentity) ||
@@ -555,11 +573,11 @@ function observeSpawnedCoordinatorTerminal(child: ChildProcess): Promise<Spawned
       child.off('error', onError);
       resolve(outcome);
     }
-    function onExit(code: number | null, signal: NodeJS.Signals | null): void {
-      settle({ kind: 'exit', code, signal });
+    function onExit(): void {
+      settle({ kind: 'exited' });
     }
     function onError(error: Error): void {
-      settle({ kind: 'error', error });
+      settle({ kind: 'never-started', reason: error.message });
     }
 
     child.once('exit', onExit);
@@ -640,6 +658,34 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
 }
 
 /**
+ * Each way the wait can end gets its own sentence, and only a decisive reading may say the coordinator stopped
+ * before binding: a probe that never completed did not observe that, and a coordinator that is serving would
+ * answer the same way to a dropped request.
+ */
+function endedStartupMessage(terminal: SpawnedCoordinatorTerminal, reading: CoordinatorHealthReading): string {
+  const inspect = 'Run `coral-cli backend status` to inspect the recorded startup outcome.';
+  if (terminal.kind === 'never-started') {
+    return `The Coral coordinator process could not be started (${terminal.reason}). ${inspect}`;
+  }
+  switch (reading.kind) {
+    case 'answered':
+      return `The spawned Coral coordinator stopped, and the coordinator holding this address is draining. ${inspect}`;
+    case 'unusable':
+      return (
+        'The spawned Coral coordinator stopped, and this address answered something this Coral build cannot read ' +
+        `as coordinator health. ${inspect}`
+      );
+    case 'unanswered':
+      return (
+        'The spawned Coral coordinator stopped, and this invocation could not reach a coordinator at this address ' +
+        `to see whether one is serving it (${reading.cause}), so whether one is remains unobserved. ${inspect}`
+      );
+    default:
+      return assertNever(reading);
+  }
+}
+
+/**
  * After a fresh spawn (or while the incumbent is still in `starting`), poll
  * until the daemon has both bound the socket AND written `coordinator.json`
  * with an authenticated, identity-checked health response that can serve the
@@ -659,40 +705,34 @@ async function waitForBackendReady(
 
   while (currentAttempt || timePort.now() < readyDeadline) {
     const info = readDiscoverySnapshot(paths);
-    let observedPid: number | undefined = info?.pid;
-    let observedHealth: RawCoordinatorHealth | null = null;
+    const observedReading = await readRawCoordinatorHealth(
+      createIpcClient(info?.socketPath ?? expectedSocketPath, timePort),
+    );
+    const observedHealth = answeredHealth(observedReading);
+    const observedPid: number | undefined = observedHealth?.pid ?? info?.pid;
     let servingIncumbent: ReadyCoordinatorEvidence | null = null;
-    if (info) {
-      const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
-      observedHealth = health;
-      observedPid = health?.pid ?? observedPid;
-      if (mayInvocationBeServedByIncumbent(health) && isReadyStatus(health.status)) {
-        const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
-          info,
-          expectedSocketPath,
-          health,
-          timePort,
-        );
-        if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
-          servingIncumbent = { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
-          if (waitContext.kind !== 'current-attempt') {
-            return servingIncumbent;
-          }
-          const lineage = resolveStartupAttemptLineage({
-            observedAttemptId: authenticatedHealth.env?.CORAL_STARTUP_ATTEMPT_ID,
-            expectedAttemptId: waitContext.attemptId,
-            observedIdentity: authenticatedHealth,
-            desiredIdentity: desired,
-          });
-          if (lineage.kind === 'proven-current-attempt') {
-            return servingIncumbent;
-          }
+    if (info && mayInvocationBeServedByIncumbent(observedHealth) && isReadyStatus(observedHealth.status)) {
+      const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
+        info,
+        expectedSocketPath,
+        observedHealth,
+        timePort,
+      );
+      if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
+        servingIncumbent = { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+        if (waitContext.kind !== 'current-attempt') {
+          return servingIncumbent;
+        }
+        const lineage = resolveStartupAttemptLineage({
+          observedAttemptId: authenticatedHealth.env?.CORAL_STARTUP_ATTEMPT_ID,
+          expectedAttemptId: waitContext.attemptId,
+          observedIdentity: authenticatedHealth,
+          desiredIdentity: desired,
+        });
+        if (lineage.kind === 'proven-current-attempt') {
+          return servingIncumbent;
         }
       }
-    } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
-      const health = await readRawCoordinatorHealth(createIpcClient(expectedSocketPath, timePort));
-      observedHealth = health;
-      observedPid = health?.pid;
     }
 
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
@@ -722,8 +762,7 @@ async function waitForBackendReady(
       }
       // A terminal child that left no refusal is not evidence the address is dead: the incumbent it conceded
       // to may still be in `starting`, which is not a ready status and so cannot produce a serving incumbent
-      // here. Only a probe that no coordinator answered — or one answered by a coordinator that named its own
-      // shutdown — may finalize this wait as a failed startup.
+      // here.
       if (mayInvocationBeServedByIncumbent(observedHealth)) {
         return waitForBackendReady(
           paths,
@@ -734,9 +773,7 @@ async function waitForBackendReady(
           expectedSocketPath,
         );
       }
-      throw new BackendUnreachableError(
-        'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
-      );
+      throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading));
     }
 
     if (waitContext.kind === 'current-attempt') {
@@ -787,7 +824,7 @@ async function waitForExistingIncumbentReady(
     }
 
     await timePort.sleep(STARTUP_POLL_MS);
-    health = await readRawCoordinatorHealth(createIpcClient(socketPath, timePort));
+    health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
   }
 
   throw childCoordinatorUnavailable('timed out waiting for the observed parent coordinator to become ready');
@@ -913,7 +950,7 @@ async function ensureTopLevelCoordinator(
     // racing `bindWithHandoff` for the same socket. `mayProcessReplaceIncumbent`
     // is the same predicate `mayInvocationBeServedByIncumbent` complements —
     // it is the explicit gate for "is spawning even on the table here".
-    replacementEvidence = await readRawCoordinatorHealth(createIpcClient(socketPath, timePort));
+    replacementEvidence = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
     if (mayInvocationBeServedByIncumbent(replacementEvidence)) {
       const retried = await reuseServingIncumbent(paths, socketPath, desired, replacementEvidence, timePort);
       if (retried !== null) {
@@ -937,7 +974,7 @@ async function observeCoordinator(
   paths: CoordinatorPaths,
   timePort: TimePort,
 ): Promise<CoordinatorObservation> {
-  const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+  const health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort)));
   if (health !== null) return { socketPath: paths.socketPath, health };
 
   const info = readDiscoverySnapshot(paths);
@@ -957,7 +994,7 @@ async function observeCoordinator(
 
   return {
     socketPath: info.socketPath,
-    health: await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort)),
+    health: answeredHealth(await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort))),
   };
 }
 

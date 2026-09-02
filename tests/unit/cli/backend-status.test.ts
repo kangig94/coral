@@ -437,6 +437,21 @@ describe('backend status local exit combination', () => {
       },
       'rerun coral-cli backend status',
     ],
+    // The refusal with no terminal disposition: it exists because none was reached, so the successor cannot
+    // describe what the delegated work did, and must still name the command that settles the invocation.
+    [
+      {
+        phase: 'terminal',
+        invocationId: PUBLICATION_INVOCATION_ID,
+        kind: 'refused',
+        refusal: {
+          reason: 'startup-readiness-unobserved',
+          remediation: 'inspect-backend-status-before-repair',
+          attemptedPhase: 'terminal',
+        },
+      },
+      'rerun coral-cli backend status to see whether the selected build is serving',
+    ],
   ])('renders an actionable successor without exposing refusal tokens', (incident, expected) => {
     const rendered = formatHandoffPublicationIncident(incident);
     expect(rendered).toContain(`Next step: ${expected}`);

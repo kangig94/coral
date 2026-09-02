@@ -54,7 +54,7 @@ const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 
 type HandoffOutcome = HandoffRunnerMod.HandoffOutcome;
-type HandoffContinuationResult = HandoffRunnerMod.HandoffContinuationResult;
+type HandoffContinuationResult = HandoffRunnerMod.DelegatingHandoffContinuation;
 type ProgramModule = typeof ProgramMod;
 
 function handoffSuccess(): HandoffOutcome {

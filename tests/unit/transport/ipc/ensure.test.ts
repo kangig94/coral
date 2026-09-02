@@ -1526,27 +1526,35 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('treats child error without exit as terminal without exposing its text', async () => {
+  const UNREACHABLE_AFTER_CHILD_STOPPED =
+    'The spawned Coral coordinator stopped, and this invocation could not reach a coordinator at this address to ' +
+    'see whether one is serving it (health-request-failed), so whether one is remains unobserved. Run ' +
+    '`coral-cli backend status` to inspect the recorded startup outcome.';
+
+  // A child that never spawned did not stop before binding, and the reason it never spawned is this process's
+  // own: `spawnCoordinator` gives the child `stdio: ['ignore', 'ignore', <coordinator.log fd>]`, so nothing the
+  // child wrote can reach the `error` event. Reverting the terminal to one shape makes both halves fail — the
+  // message goes back to naming a bind that was never attempted, and the reason disappears.
+  it('names the spawn failure when the child never started, rather than a bind it never attempted', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
     const child = spawnedChild();
-    const lifecycleSecret = 'private spawn lifecycle failure';
+    const spawnFailure = 'spawn /nonexistent/node ENOENT';
     mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
     mockState.spawn.mockReturnValue(child);
 
     const { ensure } = await importEnsure();
     const ensuredPromise = ensure(root).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(0);
-    child.emit('error', new Error(lifecycleSecret));
+    child.emit('error', new Error(spawnFailure));
     await vi.advanceTimersByTimeAsync(0);
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(
-      'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
+      `The Coral coordinator process could not be started (${spawnFailure}). Run \`coral-cli backend status\` to inspect the recorded startup outcome.`,
     );
-    expect((error as Error).message).not.toContain(lifecycleSecret);
   });
 
   it.each([
@@ -1569,9 +1577,9 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(
-      'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
-    );
+    // The probe never completed, so this invocation did not observe a coordinator failing to bind — only that
+    // it could not see one. Restoring the single 'stopped before binding' message turns this red.
+    expect((error as Error).message).toBe(UNREACHABLE_AFTER_CHILD_STOPPED);
   });
 
   it('rejects a wrong-attempt sentinel after the exact child becomes terminal', async () => {
@@ -1591,9 +1599,7 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(
-      'The spawned Coral coordinator stopped before binding or becoming ready. Run `coral-cli backend status` to inspect the recorded startup outcome.',
-    );
+    expect((error as Error).message).toBe(UNREACHABLE_AFTER_CHILD_STOPPED);
     expect(readFileSync(coordinatorPaths('prod').startupErrorFile, 'utf-8')).toContain('another-attempt');
   });
 

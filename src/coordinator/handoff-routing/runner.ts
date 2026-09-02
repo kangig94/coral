@@ -171,9 +171,23 @@ export const ABSENT_HANDOFF_RESULT_OBLIGATION = {
   exitContribution: 0,
 } as const satisfies RoutingBasisObligation;
 
-export type HandoffContinuationResult =
+/**
+ * A delegating proxy mirrors this outcome into its own process exit, so `handoff-exit{0}` here would mean the
+ * delegated command succeeded.
+ */
+export type DelegatingHandoffContinuation =
   | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
+
+/**
+ * Nobody mirrors the selected build's exit code here: exiting 0 is an ordinary way to fail to become the
+ * backend, so a child that ended 0 without serving must reach the record as `delegated-exit{0}`.
+ */
+export type BackendStartupHandoffContinuation =
+  | Readonly<{ kind: 'run-current'; reason: HandoffContinuationReason }>
+  | Readonly<{ kind: 'delegated-startup'; version: string; observation: DelegatedStartupObservation }>;
+
+export type HandoffContinuationResult = DelegatingHandoffContinuation | BackendStartupHandoffContinuation;
 
 export type HandoffRecordingRefusal =
   | Readonly<{
@@ -189,6 +203,11 @@ export type HandoffRecordingRefusal =
   | Readonly<{
       reason: 'selection-publication-outcome-unknown';
       remediation: 'inspect-routing-status-before-repair';
+      attemptedPhase: 'terminal';
+    }>
+  | Readonly<{
+      reason: 'startup-readiness-unobserved';
+      remediation: 'inspect-backend-status-before-repair';
       attemptedPhase: 'terminal';
     }>;
 
@@ -216,33 +235,45 @@ type HandoffRefusalIncident =
       invocationId: string;
       terminalDisposition: DirectTerminalDisposition;
       kind: 'refused';
-      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
+      refusal: Extract<HandoffRecordingRefusal, { reason: 'selection-publication-outcome-unknown' }>;
+    }>
+  // No disposition: this refusal exists because none was reached, and one supplied here would be the verdict
+  // the refusal withholds.
+  | Readonly<{
+      phase: 'terminal';
+      invocationId: string;
+      kind: 'refused';
+      refusal: Extract<HandoffRecordingRefusal, { reason: 'startup-readiness-unobserved' }>;
     }>;
 
 export type HandoffPublicationIncident = HandoffPublicationFailureIncident | HandoffRefusalIncident;
 
 export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 
-export type HandoffRunResult =
+/**
+ * `C` is the set of continuations the run's own operation can reach. Backend startup is the only operation
+ * that can withhold its terminal, so it is the only one whose result admits `delegated-startup`.
+ */
+export type HandoffRunResult<C extends HandoffContinuationResult = DelegatingHandoffContinuation> =
   | Readonly<{
       kind: 'recorded';
-      continuation: HandoffContinuationResult;
+      continuation: C;
       publicationIncidents: readonly [];
     }>
   | Readonly<{
       kind: 'recording-not-applicable';
-      continuationWithoutRecording: HandoffContinuationResult;
+      continuationWithoutRecording: C;
     }>
   | Readonly<{
       kind: 'recording-incidents';
-      observedWork: HandoffContinuationResult;
+      observedWork: C;
       publicationIncidents: NonEmptyReadonlyArray<HandoffPublicationIncident>;
     }>;
 
-export function consumeHandoffRunResult(
-  result: HandoffRunResult,
+export function consumeHandoffRunResult<C extends HandoffContinuationResult>(
+  result: HandoffRunResult<C>,
   handleRecordingIncidents: (incidents: NonEmptyReadonlyArray<HandoffPublicationIncident>) => void,
-): HandoffContinuationResult {
+): C {
   switch (result.kind) {
     case 'recorded':
       return result.continuation;
@@ -292,32 +323,33 @@ export type RunHandoffOptions = Readonly<{
   onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
 }>;
 
-type ChildOutcome = Readonly<{
+export type ChildEnding = Readonly<{
   code: number | null;
   signal: NodeJS.Signals | null;
 }>;
 
 type ObservedChild = Readonly<{
   spawned: Promise<void>;
-  outcome: Promise<ChildOutcome>;
+  ending: Promise<ChildEnding>;
 }>;
 
-type BackendStartupObservation = Readonly<{ kind: 'ready' }> | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>;
+/**
+ * Whether the build this process delegated startup to is now serving. `undetermined` licenses nothing — no
+ * terminal, no diagnostic, no sentinel, no audit event — and carries no ending on purpose: an exit code is not
+ * evidence about whether a coordinator is serving, so no later reader may finalize from one.
+ */
+export type DelegatedStartupObservation =
+  | Readonly<{ kind: 'serving' }>
+  | Readonly<{ kind: 'not-serving'; childEnding: ChildEnding }>
+  | Readonly<{ kind: 'undetermined'; cause: UnresolvedIncumbentCause }>;
 
-type BackendStartupHoldReason =
-  | Readonly<{
-      kind: 'lineage-unproven';
-      lineage: Exclude<StartupAttemptLineage, { kind: 'proven-current-attempt' }>;
-    }>
-  | Readonly<{ kind: 'not-serving'; status: Exclude<LiveIncumbentHealth['status'], 'ok'> }>;
-
-type BackendStartupReadiness =
-  | Readonly<{ kind: 'ready' }>
-  | Readonly<{
-      kind: 'hold';
-      until: 'serving-lineage-confirmed-health-or-child-terminal';
-      reason: BackendStartupHoldReason;
-    }>;
+/**
+ * `undetermined` is not a weaker `not-serving`: it may neither end a hold nor finalize a delegation.
+ */
+type CoordinatorServingAnswer =
+  | Readonly<{ kind: 'serving' }>
+  | Readonly<{ kind: 'not-serving' }>
+  | Readonly<{ kind: 'undetermined'; cause: UnresolvedIncumbentCause }>;
 
 type RoutingResolution = Readonly<{
   routing: HandoffRoutingResult;
@@ -538,15 +570,15 @@ function observeChild(child: ChildProcess): ObservedChild {
     child.once('spawn', resolve);
     child.once('error', reject);
   });
-  const outcomePromise = new Promise<ChildOutcome>((resolve, reject) => {
+  const endingPromise = new Promise<ChildEnding>((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       resolve({ code, signal });
     });
   });
-  void outcomePromise.catch(() => undefined);
+  void endingPromise.catch(() => undefined);
 
-  return { spawned: spawnedPromise, outcome: outcomePromise };
+  return { spawned: spawnedPromise, ending: endingPromise };
 }
 
 function handoffSuccess(version: string): HandoffSuccess {
@@ -557,21 +589,14 @@ function handoffSuccess(version: string): HandoffSuccess {
   });
 }
 
-function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome {
-  if (outcome.signal !== null) {
-    return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
+function handoffOutcome(version: string, ending: ChildEnding): HandoffOutcome {
+  if (ending.signal !== null) {
+    return Object.freeze({ kind: 'handoff-signal', signal: ending.signal });
   }
-  if (outcome.code !== 0) {
-    return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code ?? 1 });
+  if (ending.code !== 0) {
+    return Object.freeze({ kind: 'handoff-exit', exitCode: ending.code ?? 1 });
   }
   return handoffSuccess(version);
-}
-
-function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, HandoffSuccess> {
-  if (outcome.signal !== null) {
-    return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
-  }
-  return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code === 0 ? 1 : (outcome.code ?? 1) });
 }
 
 function startupAttemptLineage(
@@ -587,91 +612,137 @@ function startupAttemptLineage(
   });
 }
 
-/**
- * Readiness needs two proofs and neither substitutes for the other: lineage proves the answering coordinator
- * belongs to this attempt, and `ok` proves it finished starting. A selected backend that has bound its socket
- * and published its discovery record still answers `starting` while it can refuse, so releasing the direct
- * child on lineage alone strands every refusal raised after that point.
- */
-function liveBackendStartupReadiness(
-  reading: LiveIncumbentReading,
-  desiredIdentity: StartupAttemptIdentity,
-  expectedAttemptId: string | undefined,
-): BackendStartupReadiness | null {
-  if (reading.kind !== 'observed') {
-    return null;
+/** A reading that produced no health answers the same way whichever question was asked of it. */
+function servingAnswerWithoutHealth(
+  reading: Exclude<LiveIncumbentReading, { kind: 'observed' }>,
+): Exclude<CoordinatorServingAnswer, { kind: 'serving' }> {
+  switch (reading.kind) {
+    case 'observed-unusable':
+      return { kind: 'not-serving' };
+    case 'not-observed':
+      return reading.reason === 'absent' ? { kind: 'not-serving' } : { kind: 'undetermined', cause: reading.cause };
+    default:
+      return assertNever(reading);
   }
-  const until = 'serving-lineage-confirmed-health-or-child-terminal';
-  const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);
-  if (lineage.kind !== 'proven-current-attempt') {
-    return { kind: 'hold', until, reason: { kind: 'lineage-unproven', lineage } };
-  }
-  const { status } = reading.health;
-  return status === 'ok' ? { kind: 'ready' } : { kind: 'hold', until, reason: { kind: 'not-serving', status } };
+}
+
+function servingAnswerForStatus(status: LiveIncumbentHealth['status']): CoordinatorServingAnswer {
+  return status === 'ok' ? { kind: 'serving' } : { kind: 'not-serving' };
 }
 
 /**
- * The reading is taken here rather than accepted from the caller, because a reading raced against the
- * terminal was issued while the child was still alive and reports only pre-terminal state: it can neither
- * withdraw an `ok` the coordinator has since lost, nor see the publication a transitively delegated
- * coordinator made after the probe landed. Classifying a terminal against one records a dead coordinator as
- * a started one, and a started one as a delegated exit.
- *
- * Terminality retires lineage's veto over a bare identity match; it does not retire lineage as a proof. The
- * inherited attempt id is the only one of the two that survives further delegation — a transitively delegated
- * coordinator carries this attempt's id while its build identity is a third build's — so accepting the
- * identity match alone records a startup that succeeded as a delegated exit. Terminality retires neither
- * half of the serving proof: a coordinator still starting has not answered whether it will serve at all.
+ * Two proofs and neither substitutes for the other: lineage proves the answering coordinator belongs to this
+ * attempt, and `ok` proves it finished starting. A selected backend that has bound its socket and published
+ * its discovery record still answers `starting` while it can refuse, so releasing the direct child on lineage
+ * alone strands every refusal raised after that point.
  */
-async function readinessAfterChildTerminal(
+async function coordinatorStartedByThisAttempt(
   runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
-): Promise<Readonly<{ kind: 'ready' }> | null> {
+): Promise<CoordinatorServingAnswer> {
   const reading = await readLiveCoordinatorHealth(runtime, time);
-  if (reading.kind !== 'observed' || reading.health.status !== 'ok') {
-    return null;
+  if (reading.kind !== 'observed') {
+    return servingAnswerWithoutHealth(reading);
+  }
+  const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);
+  return lineage.kind === 'proven-current-attempt'
+    ? servingAnswerForStatus(reading.health.status)
+    : { kind: 'not-serving' };
+}
+
+/**
+ * Each predicate takes its own reading, because a reading raced against the child's ending was issued while
+ * that child was still alive and reports only pre-ending state: it can neither withdraw an `ok` the
+ * coordinator has since lost, nor see the publication a transitively delegated coordinator made after the
+ * probe landed.
+ *
+ * The one question this asks that `coordinatorStartedByThisAttempt` does not: a bare build-identity match
+ * counts once the child is gone. Attempt lineage still counts too, and must — the inherited attempt id is the
+ * only one of the two that survives further delegation, since a transitively delegated coordinator carries
+ * this attempt's id while its build identity is a third build's. Neither half of the serving proof is
+ * retired: a coordinator still starting has not answered whether it will serve at all.
+ */
+async function coordinatorServingThisAddress(
+  runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
+  time: TimePort,
+  desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string | undefined,
+): Promise<CoordinatorServingAnswer> {
+  const reading = await readLiveCoordinatorHealth(runtime, time);
+  if (reading.kind !== 'observed') {
+    return servingAnswerWithoutHealth(reading);
   }
   const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);
   return lineage.kind === 'proven-current-attempt' || startupAttemptIdentityMatches(reading.health, desiredIdentity)
-    ? { kind: 'ready' }
-    : null;
+    ? servingAnswerForStatus(reading.health.status)
+    : { kind: 'not-serving' };
 }
 
-async function waitForBackendStartupObservation(
-  observation: ObservedChild,
+async function startupObservationAfterChildEnded(
   runtime: Runtime,
   time: TimePort,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
-): Promise<BackendStartupObservation> {
-  const terminal = observation.outcome.then((outcome) => ({ kind: 'terminal', outcome }) as const);
+  childEnding: ChildEnding,
+): Promise<DelegatedStartupObservation> {
+  const answer = await coordinatorServingThisAddress(runtime, time, desiredIdentity, expectedAttemptId);
+  switch (answer.kind) {
+    case 'serving':
+      return { kind: 'serving' };
+    case 'not-serving':
+      return { kind: 'not-serving', childEnding };
+    case 'undetermined':
+      backendLog.warn(
+        `The selected backend's startup could not be observed (${answer.cause}); the spawned child ended with ` +
+          `${describeChildEnding(childEnding)}. Neither outcome is recorded, because neither was observed.`,
+      );
+      return { kind: 'undetermined', cause: answer.cause };
+    default:
+      return assertNever(answer);
+  }
+}
+
+async function waitForBackendStartupObservation(
+  child: ObservedChild,
+  runtime: Runtime,
+  time: TimePort,
+  desiredIdentity: StartupAttemptIdentity,
+  expectedAttemptId: string | undefined,
+): Promise<DelegatedStartupObservation> {
+  const ended = child.ending.then((childEnding) => ({ kind: 'child-ended', childEnding }) as const);
 
   while (true) {
-    const readiness = readLiveCoordinatorHealth(runtime, time).then((health) =>
-      liveBackendStartupReadiness(health, desiredIdentity, expectedAttemptId),
+    const answered = coordinatorStartedByThisAttempt(runtime, time, desiredIdentity, expectedAttemptId).then(
+      (answer) => ({ kind: 'coordinator-answered', answer }) as const,
     );
-    const observed = await Promise.race([terminal, readiness]);
-    if (observed !== null) {
-      if (observed.kind === 'ready') {
-        return observed;
-      }
-      if (observed.kind === 'terminal') {
-        return (await readinessAfterChildTerminal(runtime, time, desiredIdentity, expectedAttemptId)) ?? observed;
-      }
+    const first = await Promise.race([ended, answered]);
+    if (first.kind === 'child-ended') {
+      return startupObservationAfterChildEnded(runtime, time, desiredIdentity, expectedAttemptId, first.childEnding);
+    }
+    if (first.answer.kind === 'serving') {
+      return { kind: 'serving' };
     }
 
-    const terminalDuringPoll = await Promise.race([
-      terminal,
+    const endedDuringPoll = await Promise.race([
+      ended,
       time.sleep(BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS).then(() => null),
     ]);
-    if (terminalDuringPoll !== null) {
-      return (
-        (await readinessAfterChildTerminal(runtime, time, desiredIdentity, expectedAttemptId)) ?? terminalDuringPoll
+    if (endedDuringPoll !== null) {
+      return startupObservationAfterChildEnded(
+        runtime,
+        time,
+        desiredIdentity,
+        expectedAttemptId,
+        endedDuringPoll.childEnding,
       );
     }
   }
+}
+
+function describeChildEnding(ending: ChildEnding): string {
+  return ending.signal !== null ? `signal ${ending.signal}` : `exit code ${ending.code ?? 'unreported'}`;
 }
 
 function delegatedArguments(operation: HandoffOperation): readonly string[] {
@@ -760,7 +831,7 @@ type TerminalPublication =
   | PublicationOutcome
   | Readonly<{
       kind: 'refused';
-      refusal: Extract<HandoffRecordingRefusal, { attemptedPhase: 'terminal' }>;
+      refusal: Extract<HandoffRecordingRefusal, { reason: 'selection-publication-outcome-unknown' }>;
     }>;
 
 function summarizeBuild(manifest: StrictBundleManifest): BuildSummary {
@@ -917,17 +988,40 @@ async function recordSelection(
   );
 }
 
-function finalizedDisposition(continuation: HandoffContinuationResult): DirectTerminalDisposition {
+/**
+ * Publishing a terminal is finalization, so an observation that decided nothing may not reach one. The
+ * withholding is decided here, where the observation is, and not by a later reader of its parts.
+ */
+type TerminalRecording =
+  | Readonly<{ kind: 'publish'; disposition: DirectTerminalDisposition }>
+  | Readonly<{
+      kind: 'withhold';
+      refusal: Extract<HandoffRecordingRefusal, { reason: 'startup-readiness-unobserved' }>;
+    }>;
+
+function endedStartupDisposition(version: string, ending: ChildEnding): DirectTerminalDisposition {
+  return ending.signal !== null
+    ? { kind: 'delegated-signal', version, signal: ending.signal }
+    : { kind: 'delegated-exit', version, exitCode: ending.code ?? 1 };
+}
+
+function terminalRecordingFor(continuation: HandoffContinuationResult): TerminalRecording {
   switch (continuation.kind) {
     case 'run-current':
       switch (continuation.reason.kind) {
         case 'routing':
           return {
-            kind: 'continued-current',
-            reason: { kind: 'routing', basis: durableRoutingBasis(continuation.reason.basis) },
+            kind: 'publish',
+            disposition: {
+              kind: 'continued-current',
+              reason: { kind: 'routing', basis: durableRoutingBasis(continuation.reason.basis) },
+            },
           };
         case 'handoff-abandoned':
-          return { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } };
+          return {
+            kind: 'publish',
+            disposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
+          };
         case 'handoff-not-applicable':
           throw new Error('Display-only handoff continuations cannot enter routing-status recording.');
         default:
@@ -936,13 +1030,48 @@ function finalizedDisposition(continuation: HandoffContinuationResult): DirectTe
     case 'delegated':
       switch (continuation.outcome.kind) {
         case 'handoff-success':
-          return { kind: 'delegated-success', version: continuation.version };
+          return { kind: 'publish', disposition: { kind: 'delegated-success', version: continuation.version } };
         case 'handoff-exit':
-          return { kind: 'delegated-exit', version: continuation.version, exitCode: continuation.outcome.exitCode };
+          return {
+            kind: 'publish',
+            disposition: {
+              kind: 'delegated-exit',
+              version: continuation.version,
+              exitCode: continuation.outcome.exitCode,
+            },
+          };
         case 'handoff-signal':
-          return { kind: 'delegated-signal', version: continuation.version, signal: continuation.outcome.signal };
+          return {
+            kind: 'publish',
+            disposition: {
+              kind: 'delegated-signal',
+              version: continuation.version,
+              signal: continuation.outcome.signal,
+            },
+          };
         default:
           return assertNever(continuation.outcome);
+      }
+    case 'delegated-startup':
+      switch (continuation.observation.kind) {
+        case 'serving':
+          return { kind: 'publish', disposition: { kind: 'delegated-success', version: continuation.version } };
+        case 'not-serving':
+          return {
+            kind: 'publish',
+            disposition: endedStartupDisposition(continuation.version, continuation.observation.childEnding),
+          };
+        case 'undetermined':
+          return {
+            kind: 'withhold',
+            refusal: {
+              reason: 'startup-readiness-unobserved',
+              remediation: 'inspect-backend-status-before-repair',
+              attemptedPhase: 'terminal',
+            },
+          };
+        default:
+          return assertNever(continuation.observation);
       }
     default:
       return assertNever(continuation);
@@ -1048,25 +1177,22 @@ async function executeResolvedHandoff(
       if (startup !== undefined) {
         child.unref();
         // A cancellation may not be threaded into this observation: it would have to return while the
-        // detached child is still live, and `HandoffOutcome` has no variant that names an unobserved child,
-        // so the abandonment would be reported as a success or an exit. Both are false.
-        const startupObservation = await waitForBackendStartupObservation(
-          childObservation,
-          runtime,
-          time,
-          startup.identity,
-          startup.expectedAttemptId,
-        );
+        // detached child is still live, and no variant here names a child abandoned rather than observed —
+        // `undetermined` is about the coordinator and carries no ending at all — so the abandonment would be
+        // reported as a serving coordinator or an ended child. Both are false.
         return {
-          kind: 'delegated',
+          kind: 'delegated-startup',
           version: execution.manifest.version,
-          outcome:
-            startupObservation.kind === 'ready'
-              ? handoffSuccess(execution.manifest.version)
-              : endedChildOutcome(startupObservation.outcome),
+          observation: await waitForBackendStartupObservation(
+            childObservation,
+            runtime,
+            time,
+            startup.identity,
+            startup.expectedAttemptId,
+          ),
         };
       }
-      const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
+      const outcome = handoffOutcome(execution.manifest.version, await childObservation.ending);
       return { kind: 'delegated', version: execution.manifest.version, outcome };
     }
     default:
@@ -1082,10 +1208,18 @@ function collectedIncidents(
     : (Object.freeze([...incidents]) as NonEmptyReadonlyArray<HandoffPublicationIncident>);
 }
 
+export function runHandoff(
+  operation: Extract<HandoffOperation, { kind: 'backend-startup' }>,
+  options?: RunHandoffOptions,
+): Promise<HandoffRunResult<BackendStartupHandoffContinuation>>;
+export function runHandoff(
+  operation: Exclude<HandoffOperation, { kind: 'backend-startup' }>,
+  options?: RunHandoffOptions,
+): Promise<HandoffRunResult<DelegatingHandoffContinuation>>;
 export async function runHandoff(
   operationInput: HandoffOperation,
   options: RunHandoffOptions = {},
-): Promise<HandoffRunResult> {
+): Promise<HandoffRunResult<HandoffContinuationResult>> {
   const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
   if (isDisplayOnlyInvocation(operation)) {
     return {
@@ -1133,9 +1267,21 @@ export async function runHandoff(
       options.signal,
       executionPhase,
     );
-    const terminalDisposition = finalizedDisposition(continuation);
-    const terminal = await recordTerminal(runtime, time, invocationId, selection, terminalDisposition, options.signal);
-    recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
+    const recording = terminalRecordingFor(continuation);
+    if (recording.kind === 'withhold') {
+      incidents.push({ phase: 'terminal', invocationId, kind: 'refused', refusal: recording.refusal });
+    } else {
+      const terminalDisposition = recording.disposition;
+      const terminal = await recordTerminal(
+        runtime,
+        time,
+        invocationId,
+        selection,
+        terminalDisposition,
+        options.signal,
+      );
+      recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
+    }
     const publicationIncidents = collectedIncidents(incidents);
     return publicationIncidents === null
       ? { kind: 'recorded', continuation, publicationIncidents: [] }
