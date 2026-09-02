@@ -5,7 +5,11 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { handoffRoutingStatusStoreSchema, readHandoffRoutingStatus } from '#src/coordinator/handoff-routing/status.js';
+import {
+  handoffRoutingStatusStoreSchema,
+  readHandoffRoutingStatus,
+  type HandoffRoutingInvocationStatus,
+} from '#src/coordinator/handoff-routing/status.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { handoffRoutingStatusPathForRunDir } from '#src/infra/path/coordinator.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -374,24 +378,28 @@ describe('real backend-startup delegation', () => {
       `Handoff refused at the startup deadline for socket ${files.socketPath}: the socket remained bound but no verified holder pid was available.`,
     );
 
-    const routingStatus = readHandoffRoutingStatus(
-      runtime,
-      handoffRoutingStatusPathForRunDir(
-        files.runDir,
-        handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
-      ),
-    );
-    expect(routingStatus.kind).toBe('current');
-    if (routingStatus.kind !== 'current') {
-      throw new Error(`Expected current handoff routing status, received ${routingStatus.kind}`);
-    }
-    const originalDisposition = routingStatus.statuses.find((entry) => {
-      if (entry.kind !== 'terminal' || entry.selection === null) return false;
-      const disposition = entry.selection.disposition;
-      return (
-        disposition.kind === 'handoff-selected' && disposition.target.build.bundleHash === selected.manifest.bundleHash
+    // The first hop is published by the detached backend the CLI spawned, which outlives it, so the CLI's
+    // exit does not order that write.
+    const readOriginalDisposition = (): HandoffRoutingInvocationStatus | undefined => {
+      const status = readHandoffRoutingStatus(
+        runtime,
+        handoffRoutingStatusPathForRunDir(
+          files.runDir,
+          handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
+        ),
       );
-    });
+      if (status.kind !== 'current') return undefined;
+      return status.statuses.find((entry) => {
+        if (entry.kind !== 'terminal' || entry.selection === null) return false;
+        const disposition = entry.selection.disposition;
+        return (
+          disposition.kind === 'handoff-selected' &&
+          disposition.target.build.bundleHash === selected.manifest.bundleHash
+        );
+      });
+    };
+    await waitForCondition(() => readOriginalDisposition() !== undefined, 30_000);
+    const originalDisposition = readOriginalDisposition();
     // A backend that refuses startup exits 1: only the CLI envelope maps a documented code to its exit
     // code, so the refusal's class travels in the sentinel, not in the child's process status. What this
     // record must show is that the first hop ended on its child's terminal outcome rather than being
