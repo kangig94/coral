@@ -123,9 +123,11 @@ This only affects malformed or truncated backend responses. In normal operation 
 
 Socket-handoff refusals are documented `CoralSetupError` instances whose code names the observed cause. Catalog-backed
 public projections such as `backend status` ignore persisted prose and regenerate the code-indexed, authored message
-and remediation. SessionStart cannot import that catalog, so it validates and prints only the bounded error code and
-points to `backend status`; arbitrary exception text and persisted diagnostic prose remain private evidence, including
-a nested cause attached to a handoff failure.
+and remediation. SessionStart cannot import that catalog, so it validates and prints only the bounded error code, and
+its exit is the diagnostic file it read: the notice names that path as where the failed attempt recorded the cause and
+the next step, and stays silent unless it observed both there. It names no command, because whether any command can
+still attribute that diagnostic turns on discovery state the hook never observed. Arbitrary exception text and
+persisted diagnostic prose remain private evidence, including a nested cause attached to a handoff failure.
 
 Provider endpoint construction reports a settled ownership, entry-type, or parent-permission refusal as `proxy_endpoint_insecure`, with `refusal` set to `foreign`, `unusable`, or `unsecurable`. It reports no settled verdict as `proxy_endpoint_unverified`, with `refusal` set to `unverified`: an operation may have failed, a successful observation may have reported no owner, or the fallback address may have named an unusable uid. Consumers must not interpret that code as an insecure-directory verdict.
 

@@ -83,7 +83,11 @@ describe('handoff refusal classification ownership', () => {
   it('pins every construction to the approved refusal-observation inventory', () => {
     const source = readFileSync(join(REPO_ROOT, HANDOFF_CLASSIFIER), 'utf-8');
 
-    expect(handoffEscalationConstructionSites(source)).toEqual([
+    // Both directions hold: no construction outside this inventory, and no entry in it without a
+    // construction. A repeated pair is a second classification site for one code, so the comparison keeps
+    // multiplicity. What it must not depend on is position — where a `throw` sits inside the function that
+    // owns it is not a change of ownership, and an inventory that fails for it gets re-synced rather than read.
+    const approved = [
       'refreshIncumbentForSignal:handoff_fresh_discovery_unavailable',
       'refreshIncumbentForSignal:handoff_fresh_discovery_changed',
       'assertSignalCapability:handoff_signal_capability_unavailable',
@@ -106,6 +110,8 @@ describe('handoff refusal classification ownership', () => {
       'bindWithHandoff:handoff_shutdown_credential_unavailable',
       'bindWithHandoff:handoff_socket_holder_unverified',
       'bindWithHandoff:handoff_manual_policy',
-    ]);
+    ];
+
+    expect(handoffEscalationConstructionSites(source).sort()).toEqual(approved.sort());
   });
 });

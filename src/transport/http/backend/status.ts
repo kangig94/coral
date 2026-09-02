@@ -103,7 +103,11 @@ export type BackendStatusFull =
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
       retryable: boolean;
-      /** Persisted diagnostic text and context must not cross this operator-facing boundary. */
+      /**
+       * Recorded prose crosses this operator-facing boundary only for a code this build proved it wrote, and
+       * only inside the charset and length bounds of `canonicalSelfAuthoredProse`; recorded context must
+       * never cross it. see `readOperatorFacingCoralSetupError` in src/runtime/errors.ts
+       */
       setupError?: OperatorFacingCoralSetupError;
     };
 

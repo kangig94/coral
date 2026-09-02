@@ -862,6 +862,53 @@ describe('bindWithHandoff', () => {
     );
   });
 
+  // A bindable socket is not a dead incumbent. The signalled process can still be running with its listener
+  // already closed, so adopting the socket here would hand this coordinator the port while the target it
+  // signalled is alive behind it.
+  it('refuses the bindable socket while the signalled target is still alive', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 7791,
+      incarnation: testIncarnation(562_000),
+      source: 'health',
+    };
+    let sigtermAccepted = false;
+    const { options, time, killCalls } = buildHarness({
+      bindAttempt: async () => (sigtermAccepted ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' }),
+      totalBudgetMs: 500,
+      observeLiveness: () => 'alive' as const,
+      killReturns: (signal) => {
+        if (signal === 'SIGTERM') sigtermAccepted = true;
+        return true;
+      },
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'bindable-socket-incumbent',
+        token: 'token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    const promise = bindWithHandoff(options).catch((error: unknown) => error);
+    for (let i = 0; i < (SIGTERM_GRACE_MS + 5_000) / 200; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+
+    expectHandoffRefusal(outcome, 'handoff_accepted_signal_target_alive_after_bind', {
+      stage: 'after-accepted-signal-bind',
+      pid: 7791,
+      signal: 'SIGTERM',
+    });
+    expect(killCalls, 'the socket became bindable before the grace elapsed, so no SIGKILL is due').toEqual([
+      { pid: 7791, signal: 'SIGTERM' },
+    ]);
+  });
+
   it.each(pendingSignalFailureCases)(
     'observes an accepted %s before a bind error exits when the target is %s',
     async (acceptedSignal, targetStatus) => {
@@ -1511,6 +1558,36 @@ describe('bindWithHandoff', () => {
     const outcome = await promise;
     expectHandoffRefusal(outcome, 'handoff_process_identity_unavailable', { stage: 'before-signal', pid: 2468 });
     expect(killCalls, 'unreadable must not be read as gone').toEqual([]);
+  });
+
+  // The mirror of the case above: the incarnation is unreadable when this attempt *adopts* the pid, so no
+  // baseline is taken, and it becomes readable in time for pre-signal verification. Agreement between that
+  // reading and what the incumbent published is then two probes taken after the window they are supposed to
+  // span, and it authorizes nothing.
+  it('refuses to signal a pid it never observed while that pid was authenticated', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 3157,
+      incarnation: testIncarnation(1_200_000),
+      source: 'discovery',
+      instanceId: 'anchorless-incumbent',
+      token: 'token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
+    const { options, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      observeLiveness: () => 'alive' as const,
+      readDiscovery: () => verifiedIdentity,
+    });
+    // An exhausted budget escalates on the first pass, so these are the only two probes: adoption, then
+    // pre-signal verification.
+    mockedProbe.mockReturnValueOnce(null).mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    const outcome = await bindWithHandoff(options).catch((e: Error) => e);
+
+    expectHandoffRefusal(outcome, 'handoff_signal_anchor_missing', { stage: 'before-signal', pid: 3157 });
+    expect(killCalls, 'a pid with no authenticated baseline must never be signalled').toEqual([]);
   });
 
   it('identity change at immediate pre-signal revalidation stays fatal', async () => {

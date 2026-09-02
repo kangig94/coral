@@ -175,8 +175,10 @@ describe('session-start.mjs startup failure notice', () => {
       expect(context).toContain('the most recent start attempt failed');
       expect(context).toContain('Error code: store_newer_incompatible');
       expect(context).toContain(join(fixture.root, '.coral', 'gen2', 'run', 'startup-diagnostic.json'));
-      // The hook read that file, so naming it holds. Whether any command reports the code turns on evidence
-      // the hook never observed, so the notice may not name one.
+      // A bare code an operator cannot decode is a dead end, so the notice must hand over an exit. The one
+      // it may hand over is the file it read: whether any command still attributes that diagnostic turns on
+      // evidence the hook never observed, so the notice may not name a command instead.
+      expect(context).toContain('recorded the cause and the next step at');
       expect(context).not.toContain('coral-cli backend status');
       expect(context).not.toContain('\u001B');
       expect(context).not.toContain('forged cause');
@@ -202,6 +204,29 @@ describe('session-start.mjs startup failure notice', () => {
       const context = await contextFor(fixture, 'test-session-invalid-code');
 
       expect(context).not.toContain('the most recent start attempt failed');
+      expect(context).not.toContain('store_newer_incompatible');
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it.each([
+    { half: 'cause', error: { userMessage: '   ', remediation: 'Retry with the matching build.' } },
+    { half: 'next step', error: { userMessage: 'The store was written by a newer build.' } },
+  ])(
+    'stays silent when the record holds no $half for the notice to point at',
+    async ({ half, error }) => {
+      const fixture = setupFixture();
+      writeDiagnostic(fixture, {
+        ...documentedFailure(new Date().toISOString()),
+        error: { kind: 'coral_setup_error', code: 'store_newer_incompatible', ...error },
+      });
+
+      const context = await contextFor(fixture, `test-session-no-${half.replace(' ', '-')}`);
+
+      expect(
+        context,
+        'the exit the notice offers is that the file holds both, so a record holding one of them is the dead end this notice replaced',
+      ).not.toContain('the most recent start attempt failed');
       expect(context).not.toContain('store_newer_incompatible');
     },
     WARM_START_TIMEOUT_MS,

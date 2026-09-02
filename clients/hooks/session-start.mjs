@@ -118,6 +118,15 @@ function isCoordinatorAlive(runDir) {
   }
 }
 
+function recordsCauseAndNextStep(error) {
+  return (
+    typeof error.userMessage === 'string' &&
+    error.userMessage.trim().length > 0 &&
+    typeof error.remediation === 'string' &&
+    error.remediation.trim().length > 0
+  );
+}
+
 // The spawn above is detached, so this hook never learns whether it worked, and a
 // failure has until now been invisible: the daemon writes a diagnostic and exits,
 // the hook fails open, and the session proceeds as if Coral were healthy.
@@ -131,9 +140,10 @@ function isCoordinatorAlive(runDir) {
 // The recency and liveness filters remain, as noise control rather than proof: an
 // answering daemon or an old diagnostic means the report is not worth making.
 //
-// The notice may point only at what this hook itself observed, and what it observed is
-// the diagnostic file. Naming a command instead promises an answer that depends on
-// evidence this hook does not have.
+// The notice may point only at what this hook itself observed: the diagnostic file, and the fields it
+// read out of that file. Naming a command instead promises an answer that depends on evidence this hook
+// does not have. The same rule bounds the pointer's own claim — the file is said to hold a cause and a
+// next step only because both were observed in it, and a record missing either is not reported at all.
 function readRecentStartupFailureNotice(runDir) {
   const diagnosticFile = join(runDir, 'startup-diagnostic.json');
   try {
@@ -156,7 +166,8 @@ function readRecentStartupFailureNotice(runDir) {
     ) {
       return null;
     }
-    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nThe failed attempt recorded this at ${diagnosticFile}.`;
+    if (!recordsCauseAndNextStep(error)) return null;
+    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nThe failed attempt recorded the cause and the next step at ${diagnosticFile}.`;
   } catch {
     return null;
   }
