@@ -41,6 +41,7 @@ import { makeClient } from '#src/cli/dispatch.js';
 import { markProviderCommand } from '#src/cli/classify.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '#src/infra/network-env.js';
+import { BackendUnreachableError } from '#src/infra/http-errors.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
   let current = root;
@@ -105,6 +106,18 @@ describe('command client routing', () => {
       { projectRoot: realpathSync(physicalProject), phase: 'running' },
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+  });
+
+  it('rejects a null operational response as an unreachable backend', async () => {
+    mockState.request.mockResolvedValueOnce(null);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'detail'));
+
+    const error = await client.detailJob('job-1').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BackendUnreachableError);
+    expect(error).toMatchObject({
+      message: 'Coral coordinator did not answer jobs.detail. Run `coral-cli backend status` and retry.',
+    });
   });
 
   it('captures caller-default Claude as an explicit physical profile without requiring Codex', async () => {

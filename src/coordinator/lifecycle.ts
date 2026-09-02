@@ -72,7 +72,7 @@ import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
-import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { StoreFormatDescription } from '../store/format-fingerprint.js';
 import { decodeStoredBody } from '../store/body-codec.js';
 import { rowToCoralEvent } from '../store/envelope.js';
@@ -954,12 +954,9 @@ async function runLifecycleStartup({
     if (deps.systemProviderScope !== undefined) {
       const decodedScope = providerRegistry.decodeScope(deps.systemProviderScope);
       if (!decodedScope.ok) {
-        throw new CoralSetupError({
-          code: 'system_provider_scope_invalid',
-          userMessage: `Named system provider scope '${deps.systemProviderScope.name}' is invalid.`,
-          remediation:
-            'Edit CORAL_SYSTEM_PROVIDER_SCOPE, remove the duplicate or invalid provider entry, and restart Coral.',
-          context: { scopeName: deps.systemProviderScope.name, reason: decodedScope.failure.reason },
+        throw documentedCoralSetupError('system_provider_scope_invalid', {
+          scopeName: deps.systemProviderScope.name,
+          reason: decodedScope.failure.reason,
         });
       }
     }

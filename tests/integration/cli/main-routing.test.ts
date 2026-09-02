@@ -620,14 +620,19 @@ describe('cli main routing', () => {
       return program;
     }
 
-    // `backend status` never set an exit code before this, so `backend status && <destructive op>` read every
-    // outcome — including "state is unknown" — as permission to proceed. Only the two statuses that mean the
-    // state genuinely could not be determined get a non-zero exit; every confidently observed answer, even bad
-    // news like `not_running`, stays exit 0. `ok` needs a full `BackendHealth` fixture that adds
-    // nothing here — the lookup is a plain object index, so proving the wiring works for one exit-0 and one
-    // exit-75 status is what the completeness test below cannot itself prove.
     it.each([
-      [{ status: 'not_running' }, 0],
+      [{ status: 'no_record_no_socket' }, 0],
+      [{ status: 'recorded_process_absent', pid: 4242 }, 0],
+      [
+        {
+          status: 'unreachable',
+          cause: 'foreign_peer',
+          observed: { namespace: 'foreign', flavor: 'dev' },
+          pid: 4242,
+          recordPath: '/run/coral/coordinator.json',
+        },
+        75,
+      ],
       [{ status: 'unreachable', detail: 'ECONNRESET', cause: 'no_response' }, 75],
     ] as const)('exits %j with %s', async (status, expected) => {
       const program = statusProgram(async () => status);
@@ -637,13 +642,10 @@ describe('cli main routing', () => {
       expect(process.exitCode).toBe(expected);
     });
 
-    // The rows above only cover two of the `BackendStatusFull['status']` values — this is the complete
-    // statement, independent of the it.each rows, mirroring `SHUTDOWN_REFUSAL_EXIT_CODES`'s own completeness
-    // test: a new status gets an exit code in the production table and no row here, and that is the shape of
-    // every "the list is exhaustive" claim this branch found to be stale.
     const BACKEND_STATUS_EXIT_EXPECTATIONS = [
       ['ok', 0],
-      ['not_running', 0],
+      ['no_record_no_socket', 0],
+      ['recorded_process_absent', 0],
       ['shutting_down', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],
@@ -652,12 +654,12 @@ describe('cli main routing', () => {
       ['no_record_socket_present', 75],
     ] as const;
 
-    it('has a row for every status the command can produce', async () => {
+    // Both halves of the mapping, not just its keys: the codes above were carried alongside the statuses and
+    // never compared to anything, so a status could have changed its contribution with every row still green.
+    it('states the exit contribution of every status the command can produce', async () => {
       const { BACKEND_STATUS_EXIT_CODES } = await import('#src/cli/commands/backend.js');
 
-      expect(BACKEND_STATUS_EXIT_EXPECTATIONS.map(([status]) => status).sort()).toEqual(
-        Object.keys(BACKEND_STATUS_EXIT_CODES).sort(),
-      );
+      expect(Object.fromEntries(BACKEND_STATUS_EXIT_EXPECTATIONS)).toEqual(BACKEND_STATUS_EXIT_CODES);
     });
   });
 

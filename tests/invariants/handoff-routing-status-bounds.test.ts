@@ -4,7 +4,9 @@ import {
   HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION,
   MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
+  MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_CLOSING_RECORD_BYTES,
+  MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES,
   MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES,
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
@@ -18,6 +20,10 @@ import {
 } from '#src/store/handoff-routing-status-store/index.js';
 
 describe('handoff routing status bounds', () => {
+  it('pins the operational store byte ceiling', () => {
+    expect(MAX_HANDOFF_ROUTING_STATUS_BYTES).toBe(1_048_576);
+  });
+
   it('derives the maximum-body incarnation from its canonical bound', () => {
     expect(MAX_LEGAL_ROUTING_SELECTED_TRANSITION.owner.incarnation).toHaveLength(MAX_PROCESS_INCARNATION_LENGTH);
   });
@@ -31,12 +37,8 @@ describe('handoff routing status bounds', () => {
     expect(generation).toBeLessThanOrEqual(maximum);
     expect(MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES).toEqual(MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBe(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
-    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBe(
-      Math.max(
-        MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
-        MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
-        MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
-      ),
+    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBeGreaterThanOrEqual(
+      Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES),
     );
   });
 

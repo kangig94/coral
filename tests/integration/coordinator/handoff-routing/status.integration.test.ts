@@ -14,7 +14,7 @@ import {
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_HANDOFF_ROUTING_STATUS_BYTES,
   MAX_LEGAL_CLOSING_RECORD_BYTES,
-  MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
+  MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
   MAX_LEGAL_ROUTING_SELECTED_TRANSITION,
   MAX_RETIREMENT_TOMBSTONES,
   MAX_UNRESOLVED_INVOCATIONS,
@@ -37,7 +37,8 @@ const LOCK_RELEASE_GATE_MS = 50;
 const BENCHMARK_LIFECYCLES = 100;
 const CONCURRENT_WRITERS = 2;
 const BYTE_PRESSURE_COMPLETED_PAIRS = 204;
-const BYTE_PRESSURE_BATCHED_PAIRS = 180;
+// Keep this pressure batch below the packing-sensitive capacity boundary.
+const BYTE_PRESSURE_BATCHED_PAIRS = 96;
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const runtime = createRealRuntime('prod');
 const time = runtime.time;
@@ -126,9 +127,9 @@ function maximumSelection(identity: string): HandoffRoutingTransition {
   };
 }
 
-function maximumTerminal(identity: string, selectionSequence: number): HandoffRoutingTransition {
+function maximumCompactableTerminal(identity: string, selectionSequence: number): HandoffRoutingTransition {
   return {
-    ...MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
+    ...MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
     eventId: maximumIdentifier(`t${identity}`),
     invocationId: maximumIdentifier(`i${identity}`),
     selection: { kind: 'with-selection-sequence', selectionSequence },
@@ -137,7 +138,7 @@ function maximumTerminal(identity: string, selectionSequence: number): HandoffRo
 
 function maximumGapTerminal(identity: string): HandoffRoutingTransition {
   return {
-    ...MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION,
+    ...MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
     eventId: maximumIdentifier(`g${identity}`),
     invocationId: maximumIdentifier(`x${identity}`),
     selection: { kind: 'without-selection' },
@@ -299,7 +300,7 @@ async function populateMaximumRetainedStore(coordinatedRuntime: Runtime, path: s
   for (let index = 0; index < MAX_COMPLETED_HANDOFF_ROUTING_PAIRS; index += 1) {
     const identity = `retained-pair-${index}`;
     const selected = await generationCoordinatedCommitted(coordinatedRuntime, path, maximumSelection(identity));
-    await generationCoordinatedCommitted(coordinatedRuntime, path, maximumTerminal(identity, selected));
+    await generationCoordinatedCommitted(coordinatedRuntime, path, maximumCompactableTerminal(identity, selected));
   }
   const openings = Array.from({ length: MAX_UNRESOLVED_INVOCATIONS + MAX_RETIREMENT_TOMBSTONES }, (_, index) =>
     maximumSelection(`retained-opening-${index}`),
@@ -585,7 +586,7 @@ describe('handoff-routing/status', () => {
     const fill = Array.from({ length: BYTE_PRESSURE_BATCHED_PAIRS }, (_, index) => {
       const selectionSequence = 2 + index * 2;
       const identity = `pair-${index}`;
-      return [maximumSelection(identity), maximumTerminal(identity, selectionSequence)];
+      return [maximumSelection(identity), maximumCompactableTerminal(identity, selectionSequence)];
     }).flat();
     await committed(path, opening);
     const fillOutcome = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, fill);
@@ -593,19 +594,22 @@ describe('handoff-routing/status', () => {
     for (let index = BYTE_PRESSURE_BATCHED_PAIRS; index < BYTE_PRESSURE_COMPLETED_PAIRS; index += 1) {
       const identity = `pair-${index}`;
       const selected = await committed(path, maximumSelection(identity));
-      await committed(path, maximumTerminal(identity, selected));
+      await committed(path, maximumCompactableTerminal(identity, selected));
     }
+    const retainedCompletedPairs = retainedRecordCounts(path).completedPairs;
+    expect(retainedCompletedPairs).toBeLessThan(BYTE_PRESSURE_COMPLETED_PAIRS);
+    expect(retainedCompletedPairs).toBeLessThanOrEqual(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
 
     const admitted = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
       maximumSelection('admitted'),
     ]);
     const closedOpening = await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
-      maximumTerminal('opening', 1),
+      maximumCompactableTerminal('opening', 1),
     ]);
     const closedAdmission =
       admitted.kind === 'committed'
         ? await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
-            maximumTerminal('admitted', admitted.sequence),
+            maximumCompactableTerminal('admitted', admitted.sequence),
           ])
         : undefined;
 
@@ -627,7 +631,9 @@ describe('handoff-routing/status', () => {
     expect(retainedRecordCounts(path).completedPairs).toBeLessThanOrEqual(MAX_COMPLETED_HANDOFF_ROUTING_PAIRS);
 
     await expect(
-      publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [maximumTerminal('gap-opening', opening)]),
+      publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
+        maximumCompactableTerminal('gap-opening', opening),
+      ]),
     ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
     await expect(
       publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [maximumSelection('after-gaps')]),
@@ -639,7 +645,7 @@ describe('handoff-routing/status', () => {
     for (let index = 0; index < 68; index += 1) {
       const identity = `late-pair-${index}`;
       const pairSelection = await committed(path, maximumSelection(identity));
-      await committed(path, maximumTerminal(identity, pairSelection));
+      await committed(path, maximumCompactableTerminal(identity, pairSelection));
     }
     const selected = await committed(path, maximumSelection('resolved-under-pressure'));
     await committed(path, maximumResolution('resolved-under-pressure', selected));
@@ -665,7 +671,7 @@ describe('handoff-routing/status', () => {
 
     await expect(
       publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
-        maximumTerminal('resolved-under-pressure', selected),
+        maximumCompactableTerminal('resolved-under-pressure', selected),
       ]),
     ).resolves.toEqual({ kind: 'committed', sequence: expect.any(Number) });
     expect(retainedRecordCounts(path).completedPairs).toBeLessThan(69);

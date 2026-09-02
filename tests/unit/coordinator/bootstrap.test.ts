@@ -29,9 +29,9 @@ describe('backend bootstrap store handoff', () => {
     mockState.runHandoff.mockResolvedValue({
       kind: 'recorded',
       continuation: {
-        kind: 'delegated',
+        kind: 'delegated-startup',
         version: '2.0.0',
-        outcome: { kind: 'handoff-success', version: '2.0.0' },
+        observation: { kind: 'serving' },
       },
       publicationIncidents: [],
     });
@@ -49,31 +49,64 @@ describe('backend bootstrap store handoff', () => {
 
   it.each([
     {
-      continuation: {
-        kind: 'recorded',
-        continuation: { kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 23 } },
-        publicationIncidents: [],
-      },
-      message: 'Selected backend exited during startup handoff with code 23.',
+      childEnding: { code: 23, signal: null },
+      message: 'Selected backend exited during startup handoff with code 23 without taking over as the coordinator.',
+      exitCode: 23,
     },
     {
-      continuation: {
-        kind: 'recorded',
-        continuation: {
-          kind: 'delegated',
-          version: '2.0.0',
-          outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
-        },
-        publicationIncidents: [],
-      },
-      message: 'Selected backend exited during startup handoff from signal SIGTERM.',
+      childEnding: { code: null, signal: 'SIGTERM' },
+      message: 'Selected backend ended during startup handoff from signal SIGTERM.',
+      exitCode: 1,
     },
-  ])('should map a non-success continuation to bootstrap failure: $message', async ({ continuation, message }) => {
-    mockState.runHandoff.mockResolvedValue(continuation);
+    // Exiting 0 without serving is an ordinary failure to become the backend, so this process still exits
+    // nonzero — while the record keeps the child's own 0, which is why nothing forces it here.
+    {
+      childEnding: { code: 0, signal: null },
+      message: 'Selected backend exited during startup handoff with code 0 without taking over as the coordinator.',
+      exitCode: 1,
+    },
+  ])('should map an unserved startup to bootstrap failure: $message', async ({ childEnding, message, exitCode }) => {
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recorded',
+      continuation: { kind: 'delegated-startup', version: '2.0.0', observation: { kind: 'not-serving', childEnding } },
+      publicationIncidents: [],
+    });
 
     const result = await handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target));
 
-    expect(result).toMatchObject({ kind: 'failed', error: { message } });
+    expect(result).toMatchObject({ kind: 'failed', exitCode, error: { message } });
+  });
+
+  // The disposition `main` needs to keep away from `writeBootstrapDiagnostic`: a startup nobody observed is
+  // not a startup that failed. Folding it into `failed` — the shape this replaces — hands the diagnostic,
+  // sentinel and audit event a failure that was never observed.
+  it('should report an unobserved startup as undetermined rather than failed', async () => {
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recording-incidents',
+      observedWork: {
+        kind: 'delegated-startup',
+        version: '2.0.0',
+        observation: { kind: 'undetermined', cause: 'health-request-failed' },
+      },
+      publicationIncidents: [
+        {
+          phase: 'terminal',
+          invocationId: PUBLICATION_INVOCATION_ID,
+          kind: 'refused',
+          refusal: {
+            reason: 'startup-readiness-unobserved',
+            remediation: 'inspect-backend-status-before-repair',
+            attemptedPhase: 'terminal',
+          },
+        },
+      ],
+    });
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await expect(handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target))).resolves.toEqual({
+      kind: 'undetermined',
+      cause: 'health-request-failed',
+    });
   });
 
   it('should preserve a handoff execution error for bootstrap diagnostics', async () => {
@@ -94,6 +127,7 @@ describe('backend bootstrap store handoff', () => {
     await expect(handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target))).resolves.toEqual({
       kind: 'failed',
       error: handoffError,
+      exitCode: 1,
     });
     expect(warn).toHaveBeenCalledWith(
       'Backend startup handoff routing-status publication incident: ' +
@@ -118,9 +152,9 @@ describe('backend bootstrap store handoff', () => {
       return {
         kind: 'recording-incidents',
         observedWork: {
-          kind: 'delegated',
+          kind: 'delegated-startup',
           version: '2.0.0',
-          outcome: { kind: 'handoff-success', version: '2.0.0' },
+          observation: { kind: 'serving' },
         },
         publicationIncidents: [
           {

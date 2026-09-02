@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { dirname } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
@@ -5,6 +6,8 @@ import { backendLog } from '../infra/backend-log.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { isRecord } from '../infra/json.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { isRetryableCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
@@ -13,15 +16,30 @@ export type BootstrapDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error'
 
 const MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH = 8;
 
+/**
+ * Wall-clock instant this process began, in ms, so it is comparable with the `recordedAt` another process
+ * wrote. `performance.timeOrigin` is a wall-clock reading and not a monotonic one, which is what makes that
+ * comparison meaningful. `CORAL_STARTUP_STARTED_AT` may not stand in: it names the *attempt's* start, which
+ * a delegating ancestor and the build it delegates to share, and which a spawn exporting none leaves absent.
+ */
+const PROCESS_STARTED_AT_MS = performance.timeOrigin;
+
 function startupStartedAt(): number {
   const startedAt = Number(process.env.CORAL_STARTUP_STARTED_AT);
   return Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
 }
 
 export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<string, unknown> {
+  const nestedCause = error instanceof Error ? error.cause : undefined;
   const setupError = serializeCoralSetupError(error);
   if (setupError) {
-    return { kind: 'coral_setup_error', ...setupError };
+    return {
+      kind: 'coral_setup_error',
+      ...setupError,
+      ...(nestedCause === undefined || nestedCause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
+        ? {}
+        : { cause: serializeBootstrapError(nestedCause, causeDepth + 1) }),
+    };
   }
   if (error instanceof Error) {
     return {
@@ -30,15 +48,44 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
       message: error.message,
       ...(error.stack === undefined ? {} : { stack: error.stack }),
       // Nested causes must remain inspectable in the structured diagnostic; they never enter default public text.
-      ...(error.cause === undefined || error.cause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
+      ...(nestedCause === undefined || nestedCause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
         ? {}
-        : { cause: serializeBootstrapError(error.cause, causeDepth + 1) }),
+        : { cause: serializeBootstrapError(nestedCause, causeDepth + 1) }),
     };
   }
   return {
     kind: 'unknown',
     message: String(error),
   };
+}
+
+/**
+ * A documented refusal this process may not overwrite with a generic startup failure of its own.
+ *
+ * Attribution may not rest on `CORAL_STARTUP_ATTEMPT_ID`: it names the attempt, which a delegating ancestor
+ * and every build it delegates to share, so it cannot answer either half of the question this guard asks — a
+ * matching id neither proves the record came from another process nor that it was written during this
+ * process's life. Those two halves are what hold: a build this process delegated to satisfies both, and a
+ * record from an attempt that ended before this process started satisfies neither.
+ *
+ * A record with no readable pid is not preserved. This writer always stamps one, so a `startup_failed` record
+ * without one did not come from here and its prose is not this build's.
+ */
+function isSetupRefusalFromAnotherProcessSinceStartup(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.phase !== 'startup_failed' ||
+    !isRecord(value.error) ||
+    value.error.kind !== 'coral_setup_error'
+  ) {
+    return false;
+  }
+  if (typeof value.pid !== 'number' || value.pid === process.pid) {
+    return false;
+  }
+  const recordedAt = typeof value.recordedAt === 'string' ? Date.parse(value.recordedAt) : Number.NaN;
+  return Number.isFinite(recordedAt) && recordedAt >= PROCESS_STARTED_AT_MS;
 }
 
 export function writeBootstrapDiagnostic(
@@ -51,6 +98,8 @@ export function writeBootstrapDiagnostic(
     const flavor = resolveBuildFlavor(process.env);
     const runtime = createRealRuntime(flavor);
     const diagnosticFile = runtime.paths.coral.coordinator.startupDiagnosticFile;
+    const attemptId = process.env.CORAL_STARTUP_ATTEMPT_ID;
+    const serializedError = serializeBootstrapError(error);
     const diagnostic = {
       schemaVersion: 1,
       phase,
@@ -58,15 +107,34 @@ export function writeBootstrapDiagnostic(
       retryable: isRetryableCoralSetupError(error),
       pid: process.pid,
       recordedAt: new Date().toISOString(),
-      attemptId: process.env.CORAL_STARTUP_ATTEMPT_ID,
+      attemptId,
       startedAt: startupStartedAt(),
       socketPath: runtime.paths.coral.coordinator.socketPath,
       bundleHash: readBundleHash(pluginRoot),
       flavor,
       namespace: pluginRootNamespace(pluginRoot),
       exitCode,
-      error: serializeBootstrapError(error),
+      error: serializedError,
     };
+    if (phase === 'startup_failed' && serializedError.kind !== 'coral_setup_error') {
+      try {
+        const existing: unknown = JSON.parse(runtime.storage.readFileSync(diagnosticFile, 'utf-8'));
+        if (isSetupRefusalFromAnotherProcessSinceStartup(existing)) {
+          return diagnosticFile;
+        }
+      } catch (readError: unknown) {
+        // A record that could not be read is not known to be the better one, and this process may not pay
+        // for that uncertainty with its own: a generic startup failure writes no sentinel, so declining to
+        // write here would leave the failure this process did observe on no durable surface at all.
+        if (!(isNoEntryError(readError) || readError instanceof SyntaxError)) {
+          backendLog.warn(
+            `Could not read the existing startup diagnostic at ${diagnosticFile} (${errorMessage(readError)}); ` +
+              'it is replaced unchecked, so a documented refusal another process recorded there is not ' +
+              "preserved. Run 'coral-cli backend status' for what this build recorded in its place.",
+          );
+        }
+      }
+    }
     const tmp = `${diagnosticFile}.tmp-${process.pid}-${phase}`;
     runtime.storage.mkdirSync(dirname(diagnosticFile), { recursive: true });
     runtime.storage.writeFileSync(tmp, JSON.stringify(diagnostic, null, 2) + '\n', {
@@ -116,6 +184,10 @@ export function auditBootstrapFailure(
   }
 }
 
+/**
+ * A startup exit code has one home, and it is the diagnostic named by `diagnosticFile`. A second copy in
+ * the sentinel is not redundancy — it is a record that can disagree with the code the process exits with.
+ */
 export function writeStartupErrorSentinel(
   pluginRoot: string,
   error: unknown,
@@ -140,7 +212,6 @@ export function writeStartupErrorSentinel(
       recordedAt: Date.now(),
       phase: 'startup_failed',
       state: 'stopped_with_diagnostic',
-      exitCode: 1,
       diagnosticFile,
       socketPath: runtime.paths.coral.coordinator.socketPath,
       bundleHash: readBundleHash(pluginRoot),

@@ -12,6 +12,11 @@ import {
   formatHandoffRoutingStatus,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
+import {
+  documentedCoralSetupError,
+  type DocumentedCoralSetupErrorCode,
+  type SetupErrorAuthorIdentity,
+} from '#src/runtime/errors.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -121,7 +126,7 @@ describe('backend status generation readiness', () => {
         generatedPath: '/state/gen2/data',
         storedProductVersion: '0.9.16',
       }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({ kind: 'absent' }),
     };
@@ -134,7 +139,7 @@ describe('backend status generation readiness', () => {
     expect(stderr).toBe(
       'Legacy Coral history remains at /state/data (stored Coral version 0.9.16) and is left untouched. This generation initializes its own state at /state/gen2/data.\n',
     );
-    expect(stdout).toContain('Backend not running.');
+    expect(stdout).toContain('No coordinator discovery record and no coordinator socket');
   });
 
   it('prints a recent startup failure returned by the read-only status probe', async () => {
@@ -157,10 +162,10 @@ describe('backend status generation readiness', () => {
     expect(stderr).toBe('');
     expect(stdout).toBe(
       [
-        'Backend is not running after a recent coordinator failure.',
+        'Coral recorded a recent coordinator failure.',
         'Phase: startup_failed',
         'Retryable: no',
-        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
         '',
       ].join('\n'),
     );
@@ -171,7 +176,7 @@ describe('backend status live handoff disposition', () => {
   it('renders and exits 75 for a same-version incumbent from a different build set', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -205,9 +210,9 @@ describe('backend status live handoff disposition', () => {
 
     expect(stdout).toBe(
       [
-        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — the CLI and running backend are both version 0.10.9 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
         '',
       ].join('\n'),
     );
@@ -217,7 +222,7 @@ describe('backend status live handoff disposition', () => {
   it('suppresses an informational same-build-set disposition', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -238,7 +243,7 @@ describe('backend status live handoff disposition', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toBe(
-      'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.\n',
     );
     expect(process.exitCode).toBe(0);
   });
@@ -246,7 +251,7 @@ describe('backend status live handoff disposition', () => {
   it('renders the live-incumbent newer-build line exactly', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -432,6 +437,21 @@ describe('backend status local exit combination', () => {
       },
       'rerun coral-cli backend status',
     ],
+    // The refusal with no terminal disposition: it exists because none was reached, so the successor cannot
+    // describe what the delegated work did, and must still name the command that settles the invocation.
+    [
+      {
+        phase: 'terminal',
+        invocationId: PUBLICATION_INVOCATION_ID,
+        kind: 'refused',
+        refusal: {
+          reason: 'startup-readiness-unobserved',
+          remediation: 'inspect-backend-status-before-repair',
+          attemptedPhase: 'terminal',
+        },
+      },
+      'rerun coral-cli backend status to see whether the selected build is serving',
+    ],
   ])('renders an actionable successor without exposing refusal tokens', (incident, expected) => {
     const rendered = formatHandoffPublicationIncident(incident);
     expect(rendered).toContain(`Next step: ${expected}`);
@@ -487,7 +507,7 @@ describe('backend status local exit combination', () => {
         getStatus: async () =>
           daemonContribution === 75
             ? { status: 'undecodable_record', reason: 'corrupt-json', path: '/run/coordinator.json' }
-            : { status: 'not_running' },
+            : { status: 'no_record_no_socket' },
         getLiveHandoffResult: () => live,
         getRoutingStatus: async () =>
           routingContribution === 75 ? { kind: 'unreadable', reason: 'invalid-json' } : { kind: 'absent' },
@@ -768,7 +788,7 @@ describe('backend routing status', () => {
     };
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => routingStatus,
     };
@@ -786,7 +806,7 @@ describe('backend routing status', () => {
   it('renders aggregate-only retirement history without keeping the expired capacity gate', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
@@ -823,7 +843,7 @@ describe('backend routing status', () => {
     const finalizedInvocationId = '123e4567-e89b-42d3-a456-426614174011';
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
@@ -896,7 +916,7 @@ describe('backend routing status', () => {
   it('keeps the capacity gate while the exact retirement tombstone is retained', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
-      getStatus: async () => ({ status: 'not_running' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({
         kind: 'current',
@@ -972,7 +992,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
-        'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session) to relaunch the backend from the current installation.',
+        'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
       ].join('\n'),
     },
     {
@@ -1035,7 +1055,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — incumbent 2.1.0 did not report a complete bundle identity.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
       ].join('\n'),
     },
     {
@@ -1061,7 +1081,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the CLI and running backend are both version 2.1.0 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command to relaunch from this installation.',
+        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
       ].join('\n'),
     },
     {
@@ -1112,6 +1132,8 @@ describe('handoff continuation remediation', () => {
 
     expect(rendered).toBe(expected);
     expect(RAW_ENUM_TOKENS.filter((token) => rendered.includes(token))).toEqual([]);
+    expect(rendered).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
+    expect(rendered).not.toContain('Backend not running');
   });
 });
 
@@ -1426,6 +1448,16 @@ describe('backend status provider proxy dispositions', () => {
 
 describe('backend startup diagnostic classification', () => {
   const now = Date.parse('2026-08-02T12:00:00.000Z');
+  // The records below carry no build identity, so authorship stays unprovable however this build proves its own.
+  const provenSelfIdentity = (): SetupErrorAuthorIdentity => ({ bundleHash: '0123456789abcdef', namespace: 'ns-self' });
+
+  const authored = (
+    code: DocumentedCoralSetupErrorCode,
+    context?: Record<string, unknown>,
+  ): { userMessage: string; remediation: string } => {
+    const error = documentedCoralSetupError(code, context);
+    return { userMessage: error.userMessage, remediation: error.remediation };
+  };
 
   it('classifies a recent failure without returning serialized exception text', () => {
     expect(
@@ -1449,6 +1481,7 @@ describe('backend startup diagnostic classification', () => {
           },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toEqual({
       status: 'recent_failure',
@@ -1476,15 +1509,17 @@ describe('backend startup diagnostic classification', () => {
           },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toEqual({
       status: 'recent_failure',
       phase: 'startup_failed',
       retryable: true,
       setupError: {
+        kind: 'documented',
         code: 'store_open_contended',
-        userMessage: 'The current-generation store could not be opened because it is in use.',
-        remediation: 'Wait for the other store user to release the SQLite lock, then retry.',
+        userMessage: authored('store_open_contended').userMessage,
+        remediation: authored('store_open_contended').remediation,
       },
     });
   });
@@ -1507,23 +1542,21 @@ describe('backend startup diagnostic classification', () => {
               'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
             remediation:
               "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
-            // Context is deliberately not forwarded: only the two rendered
-            // strings are authored per code and safe to show.
             context: { flavor: 'prod', version: '0.11.0' },
           },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toEqual({
       status: 'recent_failure',
       phase: 'startup_failed',
       retryable: false,
       setupError: {
+        kind: 'documented',
         code: 'store_newer_incompatible',
-        userMessage:
-          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-        remediation:
-          "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+        userMessage: authored('store_newer_incompatible', { flavor: 'prod', version: '0.11.0' }).userMessage,
+        remediation: authored('store_newer_incompatible', { flavor: 'prod', version: '0.11.0' }).remediation,
       },
     });
   });
@@ -1546,6 +1579,7 @@ describe('backend startup diagnostic classification', () => {
         },
       },
       now,
+      provenSelfIdentity,
     );
     if (classified === null) throw new Error('expected recent startup failure');
     const status: BackendStatusCommandOperations = {
@@ -1577,6 +1611,7 @@ describe('backend startup diagnostic classification', () => {
           error: { message: 'old failure' },
         },
         now,
+        provenSelfIdentity,
       ),
     ).toBeNull();
   });
@@ -1593,6 +1628,7 @@ describe('backend startup diagnostic classification', () => {
           error: { message: 'prior failure' },
         },
         now,
+        provenSelfIdentity,
         Date.parse('2026-08-02T11:59:45.000Z'),
       ),
     ).toBeNull();
@@ -1611,6 +1647,7 @@ describe('backend startup diagnostic classification', () => {
           error: { message: 'new contender failed' },
         },
         now,
+        provenSelfIdentity,
         Date.parse('2026-08-02T11:59:00.000Z'),
         4242,
       ),

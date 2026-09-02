@@ -8,6 +8,12 @@ export const SQLITE_NOTADB = 26;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_ERROR = 1;
 
+const boundedTerminalPredicate = `terminal.record_kind = 'terminal'
+  AND NOT EXISTS (
+    SELECT 1 FROM handoff_routing_records AS selection
+    WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
+  )`;
+
 export type HandoffRoutingRecordKind = 'selection' | 'terminal' | 'retirement';
 
 export type HandoffRoutingRecordValidationResult =
@@ -262,11 +268,7 @@ export class HandoffRoutingStatusTransaction {
           WHERE sequence = (
             SELECT terminal.sequence
             FROM handoff_routing_records AS terminal
-            WHERE terminal.record_kind = 'terminal'
-              AND NOT EXISTS (
-                SELECT 1 FROM handoff_routing_records AS selection
-                WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
-              )
+            WHERE ${boundedTerminalPredicate}
             ORDER BY terminal.sequence
             LIMIT 1
           )`,
@@ -280,11 +282,7 @@ export class HandoffRoutingStatusTransaction {
       .prepare(
         `SELECT COUNT(*) AS count
         FROM handoff_routing_records AS terminal
-        WHERE terminal.record_kind = 'terminal'
-          AND NOT EXISTS (
-            SELECT 1 FROM handoff_routing_records AS selection
-            WHERE selection.invocation_id = terminal.invocation_id AND selection.record_kind = 'selection'
-          )`,
+        WHERE ${boundedTerminalPredicate}`,
       )
       .get() as Readonly<{ count: number }>;
     return row.count;

@@ -65,12 +65,21 @@ export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'execution-failed': 2_345,
   'continuation-finalized': 2_923,
 });
+// What a retained selection reserves at admission. It must cover every record that can redeem it, and it is
+// fingerprinted, so moving it re-addresses the store: a build on either value never opens the other's file
+// and silently loses the holds in it. It may therefore move only for a record it cannot hold — never to
+// recover capacity from records that remain decodable under it.
 export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_923;
+// Admission for a closing record that redeems no reserve must fit the widest record such a caller inserts —
+// a wrapped late terminal, or the replacement tombstone that supersedes an unresolved one. Sized from those
+// rather than from the reserve, which is a durable address and not a capacity knob.
+export const MAX_UNRESERVED_CLOSING_RECORD_BYTES = Math.max(
+  MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
+  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+  MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+);
 
-/**
- * A persisted disposition is a hold only when a Coral operation can change its record. Every other
- * disposition is retained and rendered as history, and history never contributes a nonzero status exit.
- */
+// A hold must retain an observable or operator-controlled exit; history contributes zero to status.
 const PERSISTED_DISPOSITION_CLASSIFICATIONS = Object.freeze({
   'incumbent-absent': 'hold',
   'incumbent-unresolved': 'hold',
@@ -458,10 +467,10 @@ function createHandoffRoutingRecordSchemaRegistry(generation: number) {
     .strict()
     .superRefine((event, context) => {
       const withoutSelection = event.selection.kind === 'without-selection';
-      const gapDisposition =
+      const selectionlessDisposition =
         event.disposition.kind === 'failed-without-selection' ||
         event.disposition.kind === 'finalized-without-selection';
-      if (withoutSelection !== gapDisposition) {
+      if (withoutSelection !== selectionlessDisposition) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           message: 'terminal selection link does not match disposition',
@@ -1030,7 +1039,7 @@ function makeClosingAdmissionRoom(
   while (transaction.boundedTerminalCount() >= MAX_BOUNDED_TERMINAL_HISTORY) {
     transaction.deleteOldestBoundedTerminal();
   }
-  while (!transaction.hasAdmissionCapacity(MAX_LEGAL_CLOSING_RECORD_BYTES)) {
+  while (!transaction.hasAdmissionCapacity(MAX_UNRESERVED_CLOSING_RECORD_BYTES)) {
     if (reclaimBoundedHistoryForAdmission(transaction, ids, observedAt)) continue;
     throw new CapacityExhaustedError();
   }
@@ -1785,9 +1794,18 @@ const closingReserveReadRowSchema = z
 
 type ClosingReserveReadRow = z.infer<typeof closingReserveReadRowSchema>;
 
+type AdmittedHandoffRoutingInvocationStatus =
+  | Readonly<{ kind: 'unresolved'; selection: RoutingSelectedEvent }>
+  | Readonly<{
+      kind: 'terminal';
+      selection: RoutingSelectedEvent | null;
+      terminal: HandoffRoutingTerminalEvent;
+    }>
+  | Readonly<{ kind: 'retired'; tombstone: RetirementTombstone }>;
+
 type StatusSnapshot = Readonly<{
   generation: typeof HANDOFF_ROUTING_STATUS_GENERATION;
-  statuses: readonly HandoffRoutingInvocationStatus[];
+  statuses: readonly AdmittedHandoffRoutingInvocationStatus[];
   retirementHistoryTruncated: RetirementHistoryTruncated;
 }>;
 
@@ -1802,13 +1820,13 @@ type InvocationRecords = {
 type UnreadableStatus = Extract<HandoffRoutingStatusReadResult, { kind: 'unreadable' }>;
 
 type StatusProjection =
-  | Readonly<{ kind: 'projected'; statuses: readonly HandoffRoutingInvocationStatus[] }>
+  | Readonly<{ kind: 'projected'; statuses: readonly AdmittedHandoffRoutingInvocationStatus[] }>
   | UnreadableStatus;
 
 type DecodedStatusRow = Readonly<{ kind: 'decoded'; record: StoredStatusRecord }> | UnreadableStatus;
 
 type InvocationStatusProjection =
-  | Readonly<{ kind: 'projected'; status: HandoffRoutingInvocationStatus }>
+  | Readonly<{ kind: 'projected'; status: AdmittedHandoffRoutingInvocationStatus }>
   | Readonly<{ kind: 'empty' }>
   | UnreadableStatus;
 
@@ -1924,7 +1942,6 @@ function validateInvocationReserve(
 function projectInvocationStatus(
   invocation: InvocationRecords,
   closingReserves: Map<string, ClosingReserveReadRow>,
-  probe: HandoffRoutingOwnerLivenessProbe | undefined,
 ): InvocationStatusProjection {
   if (invocation.tombstone !== undefined) {
     if (
@@ -1956,7 +1973,11 @@ function projectInvocationStatus(
     }
     return {
       kind: 'projected',
-      status: { kind: 'terminal', selection: invocation.selection ?? null, terminal: invocation.terminal },
+      status: {
+        kind: 'terminal',
+        selection: invocation.selection ?? null,
+        terminal: invocation.terminal,
+      },
     };
   }
   if (invocation.selection === undefined) return { kind: 'empty' };
@@ -1969,16 +1990,11 @@ function projectInvocationStatus(
     status: {
       kind: 'unresolved',
       selection: invocation.selection,
-      ownerLiveness: ownerLiveness(invocation.selection.owner, probe),
     },
   };
 }
 
-function projectInvocationStatuses(
-  rows: readonly unknown[],
-  reserves: readonly unknown[],
-  probe: HandoffRoutingOwnerLivenessProbe | undefined,
-): StatusProjection {
+function projectInvocationStatuses(rows: readonly unknown[], reserves: readonly unknown[]): StatusProjection {
   const invocations = new Map<string, InvocationRecords>();
   for (const rawRow of rows) {
     const decoded = decodeAndValidateStatusRow(rawRow);
@@ -1993,9 +2009,9 @@ function projectInvocationStatuses(
     }
   }
 
-  const statuses: HandoffRoutingInvocationStatus[] = [];
+  const statuses: AdmittedHandoffRoutingInvocationStatus[] = [];
   for (const invocation of invocations.values()) {
-    const projected = projectInvocationStatus(invocation, closingReserves, probe);
+    const projected = projectInvocationStatus(invocation, closingReserves);
     if (projected.kind === 'unreadable') return projected;
     if (projected.kind === 'projected') statuses.push(projected.status);
   }
@@ -2022,7 +2038,7 @@ function admitStatusSnapshot(
   if (snapshot.retirement?.generation !== HANDOFF_ROUTING_STATUS_GENERATION || !retirementHistory.success) {
     return { kind: 'unreadable', reason: 'invalid-shape' };
   }
-  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves, undefined);
+  const projection = projectInvocationStatuses(snapshot.rows, snapshot.reserves);
   if (projection.kind === 'unreadable') return projection;
   return {
     kind: 'admitted',
@@ -2125,7 +2141,7 @@ function observationProbe(
 }
 
 export async function readHandoffRoutingStatusWithOwnerObservations(
-  runtime: Pick<Runtime, 'storage' | 'process'>,
+  runtime: Pick<Runtime, 'storage' | 'process' | 'time'>,
   path: string,
 ): Promise<HandoffRoutingStatusReadResult> {
   const snapshot = readStatusSnapshot(runtime.storage, path);
@@ -2134,17 +2150,33 @@ export async function readHandoffRoutingStatusWithOwnerObservations(
     status.kind === 'unresolved' ? [status.selection.owner] : [],
   );
   if (owners.length === 0) return projectHandoffRoutingStatus(snapshot, undefined);
-  let observations: Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
-  try {
-    observations = await runtime.process.observeProcessIdentities(
-      owners.slice(0, MAX_UNRESOLVED_INVOCATIONS),
-      MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS,
-    );
-  } catch {
-    observations = owners.map((owner) => ({
-      owner,
-      evidence: { kind: 'unobservable', cause: 'probe-failed' },
-    }));
+  type ProcessIdentityObservations = Awaited<ReturnType<Runtime['process']['observeProcessIdentities']>>;
+  type UnobservableCause = Extract<ProcessIdentityObservations[number]['evidence'], { kind: 'unobservable' }>['cause'];
+  const unobserved = (batch: typeof owners, cause: UnobservableCause): ProcessIdentityObservations =>
+    batch.map((owner): ProcessIdentityObservations[number] => ({ owner, evidence: { kind: 'unobservable', cause } }));
+
+  // The budget bounds the sweep, not one batch of it: batching exists so a large snapshot still reaches every
+  // owner, and a per-batch budget would multiply an operator's wait by however many batches a snapshot needs.
+  // An owner the remaining budget could not reach is unobserved for that reason, not for a probe that failed.
+  let remainingMs = MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS;
+  let measuredAt = runtime.time.now();
+  let observations: ProcessIdentityObservations = [];
+  for (let offset = 0; offset < owners.length; offset += MAX_UNRESOLVED_INVOCATIONS) {
+    const batch = owners.slice(offset, offset + MAX_UNRESOLVED_INVOCATIONS);
+    if (remainingMs <= 0) {
+      observations = [...observations, ...unobserved(batch, 'deadline-expired')];
+      continue;
+    }
+    let batchObservations: ProcessIdentityObservations;
+    try {
+      batchObservations = await runtime.process.observeProcessIdentities(batch, remainingMs);
+    } catch {
+      batchObservations = unobserved(batch, 'probe-failed');
+    }
+    observations = [...observations, ...batchObservations];
+    const now = runtime.time.now();
+    remainingMs -= now - measuredAt;
+    measuredAt = now;
   }
   return projectHandoffRoutingStatus(snapshot, observationProbe(observations));
 }
@@ -2396,6 +2428,11 @@ const MAX_RESOLVED_FINALIZED_TERMINAL = terminalEventSchema.parse({
   },
 });
 
+export const MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES = Math.max(
+  encodedBytes(MAX_EXECUTION_TERMINAL),
+  encodedBytes(MAX_FINALIZED_TERMINAL),
+);
+
 export const MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'routing-selected': encodedBytes(MAX_SELECTION),
   'execution-failed': Math.max(encodedBytes(MAX_EXECUTION_TERMINAL), encodedBytes(MAX_RESOLVED_EXECUTION_TERMINAL)),
@@ -2414,7 +2451,7 @@ export const MAX_LEGAL_ROUTING_SELECTED_TRANSITION = routingSelectedTransitionSc
   disposition: MAX_SELECTION.disposition,
 });
 
-export const MAX_LEGAL_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSchema.parse({
+export const MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION = terminalTransitionSchema.parse({
   kind: 'continuation-finalized',
   eventId: MAX_FINALIZED_TERMINAL.eventId,
   invocationId: MAX_FINALIZED_TERMINAL.invocationId,

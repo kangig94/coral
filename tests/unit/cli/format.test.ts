@@ -13,6 +13,11 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
+import {
+  documentedCoralSetupError,
+  type DocumentedCoralSetupErrorCode,
+  type OperatorFacingCoralSetupError,
+} from '#src/runtime/errors.js';
 import { formatBackendStatus as formatComposedBackendStatus, formatShutdown } from '#src/cli/format/backend.js';
 import {
   formatDiscussAbort,
@@ -685,6 +690,17 @@ describe('cli format', () => {
       },
     );
 
+    // A mutating command attempts startup *or handoff*: it starts a coordinator only when none is serving.
+    // "Relaunch" promises the first outcome for evidence that cannot tell the two apart, which is why the
+    // status surface says "attempts startup or handoff" and is held to it by its own wording sweep. Shutdown
+    // reports the same evidence to the same operator and may not promise more than status does.
+    it.each(SHUTDOWN_REFUSAL_SENTENCES)(
+      'does not promise a relaunch a mutating command may not perform (%j)',
+      (result) => {
+        expect(formatShutdown(result)).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
+      },
+    );
+
     it('reports no_record as a discovery result, not a verdict that the backend stopped', () => {
       const text = formatShutdown({ ok: false, reason: 'no_record' });
 
@@ -997,9 +1013,40 @@ describe('cli format', () => {
       expect(formatBackendStatus(status)).not.toContain('Queue depth');
     });
 
-    it('formats a not-running backend status with a recovery hint', () => {
-      expect(formatBackendStatus({ status: 'not_running' })).toBe(
-        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+    it('formats each no-daemon observation without inventing a general absence', () => {
+      expect(formatBackendStatus({ status: 'no_record_no_socket' })).toBe(
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
+      );
+      expect(formatBackendStatus({ status: 'recorded_process_absent', pid: 4242 })).toBe(
+        'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.',
+      );
+    });
+
+    // What the evidence supports and nothing more: a Coral coordinator answers the recorded port and did not
+    // write that record. The port is ephemeral, so this says nothing about whether this installation's
+    // coordinator is running and nothing about startup is held — the earlier wording claimed a startup
+    // conflict and told an operator to stop a live, unrelated coordinator. The peer did not write the record,
+    // so no credential this build holds can stop it either; offering `backend shutdown` as a remedy would name
+    // an exit that cannot be taken.
+    it('reports a foreign peer at the recorded port as unknown state, not as a hold over startup', () => {
+      const text = formatBackendStatus({
+        status: 'unreachable',
+        cause: 'foreign_peer',
+        observed: { namespace: 'another-installation', flavor: 'dev' },
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+      });
+
+      expect(text).toBe(
+        [
+          'Backend state is unknown: the recorded coordinator address is answered by a Coral coordinator for namespace=another-installation flavor=dev, which is not the identity the discovery record carries.',
+          'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A coral-cli mutating command (or a Claude Code session start) still attempts startup or handoff.',
+          "Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: run 'ps -p 4242' (or check your process manager), and if that is not Coral, delete /run/coral/coordinator.json and run a coral-cli mutating command; it attempts startup or handoff. coral-cli backend shutdown cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.",
+        ].join('\n'),
+      );
+      expect(text, 'nothing observed here says startup cannot proceed').not.toMatch(/stays held|remains held/u);
+      expect(text, 'no credential this build holds can stop that peer').not.toMatch(
+        /stop that coordinator through the service or account/u,
       );
     });
 
@@ -1070,7 +1117,7 @@ describe('cli format', () => {
 
       expect(text).toMatch(/ps -p 4242/u);
       expect(text).toContain('/run/coral/coordinator.json');
-      expect(text).toMatch(/coral-cli mutating command to relaunch/u);
+      expect(text).toMatch(/coral-cli mutating command; it attempts startup or handoff/u);
     });
 
     // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in
@@ -1095,10 +1142,10 @@ describe('cli format', () => {
         }),
       ).toBe(
         [
-          'Backend is not running after a recent coordinator failure.',
+          'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
-          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
         ].join('\n'),
       );
     });
@@ -1120,6 +1167,7 @@ describe('cli format', () => {
           phase: 'startup_failed',
           retryable: false,
           setupError: {
+            kind: 'documented',
             code: 'store_newer_incompatible',
             userMessage:
               'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
@@ -1129,7 +1177,7 @@ describe('cli format', () => {
         }),
       ).toBe(
         [
-          'Backend is not running after a recent coordinator failure.',
+          'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
           'Cause: The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build. [code=store_newer_incompatible]',
@@ -1138,14 +1186,192 @@ describe('cli format', () => {
       );
     });
 
+    it('formats an unrecognized setup-error code without printing persisted text', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal', authorship: 'other-build' },
+        }),
+      ).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=future_setup_refusal]',
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+        ].join('\n'),
+      );
+    });
+
+    // Telling an operator to upgrade past a code the running build itself recorded sends them after a release
+    // that does not exist, so only the other-build arm above may say it.
+    it.each([
+      ['this-build', 'Cause: Coral recorded a setup refusal this build wrote, and the text recorded with it'],
+      ['unprovable', 'Cause: Coral recorded a setup refusal and could not prove which Coral build wrote it.'],
+    ] as const)('formats an unrecognized %s setup-error code without advising an upgrade', (authorship, cause) => {
+      const text = formatBackendStatus({
+        status: 'recent_failure',
+        phase: 'startup_failed',
+        retryable: false,
+        setupError: { kind: 'unrecognized_code', code: 'describer_missing', authorship },
+      });
+
+      expect(text).toContain(cause);
+      expect(text).toContain('[code=describer_missing]');
+      expect(text).not.toContain('upgrade Coral');
+    });
+
+    it('formats an uncatalogued setup refusal this build proved it wrote from its own recorded text', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: {
+            kind: 'self_authored',
+            code: 'describer_missing',
+            userMessage: 'Event describer missing for: job_started.',
+            remediation: "Add an entry to the owning domain's event-describers.ts.",
+          },
+        }),
+      ).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Cause: Event describer missing for: job_started. [code=describer_missing]',
+          "Next step: Add an entry to the owning domain's event-describers.ts.",
+        ].join('\n'),
+      );
+    });
+
+    // The disposition beside this one names its code, so this arm has to say why it does not: nothing readable
+    // was recorded, rather than a code being withheld.
+    it('formats an invalid setup diagnostic as a refusal that must be replaced', () => {
+      const text = formatBackendStatus({
+        status: 'recent_failure',
+        phase: 'startup_failed',
+        retryable: false,
+        setupError: { kind: 'invalid_diagnostic' },
+      });
+
+      expect(text).toContain('Coral recorded a setup refusal that carries no readable setup-error code.');
+      expect(text).toContain('a current valid startup diagnostic replaces this one');
+    });
+
+    // A documented code whose context did not validate is the case that used to print no code at all, which
+    // made a refusal this build documents strictly worse to meet than one it had never heard of.
+    it('names a documented setup-error code whose recorded context could not be rendered', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: {
+            kind: 'unrenderable_context',
+            code: 'handoff_socket_holder_unverified',
+            authorship: 'other-build',
+          },
+        }),
+      ).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Cause: Coral documents this setup refusal, but the details recorded with it are not in the shape this build renders that code from, so its text could not be regenerated. [code=handoff_socket_holder_unverified]',
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+        ].join('\n'),
+      );
+    });
+
+    // Same rule as the unrecognized arm: only a record another build wrote has a later release to upgrade to.
+    it.each(['this-build', 'unprovable'] as const)(
+      'names an unrenderable %s setup-error code without advising an upgrade',
+      (authorship) => {
+        const text = formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: { kind: 'unrenderable_context', code: 'handoff_socket_holder_unverified', authorship },
+        });
+
+        expect(text).toContain('[code=handoff_socket_holder_unverified]');
+        expect(text).not.toContain('upgrade Coral');
+      },
+    );
+
     it('formats a shutting-down backend status', () => {
       expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
     });
 
     it('formats an unauthorized backend status with a recovery hint', () => {
       expect(formatBackendStatus({ status: 'unauthorized' })).toBe(
-        'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.',
+        'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry a coral-cli mutating command; it attempts startup or handoff with a fresh token.',
       );
+    });
+
+    // A documented refusal is re-rendered from the setup-error registry, so `recent_failure` displays text
+    // this formatter never authored; a sweep that omits it checks only the formatter's own sentences.
+    const documentedSetupError = (code: DocumentedCoralSetupErrorCode): OperatorFacingCoralSetupError => {
+      const authored = documentedCoralSetupError(code);
+      return { kind: 'documented', code, userMessage: authored.userMessage, remediation: authored.remediation };
+    };
+
+    it.each([
+      { status: 'ok', health: { ...baseHealth, components: [] } },
+      { status: 'no_record_no_socket' },
+      { status: 'recorded_process_absent', pid: 4242 },
+      {
+        status: 'unreachable',
+        cause: 'foreign_peer' as const,
+        observed: { namespace: 'foreign', flavor: 'prod' as const },
+        pid: 4242,
+        recordPath: '/run/coordinator.json',
+      },
+      { status: 'undecodable_record', reason: 'corrupt-json' as const, path: '/run/coordinator.json' },
+      { status: 'unreachable', detail: '500', cause: 'responded' as const },
+      {
+        status: 'unreachable',
+        detail: 'ECONNREFUSED',
+        cause: 'refused' as const,
+        pidLiveness: 'alive' as const,
+        pid: 4242,
+        recordPath: '/run/coordinator.json',
+      },
+      { status: 'unreachable', detail: 'ETIMEDOUT', cause: 'no_response' as const },
+      { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
+      { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        setupError: documentedSetupError('coordinator_record_unreadable'),
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        setupError: { kind: 'invalid_diagnostic' as const },
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        setupError: {
+          kind: 'unrenderable_context' as const,
+          code: 'handoff_socket_holder_unverified' as const,
+          authorship: 'other-build' as const,
+        },
+      },
+      { status: 'shutting_down' },
+      { status: 'unauthorized' },
+    ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {
+      const text = formatBackendStatus(status);
+
+      expect(text).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
+      expect(text).not.toContain('Backend not running');
     });
 
     it('formats a successful shutdown result', () => {

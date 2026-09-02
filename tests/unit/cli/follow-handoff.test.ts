@@ -44,7 +44,9 @@ const waitTiming = {
 
 type FollowOptions = Parameters<typeof FollowModule.launchAndFollow>[0];
 
-function recorded(continuation: HandoffRunnerModule.HandoffContinuationResult): HandoffRunnerModule.HandoffRunResult {
+function recorded(
+  continuation: HandoffRunnerModule.DelegatingHandoffContinuation,
+): HandoffRunnerModule.HandoffRunResult {
   return { kind: 'recorded', continuation, publicationIncidents: [] };
 }
 

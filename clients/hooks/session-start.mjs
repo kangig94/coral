@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -52,9 +53,9 @@ import {
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');
-// Long enough to still catch the failure when a session starts minutes after the
-// user's last attempt, short enough that a cured problem stops being reported.
-const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
+const STARTUP_FAILURE_NOTICE_WINDOW_MS = 5 * 60 * 1000;
+const STARTUP_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const MAX_STARTUP_FAILURE_CODE_LENGTH = 128;
 
 function rotateLogIfLarge(runDir) {
   const path = join(runDir, 'coordinator.log');
@@ -92,9 +93,15 @@ function spawnBackend(pluginRoot) {
     stderr = openSync(join(runDir, 'coordinator.log'), 'a');
   } catch {}
   try {
+    // A backend spawned without an attempt id cannot be told apart from anyone else's once it delegates: the
+    // coordinator that finally binds may be a third build, and then the id is the only evidence tying it back
+    // to this spawn. Every minter of this variable draws from one namespace in which no two attempts may
+    // collide, so it has to be unique across processes without coordination — `randomUUID` is CSPRNG-backed
+    // and satisfies that. See `spawnCoordinator` in `src/transport/ipc/ensure.ts`.
     const child = spawn(process.execPath, [backendBin], {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
+      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID() },
     });
     child.unref();
   } catch {}
@@ -111,6 +118,15 @@ function isCoordinatorAlive(runDir) {
   }
 }
 
+function recordsCauseAndNextStep(error) {
+  return (
+    typeof error.userMessage === 'string' &&
+    error.userMessage.trim().length > 0 &&
+    typeof error.remediation === 'string' &&
+    error.remediation.trim().length > 0
+  );
+}
+
 // The spawn above is detached, so this hook never learns whether it worked, and a
 // failure has until now been invisible: the daemon writes a diagnostic and exits,
 // the hook fails open, and the session proceeds as if Coral were healthy.
@@ -119,18 +135,20 @@ function isCoordinatorAlive(runDir) {
 // know: the spawn issued moments ago has not had time to bind, so no daemon is
 // answering yet on every session start, and nothing ever deletes the diagnostic.
 // Predicting from those signals is wrong exactly on the recovery path — someone
-// who just fixed the cause would be told it is still broken. Reporting the last
-// failure and its remedy is true whether or not it has since been resolved.
+// who just fixed the cause would be told it is still broken.
 //
 // The recency and liveness filters remain, as noise control rather than proof: an
-// answering daemon or an old diagnostic means the report is not worth making. The
-// window is deliberately wider than the daemon's own 5-minute probe horizon
-// (`statusFromStartupDiagnostic`) because a session may start minutes after the
-// user's last attempt; that divergence is intended, not drift.
+// answering daemon or an old diagnostic means the report is not worth making.
+//
+// The notice may point only at what this hook itself observed: the diagnostic file, and the fields it
+// read out of that file. Naming a command instead promises an answer that depends on evidence this hook
+// does not have. The same rule bounds the pointer's own claim — the file is said to hold a cause and a
+// next step only because both were observed in it, and a record missing either is not reported at all.
 function readRecentStartupFailureNotice(runDir) {
+  const diagnosticFile = join(runDir, 'startup-diagnostic.json');
   try {
     if (isCoordinatorAlive(runDir) !== false) return null;
-    const diagnostic = JSON.parse(readFileSync(join(runDir, 'startup-diagnostic.json'), 'utf-8'));
+    const diagnostic = JSON.parse(readFileSync(diagnosticFile, 'utf-8'));
     if (diagnostic?.schemaVersion !== 1) return null;
     if (diagnostic.state !== 'stopped_with_diagnostic' || diagnostic.retryable !== false) return null;
     const recordedAt = Date.parse(diagnostic.recordedAt);
@@ -138,11 +156,18 @@ function readRecentStartupFailureNotice(runDir) {
     const age = Date.now() - recordedAt;
     if (age < 0 || age > STARTUP_FAILURE_NOTICE_WINDOW_MS) return null;
     const error = diagnostic.error;
-    // Only documented setup errors carry authored, user-safe text; an arbitrary
-    // bootstrap exception's message stays in the coordinator log.
     if (error?.kind !== 'coral_setup_error') return null;
-    if (typeof error.userMessage !== 'string' || typeof error.remediation !== 'string') return null;
-    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. If Coral turns out to be unavailable this session, this is the cause and the remedy — it may already be resolved.\nCause: ${error.userMessage}\nRemedy: ${error.remediation}`;
+    const code = error.code;
+    if (
+      typeof code !== 'string' ||
+      code.length === 0 ||
+      code.length > MAX_STARTUP_FAILURE_CODE_LENGTH ||
+      !STARTUP_FAILURE_CODE_PATTERN.test(code)
+    ) {
+      return null;
+    }
+    if (!recordsCauseAndNextStep(error)) return null;
+    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nThe failed attempt recorded the cause and the next step at ${diagnosticFile}.`;
   } catch {
     return null;
   }

@@ -7,12 +7,16 @@ import {
   HandoffRunError,
   consumeHandoffRunResult,
   runHandoff,
+  type DelegatedStartupObservation,
   type HandoffPublicationIncident,
 } from './handoff-routing/runner.js';
+import type { UnresolvedIncumbentCause } from './handoff-routing/policy.js';
+import type { handoffRoutingStatusExitContribution } from './handoff-routing/status.js';
 import { createCoordinatorServer } from './index.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
+import { assertNever } from '../infra/error-format.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -33,6 +37,15 @@ const PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES: Readonly<Record<ProviderRole, nu
   reaper: 72,
   proxy: 73,
 });
+
+/**
+ * A nonzero exit says this process did not discharge its obligation; a `startup_failed` diagnostic says the
+ * startup failed. Delegated startup nobody could observe is the first and not the second, so it takes an exit
+ * code and no diagnostic. The value must stay the one `handoffRoutingStatusExitContribution`
+ * (src/coordinator/handoff-routing/status.ts) contributes for the invocation this process leaves unresolved:
+ * `coral-backend` and `coral-cli backend status` may not make the same claim with two different numbers.
+ */
+const UNOBSERVED_STARTUP_DELEGATION_EXIT_CODE: ReturnType<typeof handoffRoutingStatusExitContribution> = 75;
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -74,10 +87,50 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   }
 }
 
+/**
+ * `undetermined` is not a quiet `failed`: it may not reach a diagnostic, a sentinel, or an audit event, since
+ * every one of those records a startup failure this process did not observe.
+ */
+type DelegatedStartupResult =
+  | Readonly<{ kind: 'started' }>
+  | Readonly<{ kind: 'failed'; error: unknown; exitCode: number }>
+  | Readonly<{ kind: 'undetermined'; cause: UnresolvedIncumbentCause }>;
+
+function delegatedStartupResult(observation: DelegatedStartupObservation): DelegatedStartupResult {
+  switch (observation.kind) {
+    case 'serving':
+      return { kind: 'started' };
+    case 'not-serving': {
+      const { childEnding } = observation;
+      if (childEnding.signal !== null) {
+        return {
+          kind: 'failed',
+          error: new Error(`Selected backend ended during startup handoff from signal ${childEnding.signal}.`),
+          exitCode: 1,
+        };
+      }
+      // Exiting 0 without taking over is still a failure to become the backend, so this process must exit
+      // nonzero. The child's own code is the record's; forcing it here would not reach the record.
+      return {
+        kind: 'failed',
+        error: new Error(
+          `Selected backend exited during startup handoff with code ${childEnding.code ?? 'unreported'} without ` +
+            'taking over as the coordinator.',
+        ),
+        exitCode: childEnding.code === null || childEnding.code === 0 ? 1 : childEnding.code,
+      };
+    }
+    case 'undetermined':
+      return { kind: 'undetermined', cause: observation.cause };
+    default:
+      return assertNever(observation);
+  }
+}
+
 export async function handoffStartupToSelectedBuild(
   pluginRoot: string,
   startupError: StartupStoreHandoffError,
-): Promise<Readonly<{ kind: 'started' }> | Readonly<{ kind: 'failed'; error: unknown }>> {
+): Promise<DelegatedStartupResult> {
   try {
     const result = await runHandoff(
       { kind: 'backend-startup' },
@@ -90,36 +143,19 @@ export async function handoffStartupToSelectedBuild(
     const continuation = consumeHandoffRunResult(result, (incidents) =>
       incidents.filter((incident) => incident.phase === 'terminal').forEach(logStartupHandoffPublicationIncident),
     );
-    if (continuation.kind === 'run-current') {
-      return {
-        kind: 'failed',
-        error: new Error('Selected backend startup handoff did not delegate to the selected build.'),
-      };
-    }
-    switch (continuation.outcome.kind) {
-      case 'handoff-success':
-        return { kind: 'started' };
-      case 'handoff-exit':
-        return {
+    return continuation.kind === 'run-current'
+      ? {
           kind: 'failed',
-          error: new Error(
-            `Selected backend exited during startup handoff with code ${continuation.outcome.exitCode}.`,
-          ),
-        };
-      case 'handoff-signal':
-        return {
-          kind: 'failed',
-          error: new Error(
-            `Selected backend exited during startup handoff from signal ${continuation.outcome.signal}.`,
-          ),
-        };
-    }
+          error: new Error('Selected backend startup handoff did not delegate to the selected build.'),
+          exitCode: 1,
+        }
+      : delegatedStartupResult(continuation.observation);
   } catch (error: unknown) {
     if (error instanceof HandoffRunError) {
       error.incidents.filter((incident) => incident.phase === 'terminal').forEach(logStartupHandoffPublicationIncident);
-      return { kind: 'failed', error: error.originalError };
+      return { kind: 'failed', error: error.originalError, exitCode: 1 };
     }
-    return { kind: 'failed', error };
+    return { kind: 'failed', error, exitCode: 1 };
   }
 }
 
@@ -226,24 +262,41 @@ export async function main(): Promise<number> {
     }
 
     let startupError = error;
+    let startupExitCode = 1;
     if (error instanceof StartupStoreHandoffError) {
       const handoff = await handoffStartupToSelectedBuild(__PLUGIN_ROOT__, error);
-      if (handoff.kind === 'started') return 0;
-      startupError = handoff.error;
+      switch (handoff.kind) {
+        case 'started':
+          return 0;
+        case 'undetermined':
+          backendLog.warn(
+            `This process delegated startup to the selected Coral build and could not observe whether that build ` +
+              `is now serving (${handoff.cause}). No startup failure is recorded, because none was observed. Run ` +
+              `'coral-cli backend status' to see whether the selected build is serving, and to settle the routing ` +
+              `invocation this process left unresolved.`,
+          );
+          return UNOBSERVED_STARTUP_DELEGATION_EXIT_CODE;
+        case 'failed':
+          startupError = handoff.error;
+          startupExitCode = handoff.exitCode;
+          break;
+        default:
+          return assertNever(handoff);
+      }
     }
 
     backendLog.error('Fatal startup error', startupError);
-    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, 1);
+    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, startupExitCode);
     writeStartupErrorSentinel(__PLUGIN_ROOT__, startupError, diagnosticFile);
     auditBootstrapFailure(
       'bootstrap_startup_failed',
       __PLUGIN_ROOT__,
       'startup_failed',
       startupError,
-      1,
+      startupExitCode,
       diagnosticFile,
     );
-    return 1;
+    return startupExitCode;
   } finally {
     clearInterval(startupKeepalive);
   }

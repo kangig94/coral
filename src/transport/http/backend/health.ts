@@ -172,6 +172,10 @@ export type BackendPing = {
   incarnation?: ProcessIncarnation;
 };
 
+function isBackendNamespaceToken(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+}
+
 function isMutationBlocked(value: unknown): value is { owner: string; ageMs: number; signaledAtMs: number } {
   return (
     isRecord(value) &&
@@ -544,8 +548,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     typeof value.bundleHash !== 'string' ||
     (value.flavor !== 'prod' && value.flavor !== 'dev') ||
     typeof value.instanceId !== 'string' ||
-    typeof value.namespace !== 'string' ||
-    value.namespace.length === 0 ||
+    !isBackendNamespaceToken(value.namespace) ||
     !Number.isFinite(value.uptimeMs) ||
     !Number.isInteger(value.active) ||
     !Number.isInteger(value.activeJobs) ||
@@ -584,8 +587,7 @@ export function isBackendPing(value: unknown): value is BackendPing {
     typeof value.bundleHash === 'string' &&
     (value.flavor === 'prod' || value.flavor === 'dev') &&
     typeof value.instanceId === 'string' &&
-    typeof value.namespace === 'string' &&
-    value.namespace.length > 0 &&
+    isBackendNamespaceToken(value.namespace) &&
     Number.isInteger(value.pid) &&
     (value.incarnation === undefined || isProcessIncarnation(value.incarnation))
   );

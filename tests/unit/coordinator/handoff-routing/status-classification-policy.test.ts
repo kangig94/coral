@@ -4,7 +4,14 @@ import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationFailureSuccessor } from '#src/cli/format/handoff-publication.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
+  MAX_LEGAL_CLOSING_RECORD_BYTES,
+  MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION,
+  MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES,
+  MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES,
+  MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
+  MAX_UNRESERVED_CLOSING_RECORD_BYTES,
   handoffRoutingStatusStoreSchema,
+  persistedHandoffDispositionPolicy,
   type HandoffRoutingStatusClassification,
   type HandoffRoutingStatusClassificationPolicy,
 } from '#src/coordinator/handoff-routing/status.js';
@@ -189,6 +196,33 @@ const policyFixtures = [
 ] as const satisfies readonly PolicyFixture[];
 
 describe('handoff routing status classification policy', () => {
+  it('keeps the maximum compactable terminal in bounded history', () => {
+    expect(
+      persistedHandoffDispositionPolicy(MAX_LEGAL_COMPACTABLE_CONTINUATION_FINALIZED_TRANSITION.disposition),
+    ).toEqual({
+      durability: 'lifecycle-journal',
+      retention: 'bounded-history',
+      severity: 'warning',
+      classification: 'history',
+      exitContribution: 0,
+    });
+  });
+
+  it('covers every record that redeems the reserve and sizes unreserved admission from its own inserts', () => {
+    // The reserve is a durable address, so it may exceed what redeems it but may never be trimmed to fit;
+    // admission that redeems no reserve is sized from the records it inserts, never from the reserve.
+    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBeGreaterThanOrEqual(
+      Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES),
+    );
+    expect(MAX_UNRESERVED_CLOSING_RECORD_BYTES).toBe(
+      Math.max(
+        MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES,
+        MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
+        MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
+      ),
+    );
+  });
+
   it('matches every independent policy fixture and no additional classification arm', () => {
     expect(Object.keys(HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY).sort()).toEqual(
       policyFixtures.map(({ classification }) => classification.kind).sort(),

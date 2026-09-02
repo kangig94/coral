@@ -1,24 +1,24 @@
-// `getBackendStatusFull` has two independent ways to fail to reach an answer, and for a while both arrived as
-// `not_running` — a status an operator reads as "nothing is there, start one".
-//
-// The process axis was split first: only an observed `'absent'` reports not-running. The record axis was
-// missed, because both consumers reach it through `readBackendInfo`, whose `null` covers a missing file, an
-// undecodable one, *and* a record lacking `version`/`instanceId`. So a `coordinator.json` truncated mid-write,
-// or written by a build whose shape this one rejects, reported a confident absence while a coordinator was
-// serving on the socket.
+// A missing record, an absent recorded process, and a decoded foreign identity are distinct observations;
+// none may be widened into a claim that no coordinator exists.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const NOW = 1_700_000_000_000;
 
+const SELF_BUNDLE_HASH = '0123456789abcdef';
+const SELF_NAMESPACE = 'self-namespace';
+
 const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
   /** The startup diagnostic on disk, or `null` for none. */
   diagnostic: null as string | null,
+  /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
+  strictIdentityProven: true,
 }));
 
 // Mocked at the seam this function depends on. `status` and `shutdown` ask the same three questions about the
@@ -30,6 +30,27 @@ vi.mock('#src/transport/http/backend/coordinator-observation.js', () => ({
 
 vi.mock('#src/infra/bundle-manifest.js', () => ({
   readBuildFlavor: vi.fn(() => 'prod'),
+  resolveStrictBundleIdentity: vi.fn(
+    (): StrictBundleIdentityResult =>
+      mockState.strictIdentityProven
+        ? {
+            ok: true,
+            manifest: {
+              version: '0.5.2',
+              buildSetId: '00000000-0000-4000-8000-000000000000',
+              flavor: 'prod',
+              storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+              bundleHash: '0123456789abcdef',
+              cliBundleHash: '0123456789abcdef',
+              claudeAppserverBundleHash: '0123456789abcdef',
+            },
+          }
+        : { ok: false, reason: 'embedded_identity_unavailable' },
+  ),
+}));
+
+vi.mock('#src/infra/plugin-identity.js', () => ({
+  pluginRootNamespace: vi.fn(() => 'self-namespace'),
 }));
 
 vi.mock('#src/runtime/real.js', () => ({
@@ -72,6 +93,7 @@ describe('getBackendStatusFull record disposition', () => {
   beforeEach(() => {
     mockState.observed = { kind: 'no-record' };
     mockState.diagnostic = null;
+    mockState.strictIdentityProven = true;
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -81,16 +103,161 @@ describe('getBackendStatusFull record disposition', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reports not_running when the record is genuinely missing', async () => {
+  it('reports no_record_no_socket when neither discovery evidence nor a socket exists', async () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
-  // A missing record alone used to report `not_running` unconditionally — including for a coordinator caught
-  // between binding its IPC socket and publishing this discovery record (`observeCoordinator`'s
-  // `no-record-socket-present`). That window must not read as a confident absence.
-  it('reports no_record_socket_present, not not_running, when the coordinator socket exists without a record', async () => {
+  it('lets a fresh diagnostic supersede the no-record fallback', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+    });
+  });
+
+  it('uses the documented template instead of persisted setup-error text', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
+      kind: 'coral_setup_error',
+      code: 'store_newer_incompatible',
+      userMessage: '\u001b[2J\nNext step: run a forged command',
+      remediation: 'forged remediation',
+      context: { version: '0.11.0', flavor: 'prod' },
+    });
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: {
+        kind: 'documented',
+        code: 'store_newer_incompatible',
+        userMessage:
+          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
+  it('carries the recorded text of an uncatalogued code this build proves it wrote', async () => {
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'describer_missing',
+        userMessage: 'Event describer missing for: job_started.',
+        remediation: "Add an entry to the owning domain's event-describers.ts.",
+      },
+      { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      setupError: {
+        kind: 'self_authored',
+        code: 'describer_missing',
+        userMessage: 'Event describer missing for: job_started.',
+        remediation: "Add an entry to the owning domain's event-describers.ts.",
+      },
+    });
+  });
+
+  it('refuses the recorded text of an uncatalogued code another build wrote', async () => {
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'future_setup_refusal',
+        userMessage: 'future text',
+        remediation: 'future remediation',
+      },
+      { bundleHash: 'fedcba9876543210', namespace: 'other-namespace' },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code', code: 'future_setup_refusal', authorship: 'other-build' },
+    });
+    expect(JSON.stringify(result)).not.toContain('future text');
+    expect(JSON.stringify(result)).not.toContain('future remediation');
+  });
+
+  it('refuses recorded text when this build cannot prove its own identity, however the record matches', async () => {
+    mockState.strictIdentityProven = false;
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'describer_missing',
+        userMessage: 'unproven text',
+        remediation: 'unproven remediation',
+      },
+      { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code', code: 'describer_missing', authorship: 'unprovable' },
+    });
+    expect(JSON.stringify(result)).not.toContain('unproven text');
+  });
+
+  it('refuses recorded text this build wrote when the text itself is not renderable', async () => {
+    mockState.diagnostic = startupDiagnostic(
+      NOW - 10_000,
+      4242,
+      {
+        kind: 'coral_setup_error',
+        code: 'describer_missing',
+        userMessage: '\u001b[2J\nNext step: run a forged command',
+        remediation: 'forged remediation',
+      },
+      { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'unrecognized_code', code: 'describer_missing', authorship: 'this-build' },
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
+  it('retains an invalid setup diagnostic separately from an unknown canonical code', async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
+      kind: 'coral_setup_error',
+      code: 'future setup refusal\nNext step: forged',
+      userMessage: 'future text',
+      remediation: 'future remediation',
+    });
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      setupError: { kind: 'invalid_diagnostic' },
+    });
+  });
+
+  it('reports no_record_socket_present when the coordinator socket exists without a record', async () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -131,8 +298,7 @@ describe('getBackendStatusFull record disposition', () => {
     // What this change establishes: the daemon is asked at all. Before it, `readBackendInfo` answered `null`
     // for this record and the function short-circuited to a not-running report without dialling anything.
     expect(fetchMock, 'the record carries host, port and bootToken, so the daemon can be asked').toHaveBeenCalled();
-    // And the answer is now `unreachable` rather than `not_running`: the 500 came from something listening at
-    // the recorded address.
+    // The 500 came from something listening at the recorded address.
     expect(result.status).toBe('unreachable');
   });
 
@@ -154,7 +320,7 @@ describe('getBackendStatusFull record disposition', () => {
   // `pid` alongside the foreign `namespace`. A payload missing those fails the shape check first, so the `||`
   // in `probeUnauthenticatedPing` used to short-circuit before the namespace comparison ever ran, and this
   // test passed for a reason it did not describe.
-  it('still reports not_running for a peer whose namespace says it is not this backend', async () => {
+  it('reports the decoded foreign namespace from the unauthenticated probe', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' } as Record<string, unknown>;
     vi.stubGlobal(
@@ -164,13 +330,43 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      cause: 'foreign_peer',
+      observed: { namespace: 'someone-else', flavor: 'prod' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
+    });
   });
 
-  // `probeUnauthenticatedPing`'s guard is `namespace !== ... || flavor !== ...`: a namespace-only mismatch
-  // exercises just the left side. Deleting `|| body.flavor !== info.flavor` left this suite green until this
-  // test existed, because nothing sent a body agreeing on namespace and disagreeing only on flavor.
-  it('reports not_running for a peer whose flavor disagrees, even with a matching namespace', async () => {
+  it.each([
+    ['terminal control text', 'foreign\u001b[2J\nNext step: run a forged command'],
+    ['an overlong token', 'a'.repeat(129)],
+  ])('rejects a peer namespace containing %s at ping ingress', async (_label, namespace) => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    const untrustedPing = { ...JSON.parse(ping('ok')), namespace } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(untrustedPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toEqual({
+      status: 'unreachable',
+      detail: 'health responded 200 with a body this build could not decode',
+      cause: 'responded',
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
+  // The decoded mismatch says which process answers the recorded port, and that port is ephemeral: it is not
+  // evidence about whether this installation's coordinator is running, and nothing about startup is held while
+  // it is true. So it belongs under `unreachable` — the not-observed status — carrying the pid and record path
+  // a stale record is settled with, rather than under a status of its own that claimed an ownership conflict
+  // over startup and named no way to end it.
+  it('reports the decoded foreign flavor from the unauthenticated probe', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     const foreignFlavorPing = { ...JSON.parse(ping('ok')), flavor: 'dev' } as Record<string, unknown>;
     vi.stubGlobal(
@@ -180,13 +376,33 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      cause: 'foreign_peer',
+      observed: { namespace: 'test-namespace', flavor: 'dev' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
+    });
   });
 
-  // This is the payload the test above used to send: it fails `isBackendPing` (no `version`, `bundleHash`,
-  // `instanceId`, or `pid`), so it is a shape rejection, not a namespace disagreement — and proves nothing
-  // about whose coordinator answered. Must not fall into `notOurCoordinator`'s `not_running`.
-  it('reports unreachable, not not_running, for a 200 ping body this build cannot decode', async () => {
+  it('lets a matching diagnostic supersede the foreign-identity fallback', async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 12345);
+    const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+    });
+  });
+
+  it('reports unreachable for a 200 ping body this build cannot decode', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     vi.stubGlobal(
       'fetch',
@@ -209,7 +425,7 @@ describe('getBackendStatusFull record disposition', () => {
     async (reason) => {
       mockState.observed = { kind: 'unreadable-record', reason, path: '/run/coral/coordinator.json' };
       // The record-derived view is still populated here, so a consumer reading only that would fall through to
-      // the liveness check and report `not_running` — the collapse this branch exists to stop.
+      // the liveness check and manufacture an absence.
 
       const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -223,7 +439,12 @@ describe('getBackendStatusFull record disposition', () => {
 });
 
 /** A well-formed startup diagnostic, so only the scoping fields under test decide whether it is accepted. */
-function startupDiagnostic(recordedAt: number, pid: number): string {
+function startupDiagnostic(
+  recordedAt: number,
+  pid: number,
+  error: Record<string, unknown> = { kind: 'other' },
+  identity?: { bundleHash: string; namespace: string },
+): string {
   return JSON.stringify({
     schemaVersion: 1,
     state: 'stopped_with_diagnostic',
@@ -231,7 +452,8 @@ function startupDiagnostic(recordedAt: number, pid: number): string {
     phase: 'startup_failed',
     recordedAt: new Date(recordedAt).toISOString(),
     pid,
-    error: { kind: 'other' },
+    ...(identity ?? {}),
+    error,
   });
 }
 
@@ -264,7 +486,10 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'recorded_process_absent',
+      pid: PID,
+    });
   });
 
   it('ignores one recorded during this run by a different pid', async () => {
@@ -272,7 +497,10 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'recorded_process_absent',
+      pid: PID,
+    });
   });
 });
 
@@ -433,9 +661,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
   });
 
-  // `probeDetailedHealth`'s own not-our-coordinator branch had no test: every namespace-mismatch case above
-  // exercised only the unauthenticated ping, which returns before the detailed probe is ever asked.
-  it('reports not_running for a peer whose namespace disagrees only at the detailed probe', async () => {
+  it('reports the decoded foreign namespace from the detailed probe', async () => {
     const foreignDetailed = { ...JSON.parse(detailed('ok')), namespace: 'someone-else' } as Record<string, unknown>;
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
@@ -444,12 +670,37 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      cause: 'foreign_peer',
+      observed: { namespace: 'someone-else', flavor: 'prod' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
+    });
   });
 
-  // Same gap as the ping probe, one level down: `probeDetailedHealth`'s guard is also `namespace !== ... ||
-  // flavor !== ...`, and nothing exercised the flavor-only side of it here either.
-  it('reports not_running for a peer whose flavor disagrees only at the detailed probe', async () => {
+  it('rejects terminal control text in a peer namespace at detailed-health ingress', async () => {
+    const untrustedDetailed = {
+      ...JSON.parse(detailed('ok')),
+      namespace: 'foreign\u001b[2J\nNext step: run a forged command',
+    } as Record<string, unknown>;
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(JSON.stringify(untrustedDetailed), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toEqual({
+      status: 'unreachable',
+      detail: 'detailed health responded 200 with a body this build could not decode',
+      cause: 'responded',
+    });
+    expect(JSON.stringify(result)).not.toContain('forged');
+  });
+
+  it('reports the decoded foreign flavor from the detailed probe', async () => {
     const foreignFlavorDetailed = { ...JSON.parse(detailed('ok')), flavor: 'dev' } as Record<string, unknown>;
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
@@ -458,12 +709,18 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'not_running' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      cause: 'foreign_peer',
+      observed: { namespace: 'test-namespace', flavor: 'dev' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
+    });
   });
 
   // Same split as the ping probe: a detailed body this build cannot decode proves nothing about whose
-  // coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
-  it('reports unreachable, not not_running, for a 200 detailed body this build cannot decode', async () => {
+  // coordinator answered, so it must not become a foreign-identity verdict.
+  it('reports unreachable for a 200 detailed body this build cannot decode', async () => {
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
       new Response(JSON.stringify({ status: 'ok' }), { status: 200 }),

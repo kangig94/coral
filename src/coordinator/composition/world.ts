@@ -41,7 +41,7 @@ import {
 } from '../services/provider-proxy-set/inheritance.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { CoralSetupError } from '../../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
@@ -157,11 +157,8 @@ function readConfiguredSystemProviderScope(
     if (scope.origin !== 'system') throw new Error('origin must be system');
     return scope;
   } catch (error) {
-    throw new CoralSetupError({
-      code: 'system_provider_scope_invalid',
-      userMessage: `${SYSTEM_PROVIDER_SCOPE_ENV} is not a valid named system provider scope.`,
-      remediation: `Set ${SYSTEM_PROVIDER_SCOPE_ENV} to a strict JSON object with origin "system", a non-empty name, and canonical provider profiles, or unset it to disable HTTP/internal provider execution.`,
-      context: { detail: error instanceof Error ? error.message : String(error) },
+    throw documentedCoralSetupError('system_provider_scope_invalid', {
+      detail: error instanceof Error ? error.message : String(error),
     });
   }
 }

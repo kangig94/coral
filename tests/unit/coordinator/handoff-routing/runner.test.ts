@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -29,6 +29,7 @@ import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routin
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import type { TimePort } from '#src/infra/port-types.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { withValidatedHandoffTarget, type ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type * as RealRuntimeMod from '#src/runtime/real.js';
@@ -88,6 +89,7 @@ vi.mock('#src/transport/ipc/client.js', () => ({
 }));
 
 const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
+const SPAWNED_CHILD_PID = 4242;
 const originalGuard = process.env[GUARD_ENV];
 const roots: string[] = [];
 const backendBundle = 'handoff runner backend fixture';
@@ -152,7 +154,7 @@ async function createHandoffRuntime(baseDir?: string): Promise<Runtime> {
   };
 }
 
-function observedContinuation(result: HandoffRunResult): HandoffContinuationResult {
+function observedContinuation(result: HandoffRunResult<HandoffContinuationResult>): HandoffContinuationResult {
   return consumeHandoffRunResult(result, () => undefined);
 }
 
@@ -160,7 +162,11 @@ async function runHandoff(
   operation: HandoffOperation,
   options?: RunHandoffOptions,
 ): Promise<HandoffContinuationResult> {
-  return observedContinuation(await runHandoffResult(operation, options));
+  const result: HandoffRunResult<HandoffContinuationResult> =
+    operation.kind === 'backend-startup'
+      ? await runHandoffResult(operation, options)
+      : await runHandoffResult(operation, options);
+  return observedContinuation(result);
 }
 
 function createBundle(): string {
@@ -173,13 +179,13 @@ function createBundle(): string {
   return root;
 }
 
-function liveHealth(bundleDir?: string): LiveIncumbentHealth {
+function liveHealth(bundleDir?: string, namespace = 'handoff-runner'): LiveIncumbentHealth {
   return {
     status: 'ok',
     version: manifest.version,
     bundleHash: manifest.bundleHash,
     flavor: manifest.flavor,
-    namespace: 'handoff-runner',
+    namespace,
     instanceId: 'incumbent-1',
     pid: 4242,
     ...(bundleDir === undefined ? {} : { manifest, bundleDir }),
@@ -187,6 +193,7 @@ function liveHealth(bundleDir?: string): LiveIncumbentHealth {
 }
 
 function configureNewerIncumbent(bundleDir = createBundle()): string {
+  const namespace = pluginRootNamespace(dirname(bundleDir));
   mockState.probeCoordinator.mockReturnValue({
     kind: 'live',
     record: {
@@ -194,20 +201,20 @@ function configureNewerIncumbent(bundleDir = createBundle()): string {
       pid: 4242,
       bundleHash: manifest.bundleHash,
       flavor: manifest.flavor,
-      namespace: 'handoff-runner',
+      namespace,
       bootToken: 'boot-token',
     },
   });
-  mockState.health.mockResolvedValue(liveHealth(bundleDir));
+  mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
   return bundleDir;
 }
 
-function cliOperation(...args: string[]): HandoffOperation {
+function cliOperation(...args: string[]): Extract<HandoffOperation, { kind: 'cli-invocation' }> {
   return { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...args] };
 }
 
 function childThatExits(code: number | null, signal: NodeJS.Signals | null): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+  const child = Object.assign(new EventEmitter(), { pid: SPAWNED_CHILD_PID }) as unknown as ChildProcess;
   child.unref = vi.fn();
   queueMicrotask(() => {
     child.emit('spawn');
@@ -223,8 +230,18 @@ function childThatErrors(error: Error): ChildProcess {
   return child;
 }
 
+function childThatSpawnsThenErrors(error: Error): ChildProcess {
+  const child = Object.assign(new EventEmitter(), { pid: SPAWNED_CHILD_PID }) as unknown as ChildProcess;
+  child.unref = vi.fn();
+  queueMicrotask(() => {
+    child.emit('spawn');
+    queueMicrotask(() => child.emit('error', error));
+  });
+  return child;
+}
+
 function childThatStaysAlive(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+  const child = Object.assign(new EventEmitter(), { pid: SPAWNED_CHILD_PID }) as unknown as ChildProcess;
   child.unref = vi.fn();
   queueMicrotask(() => child.emit('spawn'));
   return child;
@@ -851,27 +868,28 @@ describe('handoff-routing/runner', () => {
     });
   });
 
-  it('should bypass the CLI guard for monotone backend startup delegation and confirm liveness without exit', async () => {
+  it('keeps backend-startup delegation pending past the former liveness point until authenticated readiness', async () => {
     process.env[GUARD_ENV] = 'not-a-cli-guard';
     const bundleDir = roots[0];
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
-    const confirmationTimer = {};
-    const confirmationDelays: number[] = [];
-    let confirmAlive: (() => void) | undefined;
+    let releasePoll: (() => void) | undefined;
+    const pollDelays: number[] = [];
     const time: TimePort = {
       now: () => 0,
       monotonicNow: () => 0n,
-      sleep: async () => {},
-      setTimeout: vi.fn((fn: () => void, ms: number) => {
-        confirmationDelays.push(ms);
-        confirmAlive = fn;
-        return confirmationTimer;
-      }),
+      sleep: (ms) =>
+        new Promise<void>((resolve) => {
+          pollDelays.push(ms);
+          releasePoll = resolve;
+        }),
+      setTimeout: vi.fn(() => ({})),
       clearTimeout: vi.fn(),
-      setInterval: vi.fn(() => confirmationTimer),
+      setInterval: vi.fn(() => ({})),
       clearInterval: vi.fn(),
     };
+    runtimeUuid.mockReturnValue('delegation-attempt');
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     mockState.spawn.mockImplementationOnce(() => {
       child = childThatStaysAlive();
       return child;
@@ -885,18 +903,16 @@ describe('handoff-routing/runner', () => {
     );
     await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
 
-    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+    expect(mockState.probeCoordinator).toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
     expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
       cwd: '/handoff/cwd',
-      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1' },
+      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1', CORAL_STARTUP_ATTEMPT_ID: 'delegation-attempt' },
       stdio: 'inherit',
       detached: true,
     });
-    expect(time.setTimeout).toHaveBeenCalledOnce();
-    expect(confirmationDelays).toHaveLength(1);
-    expect(Number.isFinite(confirmationDelays[0])).toBe(true);
-    expect(confirmationDelays[0]).toBeGreaterThan(0);
+    expect(pollDelays).toHaveLength(1);
+    expect(pollDelays[0]).toBe(100);
 
     let settled = false;
     void result.then(() => {
@@ -904,53 +920,29 @@ describe('handoff-routing/runner', () => {
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    confirmAlive?.();
+    configureNewerIncumbent(bundleDir);
+    releasePoll?.();
     await expect(result).resolves.toMatchObject({
-      kind: 'delegated',
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
     });
-    expect(time.clearTimeout).toHaveBeenCalledWith(confirmationTimer);
   });
 
-  it('refuses to continue-current for a startup handoff whose stdout drain would fail', async () => {
-    const bundleDir = roots[0];
-    const target = validatedTarget(bundleDir);
-    let child: ChildProcess | undefined;
-    let confirmAlive: (() => void) | undefined;
-    const time: TimePort = {
-      now: () => 0,
-      monotonicNow: () => 0n,
-      sleep: async () => {},
-      setTimeout: vi.fn((fn: () => void) => {
-        confirmAlive = fn;
-        return {};
-      }),
-      clearTimeout: vi.fn(),
-      setInterval: vi.fn(() => ({})),
-      clearInterval: vi.fn(),
-    };
-    mockState.spawn.mockImplementationOnce(() => {
-      child = childThatStaysAlive();
-      return child;
-    });
+  it('abandons a delegated CLI invocation whose signal is already aborted before any spawn', async () => {
+    const target = validatedTarget(roots[0]);
 
-    const aborted = AbortSignal.abort();
-    const result = runHandoff(
-      { kind: 'backend-startup' },
-      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time, signal: aborted },
-    );
-    await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
-    confirmAlive?.();
-
-    await expect(result).resolves.toMatchObject({ kind: 'delegated' });
-
-    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
     await expect(
-      runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root', activeSelectionTarget: target, signal: aborted }),
+      runHandoff(cliOperation('run'), {
+        pluginRoot: '/plugin/root',
+        activeSelectionTarget: target,
+        signal: AbortSignal.abort(),
+      }),
     ).resolves.toEqual({
       kind: 'run-current',
       reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
     });
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   it('should produce the active-selection source before backend startup delegation', async () => {
@@ -1031,13 +1023,383 @@ describe('handoff-routing/runner', () => {
     await expect(
       runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
     ).resolves.toMatchObject({
-      kind: 'delegated',
+      kind: 'delegated-startup',
       version: manifest.version,
-      outcome: { kind: 'handoff-success', version: manifest.version },
+      observation: { kind: 'serving' },
     });
-    expect(mockState.probeCoordinator).toHaveBeenCalledOnce();
-    expect(mockState.health).toHaveBeenCalledOnce();
+    expect(
+      mockState.probeCoordinator,
+      'the terminal is classified by a probe issued after it, never by the reading raced against it',
+    ).toHaveBeenCalledTimes(2);
+    expect(mockState.health).toHaveBeenCalledTimes(2);
     expect(child?.unref).toHaveBeenCalledOnce();
+  });
+
+  // Both directions of the same defect: a reading issued while the child was alive cannot classify that
+  // child's terminal. Reverting either path to the raced-against reading turns one of these red.
+  it('refuses a pre-terminal ok as proof of startup once the coordinator is gone', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    let answerFirstProbe!: (health: LiveIncumbentHealth) => void;
+    mockState.health.mockImplementationOnce(
+      () =>
+        new Promise<LiveIncumbentHealth>((resolve) => {
+          answerFirstProbe = resolve;
+        }),
+    );
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalledOnce());
+
+    // The coordinator dies while that first probe is still in flight, so the reply it eventually gives
+    // describes a coordinator that no longer exists.
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    child.emit('exit', 7, null);
+    answerFirstProbe(liveHealth(bundleDir, namespace));
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      observation: { kind: 'not-serving', childEnding: { code: 7, signal: null } },
+    });
+  });
+
+  it('refuses a pre-terminal unresolved probe as proof of failure once the coordinator answers', async () => {
+    const target = validatedTarget(roots[0]);
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    let refuseFirstProbe!: (error: Error) => void;
+    mockState.health.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          refuseFirstProbe = reject;
+        }),
+    );
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalledOnce());
+
+    // A transitively delegated coordinator publishes only once the build that spawned it has exited, so the
+    // probe raced against that exit could not have seen it.
+    child.emit('exit', 0, null);
+    refuseFirstProbe(new Error('ECONNREFUSED'));
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      observation: { kind: 'serving' },
+    });
+  });
+
+  // A child that ended while the coordinator it started is still starting has settled nothing. That is the
+  // shape two-hop delegation always takes: the first hop ends as soon as the second is alive, and the
+  // coordinator that finally binds answers `starting` until its own recovery finishes. Reading that as a
+  // decided no published a `delegated-exit` terminal and a startup failure for a delegation that was
+  // succeeding.
+  it('holds a delegated startup whose coordinator has not yet said whether it will serve', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    child.emit('exit', 0, null);
+    // A second poll is the hold: it comes from the probe taken after the child ended, which found the
+    // coordinator still starting and recorded nothing.
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(
+      mockState.publishGenerationCoordinatedHandoffRoutingTransitions,
+      'only the selection: a terminal would finalize what nothing has observed',
+    ).toHaveBeenCalledOnce();
+
+    mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
+    for (const release of releasePolls.splice(0)) release();
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-success', version: manifest.version },
+    });
+  });
+
+  // The hold's other exit, and the one that must still reach a terminal: the coordinator that was starting is
+  // gone, so the child's ending is this delegation's outcome after all. Its code reaches the record unchanged
+  // — exiting 0 without taking over is an ordinary way to fail, and the forced `code === 0 ? 1` this replaces
+  // made the record claim an exit the child never took.
+  it('ends the hold with the child ending once the coordinator that was starting is gone', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    child.emit('exit', 0, null);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    for (const release of releasePolls.splice(0)) release();
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'not-serving', childEnding: { code: 0, signal: null } },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-exit', version: manifest.version, exitCode: 0 },
+    });
+    expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it('holds a selected coordinator that published its record before it finished starting', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => childThatStaysAlive());
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    configureNewerIncumbent(bundleDir);
+    mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
+    for (const release of releasePolls.splice(0)) release();
+
+    // A further poll is the evidence of the hold: readiness would have settled the delegation instead.
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
+    for (const release of releasePolls.splice(0)) release();
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      observation: { kind: 'serving' },
+    });
+  });
+
+  it('holds a coordinator that cannot prove this startup attempt until the spawned backend ends', async () => {
+    const target = validatedTarget(roots[0]);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    const foreignBundleDir = createBundle();
+    const foreignManifest = { ...manifest, version: '2.0.0', bundleHash: 'f'.repeat(16) };
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: foreignManifest.bundleHash,
+        flavor: foreignManifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'foreign-boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      ...liveHealth(foreignBundleDir),
+      version: foreignManifest.version,
+      bundleHash: foreignManifest.bundleHash,
+      manifest: foreignManifest,
+    });
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalled());
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 23, null);
+    for (const release of releasePolls.splice(0)) release();
+    await expect(result).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 23, signal: null } },
+    });
+  });
+
+  it('holds matching build health from a different plugin-root namespace until the spawned backend ends', async () => {
+    const bundleDir = roots[0];
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    let child!: ChildProcess;
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    const foreignNamespace = 'foreign-plugin-root';
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: foreignNamespace,
+        bootToken: 'foreign-boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue(liveHealth(bundleDir, foreignNamespace));
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(mockState.health).toHaveBeenCalled());
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 23, null);
+    for (const release of releasePolls.splice(0)) release();
+    await expect(result).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 23, signal: null } },
+    });
   });
 
   // The behaviour `5ad55ded` exists to produce, and the one nothing asserted: an unobservable pid is not an
@@ -1052,7 +1414,7 @@ describe('handoff-routing/runner', () => {
         pid: 4242,
         bundleHash: manifest.bundleHash,
         flavor: manifest.flavor,
-        namespace: 'handoff-runner',
+        namespace: pluginRootNamespace(dirname(roots[0])),
         bootToken: 'boot-token',
       },
     });
@@ -1273,34 +1635,458 @@ describe('handoff-routing/runner', () => {
     );
   });
 
-  it.each([0, 23])(
-    'should report an immediate backend startup exit with code %s when no coordinator is live',
-    async (code) => {
+  it.each([{ childExitCode: 0 }, { childExitCode: 23 }])(
+    'should record child code $childExitCode as itself when no coordinator is live',
+    async ({ childExitCode }) => {
       const target = validatedTarget(roots[0]);
       let child: ChildProcess | undefined;
       mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
       mockState.spawn.mockImplementationOnce(() => {
-        child = childThatExits(code, null);
+        child = childThatExits(childExitCode, null);
         return child;
       });
 
       await expect(
         runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
       ).resolves.toEqual({
-        kind: 'delegated',
+        kind: 'delegated-startup',
         version: manifest.version,
-        outcome: { kind: 'handoff-exit', exitCode: code },
+        observation: { kind: 'not-serving', childEnding: { code: childExitCode, signal: null } },
+      });
+      // Nobody mirrors this code into an exit here, so 0 must arrive as 0. Restoring the proxy vocabulary
+      // reintroduces the `0 -> 1` rewrite and turns the first row red.
+      expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+        kind: 'continuation-finalized',
+        disposition: { kind: 'delegated-exit', version: manifest.version, exitCode: childExitCode },
       });
       expect(child?.unref).toHaveBeenCalledOnce();
     },
   );
 
-  // The same confirmation site, reached through the other `not-observed` reason: a discovery record exists
-  // and health could not be resolved from it. Reporting success here would be exactly the finalization this
-  // branch's design rules forbid — an early exit-shaped outcome plus a probe that could not confirm life is
-  // not evidence the backend is up. `liveCoordinator.kind === 'observed'` is what this test would catch a
-  // regression to `!== null` (or similar) from failing to guard: both compile, only one refuses correctly.
-  it('should report an immediate backend startup exit, not a false success, when health cannot be reached', async () => {
+  it('should report a signalled backend startup child as terminal before readiness', async () => {
+    const target = validatedTarget(roots[0]);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatExits(null, 'SIGTERM'));
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).resolves.toEqual({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'not-serving', childEnding: { code: null, signal: 'SIGTERM' } },
+    });
+  });
+
+  it('should propagate a backend startup child error without waiting for exit', async () => {
+    const target = validatedTarget(roots[0]);
+    const failure = new Error('backend lifecycle error');
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementationOnce(() => childThatSpawnsThenErrors(failure));
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).rejects.toBe(failure);
+  });
+
+  it('keeps both delegators pending until the final backend publishes authenticated readiness', async () => {
+    const firstTarget = validatedTarget(roots[0]);
+    const secondTarget = validatedTarget(roots[0]);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => childThatStaysAlive());
+
+    const first = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: firstTarget, time },
+    );
+    void first.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    const second = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: secondTarget, time },
+    );
+    void second.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+
+    let firstSettled = false;
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+
+    configureNewerIncumbent(roots[0]);
+    for (const release of releasePolls.splice(0)) release();
+
+    await expect(second).resolves.toMatchObject({ observation: { kind: 'serving' } });
+    await expect(first).resolves.toMatchObject({ observation: { kind: 'serving' } });
+  });
+
+  it('keeps concurrent backend startup attempts isolated until each child terminates', async () => {
+    const firstTarget = validatedTarget(roots[0]);
+    const secondTarget = validatedTarget(roots[0]);
+    let firstChild: ChildProcess | undefined;
+    let secondChild: ChildProcess | undefined;
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn
+      .mockImplementationOnce(() => {
+        firstChild = childThatStaysAlive();
+        return firstChild;
+      })
+      .mockImplementationOnce(() => {
+        secondChild = childThatStaysAlive();
+        return secondChild;
+      });
+
+    const first = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: firstTarget, time },
+    );
+    void first.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    const second = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: secondTarget, time },
+    );
+    void second.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(2));
+    const spawnedFirstChild = firstChild;
+    const spawnedSecondChild = secondChild;
+    if (spawnedFirstChild === undefined || spawnedSecondChild === undefined) {
+      throw new Error('Expected both delegated backend children to spawn.');
+    }
+    spawnedSecondChild.emit('exit', 17, null);
+
+    await expect(second).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 17, signal: null } },
+    });
+
+    let firstSettled = false;
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+
+    spawnedFirstChild.emit('exit', 23, null);
+
+    await expect(first).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 23, signal: null } },
+    });
+  });
+
+  it('accepts the desired build from another attempt only after the exact child terminates', async () => {
+    const target = validatedTarget(roots[0]);
+    const currentAttemptId = 'current-attempt';
+    const attemptRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? currentAttemptId : runtime.env.get(key)),
+        fullSnapshot: () => ({
+          ...runtime.env.fullSnapshot(),
+          CORAL_STARTUP_ATTEMPT_ID: currentAttemptId,
+        }),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    mockState.createRealRuntime.mockReturnValue(attemptRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    const bundleDir = configureNewerIncumbent(roots[0]);
+    mockState.health.mockResolvedValue({
+      ...liveHealth(bundleDir, pluginRootNamespace(dirname(bundleDir))),
+      env: { CORAL_STARTUP_ATTEMPT_ID: 'other-attempt' },
+    });
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({ observation: { kind: 'serving' } });
+  });
+
+  it('accepts a third build reached through this attempt when its own child terminates first', async () => {
+    const target = validatedTarget(roots[0]);
+    const currentAttemptId = 'current-attempt';
+    // The second hop delegated again, so the coordinator that bound is a third build. It carries this
+    // attempt's inherited id, which the identity comparison alone cannot recognise.
+    const transitiveNamespace = 'transitively-delegated-plugin-root';
+    const attemptRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? currentAttemptId : runtime.env.get(key)),
+        fullSnapshot: () => ({
+          ...runtime.env.fullSnapshot(),
+          CORAL_STARTUP_ATTEMPT_ID: currentAttemptId,
+        }),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    mockState.createRealRuntime.mockReturnValue(attemptRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: transitiveNamespace,
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      ...liveHealth(undefined, transitiveNamespace),
+      env: { CORAL_STARTUP_ATTEMPT_ID: currentAttemptId },
+    });
+
+    // The exact child exits while this observer is inside its poll sleep, so the only readiness read that
+    // sees the third build is the one terminality triggers.
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-success', version: manifest.version },
+    });
+  });
+
+  // The hook spawn path leaves no attempt id, so the whole chain used to be anonymous: a second hop put a
+  // third build on the address, its identity matched neither end, and a startup that worked was recorded as
+  // `delegated-exit{0}` with a `startup_failed` diagnostic beside it. Minting one here is what makes the
+  // grandchild attributable; without it this observation is `not-serving` and the terminal is an exit.
+  it('attributes a two-hop delegation when this process inherited no attempt id', async () => {
+    const target = validatedTarget(roots[0]);
+    const mintedAttemptId = 'minted-attempt';
+    const transitiveNamespace = 'transitively-delegated-plugin-root';
+    const anonymousRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? undefined : runtime.env.get(key)),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    runtimeUuid.mockReturnValue(mintedAttemptId);
+    mockState.createRealRuntime.mockReturnValue(anonymousRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    // The id only proves lineage if the child it was minted for actually receives it and passes it on.
+    expect(mockState.spawn.mock.calls[0]?.[2]?.env).toMatchObject({ CORAL_STARTUP_ATTEMPT_ID: mintedAttemptId });
+
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: transitiveNamespace,
+        bootToken: 'boot-token',
+      },
+    });
+    mockState.health.mockResolvedValue({
+      ...liveHealth(undefined, transitiveNamespace),
+      env: { CORAL_STARTUP_ATTEMPT_ID: mintedAttemptId },
+    });
+
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated-startup',
+      version: manifest.version,
+      observation: { kind: 'serving' },
+    });
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0]).toMatchObject({
+      kind: 'continuation-finalized',
+      disposition: { kind: 'delegated-success', version: manifest.version },
+    });
+  });
+
+  it('does not read an empty attempt id as proof that this attempt is serving', async () => {
+    const target = validatedTarget(roots[0]);
+    const attemptRuntime: Runtime = {
+      ...runtime,
+      env: {
+        ...runtime.env,
+        get: (key) => (key === 'CORAL_STARTUP_ATTEMPT_ID' ? '' : runtime.env.get(key)),
+        fullSnapshot: () => ({ ...runtime.env.fullSnapshot(), CORAL_STARTUP_ATTEMPT_ID: '' }),
+      },
+    };
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    let child!: ChildProcess;
+    mockState.createRealRuntime.mockReturnValue(attemptRuntime);
+    mockState.probeCoordinator.mockReturnValue({
+      kind: 'live',
+      record: {
+        socketPath,
+        pid: 4242,
+        bundleHash: manifest.bundleHash,
+        flavor: manifest.flavor,
+        namespace: 'handoff-runner',
+        bootToken: 'boot-token',
+      },
+    });
+    // An unrelated coordinator under another namespace, exporting the same empty attempt id.
+    mockState.health.mockResolvedValue({ ...liveHealth(), env: { CORAL_STARTUP_ATTEMPT_ID: '' } });
+    mockState.spawn.mockImplementation(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    for (const release of releasePolls.splice(0)) release();
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    expect(settled).toBe(false);
+
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toMatchObject({
+      observation: { kind: 'not-serving', childEnding: { code: 0, signal: null } },
+    });
+  });
+
+  // A discovery record exists and health could not be resolved from it: the third answer, and the only one
+  // that decides nothing. Success and exit are both finalizations here, and the child's own code is evidence
+  // about the child, never about whether a coordinator is serving. Collapsing `undetermined` into either
+  // neighbour turns this red twice — once on the observation, once on the withheld terminal.
+  it("withholds every terminal when the selected build's startup could not be observed", async () => {
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const target = validatedTarget(roots[0]);
     let child: ChildProcess | undefined;
     mockState.probeCoordinator.mockReturnValue({
@@ -1320,12 +2106,36 @@ describe('handoff-routing/runner', () => {
       return child;
     });
 
-    await expect(
-      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
-    ).resolves.toEqual({
-      kind: 'delegated',
-      version: manifest.version,
-      outcome: { kind: 'handoff-exit', exitCode: 1 },
+    const result = await runHandoffResult(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target },
+    );
+
+    expect(result).toEqual({
+      kind: 'recording-incidents',
+      observedWork: {
+        kind: 'delegated-startup',
+        version: manifest.version,
+        observation: { kind: 'undetermined', cause: 'health-request-failed' },
+      },
+      publicationIncidents: [
+        {
+          phase: 'terminal',
+          invocationId: '123e4567-e89b-42d3-a456-426614174000',
+          kind: 'refused',
+          refusal: {
+            reason: 'startup-readiness-unobserved',
+            remediation: 'inspect-backend-status-before-repair',
+            attemptedPhase: 'terminal',
+          },
+        },
+      ],
+    });
+    // Exactly one publication: the selection. A terminal would finalize an invocation nothing observed, and
+    // the selection is the durable hold an operator resolves.
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).toHaveBeenCalledOnce();
+    expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0]).toMatchObject({
+      kind: 'routing-selected',
     });
     expect(child?.unref).toHaveBeenCalledOnce();
   });

@@ -4,7 +4,7 @@ declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string;
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -24,12 +24,23 @@ import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
 import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
-import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
+import {
+  CoralSetupError,
+  readOperatorFacingCoralSetupError,
+  resolveSetupErrorAuthorship,
+  type OperatorFacingCoralSetupError,
+  type SetupErrorAuthorship,
+  type SetupErrorAuthorshipKind,
+} from '../../runtime/errors.js';
+import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
+import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
 export const STARTUP_POLL_MS = 200;
-/** Time budget for the daemon to bind its socket / answer first health probe. */
-export const KERNEL_BIND_DEADLINE_MS = 5_000;
-/** Time budget for the daemon to reach a usable lifecycle phase (kernel-ready or running). */
+/**
+ * Time budget for an already-starting incumbent to reach a usable lifecycle phase (kernel-ready or running).
+ * A coordinator spawned by this invocation is bounded by its own child process instead, so no elapsed-time
+ * budget may cut that wait short.
+ */
 export const KERNEL_READY_DEADLINE_MS = 15_000;
 /**
  * Time budget for the previous daemon to release the socket after shutdown
@@ -57,6 +68,7 @@ export type RawCoordinatorHealth = {
   pid?: number;
   incarnation?: ProcessIncarnation;
   components?: TransportRuntimeComponentStatus[];
+  env?: Readonly<Record<string, string>>;
 };
 
 export type VerifiedBackendInfo = {
@@ -99,13 +111,26 @@ type ExistingIncumbentIdentity = Readonly<{
 }>;
 
 type SpawnedCoordinator = {
-  readonly pid: number;
   readonly attemptId: string;
   readonly spawnedAt: number;
+  readonly terminal: Promise<SpawnedCoordinatorTerminal>;
 };
 
+/**
+ * No code and no signal: an exit code is not evidence about whether a coordinator is serving, and the only
+ * consumer must not be handed one to reason from. `reason` is safe to surface because it is authored here —
+ * `spawnCoordinator` gives the child `stdio: ['ignore', 'ignore', <coordinator.log fd>]`, so no child-authored
+ * text can reach this process.
+ */
+type SpawnedCoordinatorTerminal = Readonly<{ kind: 'exited' }> | Readonly<{ kind: 'never-started'; reason: string }>;
+
 type BackendReadyWaitContext =
-  | { readonly kind: 'current-attempt'; readonly attemptId: string; readonly spawnedAt: number }
+  | {
+      readonly kind: 'current-attempt';
+      readonly attemptId: string;
+      readonly spawnedAt: number;
+      readonly terminal: Promise<SpawnedCoordinatorTerminal>;
+    }
   | { readonly kind: 'existing-starting' };
 
 type ReadyCoordinatorEvidence = Readonly<{
@@ -126,13 +151,12 @@ type StartupErrorSentinel = {
   readonly recordedAt?: number;
   readonly phase?: string;
   readonly state?: string;
-  readonly exitCode?: number;
   readonly diagnosticFile?: string;
   readonly socketPath: string;
   readonly bundleHash: string;
   readonly flavor: 'prod' | 'dev';
   readonly namespace: string;
-  readonly error: SerializedCoralSetupError;
+  readonly error: unknown;
 };
 
 function summarizeBackend(
@@ -217,6 +241,7 @@ const rawCoordinatorHealthSchema = z
     pid: z.number().int().positive().optional(),
     incarnation: processIncarnationSchema.optional(),
     components: z.array(runtimeComponentStatusSchema).optional(),
+    env: z.record(z.string()).optional(),
   })
   .passthrough();
 
@@ -243,11 +268,6 @@ const verifiedBackendInfoSchema = z
   // make this build's own read of the record it just wrote fail.
   .passthrough();
 
-function parseRawCoordinatorHealth(value: unknown): RawCoordinatorHealth | null {
-  const parsed = rawCoordinatorHealthSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
-
 /**
  * Treat both coarse `'ok'` and lifecycle phases (`'kernel-ready'`,
  * `'running'`) as "the daemon is ready to serve requests".
@@ -258,15 +278,6 @@ function isReadyStatus(status: RawCoordinatorHealth['status']): boolean {
 
 function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
   return verifiedBackendInfoSchema.safeParse(value).success;
-}
-
-function isSerializedStartupError(value: unknown): value is SerializedCoralSetupError {
-  return (
-    isRecord(value) &&
-    typeof value.code === 'string' &&
-    typeof value.userMessage === 'string' &&
-    typeof value.remediation === 'string'
-  );
 }
 
 function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
@@ -282,23 +293,42 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
     typeof value.bundleHash === 'string' &&
     (value.flavor === 'prod' || value.flavor === 'dev') &&
     typeof value.namespace === 'string' &&
-    isSerializedStartupError(value.error)
+    'error' in value
   );
 }
+
+/**
+ * A probe that did not complete is not a probe that found nothing. `unanswered` is the third answer and may
+ * not stand in for either other one; in particular it is not evidence that the address is dead.
+ */
+type CoordinatorHealthReading =
+  | Readonly<{ kind: 'answered'; health: RawCoordinatorHealth }>
+  | Readonly<{ kind: 'unusable'; cause: 'health-shape-rejected' }>
+  | Readonly<{ kind: 'unanswered'; cause: 'health-request-failed' }>;
 
 async function readRawCoordinatorHealth(
   client: IpcClient,
   request: 'ping' | 'health' = 'ping',
-): Promise<RawCoordinatorHealth | null> {
+): Promise<CoordinatorHealthReading> {
+  let reply: unknown;
   try {
-    const health =
+    reply =
       request === 'ping'
         ? await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS })
         : await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
-    return parseRawCoordinatorHealth(health);
   } catch {
-    return null;
+    return { kind: 'unanswered', cause: 'health-request-failed' };
   }
+
+  const parsed = rawCoordinatorHealthSchema.safeParse(reply);
+  return parsed.success
+    ? { kind: 'answered', health: parsed.data }
+    : { kind: 'unusable', cause: 'health-shape-rejected' };
+}
+
+/** `null` is this invocation's lack of a usable reading, never proof that no coordinator is serving. */
+function answeredHealth(reading: CoordinatorHealthReading): RawCoordinatorHealth | null {
+  return reading.kind === 'answered' ? reading.health : null;
 }
 
 function readDiscoverySnapshot(paths: CoordinatorPaths): VerifiedBackendInfo | null {
@@ -385,7 +415,7 @@ async function readIdentityCheckedAuthenticatedHealth(
   }
 
   const client = createIpcClient(info.socketPath, timePort, { kind: 'boot', token: info.bootToken });
-  const authenticatedHealth = await readRawCoordinatorHealth(client, 'health');
+  const authenticatedHealth = answeredHealth(await readRawCoordinatorHealth(client, 'health'));
   if (
     authenticatedHealth === null ||
     !identityMatchesExistingIncumbent(authenticatedHealth, observedIdentity) ||
@@ -402,17 +432,18 @@ function childCoordinatorUnavailable(reason: string): BackendUnreachableError {
   );
 }
 
-function startupSentinelIdentityMatches(
+/**
+ * The address and flavor a sentinel names are the invocation's own, whichever build wrote it: startup
+ * delegation ends at this socket under this flavor. A delegated build's own identity — its bundle hash and
+ * the namespace of its plugin root — is by construction not this build's, so neither may be part of the
+ * boundary that decides whether a sentinel is about this socket at all.
+ */
+function startupSentinelBoundaryMatches(
   sentinel: StartupErrorSentinel,
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
 ): boolean {
-  return (
-    sentinel.socketPath === paths.socketPath &&
-    sentinel.bundleHash === desired.bundleHash &&
-    sentinel.flavor === desired.flavor &&
-    sentinel.namespace === desired.namespace
-  );
+  return sentinel.socketPath === paths.socketPath && sentinel.flavor === desired.flavor;
 }
 
 function readStartupErrorSentinel(paths: CoordinatorPaths): { sentinel: StartupErrorSentinel; mtimeMs: number } | null {
@@ -435,32 +466,104 @@ function clearStartupErrorSentinel(paths: CoordinatorPaths): void {
   }
 }
 
+/**
+ * Shared by every startup refusal that names a code whose text could not be rebuilt. "Upgrade Coral" may be
+ * said only about a record some other build wrote: telling an operator to upgrade past a refusal the running
+ * build itself recorded sends them after a release that does not exist.
+ */
+function startupErrorFollowUp(authorship: SetupErrorAuthorshipKind): string {
+  const inspect = 'Run `coral-cli backend status` to inspect the recorded failure';
+  switch (authorship) {
+    case 'this-build':
+    case 'unprovable':
+      return `${inspect}, read the coordinator log for that code, then retry the original command.`;
+    case 'other-build':
+      return `${inspect}, then upgrade Coral and retry the original command.`;
+    default:
+      return assertNever(authorship);
+  }
+}
+
+/**
+ * "whose codes this build cannot name" may be said only about a code some other build wrote. A record the
+ * running build itself wrote and then could not re-read says nothing about its own catalog, so that arm may
+ * claim only what was observed: the text did not survive the round trip.
+ */
+function unrecognizedStartupCodeMessage(
+  startupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrecognized_code' }>,
+): string {
+  const recorded = `Coordinator startup stopped with setup-error code '${startupError.code}'`;
+  const followUp = startupErrorFollowUp(startupError.authorship);
+  switch (startupError.authorship) {
+    case 'this-build':
+      return `${recorded}, and the text this Coral build recorded with it could not be re-read. ${followUp}`;
+    case 'other-build':
+      return `${recorded}, recorded by a Coral build other than the one running here, whose codes this build cannot name. ${followUp}`;
+    case 'unprovable':
+      return `${recorded}, and this Coral build could not prove which build recorded it. ${followUp}`;
+    default:
+      return assertNever(startupError.authorship);
+  }
+}
+
+/**
+ * A documented code whose recorded context this build cannot render still has a name, and the name is what an
+ * operator searches the coordinator log with. Withholding it would leave a code this build documents harder to
+ * act on than one it has never heard of.
+ */
+function unrenderableStartupContextMessage(
+  startupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrenderable_context' }>,
+): string {
+  return `Coordinator startup stopped with setup-error code '${startupError.code}', and the details recorded with it are not in the shape this Coral build renders that code from, so its text could not be regenerated. ${startupErrorFollowUp(startupError.authorship)}`;
+}
+
+/**
+ * Only a strictly proven bundle identity may claim authorship of a sentinel. A hash this build read back
+ * without that proof is not evidence: the same unproven value can be read by a build that wrote nothing.
+ */
+function sentinelAuthorship(sentinel: StartupErrorSentinel, desired: DesiredCoordinator): SetupErrorAuthorship {
+  const strict = resolveStrictBundleIdentity();
+  return resolveSetupErrorAuthorship({
+    recorded: { bundleHash: sentinel.bundleHash, namespace: sentinel.namespace },
+    self: strict.ok ? { bundleHash: strict.manifest.bundleHash, namespace: desired.namespace } : null,
+  });
+}
+
 function matchingStartupError(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
   waitContext: BackendReadyWaitContext,
   observedPid?: number,
-): CoralSetupError | null {
+): OperatorFacingCoralSetupError | null {
   const record = readStartupErrorSentinel(paths);
   if (!record) return null;
 
   const { sentinel, mtimeMs } = record;
-  if (!startupSentinelIdentityMatches(sentinel, paths, desired)) {
+  if (!startupSentinelBoundaryMatches(sentinel, paths, desired)) {
     return null;
   }
 
   if (waitContext.kind === 'current-attempt') {
-    if (sentinel.attemptId !== waitContext.attemptId) {
+    const lineage = resolveStartupAttemptLineage({
+      observedAttemptId: sentinel.attemptId,
+      expectedAttemptId: waitContext.attemptId,
+      desiredIdentity: desired,
+    });
+    if (lineage.kind !== 'proven-current-attempt' || lineage.proof !== 'startup-attempt-id') {
       return null;
     }
     const earliestMtime = waitContext.spawnedAt - STARTUP_POLL_MS;
-    const latestMtime = waitContext.spawnedAt + KERNEL_READY_DEADLINE_MS;
-    if (mtimeMs < earliestMtime || mtimeMs > latestMtime) {
+    if (mtimeMs < earliestMtime) {
       return null;
     }
-    return new CoralSetupError(sentinel.error);
+    return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
   }
 
+  // No attempt id ties this sentinel to the spawn being waited on, so build identity is the only remaining
+  // attribution: a record left by another build is not this invocation's to adopt or to retire.
+  if (sentinel.bundleHash !== desired.bundleHash || sentinel.namespace !== desired.namespace) {
+    return null;
+  }
   if (observedPid !== undefined && sentinel.pid !== observedPid) {
     return null;
   }
@@ -470,7 +573,7 @@ function matchingStartupError(
     clearStartupErrorSentinel(paths);
     return null;
   }
-  return new CoralSetupError(sentinel.error);
+  return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
 }
 
 function rotateLogIfLarge(runDir: string): void {
@@ -487,6 +590,30 @@ function rotateLogIfLarge(runDir: string): void {
   } catch {
     // no current log, or fs error: fail-open and let openSync create a fresh one
   }
+}
+
+function observeSpawnedCoordinatorTerminal(child: ChildProcess): Promise<SpawnedCoordinatorTerminal> {
+  return new Promise((resolve) => {
+    let settled = false;
+    function settle(outcome: SpawnedCoordinatorTerminal): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.off('exit', onExit);
+      child.off('error', onError);
+      resolve(outcome);
+    }
+    function onExit(): void {
+      settle({ kind: 'exited' });
+    }
+    function onError(error: Error): void {
+      settle({ kind: 'never-started', reason: error.message });
+    }
+
+    child.once('exit', onExit);
+    child.once('error', onError);
+  });
 }
 
 function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedCoordinator {
@@ -512,11 +639,9 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
         CORAL_STARTUP_STARTED_AT: String(spawnedAt),
       },
     });
-    if (child.pid === undefined) {
-      throw new Error('Spawned coordinator pid was unavailable.');
-    }
+    const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
-    return { pid: child.pid, attemptId, spawnedAt };
+    return { attemptId, spawnedAt, terminal };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
@@ -564,6 +689,34 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
 }
 
 /**
+ * Each way the wait can end gets its own sentence, and only a decisive reading may say the coordinator stopped
+ * before binding: a probe that never completed did not observe that, and a coordinator that is serving would
+ * answer the same way to a dropped request.
+ */
+function endedStartupMessage(terminal: SpawnedCoordinatorTerminal, reading: CoordinatorHealthReading): string {
+  const inspect = 'Run `coral-cli backend status` to inspect the recorded startup outcome.';
+  if (terminal.kind === 'never-started') {
+    return `The Coral coordinator process could not be started (${terminal.reason}). ${inspect}`;
+  }
+  switch (reading.kind) {
+    case 'answered':
+      return `The spawned Coral coordinator stopped, and the coordinator holding this address is draining. ${inspect}`;
+    case 'unusable':
+      return (
+        'The spawned Coral coordinator stopped, and this address answered something this Coral build cannot read ' +
+        `as coordinator health. ${inspect}`
+      );
+    case 'unanswered':
+      return (
+        'The spawned Coral coordinator stopped, and this invocation could not reach a coordinator at this address ' +
+        `to see whether one is serving it (${reading.cause}), so whether one is remains unobserved. ${inspect}`
+      );
+    default:
+      return assertNever(reading);
+  }
+}
+
+/**
  * After a fresh spawn (or while the incumbent is still in `starting`), poll
  * until the daemon has both bound the socket AND written `coordinator.json`
  * with an authenticated, identity-checked health response that can serve the
@@ -578,52 +731,92 @@ async function waitForBackendReady(
   expectedSocketPath: string = paths.socketPath,
 ): Promise<ReadyCoordinatorEvidence> {
   const currentAttempt = waitContext.kind === 'current-attempt';
-  const bindDeadline = timePort.now() + KERNEL_BIND_DEADLINE_MS;
-  let sawFirstHealth = !currentAttempt;
-  let readyDeadline = timePort.now() + timeoutMs;
+  const readyDeadline = timePort.now() + timeoutMs;
+  let terminalOutcome: SpawnedCoordinatorTerminal | null = null;
 
-  const noteHealth = (health: RawCoordinatorHealth | null): void => {
-    if (health === null || sawFirstHealth) {
-      return;
-    }
-    sawFirstHealth = true;
-    readyDeadline = timePort.now() + timeoutMs;
-  };
-
-  while (timePort.now() < (sawFirstHealth ? readyDeadline : bindDeadline)) {
+  while (currentAttempt || timePort.now() < readyDeadline) {
     const info = readDiscoverySnapshot(paths);
-    let observedPid: number | undefined = info?.pid;
-    if (info) {
-      const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
-      noteHealth(health);
-      observedPid = health?.pid ?? observedPid;
-      if (mayInvocationBeServedByIncumbent(health) && isReadyStatus(health.status)) {
-        const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
-          info,
-          expectedSocketPath,
-          health,
-          timePort,
-        );
-        if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
-          return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+    const observedReading = await readRawCoordinatorHealth(
+      createIpcClient(info?.socketPath ?? expectedSocketPath, timePort),
+    );
+    const observedHealth = answeredHealth(observedReading);
+    const observedPid: number | undefined = observedHealth?.pid ?? info?.pid;
+    let servingIncumbent: ReadyCoordinatorEvidence | null = null;
+    if (info && mayInvocationBeServedByIncumbent(observedHealth) && isReadyStatus(observedHealth.status)) {
+      const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
+        info,
+        expectedSocketPath,
+        observedHealth,
+        timePort,
+      );
+      if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
+        servingIncumbent = { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+        if (waitContext.kind !== 'current-attempt') {
+          return servingIncumbent;
+        }
+        const lineage = resolveStartupAttemptLineage({
+          observedAttemptId: authenticatedHealth.env?.CORAL_STARTUP_ATTEMPT_ID,
+          expectedAttemptId: waitContext.attemptId,
+          observedIdentity: authenticatedHealth,
+          desiredIdentity: desired,
+        });
+        if (lineage.kind === 'proven-current-attempt') {
+          return servingIncumbent;
         }
       }
-    } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
-      const health = await readRawCoordinatorHealth(createIpcClient(expectedSocketPath, timePort));
-      noteHealth(health);
-      observedPid = health?.pid;
     }
 
     const startupError = matchingStartupError(paths, desired, waitContext, observedPid);
     if (startupError) {
-      throw startupError;
+      switch (startupError.kind) {
+        case 'documented':
+        case 'self_authored':
+          throw new CoralSetupError(startupError);
+        case 'unrecognized_code':
+          throw new BackendUnreachableError(unrecognizedStartupCodeMessage(startupError));
+        case 'unrenderable_context':
+          throw new BackendUnreachableError(unrenderableStartupContextMessage(startupError));
+        case 'invalid_diagnostic':
+          throw new BackendUnreachableError(
+            'Coordinator startup stopped with a setup-error diagnostic that carries no readable code. Run `coral-cli backend status` to inspect the recorded failure, then reinstall or upgrade the selected Coral build and retry the original command.',
+          );
+        default:
+          return assertNever(startupError);
+      }
     }
-    await timePort.sleep(STARTUP_POLL_MS);
+    if (terminalOutcome !== null) {
+      // Attempt lineage governs only a live child: while the exact child runs, a coordinator that cannot be
+      // tied to it may be someone else's and must not end the wait. Once that child is terminal and left no
+      // refusal of its own, the question is the one `reuseServingIncumbent` answers before any spawn — is an
+      // identity-checked, ready coordinator serving this address — and its answer does not depend on which
+      // build bound it. Conceding to an incumbent that outranks it is a normal way for the child to exit.
+      if (servingIncumbent !== null) {
+        return servingIncumbent;
+      }
+      // A terminal child that left no refusal is not evidence the address is dead: the incumbent it conceded
+      // to may still be in `starting`, which is not a ready status and so cannot produce a serving incumbent
+      // here.
+      if (mayInvocationBeServedByIncumbent(observedHealth)) {
+        return waitForBackendReady(
+          paths,
+          desired,
+          timeoutMs,
+          timePort,
+          { kind: 'existing-starting' },
+          expectedSocketPath,
+        );
+      }
+      throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading));
+    }
+
+    if (waitContext.kind === 'current-attempt') {
+      terminalOutcome = await Promise.race([waitContext.terminal, timePort.sleep(STARTUP_POLL_MS).then(() => null)]);
+    } else {
+      await timePort.sleep(STARTUP_POLL_MS);
+    }
   }
   throw new BackendUnreachableError(
-    sawFirstHealth
-      ? 'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.'
-      : 'Timed out waiting for Coral coordinator bind. Run `coral-cli backend status` to check coordinator health.',
+    'Timed out waiting for Coral coordinator startup. Run `coral-cli backend status` to check coordinator health.',
   );
 }
 
@@ -664,7 +857,7 @@ async function waitForExistingIncumbentReady(
     }
 
     await timePort.sleep(STARTUP_POLL_MS);
-    health = await readRawCoordinatorHealth(createIpcClient(socketPath, timePort));
+    health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
   }
 
   throw childCoordinatorUnavailable('timed out waiting for the observed parent coordinator to become ready');
@@ -753,6 +946,7 @@ async function spawnTopLevelCoordinator(
     kind: 'current-attempt',
     attemptId: spawned.attemptId,
     spawnedAt: spawned.spawnedAt,
+    terminal: spawned.terminal,
   });
   return summarizeBackend(ready.info, timePort, 'boot');
 }
@@ -789,7 +983,7 @@ async function ensureTopLevelCoordinator(
     // racing `bindWithHandoff` for the same socket. `mayProcessReplaceIncumbent`
     // is the same predicate `mayInvocationBeServedByIncumbent` complements —
     // it is the explicit gate for "is spawning even on the table here".
-    replacementEvidence = await readRawCoordinatorHealth(createIpcClient(socketPath, timePort));
+    replacementEvidence = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
     if (mayInvocationBeServedByIncumbent(replacementEvidence)) {
       const retried = await reuseServingIncumbent(paths, socketPath, desired, replacementEvidence, timePort);
       if (retried !== null) {
@@ -813,7 +1007,7 @@ async function observeCoordinator(
   paths: CoordinatorPaths,
   timePort: TimePort,
 ): Promise<CoordinatorObservation> {
-  const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+  const health = answeredHealth(await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort)));
   if (health !== null) return { socketPath: paths.socketPath, health };
 
   const info = readDiscoverySnapshot(paths);
@@ -833,7 +1027,7 @@ async function observeCoordinator(
 
   return {
     socketPath: info.socketPath,
-    health: await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort)),
+    health: answeredHealth(await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort))),
   };
 }
 

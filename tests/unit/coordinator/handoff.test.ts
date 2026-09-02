@@ -18,6 +18,7 @@ import {
   type HandoffSignalPolicy,
 } from '#src/coordinator/handoff.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
+import { CoralSetupError, type HandoffRefusalCode, type HandoffRefusalContextByCode } from '#src/runtime/errors.js';
 import type { IdPort } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -147,6 +148,21 @@ function shutdownResult(overrides: {
   };
 }
 
+function expectHandoffRefusal<Code extends HandoffRefusalCode>(
+  outcome: unknown,
+  code: Code,
+  context: HandoffRefusalContextByCode[Code],
+  cause?: unknown,
+): HandoffEscalationError {
+  expect(outcome).toBeInstanceOf(HandoffEscalationError);
+  expect(outcome).toBeInstanceOf(CoralSetupError);
+  expect(outcome).toMatchObject({ code, context });
+  if (arguments.length === 4) {
+    expect((outcome as Error).cause).toBe(cause);
+  }
+  return outcome as HandoffEscalationError;
+}
+
 function shippedV0109IsHandoffSignalRecord(value: unknown): boolean {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -245,6 +261,24 @@ function countingIds(): IdPort {
 }
 
 describe('bindWithHandoff', () => {
+  it('preserves subclass, base-class, and direct cause identity', () => {
+    const cause = new Error('private bind failure');
+    const error = new HandoffEscalationError(
+      {
+        code: 'handoff_accepted_signal_target_alive_after_failure',
+        context: { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGTERM' },
+      },
+      { cause },
+    );
+
+    expectHandoffRefusal(
+      error,
+      'handoff_accepted_signal_target_alive_after_failure',
+      { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGTERM' },
+      cause,
+    );
+  });
+
   it('happy path: first bind attempt succeeds → no incumbent observed', async () => {
     const { options, time, bindAttempt } = buildHarness({
       bindSequence: [{ kind: 'bound' }],
@@ -455,9 +489,10 @@ describe('bindWithHandoff', () => {
 
     const outcome = await bindWithHandoff(options).catch((error: Error) => error);
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('verified coordinator discovery had no boot credential');
-    expect(String((outcome as Error).message)).toContain('service or account that owns it');
+    expectHandoffRefusal(outcome, 'handoff_shutdown_credential_unavailable', {
+      stage: 'shutdown-request',
+      pid: 5353,
+    });
     expect(mockedShutdown).toHaveBeenCalledWith(
       expect.objectContaining({
         socketPath: '/tmp/coral.sock',
@@ -491,9 +526,10 @@ describe('bindWithHandoff', () => {
 
     const outcome = await bindWithHandoff(options).catch((error: Error) => error);
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('the incumbent rejected the shutdown capability');
-    expect(String((outcome as Error).message)).toContain('service or account that owns it');
+    expectHandoffRefusal(outcome, 'handoff_shutdown_capability_rejected', {
+      stage: 'shutdown-request',
+      pid: 5454,
+    });
   });
 
   it('budget exhausted with no verified pid → HandoffEscalationError', async () => {
@@ -510,9 +546,10 @@ describe('bindWithHandoff', () => {
     }
     await flush();
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('no verified holder pid was available');
-    expect(String((outcome as Error).message)).toContain('Inspect and recover the process or stale socket');
+    expectHandoffRefusal(outcome, 'handoff_socket_holder_unverified', {
+      stage: 'handoff-deadline',
+      socketPath: '/tmp/coral.sock',
+    });
   });
 
   it('reports an observed-live incumbent after SIGKILL grace', async () => {
@@ -546,10 +583,12 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toBe(
-      'Kernel accepted SIGKILL for incumbent pid=7777, its grace elapsed, and the verified target remained alive; under heavy fsync load it may be blocked in uninterruptible I/O, so wait for that I/O to complete and the process to exit before retrying',
-    );
+    expectHandoffRefusal(outcome, 'handoff_sigkill_grace_target_alive', {
+      stage: 'after-sigkill-grace',
+      pid: 7777,
+      signal: 'SIGKILL',
+      graceMs: SIGKILL_GRACE_MS,
+    });
     const sigterms = killCalls.filter((c) => c.signal === 'SIGTERM');
     const sigkills = killCalls.filter((c) => c.signal === 'SIGKILL');
     expect(sigterms.length).toBeGreaterThanOrEqual(1);
@@ -596,10 +635,12 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toBe(
-      'Kernel accepted SIGKILL for incumbent pid=7778, its grace elapsed, and the target is gone, but its socket remained bound. Retry the original coral-cli mutating command; its bind path clears a stale socket before relaunching',
-    );
+    expectHandoffRefusal(outcome, 'handoff_sigkill_grace_target_gone_socket_still_bound', {
+      stage: 'after-sigkill-grace',
+      pid: 7778,
+      signal: 'SIGKILL',
+      graceMs: SIGKILL_GRACE_MS,
+    });
     expect(killCalls.filter((call) => call.signal === 'SIGKILL')).toHaveLength(1);
   });
 
@@ -641,17 +682,12 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    const message = String((outcome as Error).message);
-
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(message).toContain(
-      'Kernel accepted SIGKILL for incumbent pid=7779 and its grace elapsed, but the current target could not be verified',
-    );
-    expect(message).toContain('Retry when a fresh process-identity observation for this pid succeeds');
-    expect(message).toContain('incarnation was unavailable');
-    expect(message).toContain('pid absence was not established');
-    expect(message).not.toContain('remained alive after');
-    expect(message).not.toContain('socket remained bound');
+    expectHandoffRefusal(outcome, 'handoff_process_identity_unavailable', {
+      stage: 'after-sigkill-grace',
+      pid: 7779,
+      signal: 'SIGKILL',
+      graceMs: SIGKILL_GRACE_MS,
+    });
     expect(killCalls.filter((call) => call.signal === 'SIGKILL')).toHaveLength(1);
   });
 
@@ -686,11 +722,11 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain(
-      'Refusing handoff after SIGTERM was rejected for incumbent pid=7780',
-    );
-    expect(String((outcome as Error).message)).toContain('service or account that owns it');
+    expectHandoffRefusal(outcome, 'handoff_signal_rejected_live', {
+      stage: 'after-rejected-signal',
+      pid: 7780,
+      signal: 'SIGTERM',
+    });
     expect(killCalls).toEqual([{ pid: 7780, signal: 'SIGTERM' }]);
     expect(signalLedger.write).not.toHaveBeenCalled();
   });
@@ -729,13 +765,11 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    const message = String((outcome as Error).message);
-
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(message).toContain('SIGTERM was rejected for incumbent pid=7781');
-    expect(message).toContain('current target could not be verified');
-    expect(message).toContain('Retry when a fresh process-identity observation for this pid succeeds');
-    expect(message).not.toContain('remained alive after');
+    expectHandoffRefusal(outcome, 'handoff_process_identity_unavailable', {
+      stage: 'after-rejected-signal',
+      pid: 7781,
+      signal: 'SIGTERM',
+    });
     expect(killCalls).toEqual([{ pid: 7781, signal: 'SIGTERM' }]);
     expect(signalLedger.write).not.toHaveBeenCalled();
   });
@@ -813,10 +847,11 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain(
-      'Refusing handoff after SIGKILL was rejected for incumbent pid=7783',
-    );
+    expectHandoffRefusal(outcome, 'handoff_signal_rejected_live', {
+      stage: 'after-rejected-signal',
+      pid: 7783,
+      signal: 'SIGKILL',
+    });
     expect(killCalls).toEqual([
       { pid: 7783, signal: 'SIGTERM' },
       { pid: 7783, signal: 'SIGKILL' },
@@ -825,6 +860,53 @@ describe('bindWithHandoff', () => {
     expect(signalLedger.write).toHaveBeenCalledWith(
       expect.objectContaining({ version: 2, accepted: true, signal: 'SIGTERM' }),
     );
+  });
+
+  // A bindable socket is not a dead incumbent. The signalled process can still be running with its listener
+  // already closed, so adopting the socket here would hand this coordinator the port while the target it
+  // signalled is alive behind it.
+  it('refuses the bindable socket while the signalled target is still alive', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 7791,
+      incarnation: testIncarnation(562_000),
+      source: 'health',
+    };
+    let sigtermAccepted = false;
+    const { options, time, killCalls } = buildHarness({
+      bindAttempt: async () => (sigtermAccepted ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' }),
+      totalBudgetMs: 500,
+      observeLiveness: () => 'alive' as const,
+      killReturns: (signal) => {
+        if (signal === 'SIGTERM') sigtermAccepted = true;
+        return true;
+      },
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'bindable-socket-incumbent',
+        token: 'token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    const promise = bindWithHandoff(options).catch((error: unknown) => error);
+    for (let i = 0; i < (SIGTERM_GRACE_MS + 5_000) / 200; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+
+    expectHandoffRefusal(outcome, 'handoff_accepted_signal_target_alive_after_bind', {
+      stage: 'after-accepted-signal-bind',
+      pid: 7791,
+      signal: 'SIGTERM',
+    });
+    expect(killCalls, 'the socket became bindable before the grace elapsed, so no SIGKILL is due').toEqual([
+      { pid: 7791, signal: 'SIGTERM' },
+    ]);
   });
 
   it.each(pendingSignalFailureCases)(
@@ -885,11 +967,19 @@ describe('bindWithHandoff', () => {
       );
       if (targetStatus === 'gone') {
         expect(outcome).toBe(proximateError);
+      } else if (targetStatus === 'alive') {
+        expectHandoffRefusal(
+          outcome,
+          'handoff_accepted_signal_target_alive_after_failure',
+          { stage: 'after-accepted-signal-failure', pid: 7787, signal: acceptedSignal },
+          proximateError,
+        );
       } else {
-        expect(outcome).toBeInstanceOf(HandoffEscalationError);
-        expect((outcome as Error).cause).toBe(proximateError);
-        expect(String((outcome as Error).message)).toContain(
-          `kernel accepted ${acceptedSignal} for incumbent pid=7787`,
+        expectHandoffRefusal(
+          outcome,
+          'handoff_process_liveness_unknown',
+          { stage: 'after-accepted-signal-failure', pid: 7787, signal: acceptedSignal },
+          proximateError,
         );
       }
     },
@@ -955,11 +1045,19 @@ describe('bindWithHandoff', () => {
       );
       if (targetStatus === 'gone') {
         expect(outcome).toBe(proximateError);
+      } else if (targetStatus === 'alive') {
+        expectHandoffRefusal(
+          outcome,
+          'handoff_accepted_signal_target_alive_after_failure',
+          { stage: 'after-accepted-signal-failure', pid: 7786, signal: acceptedSignal },
+          proximateError,
+        );
       } else {
-        expect(outcome).toBeInstanceOf(HandoffEscalationError);
-        expect((outcome as Error).cause).toBe(proximateError);
-        expect(String((outcome as Error).message)).toContain(
-          `kernel accepted ${acceptedSignal} for incumbent pid=7786`,
+        expectHandoffRefusal(
+          outcome,
+          'handoff_process_liveness_unknown',
+          { stage: 'after-accepted-signal-failure', pid: 7786, signal: acceptedSignal },
+          proximateError,
         );
       }
     },
@@ -1018,10 +1116,20 @@ describe('bindWithHandoff', () => {
       expect(killCalls).toEqual([{ pid: 7784, signal: 'SIGTERM' }]);
       if (targetStatus === 'gone') {
         expect(outcome).toBe(discoveryError);
+      } else if (targetStatus === 'alive') {
+        expectHandoffRefusal(
+          outcome,
+          'handoff_accepted_signal_target_alive_after_failure',
+          { stage: 'after-accepted-signal-failure', pid: 7784, signal: 'SIGTERM' },
+          discoveryError,
+        );
       } else {
-        expect(outcome).toBeInstanceOf(HandoffEscalationError);
-        expect((outcome as Error).cause).toBe(discoveryError);
-        expect(String((outcome as Error).message)).toContain('kernel accepted SIGTERM for incumbent pid=7784');
+        expectHandoffRefusal(
+          outcome,
+          'handoff_process_liveness_unknown',
+          { stage: 'after-accepted-signal-failure', pid: 7784, signal: 'SIGTERM' },
+          discoveryError,
+        );
       }
     },
   );
@@ -1233,8 +1341,7 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('current liveness could not be observed');
+    expectHandoffRefusal(outcome, 'handoff_process_liveness_unknown', { stage: 'before-signal', pid: 10004 });
     expect(killCalls).toEqual([]);
   });
 
@@ -1285,10 +1392,10 @@ describe('bindWithHandoff', () => {
     // false and the contender died on the gate that exists to catch a missing credential.
     expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-drift' }));
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('this pid is not the process the incumbent published');
-    expect(String((outcome as Error).message)).toContain('Retry handoff against a freshly discovered incumbent');
-    expect(String((outcome as Error).message)).toContain('stop the target through its host service');
+    expectHandoffRefusal(outcome, 'handoff_published_incarnation_mismatch', {
+      stage: 'before-signal',
+      pid: 4321,
+    });
     expect(killCalls, 'a pid the incumbent did not publish must never be signalled').toEqual([]);
   });
 
@@ -1322,7 +1429,10 @@ describe('bindWithHandoff', () => {
     const outcome = await promise;
 
     expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-legacy' }));
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expectHandoffRefusal(outcome, 'handoff_published_incarnation_missing', {
+      stage: 'before-signal',
+      pid: 7777,
+    });
     expect(killCalls, 'an incumbent that published no incarnation must never be signalled').toEqual([]);
   });
 
@@ -1359,7 +1469,10 @@ describe('bindWithHandoff', () => {
     const outcome = await promise;
 
     expect(mockedShutdown).toHaveBeenCalledWith(expect.objectContaining({ bootToken: 'boot-token-darwin' }));
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expectHandoffRefusal(outcome, 'handoff_platform_identity_insufficient', {
+      stage: 'before-signal',
+      pid: 8181,
+    });
     expect(killCalls, 'a matching incarnation is not proof on a platform that cannot make it one').toEqual([]);
   });
 
@@ -1386,7 +1499,7 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expectHandoffRefusal(outcome, 'handoff_pid_recycled', { stage: 'before-signal', pid: 1234 });
     expect(killCalls, 'a recycled pid must never be signalled').toEqual([]);
   });
 
@@ -1420,7 +1533,7 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expectHandoffRefusal(outcome, 'handoff_pid_recycled', { stage: 'before-signal', pid: 9091 });
     expect(killCalls, 'a pid recycled before escalation must never be signalled').toEqual([]);
   }, 10_000);
 
@@ -1443,8 +1556,38 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expectHandoffRefusal(outcome, 'handoff_process_identity_unavailable', { stage: 'before-signal', pid: 2468 });
     expect(killCalls, 'unreadable must not be read as gone').toEqual([]);
+  });
+
+  // The mirror of the case above: the incarnation is unreadable when this attempt *adopts* the pid, so no
+  // baseline is taken, and it becomes readable in time for pre-signal verification. Agreement between that
+  // reading and what the incumbent published is then two probes taken after the window they are supposed to
+  // span, and it authorizes nothing.
+  it('refuses to signal a pid it never observed while that pid was authenticated', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 3157,
+      incarnation: testIncarnation(1_200_000),
+      source: 'discovery',
+      instanceId: 'anchorless-incumbent',
+      token: 'token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
+    const { options, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      observeLiveness: () => 'alive' as const,
+      readDiscovery: () => verifiedIdentity,
+    });
+    // An exhausted budget escalates on the first pass, so these are the only two probes: adoption, then
+    // pre-signal verification.
+    mockedProbe.mockReturnValueOnce(null).mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    const outcome = await bindWithHandoff(options).catch((e: Error) => e);
+
+    expectHandoffRefusal(outcome, 'handoff_signal_anchor_missing', { stage: 'before-signal', pid: 3157 });
+    expect(killCalls, 'a pid with no authenticated baseline must never be signalled').toEqual([]);
   });
 
   it('identity change at immediate pre-signal revalidation stays fatal', async () => {
@@ -1478,11 +1621,7 @@ describe('bindWithHandoff', () => {
 
     const outcome = await bindWithHandoff(options).catch((e: Error) => e);
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain(
-      'fresh coordinator discovery changed. Retry handoff against the newly discovered incumbent',
-    );
-    expect(String((outcome as Error).message)).not.toContain('Manual repair required');
+    expectHandoffRefusal(outcome, 'handoff_fresh_discovery_changed', { stage: 'before-signal', pid: 4320 });
     expect(mockedShutdown).not.toHaveBeenCalled();
     expect(killCalls).toEqual([]);
   });
@@ -1507,11 +1646,7 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain(
-      'fresh coordinator discovery was unavailable. Retry when verified discovery is available',
-    );
-    expect(String((outcome as Error).message)).not.toContain('Manual repair required');
+    expectHandoffRefusal(outcome, 'handoff_fresh_discovery_unavailable', { stage: 'before-signal', pid: 4321 });
     expect(killCalls).toEqual([]);
   });
 
@@ -1766,11 +1901,15 @@ describe('bindWithHandoff', () => {
     mockedProbe.mockReturnValue(target.incarnation ?? null);
 
     const outcome = await bindWithHandoff(options).catch((error: Error) => error);
-    const message = String((outcome as Error).message);
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(message).toContain('the handoff signal cooldown has not elapsed');
-    expect(message).not.toContain('legacy V1');
+    expectHandoffRefusal(outcome, 'handoff_signal_cooldown_active', {
+      stage: 'before-signal',
+      pid: 2467,
+      requestedSignal: 'SIGTERM',
+      previousSignal: 'SIGTERM',
+      ageMs: 1_000,
+      retryInMs: 59_000,
+    });
     expect(killCalls).toEqual([]);
   });
 
@@ -1927,12 +2066,15 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    const message = String((outcome as Error).message);
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(message).toContain('legacy V1 handoff record proves only that a signal was attempted');
-    expect(message).toContain('Inspect the identified target');
-    expect(message).not.toContain('the handoff signal cooldown has not elapsed');
+    expectHandoffRefusal(outcome, 'handoff_legacy_signal_attempt_indeterminate', {
+      stage: 'before-signal',
+      pid: 2467,
+      requestedSignal: 'SIGTERM',
+      previousSignal: 'SIGTERM',
+      ageMs: 600,
+      retryInMs: 9_400,
+    });
     expect(killCalls).toEqual([]);
   });
 
@@ -1976,14 +2118,14 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    const message = String((outcome as Error).message);
-    const timing = /last SIGTERM was (\d+)ms ago; retry in (\d+)ms/.exec(message);
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(message).toContain('the handoff signal cooldown has not elapsed');
-    expect(message).not.toContain('legacy V1');
-    expect(message).not.toContain('Manual repair required');
-    expect(timing).not.toBeNull();
-    expect(Number(timing?.[1]) + Number(timing?.[2])).toBe(10_000);
+    expectHandoffRefusal(outcome, 'handoff_signal_cooldown_active', {
+      stage: 'before-signal',
+      pid: 2468,
+      requestedSignal: 'SIGTERM',
+      previousSignal: 'SIGTERM',
+      ageMs: 600,
+      retryInMs: 9_400,
+    });
     expect(killCalls).toEqual([]);
   });
 
@@ -2013,10 +2155,46 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('CORAL_HANDOFF_SIGNAL_POLICY=manual');
-    expect(String((outcome as Error).message)).toContain('service or account that owns it');
-    expect(String((outcome as Error).message)).toContain('deliberately change CORAL_HANDOFF_SIGNAL_POLICY');
+    expectHandoffRefusal(outcome, 'handoff_manual_policy', {
+      stage: 'before-signal',
+      pid: 1357,
+      policy: 'manual',
+    });
+    expect(killCalls).toEqual([]);
+  });
+
+  it('manual signal policy remains decisive when deadline discovery is unavailable', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 1357,
+      incarnation: testIncarnation(901),
+      source: 'health',
+    };
+    let discoveryReads = 0;
+    const { options, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      signalPolicy: 'manual',
+      readDiscovery: () => {
+        discoveryReads += 1;
+        return discoveryReads === 1
+          ? {
+              ...verifiedIdentity,
+              source: 'discovery',
+              bootToken: 'boot-token',
+              shutdownToken: 'shutdown-token',
+            }
+          : null;
+      },
+    });
+
+    const outcome = await bindWithHandoff(options).catch((e: Error) => e);
+
+    expectHandoffRefusal(outcome, 'handoff_manual_policy', {
+      stage: 'before-signal',
+      pid: 1357,
+      policy: 'manual',
+    });
+    expect(discoveryReads).toBe(1);
     expect(killCalls).toEqual([]);
   });
 
@@ -2044,12 +2222,11 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain(
-      'verified coordinator discovery lacks required signal-capability fields: missing instanceId, token, bootToken',
-    );
-    expect(String((outcome as Error).message)).toContain('Repair or replace the coordinator discovery record');
-    expect(String((outcome as Error).message)).toContain('stop the target through its host service');
+    expectHandoffRefusal(outcome, 'handoff_signal_capability_unavailable', {
+      stage: 'before-signal',
+      pid: 9753,
+      missingFields: ['instanceId', 'token', 'bootToken'],
+    });
     expect(killCalls).toEqual([]);
   });
 
@@ -2081,11 +2258,12 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('term-only forbids SIGKILL');
-    expect(String((outcome as Error).message)).toContain("Wait for the target's own shutdown to finish");
-    expect(String((outcome as Error).message)).toContain('service or account that owns it');
-    expect(String((outcome as Error).message)).toContain('deliberately change CORAL_HANDOFF_SIGNAL_POLICY');
+    expectHandoffRefusal(outcome, 'handoff_term_only_policy', {
+      stage: 'after-sigterm-grace',
+      pid: 8642,
+      graceMs: SIGTERM_GRACE_MS,
+      policy: 'term-only',
+    });
     expect(killCalls.filter((c) => c.signal === 'SIGTERM')).toHaveLength(1);
     expect(killCalls.filter((c) => c.signal === 'SIGKILL')).toHaveLength(0);
   });
@@ -2120,9 +2298,12 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
 
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('current liveness could not be observed');
-    expect(String((outcome as Error).message)).toContain('process-liveness observation');
+    expectHandoffRefusal(outcome, 'handoff_process_liveness_unknown', {
+      stage: 'after-sigterm-grace',
+      pid: 8644,
+      signal: 'SIGTERM',
+      graceMs: SIGTERM_GRACE_MS,
+    });
     expect(killCalls.filter((call) => call.signal === 'SIGTERM')).toHaveLength(1);
     expect(killCalls.filter((call) => call.signal === 'SIGKILL')).toHaveLength(0);
   });
@@ -2182,6 +2363,62 @@ describe('bindWithHandoff', () => {
     expect(signalLedger.write).toHaveBeenCalledTimes(1);
   });
 
+  it('follows a successor after a signalled incumbent disappears and reports the successor after another grace pair', async () => {
+    const first: IncumbentIdentity = {
+      pid: 9_001,
+      incarnation: testIncarnation(9_001),
+      source: 'discovery',
+      instanceId: 'first-incumbent',
+      token: 'first-token',
+      bootToken: 'first-boot-token',
+      shutdownToken: 'first-shutdown-token',
+    };
+    const successor: IncumbentIdentity = {
+      pid: 9_002,
+      incarnation: testIncarnation(9_002),
+      source: 'discovery',
+      instanceId: 'successor-incumbent',
+      token: 'successor-token',
+      bootToken: 'successor-boot-token',
+      shutdownToken: 'successor-shutdown-token',
+    };
+    let firstSignalAccepted = false;
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      readDiscovery: () => (firstSignalAccepted ? successor : first),
+      observeLiveness: (pid) => (pid === first.pid && firstSignalAccepted ? 'absent' : 'alive'),
+      killReturns: (signal) => {
+        if (signal === 'SIGTERM' && !firstSignalAccepted) firstSignalAccepted = true;
+        return true;
+      },
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
+    mockedProbe.mockImplementation((pid) =>
+      pid === first.pid ? (first.incarnation ?? null) : (successor.incarnation ?? null),
+    );
+
+    const promise = bindWithHandoff(options).catch((error: unknown) => error);
+    const elapsedMs = 500 + SIGTERM_GRACE_MS * 2 + SIGKILL_GRACE_MS + 5_000;
+    for (let elapsed = 0; elapsed < elapsedMs; elapsed += 200) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+
+    expectHandoffRefusal(outcome, 'handoff_sigkill_grace_target_alive', {
+      stage: 'after-sigkill-grace',
+      pid: successor.pid,
+      signal: 'SIGKILL',
+      graceMs: SIGKILL_GRACE_MS,
+    });
+    expect(killCalls).toEqual([
+      { pid: first.pid, signal: 'SIGTERM' },
+      { pid: successor.pid, signal: 'SIGTERM' },
+      { pid: successor.pid, signal: 'SIGKILL' },
+    ]);
+  });
+
   it('discovery fallback: when health has no pid, reads coordinator.json via injected probe', async () => {
     const verifiedFromDiscovery: IncumbentIdentity = {
       pid: 8888,
@@ -2208,7 +2445,12 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
     const outcome = await promise;
-    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expectHandoffRefusal(outcome, 'handoff_sigkill_grace_target_alive', {
+      stage: 'after-sigkill-grace',
+      pid: 8888,
+      signal: 'SIGKILL',
+      graceMs: SIGKILL_GRACE_MS,
+    });
     expect(killCalls.some((c) => c.signal === 'SIGTERM' && c.pid === 8888)).toBe(true);
   }, 10_000);
 

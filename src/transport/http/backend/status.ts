@@ -1,10 +1,16 @@
 import { observeCoordinator } from './coordinator-observation.js';
-import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
+import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
+import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
-import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
+import {
+  readOperatorFacingCoralSetupError,
+  resolveSetupErrorAuthorship,
+  type OperatorFacingCoralSetupError,
+  type SetupErrorAuthorIdentity,
+} from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
@@ -16,9 +22,6 @@ type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootst
 
 type BackendStatus =
   | {
-      // CLI-level verdict. The daemon-side coarse lifecycle field
-      // (`'starting' | 'ok' | 'draining'`) is preserved as `health.status`
-      // inside the nested `BackendHealth` payload via `BackendStatusFull`.
       status: 'ok';
       version: string;
       bundleHash: string;
@@ -41,37 +44,21 @@ type BackendStatus =
       status: 'shutting_down';
     };
 
-/**
- * The user-facing half of a documented setup failure. Two things make it safe to
- * print, and neither is "it contains no interpolated values" — the authored
- * templates do interpolate Coral's own identifiers (a legacy path, a lease
- * holder, a base dir, a stored version). What holds the boundary is that the
- * sentences are authored per code rather than assembled from an exception, and
- * that `context` is dropped here: `serializeBootstrapError` persists it, and at
- * least one site deliberately stashes a raw `error.message` in it. An arbitrary
- * bootstrap exception's `message` and `stack` therefore stay in the coordinator
- * log. Widening this projection past these three fields reopens that path.
- */
-export type PublicSetupErrorSummary = {
-  readonly code: string;
-  readonly userMessage: string;
-  readonly remediation: string;
-};
-
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
-  | { status: 'shutting_down' | 'unauthorized' | 'not_running' }
+  | { status: 'shutting_down' | 'unauthorized' }
+  | { status: 'no_record_no_socket' }
+  | { status: 'recorded_process_absent'; pid: number }
   /**
-   * The discovery record exists and could not be read, so whether a coordinator is running is unknown. Kept
-   * distinct from `not_running` because that is a claim, and this reader has not earned it: a truncated write
-   * or a record shaped by a build this one rejects both produce it while a coordinator may be serving.
+   * An unreadable discovery record must not imply whether a coordinator is running: a truncated write or a
+   * record shaped by a build this one rejects can both exist while a coordinator is serving.
    */
   | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }
   /**
-   * Something answers at the recorded address and did not give a usable answer — a non-2xx that is not a
-   * drain, a request that never completed, or a 200 whose body this build cannot decode (shape rejection).
-   * Distinct from `not_running`, which is reserved for an observed absence and for a peer whose *decoded*
-   * namespace or flavor says it is somebody else's coordinator, not ours — a shape rejection proves neither.
+   * The recorded address did not yield this coordinator's state — a non-2xx that is not a drain, a request that
+   * never completed, a 200 whose body this build cannot decode (shape rejection), or a coordinator that
+   * decoded and is not this one. A shape rejection proves neither absence nor a foreign identity; only a
+   * decoded namespace/flavor mismatch may produce `'foreign_peer'`.
    *
    * `cause` is the one thing that decides what may be claimed about the address: `'responded'` is an actual
    * HTTP response (any status, any body) — the one thing that proves something is listening. `'refused'` is a
@@ -81,6 +68,14 @@ export type BackendStatusFull =
    * refusal that keeps refusing is a record naming a pid something else now holds, and neither checking that
    * pid nor clearing that record is possible from a status that names neither. `'no_response'` is everything else that keeps a
    * request from completing (timeout, DNS failure, ...), which proves neither way.
+   *
+   * `'foreign_peer'` is a Coral coordinator that answered and named a namespace or flavor the discovery record
+   * did not. The comparison is against that record's own identity, and the recorded HTTP port is ephemeral —
+   * the coordinator binds port 0 — so the evidence supports one claim and no more: the recorded port is now
+   * answered by a coordinator that did not write the record. It is not an ownership conflict over startup,
+   * because this installation's coordinator is addressed by its own scoped IPC socket rather than by that
+   * port, so it carries the same `pid`/`recordPath` as `'refused'` — the evidence a reader needs to settle a
+   * record whose address something else now holds.
    */
   | { status: 'unreachable'; detail: string; cause: 'responded' }
   | {
@@ -92,17 +87,28 @@ export type BackendStatusFull =
       recordPath: string;
     }
   | { status: 'unreachable'; detail: string; cause: 'no_response' }
+  | {
+      status: 'unreachable';
+      cause: 'foreign_peer';
+      observed: { namespace: string; flavor: 'prod' | 'dev' };
+      pid: number;
+      recordPath: string;
+    }
   /**
-   * The coordinator's own IPC socket file exists but no discovery record has been written — see
-   * `CoordinatorObservation`'s `no-record-socket-present` (`coordinator-observation.ts`) for what produces it.
-   * Neither a boot in progress nor a stale leftover socket may fold into `not_running`.
+   * A surviving coordinator socket must not become an absence result: it may belong to a boot in progress or
+   * be a stale leftover.
    */
   | { status: 'no_record_socket_present'; socketPath: string }
   | {
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
       retryable: boolean;
-      setupError?: PublicSetupErrorSummary;
+      /**
+       * Recorded prose crosses this operator-facing boundary only for a code this build proved it wrote, and
+       * only inside the charset and length bounds of `canonicalSelfAuthoredProse`; recorded context must
+       * never cross it. see `readOperatorFacingCoralSetupError` in src/runtime/errors.ts
+       */
+      setupError?: OperatorFacingCoralSetupError;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -111,9 +117,20 @@ function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
 }
 
+function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAuthorIdentity | null {
+  return typeof value.bundleHash === 'string' && typeof value.namespace === 'string'
+    ? { bundleHash: value.bundleHash, namespace: value.namespace }
+    : null;
+}
+
+/**
+ * `provenSelfIdentity` is deferred because proving this build's own identity hashes bundle artifacts; a status
+ * probe that finds no setup-error diagnostic must not pay for an attribution it never makes.
+ */
 export function statusFromStartupDiagnostic(
   value: unknown,
   now: number,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt = Number.NEGATIVE_INFINITY,
   expectedPid?: number,
 ): RecentFailureStatus | null {
@@ -145,9 +162,12 @@ export function statusFromStartupDiagnostic(
   }
 
   const error = value.error;
-  const setupError: PublicSetupErrorSummary | null =
-    error.kind === 'coral_setup_error' && isSerializedCoralSetupError(error)
-      ? { code: error.code, userMessage: error.userMessage, remediation: error.remediation }
+  const setupError: OperatorFacingCoralSetupError | null =
+    error.kind === 'coral_setup_error'
+      ? readOperatorFacingCoralSetupError(
+          error,
+          resolveSetupErrorAuthorship({ recorded: recordedAuthorIdentity(value), self: provenSelfIdentity() }),
+        )
       : null;
 
   return {
@@ -158,19 +178,17 @@ export function statusFromStartupDiagnostic(
   };
 }
 
-/** A decoded, in-scope startup diagnostic, or `null` if none applies — the shared read behind both
- *  `noDaemonStatus`'s decisive absence and `no-record-socket-present`'s unresolved one, which differ only in
- *  what they fall back to when no diagnostic applies. */
 function readRecentFailureDiagnostic(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
   now: number,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): RecentFailureStatus | null {
   try {
     const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid);
+    return statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
   } catch {
     return null;
   }
@@ -180,13 +198,17 @@ function noDaemonStatus(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
   now: number,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
+  fallback: Extract<
+    BackendStatusFull,
+    { status: 'no_record_no_socket' | 'recorded_process_absent' } | { cause: 'foreign_peer' }
+  >,
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): BackendStatusFull {
   return (
-    readRecentFailureDiagnostic(storage, diagnosticFile, now, earliestRecordedAt, expectedPid) ?? {
-      status: 'not_running',
-    }
+    readRecentFailureDiagnostic(storage, diagnosticFile, now, provenSelfIdentity, earliestRecordedAt, expectedPid) ??
+    fallback
   );
 }
 
@@ -199,7 +221,7 @@ function noDaemonStatus(
  */
 async function probeUnauthenticatedPing(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string }>,
-  notOurCoordinator: () => BackendStatusFull,
+  notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => BackendStatusFull,
   unreachable: (detail: string) => BackendStatusFull,
 ): Promise<BackendStatusFull | null> {
   const response = await fetch(`http://${info.host}:${info.port}/health`, {
@@ -208,13 +230,13 @@ async function probeUnauthenticatedPing(
   });
   const body = await parseJsonResponse(response);
   if (response.status === 200) {
-    // A body this build cannot decode is a shape rejection, not a namespace/flavor mismatch — it proves
-    // nothing about whose coordinator answered, so it must not fall into `notOurCoordinator`'s `not_running`.
+    // A body this build cannot decode names no peer, so it may only be classified unreachable — never as
+    // another coordinator's, and never as a coordinator that answered.
     if (!isBackendPing(body)) {
       return unreachable('health responded 200 with a body this build could not decode');
     }
     if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
-      return notOurCoordinator();
+      return notOurCoordinator({ namespace: body.namespace, flavor: body.flavor });
     }
     return body.status === 'draining' ? { status: 'shutting_down' } : null;
   }
@@ -227,7 +249,7 @@ async function probeUnauthenticatedPing(
 /** The authenticated `/health?detailed=1` probe. Always terminal: it is the last thing asked. */
 async function probeDetailedHealth(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string; bootToken: string }>,
-  notOurCoordinator: () => BackendStatusFull,
+  notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => BackendStatusFull,
   unreachable: (detail: string) => BackendStatusFull,
 ): Promise<BackendStatusFull> {
   const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
@@ -244,7 +266,7 @@ async function probeDetailedHealth(
     }
     const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
-      return notOurCoordinator();
+      return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (health.status === 'draining') {
       return { status: 'shutting_down' };
@@ -269,33 +291,41 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     env: runtime.env,
     paths: runtime.paths,
   });
+  // Only a strictly proven bundle identity may claim authorship of a diagnostic: a hash read back without that
+  // proof is not evidence, because a build that wrote nothing can read the same unproven value.
+  const provenSelfIdentity = (): SetupErrorAuthorIdentity | null => {
+    const strict = resolveStrictBundleIdentity();
+    return strict.ok ? { bundleHash: strict.manifest.bundleHash, namespace: pluginRootNamespace(pluginRoot) } : null;
+  };
 
   switch (observed.kind) {
     case 'unreadable-record':
       return { status: 'undecodable_record', reason: observed.reason, path: observed.path };
     case 'no-record':
-      return noDaemonStatus(runtime.storage, runtime.paths.coral.coordinator.startupDiagnosticFile, runtime.time.now());
+      return noDaemonStatus(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'no_record_no_socket' },
+      );
     case 'no-record-socket-present':
-      // A crash can remove the discovery record and leave the socket file behind before the diagnostic write
-      // that explains the crash lands, so this arm reads the same diagnostic `noDaemonStatus` reads for
-      // `no-record` and falls back to the vague evidence only when no diagnostic applies — never to
-      // `not_running`, which the surviving socket file already rules out.
       return (
         readRecentFailureDiagnostic(
           runtime.storage,
           runtime.paths.coral.coordinator.startupDiagnosticFile,
           runtime.time.now(),
+          provenSelfIdentity,
         ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
       );
     case 'process-absent':
-      // Absence is established, so the startup diagnostic may explain it — scoped to both halves of the dead
-      // coordinator's identity, because either alone admits a diagnostic that is not this run's. A pid is
-      // reused, so an old diagnostic naming the same number passes a pid-only check; a `startedAt` floor alone
-      // admits any later run's. `notOurCoordinator` below passes the same pair for the same reason.
+      // Diagnostic precedence must be scoped by both startedAt and pid; either alone can match another run.
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'recorded_process_absent', pid: observed.pid },
         observed.startedAt,
         observed.pid,
       );
@@ -304,20 +334,20 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   }
   const info = observed.coordinator;
 
-  // `observed.pidLiveness` is deliberately not read here, unlike `shutdownBackend`'s `socket_refused` case
-  // (`shutdown.ts`). There the *only* evidence is the prior liveness snapshot — no response ever arrives — so
-  // ignoring it lets a stale "not running" claim override the one fact that run has. Here a response DID
-  // arrive and decode: it names a namespace/flavor that is not ours, direct proof that whatever answers at
-  // `info.host`:`info.port` is not the coordinator this record described. A live `info.pid` does not contradict
-  // that — pid liveness only says some process holds that OS pid number, not that it is the process serving
-  // this address, and a pid is reused (see the `process-absent` case above). `not_running` here claims only
-  // that *this* recorded coordinator is not the one answering, which the decoded mismatch already establishes
-  // regardless of what `info.pid` is doing.
-  const notOurCoordinator = (): BackendStatusFull =>
+  // A decoded peer mismatch must retain the peer identity, regardless of the recorded pid's liveness.
+  const notOurCoordinator = (observedIdentity: { namespace: string; flavor: 'prod' | 'dev' }): BackendStatusFull =>
     noDaemonStatus(
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,
       runtime.time.now(),
+      provenSelfIdentity,
+      {
+        status: 'unreachable',
+        cause: 'foreign_peer',
+        observed: observedIdentity,
+        pid: info.pid,
+        recordPath: runtime.paths.coral.coordinator.infoFile,
+      },
       info.startedAt,
       info.pid,
     );
