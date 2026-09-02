@@ -30,9 +30,9 @@ that axis. An entry appears here only if that ordering is not obvious from its o
 **Re-ordered 2026-09-01, from what a release needs.** The previous ordering asked what has to be true
 before an entry can be worked, and kept the suite load first because no gate result is trustworthy while it
 can starve the live coordinator. That is still true and is still the reason the load matters — but the suite
-entry is half closed and its remainder wants an observed flake, so it cannot lead. What leads now is what
-0.10.10 cannot ship without, followed by what the 0.10.9..main diff has made cheap while that code is still
-warm.
+entry is half closed and its remainder wants an observed flake, so it cannot lead. What that re-ordering
+put first was what 0.10.10 cannot ship without, followed by what the 0.10.9..main diff has made cheap
+while that code is still warm.
 
 **Top priority, set 2026-09-02: [`overload-tolerance-floor`](./overload-tolerance-floor.md).** A coordinator
 starved for 60 seconds must not have its work reaped, however that is achieved. Measured on a host running
@@ -84,15 +84,16 @@ settling first, but not because the schema change is unsafe.
 
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | [`preflight-cannot-defer`](./preflight-cannot-defer.md)     | A preflight that could not check terminalizes the job it could not check, so the job dies carrying a sentence that is not true. Both providers already observe the third answer; carrying it across one boundary is a change to a contract every provider implements. |
-| 2     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others, and 0.10.10 is the release that exercises it: the store DDL changed, so this build ships a new format fingerprint. The routing-reason step is closed; this entry still carries the record direction and the independent output direction. |
-| 3     | [`comment-sweep-bug-ledger`](./comment-sweep-bug-ledger.md) | A ledger of defects the sweeps deliberately did not fix. Draining it is cheapest immediately after the sweep that filled it, which has just landed.        |
-| 4     | [`exec-result-overclaim`](./exec-result-overclaim.md)       | Two small independent members, each with a correct sibling in the same file, both found in the branch that became the build-identity work.                 |
-| 5     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | **Half closed**, and the reason it used to lead still holds: a suite run saturates the one filesystem the repo, `~/.coral` and `/tmp` share, and a coordinator blocked mid-fsync holds the store lock and misses its heartbeat. What remains is the cap itself and 22 real sleeps totalling 1.4 s — under 1% of wall time — so the case for them is flake, and it wants an observed flake to start from. |
-| 6     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
-| 7     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
-| 8     | `coordinator-process-disposition`                           | After `provider-operation-admission-hold` has settled the recovery boundary the custody transfer has to attach to.                                                                          |
-| 9     | `foreign-capsule-retirement-terminal-recovery`              | After `provider-operation-admission-hold` or `coordinator-process-disposition`, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
+| 1     | [`overload-tolerance-floor`](./overload-tolerance-floor.md) | Top priority, set 2026-09-02, and argued above. A coordinator starved for 60 seconds must not have its work reaped, and the window current source tolerates is 23 s. The requirement is settled while the mechanism is not, so what leads is a choice between four shapes rather than a patch. |
+| 2     | [`preflight-cannot-defer`](./preflight-cannot-defer.md)     | A preflight that could not check terminalizes the job it could not check, so the job dies carrying a sentence that is not true. Both providers already observe the third answer; carrying it across one boundary is a change to a contract every provider implements. |
+| 3     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others, and 0.10.10 is the release that exercises it: the store DDL changed, so this build ships a new format fingerprint. The routing-reason step is closed; this entry still carries the record direction and the independent output direction. |
+| 4     | [`comment-sweep-bug-ledger`](./comment-sweep-bug-ledger.md) | A ledger of defects the sweeps deliberately did not fix. Draining it is cheapest immediately after the sweep that filled it, which has just landed.        |
+| 5     | [`exec-result-overclaim`](./exec-result-overclaim.md)       | Two small independent members, each with a correct sibling in the same file, both found in the branch that became the build-identity work.                 |
+| 6     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | **Half closed**, and the reason it used to lead still holds: a suite run saturates the one filesystem the repo, `~/.coral` and `/tmp` share, and a coordinator blocked mid-fsync holds the store lock and misses its heartbeat. What remains is the cap itself and 22 real sleeps totalling 1.4 s — under 1% of wall time — so the case for them is flake, and it wants an observed flake to start from. |
+| 7     | `darwin-signal-authority` + `durable-cli-signal-authority`  | Needs a synchronous exit state on `ChildProcessLike`, which touches every fake in the suite. Do it when nothing else is in flight.                        |
+| 8     | `provider-operation-admission-hold`                         | Design complete and recorded; ships as one unit or not at all.                                                                                            |
+| 9     | `coordinator-process-disposition`                           | After `provider-operation-admission-hold` has settled the recovery boundary the custody transfer has to attach to.                                                                          |
+| 10    | `foreign-capsule-retirement-terminal-recovery`              | After `provider-operation-admission-hold` or `coordinator-process-disposition`, and only if one of them lands: it wants a recovery boundary that nothing about its own residue justifies introducing.                       |
 
 **Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` **was observed on 2026-08-23** and
 its start condition is met — a coordinator held in uninterruptible sleep on an ext4 journal commit, long

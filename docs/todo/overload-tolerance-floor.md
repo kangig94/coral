@@ -59,14 +59,18 @@ window moves that too.
 | --- | --- | --- |
 | `PROXY_CONTROL_RPC_TIMEOUT_MS` | 5,000 ms | none |
 | `PROXY_CONTROL_LEASE_MS` | 12,000 ms | none |
-| orphan timeout | 37,000 ms default, 19,001–300,000 valid | `CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS` |
+| orphan timeout | 37,000 ms default; stated range 19,001–300,000, of which the timing budgets accept only 36,001–300,000 | `CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS` |
 
 Only the most generous of the three is configurable, and the two that are not set the floor for the one
-that is: the lease's own minimum derives from `2 × rpc + heartbeat` through
-`providerProxyDeadlineTimingIsValid`.
+that is, through `providerProxyDeadlineTimingIsValid`: the lease's own minimum derives from
+`2 × rpc + heartbeat`, and the orphan timeout's from `lease + successorTail < adoptionWindow`, where
+`PROXY_SUCCESSOR_TAIL_MS` is 10,000. So `MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS` is 36,001 — a
+second check, rejecting part of the range the first one states — and **22,001 ms is the narrowest adoption
+window that can be configured at all**, 999 ms below the default's 23,000. The knob moves this window up;
+it cannot meaningfully move it down.
 
 `CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS=74000` would put the adoption window at 60 s and is inside the
-validated range. That is a fact about the knob, not a proposal: it makes one host survive and leaves every
+accepted range. That is a fact about the knob, not a proposal: it makes one host survive and leaves every
 other host on 23 s.
 
 ## The open question — how, not whether
