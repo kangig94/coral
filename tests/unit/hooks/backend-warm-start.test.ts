@@ -174,7 +174,10 @@ describe('session-start.mjs startup failure notice', () => {
 
       expect(context).toContain('the most recent start attempt failed');
       expect(context).toContain('Error code: store_newer_incompatible');
-      expect(context).toContain('coral-cli backend status');
+      expect(context).toContain(join(fixture.root, '.coral', 'gen2', 'run', 'startup-diagnostic.json'));
+      // The hook read that file, so naming it holds. Whether any command reports the code turns on evidence
+      // the hook never observed, so the notice may not name one.
+      expect(context).not.toContain('coral-cli backend status');
       expect(context).not.toContain('\u001B');
       expect(context).not.toContain('forged cause');
       expect(context).not.toContain('Remedy: erase the store');
@@ -205,7 +208,7 @@ describe('session-start.mjs startup failure notice', () => {
   );
 
   it(
-    'stays silent once the diagnostic is older than the horizon its own remediation reads',
+    'stays silent once the diagnostic is older than the window that makes the notice worth making',
     async () => {
       const fixture = setupFixture();
       writeDiagnostic(fixture, documentedFailure(new Date(Date.now() - 7 * 60 * 1000).toISOString()));
@@ -214,7 +217,7 @@ describe('session-start.mjs startup failure notice', () => {
 
       expect(
         context,
-        "`backend status` is the notice's only remediation and drops a diagnostic five minutes old; a wider notice window hands out a code nothing will explain",
+        'nothing deletes the diagnostic, so without a recency bound every later session reports the same long-past failure as news',
       ).not.toContain('the most recent start attempt failed');
     },
     WARM_START_TIMEOUT_MS,
