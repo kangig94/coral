@@ -57,6 +57,9 @@ import type {
   SelectedHandoffDisposition,
 } from './status.js';
 
+// A CLI's pre-dispatch budget: how long it waits for an incumbent's health before dispatching without one. It
+// is not a wire timeout and must not be retuned to track one — and could not be shared with one in any case,
+// since this module may reach the transport layer only at its IPC seam.
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
 const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;

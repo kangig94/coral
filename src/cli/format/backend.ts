@@ -18,7 +18,7 @@ import {
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
-import type { OperatorFacingCoralSetupError } from '../../runtime/errors.js';
+import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -731,8 +731,8 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
 }
 
 // A record whose address something else now holds never clears by retrying: it is settled by checking that
-// process and deleting the record. Shutdown names the same remedy for the same evidence — see
-// formatSocketRefused.
+// process and deleting the record. The same evidence must reach the operator with the same remedy whichever
+// surface observed it.
 function checkRecordedProcessThenClear(pid: number, recordPath: string): string {
   return `run 'ps -p ${pid}' (or check your process manager), and if that is not Coral, delete ${recordPath} and run a coral-cli mutating command; it attempts startup or handoff.`;
 }
@@ -765,32 +765,61 @@ function formatNoRecordSocketPresentStatus(
   ].join('\n');
 }
 
-// "This build does not document it" may be said only about a code some other build wrote. A code the running
-// build itself recorded has no upgrade that adds it, so its unrenderable case names the log instead.
+// Shared by every disposition that names a code it could not render text for. "Upgrade Coral" may be said
+// only about a record another build wrote: a refusal the running build itself recorded has no later release
+// that resolves it, so pointing at one sends the operator after something that does not exist.
+function unrenderedSetupErrorNextStep(authorship: SetupErrorAuthorshipKind): string {
+  const retry =
+    "then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.";
+  switch (authorship) {
+    case 'this-build':
+    case 'unprovable':
+      return `Next step: inspect the coordinator log for that code, ${retry}`;
+    case 'other-build':
+      return `Next step: inspect the coordinator log for that code, upgrade Coral, ${retry}`;
+    default:
+      return assertNever(authorship);
+  }
+}
+
+// "whose codes this build cannot name" may be said only about a code some other build wrote. A record the
+// running build itself wrote and then could not re-read is not evidence that its own catalog is missing
+// anything, so that arm may claim only what it observed: the text did not survive the round trip.
 function formatUnrecognizedSetupErrorLines(
   setupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrecognized_code' }>,
 ): readonly string[] {
-  const retry =
-    "then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.";
+  const nextStep = unrenderedSetupErrorNextStep(setupError.authorship);
   switch (setupError.authorship) {
     case 'this-build':
       return [
         `Cause: Coral recorded a setup refusal this build wrote, and the text recorded with it could not be re-read. [code=${setupError.code}]`,
-        `Next step: inspect the coordinator log for that code, ${retry}`,
+        nextStep,
       ];
     case 'other-build':
       return [
         `Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=${setupError.code}]`,
-        `Next step: inspect the coordinator log for that code, upgrade Coral, ${retry}`,
+        nextStep,
       ];
     case 'unprovable':
       return [
         `Cause: Coral recorded a setup refusal and could not prove which Coral build wrote it. [code=${setupError.code}]`,
-        `Next step: inspect the coordinator log for that code, ${retry}`,
+        nextStep,
       ];
     default:
       return assertNever(setupError.authorship);
   }
+}
+
+// This build documents the code, so the operator gets it even though the recorded details could not be
+// rendered: the code is what makes the refusal findable in the log and in release notes, and withholding it
+// would leave a documented refusal with less to act on than an entirely unknown one.
+function formatUnrenderableContextSetupErrorLines(
+  setupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrenderable_context' }>,
+): readonly string[] {
+  return [
+    `Cause: Coral documents this setup refusal, but the details recorded with it are not in the shape this build renders that code from, so its text could not be regenerated. [code=${setupError.code}]`,
+    unrenderedSetupErrorNextStep(setupError.authorship),
+  ];
 }
 
 function formatSetupErrorLines(setupError: OperatorFacingCoralSetupError): readonly string[] {
@@ -800,9 +829,11 @@ function formatSetupErrorLines(setupError: OperatorFacingCoralSetupError): reado
       return [`Cause: ${setupError.userMessage} [code=${setupError.code}]`, `Next step: ${setupError.remediation}`];
     case 'unrecognized_code':
       return formatUnrecognizedSetupErrorLines(setupError);
+    case 'unrenderable_context':
+      return formatUnrenderableContextSetupErrorLines(setupError);
     case 'invalid_diagnostic':
       return [
-        'Cause: Coral recorded a setup refusal whose authored text could not be reconstructed.',
+        'Cause: Coral recorded a setup refusal that carries no readable setup-error code.',
         'Next step: inspect the coordinator log, then retry a coral-cli mutating command so a current valid startup diagnostic replaces this one.',
       ];
     default:
@@ -873,7 +904,7 @@ function formatUnreadableRecordShutdown(detail: string): string {
   return [
     `Shutdown not attempted: the coordinator discovery record could not be read (${detail}).`,
     'A coordinator may still be running; this is not confirmation that one stopped.',
-    'Next step: no coral-cli command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (run coral-cli backend status to see its path) and run a coral-cli mutating command to relaunch.',
+    'Next step: no coral-cli command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (run coral-cli backend status to see its path) and run a coral-cli mutating command; it attempts startup or handoff.',
   ].join('\n');
 }
 
@@ -903,8 +934,8 @@ function formatNoRecordSocketPresentShutdown(): string {
     'Shutdown not attempted: the coordinator IPC socket exists, but no discovery record has been written yet.',
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
     // Not `SHUTDOWN_RETRY_NEXT_STEP`: `backend status` is a read, so for a stale socket it reports this same
-    // state forever and the two commands loop. Relaunching is what ends it — binding clears a stale socket.
-    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way: it binds and relaunches if the socket was stale, and if it instead reports the backend unreachable, the coordinator log is what says why. Once it relaunches, retry the shutdown.',
+    // state forever and the two commands loop. Only a bind clears a stale socket, and no read command binds.
+    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way; it attempts startup or handoff, and starting up is what clears a stale socket. If it instead reports the backend unreachable, the coordinator log is what says why. Once a coordinator is serving, retry the shutdown.',
   ].join('\n');
 }
 
@@ -925,7 +956,7 @@ function formatSocketRefused(result: Extract<ShutdownResult, { reason: 'socket_r
   return [
     `Shutdown not confirmed: ${whatRefusalMeans}`,
     'The coordinator may still be running; this is not a report that it stopped.',
-    `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: run 'ps -p ${result.pid}' (or check your process manager), and if that is not Coral, delete ${result.recordPath} and run a coral-cli mutating command to relaunch.`,
+    `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: ${checkRecordedProcessThenClear(result.pid, result.recordPath)}`,
   ].join('\n');
 }
 

@@ -1209,12 +1209,15 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('invalid setup-error diagnostic');
+    expect((error as Error).message).toContain('carries no readable code');
     expect((error as Error).message).toContain('coral-cli backend status');
     expect((error as Error).message).not.toContain('private malformed-diagnostic text');
     expect((error as Error).message).not.toContain('forged malformed-diagnostic command');
   });
 
+  // A sentinel this build cannot render is still a refusal it can name. Startup is where the operator meets it
+  // first, and a message that withholds the code leaves them nothing to search the coordinator log with, while
+  // the persisted prose stays refused because an unproven author wrote it.
   it.each([
     {
       failure: 'a discriminator owned by another refusal',
@@ -1226,7 +1229,7 @@ describe('ipc ensure', () => {
       code: 'handoff_shutdown_credential_unavailable',
       context: { stage: 'shutdown-request' },
     },
-  ])('reports $failure as an invalid current-attempt sentinel diagnostic', async ({ code, context }) => {
+  ])('names $failure in the current-attempt sentinel it could not render', async ({ code, context }) => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -1248,7 +1251,11 @@ describe('ipc ensure', () => {
     const error = await ensuredPromise;
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('invalid setup-error diagnostic');
+    expect((error as Error).message).toContain(`setup-error code '${code}'`);
+    expect((error as Error).message).toContain('not in the shape this Coral build renders that code from');
+    expect((error as Error).message).toContain('coral-cli backend status');
+    // The sentinel carries no proven author, so `unprovable` may not send the operator after a release.
+    expect((error as Error).message).not.toContain('upgrade Coral');
     expect((error as Error).message).not.toContain('private incompatible-context text');
     expect((error as Error).message).not.toContain('forged incompatible-context command');
   });

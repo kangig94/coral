@@ -13,18 +13,23 @@ Every coordinator child writes its serializable setup failure to the same `start
 renames that temporary file onto the shared path. The rename is atomic, but its destination is single-slot,
 so a later child's complete sentinel replaces an earlier child's complete sentinel.
 
-Each parent waits through `matchingStartupError` (`src/transport/ipc/ensure.ts`). For a freshly spawned
-child it first matches the shared socket path, bundle hash, flavor, and namespace, then requires the
-sentinel's `attemptId` to equal the id it gave that child and requires the file mtime to fall inside that
-spawn's window. The attempt id is therefore not the parent's only predicate, but it is the only predicate
-unique to that parent-child pair. A valid sentinel from a concurrent same-installation attempt passes the
-shared identity checks and time window, then fails that attempt-id check.
+Each parent waits through `matchingStartupError` (`src/transport/ipc/ensure.ts`). Every read first crosses one
+boundary check — the sentinel's socket path and flavor must be the ones this invocation wants. For a freshly
+spawned child the parent then requires `resolveStartupAttemptLineage` (`src/infra/startup-attempt-lineage.ts`)
+to return `proven-current-attempt` on the `startup-attempt-id` proof, which holds only when the sentinel's
+`attemptId` and the id this parent gave that child are both canonical identifiers and equal, and requires the
+file mtime not to precede the spawn by more than one poll interval. That mtime bound is a floor with no
+ceiling: it excludes a sentinel written before this spawn, not one written after it. The attempt id is
+therefore not the parent's only predicate, but it is the only predicate unique to that parent-child pair —
+socket path, flavor, and a lower mtime bound are all shared by every concurrent same-installation attempt, so
+such a sentinel passes them and fails only the attempt-id check.
 
-The existing-starting reader is broader still. It compares `sentinel.pid` only when that polling iteration
-obtained an `observedPid` from discovery or health. With neither available, it performs no pid comparison:
-any sentinel that passes the shared installation identity checks is accepted unless the process named by
-that sentinel is observed absent. The shared slot can therefore lose one parent's diagnostic and can also
-attribute a concurrent coordinator's diagnostic to a parent that never observed that coordinator's pid.
+The existing-starting reader has no attempt id to compare, so it substitutes this installation's bundle hash
+and namespace. It compares `sentinel.pid` only when that polling iteration obtained an `observedPid` from
+discovery or health. With neither available, it performs no pid comparison: any sentinel carrying that bundle
+hash and namespace is accepted unless the process named by that sentinel is observed absent. The shared slot
+can therefore lose one parent's diagnostic and can also attribute a concurrent coordinator's diagnostic to a
+parent that never observed that coordinator's pid.
 
 ## Reachable scenario and consequence
 

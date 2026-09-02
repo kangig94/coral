@@ -30,6 +30,7 @@ import {
   resolveSetupErrorAuthorship,
   type OperatorFacingCoralSetupError,
   type SetupErrorAuthorship,
+  type SetupErrorAuthorshipKind,
 } from '../../runtime/errors.js';
 import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
@@ -466,24 +467,54 @@ function clearStartupErrorSentinel(paths: CoordinatorPaths): void {
 }
 
 /**
- * "Upgrade Coral" may be said only about a code some other build wrote. Telling an operator to upgrade past a
- * code the running build itself recorded sends them after a release that does not exist.
+ * Shared by every startup refusal that names a code whose text could not be rebuilt. "Upgrade Coral" may be
+ * said only about a record some other build wrote: telling an operator to upgrade past a refusal the running
+ * build itself recorded sends them after a release that does not exist.
+ */
+function startupErrorFollowUp(authorship: SetupErrorAuthorshipKind): string {
+  const inspect = 'Run `coral-cli backend status` to inspect the recorded failure';
+  switch (authorship) {
+    case 'this-build':
+    case 'unprovable':
+      return `${inspect}, read the coordinator log for that code, then retry the original command.`;
+    case 'other-build':
+      return `${inspect}, then upgrade Coral and retry the original command.`;
+    default:
+      return assertNever(authorship);
+  }
+}
+
+/**
+ * "whose codes this build cannot name" may be said only about a code some other build wrote. A record the
+ * running build itself wrote and then could not re-read says nothing about its own catalog, so that arm may
+ * claim only what was observed: the text did not survive the round trip.
  */
 function unrecognizedStartupCodeMessage(
   startupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrecognized_code' }>,
 ): string {
   const recorded = `Coordinator startup stopped with setup-error code '${startupError.code}'`;
-  const inspect = 'Run `coral-cli backend status` to inspect the recorded failure';
+  const followUp = startupErrorFollowUp(startupError.authorship);
   switch (startupError.authorship) {
     case 'this-build':
-      return `${recorded}, and the text this Coral build recorded with it could not be re-read. ${inspect}, read the coordinator log for that code, then retry the original command.`;
+      return `${recorded}, and the text this Coral build recorded with it could not be re-read. ${followUp}`;
     case 'other-build':
-      return `${recorded}, recorded by a Coral build other than the one running here, whose codes this build cannot name. ${inspect}, then upgrade Coral and retry the original command.`;
+      return `${recorded}, recorded by a Coral build other than the one running here, whose codes this build cannot name. ${followUp}`;
     case 'unprovable':
-      return `${recorded}, and this Coral build could not prove which build recorded it. ${inspect}, read the coordinator log for that code, then retry the original command.`;
+      return `${recorded}, and this Coral build could not prove which build recorded it. ${followUp}`;
     default:
       return assertNever(startupError.authorship);
   }
+}
+
+/**
+ * A documented code whose recorded context this build cannot render still has a name, and the name is what an
+ * operator searches the coordinator log with. Withholding it would leave a code this build documents harder to
+ * act on than one it has never heard of.
+ */
+function unrenderableStartupContextMessage(
+  startupError: Extract<OperatorFacingCoralSetupError, { kind: 'unrenderable_context' }>,
+): string {
+  return `Coordinator startup stopped with setup-error code '${startupError.code}', and the details recorded with it are not in the shape this Coral build renders that code from, so its text could not be regenerated. ${startupErrorFollowUp(startupError.authorship)}`;
 }
 
 /**
@@ -743,9 +774,11 @@ async function waitForBackendReady(
           throw new CoralSetupError(startupError);
         case 'unrecognized_code':
           throw new BackendUnreachableError(unrecognizedStartupCodeMessage(startupError));
+        case 'unrenderable_context':
+          throw new BackendUnreachableError(unrenderableStartupContextMessage(startupError));
         case 'invalid_diagnostic':
           throw new BackendUnreachableError(
-            'Coordinator startup stopped with an invalid setup-error diagnostic. Run `coral-cli backend status` to inspect the recorded failure, then reinstall or upgrade the selected Coral build and retry the original command.',
+            'Coordinator startup stopped with a setup-error diagnostic that carries no readable code. Run `coral-cli backend status` to inspect the recorded failure, then reinstall or upgrade the selected Coral build and retry the original command.',
           );
         default:
           return assertNever(startupError);

@@ -690,6 +690,17 @@ describe('cli format', () => {
       },
     );
 
+    // A mutating command attempts startup *or handoff*: it starts a coordinator only when none is serving.
+    // "Relaunch" promises the first outcome for evidence that cannot tell the two apart, which is why the
+    // status surface says "attempts startup or handoff" and is held to it by its own wording sweep. Shutdown
+    // reports the same evidence to the same operator and may not promise more than status does.
+    it.each(SHUTDOWN_REFUSAL_SENTENCES)(
+      'does not promise a relaunch a mutating command may not perform (%j)',
+      (result) => {
+        expect(formatShutdown(result)).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
+      },
+    );
+
     it('reports no_record as a discovery result, not a verdict that the backend stopped', () => {
       const text = formatShutdown({ ok: false, reason: 'no_record' });
 
@@ -1236,6 +1247,8 @@ describe('cli format', () => {
       );
     });
 
+    // The disposition beside this one names its code, so this arm has to say why it does not: nothing readable
+    // was recorded, rather than a code being withheld.
     it('formats an invalid setup diagnostic as a refusal that must be replaced', () => {
       const text = formatBackendStatus({
         status: 'recent_failure',
@@ -1244,9 +1257,50 @@ describe('cli format', () => {
         setupError: { kind: 'invalid_diagnostic' },
       });
 
-      expect(text).toContain('Coral recorded a setup refusal whose authored text could not be reconstructed.');
+      expect(text).toContain('Coral recorded a setup refusal that carries no readable setup-error code.');
       expect(text).toContain('a current valid startup diagnostic replaces this one');
     });
+
+    // A documented code whose context did not validate is the case that used to print no code at all, which
+    // made a refusal this build documents strictly worse to meet than one it had never heard of.
+    it('names a documented setup-error code whose recorded context could not be rendered', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: {
+            kind: 'unrenderable_context',
+            code: 'handoff_socket_holder_unverified',
+            authorship: 'other-build',
+          },
+        }),
+      ).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Cause: Coral documents this setup refusal, but the details recorded with it are not in the shape this build renders that code from, so its text could not be regenerated. [code=handoff_socket_holder_unverified]',
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+        ].join('\n'),
+      );
+    });
+
+    // Same rule as the unrecognized arm: only a record another build wrote has a later release to upgrade to.
+    it.each(['this-build', 'unprovable'] as const)(
+      'names an unrenderable %s setup-error code without advising an upgrade',
+      (authorship) => {
+        const text = formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          retryable: false,
+          setupError: { kind: 'unrenderable_context', code: 'handoff_socket_holder_unverified', authorship },
+        });
+
+        expect(text).toContain('[code=handoff_socket_holder_unverified]');
+        expect(text).not.toContain('upgrade Coral');
+      },
+    );
 
     it('formats a shutting-down backend status', () => {
       expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
@@ -1300,6 +1354,16 @@ describe('cli format', () => {
         phase: 'startup_failed' as const,
         retryable: false,
         setupError: { kind: 'invalid_diagnostic' as const },
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        setupError: {
+          kind: 'unrenderable_context' as const,
+          code: 'handoff_socket_holder_unverified' as const,
+          authorship: 'other-build' as const,
+        },
       },
       { status: 'shutting_down' },
       { status: 'unauthorized' },

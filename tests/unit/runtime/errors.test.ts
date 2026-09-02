@@ -621,7 +621,11 @@ describe('CoralSetupError', () => {
         remediation: 'persisted remediation',
         context: { stage: 'after-sigkill-grace', pid: 4242, signal: 'SIGKILL', graceMs: -15_000 },
       }),
-    ).toEqual({ kind: 'invalid_diagnostic' });
+    ).toEqual({
+      kind: 'unrenderable_context',
+      code: 'handoff_sigkill_grace_target_alive',
+      authorship: 'this-build',
+    });
   });
 
   it('restores a handoff socket-holder refusal for a non-ASCII canonical path', () => {
@@ -725,8 +729,37 @@ describe('CoralSetupError', () => {
           remediation: 'persisted remediation',
           context: { stage: 'handoff-deadline', socketPath },
         }),
-      ).toEqual({ kind: 'invalid_diagnostic' });
+      ).toEqual({
+        kind: 'unrenderable_context',
+        code: 'handoff_socket_holder_unverified',
+        authorship: 'this-build',
+      });
     }
+  });
+
+  // The rollback shape: a later build adds a field to this code's context and hands startup to this one, whose
+  // exact-key validator rejects the whole record. Declining to render text written by a build this one cannot
+  // vouch for is right; declining to say which refusal happened leaves the operator nothing to search for.
+  it('names a documented code whose recorded context carries a field this build does not know', () => {
+    expect(
+      readOperatorFacingCoralSetupError(
+        {
+          code: 'handoff_socket_holder_unverified',
+          userMessage: 'later-build text',
+          remediation: 'Run a later-build command.',
+          context: {
+            stage: 'handoff-deadline',
+            socketPath: '/run/coral/coordinator.sock',
+            holderProbe: 'unsupported',
+          },
+        },
+        OTHER_BUILD,
+      ),
+    ).toEqual({
+      kind: 'unrenderable_context',
+      code: 'handoff_socket_holder_unverified',
+      authorship: 'other-build',
+    });
   });
 
   // Every Node errno message quotes the path it names, and this remediation branches on reading one.
@@ -785,6 +818,10 @@ describe('CoralSetupError', () => {
     }
   });
 
+  // A code this build documents may not come out of the reader anonymous. The code is the operator's only
+  // handle on the refusal — the one token that finds it in a log or a release note — and refusing to render
+  // an untrusted context is no reason to withhold it, which would leave a known code with less to act on than
+  // an unknown one.
   it.each([
     {
       failure: 'a discriminator owned by another refusal',
@@ -796,7 +833,7 @@ describe('CoralSetupError', () => {
       code: 'handoff_shutdown_credential_unavailable',
       context: { stage: 'shutdown-request' },
     },
-  ])('marks $failure invalid when backend status reads a known refusal', ({ code, context }) => {
+  ])('still names the code when backend status reads a known refusal with $failure', ({ code, context }) => {
     const now = Date.parse('2026-09-01T00:00:00.000Z');
 
     expect(
@@ -822,7 +859,8 @@ describe('CoralSetupError', () => {
       status: 'recent_failure',
       phase: 'startup_failed',
       retryable: true,
-      setupError: { kind: 'invalid_diagnostic' },
+      // The diagnostic carries no author identity, so authorship is `unprovable` — not a weaker `other-build`.
+      setupError: { kind: 'unrenderable_context', code, authorship: 'unprovable' },
     });
   });
 

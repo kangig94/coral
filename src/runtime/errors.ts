@@ -35,6 +35,18 @@ export type OperatorFacingCoralSetupError =
       remediation: string;
     }>
   | Readonly<{ kind: 'unrecognized_code'; code: string; authorship: SetupErrorAuthorshipKind }>
+  /**
+   * The catalog names this code, but the recorded context is not a shape this build renders it from, so no
+   * operator text can be regenerated. Refusing to render untrusted context may not also refuse to name the
+   * code: the code is parsed and canonical, it is the one token an operator can search a log or a release
+   * note for, and withholding it would make a known code worse to meet than an unknown one.
+   */
+  | Readonly<{
+      kind: 'unrenderable_context';
+      code: DocumentedCoralSetupErrorCode;
+      authorship: SetupErrorAuthorshipKind;
+    }>
+  /** The only disposition that names no code, because no canonical code could be parsed out of the record. */
   | Readonly<{ kind: 'invalid_diagnostic' }>;
 
 /**
@@ -1636,14 +1648,14 @@ export function readOperatorFacingCoralSetupError(
   if (isHandoffRefusalCode(code)) {
     const validateContext: (context: CoralSetupErrorContext) => boolean = HANDOFF_REFUSAL_CONTEXT_VALIDATORS[code];
     if (!validateContext(canonicalContext)) {
-      return { kind: 'invalid_diagnostic' };
+      return { kind: 'unrenderable_context', code, authorship: authorship.kind };
     }
   }
   let authored: CoralSetupError;
   try {
     authored = documentedCoralSetupError(code, canonicalContext);
   } catch {
-    return { kind: 'invalid_diagnostic' };
+    return { kind: 'unrenderable_context', code, authorship: authorship.kind };
   }
   return {
     kind: 'documented',
