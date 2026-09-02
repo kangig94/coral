@@ -1290,7 +1290,6 @@ const MAX_OPERATOR_FACING_PROSE_LENGTH = 1_024;
 const MAX_OPERATOR_FACING_CONTEXT_NUMBER = 1_000_000_000_000;
 const SETUP_ERROR_IDENTIFIER_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const OPERATOR_FACING_CONTEXT_KEY_PATTERN = /^[a-z][A-Za-z0-9]*$/;
-const OPERATOR_FACING_CONTEXT_STRING_PATTERN = /^[A-Za-z0-9 ._/:@+,=()[\]{}%#&!?~-]+$/;
 /**
  * Characters no operator-facing value may carry, whether it arrived as a path, a context value, or recorded
  * prose. A line break belongs here for the same reason an escape sequence does: the surfaces that render
@@ -1371,6 +1370,12 @@ function isMissingSignalCapabilityFields(value: unknown): value is readonly Miss
   );
 }
 
+/**
+ * An open-text context value carries an observation this build did not author — an errno message, a foreign
+ * path, a filesystem's own words — and a remediation may branch on reading it. Its bound is therefore what
+ * the rendering surfaces cannot carry and no narrower, the same bound recorded prose is held to: dropping
+ * the value silently takes whichever branch assumes it was never observed.
+ */
 function canonicalOperatorFacingContextValue(key: string, value: unknown): unknown | undefined {
   if (key === 'missingFields') {
     if (!isMissingSignalCapabilityFields(value)) return undefined;
@@ -1386,7 +1391,7 @@ function canonicalOperatorFacingContextValue(key: string, value: unknown): unkno
         ? undefined
         : value;
     }
-    if (value !== value.trim() || !OPERATOR_FACING_CONTEXT_STRING_PATTERN.test(value)) return undefined;
+    if (value !== value.trim() || OPERATOR_FACING_UNSAFE_CHARACTER_PATTERN.test(value)) return undefined;
     const closedValues = OPERATOR_FACING_CLOSED_CONTEXT_VALUES[key];
     return closedValues === undefined || closedValues.has(value) ? value : undefined;
   }
@@ -1629,7 +1634,7 @@ function readSelfAuthoredCoralSetupError(
 }
 
 /**
- * A documented code's operator text is regenerated from the catalog whoever wrote the record: the recorded
+ * A documented code's operator text is regenerated from the catalog, whoever wrote the record: the recorded
  * prose was rendered from context this build never validated, and the catalog renders from context it did.
  */
 export function readOperatorFacingCoralSetupError(

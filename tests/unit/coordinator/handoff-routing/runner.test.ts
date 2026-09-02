@@ -1026,6 +1026,80 @@ describe('handoff-routing/runner', () => {
     expect(child?.unref).toHaveBeenCalledOnce();
   });
 
+  it('refuses a backend startup terminal that leaves the selected coordinator still starting', async () => {
+    const bundleDir = roots[0];
+    const target = validatedTarget(bundleDir);
+    mockState.health.mockResolvedValue({
+      ...liveHealth(bundleDir, pluginRootNamespace(dirname(bundleDir))),
+      status: 'starting',
+    });
+    let child: ChildProcess | undefined;
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatExits(0, null);
+      return child;
+    });
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).resolves.toMatchObject({
+      kind: 'delegated',
+      version: manifest.version,
+      outcome: { kind: 'handoff-exit', exitCode: 1 },
+    });
+    expect(mockState.health).toHaveBeenCalled();
+    expect(child?.unref).toHaveBeenCalledOnce();
+  });
+
+  it('holds a selected coordinator that published its record before it finished starting', async () => {
+    const bundleDir = roots[0];
+    const namespace = pluginRootNamespace(dirname(bundleDir));
+    const target = validatedTarget(bundleDir);
+    const releasePolls: Array<() => void> = [];
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: () => new Promise<void>((resolve) => releasePolls.push(resolve)),
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation(() => childThatStaysAlive());
+
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+
+    configureNewerIncumbent(bundleDir);
+    mockState.health.mockResolvedValue({ ...liveHealth(bundleDir, namespace), status: 'starting' });
+    for (const release of releasePolls.splice(0)) release();
+
+    // A further poll is the evidence of the hold: readiness would have settled the delegation instead.
+    await vi.waitFor(() => expect(releasePolls).toHaveLength(1));
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    mockState.health.mockResolvedValue(liveHealth(bundleDir, namespace));
+    for (const release of releasePolls.splice(0)) release();
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success', version: manifest.version },
+    });
+  });
+
   it('holds a coordinator that cannot prove this startup attempt until the spawned backend ends', async () => {
     const target = validatedTarget(roots[0]);
     const releasePolls: Array<() => void> = [];

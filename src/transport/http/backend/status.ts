@@ -215,7 +215,8 @@ async function probeUnauthenticatedPing(
   });
   const body = await parseJsonResponse(response);
   if (response.status === 200) {
-    // A shape rejection provides no peer identity and must remain unreachable.
+    // A body this build cannot decode names no peer, so it may only be classified unreachable — never as
+    // another coordinator's, and never as a coordinator that answered.
     if (!isBackendPing(body)) {
       return unreachable('health responded 200 with a body this build could not decode');
     }

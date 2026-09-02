@@ -267,10 +267,17 @@ describe('real backend-startup delegation', () => {
           `Handoff refused at the startup deadline for socket ${files.socketPath}: the socket remained bound but no verified holder pid was available.`,
         );
       } else {
+        // The delegated child's own terminal is not a fact about why the coordinator is unreachable: 23 is
+        // the code the crash fixture exits with and SIGTERM the signal the signal fixture raises. The code
+        // is bounded to a free-standing token so a pid, duration, path or `file:line:col` that merely
+        // contains those digits cannot fail this for the wrong reason.
+        // see CORAL_DELEGATION_MODE in tests/fixtures/backend-startup-delegation-preload.cjs
+        const reported = run.stderr();
         expect(status).not.toBe(0);
-        expect(run.stderr()).toContain('[code=backend_unreachable]');
-        expect(run.stderr()).not.toContain('23');
-        expect(run.stderr()).not.toContain('SIGTERM');
+        expect(status).not.toBe(23);
+        expect(reported).toContain('[code=backend_unreachable]');
+        expect(reported).not.toMatch(/(?<![\w.:-])23(?![\w.:-])/u);
+        expect(reported).not.toContain('SIGTERM');
       }
     },
     120_000,

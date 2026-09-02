@@ -37,7 +37,7 @@ describe('handoff routing status bounds', () => {
     expect(generation).toBeLessThanOrEqual(maximum);
     expect(MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES).toEqual(MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES);
     expect(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES).toBe(MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES);
-    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBe(
+    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBeGreaterThanOrEqual(
       Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES),
     );
   });
@@ -48,9 +48,9 @@ describe('handoff routing status bounds', () => {
     const generation = handoffRoutingStatusGeneration(schema);
     const { minimum, maximum } = HANDOFF_ROUTING_STATUS_GENERATION_BAND;
 
-    expect(fingerprint.toString('hex')).toBe('07fb083adfe98f3cdd0c46543a79def3d6cfe71ed091d317e2d492231137b288');
+    expect(fingerprint.toString('hex')).toBe('2b1df7466714d0a345c0e242c5e4b9f0913ee44b069c2683b1b4f8529d9a55d9');
     expect(fingerprint.length).toBe(32);
-    expect(generation).toBe(1133892154);
+    expect(generation).toBe(1723384134);
     expect(generation).toBe((fingerprint.readUInt32BE(0) % (maximum - minimum + 1)) + minimum);
     expect(HANDOFF_ROUTING_STATUS_SENTINEL_GENERATION).toBe(0);
     expect(

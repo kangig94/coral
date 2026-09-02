@@ -307,12 +307,19 @@ type ObservedChild = Readonly<{
 
 type BackendStartupObservation = Readonly<{ kind: 'ready' }> | Readonly<{ kind: 'terminal'; outcome: ChildOutcome }>;
 
+type BackendStartupHoldReason =
+  | Readonly<{
+      kind: 'lineage-unproven';
+      lineage: Exclude<StartupAttemptLineage, { kind: 'proven-current-attempt' }>;
+    }>
+  | Readonly<{ kind: 'not-serving'; status: Exclude<LiveIncumbentHealth['status'], 'ok'> }>;
+
 type BackendStartupReadiness =
   | Readonly<{ kind: 'ready' }>
   | Readonly<{
       kind: 'hold';
-      until: 'lineage-confirmed-health-or-child-terminal';
-      lineage: Exclude<StartupAttemptLineage, { kind: 'proven-current-attempt' }>;
+      until: 'serving-lineage-confirmed-health-or-child-terminal';
+      reason: BackendStartupHoldReason;
     }>;
 
 type RoutingResolution = Readonly<{
@@ -579,6 +586,12 @@ function startupAttemptLineage(
   });
 }
 
+/**
+ * Readiness needs two proofs and neither substitutes for the other: lineage proves the answering coordinator
+ * belongs to this attempt, and `ok` proves it finished starting. A selected backend that has bound its socket
+ * and published its discovery record still answers `starting` while it can refuse, so releasing the direct
+ * child on lineage alone strands every refusal raised after that point.
+ */
 function liveBackendStartupReadiness(
   reading: LiveIncumbentReading,
   desiredIdentity: StartupAttemptIdentity,
@@ -587,28 +600,28 @@ function liveBackendStartupReadiness(
   if (reading.kind !== 'observed') {
     return null;
   }
+  const until = 'serving-lineage-confirmed-health-or-child-terminal';
   const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);
-  return lineage.kind === 'proven-current-attempt'
-    ? { kind: 'ready' }
-    : {
-        kind: 'hold',
-        until: 'lineage-confirmed-health-or-child-terminal',
-        lineage,
-      };
+  if (lineage.kind !== 'proven-current-attempt') {
+    return { kind: 'hold', until, reason: { kind: 'lineage-unproven', lineage } };
+  }
+  const { status } = reading.health;
+  return status === 'ok' ? { kind: 'ready' } : { kind: 'hold', until, reason: { kind: 'not-serving', status } };
 }
 
 /**
  * Terminality retires lineage's veto over a bare identity match; it does not retire lineage as a proof. The
  * inherited attempt id is the only one of the two that survives further delegation — a transitively delegated
  * coordinator carries this attempt's id while its build identity is a third build's — so accepting the
- * identity match alone records a startup that succeeded as a delegated exit.
+ * identity match alone records a startup that succeeded as a delegated exit. Terminality retires neither
+ * half of the serving proof: a coordinator still starting has not answered whether it will serve at all.
  */
 function terminalBackendStartupReadiness(
   reading: LiveIncumbentReading,
   desiredIdentity: StartupAttemptIdentity,
   expectedAttemptId: string | undefined,
 ): Readonly<{ kind: 'ready' }> | null {
-  if (reading.kind !== 'observed') {
+  if (reading.kind !== 'observed' || reading.health.status !== 'ok') {
     return null;
   }
   const lineage = startupAttemptLineage(reading.health, desiredIdentity, expectedAttemptId);

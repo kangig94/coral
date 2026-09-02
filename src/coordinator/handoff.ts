@@ -644,6 +644,10 @@ function observeSignalTarget(
   if (incumbent.incarnation === undefined) {
     return unverifiableSignalTarget('handoff_published_incarnation_missing');
   }
+  // Precedence is load-bearing: when both baselines disagree with the live incarnation, only the anchor
+  // dates the change. It is this contender's own observation of that pid, so a live incarnation differing
+  // from it means the pid was recycled since; the published record is as old as the incumbent and cannot
+  // separate a recycle from a record that was always stale.
   if (anchoredIncarnation !== null && liveIncarnation !== anchoredIncarnation) {
     return unverifiableSignalTarget('handoff_pid_recycled');
   }

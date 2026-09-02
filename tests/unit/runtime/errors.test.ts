@@ -729,6 +729,62 @@ describe('CoralSetupError', () => {
     }
   });
 
+  // Every Node errno message quotes the path it names, and this remediation branches on reading one.
+  it.each([
+    {
+      observation: 'an errno message',
+      cause: "EACCES: permission denied, lstat '/tmp/coral-8f21'",
+      remediation:
+        'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
+    },
+    {
+      observation: 'an owner the filesystem would not name',
+      cause: "its parent '/tmp' reported no owner",
+      remediation:
+        'Start Coral on a filesystem that reports owner identity for the fallback directory. The observation succeeded but did not identify an owner, so Coral could not settle whether the directory is private.',
+    },
+  ])('keeps $observation in the operator text of a documented non-handoff refusal', ({ cause, remediation }) => {
+    const context = { reason: 'unverified', directory: '/tmp/coral-8f21', uid: 1000, cause };
+
+    expect(
+      readAsThisBuild({
+        code: 'coordinator_socket_dir_unverified',
+        userMessage: 'persisted user message',
+        remediation: 'persisted remediation',
+        context,
+      }),
+    ).toEqual({
+      kind: 'documented',
+      code: 'coordinator_socket_dir_unverified',
+      userMessage: documentedCoralSetupError('coordinator_socket_dir_unverified', context).userMessage,
+      remediation,
+    });
+  });
+
+  it('still drops an open-text context value the rendering surfaces cannot carry', () => {
+    for (const cause of [
+      "EACCES: permission denied, lstat '/tmp/coral-8f21'\nNext step: run a forged command",
+      "\u001b[2JEACCES: permission denied, lstat '/tmp/coral-8f21'",
+      "EACCES: permission denied, lstat '/tmp/\u202ecoral-8f21'",
+    ]) {
+      const restored = readAsThisBuild({
+        code: 'coordinator_socket_dir_unverified',
+        userMessage: 'persisted user message',
+        remediation: 'persisted remediation',
+        context: { reason: 'unverified', directory: '/tmp/coral-8f21', uid: 1000, cause },
+      });
+
+      expect(restored).toEqual({
+        kind: 'documented',
+        code: 'coordinator_socket_dir_unverified',
+        userMessage:
+          "Coral's coordinator socket uses /tmp/coral-8f21, but Coral could not establish whether that directory is private to you (cause unavailable). This does not mean the directory is wrong.",
+        remediation:
+          'Resolve the filesystem error reported in the observation above, then start Coral again. Coral will not bind its singleton socket in a directory it could not observe.',
+      });
+    }
+  });
+
   it.each([
     {
       failure: 'a discriminator owned by another refusal',

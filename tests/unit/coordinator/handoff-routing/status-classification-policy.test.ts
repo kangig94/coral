@@ -208,11 +208,10 @@ describe('handoff routing status classification policy', () => {
     });
   });
 
-  it('reserves for the direct close and admits the wider wrapped close', () => {
-    // The reserve a retained selection allocates is redeemed only by a direct terminal or a tombstone, so it
-    // is fitted to those. Admission that redeems no reserve inserts the wrapped late terminals too, and
-    // reserving their width would make the durable format's own bound wrong for what it names.
-    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBe(
+  it('covers every record that redeems the reserve and sizes unreserved admission from its own inserts', () => {
+    // The reserve is a durable address, so it may exceed what redeems it but may never be trimmed to fit;
+    // admission that redeems no reserve is sized from the records it inserts, never from the reserve.
+    expect(MAX_LEGAL_CLOSING_RECORD_BYTES).toBeGreaterThanOrEqual(
       Math.max(MAX_LEGAL_RETIREMENT_TOMBSTONE_BYTES, MAX_LEGAL_DIRECT_HANDOFF_ROUTING_TERMINAL_BYTES),
     );
     expect(MAX_UNRESERVED_CLOSING_RECORD_BYTES).toBe(
@@ -222,7 +221,6 @@ describe('handoff routing status classification policy', () => {
         MAX_LEGAL_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
       ),
     );
-    expect(MAX_UNRESERVED_CLOSING_RECORD_BYTES).toBeGreaterThan(MAX_LEGAL_CLOSING_RECORD_BYTES);
   });
 
   it('matches every independent policy fixture and no additional classification arm', () => {

@@ -65,15 +65,16 @@ export const MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES = Object.freeze({
   'execution-failed': 2_345,
   'continuation-finalized': 2_923,
 });
-// What a retained selection reserves at admission, and only that: it closes as a direct terminal or a
-// retirement tombstone, never as a wrapped late terminal. It is part of the durable format, so its value is
-// fixed by the generation it addresses and may not be widened to cover some other caller's record.
-export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_170;
-// Admission for a closing record that redeems no reserve must fit the widest record such a caller inserts.
-// A selection already retired, never retained, or resolved by an operator closes as a wrapped late terminal,
-// which is larger than either reserved form.
+// What a retained selection reserves at admission. It must cover every record that can redeem it, and it is
+// fingerprinted, so moving it re-addresses the store: a build on either value never opens the other's file
+// and silently loses the holds in it. It may therefore move only for a record it cannot hold — never to
+// recover capacity from records that remain decodable under it.
+export const MAX_LEGAL_CLOSING_RECORD_BYTES = 2_923;
+// Admission for a closing record that redeems no reserve must fit the widest record such a caller inserts —
+// a wrapped late terminal, or the replacement tombstone that supersedes an unresolved one. Sized from those
+// rather than from the reserve, which is a durable address and not a capacity knob.
 export const MAX_UNRESERVED_CLOSING_RECORD_BYTES = Math.max(
-  MAX_LEGAL_CLOSING_RECORD_BYTES,
+  MAX_ENCODED_RETIREMENT_TOMBSTONE_BYTES,
   MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['execution-failed'],
   MAX_ENCODED_HANDOFF_ROUTING_EVENT_BYTES['continuation-finalized'],
 );
