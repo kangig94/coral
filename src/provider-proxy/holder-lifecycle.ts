@@ -25,10 +25,10 @@ export type AcquisitionPhase = 'acquisition-provisional' | 'published';
  */
 export type HolderStatusDisposition = 'alive' | 'unobservable' | 'departed';
 
-/** One `*.holder-status.v1` reading: what changed, how many disposition changes preceded it, and when the
- *  current one was recorded. `changedAtMs` is wall-clock epoch milliseconds — never the monotonic scope a
- *  `HolderObservation` carries, which by construction cannot be serialized onto the wire this crosses. */
+/** The identity and disposition share one snapshot so a reader cannot combine different holder admissions.
+ *  `changedAtMs` is wall-clock epoch milliseconds, never a process-local monotonic instant. */
 export type HolderStatusSnapshot = Readonly<{
+  identity: ControlHolderIdentity;
   disposition: HolderStatusDisposition;
   transitionSequence: number;
   changedAtMs: number;
@@ -68,14 +68,8 @@ export interface ControlHolderAuthority {
   /** One-way `acquisition-provisional` -> `published`. Idempotent: publishing an already-published authority
    *  changes nothing. */
   publish(): void;
-  /**
-   * Records what an identity-bound observation most recently found, mapping this module's own
-   * `alive|absent|unobservable` onto the starvation-readable `alive|unobservable|departed` vocabulary.
-   * Advances `transitionSequence` and updates `changedAtMs` — and fires `onTransition` — only when the
-   * mapped disposition differs from what is currently recorded; a repeated identical observation does
-   * neither.
-   */
-  recordObservation(disposition: HolderStatusDisposition): void;
+  /** An observation may change status only while its exact holder admission remains installed. */
+  recordObservation(subject: ControlHolderIdentity, disposition: HolderStatusDisposition): void;
   /** The starvation-readable surface `*.holder-status.v1` serves: `null` only before any holder has ever
    *  been admitted, the one case the pure clock bound still decides on its own. */
   status(): HolderStatusSnapshot | null;
@@ -90,9 +84,9 @@ export function createControlHolderAuthority(options: ControlHolderAuthorityOpti
   let transitionSequence = 0;
   let status: HolderStatusSnapshot | null = null;
 
-  const transitionTo = (disposition: HolderStatusDisposition): void => {
+  const transitionTo = (identity: ControlHolderIdentity, disposition: HolderStatusDisposition): void => {
     transitionSequence += 1;
-    status = { disposition, transitionSequence, changedAtMs: wallClockNow() };
+    status = { identity, disposition, transitionSequence, changedAtMs: wallClockNow() };
     options.onTransition?.(status);
   };
 
@@ -107,16 +101,23 @@ export function createControlHolderAuthority(options: ControlHolderAuthorityOpti
       installed = identity;
       // A successor's own liveness is unobserved until this authority's own next check confirms it — never
       // inherited from the predecessor's last recorded disposition.
-      transitionTo('unobservable');
+      transitionTo(identity, 'unobservable');
     },
     current: (): ControlHolderIdentity | null => installed,
     phase: (): AcquisitionPhase => phase,
     publish: (): void => {
       phase = 'published';
     },
-    recordObservation(disposition: HolderStatusDisposition): void {
+    recordObservation(subject: ControlHolderIdentity, disposition: HolderStatusDisposition): void {
+      if (
+        installed === null ||
+        installed.controlEpoch !== subject.controlEpoch ||
+        !sameControlTenancyHolder(installed.holder, subject.holder)
+      ) {
+        return;
+      }
       if (status !== null && status.disposition === disposition) return;
-      transitionTo(disposition);
+      transitionTo(installed, disposition);
     },
     status: (): HolderStatusSnapshot | null => status,
   });
@@ -205,14 +206,14 @@ export async function observeControlHolder<Scope extends symbol>(
   const liveness = await observe({ pid: admitted.holder.pid, incarnation: admitted.holder.incarnation });
   const observedAt = clock.now();
   if (liveness === 'alive') {
-    authority.recordObservation('alive');
+    authority.recordObservation(admitted, 'alive');
     return { disposition: 'alive', observedAt };
   }
   if (liveness === 'unknown') {
-    authority.recordObservation('unobservable');
+    authority.recordObservation(admitted, 'unobservable');
     return { disposition: 'unobservable', observedAt };
   }
-  authority.recordObservation('departed');
+  authority.recordObservation(admitted, 'departed');
   return {
     disposition: 'absent',
     observedAt,

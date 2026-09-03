@@ -146,6 +146,47 @@ const containmentOperationPolicy: ContainmentRequiredControlCallPolicy = {
   indeterminate: 'requires-containment',
   preEffectProtocolCodes: new Set(),
 };
+const liveClaimHoldCases: readonly Readonly<{
+  label: string;
+  waitingFor: 'heartbeat-bound-live-claims' | 'heartbeat-protocol-live-claims' | 'operation-control-outcome-unknown';
+  trigger(
+    faults: ProviderProxyAuthorityFaultLatch,
+    clock: ManualClock,
+    authority: DurableProviderProxyOperationAuthority,
+  ): void;
+}>[] = [
+  {
+    label: 'heartbeat-bound',
+    waitingFor: 'heartbeat-bound-live-claims',
+    trigger: (faults, clock) => {
+      faults.reportIncident(
+        heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+      );
+      clock.elapse(5_000);
+      faults.reportIncident(
+        heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat still timed out' }),
+      );
+    },
+  },
+  {
+    label: 'heartbeat-protocol',
+    waitingFor: 'heartbeat-protocol-live-claims',
+    trigger: (faults) => {
+      faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
+    },
+  },
+  {
+    label: 'operation-control-outcome-unknown',
+    waitingFor: 'operation-control-outcome-unknown',
+    trigger: (_faults, _clock, authority) => {
+      latchAuthorityFault(authority, {
+        kind: 'operation-control-failed',
+        policy: containmentOperationPolicy,
+        error: 'mutation outcome unknown',
+      });
+    },
+  },
+];
 const reportLifecycleIsRequired: Record<PropertyKey, never> extends Pick<
   ProviderProxySetLifecycleDeps,
   'reportLifecycle'
@@ -2095,6 +2136,46 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
+  it.each(liveClaimHoldCases)('retires the $label hold when its final claim leaves', ({ waitingFor, trigger }) => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'retirement containment still pending' }) as const);
+    const authority = fakeAuthority({
+      record,
+      faults,
+      stopAndReap,
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('live-claim-hold-route');
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+
+    trigger(faults, clock, authority);
+    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(expect.objectContaining({ waitingFor }));
+
+    claims.applyMutation({ kind: 'deleted', record });
+    lifecycle.claimsChanged(authority.setIdentity);
+
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(lifecycle.routeFor('live-claim-hold-route')).toBeNull();
+    expect(lifecycle.snapshot().states).toEqual(['containing']);
+    expect(lifecycle.snapshot().operatorDispositions).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ waitingFor })]),
+    );
+  });
+
   it('reattaches a channel incident atomically, restores routing, and rejects displaced callbacks', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -3310,6 +3391,152 @@ describe('ProviderProxySetLifecycle', () => {
     // Nothing was asked of the roles behind it — no redemption, and no containment proof either. The
     // `redeemCapsule` above throws precisely so that reaching it would fail this test rather than pass it.
     expect(proveContainmentAbsent).not.toHaveBeenCalled();
+  });
+
+  it('adopts a publication-unknown acquisition and restores its route through exact redemption', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = capsuleV3For(authority);
+    const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule: () => redemption.promise,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const routeKey = 'publication-unknown-route';
+    const admission = lifecycle.beginFreshAcquisition(routeKey, {
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+    });
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+
+    lifecycle.acquisitionPublicationUnknown(
+      admission.slotId,
+      '/capsules/publication-unknown.handoff.v3.json',
+      capsule,
+      'publication response was lost',
+    );
+
+    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['capsule-recovering'] }));
+    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({
+        setIdentity: providerProxySetAddress(authority.setIdentity),
+        disposition: 'held',
+        incidentReason: 'publication response was lost',
+        waitingFor: 'control-reattachment',
+      }),
+    );
+    expect(
+      lifecycle.beginFreshAcquisition(routeKey, {
+        buildSetId: capsule.buildSetId,
+        hostFingerprint: capsule.hostFingerprint,
+      }),
+    ).toEqual({ kind: 'already-represented' });
+
+    redemption.resolve({ kind: 'redeemed', set: authority, protection: 'protected' });
+    await vi.waitFor(() => expect(lifecycle.routeFor(routeKey)).toBe(authority));
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+  });
+
+  it('releases a publication-unknown acquisition after exact containment absence', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = capsuleV3For(authority);
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const onSlotReleased = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: async () => containmentEvidence('publication-unknown-absence'),
+      redeemCapsule: async () => ({
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'recovery-deadline', timeoutMs: 45_000 },
+      }),
+      retireCapsule,
+      onSlotReleased,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const routeKey = 'publication-unknown-absence-route';
+    const admission = lifecycle.beginFreshAcquisition(routeKey, {
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+    });
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+
+    lifecycle.acquisitionPublicationUnknown(
+      admission.slotId,
+      '/capsules/publication-unknown-absence.handoff.v3.json',
+      capsule,
+      'publication response was lost',
+    );
+
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    expect(retireCapsule).toHaveBeenCalledWith('/capsules/publication-unknown-absence.handoff.v3.json');
+    expect(onSlotReleased).toHaveBeenCalledWith(routeKey);
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+  });
+
+  it('lets the operator abandon a publication-unknown acquisition through the exact-set exit', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = capsuleV3For(authority);
+    const clock = new ManualClock();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: () => new Promise<ProviderProxySetContainmentEvidence>(() => undefined),
+      redeemCapsule: () => new Promise<ProviderProxySetRedemptionOutcome>(() => undefined),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('publication-unknown-operator-route', {
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+    });
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+    lifecycle.acquisitionPublicationUnknown(
+      admission.slotId,
+      '/capsules/publication-unknown-operator.handoff.v3.json',
+      capsule,
+      'publication response was lost',
+    );
+
+    expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity))).toEqual({
+      kind: 'deadline-pending',
+      remainingMs: 30_000,
+    });
+    clock.elapse(30_000);
+    const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected operator authorization, received ${authorization.kind}`);
+    }
+
+    await expect(
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        await operatorContainmentProof(authorization.capability, enforcersUnobservable),
+        true,
+      ),
+    ).resolves.toMatchObject({
+      kind: 'abandoned',
+      setIdentity: providerProxySetAddress(authority.setIdentity),
+      effect: { representationAction: 'abandonment-release-started' },
+    });
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
   });
 
   it('contains an unmatched zero-claim redemption before evaluating publication', async () => {

@@ -1,12 +1,12 @@
+import { assertNever } from '../infra/error-format.js';
+import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, type AsyncRecordedProcessObserver } from '../infra/node-process.js';
+import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import {
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
 } from '../infra/process-containment.js';
-
-import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, type AsyncRecordedProcessObserver } from '../infra/node-process.js';
-import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import {
   containmentExecutionDeadline,
   PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
@@ -37,6 +37,11 @@ export interface EnforcementScheduler {
 export type EnforcementOutcome =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'reap-failed'; reason: string }>;
+
+/** A superseded capability remains in the return value so no consumer can mistake refusal for completion. */
+export type EnforcementConsumptionDisposition<Authorization> =
+  | Readonly<{ kind: 'settled'; outcome: EnforcementOutcome }>
+  | Readonly<{ kind: 'authorization-superseded'; authorization: Authorization }>;
 
 /** How many distinct provider processes one containment may hold as teardown targets. */
 export const MAX_PROXY_RECORDED_PROVIDER_ROOTS = 128;
@@ -119,16 +124,12 @@ export interface ArmedEnforcer {
   wouldExceedProviderRootCap(root: RecordedProcessIdentity): boolean;
   /** The roots recorded so far, in registration order. */
   recordedRoots(): readonly RecordedProcessIdentity[];
-  /**
-   * Consumes an autonomously observed holder-absence capability. `null` when the capability no longer names
-   * the authority's current holder/epoch — a successor was installed after it was minted — in which case
-   * nothing was torn down and the caller's own loop continues under the new state. This is not a failure: a
-   * revoked capability and a genuine reap failure are different answers and must not share a return shape.
-   */
-  reapAbsentHolder(authorization: ObservedHolderAbsenceAuthorization): Promise<EnforcementOutcome | null>;
-  /** Consumes an explicit teardown capability from a credentialled active-control peer. Same `null`-on-stale
-   *  contract as `reapAbsentHolder`. */
-  stopAndReap(authorization: ExplicitTeardownAuthorization): Promise<EnforcementOutcome | null>;
+  reapAbsentHolder(
+    authorization: ObservedHolderAbsenceAuthorization,
+  ): Promise<EnforcementConsumptionDisposition<ObservedHolderAbsenceAuthorization>>;
+  stopAndReap(
+    authorization: ExplicitTeardownAuthorization,
+  ): Promise<EnforcementConsumptionDisposition<ExplicitTeardownAuthorization>>;
   /**
    * Consumes a local-signal capability. Unconditional: an OS signal delivered to this process is not a claim
    * any successor's epoch can revoke, so there is no currency check and no `null` outcome — this always
@@ -245,14 +246,22 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
 
   const consumeAbsence = async (
     authorization: ObservedHolderAbsenceAuthorization,
-  ): Promise<EnforcementOutcome | null> => {
-    if (!controlHolderAuthorizationIsCurrent(holderAuthority, authorization)) return null;
-    return teardown(containmentExecutionDeadline(clock, clock.now()));
+  ): Promise<EnforcementConsumptionDisposition<ObservedHolderAbsenceAuthorization>> => {
+    if (!controlHolderAuthorizationIsCurrent(holderAuthority, authorization)) {
+      return { kind: 'authorization-superseded', authorization };
+    }
+    const outcome = await teardown(containmentExecutionDeadline(clock, clock.now()));
+    return { kind: 'settled', outcome };
   };
 
-  const consumeExplicit = async (authorization: ExplicitTeardownAuthorization): Promise<EnforcementOutcome | null> => {
-    if (!controlHolderAuthorizationIsCurrent(holderAuthority, authorization)) return null;
-    return teardown(containmentExecutionDeadline(clock, clock.now()));
+  const consumeExplicit = async (
+    authorization: ExplicitTeardownAuthorization,
+  ): Promise<EnforcementConsumptionDisposition<ExplicitTeardownAuthorization>> => {
+    if (!controlHolderAuthorizationIsCurrent(holderAuthority, authorization)) {
+      return { kind: 'authorization-superseded', authorization };
+    }
+    const outcome = await teardown(containmentExecutionDeadline(clock, clock.now()));
+    return { kind: 'settled', outcome };
   };
 
   const consumeLocalSignal = async (_authorization: LocalSignalTeardownAuthorization): Promise<EnforcementOutcome> => {
@@ -291,7 +300,18 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
         schedule();
         return;
       }
-      void consumeAbsence(observation.authorization);
+      void consumeAbsence(observation.authorization).then((disposition) => {
+        switch (disposition.kind) {
+          case 'settled':
+            return;
+          case 'authorization-superseded':
+            deadlines.renewHolderCheck(checkedAt);
+            schedule();
+            return;
+          default:
+            return assertNever(disposition);
+        }
+      });
       return;
     }
     // Neither disposition authorizes anything; both renew, so the loop retries rather than stalling forever

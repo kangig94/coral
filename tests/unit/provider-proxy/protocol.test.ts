@@ -14,6 +14,7 @@ import {
   encodeProxyControlFrame,
   guardianAcquisitionPublishResultSchema,
   guardianContainmentCommitParamsSchema,
+  guardianContainmentCommitResultSchema,
   guardianIdentitySchema,
   guardianOperationActivateParamsSchema,
   guardianProxyOperationReleaseParamsSchema,
@@ -469,6 +470,20 @@ describe('guardian control-method request schemas, shared with their one coordin
     expect(guardianContainmentCommitParamsSchema.safeParse({ ...valid, providerRoots: [providerRoot] }).success).toBe(
       false,
     );
+  });
+
+  it('guardian.containment-commit.v1: distinguishes confirmed absence from latched teardown uncertainty', () => {
+    const absent = { state: 'containment-absent', disappearanceReceipt: 'gone' };
+    const unconfirmed = {
+      state: 'teardown-latched-absence-unconfirmed',
+      reason: 'Recorded containment remained present at the exit deadline.',
+    };
+
+    expect(guardianContainmentCommitResultSchema.safeParse(absent).success).toBe(true);
+    expect(guardianContainmentCommitResultSchema.safeParse(unconfirmed).success).toBe(true);
+    expect(
+      guardianContainmentCommitResultSchema.safeParse({ ...unconfirmed, disappearanceReceipt: 'gone' }).success,
+    ).toBe(false);
   });
 
   it('reaper.containment-prepare.v1: the reply carries a token and the reaper cumulative-root snapshot', () => {

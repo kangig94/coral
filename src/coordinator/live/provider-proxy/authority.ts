@@ -12,9 +12,9 @@ import type { HostRef } from '../../../providers/contract.js';
 /**
  * `commitContainment`'s three-way outcome. Distinguishes what `stopAndReap`'s coarse `unconfirmed` collapses:
  * whether the guardian commit is proven not to have latched (`not-sent` — a local send failure, or a
- * structured refusal the guardian answered before mutating any reversible state) or may have reached the
- * guardian with its response lost (`outcome-unknown` — the request cannot be un-sent, so silence here must
- * not be read as either a completed teardown or a proven no-op).
+ * structured refusal before the destructive latch) or may have latched without confirmed absence
+ * (`outcome-unknown` — the request cannot be un-sent, so silence or a post-latch failure must not be read as
+ * either a completed teardown or a proven no-op).
  */
 export type ContainmentCommitOutcome =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>

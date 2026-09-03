@@ -481,9 +481,7 @@ export function createProviderProxySetAuthority(
     }
     if (exchange.kind === 'response') {
       if (exchange.response.kind === 'refusal') {
-        // A structured reply from the guardian, decisive by construction: its own handler reopens both
-        // membership gates and re-throws before ever minting `ExplicitTeardownAuthorization`, so an answer
-        // reaching this sender at all proves the commit did not latch.
+        // The wire contract reserves refusals for pre-latch rejection; post-latch uncertainty is a result.
         return { kind: 'not-sent', error: exchange.response.error.message };
       }
       // A decoded `result` response proves the guardian answered, not what it did: an undecodable shape is
@@ -496,6 +494,9 @@ export function createProviderProxySetAuthority(
           kind: 'outcome-unknown',
           error: `guardian.containment-commit.v1 replied with an undecodable result: ${parsed.error.message}`,
         };
+      }
+      if (parsed.data.state === 'teardown-latched-absence-unconfirmed') {
+        return { kind: 'outcome-unknown', error: parsed.data.reason };
       }
       return { kind: 'containment-absent', disappearanceReceipt: parsed.data.disappearanceReceipt };
     }

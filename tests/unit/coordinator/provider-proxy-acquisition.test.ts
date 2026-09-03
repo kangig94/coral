@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   acquireProviderProxySet,
+  ProviderProxyAcquisitionPublicationUnknownError,
   type AcquisitionUndo,
   type ProviderProxyAcquisitionSteps,
 } from '#src/coordinator/live/provider-proxy/index.js';
 import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 
 const SET: ProviderProxyOperationAuthority = {
   proxyInstanceId: 'p1',
@@ -78,6 +80,7 @@ function steps(options: { failAt?: 'capsules' | 'spawn' | 'control'; failUndo?: 
 }
 
 const live = (): AbortSignal => new AbortController().signal;
+const PUBLICATION_UNKNOWN_CAPSULE = { version: 3 } as HandoffCapsuleV3;
 
 describe('provider proxy set acquisition', () => {
   it('publishes the set only after every step has passed', async () => {
@@ -118,6 +121,27 @@ describe('provider proxy set acquisition', () => {
     expect(result).toMatchObject({ strandedArtifacts: ['guardian'] });
     expect(recorded.log).toContain('undo:capsules');
     expect(cleanupFailures).toEqual(['guardian']);
+  });
+
+  it('returns the retained capsule owner without unwinding a publication-unknown set', async () => {
+    const recorded = steps();
+    recorded.steps.establishControl = async () => {
+      throw new ProviderProxyAcquisitionPublicationUnknownError(
+        'publication response was lost',
+        '/capsules/publication-unknown.handoff.v3.json',
+        PUBLICATION_UNKNOWN_CAPSULE,
+      );
+    };
+
+    const result = await acquireProviderProxySet({ steps: recorded.steps, deadlineSignal: live() });
+
+    expect(result).toEqual({
+      kind: 'acquisition-publication-unknown',
+      reason: 'publication response was lost',
+      capsulePath: '/capsules/publication-unknown.handoff.v3.json',
+      capsuleBinding: PUBLICATION_UNKNOWN_CAPSULE,
+    });
+    expect(recorded.log).toEqual(['capsules', 'spawn']);
   });
 
   it('does not begin a step once the acquisition deadline has elapsed', async () => {

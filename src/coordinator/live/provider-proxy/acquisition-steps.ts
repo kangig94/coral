@@ -29,7 +29,11 @@ import {
   type RoleSpawnPorts,
   type SpawnedRoleProcess,
 } from '../../../provider-proxy/role-spawn.js';
-import { currentHandoffCapsulePath } from '../../../provider-proxy/handoff-capsule.js';
+import {
+  currentHandoffCapsulePath,
+  handoffCapsuleV3Schema,
+  readHandoffCapsuleFile,
+} from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
 import type { ControlClient, ControlExchange, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import {
@@ -590,6 +594,12 @@ export function createProviderProxyAcquisitionSteps(
         if (installation.kind !== 'installed') {
           throw new Error(`provider_proxy_recovery_credential_${installation.kind}`);
         }
+        const capsuleBinding = handoffCapsuleV3Schema.parse(
+          readHandoffCapsuleFile(handoffCapsulePath, {
+            storage: runtime.storage,
+            uid: process.getuid?.() ?? 0,
+          }),
+        );
 
         // Only after every control is open and the recovery credential is installed: publication is the last
         // gate before this attempt may return a set anyone can claim. Guardian/reaper may become published
@@ -608,6 +618,8 @@ export function createProviderProxyAcquisitionSteps(
           // role into an uncredentialed orphan by running the undos below.
           throw new ProviderProxyAcquisitionPublicationUnknownError(
             `guardian.acquisition-publish.v1 / proxy.acquisition-publish.v1 outcome unknown for role '${publication.role}': ${publication.reason}`,
+            handoffCapsulePath,
+            capsuleBinding,
           );
         }
         if (publication.kind === 'not-attempted') {

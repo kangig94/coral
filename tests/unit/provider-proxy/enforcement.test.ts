@@ -2,7 +2,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import type { ProcessLiveness } from '#src/infra/node-process.js';
+import type { AsyncRecordedProcessObserver, ProcessLiveness } from '#src/infra/node-process.js';
 import type { RecordedProcessIdentity } from '#src/infra/process-containment.js';
 import {
   createArmedEnforcer,
@@ -68,7 +68,7 @@ function createHarness(options: {
   /** `false` (the default) leaves the holder authority unpublished, so the tick decides from the pure
    *  clock bound alone. */
   published?: boolean;
-  observeHolder?: () => Promise<ProcessLiveness>;
+  observeHolder?: AsyncRecordedProcessObserver;
   acceleratedCheckMayAuthorizeAbsence?: boolean;
   /** Forces the fake `bounds().holderCheckAccelerated` this test observes, independent of `adoptionInMs`. */
   accelerated?: boolean;
@@ -155,6 +155,7 @@ function createHarness(options: {
     latchTeardown,
     markContainmentAbsent,
     renewHolderCheck,
+    holderCheckAt: bounds.holderCheckAt,
     alive,
     holderAuthority,
     /** Mints a fresh `ExplicitTeardownAuthorization` from this harness's own current holder. */
@@ -211,10 +212,13 @@ describe('armed provider-proxy enforcer — pre-publication clock bound (unchang
 
     const outcome = await harness.enforcer.stopAndReap(harness.mintExplicit());
 
-    expect(outcome?.kind).toBe('containment-absent');
+    expect(outcome.kind).toBe('settled');
     // Leader exit alone is never absence evidence, so the receipt must account for each target separately.
     expect(outcome).toMatchObject({
-      disappearanceReceipt: `group:4242,leader:4242@linux:00000000-0000-4000-8000-000000000000:1000,root:7001@linux:00000000-0000-4000-8000-000000000000:2000,root:7002@linux:00000000-0000-4000-8000-000000000000:2000`,
+      outcome: {
+        kind: 'containment-absent',
+        disappearanceReceipt: `group:4242,leader:4242@linux:00000000-0000-4000-8000-000000000000:1000,root:7001@linux:00000000-0000-4000-8000-000000000000:2000,root:7002@linux:00000000-0000-4000-8000-000000000000:2000`,
+      },
     });
   });
 
@@ -316,7 +320,7 @@ describe('armed provider-proxy enforcer — pre-publication clock bound (unchang
 
     const outcome = await harness.enforcer.stopAndReap(harness.mintExplicit());
 
-    expect(outcome?.kind).toBe('reap-failed');
+    expect(outcome).toMatchObject({ kind: 'settled', outcome: { kind: 'reap-failed' } });
     expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
   });
 
@@ -333,7 +337,7 @@ describe('armed provider-proxy enforcer — pre-publication clock bound (unchang
 });
 
 describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', () => {
-  it('stopAndReap returns null, and reaps nothing, once the authorization no longer names the current holder', async () => {
+  it('stopAndReap returns the superseded authorization, and reaps nothing, once it is no longer current', async () => {
     const harness = createHarness({ adoptionInMs: 60_000 });
     const stale = harness.mintExplicit();
     harness.holderAuthority.install({
@@ -343,12 +347,12 @@ describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', ()
 
     const outcome = await harness.enforcer.stopAndReap(stale);
 
-    expect(outcome).toBeNull();
+    expect(outcome).toEqual({ kind: 'authorization-superseded', authorization: stale });
     expect(harness.latchTeardown).not.toHaveBeenCalled();
     expect(harness.outcomes).toHaveLength(0);
   });
 
-  it('reapAbsentHolder returns null, and reaps nothing, once a successor has been installed', async () => {
+  it('reapAbsentHolder returns the superseded authorization, and reaps nothing, once a successor is installed', async () => {
     const harness = createHarness({ adoptionInMs: 60_000, published: true });
     const absence = await harness.observeAbsence();
     harness.holderAuthority.install({
@@ -358,7 +362,7 @@ describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', ()
 
     const outcome = await harness.enforcer.reapAbsentHolder(absence);
 
-    expect(outcome).toBeNull();
+    expect(outcome).toEqual({ kind: 'authorization-superseded', authorization: absence });
     expect(harness.latchTeardown).not.toHaveBeenCalled();
   });
 
@@ -370,7 +374,7 @@ describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', ()
 
     const outcome = await harness.enforcer.reapAbsentHolder(absence);
 
-    expect(outcome?.kind).toBe('containment-absent');
+    expect(outcome).toMatchObject({ kind: 'settled', outcome: { kind: 'containment-absent' } });
     expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
   });
 });
@@ -450,13 +454,21 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     expect(harness.outcomes[0]?.kind).toBe('containment-absent');
   });
 
-  it('a successor installed while the probe is in flight revokes the absence result before consumption', async () => {
+  it('a superseded absence renews the loop, observes the successor, and reaps after the successor dies', async () => {
     let resolveObserve!: (liveness: ProcessLiveness) => void;
-    const observeHolder = (): Promise<ProcessLiveness> =>
-      new Promise((resolve) => {
-        resolveObserve = resolve;
-      });
+    let successorIsAlive = true;
+    const observed: RecordedProcessIdentity[] = [];
+    const observeHolder: AsyncRecordedProcessObserver = (identity) => {
+      observed.push(identity);
+      if (observed.length === 1) {
+        return new Promise((resolve) => {
+          resolveObserve = resolve;
+        });
+      }
+      return Promise.resolve(successorIsAlive ? 'alive' : 'absent');
+    };
     const harness = createHarness({ adoptionInMs: 5_000, published: true, observeHolder });
+    const successor = { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') } as const;
 
     harness.enforcer.arm();
     // First wake: still before `observationStartAt` (holderCheckAt(5000) - P(2000) - W(1000) = 2000), so it
@@ -468,10 +480,7 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     await Promise.resolve();
 
     // A successor is admitted before the probe (of the incumbent) ever resolves.
-    harness.holderAuthority.install({
-      controlEpoch: 2,
-      holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
-    });
+    harness.holderAuthority.install({ controlEpoch: 2, holder: successor });
     resolveObserve('absent');
     // Third wake: past `holderCheckAt` — commits to consuming the (already-resolved) probe.
     harness.scheduler.runDue();
@@ -483,6 +492,21 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
 
     expect(harness.outcomes).toHaveLength(0);
     expect(harness.latchTeardown).not.toHaveBeenCalled();
+    expect(harness.renewHolderCheck).toHaveBeenCalledWith(harness.holderCheckAt);
+
+    harness.advance(PROXY_ENFORCER_MAX_WAKE_LATENCY_MS);
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 10);
+
+    expect(observed[1]).toEqual({ pid: successor.pid, incarnation: successor.incarnation });
+    expect(harness.outcomes).toHaveLength(0);
+
+    successorIsAlive = false;
+    harness.advance(PROXY_ENFORCER_MAX_WAKE_LATENCY_MS);
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 10);
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
+
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+    expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
   });
 
   it('guardian-mode: an accelerated check may not consume an incumbent absence result', async () => {

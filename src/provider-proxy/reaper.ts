@@ -513,20 +513,19 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           if (!verified) {
             throw new ProxyControlProtocolError('grant_invalid', 'Status did not present the installed grant.');
           }
-          const admitted = holderAuthority.current();
           const current = holderAuthority.status();
-          if (admitted === null || current === null) {
+          if (current === null) {
             throw new ProxyControlProtocolError('invalid_state', 'This reaper holds no observed holder yet.');
           }
           return holderStatusResultSchema.parse({
             disposition: current.disposition,
             phase: holderAuthority.phase(),
             holder: {
-              instanceId: admitted.holder.instanceId,
-              pid: admitted.holder.pid,
-              incarnation: admitted.holder.incarnation,
+              instanceId: current.identity.holder.instanceId,
+              pid: current.identity.holder.pid,
+              incarnation: current.identity.holder.incarnation,
             },
-            controlEpoch: admitted.controlEpoch,
+            controlEpoch: current.identity.controlEpoch,
             transitionSequence: current.transitionSequence,
             changedAtMs: current.changedAtMs,
           });

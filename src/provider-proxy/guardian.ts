@@ -739,19 +739,16 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'This guardian holds no admitted holder to tear down.',
             );
           }
-          // Past this point the enforcer's own teardown latches synchronously before its first await
-          // (`enforcement.ts`'s `runTeardown`), so neither a stale nor a failed outcome below reopens
-          // registration: the containment is being destroyed either way, and reopening staging against a
-          // set mid-teardown would not help a coordinator that can no longer reach this guardian.
-          const outcome = await armed.stopAndReap(teardown);
-          if (outcome === null) {
+          const disposition = await armed.stopAndReap(teardown);
+          if (disposition.kind === 'authorization-superseded') {
             throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
           }
+          const outcome = disposition.outcome;
           if (outcome.kind !== 'containment-absent') {
-            throw new ProxyControlProtocolError(
-              'invalid_state',
-              `Guardian teardown did not complete: ${outcome.kind}.`,
-            );
+            return guardianContainmentCommitResultSchema.parse({
+              state: 'teardown-latched-absence-unconfirmed',
+              reason: outcome.reason,
+            });
           }
           return guardianContainmentCommitResultSchema.parse({
             state: 'containment-absent',
@@ -856,20 +853,19 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           if (!verified) {
             throw new ProxyControlProtocolError('grant_invalid', 'Status did not present the installed grant.');
           }
-          const admitted = holderAuthority.current();
           const current = holderAuthority.status();
-          if (admitted === null || current === null) {
+          if (current === null) {
             throw new ProxyControlProtocolError('invalid_state', 'This guardian holds no observed holder yet.');
           }
           return holderStatusResultSchema.parse({
             disposition: current.disposition,
             phase: holderAuthority.phase(),
             holder: {
-              instanceId: admitted.holder.instanceId,
-              pid: admitted.holder.pid,
-              incarnation: admitted.holder.incarnation,
+              instanceId: current.identity.holder.instanceId,
+              pid: current.identity.holder.pid,
+              incarnation: current.identity.holder.incarnation,
             },
-            controlEpoch: admitted.controlEpoch,
+            controlEpoch: current.identity.controlEpoch,
             transitionSequence: current.transitionSequence,
             changedAtMs: current.changedAtMs,
           });

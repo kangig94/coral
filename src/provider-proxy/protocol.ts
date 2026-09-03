@@ -589,10 +589,11 @@ export const guardianProxyOperationReleaseResultSchema = z
   .object({ state: z.enum(['membership-released', 'membership-absent']) })
   .strict();
 
-/** `guardian.containment-commit.v1`'s result. */
-export const guardianContainmentCommitResultSchema = z
-  .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
-  .strict();
+/** Post-latch failure remains a result so a transport refusal continues to prove teardown never latched. */
+export const guardianContainmentCommitResultSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) }).strict(),
+  z.object({ state: z.literal('teardown-latched-absence-unconfirmed'), reason: z.string() }).strict(),
+]);
 
 /**
  * The idempotent three-role initial-acquisition publication transaction. `guardian.acquisition-publish.v1`

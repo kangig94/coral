@@ -363,6 +363,15 @@ export class DefaultProviderHostManager
           lifecycle.acquisitionSucceeded(admission.slotId, set);
           return;
         }
+        if (outcome.kind === 'acquisition-publication-unknown') {
+          lifecycle.acquisitionPublicationUnknown(
+            admission.slotId,
+            outcome.capsulePath,
+            outcome.capsuleBinding,
+            outcome.reason,
+          );
+          return;
+        }
         lifecycle.acquisitionFailed(admission.slotId);
         backendLog.warn(
           `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,

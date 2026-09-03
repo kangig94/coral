@@ -26,6 +26,11 @@ vi.mock('#src/coordinator/live/provider-proxy/set-authority.js', () => ({
   createProviderProxySetAuthority: vi.fn(),
 }));
 
+vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
+  const original = await importOriginal<object>();
+  return { ...original, readHandoffCapsuleFile: vi.fn() };
+});
+
 import {
   createProviderProxyAcquisitionSteps,
   exchangeAcquisitionStage,
@@ -34,7 +39,7 @@ import {
   acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionPublishResultSchema,
 } from '#src/provider-proxy/protocol.js';
-import { ProviderProxyAcquisitionPublicationUnknownError } from '#src/coordinator/live/provider-proxy/index.js';
+import { readHandoffCapsuleFile, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   isProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
@@ -101,9 +106,37 @@ const ACQUISITION_PUBLISH_REAPER_IDENTITY = {
 
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
 const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
+const mockedReadHandoffCapsule = vi.mocked(readHandoffCapsuleFile);
 const containmentProofDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
 afterAll(() => containmentProofDb.close());
+
+const publicationUnknownCapsule: HandoffCapsuleV3 = {
+  version: 3,
+  grantId: '77777777-7777-4777-8777-777777777777',
+  secret: 'c'.repeat(64),
+  generation: 'gen2',
+  flavor: 'prod',
+  buildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
+  hostFingerprint: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.hostFingerprint,
+  guardianInstanceId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.guardianInstanceId,
+  reaperInstanceId: ACQUISITION_PUBLISH_REAPER_IDENTITY.reaperInstanceId,
+  proxyInstanceId: '77777777-7777-4777-8777-777777777773',
+  guardianControlEndpoint: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.canonicalControlEndpoint,
+  reaperControlEndpoint: ACQUISITION_PUBLISH_REAPER_IDENTITY.canonicalControlEndpoint,
+  proxyEndpoint: '/tmp/coral-acquisition-test-proxy.sock',
+  orphanTimeoutMs: 30_000,
+  teardownReserveMs: 14_000,
+  guardianPid: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.pid,
+  guardianIncarnation: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.incarnation,
+  proxyPid: 201,
+  reaperPid: ACQUISITION_PUBLISH_REAPER_IDENTITY.pid,
+  reaperIncarnation: ACQUISITION_PUBLISH_REAPER_IDENTITY.incarnation,
+  containmentKind: 'posix-group',
+  proxyIncarnation: testIncarnation(21),
+  proxyProcessGroupId: 201,
+};
+mockedReadHandoffCapsule.mockReturnValue(publicationUnknownCapsule);
 
 function passiveClient(): ControlClient {
   return {
@@ -637,7 +670,11 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await steps.createCapsules();
     await steps.spawnGuardian();
 
-    await expect(steps.establishControl()).rejects.toBeInstanceOf(ProviderProxyAcquisitionPublicationUnknownError);
+    await expect(steps.establishControl()).rejects.toMatchObject({
+      name: 'ProviderProxyAcquisitionPublicationUnknownError',
+      capsulePath: expect.stringMatching(/\.handoff\.v3\.json$/u),
+      capsuleBinding: publicationUnknownCapsule,
+    });
     // Not unwound: the catch that would close every opened client and delete the capsule must not run for
     // this specific error, since the guardian may already be published.
     expect(guardianClosed.value).toBe(false);

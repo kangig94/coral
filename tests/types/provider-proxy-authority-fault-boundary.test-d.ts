@@ -1,3 +1,6 @@
+import type { z } from 'zod';
+
+import type { ContainmentCommitOutcome } from '#src/coordinator/live/provider-proxy/authority.js';
 import type {
   ContainmentRequiredControlCallPolicy,
   ControlCallPolicy,
@@ -27,6 +30,7 @@ import {
   type HeartbeatReplyObservation,
 } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
+import type { guardianContainmentCommitResultSchema } from '#src/provider-proxy/protocol.js';
 
 declare const setIdentity: ProviderProxySetIdentity;
 declare const retrySafePolicy: RetrySafeControlCallPolicy;
@@ -36,6 +40,21 @@ declare const channelIncident: Extract<ProviderProxyAuthorityIncident, { kind: '
 
 declare const operatorContainment: ProviderProxySetOperatorContainmentDecision;
 declare const operatorAbandonment: ProviderProxySetOperatorAbandonmentDecision;
+
+type GuardianContainmentCommitResult = z.output<typeof guardianContainmentCommitResultSchema>;
+declare const postLatchContainmentResult: Extract<
+  GuardianContainmentCommitResult,
+  { state: 'teardown-latched-absence-unconfirmed' }
+>;
+
+const validPostLatchContainmentOutcome: Extract<ContainmentCommitOutcome, { kind: 'outcome-unknown' }> = {
+  kind: 'outcome-unknown',
+  error: postLatchContainmentResult.reason,
+};
+
+// @ts-expect-error a post-latch result cannot inhabit the decisive pre-latch `not-sent` disposition.
+const invalidPostLatchNotSent: Extract<ContainmentCommitOutcome, { kind: 'not-sent' }> = postLatchContainmentResult;
+void [validPostLatchContainmentOutcome, invalidPostLatchNotSent];
 
 // @ts-expect-error exact-set containment is a faultless operator action, never a stop-and-reap decision.
 const operatorContainmentCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> =

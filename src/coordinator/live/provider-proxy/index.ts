@@ -1,4 +1,5 @@
 import type { ProviderProxyOperationAuthority } from './operation-route.js';
+import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 
 /**
  * Acquiring one guardian/reaper/proxy set.
@@ -29,7 +30,12 @@ export type ProviderProxyAcquisitionFailure = Readonly<{
 export type ProviderProxyAcquisitionResult =
   | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
   | ProviderProxyAcquisitionFailure
-  | Readonly<{ kind: 'acquisition-publication-unknown'; reason: string }>;
+  | Readonly<{
+      kind: 'acquisition-publication-unknown';
+      reason: string;
+      capsulePath: string;
+      capsuleBinding: HandoffCapsuleV3;
+    }>;
 
 /**
  * Thrown only when an acquisition publication stage's response was lost after the request may have reached
@@ -38,8 +44,13 @@ export type ProviderProxyAcquisitionResult =
  * capsule that names it, while the role itself stays alive and possibly published.
  */
 export class ProviderProxyAcquisitionPublicationUnknownError extends Error {
-  constructor(message: string) {
+  readonly capsulePath: string;
+  readonly capsuleBinding: HandoffCapsuleV3;
+
+  constructor(message: string, capsulePath: string, capsuleBinding: HandoffCapsuleV3) {
     super(message);
+    this.capsulePath = capsulePath;
+    this.capsuleBinding = capsuleBinding;
     this.name = 'ProviderProxyAcquisitionPublicationUnknownError';
     Object.setPrototypeOf(this, ProviderProxyAcquisitionPublicationUnknownError.prototype);
   }
@@ -130,13 +141,7 @@ async function unwind(
   return stranded;
 }
 
-/**
- * Acquires one set, or leaves nothing behind trying.
- *
- * There is no partial success: the caller receives either a set whose three controls are all active and all
- * agree on the same identities, or a typed failure. An abandoned set has no published recovery authority and
- * self-expires from its own guardian-start deadline even if this cleanup could not reach it.
- */
+/** A publication-unknown outcome must retain the exact recovery capsule and must not unwind its controls. */
 export async function acquireProviderProxySet(
   options: ProviderProxyAcquisitionOptions,
 ): Promise<ProviderProxyAcquisitionResult> {
@@ -165,7 +170,12 @@ export async function acquireProviderProxySet(
         // Not a failure this attempt may unwind: the capsule and every open client (and the possibly
         // already-published guardian/reaper/proxy) stay exactly as `establishControl`'s own catch left them —
         // see that class's doc for why deleting the capsule here would orphan a published role.
-        return { kind: 'acquisition-publication-unknown', reason: error.message };
+        return {
+          kind: 'acquisition-publication-unknown',
+          reason: error.message,
+          capsulePath: error.capsulePath,
+          capsuleBinding: error.capsuleBinding,
+        };
       }
       return fail(cut, failureReason(error));
     }
@@ -183,8 +193,6 @@ export async function acquireProviderProxySet(
   if ('kind' in control) return control;
   undos.push(control.undo);
 
-  // Last check before publishing: a deadline that elapsed while the final handshake was in flight means the
-  // caller has already given up, and publishing here would hand out a set nobody is holding.
   if (options.deadlineSignal.aborted) {
     return fail('readiness publication', 'the acquisition deadline elapsed before the set was published');
   }

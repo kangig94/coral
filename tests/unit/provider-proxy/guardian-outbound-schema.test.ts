@@ -24,7 +24,7 @@ import {
   guardianHandoffRedeemParamsSchema,
   guardianReaperHandoffInstallParamsSchema,
 } from '#src/provider-proxy/handoff-capsule.js';
-import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
+import { createControlHolderAuthority, type ControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import type { EnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
 import {
   guardianOperationActivateParamsSchema,
@@ -42,6 +42,7 @@ vi.mock('#src/provider-proxy/control-endpoint.js', async (importOriginal) => {
       return {
         listen: async (): Promise<void> => {},
         close: async (): Promise<void> => {},
+        activeControlAuthorizationIsCurrent: () => true,
         pushOnTenancy: async (): Promise<never> => {
           throw new Error('unused tenancy push');
         },
@@ -102,7 +103,10 @@ function letGuardianIngressYield(schema: z.ZodTypeAny, request: unknown): void {
 
 type GuardianHarness = ReturnType<typeof createGuardianHarness>;
 
-function createGuardianHarness() {
+function createGuardianHarness(
+  holderAuthority: ControlHolderAuthority = createControlHolderAuthority(),
+  containmentFailure?: Readonly<{ latchTeardown: () => void; observeLiveness: () => never }>,
+) {
   const clock = createMonotonicClock(Symbol('guardian-outbound'), { readMilliseconds: () => 0n });
   const shared = {
     generation: 'gen2' as const,
@@ -155,6 +159,8 @@ function createGuardianHarness() {
       value = { state: 'redemption-recorded' };
     } else if (method === 'reaper.acquisition-publish.v1') {
       value = { state: 'acquisition-published' };
+    } else if (method === 'reaper.containment-prepare.v1') {
+      value = { state: 'containment-prepared', token: 'prepare-token', providerRoots: [] };
     } else {
       value = { state: 'root-recorded' };
     }
@@ -182,10 +188,16 @@ function createGuardianHarness() {
       proxyGuardianAuthSecret: PAIR_SECRET,
     },
     clock,
-    deadlines: deadlinesFor(clock),
+    deadlines: {
+      ...deadlinesFor(clock),
+      ...(containmentFailure === undefined ? {} : { latchTeardown: containmentFailure.latchTeardown }),
+    },
     containmentEnvironment: {
       clock,
-      process: { kill: () => true, observeLiveness: () => 'alive' as const },
+      process: {
+        kill: () => true,
+        observeLiveness: containmentFailure?.observeLiveness ?? (() => 'alive' as const),
+      },
       platform: 'linux',
       maxRecordedRoots: 128,
       readProcessIncarnation: () => CONTAINMENT.incarnation,
@@ -199,7 +211,7 @@ function createGuardianHarness() {
     reaperChannel,
     self: { pid: 5_102, incarnation: testIncarnation(902) },
     reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
-    holderAuthority: createControlHolderAuthority(),
+    holderAuthority,
     observeHolder: () => Promise.resolve('unknown' as const),
     onOutcome: () => {},
     onProgressViolation: () => {},
@@ -270,6 +282,63 @@ function refuseReceiverConsultation(harness: GuardianHarness): void {
 }
 
 describe('guardian outbound schemas', () => {
+  it('returns holder identity and disposition from one status snapshot', async () => {
+    const statusIdentity = {
+      controlEpoch: 7,
+      holder: { instanceId: randomUUID(), pid: 4_007, incarnation: testIncarnation('status-holder') },
+    };
+    const holderAuthority: ControlHolderAuthority = {
+      install: () => {},
+      current: () => {
+        throw new Error('holder status performed a separate current-holder read');
+      },
+      phase: () => 'published',
+      publish: () => {},
+      recordObservation: () => {},
+      status: () => ({
+        identity: statusIdentity,
+        disposition: 'alive',
+        transitionSequence: 9,
+        changedAtMs: 12_000,
+      }),
+    };
+    const harness = createGuardianHarness(holderAuthority);
+    const grantId = randomUUID();
+    const secret = 'f'.repeat(64);
+    await harness.call(
+      'guardian.handoff-install.v1',
+      guardianReaperHandoffInstallParamsSchema.parse({
+        grantId,
+        secretSha256: createHash('sha256').update(secret, 'utf8').digest('hex'),
+        successor: harness.coordinatorIdentity,
+        operations: [],
+        orphanTimeoutMs: 30_000,
+        teardownReserveMs: 14_000,
+      }),
+    );
+
+    const result = await harness.call('guardian.holder-status.v1', {
+      grantId,
+      secret,
+      generation: harness.guardianIdentity.generation,
+      flavor: harness.guardianIdentity.flavor,
+      buildSetId: harness.guardianIdentity.buildSetId,
+      hostFingerprint: harness.guardianIdentity.hostFingerprint,
+      guardianInstanceId: harness.guardianIdentity.guardianInstanceId,
+      reaperInstanceId: harness.reaperIdentity.reaperInstanceId,
+      proxyInstanceId: harness.proxyIdentity.proxyInstanceId,
+    });
+
+    expect(result).toEqual({
+      disposition: 'alive',
+      phase: 'published',
+      holder: statusIdentity.holder,
+      controlEpoch: statusIdentity.controlEpoch,
+      transitionSequence: 9,
+      changedAtMs: 12_000,
+    });
+  });
+
   it('replays one stable activation receipt for the exact membership tuple', async () => {
     const harness = createGuardianHarness();
     await armGuardian(harness);
@@ -297,6 +366,68 @@ describe('guardian outbound schemas', () => {
     expect(replay).toEqual(first);
     expect(harness.mintReceipt).toHaveBeenCalledOnce();
     expect(harness.reaperExchange).toHaveBeenCalledOnce();
+  });
+
+  it('returns a result with the enforcer reason when teardown latches but absence is not confirmed', async () => {
+    const latchTeardown = vi.fn();
+    const holderAuthority = createControlHolderAuthority();
+    const harness = createGuardianHarness(holderAuthority, {
+      latchTeardown,
+      observeLiveness: () => {
+        throw new Error('absence could not be observed');
+      },
+    });
+    holderAuthority.install({
+      controlEpoch: 1,
+      holder: {
+        instanceId: harness.coordinatorIdentity.instanceId,
+        pid: harness.coordinatorIdentity.pid,
+        incarnation: harness.coordinatorIdentity.incarnation,
+      },
+    });
+    await armGuardian(harness);
+
+    const result = await harness.call('guardian.containment-commit.v1', {
+      guardian: harness.guardianIdentity,
+      reaper: harness.reaperIdentity,
+      proxy: harness.proxyIdentity,
+    });
+
+    expect(latchTeardown).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      state: 'teardown-latched-absence-unconfirmed',
+      reason: 'absence could not be observed',
+    });
+  });
+
+  it('throws a pre-latch containment-prepare failure without latching teardown', async () => {
+    const latchTeardown = vi.fn();
+    const holderAuthority = createControlHolderAuthority();
+    const harness = createGuardianHarness(holderAuthority, {
+      latchTeardown,
+      observeLiveness: () => {
+        throw new Error('teardown must not run');
+      },
+    });
+    holderAuthority.install({
+      controlEpoch: 1,
+      holder: {
+        instanceId: harness.coordinatorIdentity.instanceId,
+        pid: harness.coordinatorIdentity.pid,
+        incarnation: harness.coordinatorIdentity.incarnation,
+      },
+    });
+    await armGuardian(harness);
+    harness.reaperExchange.mockRejectedValueOnce(new Error('prepare refused'));
+
+    await expect(
+      harness.call('guardian.containment-commit.v1', {
+        guardian: harness.guardianIdentity,
+        reaper: harness.reaperIdentity,
+        proxy: harness.proxyIdentity,
+      }),
+    ).rejects.toThrow('prepare refused');
+    expect(latchTeardown).not.toHaveBeenCalled();
   });
 
   it('lets the paired proxy release membership idempotently', async () => {

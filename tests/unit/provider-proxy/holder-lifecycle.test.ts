@@ -118,29 +118,47 @@ describe('ControlHolderAuthority: the *.holder-status.v1 disposition surface', (
 
   it('install() seeds unobservable at transitionSequence 1 — a fresh admission has no evidence yet', () => {
     const authority = createControlHolderAuthority({ wallClockNow: () => 1_000 });
+    const admission = identity(1, holder('coordinator'));
 
-    authority.install(identity(1, holder('coordinator')));
+    authority.install(admission);
 
-    expect(authority.status()).toEqual({ disposition: 'unobservable', transitionSequence: 1, changedAtMs: 1_000 });
+    expect(authority.status()).toEqual({
+      identity: admission,
+      disposition: 'unobservable',
+      transitionSequence: 1,
+      changedAtMs: 1_000,
+    });
   });
 
   it('recordObservation advances the sequence and changedAtMs only when the disposition actually changes', () => {
     let now = 1_000;
     const authority = createControlHolderAuthority({ wallClockNow: () => now });
-    authority.install(identity(1, holder('coordinator')));
+    const admission = identity(1, holder('coordinator'));
+    authority.install(admission);
 
     now = 2_000;
-    authority.recordObservation('alive');
-    expect(authority.status()).toEqual({ disposition: 'alive', transitionSequence: 2, changedAtMs: 2_000 });
+    authority.recordObservation(admission, 'alive');
+    expect(authority.status()).toEqual({
+      identity: admission,
+      disposition: 'alive',
+      transitionSequence: 2,
+      changedAtMs: 2_000,
+    });
 
     // A repeated identical observation is silent: no sequence bump, no changedAtMs move.
     now = 3_000;
-    authority.recordObservation('alive');
-    expect(authority.status()).toEqual({ disposition: 'alive', transitionSequence: 2, changedAtMs: 2_000 });
+    authority.recordObservation(admission, 'alive');
+    expect(authority.status()).toEqual({
+      identity: admission,
+      disposition: 'alive',
+      transitionSequence: 2,
+      changedAtMs: 2_000,
+    });
 
     now = 4_000;
-    authority.recordObservation('unobservable');
+    authority.recordObservation(admission, 'unobservable');
     expect(authority.status()).toEqual({
+      identity: admission,
       disposition: 'unobservable',
       transitionSequence: 3,
       changedAtMs: 4_000,
@@ -148,13 +166,13 @@ describe('ControlHolderAuthority: the *.holder-status.v1 disposition surface', (
   });
 
   it(
-    'recordObservation(departed) is the only disposition install() never seeds — reachable only from an ' +
-      'actual absence observation',
+    'departed is the only disposition install() never seeds — reachable only from an ' + 'actual absence observation',
     () => {
       const authority = createControlHolderAuthority();
-      authority.install(identity(1, holder('coordinator')));
+      const admission = identity(1, holder('coordinator'));
+      authority.install(admission);
 
-      authority.recordObservation('departed');
+      authority.recordObservation(admission, 'departed');
 
       expect(authority.status()?.disposition).toBe('departed');
     },
@@ -165,8 +183,9 @@ describe('ControlHolderAuthority: the *.holder-status.v1 disposition surface', (
       'disposition a fresh admission always starts at',
     () => {
       const authority = createControlHolderAuthority();
-      authority.install(identity(1, holder('incumbent')));
-      authority.recordObservation('alive');
+      const incumbent = identity(1, holder('incumbent'));
+      authority.install(incumbent);
+      authority.recordObservation(incumbent, 'alive');
       const beforeSequence = authority.status()?.transitionSequence;
 
       authority.install(identity(2, holder('successor', 2)));
@@ -181,12 +200,13 @@ describe('ControlHolderAuthority: the *.holder-status.v1 disposition surface', (
     const authority = createControlHolderAuthority({
       onTransition: (transition) => transitions.push(transition.disposition),
     });
+    const admission = identity(1, holder('coordinator'));
 
-    authority.install(identity(1, holder('coordinator')));
-    authority.recordObservation('alive');
-    authority.recordObservation('alive');
-    authority.recordObservation('alive');
-    authority.recordObservation('unobservable');
+    authority.install(admission);
+    authority.recordObservation(admission, 'alive');
+    authority.recordObservation(admission, 'alive');
+    authority.recordObservation(admission, 'alive');
+    authority.recordObservation(admission, 'unobservable');
 
     expect(transitions).toEqual(['unobservable', 'alive', 'unobservable']);
   });
@@ -277,6 +297,43 @@ describe('observeControlHolder', () => {
     expect(result.authorization.holder).toEqual(incumbent);
     expect(result.authorization.controlEpoch).toBe(1);
   });
+
+  it.each(['alive', 'absent'] as const)(
+    'does not attribute a stale %s observation to a successor or advance the successor sequence',
+    async (liveness) => {
+      let now = 1_000;
+      const authority = createControlHolderAuthority({ wallClockNow: () => now });
+      const incumbent = identity(1, holder('incumbent'));
+      authority.install(incumbent);
+
+      let resolveObservation!: (answer: ProcessLiveness) => void;
+      const pending = observeControlHolder(
+        authority,
+        () =>
+          new Promise((resolve) => {
+            resolveObservation = resolve;
+          }),
+        testClock(),
+      );
+
+      now = 2_000;
+      const successor = identity(2, holder('successor', 2));
+      authority.install(successor);
+      const seededSuccessorStatus = authority.status();
+
+      now = 3_000;
+      resolveObservation(liveness);
+      await pending;
+
+      expect(authority.status()).toEqual(seededSuccessorStatus);
+      expect(authority.status()).toEqual({
+        identity: successor,
+        disposition: 'unobservable',
+        transitionSequence: 2,
+        changedAtMs: 2_000,
+      });
+    },
+  );
 
   it('carries observedAt as the instant the evidence resolved, not a later consumption time', async () => {
     const authority = createControlHolderAuthority();

@@ -23,6 +23,7 @@ import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/in
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
+import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const mockedProbe = probeProcessIncarnation as unknown as ReturnType<typeof vi.fn>;
@@ -141,6 +142,31 @@ describe('ensureProviderProxySet', () => {
     });
 
     expect(outcome).toEqual({ kind: 'failed', reason: 'boom' });
+  });
+
+  it('preserves the publication-unknown recovery owner in its outcome', async () => {
+    const capsuleBinding = { version: 3 } as HandoffCapsuleV3;
+    mockedAcquire.mockResolvedValueOnce({
+      kind: 'acquisition-publication-unknown',
+      reason: 'publication response was lost',
+      capsulePath: '/capsules/publication-unknown.handoff.v3.json',
+      capsuleBinding,
+    });
+    let outcome: unknown;
+
+    await new Promise<void>((resolve) => {
+      ensureProviderProxySet(createEntry({ spec: createSharedSpec() }), environment, (result) => {
+        outcome = result;
+        resolve();
+      });
+    });
+
+    expect(outcome).toEqual({
+      kind: 'acquisition-publication-unknown',
+      reason: 'publication response was lost',
+      capsulePath: '/capsules/publication-unknown.handoff.v3.json',
+      capsuleBinding,
+    });
   });
 
   it('reports a failed outcome when the acquisition promise itself rejects', async () => {

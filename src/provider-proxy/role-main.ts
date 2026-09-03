@@ -329,11 +329,6 @@ async function reapUnheldTarget<Scope extends symbol>(
   if (afterTerm === 'absent') return;
   // Escalation needs observed life. `unknown` is not permission to send SIGKILL — the target may have exited
   // during the grace and had its id reused, and this path signals a bare number.
-  //
-  // Unpinned, and worth saying so: guardian-construction unwind is private and reachable only by driving a
-  // real guardian to fail mid-construction, so mutating this branch away leaves the suite green. The identical
-  // rule at `spawn-undo.ts` and `process-containment.ts` is pinned; this one rides on their being the same
-  // rule, which is weaker than a test and stronger than nothing.
   if (afterTerm === 'unknown') {
     throw new Error(`Could not observe ${targetLabel} after SIGTERM; refusing to escalate to SIGKILL.`);
   }

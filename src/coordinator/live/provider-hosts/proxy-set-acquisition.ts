@@ -6,6 +6,7 @@ import type { ProviderProxyOperationSnapshot } from '../../services/operation-re
 import { acquireProviderProxySet } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
+import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import { hostFingerprintFromSpec, type ProviderHostEntry } from './state.js';
 
 /**
@@ -55,19 +56,18 @@ export type ProviderProxySetAcquisitionConfig = Readonly<{
 export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisitionConfig &
   Readonly<{
     runtime: Runtime;
-    /**
-     * Aborted by the provider host manager's `stopAndClose` the instant it begins (see that field's own
-     * doc), independent of and in addition to this attempt's own `PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS`
-     * budget. Combined with it below via `AbortSignal.any`, so a stop mid-handshake reaches
-     * `acquireProviderProxySet`'s own final gate the same way its internal timeout already does: unwound,
-     * reported failed, and never published to the caller's `liveSets()` — whether or not the in-flight
-     * handshake itself had a chance to notice the abort before finishing.
-     */
+    /** Cancellation must not classify publication uncertainty as an ordinary failure. */
     signal: AbortSignal;
   }>;
 
 export type ProviderProxySetAcquisitionOutcome =
   | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
+  | Readonly<{
+      kind: 'acquisition-publication-unknown';
+      reason: string;
+      capsulePath: string;
+      capsuleBinding: HandoffCapsuleV3;
+    }>
   | Readonly<{ kind: 'failed'; reason: string }>;
 
 /**
@@ -79,9 +79,8 @@ export type ProviderProxySetAcquisitionOutcome =
  * flighting one attempt per entry is the caller's responsibility (mirrors `ensureProviderServerHandle` in
  * `recovery.ts`); this function always starts a fresh attempt when called.
  *
- * `env.signal` lets a caller retract this attempt without waiting for it: aborting it never shortens an
- * in-flight handshake, but it guarantees the eventual outcome is `failed`, never `acquired` — see
- * `ProviderProxySetAcquisitionEnvironment.signal`'s own doc.
+ * `env.signal` never converts a possibly published set into an ordinary failure; publication uncertainty
+ * retains its recovery owner even when the signal has already aborted.
  */
 export function ensureProviderProxySet(
   entry: ProviderHostEntry,
@@ -119,9 +118,11 @@ export function ensureProviderProxySet(
     deadlineSignal: AbortSignal.any([AbortSignal.timeout(PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS), env.signal]),
   }).then(
     (result) => {
-      onSettled(
-        result.kind === 'acquired' ? { kind: 'acquired', set: result.set } : { kind: 'failed', reason: result.reason },
-      );
+      if (result.kind === 'provider_proxy_acquisition_failed') {
+        onSettled({ kind: 'failed', reason: result.reason });
+        return;
+      }
+      onSettled(result);
     },
     (error: unknown) => {
       onSettled({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });

@@ -377,6 +377,35 @@ describe('createProviderProxySetAuthority: commitContainment', () => {
     expect(outcome.kind).toBe('not-sent');
   });
 
+  it('reports outcome-unknown when the guardian says teardown latched but absence remains unconfirmed', async () => {
+    const guardianClient: ControlClient = {
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                state: 'teardown-latched-absence-unconfirmed',
+                reason: 'Recorded containment remained present at the exit deadline.',
+              },
+            },
+          }),
+        ),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const authority = authorityWithGuardianClient(guardianClient);
+
+    const outcome = await authority.commitContainment(new AbortController().signal);
+
+    expect(outcome).toEqual({
+      kind: 'outcome-unknown',
+      error: 'Recorded containment remained present at the exit deadline.',
+    });
+  });
+
   it('reports outcome-unknown when the response is lost after the request may have reached the guardian', async () => {
     const guardianClient: ControlClient = {
       exchange: () =>

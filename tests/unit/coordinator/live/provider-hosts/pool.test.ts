@@ -11,11 +11,12 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
+import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
+import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type {
   DurableProviderProxyOperationAuthority,
   ProviderProxyOperationAuthority,
@@ -164,9 +165,38 @@ function fakeDurableProxySet(
   };
 }
 
+function publicationUnknownCapsule(spec: ProviderServerSpec): HandoffCapsuleV3 {
+  const identity = fakeDurableProxySet(randomUUID()).setIdentity;
+  return {
+    version: 3,
+    grantId: randomUUID(),
+    secret: 'c'.repeat(64),
+    generation: 'gen2',
+    flavor: 'prod',
+    buildSetId: FIXTURE_BUILD_SET_ID,
+    hostFingerprint: hostFingerprintFromSpec(spec),
+    guardianInstanceId: identity.guardianInstanceId,
+    reaperInstanceId: identity.reaperInstanceId,
+    proxyInstanceId: identity.proxyInstanceId,
+    guardianControlEndpoint: identity.guardianControlEndpoint,
+    reaperControlEndpoint: identity.reaperControlEndpoint,
+    proxyEndpoint: identity.canonicalEndpoint,
+    orphanTimeoutMs: 30_000,
+    teardownReserveMs: 14_000,
+    guardianPid: identity.guardianPid,
+    guardianIncarnation: identity.guardianIncarnation,
+    proxyPid: identity.proxyPid,
+    reaperPid: identity.reaperPid,
+    reaperIncarnation: identity.reaperIncarnation,
+    containmentKind: identity.containmentKind,
+    proxyIncarnation: identity.proxyIncarnation,
+    proxyProcessGroupId: identity.proxyProcessGroupId,
+  };
+}
+
 const proxySetAcquisition = {
   pluginRoot: '/plugin',
-  identity: { instanceId: 'i', buildSetId: 'b', flavor: 'prod' as const },
+  identity: { instanceId: 'i', buildSetId: FIXTURE_BUILD_SET_ID, flavor: 'prod' as const },
   // This suite fakes `ensureProxySet` itself (`mockedEnsureProxySet`), so nothing here ever reads the
   // registry; empty is the honest answer regardless.
   operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
@@ -181,6 +211,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     controlEstablished: () => undefined,
     time: runtime.time,
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+      'capsule-redemption': () => new Promise<never>(() => undefined),
       'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
     }),
     reapRecordedContainment: () => {
@@ -1141,6 +1172,44 @@ describe('provider host pool proxy set registry', () => {
 
     expect(manager.liveSets()).toEqual([]);
     lease.close();
+    await manager.shutdown();
+  });
+
+  it('keeps a publication-unknown acquisition represented and single-flighted by executable identity', async () => {
+    const server = createFakeProviderServerHandle();
+    const lifecycleRef = createProxySetLifecycleRef();
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: lifecycleRef,
+    });
+    const spec = createSharedSpec();
+    const capsuleBinding = publicationUnknownCapsule(spec);
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({
+        kind: 'acquisition-publication-unknown',
+        reason: 'publication response was lost',
+        capsulePath: '/capsules/publication-unknown.handoff.v3.json',
+        capsuleBinding,
+      });
+    });
+
+    const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+    const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
+
+    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+    expect(lifecycleRef.get()?.snapshot()).toEqual(
+      expect.objectContaining({ represented: 1, states: ['capsule-recovering'] }),
+    );
+    expect(lifecycleRef.get()?.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'control-reattachment' }),
+    );
+    expect(manager.routeAppServerOperation(spec)).toBeNull();
+
+    first.close();
+    second.close();
     await manager.shutdown();
   });
 
