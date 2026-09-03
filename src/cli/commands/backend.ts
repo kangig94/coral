@@ -131,6 +131,12 @@ import {
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
 import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '../routing-status-discard.js';
+import {
+  createProviderProxyRoleTerminationCommandOperations,
+  formatProviderProxyRoleTerminationCommand,
+  registerProviderProxyRoleTerminationCommand,
+  type ProviderProxyRoleTerminationCommandOperations,
+} from './provider-proxy-role-termination.js';
 
 /**
  * What each `backend shutdown` refusal means to a script, as an exit code.
@@ -504,6 +510,7 @@ export type BackendCommandOperations = Readonly<{
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
   providerProxySets?: ProviderProxySetCommandOperations;
+  providerProxyRoleTermination?: ProviderProxyRoleTerminationCommandOperations;
 }>;
 
 function routingStatusPath(runtime: Runtime): string {
@@ -667,7 +674,7 @@ export function formatProviderProxySetHolderStatusDirect(
               hostFingerprint: reading.hostFingerprint,
               proxyInstanceId: reading.proxyInstanceId,
             })} --abandon-without-absence\n` +
-            roles.map((role) => `    kill -TERM ${role.pid}  # ${role.role}@${role.incarnation}`).join('\n');
+            roles.map((role) => `    ${formatProviderProxyRoleTerminationCommand(role)}`).join('\n');
       return (
         `set proxy=${reading.proxyInstanceId} build=${reading.buildSetId} host=${reading.hostFingerprint}\n` +
         `  guardian: ${formatDirectHolderStatusReading(reading.guardian)}\n` +
@@ -1082,6 +1089,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
     providerProxySets = createProviderProxySetCommandOperations(),
+    providerProxyRoleTermination = createProviderProxyRoleTerminationCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
@@ -1352,7 +1360,8 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   const providerProxySetCommand = backend
     .command('provider-proxy-set')
-    .description('Contain or abandon one exact held provider-proxy set');
+    .description('Contain or abandon one exact held provider-proxy set, or terminate one exact enforcer role');
+  registerProviderProxyRoleTerminationCommand(providerProxySetCommand, providerProxyRoleTermination);
   const containProviderProxySetCommand = providerProxySetCommand
     .command('contain')
     .description('Resolve one exact held provider-proxy set after its state-specific operator-exit gate')

@@ -202,6 +202,9 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     expect(rendered).toContain(
       `coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress(setIdentity)} --abandon-without-absence`,
     );
-    expect(rendered).toContain('kill -TERM 901');
+    expect(rendered).toContain(
+      `coral-cli backend provider-proxy-set terminate-role --role guardian --pid 901 --incarnation '${testIncarnation(901)}'`,
+    );
+    expect(rendered).not.toContain('kill -TERM');
   });
 });

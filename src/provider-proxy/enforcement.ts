@@ -15,6 +15,7 @@ import {
 } from './orphan-deadline.js';
 import {
   controlHolderAuthorizationIsCurrent,
+  controlHolderIdentityIsCurrent,
   observeControlHolder,
   type ControlHolderAuthority,
   type ExplicitTeardownAuthorization,
@@ -306,6 +307,11 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       options.onProgressViolation(lateness);
     }
     if (teardownInFlight !== null || settledOutcome !== null) return;
+    if (!controlHolderIdentityIsCurrent(holderAuthority, observation.subject)) {
+      deadlines.renewHolderCheck(checkedAt);
+      schedule(generation);
+      return;
+    }
     if (observation.disposition === 'absent') {
       if (deadlines.bounds().holderCheckAccelerated && !acceleratedCheckMayAuthorizeAbsence) {
         // This role may prefetch an accelerated observation but may not consume an incumbent-absence result

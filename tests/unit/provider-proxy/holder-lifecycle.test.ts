@@ -238,7 +238,10 @@ describe('observeControlHolder', () => {
     const authority = createControlHolderAuthority();
     const observe = observerAnswering('alive');
 
-    assertDisposition(await observeControlHolder(authority, observe, testClock()), 'unobservable');
+    const result = await observeControlHolder(authority, observe, testClock());
+
+    assertDisposition(result, 'unobservable');
+    expect(result.subject).toBeNull();
     expect(observe).not.toHaveBeenCalled();
   });
 
@@ -251,16 +254,19 @@ describe('observeControlHolder', () => {
     const result = await observeControlHolder(authority, observe, testClock());
 
     assertDisposition(result, 'alive');
+    expect(result.subject).toEqual({ controlEpoch: 1, holder: incumbent });
     expect(observe).toHaveBeenCalledWith({ pid: incumbent.pid, incarnation: incumbent.incarnation });
   });
 
   it('answers unobservable, and mints nothing, when the observer cannot decide', async () => {
     const authority = createControlHolderAuthority();
-    authority.install({ controlEpoch: 1, holder: holder('coordinator') });
+    const incumbent = holder('coordinator');
+    authority.install({ controlEpoch: 1, holder: incumbent });
 
     const result = await observeControlHolder(authority, observerAnswering('unknown'), testClock());
 
     assertDisposition(result, 'unobservable');
+    expect(result.subject).toEqual({ controlEpoch: 1, holder: incumbent });
   });
 
   it('mints ObservedHolderAbsenceAuthorization only on canonical absent, bound to the observed identity', async () => {
@@ -271,6 +277,7 @@ describe('observeControlHolder', () => {
     const result = await observeControlHolder(authority, observerAnswering('absent'), testClock());
 
     if (result.disposition !== 'absent') throw new Error('expected an absent disposition');
+    expect(result.subject).toEqual({ controlEpoch: 1, holder: incumbent });
     expect(result.authorization.controlEpoch).toBe(1);
     expect(result.authorization.holder).toEqual(incumbent);
   });
@@ -298,7 +305,7 @@ describe('observeControlHolder', () => {
     expect(result.authorization.controlEpoch).toBe(1);
   });
 
-  it.each(['alive', 'absent'] as const)(
+  it.each(['alive', 'unknown', 'absent'] as const)(
     'does not attribute a stale %s observation to a successor or advance the successor sequence',
     async (liveness) => {
       let now = 1_000;

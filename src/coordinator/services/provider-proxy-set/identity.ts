@@ -38,11 +38,7 @@ export type ProviderProxySetKey = string & { readonly __providerProxySetKey: uni
 
 export type ProviderProxySetAddressKey = string & { readonly __providerProxySetAddressKey: unique symbol };
 
-/**
- * Whether a set's role generation answered the mandatory current holder-status surface. `legacy-unprotected`
- * names a v0.10.9 set: a running role whose autonomous enforcer and proxy deadline code this coordinator
- * cannot retrofit, so it does not satisfy the 60-second overload floor regardless of wire compatibility.
- */
+/** `legacy-unprotected` establishes only that the role did not provide the holder-status protection surface. */
 export type ProviderProxySetProtection = 'protected' | 'legacy-unprotected';
 
 const IDENTITY_FIELDS = [

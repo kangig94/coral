@@ -796,10 +796,11 @@ export async function startProviderReaperRole(
       localSignalTeardownAuthorized = true;
       const armed = reaperRef.enforcer();
       if (armed === null) {
-        // The guardian has not yet forwarded a containment to reap — nothing armed, nothing to enforce, so
-        // the plain close this process would otherwise have gotten on SIGTERM is the correct fallback.
-        await close();
-        return { kind: 'reap-failed', reason: 'no containment was recorded to reap' };
+        const outcome = { kind: 'reap-failed', reason: 'no containment was recorded to reap' } as const;
+        await close()
+          .catch((error: unknown) => backendLog.error('reaper: close on exit failed', error))
+          .finally(() => exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE));
+        return outcome;
       }
       // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
       // no remote peer or autonomous observation could construct this authority.

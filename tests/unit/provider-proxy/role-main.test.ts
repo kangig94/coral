@@ -31,6 +31,7 @@ import type {
   spawnRoleProcess as spawnRoleProcessType,
 } from '#src/provider-proxy/role-spawn.js';
 import type * as ProxyMod from '#src/provider-proxy/proxy.js';
+import type * as ReaperMod from '#src/provider-proxy/reaper.js';
 import type * as ProviderRootAuthorityMod from '#src/provider-proxy/provider-root-authority.js';
 import type * as SemanticOperationRunnerMod from '#src/provider-proxy/semantic-operation-runner.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -48,6 +49,13 @@ const proxyRoleCloseHarness = vi.hoisted(() => ({
   proxyListen: vi.fn<() => Promise<void>>(),
   semanticShutdown: vi.fn<() => Promise<void>>(),
   onRelinquish: undefined as unknown,
+}));
+
+const reaperRoleCloseHarness = vi.hoisted(() => ({
+  enabled: false,
+  reaperClose: vi.fn<() => Promise<void>>(),
+  reaperListen: vi.fn<() => Promise<void>>(),
+  enforcer: vi.fn<() => null>(),
 }));
 
 vi.mock('#src/provider-proxy/bootstrap-capsule.js', async (importOriginal) => {
@@ -155,6 +163,21 @@ vi.mock('#src/provider-proxy/proxy.js', async (importOriginal) => {
   };
 });
 
+vi.mock('#src/provider-proxy/reaper.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ReaperMod>();
+  return {
+    ...actual,
+    createReaper: (...args: Parameters<typeof actual.createReaper>) =>
+      reaperRoleCloseHarness.enabled
+        ? ({
+            listen: reaperRoleCloseHarness.reaperListen,
+            close: reaperRoleCloseHarness.reaperClose,
+            enforcer: reaperRoleCloseHarness.enforcer,
+          } as unknown as ReturnType<typeof actual.createReaper>)
+        : actual.createReaper(...args),
+  };
+});
+
 /**
  * `runProviderRoleMain`'s dispatch has no test anywhere: `process-topology.integration.test.ts` drives
  * `startProviderGuardianRole`/`startProviderReaperRole`/`startProviderProxyRole` directly, never through this
@@ -175,6 +198,10 @@ afterEach(() => {
   proxyRoleCloseHarness.proxyListen.mockReset();
   proxyRoleCloseHarness.semanticShutdown.mockReset();
   proxyRoleCloseHarness.onRelinquish = undefined;
+  reaperRoleCloseHarness.enabled = false;
+  reaperRoleCloseHarness.reaperClose.mockReset();
+  reaperRoleCloseHarness.reaperListen.mockReset();
+  reaperRoleCloseHarness.enforcer.mockReset();
 });
 
 function scopedTempDir(prefix: string): string {
@@ -183,7 +210,7 @@ function scopedTempDir(prefix: string): string {
   return dir;
 }
 
-function pairingCapsule(role: 'guardian' | 'proxy', directory: string, pairingSecret: unknown): unknown {
+function pairingCapsule(role: 'guardian' | 'reaper' | 'proxy', directory: string, pairingSecret: unknown): unknown {
   const shared = {
     generation: 'gen2' as const,
     flavor: 'prod' as const,
@@ -203,6 +230,16 @@ function pairingCapsule(role: 'guardian' | 'proxy', directory: string, pairingSe
       proxyEndpoint: join(directory, 'p.sock'),
       guardianReaperAuthSecret: pairingSecret,
       proxyGuardianAuthSecret: randomBytes(32).toString('hex'),
+    };
+  }
+  if (role === 'reaper') {
+    return {
+      role,
+      ...shared,
+      canonicalControlEndpoint: join(directory, 'r.sock'),
+      guardianControlEndpoint: join(directory, 'g.sock'),
+      proxyEndpoint: join(directory, 'p.sock'),
+      guardianReaperAuthSecret: pairingSecret,
     };
   }
   return {
@@ -432,6 +469,45 @@ describe('runProviderRoleMain', () => {
     expect(proxyRoleCloseHarness.proxyClose).toHaveBeenCalledOnce();
     expect(exitProcess).toHaveBeenCalledOnce();
     expect(exitProcess).toHaveBeenCalledWith(1);
+  });
+
+  it('closes and exits nonzero when a reaper is signalled before containment is recorded', async () => {
+    const directory = scopedTempDir('coral-reaper-role-close-');
+    enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
+      exchange: vi.fn(async (): Promise<never> => {
+        throw new Error('reaper unexpectedly opened an outbound control exchange');
+      }),
+      close: vi.fn(),
+    });
+    reaperRoleCloseHarness.enabled = true;
+    reaperRoleCloseHarness.reaperListen.mockResolvedValue();
+    reaperRoleCloseHarness.reaperClose.mockResolvedValue();
+    reaperRoleCloseHarness.enforcer.mockReturnValue(null);
+
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await expect(
+      runProviderRoleMain({ role: 'reaper', capsulePath: '/unused' }, { pluginRoot: directory }),
+    ).resolves.toBe(0);
+    expect(reaperRoleCloseHarness.reaperListen).toHaveBeenCalledOnce();
+    expect(shutdown).not.toBeNull();
+    exitProcess.mockClear();
+
+    (shutdown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(reaperRoleCloseHarness.enforcer).toHaveBeenCalledOnce();
+    expect(reaperRoleCloseHarness.reaperClose).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(reaperRoleCloseHarness.reaperClose.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it('relinquishes pairing and proxy control when semantic cancellation is unconfirmed', async () => {

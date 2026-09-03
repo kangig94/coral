@@ -137,10 +137,19 @@ export type HolderDisposition = 'alive' | 'absent' | 'unobservable';
  * not-before-gated consumption never earned.
  */
 export type HolderObservation<Scope extends symbol> =
-  | Readonly<{ disposition: 'alive'; observedAt: MonotonicInstant<Scope> }>
-  | Readonly<{ disposition: 'unobservable'; observedAt: MonotonicInstant<Scope> }>
+  | Readonly<{
+      disposition: 'alive';
+      subject: ControlHolderIdentity;
+      observedAt: MonotonicInstant<Scope>;
+    }>
+  | Readonly<{
+      disposition: 'unobservable';
+      subject: ControlHolderIdentity | null;
+      observedAt: MonotonicInstant<Scope>;
+    }>
   | Readonly<{
       disposition: 'absent';
+      subject: ControlHolderIdentity;
       observedAt: MonotonicInstant<Scope>;
       authorization: ObservedHolderAbsenceAuthorization;
     }>;
@@ -201,27 +210,42 @@ export async function observeControlHolder<Scope extends symbol>(
   if (admitted === null) {
     // Nothing has ever been admitted: a caller that asks anyway gets the answer that authorizes nothing,
     // not a throw.
-    return { disposition: 'unobservable', observedAt: clock.now() };
+    return { disposition: 'unobservable', subject: null, observedAt: clock.now() };
   }
   const liveness = await observe({ pid: admitted.holder.pid, incarnation: admitted.holder.incarnation });
   const observedAt = clock.now();
   if (liveness === 'alive') {
     authority.recordObservation(admitted, 'alive');
-    return { disposition: 'alive', observedAt };
+    return { disposition: 'alive', subject: admitted, observedAt };
   }
   if (liveness === 'unknown') {
     authority.recordObservation(admitted, 'unobservable');
-    return { disposition: 'unobservable', observedAt };
+    return { disposition: 'unobservable', subject: admitted, observedAt };
   }
   authority.recordObservation(admitted, 'departed');
   return {
     disposition: 'absent',
+    subject: admitted,
     observedAt,
     authorization: {
       controlEpoch: admitted.controlEpoch,
       holder: admitted.holder,
     } as unknown as ObservedHolderAbsenceAuthorization,
   };
+}
+
+/** A current-subject decision must compare both the admission epoch and the complete process identity. */
+export function controlHolderIdentityIsCurrent(
+  authority: ControlHolderAuthority,
+  subject: ControlHolderIdentity | null,
+): boolean {
+  const current = authority.current();
+  return (
+    subject !== null &&
+    current !== null &&
+    current.controlEpoch === subject.controlEpoch &&
+    sameControlTenancyHolder(current.holder, subject.holder)
+  );
 }
 
 /**
@@ -234,12 +258,7 @@ export function controlHolderAuthorizationIsCurrent(
   authority: ControlHolderAuthority,
   authorization: ObservedHolderAbsenceAuthorization | ExplicitTeardownAuthorization,
 ): boolean {
-  const current = authority.current();
-  return (
-    current !== null &&
-    current.controlEpoch === authorization.controlEpoch &&
-    sameControlTenancyHolder(current.holder, authorization.holder)
-  );
+  return controlHolderIdentityIsCurrent(authority, authorization);
 }
 
 /**

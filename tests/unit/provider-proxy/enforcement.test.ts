@@ -625,6 +625,47 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
   });
 
+  it.each(['alive', 'unknown'] as const)(
+    'a stale %s result renews from the check instant and makes the next probe target the successor',
+    async (staleResult) => {
+      let resolveObserve!: (liveness: ProcessLiveness) => void;
+      const observed: RecordedProcessIdentity[] = [];
+      const observeHolder: AsyncRecordedProcessObserver = (subject) => {
+        observed.push(subject);
+        if (observed.length === 1) {
+          return new Promise((resolve) => {
+            resolveObserve = resolve;
+          });
+        }
+        return Promise.resolve('alive');
+      };
+      const harness = createHarness({ adoptionInMs: 5_000, published: true, observeHolder });
+      const successor = { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') } as const;
+
+      harness.enforcer.arm();
+      harness.scheduler.runDue();
+      harness.advance(20_000);
+      harness.scheduler.runDue();
+      await Promise.resolve();
+
+      harness.holderAuthority.install({ controlEpoch: 2, holder: successor });
+      resolveObserve(staleResult);
+      harness.scheduler.runDue();
+      for (let flush = 0; flush < 10; flush += 1) {
+        await Promise.resolve();
+      }
+
+      expect(harness.renewHolderCheck).toHaveBeenCalledWith(harness.holderCheckAt);
+
+      harness.advance(PROXY_ENFORCER_MAX_WAKE_LATENCY_MS);
+      await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 10);
+
+      expect(observed[1]).toEqual({ pid: successor.pid, incarnation: successor.incarnation });
+      expect(harness.outcomes).toHaveLength(0);
+      harness.enforcer.disarm();
+    },
+  );
+
   it('guardian-mode: an accelerated check may not consume an incumbent absence result', async () => {
     const harness = createHarness({
       adoptionInMs: 5_000,

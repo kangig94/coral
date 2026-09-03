@@ -82,15 +82,7 @@ import type { ProviderProxySetRecordedContainmentReaper } from './recorded-conta
 
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
 
-/**
- * AC10's discovery-time classification: probes the mandatory `guardian.holder-status.v1` this build's own
- * guardian always answers, using the just-installed grant this redemption's own capsule already carries. A
- * v0.10.9 guardian has never heard of this method, so it answers the wire's own `method_not_found` refusal or
- * closes the connection bare — both are `legacy-unprotected`, a running role whose autonomous enforcer and
- * proxy deadline code this coordinator cannot retrofit and which does not satisfy the 60-second overload
- * floor regardless of wire compatibility. Anything else this probe cannot resolve is left an error: silently
- * calling an unclassifiable answer `protected` would let a genuinely unprotected set escape marked safe.
- */
+/** Absence of the holder-status protection surface does not establish any particular build version. */
 async function probeCurrentGenerationProtection(
   guardianClient: ControlClient,
   capsule: HandoffCapsuleV3,
@@ -118,9 +110,6 @@ async function probeCurrentGenerationProtection(
       }
       return 'protected';
     }
-    // `ControlClientRemoteFailure` is a union; only its `json-rpc-error` member carries `protocolCode` at
-    // all, so `invalid-frame` — an unattributable reply, not a structured refusal — is not this probe's
-    // named v0.10.9 signature and falls through to the same throw as any other unclassifiable answer.
     const failure = exchange.response.failure;
     if (failure.kind === 'json-rpc-error' && failure.protocolCode === 'method_not_found') {
       return 'legacy-unprotected';

@@ -31,9 +31,19 @@ import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { registerBackendCommands, type BackendStatusCommandOperations } from '#src/cli/commands/backend.js';
+import {
+  registerBackendCommands,
+  type BackendStatusCommandOperations,
+  type ProviderProxySetCommandOperations,
+} from '#src/cli/commands/backend.js';
+import type {
+  ProviderProxyRoleIdentity,
+  ProviderProxyRoleTerminationCommandOperations,
+} from '#src/cli/commands/provider-proxy-role-termination.js';
 import { assertNever } from '#src/infra/error-format.js';
+import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import type { ShutdownReason, ShutdownResult } from '#src/transport/http/backend/shutdown.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const genericInstallMethod = 'shell' satisfies InstallMethod;
 
@@ -660,6 +670,89 @@ describe('cli main routing', () => {
       const { BACKEND_STATUS_EXIT_CODES } = await import('#src/cli/commands/backend.js');
 
       expect(Object.fromEntries(BACKEND_STATUS_EXIT_EXPECTATIONS)).toEqual(BACKEND_STATUS_EXIT_CODES);
+    });
+  });
+
+  describe('backend provider-proxy-set routing', () => {
+    const setIdentity = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'a'.repeat(64),
+      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+    } satisfies ProviderProxySetAddress;
+    const setToken = encodeProviderProxySetAddress(setIdentity);
+    const roleIdentity = {
+      role: 'reaper',
+      pid: 6101,
+      incarnation: testIncarnation(6101),
+    } satisfies ProviderProxyRoleIdentity;
+
+    function routingProgram() {
+      const contain = vi.fn<ProviderProxySetCommandOperations['contain']>(async (request) => ({
+        kind: 'unsupported-coordinator',
+        setIdentity: request.setIdentity,
+      }));
+      const terminate = vi.fn<ProviderProxyRoleTerminationCommandOperations['terminate']>((identity) => ({
+        kind: 'signalled',
+        roleIdentity: identity,
+      }));
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        providerProxySets: { contain },
+        providerProxyRoleTermination: { terminate },
+      });
+      return { program, contain, terminate };
+    }
+
+    it('routes contain to the child operation when the parent accepts an operator action', async () => {
+      const { program, contain, terminate } = routingProgram();
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'backend',
+        'provider-proxy-set',
+        'contain',
+        setToken,
+        '--abandon-without-absence',
+      ]);
+
+      expect(contain).toHaveBeenCalledOnce();
+      expect(contain).toHaveBeenCalledWith({ setIdentity, abandonWithoutAbsence: true });
+      expect(terminate).not.toHaveBeenCalled();
+    });
+
+    it('routes terminate-role to the parent operation with its parsed identity', async () => {
+      const { program, contain, terminate } = routingProgram();
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'backend',
+        'provider-proxy-set',
+        'terminate-role',
+        '--role',
+        roleIdentity.role,
+        '--pid',
+        String(roleIdentity.pid),
+        '--incarnation',
+        roleIdentity.incarnation,
+      ]);
+
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(terminate).toHaveBeenCalledWith(roleIdentity);
+      expect(contain).not.toHaveBeenCalled();
+    });
+
+    it('refuses an unrecognized parent operator action and names the accepted action', async () => {
+      const { program, contain, terminate } = routingProgram();
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'provider-proxy-set', 'nonsense']);
+
+      expect(contain).not.toHaveBeenCalled();
+      expect(terminate).not.toHaveBeenCalled();
+      expect(stderr).toContain("Provider-proxy set operator action must be 'terminate-role'.");
+      expect(process.exitCode).toBe(2);
     });
   });
 

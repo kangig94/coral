@@ -7,6 +7,8 @@ import { createBootstrapNonceCredential, type ReaperBootstrapCapsule } from './b
 import {
   controlTenancyHolderOf,
   createControlEndpoint,
+  sameControlTenancyHolder,
+  type ControlTenancyHolder,
   type ControlEndpoint,
   type ControlEndpointTimer,
   type ControlMethod,
@@ -154,7 +156,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   // own caller presents, which is why that method's own request carries none to check it against.
   let recordedRedemption: Readonly<{
     grantId: string;
-    successorInstanceId: string;
+    successor: ControlTenancyHolder;
     operations: readonly OperationIdentity[];
     redemptionReceipt: string;
   }> | null = null;
@@ -347,10 +349,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         authority: 'pairing',
         handle: (params) => {
           const request = reaperRecordRedemptionParamsSchema.parse(params);
+          const successor = controlTenancyHolderOf(request.successor);
           if (recordedRedemption !== null) {
             const different =
               recordedRedemption.grantId !== request.grantId ||
-              recordedRedemption.successorInstanceId !== request.successor.instanceId ||
+              !sameControlTenancyHolder(recordedRedemption.successor, successor) ||
               recordedRedemption.redemptionReceipt !== request.redemptionReceipt ||
               !sameOperations(recordedRedemption.operations, request.operations);
             if (different && deadlines.controlIsLive()) {
@@ -365,7 +368,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           }
           recordedRedemption = {
             grantId: request.grantId,
-            successorInstanceId: request.successor.instanceId,
+            successor,
             operations: request.operations,
             redemptionReceipt: request.redemptionReceipt,
           };
@@ -412,10 +415,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         handle: (params) => {
           const request = reaperHandoffRotateParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor, capsule);
+          const successor = controlTenancyHolderOf(request.successor);
           if (
             recordedRedemption === null ||
             recordedRedemption.grantId !== request.grantId ||
-            recordedRedemption.successorInstanceId !== request.successor.instanceId ||
+            !sameControlTenancyHolder(recordedRedemption.successor, successor) ||
             recordedRedemption.redemptionReceipt !== request.guardianRedemptionReceipt
           ) {
             throw new ProxyControlProtocolError(
@@ -424,7 +428,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             );
           }
           return {
-            holder: controlTenancyHolderOf(request.successor),
+            holder: successor,
             fields: reaperHandoffRotateFieldsSchema.parse({
               // A wire result describing what this call did, not a deadline-model state — the deadline
               // machine this endpoint shares with the guardian has exactly one enum, and this is not a
