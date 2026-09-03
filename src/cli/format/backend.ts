@@ -1165,7 +1165,8 @@ function formatRunningStatus(health: RunningHealth): string {
             waitingFor === 'heartbeat-bound-live-claims' ||
             waitingFor === 'control-reattachment-bound-live-claims' ||
             waitingFor === 'heartbeat-protocol-live-claims' ||
-            waitingFor === 'operation-control-outcome-unknown',
+            waitingFor === 'operation-control-outcome-unknown' ||
+            waitingFor === 'publication-confirmation-or-control-release',
         )
       ) {
         lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);

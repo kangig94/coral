@@ -3557,6 +3557,82 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
   });
 
+  it('bounds unknown publication retries before authorizing representation-only operator abandonment', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = capsuleV3For(authority);
+    const clock = new ManualClock();
+    const unknownPublication = vi.fn(() =>
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: { state: 'acquisition-publication-unknown', reason: 'publication remains unknown' },
+        },
+      }),
+    );
+    const retained = publicationSessionHandoff(authority, capsule, { guardian: unknownPublication });
+    const redeemCapsule = vi.fn(() => new Promise<ProviderProxySetRedemptionOutcome>(() => undefined));
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('publication-exhausted-route', {
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+    });
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+
+    lifecycle.acquisitionPublicationUnknown(admission.slotId, retained.handoff, (set) => set);
+    await drainMicrotasks();
+
+    const address = providerProxySetAddress(authority.setIdentity);
+    expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'not-held', state: 'recovering' });
+
+    await settleScheduledWork(clock);
+
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        represented: 1,
+        states: ['capsule-recovering'],
+        operatorDispositions: [
+          expect.objectContaining({
+            incidentReason: expect.stringContaining('provider_proxy_acquisition_publication_retry_exhausted'),
+            waitingFor: 'control-reattachment',
+          }),
+        ],
+      }),
+    );
+    expect(unknownPublication).toHaveBeenCalledTimes(10);
+    expect(retained.closed).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
+    expect(retained.stopped).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
+    expect(redeemCapsule).toHaveBeenCalledOnce();
+
+    const authorization = lifecycle.authorizeOperatorExit(address);
+    if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
+    await expect(
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        await operatorContainmentProof(authorization.capability, enforcersUnobservable),
+        true,
+      ),
+    ).resolves.toEqual({
+      kind: 'abandoned',
+      setIdentity: address,
+      enforcerObservations: enforcersUnobservable.observations,
+      claimDischarge: { kind: 'initial-disposition-retry-owned' },
+      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'abandonment-release-started' },
+    });
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+  });
+
   it('closes the retained session on definitive publication refusal before capsule recovery', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);

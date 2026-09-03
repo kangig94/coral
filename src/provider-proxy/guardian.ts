@@ -780,24 +780,25 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           }
 
           try {
-            reaperAcquisitionPublishResultSchema.parse(
-              requireReaperResult(
-                'reaper.acquisition-publish.v1',
-                await options.reaperChannel.exchange(
-                  'reaper.acquisition-publish.v1',
-                  reaperAcquisitionPublishParamsSchema.parse({}),
-                  PROXY_CONTROL_RPC_TIMEOUT_MS,
-                ),
-              ),
+            const exchange = await options.reaperChannel.exchange(
+              'reaper.acquisition-publish.v1',
+              reaperAcquisitionPublishParamsSchema.parse({}),
+              PROXY_CONTROL_RPC_TIMEOUT_MS,
             );
+            // Only proof that the request never crossed the transport may authorize a not-attempted result.
+            if (exchange.kind === 'not-sent') {
+              const reason =
+                exchange.error instanceof Error && exchange.error.message.length > 0
+                  ? exchange.error.message
+                  : 'reaper.acquisition-publish.v1 was not sent';
+              return guardianAcquisitionPublishResultSchema.parse({
+                state: 'acquisition-publication-not-attempted',
+                reason: truncate(reason, 500),
+              });
+            }
+            reaperAcquisitionPublishResultSchema.parse(requireReaperResult('reaper.acquisition-publish.v1', exchange));
           } catch (error: unknown) {
-            // Both a refused/undecodable reply and a `requireReaperResult` failure land here identically: the
-            // reaper's own handler already ran `holderAuthority.publish()` before either could happen, so
-            // neither proves the reaper is unpublished — only that this exchange could not confirm it. The
-            // shared, exported schema (not a shape private to this handler) is what lets the coordinator read
-            // this as a real outcome instead of inferring it from a parse failure.
-            // Truncated: a ZodError's own `.message` is an unbounded JSON dump of every issue, and this parse
-            // must not itself throw and escape as the very refusal this branch exists to avoid.
+            // Delivery or response ambiguity may not authorize either publication or non-attempt.
             const reason =
               error instanceof Error ? error.message : 'reaper.acquisition-publish.v1 could not be confirmed';
             return guardianAcquisitionPublishResultSchema.parse({

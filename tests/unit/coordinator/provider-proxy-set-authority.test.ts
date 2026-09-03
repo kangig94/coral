@@ -962,46 +962,26 @@ describe('buildGuardianSpawnUndo', () => {
     expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
   });
 
-  it('escalates to SIGKILL on the group once the teardown reserve is spent', async () => {
-    const time = new VirtualTime();
-    const killCalls: SignalCall[] = [];
-    const runtime = guardianUndoRuntime(time, () => true, killCalls);
-    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+  it.each(['alive', 'unknown'] as const)(
+    'reports unconfirmed %s liveness without escalating to SIGKILL',
+    async (liveness) => {
+      const time = new VirtualTime();
+      const killCalls: SignalCall[] = [];
+      const runtime = guardianUndoRuntime(
+        time,
+        () => true,
+        killCalls,
+        () => liveness,
+      );
+      const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
-    time.tick(PROXY_TEARDOWN_RESERVE_MS);
-    await pending;
+      const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
+      time.tick(PROXY_TEARDOWN_RESERVE_MS);
+      await expect(pending).rejects.toThrow('guardian process-group absence was not confirmed after SIGTERM');
 
-    // The same group, again: a guardian that spent its whole reserve without disappearing is not going to,
-    // and leaving it holding the proxy containment is the one outcome this undo exists to rule out.
-    expect(killCalls).toEqual([
-      { pid: -spawned.pid, signal: 'SIGTERM' },
-      { pid: -spawned.pid, signal: 'SIGKILL' },
-    ]);
-  });
-
-  // On darwin an incarnation is wall-clock at one-second resolution, so a match is not proof the pid is still
-  // the process this acquisition spawned. Refusing costs the guardian's orphan deadline — it never received
-  // control, so it ends itself — and signalling a matching-but-different pid costs an unrelated process.
-  // Escalation needs observed life. The group may have exited during the TERM grace and had its id reused, so
-  // an unanswerable probe is not permission to SIGKILL a bare number.
-  it("does not escalate to SIGKILL when the group's liveness cannot be observed", async () => {
-    const time = new VirtualTime();
-    const killCalls: SignalCall[] = [];
-    const runtime = guardianUndoRuntime(
-      time,
-      () => true,
-      killCalls,
-      () => 'unknown',
-    );
-    const spawned = fakeSpawnedGuardian(4_242, 1_000);
-
-    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
-    time.tick(PROXY_TEARDOWN_RESERVE_MS);
-    await pending;
-
-    expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
-  });
+      expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
+    },
+  );
 
   it('declines to signal on a platform whose incarnation cannot authorize one', async () => {
     const time = new VirtualTime();

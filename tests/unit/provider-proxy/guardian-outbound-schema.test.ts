@@ -627,26 +627,47 @@ describe('guardian outbound schemas', () => {
     },
   );
 
-  it(
-    'answers acquisition-publication-unknown, never a refusal, when reaper.acquisition-publish.v1 could not ' +
-      'be sent at all',
-    async () => {
-      const harness = createGuardianHarness();
-      const publishRequest = {
-        guardian: harness.guardianIdentity,
-        reaper: harness.reaperIdentity,
-        proxy: harness.proxyIdentity,
-      };
-      harness.reaperExchange.mockRejectedValueOnce(new Error('reaper channel unavailable'));
+  it('answers acquisition-publication-not-attempted when transport evidence proves the reaper request never left', async () => {
+    const harness = createGuardianHarness();
+    const publishRequest = {
+      guardian: harness.guardianIdentity,
+      reaper: harness.reaperIdentity,
+      proxy: harness.proxyIdentity,
+    };
+    harness.reaperExchange.mockResolvedValueOnce(
+      controlExchangeForTest({
+        kind: 'not-sent',
+        cause: 'connection-already-closed',
+        error: new Error('reaper channel unavailable'),
+      }),
+    );
 
-      const unconfirmed = (await harness.call('guardian.acquisition-publish.v1', publishRequest)) as {
-        state: string;
-        reason: string;
-      };
+    const notAttempted = (await harness.call('guardian.acquisition-publish.v1', publishRequest)) as {
+      state: string;
+      reason: string;
+    };
 
-      expect(unconfirmed.state).toBe('acquisition-publication-unknown');
-      expect(unconfirmed.reason).toEqual(expect.any(String));
-      expect(harness.mintReceipt).not.toHaveBeenCalled();
-    },
-  );
+    expect(notAttempted.state).toBe('acquisition-publication-not-attempted');
+    expect(notAttempted.reason).toEqual(expect.any(String));
+    expect(harness.mintReceipt).not.toHaveBeenCalled();
+  });
+
+  it('keeps an exchange rejection unknown because it carries no transport-owned delivery disposition', async () => {
+    const harness = createGuardianHarness();
+    const publishRequest = {
+      guardian: harness.guardianIdentity,
+      reaper: harness.reaperIdentity,
+      proxy: harness.proxyIdentity,
+    };
+    harness.reaperExchange.mockRejectedValueOnce(new Error('reaper channel unavailable'));
+
+    const unconfirmed = (await harness.call('guardian.acquisition-publish.v1', publishRequest)) as {
+      state: string;
+      reason: string;
+    };
+
+    expect(unconfirmed.state).toBe('acquisition-publication-unknown');
+    expect(unconfirmed.reason).toEqual(expect.any(String));
+    expect(harness.mintReceipt).not.toHaveBeenCalled();
+  });
 });

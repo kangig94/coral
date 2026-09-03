@@ -65,11 +65,10 @@ import {
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
-import { buildGuardianSpawnUndo } from './spawn-undo.js';
+import { buildGuardianSpawnUndo, type GuardianSpawnUndo } from './spawn-undo.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
 import {
-  closeProviderProxyAcquisitionSession,
   createOwnedProviderProxyAcquisitionControlSession,
   establishProviderProxyAcquisitionSession,
   handOverProviderProxyAcquisitionControlSession,
@@ -173,6 +172,7 @@ export function createProviderProxyAcquisitionSteps(
 
   let minted: MintedSet | null = null;
   let guardianSpawn: SpawnedRoleProcess | null = null;
+  let guardianSpawnUndo: GuardianSpawnUndo | null = null;
 
   return {
     async createCapsules(): Promise<AcquisitionUndo> {
@@ -299,18 +299,20 @@ export function createProviderProxyAcquisitionSteps(
         },
       });
       guardianSpawn = spawned;
+      guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
       return {
         label: 'guardian',
-        run: buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation),
+        run: guardianSpawnUndo,
       };
     },
 
     async establishControl(registerUndo: (undo: AcquisitionUndo) => void) {
-      if (minted === null || guardianSpawn === null) {
+      if (minted === null || guardianSpawn === null || guardianSpawnUndo === null) {
         throw new Error('createCapsules and spawnGuardian must run before establishControl.');
       }
       const setMinted = minted;
       const spawnedGuardian = guardianSpawn;
+      const spawnUndo = guardianSpawnUndo;
       const timer = runtimeControlTimer(runtime);
       const retry: RoleConnectRetryOptions = {
         connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
@@ -331,6 +333,7 @@ export function createProviderProxyAcquisitionSteps(
         reaper: ReaperIdentity;
         proxy: ProxyIdentity;
       }> | null = null;
+      let guardianTeardownClient: ControlClient | null = null;
 
       try {
         // The proxy is reached first: only it can report its own pid, incarnation, and process-group id, and
@@ -431,6 +434,13 @@ export function createProviderProxyAcquisitionSteps(
             containmentKind: DETACHED_CONTAINMENT_KIND,
           },
         });
+        spawnUndo.bindControl({
+          client: guardianSession.client,
+          guardian: guardianSession.opened.guardian,
+          reaper: reaperSession.opened.reaper,
+          proxy: proxySession.opened.proxy,
+        });
+        guardianTeardownClient = guardianSession.client;
         heartbeatAssembly.startRole('reaper', {
           client: reaperSession.client,
           controlEpoch: reaperSession.opened.controlEpoch,
@@ -530,10 +540,7 @@ export function createProviderProxyAcquisitionSteps(
           );
         }
         if (publication.kind === 'not-attempted') {
-          return closeProviderProxyAcquisitionSession(
-            session,
-            `provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`,
-          );
+          throw new Error(`provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`);
         }
         const established = establishProviderProxyAcquisitionSession(session, publication.receipt);
         return {
@@ -545,7 +552,6 @@ export function createProviderProxyAcquisitionSteps(
               heartbeats.guardian.stop();
               heartbeats.reaper.stop();
               proxySession.client.close();
-              guardianSession.client.close();
               reaperSession.client.close();
             },
           },
@@ -572,7 +578,9 @@ export function createProviderProxyAcquisitionSteps(
           }
         }
         heartbeatAssembly.stop();
-        for (const client of opened) client.close();
+        for (const client of opened) {
+          if (client !== guardianTeardownClient) client.close();
+        }
         throw error;
       }
     },

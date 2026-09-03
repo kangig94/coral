@@ -1445,7 +1445,7 @@ describe('backend status provider proxy dispositions', () => {
     expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${tokens.third}`);
   });
 
-  it('exits 75 for a fully understood held set even when no row was skipped', async () => {
+  it('prints the exact-set containment command for an acquisition publication hold', async () => {
     const setIdentity = {
       buildSetId: '99999999-9999-4999-8999-999999999999',
       hostFingerprint: 'e'.repeat(64),
@@ -1473,8 +1473,8 @@ describe('backend status provider proxy dispositions', () => {
             setIdentity,
             setToken,
             disposition: 'held',
-            incidentReason: 'control_channel_reattaching',
-            waitingFor: 'control-reattachment',
+            incidentReason: 'publication_result_unknown',
+            waitingFor: 'publication-confirmation-or-control-release',
           },
         ],
       },

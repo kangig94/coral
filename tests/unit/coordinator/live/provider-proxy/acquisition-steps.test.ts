@@ -36,7 +36,10 @@ import {
   closeProviderProxyAcquisitionSession,
   providerProxyAcquisitionSessionDescriptor,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
-import { exchangeAcquisitionStage } from '#src/coordinator/live/provider-proxy/set-publication.js';
+import {
+  exchangeAcquisitionStage,
+  runProviderProxySetPublicationTransaction,
+} from '#src/coordinator/live/provider-proxy/set-publication.js';
 import {
   acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionPublishResultSchema,
@@ -66,6 +69,7 @@ import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   PROXY_CONTROL_HEARTBEAT_MS,
   PROXY_CONTROL_LEASE_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
 } from '#src/provider-proxy/orphan-deadline.js';
 import { spawnRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
@@ -162,6 +166,12 @@ function passiveClient(): ControlClient {
         return controlExchangeForTest({
           kind: 'response',
           response: { kind: 'result', value: { state: 'acquisition-published' } },
+        });
+      }
+      if (method === 'guardian.containment-commit.v1') {
+        return controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
         });
       }
       return controlExchangeForTest({
@@ -315,6 +325,51 @@ describe('exchangeAcquisitionStage', () => {
     });
   });
 
+  it('classifies a proven publication non-attempt without retrying or contacting the proxy', async () => {
+    const guardianExchange = vi.fn(async () =>
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: { state: 'acquisition-publication-not-attempted', reason: 'reaper request was not sent' },
+        },
+      }),
+    );
+    const guardian = { ...passiveClient(), exchange: guardianExchange };
+    const proxyExchange = vi.fn(async (): Promise<never> => {
+      throw new Error('proxy publication must not be attempted');
+    });
+    const proxyClient = { ...passiveClient(), exchange: proxyExchange };
+
+    const outcome = await runProviderProxySetPublicationTransaction(
+      guardian,
+      proxyClient,
+      ACQUISITION_PUBLISH_GUARDIAN_IDENTITY,
+      ACQUISITION_PUBLISH_REAPER_IDENTITY,
+      {
+        proxyInstanceId: '99999999-9999-4999-8999-999999999993',
+        guardianInstanceId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.guardianInstanceId,
+        reaperInstanceId: ACQUISITION_PUBLISH_REAPER_IDENTITY.reaperInstanceId,
+        pid: 9_003,
+        incarnation: testIncarnation(9_003),
+        processGroupId: 9_003,
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
+        hostFingerprint: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.hostFingerprint,
+        canonicalEndpoint: '/tmp/coral-acquisition-test-proxy.sock',
+      },
+    );
+
+    expect(outcome).toEqual({
+      kind: 'not-attempted',
+      role: 'guardian',
+      reason: 'reaper request was not sent',
+    });
+    expect(guardianExchange).toHaveBeenCalledOnce();
+    expect(proxyExchange).not.toHaveBeenCalled();
+  });
+
   it(
     'still classifies a confirmed published reply as ok, and an undecodable reply as unknown via the ' +
       'untouched safeParse fallback',
@@ -453,6 +508,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     };
     const proxy = await proxyLeaseSession(time);
     const guardian = passiveClient();
+    const guardianExchange = vi.spyOn(guardian, 'exchange');
     const reaper = passiveClient();
     const heartbeatOriginMs = time.now();
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
@@ -520,7 +576,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     });
     await steps.createCapsules();
-    await steps.spawnGuardian();
+    const guardianUndo = await steps.spawnGuardian();
     expect(vi.mocked(spawnRoleProcess).mock.calls.at(-1)?.[3].envAdditions).toMatchObject({
       [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
     });
@@ -530,9 +586,15 @@ describe('createProviderProxyAcquisitionSteps', () => {
     expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.registerAcquisitionUndo).toBe(registerUndo);
 
     const observation = { recurringEchoes: proxy.acceptedEchoes() - 1, controlIsLive: proxy.controlIsLive() };
-    established.set.stopHeartbeats();
     await established.set.initiateControlClose();
+    await established.undo.run();
+    await guardianUndo.run();
     await proxy.close();
+    expect(guardianExchange).toHaveBeenCalledWith(
+      'guardian.containment-commit.v1',
+      expect.any(Object),
+      PROXY_TEARDOWN_RESERVE_MS,
+    );
     expect({
       acceptedRecurringEchoes: observation.recurringEchoes > 1,
       controlIsLive: observation.controlIsLive,

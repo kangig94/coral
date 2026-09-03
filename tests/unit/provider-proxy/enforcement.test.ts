@@ -515,9 +515,9 @@ describe('giveUp — the local-signal capability (AC2, Phase 3)', () => {
     // process is not a claim any holder observation can refuse.
     const harness = createHarness({ adoptionInMs: 60_000, alive, published: false });
 
-    const outcome = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
+    const disposition = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
 
-    expect(outcome.kind).toBe('containment-absent');
+    expect(disposition).toMatchObject({ kind: 'settled', outcome: { kind: 'containment-absent' } });
     expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
   });
 
@@ -528,9 +528,24 @@ describe('giveUp — the local-signal capability (AC2, Phase 3)', () => {
       holder: { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') },
     });
 
-    const outcome = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
+    const disposition = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
 
-    expect(outcome.kind).toBe('containment-absent');
+    expect(disposition).toMatchObject({ kind: 'settled', outcome: { kind: 'containment-absent' } });
+  });
+
+  it('returns an unattributable local-signal result as a holding disposition', async () => {
+    const harness = createHarness({
+      adoptionInMs: 60_000,
+      observeContainmentLiveness: (pid) => (pid < 0 ? 'alive' : 'absent'),
+      readContainmentIncarnation: () => testIncarnation(2_000),
+    });
+
+    const disposition = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
+
+    expect(disposition).toMatchObject({
+      kind: 'holding',
+      outcome: { kind: 'recorded-group-unattributable' },
+    });
   });
 });
 

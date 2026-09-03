@@ -110,6 +110,7 @@ import {
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
+const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
 /** The post-bound reattachment hold's own retry cadence: deliberately slower than the active window's
  *  exponential backoff (capped at 30 s by `retryDelayMs`) because the bound already expired without proof of
  *  anything decisive — there is no deadline left to race against, only a peer to keep politely asking after. */
@@ -2079,6 +2080,14 @@ export class ProviderProxySetLifecycle {
         ],
       ]),
     );
+    if (slot.completedAttempts >= ACQUISITION_PUBLICATION_ATTEMPT_LIMIT) {
+      this.#releaseAcquisitionPublicationSession(
+        slot,
+        `provider_proxy_acquisition_publication_retry_exhausted:${incident}`,
+        this.#deps.time.monotonicNow(),
+      );
+      return;
+    }
     const delayMs = retryDelayMs(slot.completedAttempts);
     const requestedWakeMs = this.#deps.time.now() + delayMs;
     slot.retryTimer = this.#deps.time.setTimeout(() => {
@@ -2092,6 +2101,7 @@ export class ProviderProxySetLifecycle {
   #releaseAcquisitionPublicationSession(
     slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
     reason: unknown,
+    operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
   ): void {
     if (this.#slots.get(slot.key) !== slot) return;
     slot.attemptToken += 1;
@@ -2113,7 +2123,7 @@ export class ProviderProxySetLifecycle {
       attemptAbort: null,
       recoveryPhase: 'redemption',
       routeKey: slot.routeKey,
-      operatorExitNotBeforeMonotonicMs: this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
+      operatorExitNotBeforeMonotonicMs,
     };
     this.#slots.set(slot.key, recovering);
     this.#operatorDispositions.set(
@@ -2361,13 +2371,7 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  /**
-   * `#commitContainmentAbsence`'s guard refuses absence from `available`/`draining` (#308: a stray fault
-   * reaped a set that still looked healthy). A heartbeat-bound or operation-control hold deliberately never
-   * moves the slot on its own, so the operator's already-decisive `reap-required` proof must make the same
-   * commitment `#beginContainment` makes for every other destructive path, at the same boundary — once
-   * evidence has decided the set is gone, not before. A no-op once the slot has already left that pair.
-   */
+  /** Disappearance evidence cannot release a routable slot until containment owns it. */
   #commitHeldSlotToContainment(slot: EstablishedSlot): void {
     if (slot.kind !== 'available' && slot.kind !== 'draining') return;
     this.#removeRoute(slot);

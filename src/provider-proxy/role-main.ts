@@ -35,6 +35,7 @@ import {
   mintLocalSignalTeardownAuthorization,
   type EnforcementOutcome,
   type EnforcementScheduler,
+  type LocalSignalTeardownDisposition,
 } from './enforcement.js';
 import { DETACHED_CONTAINMENT_KIND, createGuardian, type Guardian } from './guardian.js';
 import { createControlHolderAuthority, type ControlHolderAuthority } from './holder-lifecycle.js';
@@ -240,22 +241,16 @@ export type GuardianRoleHandle = Readonly<{
   reaperSpawn: SpawnedRoleProcess;
   proxySpawn: SpawnedRoleProcess;
   close(): Promise<void>;
-  /** What a SIGTERM asks for: give up and reap the proxy containment this guardian's enforcer was armed on,
-   *  rather than merely disarm and disappear — the same close-and-exit path a cooperative
-   *  `guardian.containment-commit.v1` RPC takes, reached here directly instead of over the wire. Falls back to
-   *  a plain close on the (unreachable in production) window before any containment was ever recorded, since
-   *  there is nothing yet to reap. */
-  giveUp(): Promise<EnforcementOutcome>;
+  /** A signal is explicit operator authority to abandon an unattributable hold. */
+  giveUp(): Promise<LocalSignalTeardownDisposition>;
 }>;
 
 export type ReaperRoleHandle = Readonly<{
   role: 'reaper';
   reaper: Reaper;
   close(): Promise<void>;
-  /** The reaper's own half of `GuardianRoleHandle.giveUp`: reaps the same containment its enforcer was
-   *  independently armed on, so a SIGTERM reaching this process (it shares the guardian's process group)
-   *  enforces rather than merely disarms even if the guardian did not survive to do so itself. */
-  giveUp(): Promise<EnforcementOutcome>;
+  /** A signal is explicit operator authority to abandon an unattributable hold. */
+  giveUp(): Promise<LocalSignalTeardownDisposition>;
 }>;
 
 export type ProxyRoleHandle = Readonly<{
@@ -408,7 +403,7 @@ export type RoleEnforcementOutcomeOptions<Scope extends symbol> = Readonly<{
   close(): Promise<void>;
   exitProcess(code: number): void;
   now(): number;
-  localSignalTeardownAuthorized(): boolean;
+  operatorAbandonmentAuthorized(): boolean;
   retryUnattributable(): Promise<EnforcementOutcome> | null;
   schedule: RoleOutcomeScheduler;
 }>;
@@ -418,9 +413,9 @@ function unattributableRetryDelayMs(attempts: number): number {
 }
 
 /**
- * Unattributable outcomes must keep the role alive unless a local signal authorizes exit. Only confirmed
- * absence may mark the deadline model exited. Close-and-exit must remain deferred so an in-flight control
- * response can reach its caller before the role closes its sockets.
+ * Unattributable outcomes must keep the role alive unless explicit operator authority abandons the hold.
+ * Only confirmed absence may mark the deadline model exited. Close-and-exit must remain deferred so an
+ * in-flight control response can reach its caller before the role closes its sockets.
  */
 export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   options: RoleEnforcementOutcomeOptions<Scope>,
@@ -437,7 +432,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   const handleOutcome = (outcome: EnforcementOutcome): void => {
     if (outcome.kind === 'recorded-group-unattributable') {
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
-      if (options.localSignalTeardownAuthorized()) {
+      if (options.operatorAbandonmentAuthorized()) {
         enforcementHoldStatus = null;
         closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
         return;
@@ -460,7 +455,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       });
       options.schedule(() => {
         if (
-          options.localSignalTeardownAuthorized() ||
+          options.operatorAbandonmentAuthorized() ||
           enforcementHoldStatus?.attempts !== attempts ||
           enforcementHoldStatus.retry.state !== 'scheduled'
         ) {
@@ -651,7 +646,7 @@ export async function startProviderGuardianRole(
     // guardian it closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
     // eslint-disable-next-line prefer-const
     let guardianRef!: Guardian;
-    let localSignalTeardownAuthorized = false;
+    let operatorAbandonmentAuthorized = false;
     close = async (): Promise<void> => {
       pairedReaperChannel.close();
       await guardianRef.close();
@@ -666,7 +661,7 @@ export async function startProviderGuardianRole(
       close,
       exitProcess,
       now: ports.runtime.time.now,
-      localSignalTeardownAuthorized: () => localSignalTeardownAuthorized,
+      operatorAbandonmentAuthorized: () => operatorAbandonmentAuthorized,
       retryUnattributable: () => guardianRef.enforcer()?.retryUnattributable() ?? null,
       schedule,
     });
@@ -712,15 +707,18 @@ export async function startProviderGuardianRole(
       reaperSpawn,
       proxySpawn,
       close,
-      giveUp: async (): Promise<EnforcementOutcome> => {
-        localSignalTeardownAuthorized = true;
+      giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
+        operatorAbandonmentAuthorized = true;
         const armed = guardian.enforcer();
         if (armed === null) {
           // Unreachable once this handle exists — `recordContainment` above always succeeds before this
           // function returns — but a null enforcer still has nothing to reap, so the plain close it would
           // otherwise have gotten on SIGTERM is the correct fallback rather than a thrown assertion.
           await closeGuardian();
-          return { kind: 'reap-failed', reason: 'no containment was recorded to reap' };
+          return {
+            kind: 'settled',
+            outcome: { kind: 'reap-failed', reason: 'no containment was recorded to reap' },
+          };
         }
         // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
         // no remote peer or autonomous observation could construct this authority.
@@ -757,7 +755,7 @@ export async function startProviderReaperRole(
   // closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
   // eslint-disable-next-line prefer-const
   let reaperRef!: Reaper;
-  let localSignalTeardownAuthorized = false;
+  let operatorAbandonmentAuthorized = false;
   const close = (): Promise<void> => reaperRef.close();
   const { onOutcome, onProgressViolation, enforcementHoldStatus } = buildEnforcementOutcomeHandlers({
     role: 'reaper',
@@ -766,7 +764,7 @@ export async function startProviderReaperRole(
     close,
     exitProcess,
     now: ports.runtime.time.now,
-    localSignalTeardownAuthorized: () => localSignalTeardownAuthorized,
+    operatorAbandonmentAuthorized: () => operatorAbandonmentAuthorized,
     retryUnattributable: () => reaperRef.enforcer()?.retryUnattributable() ?? null,
     schedule: realRoleOutcomeScheduler(ports),
   });
@@ -792,15 +790,15 @@ export async function startProviderReaperRole(
     role: 'reaper',
     reaper: reaperRef,
     close,
-    giveUp: async (): Promise<EnforcementOutcome> => {
-      localSignalTeardownAuthorized = true;
+    giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
+      operatorAbandonmentAuthorized = true;
       const armed = reaperRef.enforcer();
       if (armed === null) {
         const outcome = { kind: 'reap-failed', reason: 'no containment was recorded to reap' } as const;
         await close()
           .catch((error: unknown) => backendLog.error('reaper: close on exit failed', error))
           .finally(() => exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE));
-        return outcome;
+        return { kind: 'settled', outcome };
       }
       // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
       // no remote peer or autonomous observation could construct this authority.
@@ -1106,18 +1104,6 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
   let proxyShutdownStarted = false;
 
   const shutdown = (): void => {
-    // SIGTERM/SIGINT here means give up entirely — `buildGuardianSpawnUndo`'s acquisition-cleanup path is
-    // the production sender — never a negotiated handoff (that goes through `guardian.containment-commit.v1`
-    // over control, or a clean `initiateControlClose`). A guardian or reaper holds a proxy containment its own
-    // enforcer was armed on; `close()` alone only disarms it, and the proxy is a separate detached
-    // process-group leader outside this signal's own reach, so leaving it merely disarmed strands it
-    // forever. `giveUp()` reaps it first, through the same close-and-exit path a cooperative RPC teardown
-    // takes, and its own outcome handler is what exits this process afterwards.
-    //
-    // The proxy holds no containment of its own, so it has no enforcement outcome to exit on — `close()` now
-    // drains every kernel it runs, but nothing else ever calls `exitProcess` for this role. Installing this
-    // handler overrides SIGTERM's own default terminate, so without an explicit exit here this process would
-    // sit alive with no way to end itself once `close()` resolves.
     if (handle.role === 'proxy') {
       if (proxyShutdownStarted) return;
       proxyShutdownStarted = true;

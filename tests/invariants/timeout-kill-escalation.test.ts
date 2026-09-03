@@ -133,13 +133,6 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
 // Migrating one to a sanctioned helper removes its entry.
 const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
   [
-    'src/coordinator/live/provider-proxy/spawn-undo.ts',
-    // `buildGuardianSpawnUndo`'s own comment: a shorter fixed grace (`gracefulKillByPid`'s, built for a plain
-    // child with nothing of its own left to do) would force-kill the guardian mid-reap and strand the very
-    // containment it was just asked to hold, so it spends the full teardown-reserve budget instead.
-    'deliberately not gracefulKillByPid — a plain-child grace period would force-kill the guardian mid-reap of its own containment',
-  ],
-  [
     'src/coordinator/handoff.ts',
     // Handoff targets a separately discovered incumbent, not a child or recorded containment. Each signal
     // requires a fresh pid/start-time check and its own capability, policy, cooldown, and audit handling.

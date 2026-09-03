@@ -631,13 +631,15 @@ export const acquisitionPublicationUnknownResultSchema = z
   .object({ state: z.literal('acquisition-publication-unknown'), reason: z.string().min(1).max(500) })
   .strict();
 
-/** `guardian.acquisition-publish.v1`'s reply: either the guardian and reaper are confirmed published, or the
- *  guardian is explicitly saying it could not confirm `reaper.acquisition-publish.v1`'s own outcome — the
- *  reaper's handler publishes before it replies, so an ordinary refusal here would misread as proof that
- *  nothing happened. One exported schema is the single home both the guardian and its coordinator caller
- *  share for this contract. */
+/** Only transport-owned proof that no request left the guardian may construct this disposition. */
+export const acquisitionPublicationNotAttemptedResultSchema = z
+  .object({ state: z.literal('acquisition-publication-not-attempted'), reason: z.string().min(1).max(500) })
+  .strict();
+
+/** Publication success, proven non-attempt, and ambiguity must remain distinct on the wire. */
 export const guardianAcquisitionPublishResultSchema = z.discriminatedUnion('state', [
   guardianAcquisitionPublishedResultSchema,
+  acquisitionPublicationNotAttemptedResultSchema,
   acquisitionPublicationUnknownResultSchema,
 ]);
 

@@ -42,17 +42,20 @@ export type EnforcementOutcome =
   | Readonly<{ kind: 'recorded-group-unattributable'; reason: string }>;
 
 type SettledEnforcementOutcome = Exclude<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
+type HoldingEnforcementOutcome = Extract<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
 
 type PairingLossContainmentObservation = 'absent' | 'present' | 'unobservable';
 
 /** A superseded capability remains in the return value so no consumer can mistake refusal for completion. */
 export type EnforcementConsumptionDisposition<Authorization> =
   | Readonly<{ kind: 'settled'; outcome: SettledEnforcementOutcome }>
-  | Readonly<{
-      kind: 'holding';
-      outcome: Extract<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
-    }>
+  | Readonly<{ kind: 'holding'; outcome: HoldingEnforcementOutcome }>
   | Readonly<{ kind: 'authorization-superseded'; authorization: Authorization }>;
+
+/** A local signal can authorize a teardown attempt, but cannot turn unobservable containment into absence. */
+export type LocalSignalTeardownDisposition =
+  | Readonly<{ kind: 'settled'; outcome: SettledEnforcementOutcome }>
+  | Readonly<{ kind: 'holding'; outcome: HoldingEnforcementOutcome }>;
 
 /** How many distinct provider processes one containment may hold as teardown targets. */
 export const MAX_PROXY_RECORDED_PROVIDER_ROOTS = 128;
@@ -72,18 +75,14 @@ export class EnforcementError extends Error {
 
 declare const localSignalTeardownBrand: unique symbol;
 /**
- * Constructible only inside a role's own OS-signal handler: its sole precondition is that this process was
- * signalled, which no remote peer and no autonomous observation can construct. Not substitutable for
+ * Constructible only inside a role's own OS-signal handler. Not substitutable for
  * `ObservedHolderAbsenceAuthorization` or `ExplicitTeardownAuthorization` (holder-lifecycle.ts) despite
- * carrying no public fields either — the branding symbols differ, so a value typed as one can never stand in
- * for another. The three meet only inside this module's private `runTeardown`.
+ * carrying no public fields either; a local signal authorizes attempting teardown, never inferring absence.
  */
 export type LocalSignalTeardownAuthorization = Readonly<{ readonly [localSignalTeardownBrand]: true }>;
 
 /**
- * Mints the capability a role's own SIGTERM/SIGINT handler presents to `ArmedEnforcer.giveUp`. Call this only
- * from within that handler — the precondition it documents, that this process was signalled, is not checked
- * here because there is nothing to check it against; it is true by construction of where this is called from.
+ * Call only from the role's OS-signal handler; no remote peer may mint local signal authority.
  */
 export function mintLocalSignalTeardownAuthorization(): LocalSignalTeardownAuthorization {
   return {} as LocalSignalTeardownAuthorization;
@@ -143,12 +142,8 @@ export interface ArmedEnforcer {
   stopAndReap(
     authorization: ExplicitTeardownAuthorization,
   ): Promise<EnforcementConsumptionDisposition<ExplicitTeardownAuthorization>>;
-  /**
-   * Consumes a local-signal capability. Unconditional: an OS signal delivered to this process is not a claim
-   * any successor's epoch can revoke, so there is no currency check and no `null` outcome — this always
-   * proceeds to teardown.
-   */
-  giveUp(authorization: LocalSignalTeardownAuthorization): Promise<EnforcementOutcome>;
+  /** A local signal is irrevocable authority to attempt teardown, not to settle an unattributable result. */
+  giveUp(authorization: LocalSignalTeardownAuthorization): Promise<LocalSignalTeardownDisposition>;
   /** Re-observes a teardown-latched group only while an unattributable hold remains current. */
   retryUnattributable(): Promise<EnforcementOutcome> | null;
   /** Starts the independently scheduled loop. Idempotent. */
@@ -318,11 +313,16 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       : { kind: 'settled', outcome };
   };
 
-  const consumeLocalSignal = async (_authorization: LocalSignalTeardownAuthorization): Promise<EnforcementOutcome> => {
+  const consumeLocalSignal = async (
+    _authorization: LocalSignalTeardownAuthorization,
+  ): Promise<LocalSignalTeardownDisposition> => {
     // A fresh full reserve from the signal instant, not the reduced post-wake reserve the not-before-gated
     // capabilities above receive — there is no wake to have already spent: an actual OS signal is delivered
     // directly, not queued behind a not-before gate.
-    return teardown(clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS));
+    const outcome = await teardown(clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS));
+    return outcome.kind === 'recorded-group-unattributable'
+      ? { kind: 'holding', outcome }
+      : { kind: 'settled', outcome };
   };
 
   const observationStartAt = (holderCheckAtInstant: MonotonicInstant<Scope>): MonotonicInstant<Scope> =>

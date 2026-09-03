@@ -3,6 +3,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it } from 'vitest';
 
 import {
+  acquisitionPublicationNotAttemptedResultSchema,
   acquisitionPublicationUnknownResultSchema,
   assertExactRecordedSetAgreement,
   controlHeartbeatParamsSchema,
@@ -511,23 +512,27 @@ describe('guardian control-method request schemas, shared with their one coordin
     expect(guardianAcquisitionPublishResultSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
   });
 
-  it(
-    'guardian.acquisition-publish.v1: the reply is a discriminated union, and its other member names an ' +
-      'explicit, undecodable-proof outcome rather than a certificate',
-    () => {
-      const unknownOutcome = { state: 'acquisition-publication-unknown', reason: 'reaper reply was undecodable' };
-      expect(guardianAcquisitionPublishResultSchema.safeParse(unknownOutcome).success).toBe(true);
-      expect(acquisitionPublicationUnknownResultSchema.safeParse(unknownOutcome).success).toBe(true);
-      // Neither member's shape satisfies the other: a published reply names no `reason`, and an unknown-outcome
-      // reply names no `certificate` — the discriminant alone must decide which one this is.
-      expect(guardianAcquisitionPublishResultSchema.safeParse({ ...unknownOutcome, unexpected: true }).success).toBe(
-        false,
-      );
-      expect(
-        guardianAcquisitionPublishResultSchema.safeParse({ state: 'acquisition-publication-unknown' }).success,
-      ).toBe(false);
-    },
-  );
+  it('guardian.acquisition-publish.v1: distinguishes published, not-attempted, and unknown', () => {
+    const notAttemptedOutcome = {
+      state: 'acquisition-publication-not-attempted',
+      reason: 'reaper channel was already closed',
+    };
+    const unknownOutcome = { state: 'acquisition-publication-unknown', reason: 'reaper reply was undecodable' };
+    expect(guardianAcquisitionPublishResultSchema.safeParse(notAttemptedOutcome).success).toBe(true);
+    expect(acquisitionPublicationNotAttemptedResultSchema.safeParse(notAttemptedOutcome).success).toBe(true);
+    expect(guardianAcquisitionPublishResultSchema.safeParse(unknownOutcome).success).toBe(true);
+    expect(acquisitionPublicationUnknownResultSchema.safeParse(unknownOutcome).success).toBe(true);
+    // No non-published disposition may carry a certificate.
+    expect(
+      guardianAcquisitionPublishResultSchema.safeParse({ ...notAttemptedOutcome, certificate: 'forged' }).success,
+    ).toBe(false);
+    expect(guardianAcquisitionPublishResultSchema.safeParse({ ...unknownOutcome, unexpected: true }).success).toBe(
+      false,
+    );
+    expect(guardianAcquisitionPublishResultSchema.safeParse({ state: 'acquisition-publication-unknown' }).success).toBe(
+      false,
+    );
+  });
 
   it('proxy.acquisition-publish.v1: requires the certificate and its guardian/reaper binding', () => {
     const valid = { certificate: 'acquisition-certificate', guardian: guardianIdentity, reaper: reaperIdentity };

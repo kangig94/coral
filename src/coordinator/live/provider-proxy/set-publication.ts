@@ -5,6 +5,7 @@ import type { ControlClient, ControlExchange } from '../../../provider-proxy/con
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE,
+  acquisitionPublicationNotAttemptedResultSchema,
   acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionPublishParamsSchema,
   guardianAcquisitionPublishResultSchema,
@@ -29,7 +30,11 @@ type AcquisitionPublicationStageOutcome<T> =
   | Readonly<{ kind: 'not-attempted'; reason: string }>
   | Readonly<{ kind: 'unknown'; reason: string }>;
 
-type AcquisitionStageConfirmed<T> = Exclude<T, z.infer<typeof acquisitionPublicationUnknownResultSchema>>;
+type AcquisitionStageConfirmed<T> = Exclude<
+  T,
+  | z.infer<typeof acquisitionPublicationNotAttemptedResultSchema>
+  | z.infer<typeof acquisitionPublicationUnknownResultSchema>
+>;
 
 export type ProviderProxySetPublicationOutcome =
   | Readonly<{ kind: 'published'; receipt: PublicationReceipt }>
@@ -72,6 +77,10 @@ export async function exchangeAcquisitionStage<T>(
     const explicitOutcome = acquisitionPublicationUnknownResultSchema.safeParse(exchange.response.value);
     if (explicitOutcome.success) {
       return { kind: 'unknown', reason: explicitOutcome.data.reason };
+    }
+    const notAttempted = acquisitionPublicationNotAttemptedResultSchema.safeParse(exchange.response.value);
+    if (notAttempted.success) {
+      return { kind: 'not-attempted', reason: notAttempted.data.reason };
     }
     const parsed = resultSchema.safeParse(exchange.response.value);
     if (!parsed.success) {
