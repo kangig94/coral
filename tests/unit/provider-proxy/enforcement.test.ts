@@ -74,6 +74,7 @@ function createHarness(options: {
   published?: boolean;
   observeHolder?: AsyncRecordedProcessObserver;
   acceleratedCheckMayAuthorizeAbsence?: boolean;
+  pairingLossObserved?: () => boolean;
   /** Forces the fake `bounds().holderCheckAccelerated` this test observes, independent of `adoptionInMs`. */
   accelerated?: boolean;
   observeContainmentLiveness?(pid: number): ProcessLiveness;
@@ -110,6 +111,10 @@ function createHarness(options: {
   const scheduler = createManualScheduler();
   const outcomes: EnforcementOutcome[] = [];
   const violations: number[] = [];
+  const observeContainmentLiveness = vi.fn(
+    options.observeContainmentLiveness ??
+      ((pid: number) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent')),
+  );
   const signalContainment = vi.fn((pid: number) => {
     const targets = pid < 0 ? [...alive] : [pid];
     for (const target of targets) {
@@ -133,9 +138,7 @@ function createHarness(options: {
       clock,
       process: {
         kill: signalContainment,
-        observeLiveness:
-          options.observeContainmentLiveness ??
-          ((pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent')),
+        observeLiveness: observeContainmentLiveness,
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
@@ -151,6 +154,7 @@ function createHarness(options: {
     holderAuthority,
     observeHolder,
     acceleratedCheckMayAuthorizeAbsence: options.acceleratedCheckMayAuthorizeAbsence ?? false,
+    pairingLossObserved: options.pairingLossObserved,
     onOutcome: (outcome) => outcomes.push(outcome),
     onProgressViolation: (lateness) => violations.push(lateness),
   });
@@ -163,6 +167,7 @@ function createHarness(options: {
     outcomes,
     violations,
     signalContainment,
+    observeContainmentLiveness,
     latchTeardown,
     markContainmentAbsent,
     renewHolderCheck,
@@ -183,6 +188,13 @@ function createHarness(options: {
       return observation.authorization;
     },
   };
+}
+
+async function runPublishedHolderCheck(harness: Pick<ReturnType<typeof createHarness>, 'scheduler'>): Promise<void> {
+  harness.scheduler.runDue();
+  await Promise.resolve();
+  harness.scheduler.runDue();
+  for (let flush = 0; flush < 10; flush += 1) await Promise.resolve();
 }
 
 /** Advances the fake clock and pumps the manual scheduler until either it settles or `maxSteps` is spent. */
@@ -344,6 +356,81 @@ describe('armed provider-proxy enforcer — pre-publication clock bound (unchang
 
     expect(harness.scheduler.pending()).toBe(0);
     expect(harness.outcomes).toHaveLength(0);
+  });
+});
+
+describe('reaper lifetime after pairing loss', () => {
+  it('settles after independently confirming that the recorded containment is absent', async () => {
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      observeHolder: () => Promise.resolve('alive'),
+      pairingLossObserved: () => true,
+    });
+
+    harness.enforcer.arm();
+    await runPublishedHolderCheck(harness);
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
+
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+    expect(harness.latchTeardown).toHaveBeenCalledOnce();
+    expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
+    expect(harness.signalContainment).not.toHaveBeenCalled();
+  });
+
+  it('stays armed and keeps checking while the recorded containment is alive', async () => {
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      alive: new Set([CONTAINMENT.pid]),
+      observeHolder: () => Promise.resolve('alive'),
+      pairingLossObserved: () => true,
+    });
+
+    harness.enforcer.arm();
+    await runPublishedHolderCheck(harness);
+
+    expect(harness.observeContainmentLiveness).toHaveBeenCalled();
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
+    expect(harness.signalContainment).not.toHaveBeenCalled();
+    expect(harness.scheduler.pending()).toBe(1);
+  });
+
+  it('stays armed when the recorded containment is unobservable', async () => {
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      alive: new Set([CONTAINMENT.pid]),
+      observeHolder: () => Promise.resolve('alive'),
+      pairingLossObserved: () => true,
+      observeContainmentLiveness: (pid) => (pid < 0 ? 'unknown' : 'alive'),
+    });
+
+    harness.enforcer.arm();
+    await runPublishedHolderCheck(harness);
+
+    expect(harness.observeContainmentLiveness).toHaveBeenCalledWith(-CONTAINMENT.processGroupId);
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
+    expect(harness.signalContainment).not.toHaveBeenCalled();
+    expect(harness.scheduler.pending()).toBe(1);
+  });
+
+  it('does not probe the recorded containment while pairing remains intact', async () => {
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      observeHolder: () => Promise.resolve('alive'),
+      pairingLossObserved: () => false,
+    });
+
+    harness.enforcer.arm();
+    await runPublishedHolderCheck(harness);
+
+    expect(harness.observeContainmentLiveness).not.toHaveBeenCalled();
+    expect(harness.outcomes).toHaveLength(0);
+    expect(harness.scheduler.pending()).toBe(1);
   });
 });
 

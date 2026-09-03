@@ -5432,59 +5432,6 @@ describe('ProviderProxySetLifecycle', () => {
   });
 });
 
-describe('AC10: legacy-unprotected rollout', () => {
-  it('reports the overload floor not ready while a legacy-unprotected set is established, and keeps it held rather than retiring it while claims remain', () => {
-    const record = providerOperationRecord('executing');
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([record]);
-    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must not run' }) as const);
-    const authority = fakeAuthority({ record, stopAndReap });
-    const lifecycle = lifecycleFor({
-      claims,
-      controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
-      time: new ManualClock(),
-      proveContainmentAbsent: noContainmentProof,
-    });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-
-    expect(lifecycle.overloadFloorReady()).toBe(true);
-
-    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'legacy-unprotected');
-
-    expect(lifecycle.overloadFloorReady()).toBe(false);
-    expect(lifecycle.snapshot().states).toEqual(['available']);
-    // A v0.10.9 role's autonomous enforcer is what protects a live claim, never this coordinator's commit —
-    // the whole reason the floor is reported not ready. It must not be torn down for having live work.
-    expect(stopAndReap).not.toHaveBeenCalled();
-  });
-
-  it('admits no new claims to a legacy-unprotected slot and drains it once its claims reach zero', async () => {
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'legacy-drained' }) as const);
-    const authority = fakeAuthority({ stopAndReap });
-    const lifecycle = lifecycleFor({
-      claims,
-      controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
-      time: new ManualClock(),
-      proveContainmentAbsent: noContainmentProof,
-    });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-
-    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'legacy-unprotected');
-
-    // No live claims: an admitted current-generation set would stay `available` and routable, but a
-    // legacy-unprotected one is drain-only and reaches zero claims immediately, so it retires on sight
-    // instead of standing by to accept new work.
-    await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(lifecycle.overloadFloorReady()).toBe(true));
-  });
-});
-
 describe('AC3: forceProviderProxySetContainment', () => {
   const fakeOperatorTeardownAuthorization = Object.freeze({}) as unknown as OperatorTeardownAuthorization;
 

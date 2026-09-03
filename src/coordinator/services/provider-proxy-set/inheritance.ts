@@ -1,18 +1,11 @@
-import { errorMessage } from '../../../infra/error-format.js';
 import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import {
   currentHandoffCapsulePath,
-  holderStatusParamsSchema,
   readHandoffCapsuleFile,
   type HandoffCapsuleV3,
 } from '../../../provider-proxy/handoff-capsule.js';
-import {
-  PROXY_CONTROL_RPC_TIMEOUT_MS,
-  PROXY_STATUS_RPC_TIMEOUT_MS,
-  holderStatusResultSchema,
-  type CoordinatorIdentity,
-} from '../../../provider-proxy/protocol.js';
-import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../../provider-proxy/protocol.js';
+import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
@@ -81,50 +74,6 @@ import type { ProviderProxySetRecordedContainmentReaper } from './recorded-conta
  */
 
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
-
-/** Absence of the holder-status protection surface does not establish any particular build version. */
-async function probeCurrentGenerationProtection(
-  guardianClient: ControlClient,
-  capsule: HandoffCapsuleV3,
-): Promise<ProviderProxySetProtection> {
-  const params = holderStatusParamsSchema.parse({
-    grantId: capsule.grantId,
-    secret: capsule.secret,
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    guardianInstanceId: capsule.guardianInstanceId,
-    reaperInstanceId: capsule.reaperInstanceId,
-    proxyInstanceId: capsule.proxyInstanceId,
-  });
-  const exchange = await guardianClient.exchange('guardian.holder-status.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
-  if (exchange.kind === 'response') {
-    if (exchange.response.kind === 'result') {
-      // A read-only observation, not a commit: an undecodable "result" carries no latch ambiguity to
-      // preserve, so it takes this probe's own already-declared exit for anything it cannot classify —
-      // thrown here by name rather than as a bare `ZodError`, matching its sibling throws below.
-      const parsed = holderStatusResultSchema.safeParse(exchange.response.value);
-      if (!parsed.success) {
-        throw new Error(`guardian.holder-status.v1 replied with an undecodable result: ${parsed.error.message}`);
-      }
-      return 'protected';
-    }
-    const failure = exchange.response.failure;
-    if (failure.kind === 'json-rpc-error' && failure.protocolCode === 'method_not_found') {
-      return 'legacy-unprotected';
-    }
-    throw new Error(
-      `guardian.holder-status.v1 was refused for a reason other than method_not_found: ${exchange.response.error.message}`,
-    );
-  }
-  if (exchange.kind === 'no-response' && exchange.cause === 'connection-closed-after-write') {
-    return 'legacy-unprotected';
-  }
-  throw new Error(
-    `guardian.holder-status.v1 could not be classified: ${exchange.kind} (${errorMessage(exchange.error)})`,
-  );
-}
 
 export type ProviderProxySetLocator = Readonly<{
   operation: ProviderOperationIdentity;
@@ -432,9 +381,8 @@ async function buildInheritedAuthority(
       faults: bundle.faults,
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
-    const protection = await probeCurrentGenerationProtection(bundle.clients.guardian, capsule);
-    deps.registerInheritedSet?.(set, bundle.publicationReceipt, protection);
-    return { set, publicationReceipt: bundle.publicationReceipt, protection };
+    deps.registerInheritedSet?.(set, bundle.publicationReceipt, 'protected');
+    return { set, publicationReceipt: bundle.publicationReceipt, protection: 'protected' };
   } catch (error: unknown) {
     closeRedeemedProviderProxyControl(redemption);
     throw error;
@@ -588,7 +536,7 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
-   *  shutdown. `protection` carries `probeCurrentGenerationProtection`'s own verdict through unchanged. */
+   *  shutdown. */
   registerInheritedSet(
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,

@@ -693,20 +693,6 @@ function redemptionResponses(
     'guardian.handoff-install.v1': installAck,
     'reaper.handoff-install.v1': installAck,
     'handoff.install.v1': installAck,
-    // AC10's discovery-time probe: a current-generation guardian, so a redeemed test fixture is classified
-    // `protected` rather than `legacy-unprotected` unless a test overrides this to exercise the v0.10.9 shapes.
-    'guardian.holder-status.v1': {
-      disposition: 'alive',
-      phase: 'published',
-      holder: {
-        instanceId: guardianIdentityFor(loc).guardianInstanceId,
-        pid: guardianIdentityFor(loc).pid,
-        incarnation: guardianIdentityFor(loc).incarnation,
-      },
-      controlEpoch: 1,
-      transitionSequence: 1,
-      changedAtMs: 0,
-    },
     ...overrides,
   };
 }
@@ -1853,11 +1839,6 @@ describe('createProviderProxySetInheritance', () => {
     expect(calls.map(({ method }) => method)).toEqual(
       expect.arrayContaining(['guardian.acquisition-publish.v1', 'proxy.acquisition-publish.v1']),
     );
-    if (outcome.kind === 'inherited') {
-      // A set that answered the holder-status probe registers as protected; the classification travels with
-      // the set because a route may only serve a protected one.
-      expect(registerInheritedSet).toHaveBeenCalledWith(outcome.set, outcome.publicationReceipt, 'protected');
-    }
   });
 
   it('keeps guardian control live while reaper and proxy each consume 8500ms', async () => {

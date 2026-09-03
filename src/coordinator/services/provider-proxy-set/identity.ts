@@ -38,8 +38,7 @@ export type ProviderProxySetKey = string & { readonly __providerProxySetKey: uni
 
 export type ProviderProxySetAddressKey = string & { readonly __providerProxySetAddressKey: unique symbol };
 
-/** `legacy-unprotected` establishes only that the role did not provide the holder-status protection surface. */
-export type ProviderProxySetProtection = 'protected' | 'legacy-unprotected';
+export type ProviderProxySetProtection = 'protected';
 
 const IDENTITY_FIELDS = [
   'buildSetId',

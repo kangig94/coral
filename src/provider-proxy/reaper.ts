@@ -141,6 +141,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self, holderAuthority, observeHolder } = options;
   let recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null = null;
   let enforcer: ArmedEnforcer | null = null;
+  let pairingLost = false;
 
   /** Every field a grant is bound to except the orphan timeout, mirroring `guardian.ts`'s own `setIdentity`:
    *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
@@ -261,6 +262,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             // successor can still be in flight, so the reaper may consume a decisive result at an
             // accelerated check, unlike the guardian's own stricter rule.
             acceleratedCheckMayAuthorizeAbsence: true,
+            pairingLossObserved: () => pairingLost,
             onOutcome: options.onOutcome,
             onProgressViolation: options.onProgressViolation,
           });
@@ -558,7 +560,10 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       // What it does mean is that the party that linearizes an ordered redemption is gone, so admitting a
       // successor can now only fail — hence its own vocabulary, `observePairingLoss`, rather than folding
       // it into `observeEof` and collapsing two separate authorities into one.
-      onPairingLost: () => deadlines.observePairingLoss(),
+      onPairingLost: () => {
+        pairingLost = true;
+        deadlines.observePairingLoss();
+      },
     },
     timer,
     holderAuthority,

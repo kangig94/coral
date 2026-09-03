@@ -949,31 +949,7 @@ export class ProviderProxySetLifecycle {
     const key = this.#routeIndex.get(routeKey);
     if (key === undefined) return null;
     const slot = this.#slots.get(key);
-    return slot?.kind === 'available' && slot.capacityClass === 'retained' && slot.protection === 'protected'
-      ? slot.authority
-      : null;
-  }
-
-  /**
-   * False while any currently established slot is `legacy-unprotected`: a running v0.10.9 role whose
-   * autonomous enforcer and proxy deadline code this coordinator cannot retrofit. AC10's floor readiness is
-   * reported false until that set drains to zero claims and is replaced by current roles.
-   */
-  overloadFloorReady(): boolean {
-    for (const slot of this.#slots.values()) {
-      if (
-        (slot.kind === 'available' ||
-          slot.kind === 'draining' ||
-          slot.kind === 'reattaching' ||
-          slot.kind === 'reattachment-hold' ||
-          slot.kind === 'containing' ||
-          slot.kind === 'containment-wait') &&
-        slot.protection === 'legacy-unprotected'
-      ) {
-        return false;
-      }
-    }
-    return true;
+    return slot?.kind === 'available' && slot.capacityClass === 'retained' ? slot.authority : null;
   }
 
   authorityFor(identity: ProviderProxySetIdentity): DurableProviderProxyOperationAuthority | null {
@@ -2182,10 +2158,7 @@ export class ProviderProxySetLifecycle {
     this.#slots.set(key, slot);
     this.#subscribeAuthority(slot, authority, slot.attemptToken);
     this.#classifyCapacity();
-    if (
-      (intent === 'contain-unclaimed-discovery' || protection === 'legacy-unprotected') &&
-      slot.kind === 'available'
-    ) {
+    if (intent === 'contain-unclaimed-discovery' && slot.kind === 'available') {
       const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
       if (liveClaims === 0) {
         this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, 'unclaimed_discovery', liveClaims));

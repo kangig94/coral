@@ -2,6 +2,7 @@ import { assertNever } from '../infra/error-format.js';
 import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, type AsyncRecordedProcessObserver } from '../infra/node-process.js';
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import {
+  ProcessContainmentError,
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
@@ -41,6 +42,8 @@ export type EnforcementOutcome =
   | Readonly<{ kind: 'recorded-group-unattributable'; reason: string }>;
 
 type SettledEnforcementOutcome = Exclude<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
+
+type PairingLossContainmentObservation = 'absent' | 'present' | 'unobservable';
 
 /** A superseded capability remains in the return value so no consumer can mistake refusal for completion. */
 export type EnforcementConsumptionDisposition<Authorization> =
@@ -105,6 +108,8 @@ export type ArmedEnforcerOptions<Scope extends symbol> = Readonly<{
    * accelerated absence result waits for the next ordinary, unaccelerated check before it may be consumed.
    */
   acceleratedCheckMayAuthorizeAbsence: boolean;
+  /** Only a permanent pairing loss may enable the independent containment-absence observation. */
+  pairingLossObserved?(): boolean;
   /** An unattributable outcome is non-terminal and may be reported again after a later probe. */
   onOutcome(outcome: EnforcementOutcome): void;
   /**
@@ -201,6 +206,14 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   const wouldExceedRootCap = (root: RecordedProcessIdentity): boolean =>
     !roots.has(rootKey(root)) && roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS;
 
+  const confirmedContainmentAbsentOutcome = (): Extract<EnforcementOutcome, { kind: 'containment-absent' }> => {
+    deadlines.markContainmentAbsent();
+    return {
+      kind: 'containment-absent',
+      disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRecordedRoots()),
+    };
+  };
+
   const settle = (outcome: SettledEnforcementOutcome): SettledEnforcementOutcome => {
     if (settledOutcome === null) {
       settledOutcome = outcome;
@@ -229,11 +242,34 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     } catch (error: unknown) {
       return { kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' };
     }
-    deadlines.markContainmentAbsent();
-    return {
-      kind: 'containment-absent',
-      disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRecordedRoots()),
-    };
+    return confirmedContainmentAbsentOutcome();
+  };
+
+  /** Pairing loss authorizes observation only; this path must never deliver a process-control signal. */
+  const probeContainmentAfterPairingLoss = async (): Promise<PairingLossContainmentObservation> => {
+    const containmentPresent = new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'The recorded containment is still present.',
+    );
+    try {
+      const outcome = await reapRecordedContainment(
+        containment,
+        orderedRecordedRoots(),
+        containmentExecutionDeadline(clock, clock.now()),
+        {
+          ...containmentEnvironment,
+          process: {
+            ...containmentEnvironment.process,
+            kill: () => {
+              throw containmentPresent;
+            },
+          },
+        },
+      );
+      return outcome.kind === 'containment-absent' ? 'absent' : 'unobservable';
+    } catch (error: unknown) {
+      return error === containmentPresent ? 'present' : 'unobservable';
+    }
   };
 
   /** Concurrent teardown callers must join one reap; only an unattributable hold permits a later reap. */
@@ -403,7 +439,21 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     holderProbe = null;
     void probe.promise.then((observation) => {
       if (armedGeneration !== generation) return;
-      consumeHolderObservation(generation, observation, holderCheckAtInstant);
+      if (options.pairingLossObserved?.() !== true) {
+        consumeHolderObservation(generation, observation, holderCheckAtInstant);
+        return;
+      }
+      void probeContainmentAfterPairingLoss().then((containmentObservation) => {
+        if (armedGeneration !== generation) return;
+        if (containmentObservation !== 'absent') {
+          consumeHolderObservation(generation, observation, holderCheckAtInstant);
+          return;
+        }
+        consuming = false;
+        if (teardownInFlight !== null || settledOutcome !== null) return;
+        deadlines.latchTeardown();
+        settle(confirmedContainmentAbsentOutcome());
+      });
     });
   };
 
