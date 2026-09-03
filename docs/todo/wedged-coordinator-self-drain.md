@@ -182,6 +182,23 @@ that established set so it does not drift from the enforcer's own tolerance, and
 Answered-but-unusable evidence cannot advance this clock and has a separate independent-absence release. It
 sends no destructive control RPC, but after both enforcers are proven absent it reaps the orphaned proxy group.
 
+**Corrected 2026-09-03, and the framing changes with it.** The correction above named the coordinator's own
+bounded silence exit as "the actual boundary for this scenario" because `heartbeat_hold_exhausted` was, on
+2026-08-27, still a decisive `stop-and-reap`. It no longer is: `heartbeat_hold_exhausted` now joins the
+answered-unusable and protocol-incompatible siblings it already stood apart from, on the same non-destructive
+`await-containment-absence` action (`#silenceHoldExhaustedDecision`, `#applyHeartbeatDisposition` in
+`src/coordinator/services/provider-proxy-set/index.ts`), and the enforcer's own adoption deadline stopped
+being a second destructive clock at the same time — it now classifies the admitted control holder
+`alive | absent | unobservable` from a recorded-process observation and mints a demolition capability only on
+proven `absent` (`createArmedEnforcer`'s tick, `src/provider-proxy/enforcement.ts`). With live claims present,
+neither source may authorize destruction on its own. A coordinator that stays starved and never recovers
+therefore holds its set indefinitely — the wedge this entry tracks is reached deliberately now, not stumbled
+into by a starved clock, and its named exits are an accepted heartbeat, a redeemed or current-guardian-commit
+control, decisive absence, the set's claims reaching zero, the operator's exact-set override, or
+representation-only abandonment. What this entry still asks for — a party outside the coordinator's own
+process able to end it when none of those exits fire — was framed above as recovery from an accident; it is
+now the backstop a deliberate design decision depends on.
+
 ## Start condition
 
 **Met.** The observation above is the reachable cause this asked for. What remains before building anything is

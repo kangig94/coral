@@ -9,6 +9,17 @@ release a no-claim set to roles whose deadline acknowledgement was verified. The
 dispositions through `coral-cli backend status`; this entry now concerns only a durable read after that process
 dies.
 
+**Corrected 2026-09-03.** The `stop-and-reap` this Status paragraph names for silence no longer exists.
+`heartbeat_hold_exhausted` now joins `heartbeat_answer_unusable_hold_exhausted` and
+`heartbeat_protocol_incompatible` on the same non-destructive `await-containment-absence` action
+(`#silenceHoldExhaustedDecision`, `#applyHeartbeatDisposition` in
+`src/coordinator/services/provider-proxy-set/index.ts`): with live claims present none of the three heartbeat
+sources authorizes destruction on its own, and only a zero-claim set proceeds into the independent-absence
+release this paragraph already describes for the other two. That is a different subject from this one, with a
+different writer — the coordinator's own destructive authority over elapsed silence, not the durable projection
+of the evidence window this entry is about — and its three open questions below (durable owner, stale-record
+rule, retention) are untouched by it. Adjacent, not joint.
+
 ## What exists
 
 `ProviderProxySetLifecycle` keys each live set by its exact `ProviderProxySetIdentity` and keeps active

@@ -46,6 +46,21 @@ And a synchronous subprocess is not merely slow: it blocks the event loop, so no
 clock check, and no budgeted shutdown step can interrupt it. `assertContainmentAuthorized` at the top of each
 loop turn cannot fire while the sweep is inside `execFileSync`.
 
+**Updated 2026-09-03.** The `overload-tolerance-floor` plan added a second, different identity probe that does
+not fix this entry but does change one of its inputs. `createAsyncRecordedProcessObserver`
+(`src/infra/node-process.ts`), reached through `ProcessPort.observeRecordedProcessAsync`, answers the
+guardian/reaper enforcer's own periodic holder-check (`observeControlHolder`,
+`src/provider-proxy/holder-lifecycle.ts`) with non-blocking `execFileAsync` calls and `AbortSignal`-bounded file
+reads, each capped by the same `PROCESS_INCARNATION_PROBE_TIMEOUT_MS` this entry already names. It leaves the
+sweep this entry is about untouched: `observeRecordedSet`/`waitForAbsence` in `src/infra/process-containment.ts`
+still call the synchronous `readIncarnation` above, unabridged and still checking the deadline only after
+observing. What it changes is the reserve the 516-second figure above is measured against, not the figure
+itself. `containmentExecutionDeadline` (`src/provider-proxy/orphan-deadline.ts`) now grants the dominant
+absence-driven teardown path `PROXY_TEARDOWN_RESERVE_MS - PROXY_ENFORCER_MAX_WAKE_LATENCY_MS` =
+14,000 - 1,000 = **13,000ms**, carving that 1,000ms out for the wake that consumes the new probe's already-settled
+result. A local-signal (`giveUp`) teardown and the pre-publication provisional-phase clock bound still receive
+the full 14,000ms; only the holder-observed-absence path lost it.
+
 ## What is already decided
 
 - **The per-call model is right and stays.** `signalRecordedSet`'s comment is correct: bounding a sweep of
