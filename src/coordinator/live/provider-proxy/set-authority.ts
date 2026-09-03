@@ -183,8 +183,8 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Runtime;
   onProviderEvent?(): ProviderEventHandler;
-  /** `guardian.containment-commit.v1` carries no `providerRoots` argument, so `commitContainment` does not
-   *  read this; `promote()` still forwards it into the reconstructed authority it builds on redemption. */
+  /** `commitContainment` does not read this; `promote()` still forwards it into the reconstructed authority
+   *  it builds on redemption. */
   operationRegistry: ProviderProxyOperationSnapshot;
   /** Fresh acquisition must transfer cleanup ownership in the same turn that writes the capsule. */
   registerAcquisitionUndo?(undo: AcquisitionUndo): void;

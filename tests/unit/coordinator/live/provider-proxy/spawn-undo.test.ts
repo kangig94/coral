@@ -50,15 +50,22 @@ const proxy: ProxyIdentity = {
 };
 
 describe('guardian spawn undo', () => {
-  it('reports an unconfirmed pre-control SIGTERM without treating it as completed cleanup', async () => {
-    const kill = vi.fn();
-    let now = 0;
+  it('escalates a still-alive pre-control group and confirms its absence', async () => {
+    let deliveredSignal: NodeJS.Signals | null = null;
+    const kill = vi.fn((_pid: number, signal: NodeJS.Signals | 0) => {
+      if (signal !== 0) deliveredSignal = signal;
+      return true;
+    });
+    let monotonicNow = 0n;
     const runtime = {
-      process: { kill, observeLiveness: () => 'unknown' },
+      process: {
+        kill,
+        observeLiveness: (pid: number) => (pid === -guardian.pid && deliveredSignal === 'SIGKILL' ? 'absent' : 'alive'),
+      },
       time: {
-        now: () => now,
+        monotonicNow: () => monotonicNow,
         sleep: async (ms: number) => {
-          now += ms;
+          monotonicNow += BigInt(ms);
         },
       },
     } as unknown as Runtime;
@@ -69,7 +76,41 @@ describe('guardian spawn undo', () => {
       () => guardian.incarnation,
     );
 
-    await expect(undo()).rejects.toThrow('guardian process-group absence was not confirmed after SIGTERM');
+    await expect(undo()).resolves.toBeUndefined();
+
+    expect(kill.mock.calls).toEqual([
+      [-guardian.pid, 'SIGTERM'],
+      [-guardian.pid, 'SIGKILL'],
+    ]);
+  });
+
+  it('holds without escalating when the group cannot be re-observed after SIGTERM', async () => {
+    const kill = vi.fn(() => true);
+    let groupObservations = 0;
+    const runtime = {
+      process: {
+        kill,
+        observeLiveness: (pid: number) => {
+          if (pid !== -guardian.pid) return 'alive';
+          groupObservations += 1;
+          return groupObservations <= 2 ? 'alive' : 'unknown';
+        },
+      },
+      time: {
+        monotonicNow: () => 0n,
+        sleep: async () => undefined,
+      },
+    } as unknown as Runtime;
+    const undo = buildGuardianSpawnUndo(
+      runtime,
+      { pid: guardian.pid, incarnation: guardian.incarnation } as SpawnedRoleProcess,
+      'linux',
+      () => guardian.incarnation,
+    );
+
+    await expect(undo()).rejects.toThrow(
+      'guardian process-group cleanup is holding because absence could not be confirmed',
+    );
 
     expect(kill).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledWith(-guardian.pid, 'SIGTERM');

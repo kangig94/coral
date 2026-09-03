@@ -68,6 +68,7 @@ function createRuntime(
         }
         return daemonProcess;
       }),
+      observeLiveness: () => 'alive' as const,
     },
     storage: {},
     env: {

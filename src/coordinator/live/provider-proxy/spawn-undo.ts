@@ -1,6 +1,7 @@
 import { errorMessage } from '../../../infra/error-format.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../../infra/node-process.js';
-import { ABSENCE_POLL_MS } from '../../../infra/process-containment.js';
+import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
+import { ProcessContainmentError, reapRecordedContainment } from '../../../infra/process-containment.js';
 import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import {
@@ -19,6 +20,8 @@ type GuardianControlTeardown = Readonly<{
   reaper: ReaperIdentity;
   proxy: ProxyIdentity;
 }>;
+
+const guardianSpawnUndoClockScope: unique symbol = Symbol('coral.provider-proxy.guardian-spawn-undo');
 
 export type GuardianSpawnUndo = (() => Promise<void>) &
   Readonly<{
@@ -70,17 +73,39 @@ export function buildGuardianSpawnUndo(
       return;
     }
 
-    // Before authenticated control exists, an identity-checked signal is the only request channel.
-    if (!incarnationMayAuthorizeSignal(platform)) return;
-    if (readProcessIncarnation(spawned.pid, platform) !== spawned.incarnation) return;
-    const group = -spawned.pid;
-    runtime.process.kill(group, 'SIGTERM');
-    const deadline = runtime.time.now() + PROXY_TEARDOWN_RESERVE_MS;
-    while (runtime.process.observeLiveness(group) !== 'absent' && runtime.time.now() < deadline) {
-      await runtime.time.sleep(ABSENCE_POLL_MS);
-    }
-    if (runtime.process.observeLiveness(group) !== 'absent') {
-      throw new Error('guardian process-group absence was not confirmed after SIGTERM');
+    if (!incarnationMayAuthorizeSignal(platform))
+      return Promise.reject(
+        new Error(
+          'guardian process-group cleanup is holding because this platform cannot bind a signal to its recorded incarnation',
+        ),
+      );
+    const clock = createMonotonicClock(guardianSpawnUndoClockScope, {
+      readMilliseconds: () => runtime.time.monotonicNow(),
+      sleep: (milliseconds) => runtime.time.sleep(milliseconds),
+    });
+    try {
+      const result = await reapRecordedContainment(
+        { pid: spawned.pid, incarnation: spawned.incarnation, processGroupId: spawned.pid },
+        [],
+        clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
+        {
+          maxRecordedRoots: 0,
+          clock,
+          process: runtime.process,
+          platform,
+          readProcessIncarnation,
+        },
+      );
+      if (result.kind === 'recorded-group-unattributable') {
+        throw new Error('guardian process-group cleanup is holding because the recorded group became unattributable');
+      }
+    } catch (error: unknown) {
+      if (error instanceof ProcessContainmentError) {
+        throw new Error('guardian process-group cleanup is holding because absence could not be confirmed', {
+          cause: error,
+        });
+      }
+      throw error;
     }
   };
   return Object.assign(run, {

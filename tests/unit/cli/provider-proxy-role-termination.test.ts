@@ -61,7 +61,7 @@ describe('backend provider-proxy-set terminate-role', () => {
     expect(abandon).not.toHaveBeenCalled();
     expect(output.stdout).toBe('');
     expect(output.stderr).toContain(`observed incarnation "${observedIncarnation}" does not match`);
-    expect(output.stderr).toContain('No signal was sent.');
+    expect(output.stderr).toContain('This command does not send process signals.');
     expect(process.exitCode).toBe(1);
   });
 
@@ -96,8 +96,29 @@ describe('backend provider-proxy-set terminate-role', () => {
     expect(abandon).toHaveBeenCalledWith({ role: 'reaper', pid: 6101, incarnation });
     expect(output.stderr).toBe('');
     expect(output.stdout).toContain('Authorized reaper role pid 6101');
-    expect(output.stdout).toContain('No signal was sent and no absence was minted.');
+    expect(output.stdout).toContain('The abandonment request sent no process signal and minted no absence.');
     expect(process.exitCode).toBe(0);
+  });
+
+  it('reports that an in-progress retry may already have signalled the process', async () => {
+    const incarnation = testIncarnation(6101);
+    const operations = createProviderProxyRoleTerminationCommandOperations({
+      platform: 'linux',
+      readProcessIncarnation: () => incarnation,
+      abandon: async () => ({
+        kind: 'refused',
+        reason:
+          'This reaper cannot abandon its unattributable hold while a retry is in-progress and may already have sent a process signal. Retry the abandonment after the containment retry settles.',
+      }),
+    });
+
+    const output = await runTerminateRole(operations, incarnation);
+
+    expect(output.stdout).toBe('');
+    expect(output.stderr).toContain('retry is in-progress and may already have sent a process signal');
+    expect(output.stderr).toContain('This command does not send process signals.');
+    expect(output.stderr).not.toContain('No signal was sent.');
+    expect(process.exitCode).toBe(1);
   });
 
   it('surfaces a live-coordinator refusal with the coordinator-side command', async () => {

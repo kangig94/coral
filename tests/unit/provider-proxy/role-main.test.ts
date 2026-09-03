@@ -18,6 +18,7 @@ import {
   type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
 import type { EnforcementOutcome } from '#src/provider-proxy/enforcement.js';
+import type * as NodeProcessMod from '#src/infra/node-process.js';
 import { CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV } from '#src/provider-proxy/orphan-deadline.js';
 import {
   buildEnforcementOutcomeHandlers,
@@ -61,6 +62,22 @@ const reaperRoleCloseHarness = vi.hoisted(() => ({
   latchTeardown: undefined as (() => void) | undefined,
   markContainmentAbsent: undefined as (() => void) | undefined,
 }));
+
+const processIncarnationProbeCleanupHarness = vi.hoisted(() => ({
+  enabled: false,
+  cleanup: vi.fn<() => ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>(),
+}));
+
+vi.mock('#src/infra/node-process.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeProcessMod>();
+  return {
+    ...actual,
+    terminateProcessIncarnationProbes: () =>
+      processIncarnationProbeCleanupHarness.enabled
+        ? processIncarnationProbeCleanupHarness.cleanup()
+        : actual.terminateProcessIncarnationProbes(),
+  };
+});
 
 vi.mock('#src/provider-proxy/bootstrap-capsule.js', async (importOriginal) => {
   const actual = await importOriginal<{
@@ -212,6 +229,8 @@ afterEach(() => {
   reaperRoleCloseHarness.onOutcome = undefined;
   reaperRoleCloseHarness.latchTeardown = undefined;
   reaperRoleCloseHarness.markContainmentAbsent = undefined;
+  processIncarnationProbeCleanupHarness.enabled = false;
+  processIncarnationProbeCleanupHarness.cleanup.mockReset();
 });
 
 function scopedTempDir(prefix: string): string {
@@ -479,6 +498,74 @@ describe('runProviderRoleMain', () => {
     expect(proxyRoleCloseHarness.proxyClose).toHaveBeenCalledOnce();
     expect(exitProcess).toHaveBeenCalledOnce();
     expect(exitProcess).toHaveBeenCalledWith(1);
+  });
+
+  it('keeps a probe cleanup hold non-finalizing and retries it on a later shutdown signal', async () => {
+    const directory = scopedTempDir('coral-proxy-role-probe-cleanup-');
+    enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
+      exchange: vi.fn(
+        async (): Promise<ControlExchange> =>
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'paired' } },
+          }),
+      ),
+      close: vi.fn(),
+    });
+    proxyRoleCloseHarness.enabled = true;
+    proxyRoleCloseHarness.proxyListen.mockResolvedValue();
+    proxyRoleCloseHarness.proxyClose.mockResolvedValue();
+    proxyRoleCloseHarness.semanticShutdown.mockResolvedValue();
+    processIncarnationProbeCleanupHarness.enabled = true;
+    let settleCleanup!: (
+      disposition: Awaited<ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>,
+    ) => void;
+    processIncarnationProbeCleanupHarness.cleanup.mockReturnValue(
+      new Promise((resolve) => {
+        settleCleanup = resolve;
+      }),
+    );
+
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await expect(
+      runProviderRoleMain({ role: 'proxy', capsulePath: '/unused' }, { pluginRoot: directory }),
+    ).resolves.toBe(0);
+    exitProcess.mockClear();
+
+    (shutdown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledOnce();
+    expect(exitProcess).not.toHaveBeenCalled();
+
+    settleCleanup({
+      disposition: 'hold',
+      unsettled: [
+        {
+          child: {} as never,
+          pid: 4_242,
+          reason: 'close-unobserved',
+          exit: 'child-close-or-cleanup-retry',
+        },
+      ],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(exitProcess).not.toHaveBeenCalled();
+
+    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValueOnce({ disposition: 'settled' });
+    (shutdown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledTimes(2);
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
   it('closes and exits nonzero when a reaper is signalled before containment is recorded', async () => {
@@ -798,6 +885,35 @@ describe('buildEnforcementOutcomeHandlers', () => {
       kind: 'recorded-group-unattributable',
       attempts: 1,
     });
+    expect(close).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
+  });
+
+  it('refuses abandonment while an unattributable retry is in-progress', () => {
+    const scheduled: Array<() => void> = [];
+    const close = vi.fn(async () => undefined);
+    const exitProcess = vi.fn();
+    const retryUnattributable = vi.fn(() => new Promise<EnforcementOutcome>(() => undefined));
+    const handlers = buildEnforcementOutcomeHandlers({
+      role: 'guardian',
+      roleIdentity: { pid: 4275, incarnation: testIncarnation(4275) },
+      deadlines: { markExited: vi.fn() },
+      close,
+      exitProcess,
+      now: () => 10_000,
+      retryUnattributable,
+      schedule: (callback) => scheduled.push(callback),
+    });
+
+    handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+    scheduled.shift()?.();
+    scheduled.shift()?.();
+
+    expect(handlers.enforcementHoldStatus()?.retry.state).toBe('in-progress');
+    expect(() => handlers.abandonUnattributable()).toThrow(
+      'retry is in-progress and may already have sent a process signal',
+    );
+    expect(handlers.enforcementHoldStatus()?.retry.state).toBe('in-progress');
     expect(close).not.toHaveBeenCalled();
     expect(exitProcess).not.toHaveBeenCalled();
   });

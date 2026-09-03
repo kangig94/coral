@@ -2,9 +2,11 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
 import { SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
-import { gracefulKill } from '#src/infra/process-supervision.js';
+import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
+import { gracefulKill, gracefulKillByPid } from '#src/infra/process-supervision.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 class FakeChild extends EventEmitter implements ChildProcessLike {
@@ -43,7 +45,7 @@ describe('gracefulKill', () => {
     const time = new VirtualTime();
     const child = new FakeChild();
 
-    gracefulKill(child, fakeRuntime(time));
+    gracefulKill(child, fakeRuntime(time), () => 'alive');
     expect(child.killedSignals).toEqual(['SIGTERM']);
 
     time.tick(SIGTERM_GRACE_MS - 1);
@@ -57,7 +59,7 @@ describe('gracefulKill', () => {
     const time = new VirtualTime();
     const child = new FakeChild();
 
-    gracefulKill(child, fakeRuntime(time));
+    gracefulKill(child, fakeRuntime(time), () => 'alive');
     time.tick(SIGTERM_GRACE_MS / 2);
     child.emitClose();
 
@@ -70,10 +72,148 @@ describe('gracefulKill', () => {
     const child = new FakeChild();
     child.throwOnNextKill('SIGTERM');
 
-    expect(() => gracefulKill(child, fakeRuntime(time))).not.toThrow();
+    expect(() => gracefulKill(child, fakeRuntime(time), () => 'alive')).not.toThrow();
     expect(child.killedSignals).toEqual([]);
 
     time.tick(SIGTERM_GRACE_MS);
     expect(child.killedSignals).toEqual(['SIGKILL']);
+  });
+
+  it('refuses SIGKILL when the delayed observation finds the child absent', () => {
+    const time = new VirtualTime();
+    const child = new FakeChild();
+
+    gracefulKill(child, fakeRuntime(time), () => 'absent');
+    time.tick(SIGTERM_GRACE_MS);
+
+    expect(child.killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('refuses SIGKILL when the delayed observation is unknown', () => {
+    const time = new VirtualTime();
+    const child = new FakeChild();
+
+    gracefulKill(child, fakeRuntime(time), () => 'unknown');
+    time.tick(SIGTERM_GRACE_MS);
+
+    expect(child.killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('refuses SIGKILL when the delayed observation throws', () => {
+    const time = new VirtualTime();
+    const child = new FakeChild();
+
+    gracefulKill(child, fakeRuntime(time), () => {
+      throw new Error('observation failed');
+    });
+    time.tick(SIGTERM_GRACE_MS);
+
+    expect(child.killedSignals).toEqual(['SIGTERM']);
+  });
+});
+
+function pidRuntime(
+  time: VirtualTime,
+  incarnations: readonly (ProcessIncarnation | null)[],
+  observeLiveness: () => ProcessLiveness = () => 'alive',
+  platform: NodeJS.Platform = 'linux',
+): { runtime: Runtime; killedSignals: NodeJS.Signals[] } {
+  const remainingIncarnations = [...incarnations];
+  const killedSignals: NodeJS.Signals[] = [];
+  const runtime = {
+    time,
+    env: { platform: () => platform },
+    process: {
+      kill: (_pid: number, signal: NodeJS.Signals) => {
+        killedSignals.push(signal);
+        return true;
+      },
+      observeLiveness,
+      readProcessIncarnation: () => remainingIncarnations.shift() ?? null,
+    },
+  } as unknown as Runtime;
+  return { runtime, killedSignals };
+}
+
+describe('gracefulKillByPid', () => {
+  const incarnation = testIncarnation(42);
+
+  it('escalates only after the recorded incarnation is re-observed alive', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation]);
+
+    gracefulKillByPid(runtime, 4_242);
+    expect(killedSignals).toEqual(['SIGTERM']);
+
+    time.tick(SIGTERM_GRACE_MS);
+    expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('refuses escalation when the recorded incarnation cannot be re-established', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation, null]);
+
+    gracefulKillByPid(runtime, 4_242);
+    time.tick(SIGTERM_GRACE_MS);
+
+    expect(killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('refuses escalation when the re-established process has unknown liveness', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation], () => 'unknown');
+
+    gracefulKillByPid(runtime, 4_242);
+    time.tick(SIGTERM_GRACE_MS);
+
+    expect(killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('refuses escalation when the liveness observation throws', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation], () => {
+      throw new Error('observation failed');
+    });
+
+    gracefulKillByPid(runtime, 4_242);
+    time.tick(SIGTERM_GRACE_MS);
+
+    expect(killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('sends the first SIGTERM when a passed expected incarnation still matches', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation]);
+
+    gracefulKillByPid(runtime, 4_242, incarnation);
+
+    expect(killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('refuses the first SIGTERM when the pid no longer carries the expected incarnation', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)]);
+
+    gracefulKillByPid(runtime, 4_242, incarnation);
+
+    expect(killedSignals).toEqual([]);
+  });
+
+  it('refuses the first SIGTERM when an expected incarnation is passed but none can be observed', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [null]);
+
+    gracefulKillByPid(runtime, 4_242, incarnation);
+
+    expect(killedSignals).toEqual([]);
+  });
+
+  it('still sends the first SIGTERM unconditionally on a platform whose incarnation cannot authorize a signal', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)], () => 'alive', 'darwin');
+
+    gracefulKillByPid(runtime, 4_242, incarnation);
+
+    expect(killedSignals).toEqual(['SIGTERM']);
   });
 });

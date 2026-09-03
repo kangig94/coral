@@ -1,6 +1,6 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
@@ -57,6 +57,30 @@ describe('readProviderProxySetHolderStatusDirect', () => {
 
     expect(readings).toEqual([]);
     expect(formatProviderProxySetHolderStatusDirect(readings)).toBe('No provider proxy sets discovered on disk.');
+  });
+
+  it('renders no discovered sets when the run directory was never created, rather than throwing', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'c-hs4-'));
+    const runtime = createRealRuntime('prod', { baseDir });
+
+    const readings = await readProviderProxySetHolderStatusDirect(runtime);
+
+    expect(readings).toEqual([]);
+    expect(formatProviderProxySetHolderStatusDirect(readings)).toBe('No provider proxy sets discovered on disk.');
+  });
+
+  it('reports an unreadable run directory as a structured row instead of throwing', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'c-hs5-'));
+    const runtime = createRealRuntime('prod', { baseDir });
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    mkdirSync(dirname(runDir), { recursive: true });
+    writeFileSync(runDir, 'not a directory');
+
+    const readings = await readProviderProxySetHolderStatusDirect(runtime);
+
+    expect(readings).toHaveLength(1);
+    expect(readings[0]).toMatchObject({ kind: 'unreadable-run-directory', path: runDir });
+    expect(formatProviderProxySetHolderStatusDirect(readings)).toContain(`unreadable run directory path=${runDir}`);
   });
 
   it('reports an unreadable capsule without hiding readable sets', async () => {

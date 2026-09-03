@@ -1069,7 +1069,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
     if (result === 'timeout' && daemonProcess === spawned) {
       setFailure(`daemon did not become ready within ${startTimeoutMs}ms`);
-      gracefulKill(spawned, runtime);
+      gracefulKill(spawned, runtime, (pid) => runtime.process.observeLiveness(pid));
     }
 
     return read();
@@ -1098,7 +1098,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       );
       activeDaemonProcess.stdin?.end();
     } catch {
-      gracefulKill(activeDaemonProcess, runtime);
+      gracefulKill(activeDaemonProcess, runtime, (pid) => runtime.process.observeLiveness(pid));
     }
 
     const result = await Promise.race([closed, withAbortableTimeout(runtime, stopTimeoutMs, signal)]);
@@ -1108,7 +1108,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           ? 'daemon stop aborted by shutdown budget'
           : `daemon stop timed out after ${stopTimeoutMs}ms`,
       );
-      gracefulKill(activeDaemonProcess, runtime);
+      gracefulKill(activeDaemonProcess, runtime, (pid) => runtime.process.observeLiveness(pid));
     }
     rejectPendingRequests('KB daemon stopped');
     return read();

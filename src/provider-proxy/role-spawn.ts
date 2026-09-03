@@ -45,10 +45,6 @@ export class RoleSpawnError extends Error {
 
 export type RoleSpawnPorts = Readonly<{
   process: Pick<Runtime['process'], 'spawn'>;
-  /** Passed whole, not narrowed to `time`, because `gracefulKill` (`infra/process-supervision.ts`) takes a
-   *  full `Runtime` — used only to escalate a spawn that must be killed before it ever became a role this
-   *  module tracks (`role_spawn_no_pid` / `role_spawn_incarnation_unavailable`) from SIGTERM to SIGKILL after
-   *  a grace period. */
   runtime: Runtime;
   platform: NodeJS.Platform;
   /** Injected so a test can fake a spawned pid's incarnation without a real process existing. */
@@ -136,7 +132,8 @@ export function spawnRoleProcess(
   // loop alive.
   child.unref?.();
 
-  const killFailedSpawn = (): void => gracefulKill(child, ports.runtime);
+  const killFailedSpawn = (): void =>
+    gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
 
   if (typeof child.pid !== 'number') {
     killFailedSpawn();

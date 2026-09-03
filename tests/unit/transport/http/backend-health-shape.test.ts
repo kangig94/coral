@@ -1,7 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
+import type {
+  AssertDispositionCausesCoverIncident,
+  AssertIncidentCoversDispositionCauses,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import {
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
+} from '#src/provider-proxy/operator-disposition-vocabulary.js';
+
+it('enumerates exactly the disposition causes an incident can produce', () => {
+  expectTypeOf<AssertDispositionCausesCoverIncident>().toEqualTypeOf<never>();
+  expectTypeOf<AssertIncidentCoversDispositionCauses>().toEqualTypeOf<never>();
+});
 
 const HEALTHY_BASE: BackendHealth = {
   status: 'ok',
@@ -423,6 +437,45 @@ describe('/health typed shape (AC10a)', () => {
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
   });
+
+  it.each(PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS.map((disposition) => [disposition] as const))(
+    'accepts every disposition the vocabulary currently defines: %s',
+    (disposition) => {
+      const parsed = parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, disposition }] },
+      });
+
+      expect(parsed?.skippedProviderProxySetRows).toBe(0);
+      expect(parsed?.health.diagnostics?.providerProxySets).toHaveLength(1);
+    },
+  );
+
+  it.each(PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES.map((cause) => [cause] as const))(
+    'accepts every cause the vocabulary currently defines: %s',
+    (cause) => {
+      const parsed = parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, cause }] },
+      });
+
+      expect(parsed?.skippedProviderProxySetRows).toBe(0);
+      expect(parsed?.health.diagnostics?.providerProxySets).toHaveLength(1);
+    },
+  );
+
+  it.each(PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR.map((waitingFor) => [waitingFor] as const))(
+    'accepts every waitingFor the vocabulary currently defines: %s',
+    (waitingFor) => {
+      const parsed = parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, waitingFor }] },
+      });
+
+      expect(parsed?.skippedProviderProxySetRows).toBe(0);
+      expect(parsed?.health.diagnostics?.providerProxySets).toHaveLength(1);
+    },
+  );
 
   it("skips an unknown cause that does not carry this build's companion fields", () => {
     const future = {

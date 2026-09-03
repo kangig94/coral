@@ -305,9 +305,46 @@ type ProcessIncarnationProbeRegistration = {
   state: 'running' | 'terminating';
   retryTimer: NodeJS.Timeout | null;
   terminate: ProcessIncarnationProbeTerminator;
+  settlementWaiters: Set<(hold: ProcessIncarnationProbeHold | null) => void>;
 };
 
 const processIncarnationProbeChildren = new Map<ChildProcess, ProcessIncarnationProbeRegistration>();
+
+/** A shutdown hold keeps the exact child registered until close and remains eligible for another cleanup attempt. */
+export type ProcessIncarnationProbeHold = Readonly<{
+  child: ChildProcess;
+  pid: number | undefined;
+  reason: 'termination-failed' | 'close-unobserved';
+  exit: 'child-close-or-cleanup-retry';
+  error?: unknown;
+}>;
+
+/** Probe cleanup cannot report settlement while any owned child remains registered. */
+export type ProcessIncarnationProbeCleanupDisposition =
+  | Readonly<{ disposition: 'settled' }>
+  | Readonly<{ disposition: 'hold'; unsettled: readonly ProcessIncarnationProbeHold[] }>;
+
+function settleProcessIncarnationProbeTermination(
+  registration: ProcessIncarnationProbeRegistration,
+  hold: ProcessIncarnationProbeHold | null,
+): void {
+  for (const resolve of registration.settlementWaiters) resolve(hold);
+  registration.settlementWaiters.clear();
+}
+
+function processIncarnationProbeHold(
+  child: ChildProcess,
+  reason: ProcessIncarnationProbeHold['reason'],
+  error?: unknown,
+): ProcessIncarnationProbeHold {
+  return {
+    child,
+    pid: child.pid,
+    reason,
+    exit: 'child-close-or-cleanup-retry',
+    ...(error === undefined ? {} : { error }),
+  };
+}
 
 function terminateProcessIncarnationProbeChild(child: ChildProcess): void {
   const registration = processIncarnationProbeChildren.get(child);
@@ -317,12 +354,18 @@ function terminateProcessIncarnationProbeChild(child: ChildProcess): void {
     registration.terminate(child);
   } catch (error: unknown) {
     registration.state = 'running';
+    settleProcessIncarnationProbeTermination(
+      registration,
+      processIncarnationProbeHold(child, 'termination-failed', error),
+    );
     throw error;
   }
+  if (processIncarnationProbeChildren.get(child) !== registration) return;
   registration.retryTimer = setTimeout(() => {
     if (processIncarnationProbeChildren.get(child) !== registration) return;
     registration.state = 'running';
     registration.retryTimer = null;
+    settleProcessIncarnationProbeTermination(registration, processIncarnationProbeHold(child, 'close-unobserved'));
   }, SIGTERM_GRACE_MS);
   registration.retryTimer.unref();
 }
@@ -332,15 +375,23 @@ export function processIncarnationProbeRegistrySize(): number {
   return processIncarnationProbeChildren.size;
 }
 
-/** Each owned child has at most one active cleanup attempt; unresolved children remain retryable. */
-export function terminateProcessIncarnationProbes(): void {
-  for (const child of processIncarnationProbeChildren.keys()) {
+/** Every returned hold retains its child in the registry and names the retry that can settle it. */
+export async function terminateProcessIncarnationProbes(): Promise<ProcessIncarnationProbeCleanupDisposition> {
+  const attempts = [...processIncarnationProbeChildren.entries()].map(([child, registration]) => {
+    const settled = new Promise<ProcessIncarnationProbeHold | null>((resolve) => {
+      registration.settlementWaiters.add(resolve);
+    });
     try {
       terminateProcessIncarnationProbeChild(child);
     } catch {
-      // One cleanup failure must not abandon the remaining owned children.
+      // A termination this call could not deliver decides nothing about the child: only `close` resolves the
+      // settlement promise below, so a throw here must not skip the wait that reports the child as unsettled.
     }
-  }
+    return settled;
+  });
+
+  const unsettled = (await Promise.all(attempts)).filter((hold): hold is ProcessIncarnationProbeHold => hold !== null);
+  return unsettled.length === 0 ? { disposition: 'settled' } : { disposition: 'hold', unsettled };
 }
 
 function probeDeadlineError(signal: AbortSignal): Error {
@@ -388,7 +439,12 @@ function execFileAsync(
       }
     };
 
-    processIncarnationProbeChildren.set(child, { state: 'running', retryTimer: null, terminate });
+    processIncarnationProbeChildren.set(child, {
+      state: 'running',
+      retryTimer: null,
+      terminate,
+      settlementWaiters: new Set(),
+    });
     child.on('close', () => {
       signal.removeEventListener('abort', onAbort);
       const registration = processIncarnationProbeChildren.get(child);
@@ -396,6 +452,7 @@ function execFileAsync(
         clearTimeout(registration.retryTimer);
       }
       processIncarnationProbeChildren.delete(child);
+      if (registration !== undefined) settleProcessIncarnationProbeTermination(registration, null);
     });
     signal.addEventListener('abort', onAbort, { once: true });
     if (signal.aborted) onAbort();

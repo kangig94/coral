@@ -58,7 +58,7 @@ import type {
   RepresentationAbandonmentDeliveryAttemptOutcome,
 } from '../provider-representation-abandonment.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
-import type { ProviderProxySetOperatorDisposition } from './operator-disposition-vocabulary.js';
+import type { ProviderProxySetOperatorDisposition } from '../../../provider-proxy/operator-disposition-vocabulary.js';
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityObservation,

@@ -9,7 +9,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import type { createEnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
-import { runtimeControlTimer, type connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
+import {
+  runtimeControlTimer,
+  type connectRoleControlWithRetry,
+  type SpawnedRoleProcess,
+} from '#src/provider-proxy/role-spawn.js';
 import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
@@ -137,10 +141,11 @@ import {
   providerReaperBootstrapCapsulePath,
   providerReaperEndpoint,
 } from '#src/infra/path/index.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation, type ProcessLiveness } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
+import { buildGuardianSpawnUndo } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
 import { isProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
@@ -310,8 +315,19 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     return {
       ...options.base,
       ...(pidOverride === undefined ? {} : { env: { ...options.base.env, pid: () => pidOverride } }),
-      process: { ...options.base.process, spawn: fakeSpawn, kill: fakeKill },
+      process: { ...options.base.process, spawn: fakeSpawn, kill: fakeKill, observeLiveness: fakeObserveLiveness },
     };
+  }
+
+  /** Real spawned OS processes never exist behind these pids, so an unfaked, syscall-based liveness check
+   *  would always answer `absent` regardless of whether the fake role it names is still up. Ground truth is
+   *  instead whichever fake role handles this environment still has registered. A negative pid is the
+   *  process-group convention: alive while any registered handle's group leader is that group. */
+  function fakeObserveLiveness(pid: number): ProcessLiveness {
+    if (pid < 0) {
+      return [...pidHandles.keys()].some((candidate) => groupLeaderPidOf(candidate) === -pid) ? 'alive' : 'absent';
+    }
+    return pidHandles.has(pid) ? 'alive' : 'absent';
   }
 
   function portsFor(pidOverride: number | undefined): ProviderRoleMainPorts {
@@ -1345,6 +1361,39 @@ describe('provider-proxy process topology: acquisition', () => {
       const remaining = readdirSync(runDir).filter((name) => name.endsWith('.bootstrap.json'));
       expect(remaining).toEqual([]);
     }
+  });
+
+  // The other two directions `reapRecordedContainment` gives the acquisition undo: the group above was
+  // observed alive and had to be signalled. These check that an already-absent group is never signalled at
+  // all, and that a group this process cannot observe holds the undo open rather than letting it resolve as
+  // if cleanup had succeeded.
+  function undoRuntimeWithLiveness(observeLiveness: (pid: number) => ProcessLiveness): {
+    runtime: Runtime;
+    kill: ReturnType<typeof vi.fn>;
+  } {
+    const kill = vi.fn(() => true);
+    const base = createRealRuntime(FLAVOR);
+    return { runtime: { ...base, process: { ...base.process, kill, observeLiveness } }, kill };
+  }
+
+  it('does not signal a guardian process group already observed absent', async () => {
+    const spawned = { pid: 900_101, incarnation: testIncarnation('base-900101') } as SpawnedRoleProcess;
+    const { runtime, kill } = undoRuntimeWithLiveness(() => 'absent');
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
+
+    await expect(undo()).resolves.toBeUndefined();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('holds rather than claiming success when a guardian process group cannot be observed at all', async () => {
+    const spawned = { pid: 900_102, incarnation: testIncarnation('base-900102') } as SpawnedRoleProcess;
+    const { runtime, kill } = undoRuntimeWithLiveness(() => 'unknown');
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
+
+    await expect(undo()).rejects.toThrow(
+      'guardian process-group cleanup is holding because absence could not be confirmed',
+    );
+    expect(kill).not.toHaveBeenCalled();
   });
 });
 

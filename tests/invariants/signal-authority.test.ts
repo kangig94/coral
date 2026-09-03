@@ -70,18 +70,8 @@ const ALLOWLIST = new Map<string, string>([
     // place it is recorded.
     'deliberately open on darwin — see docs/todo/darwin-signal-authority.md',
   ],
-  [
-    'src/coordinator/live/durable-transport.ts',
-    // Signals a durable child's pid after an idle timeout measured in minutes. The identity IS recorded
-    // (`durable_cli_process.v1` carries an incarnation) and is not consulted.
-    'UNGUARDED, tracked in docs/todo/durable-cli-signal-authority.md',
-  ],
   ['src/jobs/reconcile/registry.ts', 'UNGUARDED, tracked in docs/todo/durable-cli-signal-authority.md'],
   ['src/coordinator/services/recovery/service.ts', 'UNGUARDED, tracked in docs/todo/durable-cli-signal-authority.md'],
-  [
-    'src/infra/process-supervision.ts',
-    'UNGUARDED (gracefulKillByPid), tracked in docs/todo/durable-cli-signal-authority.md',
-  ],
   [
     'src/runtime/exec-builder.ts',
     // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.

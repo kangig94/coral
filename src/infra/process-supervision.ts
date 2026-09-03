@@ -1,5 +1,5 @@
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from './process-constants.js';
-import type { ProcessLiveness } from './node-process.js';
+import { incarnationMayAuthorizeSignal, type ProcessIncarnation, type ProcessLiveness } from './node-process.js';
 import type { ChildProcessLike, TimePort } from './port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 
@@ -18,36 +18,62 @@ export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void 
 export function gracefulKill(
   child: ChildProcessLike,
   runtime: GracefulKillRuntime,
-  observeLiveness?: (pid: number) => ProcessLiveness,
+  observeLiveness: (pid: number) => ProcessLiveness,
 ): void {
   safeKill(child, 'SIGTERM');
   const killTimer = runtime.time.setTimeout(() => {
-    if (observeLiveness !== undefined) {
-      if (child.pid === undefined) return;
-      try {
-        if (observeLiveness(child.pid) !== 'alive') return;
-      } catch {
-        return;
-      }
+    if (child.pid === undefined) return;
+    try {
+      if (observeLiveness(child.pid) !== 'alive') return;
+    } catch {
+      return;
     }
     safeKill(child, 'SIGKILL');
   }, SIGTERM_GRACE_MS);
-  // Unref so a caller that fires gracefulKill on an already-closed child (whose
-  // 'close' won't fire again to clear the timer) can't pin the event loop for
-  // the SIGTERM grace window. Matches gracefulKillByPid's escalation timer.
   killTimer.unref?.();
   child.on('close', () => runtime.time.clearTimeout(killTimer));
 }
 
+function readSignalAuthorizingIncarnation(runtime: Runtime, pid: number): ProcessIncarnation | null {
+  const platform = runtime.env.platform() as NodeJS.Platform;
+  if (!incarnationMayAuthorizeSignal(platform)) return null;
+  try {
+    return runtime.process.readProcessIncarnation(pid, platform);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * PID-based variant of {@link gracefulKill} for callers that detached the
- * child handle (e.g., durable transports that hand the spawned PID off to a
- * background watcher). Fires-and-forgets the SIGKILL escalation; the returned
- * timer is unref'd so it never holds the event loop alive on its own.
+ * `expectedIncarnation` is the identity a caller recorded next to `pid` when it captured it (e.g.
+ * `durable_cli_process.v1`). Supplying it gates the first SIGTERM on a fresh match, not only the escalation
+ * below. Gating is skipped, not refused, wherever `incarnationMayAuthorizeSignal` is false: there the
+ * platform's own incarnation already cannot authorize anything (the same limit `docs/todo/darwin-signal-
+ * authority.md` documents for containment), so this call keeps sending its first signal unconditionally
+ * exactly as a caller that passes no `expectedIncarnation` still does everywhere.
  */
-export function gracefulKillByPid(runtime: Runtime, pid: number): void {
+export function gracefulKillByPid(runtime: Runtime, pid: number, expectedIncarnation?: ProcessIncarnation): void {
+  const platform = runtime.env.platform() as NodeJS.Platform;
+  const observedIncarnation = readSignalAuthorizingIncarnation(runtime, pid);
+  if (
+    expectedIncarnation !== undefined &&
+    incarnationMayAuthorizeSignal(platform) &&
+    observedIncarnation !== expectedIncarnation
+  ) {
+    return;
+  }
   runtime.process.kill(pid, 'SIGTERM');
-  const escalation = runtime.time.setTimeout(() => runtime.process.kill(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+  if (observedIncarnation === null) return;
+
+  const escalation = runtime.time.setTimeout(() => {
+    if (readSignalAuthorizingIncarnation(runtime, pid) !== observedIncarnation) return;
+    try {
+      if (runtime.process.observeLiveness(pid) !== 'alive') return;
+    } catch {
+      return;
+    }
+    runtime.process.kill(pid, 'SIGKILL');
+  }, SIGTERM_GRACE_MS);
   escalation.unref?.();
 }
 

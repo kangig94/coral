@@ -287,7 +287,7 @@ function establishDetachedProviderServerIdentity(
     incarnation = null;
   }
   if (incarnation === null) {
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     throw new ProcessContainmentError(
       'process_identity_unverified',
       `Could not read the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
@@ -304,7 +304,7 @@ function establishDetachedProviderServerIdentity(
     processGroupIsSignalable = false;
   }
   if (!processGroupIsSignalable) {
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     throw new ProcessContainmentError(
       'process_identity_unverified',
       `The spawned ${entry.provider} provider server (pid ${entry.pid}) is not a process-group leader.`,
@@ -320,7 +320,7 @@ function establishDetachedProviderServerIdentity(
   try {
     assertRecordedContainmentIdentity(containmentIdentity);
   } catch (error: unknown) {
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     throw error;
   }
   return containmentIdentity;
@@ -348,7 +348,7 @@ function bindProviderServerEvents(entry: ProviderServerEntry, pipes: ProviderSer
     const stdinError = createProviderHostFault(entry, `stdin error: ${error.message}`);
     backendLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
   });
   entry.child.on('error', (error: Error) => {
     const closeError = createProviderHostFault(entry, `failed: ${error.message}`);
@@ -398,7 +398,7 @@ function createProviderServerRpc(entry: ProviderServerEntry, runtime: Runtime): 
         const notifyError = error instanceof Error ? error : createProviderHostFault(entry, `failed to send ${method}`);
         backendLog.error(notifyError.message, error);
         detachProviderServer(entry, notifyError);
-        gracefulKill(entry.child, runtime);
+        gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
       }
     },
   };
@@ -427,7 +427,7 @@ async function initializeSpawnedProviderServer(
     const initError = error instanceof Error ? error : createProviderHostFault(entry, `initialize failed`);
     detachProviderServer(entry, initError);
     if (killOnFailure) {
-      gracefulKill(entry.child, runtime);
+      gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     }
     throw initError;
   }
@@ -632,7 +632,7 @@ function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: 
     entry.stdoutBuffer = '';
     entry.stdoutBufferBytes = 0;
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     return false;
   }
 
@@ -670,7 +670,7 @@ function parseProviderServerLine(
     });
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     return undefined;
   }
 }
@@ -691,7 +691,7 @@ function handleProviderServerRequest(
       error instanceof Error ? error : createProviderHostFault(entry, 'failed to answer server request');
     backendLog.error(protocolError.message, error);
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
   }
 }
 
@@ -747,7 +747,7 @@ function handleProviderServerNotification(
     const protocolError = createProviderHostFault(entry, 'emitted a malformed JSON-RPC message', message);
     backendLog.error(protocolError.message);
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child, runtime);
+    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
     return;
   }
 
@@ -763,7 +763,7 @@ function handleProviderServerNotification(
       backendLog.error(dispatchError.message, error);
       if (!entry.closed) {
         detachProviderServer(entry, dispatchError);
-        gracefulKill(entry.child, runtime);
+        gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
       }
       return;
     }
@@ -778,5 +778,5 @@ function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string)
 
 function shutdownProviderServer(entry: ProviderServerEntry, detail: string, runtime: Runtime): void {
   beginProviderServerShutdown(entry, detail);
-  gracefulKill(entry.child, runtime);
+  gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
 }

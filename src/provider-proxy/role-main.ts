@@ -7,6 +7,7 @@ import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-cl
 import {
   incarnationMayAuthorizeSignal,
   probeProcessIncarnation,
+  terminateProcessIncarnationProbes,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
   type ProcessLiveness,
@@ -55,6 +56,7 @@ import {
   guardianProxyOperationReleaseResultSchema,
   jointContainmentReceiptSchema,
   providerRootSchema,
+  ProxyControlProtocolError,
   reservationSchema,
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   controlPairParamsSchema,
@@ -489,6 +491,12 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
     enforcementHoldStatus: () => enforcementHoldStatus,
     abandonUnattributable: () => {
       if (enforcementHoldStatus === null || unattributableAbandoned) return false;
+      if (enforcementHoldStatus.retry.state === 'in-progress') {
+        throw new ProxyControlProtocolError(
+          'invalid_state',
+          `This ${options.role} cannot abandon its unattributable hold while a retry is in-progress and may already have sent a process signal. Retry the abandonment after the containment retry settles.`,
+        );
+      }
       unattributableAbandoned = true;
       enforcementHoldStatus = null;
       options.schedule(() => closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE), 0);
@@ -1073,6 +1081,48 @@ export async function startProviderProxyRole(
 
 export type ProviderRoleMainOptions = Readonly<{ pluginRoot: string }>;
 
+function createRoleShutdownProbeGate(
+  role: 'guardian' | 'reaper' | 'proxy',
+  exitProcess: (code: number) => void,
+): Readonly<{ requestCleanup(): void; requestExit(code: number): void }> {
+  let requestedExitCode: number | null = null;
+  let cleanupInFlight = false;
+  let exited = false;
+
+  const requestCleanup = (): void => {
+    if (cleanupInFlight || exited) return;
+    cleanupInFlight = true;
+    void terminateProcessIncarnationProbes().then(
+      (disposition) => {
+        cleanupInFlight = false;
+        if (disposition.disposition === 'hold') {
+          backendLog.error(
+            `${role}: shutdown remains held by unsettled process-incarnation probe children`,
+            disposition.unsettled.map(({ pid, reason, exit }) => ({ pid, reason, exit })),
+          );
+          return;
+        }
+        if (requestedExitCode !== null) {
+          exited = true;
+          exitProcess(requestedExitCode);
+        }
+      },
+      (error: unknown) => {
+        cleanupInFlight = false;
+        backendLog.error(`${role}: process-incarnation probe cleanup failed; shutdown remains held`, error);
+      },
+    );
+  };
+
+  return {
+    requestCleanup,
+    requestExit: (code): void => {
+      requestedExitCode ??= code;
+      requestCleanup();
+    },
+  };
+}
+
 /**
  * The `bootstrap.ts` dispatch target: composes the real runtime and runs whichever role `argv` named,
  * staying up for the lifetime of the process via its own open control socket — the same pattern the ordinary
@@ -1093,7 +1143,12 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
   process.stderr.on('error', () => {});
 
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-  const ports: ProviderRoleMainPorts = { runtime, pluginRoot: options.pluginRoot };
+  const probeGate = createRoleShutdownProbeGate(mode.role, (code) => process.exit(code));
+  const ports: ProviderRoleMainPorts = {
+    runtime,
+    pluginRoot: options.pluginRoot,
+    exitProcess: probeGate.requestExit,
+  };
 
   const handle: ProviderRoleHandle =
     mode.role === 'guardian'
@@ -1102,18 +1157,18 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
         ? await startProviderReaperRole(mode.capsulePath, ports)
         : await startProviderProxyRole(mode.capsulePath, ports);
 
-  const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   let proxyShutdownStarted = false;
 
   const shutdown = (): void => {
+    probeGate.requestCleanup();
     if (handle.role === 'proxy') {
       if (proxyShutdownStarted) return;
       proxyShutdownStarted = true;
       void handle.close().then(
-        () => exitProcess(0),
+        () => probeGate.requestExit(0),
         (error: unknown) => {
           backendLog.error('proxy: close on shutdown failed', error);
-          exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+          probeGate.requestExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
         },
       );
       return;

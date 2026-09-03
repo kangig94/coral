@@ -96,15 +96,15 @@ export function formatProviderProxyRoleTerminationResult(result: ProviderProxyRo
   const { role, pid, incarnation } = result.roleIdentity;
   switch (result.kind) {
     case 'abandoned':
-      return `Authorized ${role} role pid ${pid} to finalize its unattributable containment after re-observing incarnation ${JSON.stringify(incarnation)}. No signal was sent and no absence was minted.`;
+      return `Authorized ${role} role pid ${pid} to finalize its unattributable containment after re-observing incarnation ${JSON.stringify(incarnation)}. The abandonment request sent no process signal and minted no absence.`;
     case 'identity-mismatch':
-      return `Refusing to abandon ${role} role pid ${pid}: observed incarnation ${JSON.stringify(result.observedIncarnation)} does not match recorded incarnation ${JSON.stringify(incarnation)}. No signal was sent.`;
+      return `Refusing to abandon ${role} role pid ${pid}: observed incarnation ${JSON.stringify(result.observedIncarnation)} does not match recorded incarnation ${JSON.stringify(incarnation)}. This command does not send process signals.`;
     case 'identity-unobservable':
-      return `Refusing to abandon ${role} role pid ${pid}: its current incarnation could not be observed. No signal was sent.`;
+      return `Refusing to abandon ${role} role pid ${pid}: its current incarnation could not be observed. This command does not send process signals.`;
     case 'refused':
-      return `Refusing to abandon ${role} role pid ${pid}: ${result.reason} No signal was sent.`;
+      return `Refusing to abandon ${role} role pid ${pid}: ${result.reason} This command does not send process signals.`;
     case 'unreachable':
-      return `Could not ask ${role} role pid ${pid} to abandon its unattributable containment: ${result.reason} No signal was sent.`;
+      return `Could not ask ${role} role pid ${pid} to abandon its unattributable containment: ${result.reason} This command does not send process signals.`;
     default:
       return assertNever(result);
   }

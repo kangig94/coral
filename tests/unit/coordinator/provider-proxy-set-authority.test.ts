@@ -914,16 +914,26 @@ type SignalCall = { pid: number; signal: NodeJS.Signals | 0 };
  * partial mock this replaces went unnoticed.
  */
 function guardianUndoRuntime(
-  time: VirtualTime,
   isAlive: () => boolean,
   killCalls: SignalCall[],
   observe?: () => ProcessLiveness,
+  onKill?: (signal: NodeJS.Signals | 0) => void,
 ): Runtime {
+  let monotonicNow = 0n;
   return {
-    time,
+    time: {
+      now: () => {
+        throw new Error('guardian spawn undo must not read wall-clock time');
+      },
+      monotonicNow: () => monotonicNow,
+      sleep: async (milliseconds: number) => {
+        monotonicNow += BigInt(milliseconds);
+      },
+    },
     process: {
       kill: (pid: number, signal: NodeJS.Signals | 0) => {
         killCalls.push({ pid, signal });
+        onKill?.(signal);
         return true;
       },
       observeLiveness: () => observe?.() ?? (isAlive() ? 'alive' : 'absent'),
@@ -933,9 +943,16 @@ function guardianUndoRuntime(
 
 describe('buildGuardianSpawnUndo', () => {
   it("signals the guardian's process group, not its bare pid", async () => {
-    const time = new VirtualTime();
     const killCalls: SignalCall[] = [];
-    const runtime = guardianUndoRuntime(time, () => false, killCalls);
+    let alive = true;
+    const runtime = guardianUndoRuntime(
+      () => alive,
+      killCalls,
+      undefined,
+      (signal) => {
+        if (signal === 'SIGTERM') alive = false;
+      },
+    );
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
@@ -947,64 +964,80 @@ describe('buildGuardianSpawnUndo', () => {
     expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
   });
 
-  it('waits out the teardown reserve for a group still reaping rather than force-killing it mid-reap', async () => {
-    const time = new VirtualTime();
+  it('escalates a group that remains alive through the SIGTERM grace', async () => {
     const killCalls: SignalCall[] = [];
-    // Alive while the guardian drives its own enforcer's stopAndReap, gone before the reserve runs out.
-    const disappearsAt = time.now() + PROXY_TEARDOWN_RESERVE_MS / 2;
-    const runtime = guardianUndoRuntime(time, () => time.now() < disappearsAt, killCalls);
+    let alive = true;
+    const runtime = guardianUndoRuntime(
+      () => alive,
+      killCalls,
+      undefined,
+      (signal) => {
+        if (signal === 'SIGKILL') alive = false;
+      },
+    );
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
-    time.tick(PROXY_TEARDOWN_RESERVE_MS);
-    await pending;
+    await buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
 
-    expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
+    expect(killCalls).toEqual([
+      { pid: -spawned.pid, signal: 'SIGTERM' },
+      { pid: -spawned.pid, signal: 'SIGKILL' },
+    ]);
   });
 
-  it.each(['alive', 'unknown'] as const)(
-    'reports unconfirmed %s liveness without escalating to SIGKILL',
-    async (liveness) => {
-      const time = new VirtualTime();
-      const killCalls: SignalCall[] = [];
-      const runtime = guardianUndoRuntime(
-        time,
-        () => true,
-        killCalls,
-        () => liveness,
-      );
-      const spawned = fakeSpawnedGuardian(4_242, 1_000);
-
-      const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
-      time.tick(PROXY_TEARDOWN_RESERVE_MS);
-      await expect(pending).rejects.toThrow('guardian process-group absence was not confirmed after SIGTERM');
-
-      expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
-    },
-  );
-
-  it('declines to signal on a platform whose incarnation cannot authorize one', async () => {
-    const time = new VirtualTime();
+  it('reports a hold after SIGKILL when the group remains alive', async () => {
     const killCalls: SignalCall[] = [];
-    const runtime = guardianUndoRuntime(time, () => true, killCalls);
+    const runtime = guardianUndoRuntime(() => true, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    await buildGuardianSpawnUndo(runtime, spawned, 'darwin', () => spawned.incarnation)();
+    await expect(buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)()).rejects.toThrow(
+      'guardian process-group cleanup is holding because absence could not be confirmed',
+    );
+
+    expect(killCalls).toEqual([
+      { pid: -spawned.pid, signal: 'SIGTERM' },
+      { pid: -spawned.pid, signal: 'SIGKILL' },
+    ]);
+  });
+
+  it('reports a hold without signalling when group liveness is unknown', async () => {
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(
+      () => true,
+      killCalls,
+      () => 'unknown',
+    );
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    await expect(buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)()).rejects.toThrow(
+      'guardian process-group cleanup is holding because absence could not be confirmed',
+    );
+
+    expect(killCalls).toEqual([]);
+  });
+
+  it('declines to signal on a platform whose incarnation cannot authorize one', async () => {
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(() => true, killCalls);
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    await expect(buildGuardianSpawnUndo(runtime, spawned, 'darwin', () => spawned.incarnation)()).rejects.toThrow(
+      'this platform cannot bind a signal to its recorded incarnation',
+    );
 
     expect(killCalls).toEqual([]);
   });
 
   it('refuses to signal once the recorded incarnation no longer matches (recycled pid)', async () => {
-    const time = new VirtualTime();
     const killCalls: SignalCall[] = [];
-    const runtime = guardianUndoRuntime(time, () => true, killCalls);
+    const runtime = guardianUndoRuntime(() => true, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
     // A different incarnation than what this acquisition recorded at spawn time: pid 4242 now names some
     // other process, and signalling it would kill a stranger.
     const readProcessIncarnation = (): ProcessIncarnation => testIncarnation(9_999);
 
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', readProcessIncarnation);
-    await undo();
+    await expect(undo()).rejects.toThrow('recorded group became unattributable');
 
     expect(killCalls).toEqual([]);
   });

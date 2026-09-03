@@ -38,6 +38,7 @@ import type {
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
 import {
@@ -565,20 +566,28 @@ export type DirectProviderProxySetHolderStatus = Readonly<{
 
 export type DirectProviderProxySetHolderStatusRow =
   | DirectProviderProxySetHolderStatus
-  | Readonly<{ kind: 'unreadable-capsule'; path: string; reason: string }>;
+  | Readonly<{ kind: 'unreadable-capsule'; path: string; reason: string }>
+  | Readonly<{ kind: 'unreadable-run-directory'; path: string; reason: string }>;
 
 type DiagnosticProviderHandoffCapsule =
   | Readonly<{ kind: 'readable'; capsule: HandoffCapsule }>
-  | Extract<DirectProviderProxySetHolderStatusRow, { kind: 'unreadable-capsule' }>;
+  | Extract<DirectProviderProxySetHolderStatusRow, { kind: 'unreadable-capsule' }>
+  | Extract<DirectProviderProxySetHolderStatusRow, { kind: 'unreadable-run-directory' }>;
 
 function readProviderHandoffCapsulesForDiagnostics(runtime: Runtime): readonly DiagnosticProviderHandoffCapsule[] {
   const runDir = runtime.paths.coral.coordinator.runDir;
   const baseDir = dirname(runtime.paths.coral.generation.root);
   const uid = process.getuid?.() ?? 0;
-  const candidates = runtime.storage
-    .readdirSync(runDir)
-    .filter((entry) => DIAGNOSTIC_HANDOFF_CAPSULE_FILENAME.test(entry))
-    .sort();
+  let runDirEntries: string[];
+  try {
+    runDirEntries = runtime.storage.readdirSync(runDir);
+  } catch (error: unknown) {
+    // A run directory that never existed, or that a coordinator already gone has since cleaned up, has
+    // nothing to discover — the unreachable coordinator this fallback exists for is exactly this case.
+    if (isNoEntryError(error)) return [];
+    return [{ kind: 'unreadable-run-directory', path: runDir, reason: errorMessage(error) }];
+  }
+  const candidates = runDirEntries.filter((entry) => DIAGNOSTIC_HANDOFF_CAPSULE_FILENAME.test(entry)).sort();
 
   return candidates.map((entry) => {
     const path = join(runDir, entry);
@@ -665,7 +674,7 @@ export async function abandonProviderProxyRoleDirect(
     return recorded.pid === roleIdentity.pid && recorded.incarnation === roleIdentity.incarnation ? [capsule] : [];
   });
   if (capsules.length !== 1) {
-    const unreadable = discovered.filter((entry) => entry.kind === 'unreadable-capsule').length;
+    const unreadable = discovered.filter((entry) => entry.kind !== 'readable').length;
     const reason =
       capsules.length === 0
         ? `no readable current handoff capsule names this role identity${unreadable === 0 ? '' : '; unreadable capsule evidence remains'}`
@@ -726,7 +735,7 @@ export async function readProviderProxySetHolderStatusDirect(
   const timer = runtimeControlTimer(runtime);
   const readings: DirectProviderProxySetHolderStatusRow[] = [];
   for (const discoveredCapsule of discovered) {
-    if (discoveredCapsule.kind === 'unreadable-capsule') {
+    if (discoveredCapsule.kind === 'unreadable-capsule' || discoveredCapsule.kind === 'unreadable-run-directory') {
       readings.push(discoveredCapsule);
       continue;
     }
@@ -775,7 +784,9 @@ export function formatProviderProxySetHolderStatusDirect(
   return readings
     .map((reading) => {
       if ('kind' in reading) {
-        return `unreadable capsule path=${reading.path}\n  reason: ${reading.reason}`;
+        return reading.kind === 'unreadable-run-directory'
+          ? `unreadable run directory path=${reading.path}\n  reason: ${reading.reason}`
+          : `unreadable capsule path=${reading.path}\n  reason: ${reading.reason}`;
       }
       const roles = [reading.guardian, reading.reaper]
         .filter((role): role is Extract<DirectHolderStatusReading, { kind: 'answered' }> => role.kind === 'answered')

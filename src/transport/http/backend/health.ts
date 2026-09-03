@@ -6,7 +6,12 @@ import {
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
-import type { ProviderProxySetOperatorDisposition } from '../../../coordinator/services/provider-proxy-set/operator-disposition-vocabulary.js';
+import {
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
+  type ProviderProxySetOperatorDisposition,
+} from '../../../provider-proxy/operator-disposition-vocabulary.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.
@@ -260,24 +265,10 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
     }
 
     const understandsEnums =
-      (entry.disposition === 'held' ||
-        entry.disposition === 'awaiting-containment-absence' ||
-        entry.disposition === 'operator-exit-refused') &&
-      (entry.cause === undefined || entry.cause === 'closed' || entry.cause === 'invalid-unattributable-frame') &&
-      (entry.waitingFor === 'heartbeat-evidence-window' ||
-        entry.waitingFor === 'control-reattachment' ||
-        entry.waitingFor === 'independent-containment-absence' ||
-        entry.waitingFor === 'ordinary-drain' ||
-        entry.waitingFor === 'set-adoption-deadline' ||
-        entry.waitingFor === 'operator-abandonment' ||
-        entry.waitingFor === 'store-repair' ||
-        entry.waitingFor === 'publication-confirmation-or-control-release' ||
-        entry.waitingFor === 'containment-authorization' ||
-        entry.waitingFor === 'containment-outcome-unknown' ||
-        entry.waitingFor === 'heartbeat-bound-live-claims' ||
-        entry.waitingFor === 'control-reattachment-bound-live-claims' ||
-        entry.waitingFor === 'heartbeat-protocol-live-claims' ||
-        entry.waitingFor === 'operation-control-outcome-unknown');
+      (PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS as readonly string[]).includes(entry.disposition) &&
+      (entry.cause === undefined ||
+        (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES as readonly string[]).includes(entry.cause)) &&
+      (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR as readonly string[]).includes(entry.waitingFor);
     if (!understandsEnums) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);

@@ -84,7 +84,7 @@ export async function spawnDurableJobTransport(params: {
     }
     cleanupKey = Symbol();
     const cleanup = (): void => {
-      gracefulKillByPid(runtime, durable.pid);
+      gracefulKillByPid(runtime, durable.pid, incarnation ?? undefined);
     };
     cleanupHandles.set(cleanupKey, cleanup);
     if (shouldTerminateAfterLaunch?.()) {
@@ -134,7 +134,7 @@ export async function spawnDurableJobTransport(params: {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
-        gracefulKillByPid(runtime, durable.pid);
+        gracefulKillByPid(runtime, durable.pid, incarnation ?? undefined);
       };
 
       if (options.signal.aborted) abortHandler();
@@ -167,7 +167,7 @@ export async function spawnDurableJobTransport(params: {
       if (tickGap > IDLE_CHECK_INTERVAL * 3) {
         lastOutputAt = now;
       } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
-        runtime.process.kill(durable.pid, 'SIGTERM');
+        gracefulKillByPid(runtime, durable.pid, incarnation ?? undefined);
         throw new Error(`Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`);
       }
 

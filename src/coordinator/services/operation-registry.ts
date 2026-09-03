@@ -177,9 +177,7 @@ export class LocalOperationRegistry {
   /**
    * Every distinct provider root this coordinator's own live operations hold against one proxy set. Deduped
    * by process identity: a shared host serving more than one activated operation is one target, not one per
-   * operation. `guardian.containment-commit.v1` carries no `providerRoots` argument of its own — the
-   * guardian's enforcer supplies the authoritative cumulative set from its own recorded state instead — so
-   * this coordinator-local view is not that agreement's input.
+   * operation.
    */
   providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; incarnation: ProcessIncarnation }>[] {
     const seen = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
@@ -192,10 +190,5 @@ export class LocalOperationRegistry {
   }
 }
 
-/**
- * The live-registry read surface threaded into the acquisition/inheritance/set-authority family.
- * `operationsFor` remains optional for callers that also expose the diagnostic live view; handoff membership
- * never reads it.
- */
 export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'providerRootsFor'> &
   Partial<Pick<LocalOperationRegistry, 'operationsFor'>>;

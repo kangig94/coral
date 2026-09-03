@@ -1,5 +1,6 @@
 import type { ControlClient, ControlClientError } from '../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../provider-proxy/heartbeat-observation.js';
+import type { ProviderProxySetOperatorDispositionCause } from '../../provider-proxy/operator-disposition-vocabulary.js';
 import type { ProxyControlProtocolErrorCode } from '../../provider-proxy/protocol.js';
 
 export type ProviderOperationSagaPhase =
@@ -45,6 +46,17 @@ export type ProviderProxyControlChannelIncident = Readonly<{
   cause: ProviderProxyControlChannelCause;
   error: ControlClientError;
 }>;
+
+type AssertNever<Value extends never> = Value;
+/** A cause this incident admits and the wire vocabulary omits fails here at compile time instead of reaching a
+ *  consumer that enumerates the vocabulary array and silently drops it. */
+export type AssertDispositionCausesCoverIncident = AssertNever<
+  Exclude<ProviderProxyControlChannelIncident['cause'], ProviderProxySetOperatorDispositionCause>
+>;
+/** The other direction: a vocabulary member no incident can produce is a wire value nothing will ever send. */
+export type AssertIncidentCoversDispositionCauses = AssertNever<
+  Exclude<ProviderProxySetOperatorDispositionCause, ProviderProxyControlChannelIncident['cause']>
+>;
 
 export type ProviderProxyAuthorityFault =
   | Readonly<{

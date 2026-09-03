@@ -106,6 +106,42 @@ function scriptDarwin(
 }
 
 describe('darwin process incarnation (async)', () => {
+  it('reports settled cleanup when no probe children are tracked', async () => {
+    await expect(terminateProcessIncarnationProbes()).resolves.toEqual({ disposition: 'settled' });
+  });
+
+  it('reports the exact child whose cleanup attempt failed', async () => {
+    const child = new ProbeChild({ pid: 4_242 });
+    const failure = new Error('termination failed');
+    mockedExecFile.mockReset();
+    mockedExecFile.mockImplementation(() => child as unknown as ChildProcess);
+
+    void probeProcessIncarnationAsync(
+      4_242,
+      () => {
+        throw failure;
+      },
+      'darwin',
+    );
+
+    await expect(terminateProcessIncarnationProbes()).resolves.toEqual({
+      disposition: 'hold',
+      unsettled: [
+        {
+          child,
+          pid: 4_242,
+          reason: 'termination-failed',
+          exit: 'child-close-or-cleanup-retry',
+          error: failure,
+        },
+      ],
+    });
+    expect(processIncarnationProbeRegistrySize()).toBe(1);
+
+    child.close();
+    expect(processIncarnationProbeRegistrySize()).toBe(0);
+  });
+
   it('frames the start coordinate with the boot session id, and bounds both subprocess calls', async () => {
     scriptDarwin();
 
@@ -191,7 +227,7 @@ describe('darwin process incarnation (async)', () => {
       const probe = probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin');
       expect(processIncarnationProbeRegistrySize()).toBe(1);
 
-      terminateProcessIncarnationProbes();
+      const cleanup = terminateProcessIncarnationProbes();
       expect(child.signals).toEqual(['SIGTERM']);
 
       await vi.advanceTimersByTimeAsync(PROCESS_INCARNATION_PROBE_TIMEOUT_MS);
@@ -200,11 +236,23 @@ describe('darwin process incarnation (async)', () => {
 
       expect(child.signals).toEqual(['SIGTERM']);
       expect(processIncarnationProbeRegistrySize()).toBe(1);
+      await expect(cleanup).resolves.toEqual({
+        disposition: 'hold',
+        unsettled: [
+          {
+            child,
+            pid: undefined,
+            reason: 'close-unobserved',
+            exit: 'child-close-or-cleanup-retry',
+          },
+        ],
+      });
 
-      terminateProcessIncarnationProbes();
+      const retry = terminateProcessIncarnationProbes();
       expect(child.signals).toEqual(['SIGTERM', 'SIGTERM']);
 
       child.close();
+      await expect(retry).resolves.toEqual({ disposition: 'settled' });
       expect(processIncarnationProbeRegistrySize()).toBe(0);
     } finally {
       timeoutSpy.mockRestore();
