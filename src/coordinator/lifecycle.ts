@@ -37,6 +37,7 @@ import {
   type ShutdownMode,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
+import type { TerminateAllDisposition } from './live/admission.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
 import {
@@ -786,7 +787,7 @@ export type LifecycleDeps = {
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
-  readonly terminateAllFn: () => void;
+  readonly terminateAllFn: () => void | TerminateAllDisposition | Promise<TerminateAllDisposition>;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   /**
    * The live guardian/reaper/proxy sets, absent whenever the composition layer had no real acquisition path

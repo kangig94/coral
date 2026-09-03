@@ -1,4 +1,3 @@
-import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import {
   currentHandoffCapsulePath,
   readHandoffCapsuleFile,
@@ -563,7 +562,7 @@ export function createProviderProxySetInheritance(
   ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
-    const incarnation = probeProcessIncarnation(pid, platform);
+    const incarnation = options.runtime.process.readProcessIncarnation(pid, platform);
     if (incarnation === null) return null;
     return {
       runtime: options.runtime,

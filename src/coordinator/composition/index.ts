@@ -35,7 +35,7 @@ import {
 } from '../../discuss/shell/tools.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import {
   providerHostEvictResponseSchema,
@@ -497,7 +497,7 @@ export function createCoordinatorCore(
     },
   });
   const createRecoveryInvocationContext = (rawProjectRoot: string): InvocationContext => {
-    const projectRoot = canonicalizeWorkDir(rawProjectRoot, process.cwd());
+    const projectRoot = canonicalizeWorkDir(rawProjectRoot, runtime.env.cwd());
     return createSystemInvocationContext(projectRoot, 'recovery-retry');
   };
   recoverySources.register('coordinator-job-recovery', (subject, signal, quarantine) =>
@@ -636,7 +636,7 @@ export function createCoordinatorCore(
     return created;
   };
 
-  const readOnlyProjectRoot = canonicalizeWorkDir(process.cwd(), process.cwd());
+  const readOnlyProjectRoot = canonicalWorkDirWireSchema.parse(runtime.env.cwd());
   const readOnlyInvocationContext = createSystemInvocationContext(
     readOnlyProjectRoot,
     'coordinator-readonly',
@@ -1056,7 +1056,10 @@ export function createCoordinatorCore(
    */
   let rememberedSelfIncarnation: ProcessIncarnation | null = null;
   const readSelfIncarnation = (): ProcessIncarnation | undefined => {
-    rememberedSelfIncarnation ??= probeProcessIncarnation(world.backendPid, runtime.env.platform() as NodeJS.Platform);
+    rememberedSelfIncarnation ??= runtime.process.readProcessIncarnation(
+      world.backendPid,
+      runtime.env.platform() as NodeJS.Platform,
+    );
     return rememberedSelfIncarnation ?? undefined;
   };
 

@@ -223,7 +223,7 @@ describe('provider-operation startup recovery ownership', () => {
         removeBackendInfoIfOwnerFn: vi.fn(),
         cleanupStaleJobsFn: vi.fn(),
         markJobsAsErrorFn: vi.fn(),
-        terminateAllFn: vi.fn(),
+        terminateAllFn: vi.fn(async () => ({ kind: 'all-observed-absent' as const })),
         providerHostManager: { drainForHandoff: vi.fn(), shutdown: vi.fn(async () => {}) } as never,
         handoffQuiescePorts: () => [],
         createKbHealthComponentFn: () => ({

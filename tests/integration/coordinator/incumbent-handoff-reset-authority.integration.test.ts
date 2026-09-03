@@ -253,7 +253,7 @@ describe('incumbent handoff reset authority', () => {
         shutdownToken,
         incarnation,
       },
-      { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+      { storage: runtime.storage, env: runtime.env, paths: runtime.paths, process: runtime.process },
     );
 
     const incumbent = await startScriptedIncumbent(runtime.paths.coral.coordinator.socketPath, async (request) => {

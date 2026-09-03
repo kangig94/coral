@@ -765,6 +765,7 @@ export function createSimulationBackend(
           storage: runtime.storage,
           env: runtime.env,
           paths: runtime.paths,
+          process: runtime.process,
         });
       },
       removeBackendInfoIfOwnerFn: (instanceId) => {

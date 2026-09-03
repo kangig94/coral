@@ -96,10 +96,14 @@ const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessIncarnation);
 
-// Call history, not implementations, so `mockedProbe`'s default `1_700_000_000` (set in the `vi.mock` factory
-// above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
-// this shared `.not.toHaveBeenCalled()`-style assertions must not see a sibling test's earlier calls.
-const runtime = createRealRuntime('prod');
+const realRuntime = createRealRuntime('prod');
+const runtime = {
+  ...realRuntime,
+  process: {
+    ...realRuntime.process,
+    readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => mockedProbe(pid, platform),
+  },
+};
 const unusedDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(unusedDb, currentCoralStoreFormat());
 const defaultContainmentProver = createProviderProxySetContainmentProver({

@@ -1,5 +1,5 @@
 import { InvalidArgumentError, type Command } from 'commander';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import type { z } from 'zod';
 
 import {
@@ -41,11 +41,7 @@ import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
-import {
-  handoffRoutingStatusPathForRunDir,
-  providerHandoffCapsuleFileSuffix,
-  providerHandoffCapsulePath,
-} from '../../infra/path/index.js';
+import { handoffRoutingStatusPathForRunDir, providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import {
   connectControlClient,
@@ -54,14 +50,16 @@ import {
 } from '../../provider-proxy/control-client.js';
 import {
   HandoffCapsuleError,
-  SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
   holderStatusParamsSchema,
-  readHandoffCapsuleFile,
   type HandoffCapsule,
   type HandoffCapsuleV1,
   type HandoffCapsuleV2,
   type HandoffCapsuleV3,
 } from '../../provider-proxy/handoff-capsule.js';
+import {
+  providerHandoffCapsuleCandidatePaths,
+  readProviderHandoffCapsuleCandidate,
+} from '../../provider-proxy/handoff-capsule-discovery.js';
 import {
   holderStatusResultSchema,
   providerProxyRoleAbandonmentParamsSchema,
@@ -544,15 +542,6 @@ function routingStatusPath(runtime: Runtime): string {
  *  the coordinator's own unreachability already triggered. */
 const DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS = 3_000;
 
-const DIAGNOSTIC_HANDOFF_CAPSULE_FILENAME = new RegExp(
-  `^provider-1[0-9a-f]{23}\\.(?:${[
-    ...new Set(SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => providerHandoffCapsuleFileSuffix(version))),
-  ]
-    .map((suffix) => suffix.replaceAll('.', '\\.'))
-    .join('|')})$`,
-  'u',
-);
-
 export type DirectHolderStatusReading =
   | Readonly<{ kind: 'answered'; status: z.infer<typeof holderStatusResultSchema> }>
   | Readonly<{ kind: 'holder-status-unavailable'; reason: string }>
@@ -583,30 +572,26 @@ type DiagnosticProviderHandoffCapsule =
 
 function readProviderHandoffCapsulesForDiagnostics(runtime: Runtime): readonly DiagnosticProviderHandoffCapsule[] {
   const runDir = runtime.paths.coral.coordinator.runDir;
-  const baseDir = dirname(runtime.paths.coral.generation.root);
   const uid = process.getuid?.() ?? 0;
-  let runDirEntries: string[];
+  let candidates: readonly string[];
   try {
-    runDirEntries = runtime.storage.readdirSync(runDir);
+    candidates = providerHandoffCapsuleCandidatePaths(runDir, runtime.storage);
   } catch (error: unknown) {
     // A run directory that never existed, or that a coordinator already gone has since cleaned up, has
     // nothing to discover — the unreachable coordinator this fallback exists for is exactly this case.
     if (isNoEntryError(error)) return [];
     return [{ kind: 'unreadable-run-directory', path: runDir, reason: errorMessage(error) }];
   }
-  const candidates = runDirEntries.filter((entry) => DIAGNOSTIC_HANDOFF_CAPSULE_FILENAME.test(entry)).sort();
 
-  return candidates.map((entry) => {
-    const path = join(runDir, entry);
+  return candidates.map((path) => {
     try {
-      const capsule = readHandoffCapsuleFile(path, { storage: runtime.storage, uid });
-      if (capsule === null) {
-        return { kind: 'unreadable-capsule', path, reason: 'provider_proxy_handoff_capsule_disappeared' };
-      }
-      if (providerHandoffCapsulePath(capsule, capsule.version, { baseDir }) !== path) {
-        return { kind: 'unreadable-capsule', path, reason: 'provider_proxy_handoff_capsule_path_mismatch' };
-      }
-      return { kind: 'readable', capsule };
+      const candidate = readProviderHandoffCapsuleCandidate(path, runtime.paths.coral.generation.root, {
+        storage: runtime.storage,
+        uid,
+      });
+      return candidate.kind === 'readable'
+        ? { kind: 'readable', capsule: candidate.capsule }
+        : { kind: 'unreadable-capsule', path, reason: candidate.reason };
     } catch (error: unknown) {
       const reason = error instanceof HandoffCapsuleError ? `${error.code}: ${error.message}` : errorMessage(error);
       return { kind: 'unreadable-capsule', path, reason };
@@ -731,6 +716,8 @@ export async function abandonProviderProxyRoleDirect(
 function createDirectProviderProxyRoleTerminationCommandOperations(): ProviderProxyRoleTerminationCommandOperations {
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
   return createProviderProxyRoleTerminationCommandOperations({
+    platform: runtime.env.platform() as NodeJS.Platform,
+    readProcessIncarnation: runtime.process.readProcessIncarnation,
     abandon: (roleIdentity) => abandonProviderProxyRoleDirect(runtime, roleIdentity),
   });
 }

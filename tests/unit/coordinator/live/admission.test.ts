@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
@@ -374,7 +375,7 @@ describe('launch admission', () => {
     expect(coordinator.getActiveJobIds('discuss')).toEqual(['discuss-2']);
   });
 
-  it('returns queue_full when the internal queue limit is reached', () => {
+  it('returns queue_full when the internal queue limit is reached', async () => {
     expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
       type: 'immediate',
     });
@@ -389,7 +390,7 @@ describe('launch admission', () => {
 
     expect(coordinator.queueDepth()).toBe(20);
     expect(coordinator.requestLaunch('job-22', 'codex', providerOwner('session-22'))).toBe('queue_full');
-    coordinator.terminateAll();
+    await coordinator.terminateAll();
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {
@@ -482,5 +483,38 @@ describe('launch admission', () => {
     coordinator.releaseLaunch('default-1');
     await permit;
     expect(coordinator.getActiveJobIds('default')).toContain('queued-1');
+  });
+
+  it('keeps cleanup ownership when termination is refused', async () => {
+    const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
+      .cleanupHandles;
+    const cleanupKey = Symbol('refused-child');
+    cleanupHandles.set(cleanupKey, async () => ({
+      kind: 'signal-refused',
+      pid: TEST_PROVIDER_PID,
+      reason: 'recorded-incarnation-unavailable',
+    }));
+
+    await expect(coordinator.terminateAll()).resolves.toEqual({
+      kind: 'unsettled',
+      processes: [
+        {
+          kind: 'signal-refused',
+          pid: TEST_PROVIDER_PID,
+          reason: 'recorded-incarnation-unavailable',
+        },
+      ],
+    });
+    expect(cleanupHandles.has(cleanupKey)).toBe(true);
+  });
+
+  it('releases cleanup ownership only after observed absence', async () => {
+    const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
+      .cleanupHandles;
+    const cleanupKey = Symbol('absent-child');
+    cleanupHandles.set(cleanupKey, async () => ({ kind: 'observed-absent', pid: TEST_PROVIDER_PID }));
+
+    await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    expect(cleanupHandles.has(cleanupKey)).toBe(false);
   });
 });

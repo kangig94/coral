@@ -409,7 +409,12 @@ describe('ipc server', () => {
         token: 'published-token',
         bootToken: 'published-boot-token',
       },
-      { storage: harness.runtime.storage, env: harness.runtime.env, paths: harness.runtime.paths },
+      {
+        storage: harness.runtime.storage,
+        env: harness.runtime.env,
+        paths: harness.runtime.paths,
+        process: harness.runtime.process,
+      },
     );
     let compatibilitySocket: Socket | null = null;
 

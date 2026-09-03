@@ -1,4 +1,5 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
@@ -26,6 +27,7 @@ function makeRuntime(): Runtime {
     process: {
       observeLiveness: () => 'absent' as const,
       kill: () => {},
+      readProcessIncarnation: () => testIncarnation(1_700_000_000),
     },
     ids: {
       uuid: () => 'uuid',

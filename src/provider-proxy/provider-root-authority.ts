@@ -1,5 +1,5 @@
 import { backendLog } from '../infra/backend-log.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   spawnProviderServerTransport,
@@ -444,7 +444,10 @@ class ProxyProviderRootPool {
     transaction.liveRootCommitted = true;
 
     const retirement = this.installRetirement(transaction, handle);
-    const incarnation = probeProcessIncarnation(handle.pid, this.runtime.env.platform() as NodeJS.Platform);
+    const incarnation = this.runtime.process.readProcessIncarnation(
+      handle.pid,
+      this.runtime.env.platform() as NodeJS.Platform,
+    );
     if (incarnation === null || handle.isClosed()) {
       throw new Error(`Provider server ${spec.provider} could not have its own incarnation read after spawn.`);
     }

@@ -57,11 +57,11 @@ describe('durable transport', () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'coral-live-durable-'));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     rmSync(tmpRoot, { recursive: true, force: true });
     delete process.env.CORAL_MAX_WORKERS;
     delete process.env.CORAL_DISCUSS_MAX_WORKERS;
-    coordinator.terminateAll();
+    await coordinator.terminateAll();
     vi.restoreAllMocks();
   });
 
@@ -162,7 +162,7 @@ describe('durable transport', () => {
       args: ['-e', createProviderServerScript()],
     });
 
-    coordinator.terminateAll();
+    await coordinator.terminateAll();
 
     await expect(handle.rpc.request('ping', { value: 'still-live' })).resolves.toEqual({
       pong: 'still-live',

@@ -2,7 +2,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import {
@@ -12,7 +12,7 @@ import {
   type RoleSpawnPorts,
 } from '#src/provider-proxy/role-spawn.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { RuntimeSpawnOptions } from '#src/runtime/ports.js';
+import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 
 /**
  * `spawnRoleProcess` has no dedicated coverage anywhere else: `process-topology.integration.test.ts` drives
@@ -47,6 +47,7 @@ function createFakeChild(pid: number | undefined): {
 
 type FakePortsOptions = Readonly<{
   spawn(options: RuntimeSpawnOptions): ChildProcessLike;
+  runtime?: Runtime;
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
@@ -57,7 +58,7 @@ const realRuntime = createRealRuntime('prod');
 function fakePorts(options: FakePortsOptions): RoleSpawnPorts {
   return {
     process: { spawn: options.spawn },
-    runtime: realRuntime,
+    runtime: options.runtime ?? realRuntime,
     platform: 'linux',
     ...(options.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: options.readProcessIncarnation }),
   };
@@ -92,6 +93,20 @@ describe('spawnRoleProcess', () => {
       expect(error).toMatchObject({ code: 'role_spawn_incarnation_unavailable', role: 'reaper' });
     }
     expect(killSignals).toContain('SIGTERM');
+  });
+
+  it('reads the spawned identity through the runtime process port by default', () => {
+    const { child } = createFakeChild(6_001);
+    const readProcessIncarnation = vi.fn(() => testIncarnation(1_001));
+    const runtime = {
+      ...realRuntime,
+      process: { ...realRuntime.process, readProcessIncarnation },
+    };
+
+    expect(
+      spawnRoleProcess('reaper', '/capsule.json', fakePorts({ spawn: () => child, runtime }), baseOptions()),
+    ).toMatchObject({ pid: 6_001, incarnation: testIncarnation(1_001) });
+    expect(readProcessIncarnation).toHaveBeenCalledWith(6_001, 'linux');
   });
 
   it('reuses the current entrypoint when it is already coral-backend.cjs', () => {

@@ -21,7 +21,11 @@ import {
   verifiedIncumbentFromProbe,
   verifiedIncumbentFromRuntimeProbe,
 } from '#src/coordinator/lifecycle.js';
-import type { CoordinatorDiscoveryRecord, CoordinatorProbe, DiscoveryRuntime } from '#src/infra/backend-discovery.js';
+import type {
+  CoordinatorDiscoveryRecord,
+  CoordinatorProbe,
+  DiscoveryWriterRuntime,
+} from '#src/infra/backend-discovery.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { DesiredIncumbentIdentity, IncumbentHealth } from '#src/transport/ipc/handoff.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -209,12 +213,12 @@ describe('verifiedIncumbentFromRuntimeProbe', () => {
     }
   });
 
-  function makeRuntime(): DiscoveryRuntime {
+  function makeRuntime(): DiscoveryWriterRuntime {
     const home = mkdtempSync(join(tmpdir(), 'coral-runtime-probe-home-'));
     tempRoots.push(home);
     mockState.home = home;
     const runtime = createRealRuntime('prod');
-    return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+    return { storage: runtime.storage, env: runtime.env, paths: runtime.paths, process: runtime.process };
   }
 
   it('has no incumbent to contend with when no discovery record was ever written', () => {

@@ -1,13 +1,6 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { describe, expect, it, vi } from 'vitest';
-
-vi.mock('#src/infra/node-process.js', async (importOriginal) => {
-  const original = await importOriginal<object>();
-  return {
-    ...original,
-    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
-  };
-});
 
 vi.mock('#src/coordinator/live/provider-proxy/acquisition-steps.js', () => ({
   createProviderProxyAcquisitionSteps: vi.fn(() => ({ steps: 'stub' })),
@@ -17,7 +10,6 @@ vi.mock('#src/coordinator/live/provider-proxy/index.js', () => ({
   acquireProviderProxySet: vi.fn(),
 }));
 
-import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
@@ -36,13 +28,18 @@ import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/service
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
-const mockedProbe = probeProcessIncarnation as unknown as ReturnType<typeof vi.fn>;
+const readProcessIncarnation = vi.fn<(pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null>(() =>
+  testIncarnation(1_700_000_000),
+);
 const mockedCreateSteps = createProviderProxyAcquisitionSteps as unknown as ReturnType<typeof vi.fn>;
 const mockedAcquire = acquireProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 const PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 
 const environment = {
-  runtime,
+  runtime: {
+    ...runtime,
+    process: { ...runtime.process, readProcessIncarnation },
+  },
   pluginRoot: '/plugin/root',
   identity: {
     instanceId: 'coordinator-instance',
@@ -101,7 +98,7 @@ function publicationUnknownAcquisitionHandoff(capsuleBinding: HandoffCapsuleV3) 
 
 describe('ensureProviderProxySet', () => {
   it('reports a failed outcome without attempting acquisition when the coordinator’s own incarnation cannot be read', () => {
-    mockedProbe.mockReturnValueOnce(null);
+    readProcessIncarnation.mockReturnValueOnce(null);
     const outcomes: unknown[] = [];
 
     ensureProviderProxySet(createEntry({ spec: createSharedSpec() }), environment, (outcome) => {

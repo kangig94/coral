@@ -101,11 +101,14 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     const malformedIdentity = testCapsule(runDir, 300);
     const malformedPath = providerHandoffCapsulePath(malformedIdentity, malformedIdentity.version, { baseDir });
     runtime.storage.writeAtomicDurableSync(malformedPath, '{', { encoding: 'utf-8', mode: 0o600 });
+    const futurePath = join(runDir, `provider-1${'a'.repeat(23)}.handoff.v4.json`);
+    runtime.storage.writeAtomicDurableSync(futurePath, '{', { encoding: 'utf-8', mode: 0o600 });
 
     const readings = await readProviderProxySetHolderStatusDirect(runtime);
     const rendered = formatProviderProxySetHolderStatusDirect(readings);
 
     expect(readings).toHaveLength(3);
+    expect(readings).not.toContainEqual(expect.objectContaining({ path: futurePath }));
     expect(readings).toContainEqual({
       kind: 'unreadable-capsule',
       path: malformedPath,

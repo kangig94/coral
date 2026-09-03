@@ -8,25 +8,41 @@ import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { gracefulKillByPid, type GracefulKillByPidDisposition } from '../../infra/process-supervision.js';
+import { gracefulKillByPid, type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
 
-function requestDurableProcessTermination(
+function terminationOutcomeDetail(outcome: Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>): string {
+  switch (outcome.kind) {
+    case 'signal-refused':
+      return outcome.reason;
+    case 'signal-failed':
+      return `${outcome.signal}:${outcome.reason}`;
+    case 'target-unobservable':
+    case 'target-alive':
+      return `${outcome.kind}:${outcome.stage}`;
+  }
+}
+
+async function requestDurableProcessTermination(
   runtime: Runtime,
   pid: number,
   incarnation: ProcessIncarnation | null,
-): GracefulKillByPidDisposition {
+): Promise<GracefulKillByPidOutcome> {
   const disposition = gracefulKillByPid(runtime, pid, incarnation);
-  if (disposition.kind === 'signal-refused') {
+  const outcome = disposition.kind === 'escalation-scheduled' ? await disposition.settlement : disposition;
+  if (outcome.kind !== 'observed-absent') {
     backendLog.warn(
-      `[durable-process:${pid}] No termination signal was sent (${disposition.reason}); the process remains owned.`,
+      `[durable-process:${pid}] Termination remains unsettled (${terminationOutcomeDetail(outcome)}); ` +
+        'the process remains owned.',
     );
   }
-  return disposition;
+  return outcome;
 }
+
+export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
 
 export type CliExecResult = {
   stdout: string;
@@ -66,7 +82,7 @@ export async function spawnDurableJobTransport(params: {
   options: SpawnDurableJobOptions;
   pool: LaunchPool;
   internalPermitJobId: string | null;
-  cleanupHandles: Map<symbol, () => void>;
+  cleanupHandles: Map<symbol, DurableProcessCleanup>;
   releaseLaunch: (jobId: string, pool: LaunchPool) => void;
   shouldTerminateAfterLaunch?: () => boolean;
 }): Promise<CliExecResult> {
@@ -74,6 +90,8 @@ export async function spawnDurableJobTransport(params: {
   const { internalPermitJobId } = params;
   let abortHandler: (() => void) | null = null;
   let cleanupKey: symbol | null = null;
+  let cleanupInFlight: Promise<GracefulKillByPidOutcome> | null = null;
+  let durableExitObserved = false;
 
   try {
     if (options.signal?.aborted) {
@@ -98,15 +116,30 @@ export async function spawnDurableJobTransport(params: {
       options.onDurableProcessIdentity?.({ pid: durable.pid, incarnation });
     }
     cleanupKey = Symbol();
-    const cleanup = (): void => {
-      requestDurableProcessTermination(runtime, durable.pid, incarnation);
+    const cleanup = (): Promise<GracefulKillByPidOutcome> => {
+      if (cleanupInFlight !== null) return cleanupInFlight;
+      cleanupInFlight = requestDurableProcessTermination(runtime, durable.pid, incarnation).then((outcome) => {
+        if (outcome.kind === 'observed-absent' && cleanupKey !== null) {
+          cleanupHandles.delete(cleanupKey);
+          cleanupKey = null;
+        }
+        return outcome;
+      });
+      void cleanupInFlight.then(
+        () => {
+          cleanupInFlight = null;
+        },
+        () => {
+          cleanupInFlight = null;
+        },
+      );
+      return cleanupInFlight;
     };
     cleanupHandles.set(cleanupKey, cleanup);
     if (shouldTerminateAfterLaunch?.()) {
-      // terminateAll may have drained before this durable child was registered.
-      cleanupHandles.delete(cleanupKey);
-      cleanupKey = null;
-      cleanup();
+      void cleanup().catch((error: unknown) => {
+        backendLog.warn(`[durable-process:${durable.pid}] Termination failed: ${errorMessage(error)}`);
+      });
     }
 
     let abortedBySignal = false;
@@ -149,7 +182,9 @@ export async function spawnDurableJobTransport(params: {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
-        requestDurableProcessTermination(runtime, durable.pid, incarnation);
+        void cleanup().catch((error: unknown) => {
+          backendLog.warn(`[durable-process:${durable.pid}] Termination failed: ${errorMessage(error)}`);
+        });
       };
 
       if (options.signal.aborted) abortHandler();
@@ -161,6 +196,7 @@ export async function spawnDurableJobTransport(params: {
 
       const completedExit = durableState.exitRecord;
       if (completedExit !== null) {
+        durableExitObserved = true;
         drainStdout();
         return {
           stdout: readOutputFile(runtime.storage, durable.stdoutPath),
@@ -182,20 +218,19 @@ export async function spawnDurableJobTransport(params: {
       if (tickGap > IDLE_CHECK_INTERVAL * 3) {
         lastOutputAt = now;
       } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
-        const disposition = requestDurableProcessTermination(runtime, durable.pid, incarnation);
-        if (disposition.kind === 'signal-refused') {
-          lastOutputAt = now;
-        } else {
+        const disposition = await cleanup();
+        if (disposition.kind === 'observed-absent') {
           throw new Error(
-            `Durable process ${durable.pid} termination scheduled after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
+            `Durable process ${durable.pid} terminated after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
           );
         }
+        lastOutputAt = runtime.time.now();
       }
 
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
     }
   } finally {
-    if (cleanupKey !== null) {
+    if (durableExitObserved && cleanupKey !== null) {
       cleanupHandles.delete(cleanupKey);
     }
     if (abortHandler && options.signal) {

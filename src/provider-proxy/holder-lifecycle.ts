@@ -43,26 +43,10 @@ export type ControlHolderAuthorityOptions = Readonly<{
   onTransition?: (transition: HolderStatusSnapshot) => void;
 }>;
 
-/**
- * The one home for a guardian/reaper/proxy process's own holder identity (§7). `createControlEndpoint`
- * installs it on every admission; a future enforcer reads it to decide what it is observing. Nothing else in
- * either caller may keep a second copy of `{ controlEpoch, holder }` — a comparison that reads one copy while
- * a reattach validates another is exactly the split this authority exists to close.
- *
- * `controlEpoch` here is never a second counter: it is always the exact value `createControlEndpoint` already
- * minted for this admission (its own `nextEpoch`), installed synchronously in the same admission that minted
- * it. This authority never derives or increments an epoch of its own.
- */
 export interface ControlHolderAuthority {
-  /**
-   * Installs the holder that just earned this tenancy — first admission or a successor's. Must be called
-   * synchronously, in the same turn the epoch was minted, with no `await` before the caller's own displaced
-   * connection is torn down: a successor's install has to be visible to every later read (including a
-   * teardown authorization already in flight) before anything reacts to the predecessor's loss.
-   */
+  /** Installs only a holder whose control epoch is strictly greater than the currently installed epoch. */
   install(identity: ControlHolderIdentity): void;
-  /** The currently installed holder, or `null` before any admission has ever occurred — the pure clock
-   *  bound decides then, and there is nothing yet for this authority to hold. */
+  /** Returns `null` until a holder has been installed. */
   current(): ControlHolderIdentity | null;
   phase(): AcquisitionPhase;
   /** One-way `acquisition-provisional` -> `published`. Idempotent: publishing an already-published authority
@@ -70,13 +54,10 @@ export interface ControlHolderAuthority {
   publish(): void;
   /** An observation may change status only while its exact holder admission remains installed. */
   recordObservation(subject: ControlHolderIdentity, disposition: HolderStatusDisposition): void;
-  /** The starvation-readable surface `*.holder-status.v1` serves: `null` only before any holder has ever
-   *  been admitted, the one case the pure clock bound still decides on its own. */
+  /** Returns `null` until a holder has been installed. */
   status(): HolderStatusSnapshot | null;
 }
 
-/** Exactly one instance per guardian/reaper/proxy process. Every internal composition inside that process
- *  which needs holder identity reads this same instance; none may construct a second one. */
 export function createControlHolderAuthority(options: ControlHolderAuthorityOptions = {}): ControlHolderAuthority {
   const wallClockNow = options.wallClockNow ?? Date.now;
   let installed: ControlHolderIdentity | null = null;

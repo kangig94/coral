@@ -112,7 +112,7 @@ function buildHarness(opts: {
       set: () => {},
       clear: () => {},
     } as never,
-    terminateAllFn: () => {},
+    terminateAllFn: () => ({ kind: 'all-observed-absent' }),
     handoffQuiescePorts: () => [],
     disposeLifecycleReactor: () => {
       callLog.push('lifecycleReactor.dispose');
@@ -202,6 +202,7 @@ describe('runShutdownSequence drain budget', () => {
     } as never;
     harness.ctx.terminateAllFn = () => {
       harness.callLog.push('terminateAllFn');
+      return { kind: 'all-observed-absent' };
     };
 
     const sequence = runShutdownSequence(harness.ctx).catch((error: unknown) => error);
@@ -214,9 +215,12 @@ describe('runShutdownSequence drain budget', () => {
     const sawExceeded = harness.logLines.some((l) => l.includes('provider host shutdown: exceeded drain budget'));
     expect(sawExceeded).toBe(false);
     expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as Error).message).toContain('shutdown completed with 1 finalizer failure');
+    expect((failure as Error).message).toContain('shutdown completed with 2 finalizer failures');
     expect(harness.logLines).toContainEqual(
       expect.stringContaining("Required shutdown step 'provider host shutdown' timed-out"),
+    );
+    expect(harness.logLines).toContainEqual(
+      expect.stringContaining("Required shutdown step 'child termination' budget-exhausted"),
     );
     expect(providerSignal?.aborted).toBe(true);
     expect(harness.callLog).toContain('terminateAllFn');
@@ -241,6 +245,7 @@ describe('runShutdownSequence drain budget', () => {
     } as never;
     harness.ctx.terminateAllFn = () => {
       harness.callLog.push('terminateAllFn');
+      return { kind: 'all-observed-absent' };
     };
 
     await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
@@ -251,6 +256,38 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.logLines).toContainEqual(
       expect.stringContaining('crashed job terminalization failed during shutdown'),
     );
+  });
+
+  it('fails hard shutdown and names a durable child still alive after escalation', async () => {
+    const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
+    harness.ctx.terminateAllFn = async () => ({
+      kind: 'unsettled',
+      processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+    });
+
+    const detail = await shutdownFailureDetail(harness.ctx);
+
+    expect(detail).toContain("Required shutdown step 'child termination' unconfirmed");
+    expect(detail).toContain('pid 4242: target-alive after-sigkill');
+  });
+
+  it('fails hard shutdown and names a durable child whose signal authority is unavailable', async () => {
+    const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
+    harness.ctx.terminateAllFn = async () => ({
+      kind: 'unsettled',
+      processes: [
+        {
+          kind: 'signal-refused',
+          pid: 4_243,
+          reason: 'recorded-incarnation-unavailable',
+        },
+      ],
+    });
+
+    const detail = await shutdownFailureDetail(harness.ctx);
+
+    expect(detail).toContain("Required shutdown step 'child termination' unconfirmed");
+    expect(detail).toContain('pid 4243: recorded-incarnation-unavailable');
   });
 
   it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {
@@ -481,6 +518,7 @@ describe('required provider-proxy shutdown steps', () => {
     });
     harness.ctx.terminateAllFn = () => {
       callLog.push('terminateAll');
+      return { kind: 'all-observed-absent' };
     };
 
     await runShutdownSequence(harness.ctx);
@@ -513,6 +551,7 @@ describe('required provider-proxy shutdown steps', () => {
     } as never;
     harness.ctx.terminateAllFn = () => {
       callLog.push('terminateAll');
+      return { kind: 'all-observed-absent' };
     };
 
     await runShutdownSequence(harness.ctx);

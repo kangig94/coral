@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
+import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../../providers/app-server-transport.js';
 import {
   providerGuardianBootstrapCapsulePath,
@@ -283,7 +283,7 @@ export function createProviderProxyAcquisitionSteps(
       }
       const setMinted = minted;
       const platform = runtime.env.platform() as NodeJS.Platform;
-      const readProcessIncarnation = options.readProcessIncarnation ?? probeProcessIncarnation;
+      const readProcessIncarnation = options.readProcessIncarnation ?? runtime.process.readProcessIncarnation;
       const spawnPorts: RoleSpawnPorts = {
         process: runtime.process,
         runtime,

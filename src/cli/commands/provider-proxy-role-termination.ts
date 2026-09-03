@@ -1,11 +1,7 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import { assertNever } from '../../infra/error-format.js';
-import {
-  probeProcessIncarnation,
-  processIncarnationSchema,
-  type ProcessIncarnation,
-} from '../../infra/node-process.js';
+import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 import { providerProxyRoleIdentitySchema, type ProviderProxyRoleIdentity } from '../../provider-proxy/protocol.js';
 import { emitError } from '../emit.js';
 
@@ -34,19 +30,16 @@ export interface ProviderProxyRoleTerminationCommandOperations {
 }
 
 export function createProviderProxyRoleTerminationCommandOperations(options: {
-  platform?: NodeJS.Platform;
-  readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
+  platform: NodeJS.Platform;
+  readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   abandon(roleIdentity: ProviderProxyRoleIdentity): Promise<ProviderProxyRoleAbandonmentAttempt>;
 }): ProviderProxyRoleTerminationCommandOperations {
-  const platform = options.platform ?? process.platform;
-  const readProcessIncarnation = options.readProcessIncarnation ?? probeProcessIncarnation;
-
   return {
     terminate: async (input) => {
       const roleIdentity = providerProxyRoleIdentitySchema.parse(input);
       let observedIncarnation: ProcessIncarnation | null;
       try {
-        observedIncarnation = readProcessIncarnation(roleIdentity.pid, platform);
+        observedIncarnation = options.readProcessIncarnation(roleIdentity.pid, options.platform);
       } catch {
         observedIncarnation = null;
       }

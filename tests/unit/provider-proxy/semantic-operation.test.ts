@@ -1,4 +1,3 @@
-import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -27,17 +26,6 @@ vi.mock('#src/providers/bootstrap.js', () => ({
 vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
   const actual = await importOriginal<object>();
   return { ...actual, spawnProviderServerTransport: vi.fn() };
-});
-
-// `openSession` reads the spawned process's own incarnation straight off `/proc` (or platform equivalent).
-// Faking a pid that exists in `/proc` is possible but fragile across CI sandboxes; stubbing the probe itself
-// is the same technique `provider-hosts/proxy-set-acquisition.test.ts` already uses for the identical call.
-vi.mock('#src/infra/node-process.js', async (importOriginal) => {
-  const actual = await importOriginal<object>();
-  return {
-    ...actual,
-    probeProcessIncarnation: vi.fn(() => 'linux:00000000-0000-4000-8000-000000000000:1700000000' as ProcessIncarnation),
-  };
 });
 
 import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
@@ -112,7 +100,12 @@ import {
 } from '#tests/helpers/provider-proxy-correlation.js';
 import { TEST_CODEX_PLAN } from '#tests/helpers/provider-credentials.js';
 
-const runtime: Runtime = createRealRuntime('prod');
+const realRuntime = createRealRuntime('prod');
+const readProcessIncarnation = vi.fn(() => testIncarnation(1_700_000_000));
+const runtime: Runtime = {
+  ...realRuntime,
+  process: { ...realRuntime.process, readProcessIncarnation },
+};
 
 beforeEach(() => {
   // `spawnProviderServerTransport` and `rehydrateBinding` are plain `vi.fn()`s created inside a `vi.mock()`
@@ -120,6 +113,7 @@ beforeEach(() => {
   // own queued `mockResolvedValueOnce`/`mockReturnValue` state explicitly rather than leaking into the next.
   vi.mocked(spawnProviderServerTransport).mockReset();
   providerRegistryDouble.rehydrateBinding.mockReset();
+  readProcessIncarnation.mockReset().mockReturnValue(testIncarnation(1_700_000_000));
 });
 
 afterEach(() => {
@@ -1617,6 +1611,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     const second = await secondScope.openSession(spec);
 
     expect(spawnProviderServerTransport).toHaveBeenCalledTimes(1);
+    expect(readProcessIncarnation).toHaveBeenCalledWith(server.handle.pid, runtime.env.platform());
     expect(vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0]).not.toHaveProperty('detached');
     expect(first.hostRef.instanceId).toBe(second.hostRef.instanceId);
     first.close();

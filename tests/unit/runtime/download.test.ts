@@ -10,10 +10,12 @@ function runtimeWithExec(
     args: string[],
     options?: RuntimeExecOptions,
   ) => Promise<{ stdout: string; stderr: string; status: number }>,
+  tmpdir: () => string = () => '/tmp',
 ): Runtime {
   return {
     env: {
       platform: () => 'linux',
+      tmpdir,
     },
     process: {
       exec,
@@ -87,6 +89,7 @@ describe('downloadBuffer', () => {
   });
 
   it('checks command downloads before reading the temporary file into memory', async () => {
+    const tmpdir = vi.fn(() => '/tmp');
     const runtime = runtimeWithExec(async (command, args) => {
       if (command === 'which' && args[0] === 'curl') {
         return { stdout: '/usr/bin/curl\n', stderr: '', status: 0 };
@@ -96,10 +99,11 @@ describe('downloadBuffer', () => {
         return { stdout: '', stderr: '', status: 0 };
       }
       return { stdout: '', stderr: '', status: 1 };
-    });
+    }, tmpdir);
 
     await expect(downloadBuffer(runtime, 'https://example.invalid/archive.bin', { maxBytes: 8 })).rejects.toThrow(
       /12 bytes > 8 bytes/,
     );
+    expect(tmpdir).toHaveBeenCalledOnce();
   });
 });

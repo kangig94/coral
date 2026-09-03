@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { DiscoveryRuntime } from '#src/infra/backend-discovery.js';
+import type { DiscoveryWriterRuntime } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   home: '',
@@ -44,9 +44,9 @@ function makeHome(): string {
   return root;
 }
 
-function makeDiscoveryRuntime(flavor: 'prod' | 'dev'): DiscoveryRuntime {
+function makeDiscoveryRuntime(flavor: 'prod' | 'dev'): DiscoveryWriterRuntime {
   const runtime = createRealRuntime(flavor);
-  return { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+  return { storage: runtime.storage, env: runtime.env, paths: runtime.paths, process: runtime.process };
 }
 
 describe('coordinator discovery', () => {
@@ -90,6 +90,39 @@ describe('coordinator discovery', () => {
         version: '1.2.3',
         instanceId: 'instance-a',
       },
+    });
+  });
+
+  it('reads an omitted incarnation through the runtime process port', async () => {
+    makeHome();
+    const { readDiscoveryRecordDisposition, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+    const incarnation = testIncarnation('simulated-process');
+    const readProcessIncarnation = vi.fn(() => incarnation);
+    const injectedRuntime: DiscoveryWriterRuntime = {
+      ...runtime,
+      process: { readProcessIncarnation },
+    };
+
+    writeDiscoveryRecord(
+      {
+        pid: 12345,
+        port: 4312,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'bundle-simulated',
+        flavor: 'prod',
+        namespace: 'ns-simulated',
+        startedAt: 1_713_456_789_000,
+        token: 'token-simulated',
+        bootToken: 'boot-token-simulated',
+      },
+      injectedRuntime,
+    );
+
+    expect(readProcessIncarnation).toHaveBeenCalledWith(12345, mockState.platform);
+    expect(readDiscoveryRecordDisposition(injectedRuntime)).toMatchObject({
+      kind: 'record',
+      record: { pid: 12345, incarnation },
     });
   });
 
@@ -360,7 +393,7 @@ describe('coordinator discovery', () => {
           throw Object.assign(new Error(code), { code });
         },
       },
-    } as DiscoveryRuntime;
+    } as DiscoveryWriterRuntime;
 
     expect(() => readDiscoveryRecordDisposition(failing)).toThrow(code);
   });

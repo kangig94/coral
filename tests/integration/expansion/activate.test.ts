@@ -519,7 +519,7 @@ describe('expansion activation', () => {
           flavor: 'dev',
           socketPath: '/tmp/coral-dev.sock',
         }),
-        { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+        { storage: runtime.storage, env: runtime.env, paths: runtime.paths, process: runtime.process },
       );
       mockState.createIpcClient.mockReturnValue({ request });
 

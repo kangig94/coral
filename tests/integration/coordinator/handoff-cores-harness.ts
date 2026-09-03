@@ -170,7 +170,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         removeBackendInfoIfOwnerFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
-        terminateAllFn: () => {},
+        terminateAllFn: async () => ({ kind: 'all-observed-absent' }),
         registerBuiltInProvidersFn: () => {},
         ...(opts.createExecutionService === undefined ? {} : { createExecutionService: opts.createExecutionService }),
         ...(opts.providerHostManager === undefined ? {} : { providerHostManager: opts.providerHostManager }),

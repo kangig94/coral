@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 
-import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import { gracefulKill } from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -140,7 +140,7 @@ export function spawnRoleProcess(
     throw new RoleSpawnError('role_spawn_no_pid', role, `Spawning the ${role} role did not return a pid.`);
   }
 
-  const readIncarnation = ports.readProcessIncarnation ?? probeProcessIncarnation;
+  const readIncarnation = ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation;
   const incarnation = readIncarnation(child.pid, ports.platform);
   if (incarnation === null) {
     killFailedSpawn();

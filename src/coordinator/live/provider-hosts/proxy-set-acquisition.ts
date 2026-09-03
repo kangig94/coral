@@ -1,4 +1,3 @@
-import { probeProcessIncarnation } from '../../../infra/node-process.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
@@ -144,7 +143,7 @@ export function ensureProviderProxySet(
 ): Promise<void> {
   const pid = env.runtime.env.pid();
   const platform = env.runtime.env.platform() as NodeJS.Platform;
-  const incarnation = probeProcessIncarnation(pid, platform);
+  const incarnation = env.runtime.process.readProcessIncarnation(pid, platform);
   if (incarnation === null) {
     // This process's own incarnation is not a value this file may guess at: the coordinator identity it feeds
     // the handshake is a security-relevant field, not a diagnostic one, so an unreadable read is a failed

@@ -1,5 +1,11 @@
 import type { Runtime } from '../../runtime/ports.js';
-import { type CliExecResult, type SpawnDurableJobOptions, spawnDurableJobTransport } from './durable-transport.js';
+import {
+  type CliExecResult,
+  type DurableProcessCleanup,
+  type SpawnDurableJobOptions,
+  spawnDurableJobTransport,
+} from './durable-transport.js';
+import type { GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
 import {
   type ContainedProviderServerHandle,
   type ProviderResponseObservationSink,
@@ -47,8 +53,15 @@ export class DuplicateLaunchReservationError extends Error {
   }
 }
 
+export type TerminateAllDisposition =
+  | Readonly<{ kind: 'all-observed-absent' }>
+  | Readonly<{
+      kind: 'unsettled';
+      processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
+    }>;
+
 export class LaunchCoordinator {
-  private readonly cleanupHandles = new Map<symbol, () => void>();
+  private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
   private nextProviderServerGeneration = 1;
   private readonly pools: Record<LaunchPool, PoolState> = {
     default: { active: new Map(), queued: [] },
@@ -193,24 +206,42 @@ export class LaunchCoordinator {
     return this.queuedHandle(entry, pool);
   }
 
-  terminateAll(): void {
+  async terminateAll(): Promise<TerminateAllDisposition> {
     this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
     const failures: unknown[] = [];
+    const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
     for (const cleanup of this.cleanupHandles.values()) {
       try {
-        cleanup();
+        attempts.push({ cleanup, task: cleanup() });
       } catch (error: unknown) {
         failures.push(error);
       }
     }
-    this.cleanupHandles.clear();
+    const outcomes = await Promise.allSettled(attempts.map(({ task }) => task));
+    const unsettled: Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[] = [];
+    for (const [index, outcome] of outcomes.entries()) {
+      const attempt = attempts[index];
+      if (attempt === undefined) continue;
+      if (outcome.status === 'rejected') {
+        failures.push(outcome.reason);
+        continue;
+      }
+      if (outcome.value.kind !== 'observed-absent') {
+        unsettled.push(outcome.value);
+        continue;
+      }
+      for (const [key, registeredCleanup] of this.cleanupHandles) {
+        if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
+      }
+    }
     if (failures.length > 0) {
       throw new AggregateError(
         failures,
         `Failed to terminate ${failures.length} active child process cleanup handle(s).`,
       );
     }
+    return unsettled.length === 0 ? { kind: 'all-observed-absent' } : { kind: 'unsettled', processes: unsettled };
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, { provider: string; owner: ExecutionOwner }> {

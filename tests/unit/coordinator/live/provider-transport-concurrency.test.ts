@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createProviderHostContainmentReaper } from '#src/coordinator/live/provider-hosts/drain.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/providers/app-server-transport.js';
@@ -230,11 +231,47 @@ describe('provider transport concurrency hardening', () => {
     );
     await flushMicrotasks();
 
-    launchCoordinator.terminateAll();
+    await launchCoordinator.terminateAll();
     runtime.time.tick(5);
     await flushMicrotasks();
 
     expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
+    expect(observed.settled).toBe(false);
+  });
+
+  it('keeps a durable cleanup registered when SIGTERM delivery fails', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueDurable({ pid: 30_002, runtimeDelayMs: 0, exit: null });
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    const observed = observePromise(
+      launchCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/sim/jobs/failed-signal-durable',
+        permitGranted: true,
+      }),
+    );
+    runtime.time.tick(0);
+    await flushMicrotasks();
+    vi.spyOn(runtime.process, 'kill').mockReturnValue(false);
+
+    await expect(launchCoordinator.terminateAll()).resolves.toEqual({
+      kind: 'unsettled',
+      processes: [
+        {
+          kind: 'signal-failed',
+          pid: 30_002,
+          signal: 'SIGTERM',
+          reason: 'kill-port-returned-false',
+        },
+      ],
+    });
+
+    const cleanupHandles = (
+      launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }
+    ).cleanupHandles;
+    expect(cleanupHandles.size).toBe(1);
     expect(observed.settled).toBe(false);
   });
 });

@@ -6,7 +6,6 @@ import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
 import {
   incarnationMayAuthorizeSignal,
-  probeProcessIncarnation,
   terminateProcessIncarnationProbes,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
@@ -118,7 +117,6 @@ export type ProviderRoleMainPorts = Readonly<{
   baseDir?: string;
   /** Injected for tests; defaults to the real embedded-vs-adjacent-manifest strict identity check. */
   resolveStrictIdentity?(): StrictBundleIdentityResult;
-  /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
   /** Injected for tests; defaults to the runtime's own non-blocking identity-bound observer
    *  (`runtime.process.observeRecordedProcessAsync`). */
@@ -157,7 +155,7 @@ function buildContainmentEnvironment<Scope extends symbol>(
     clock,
     process: { kill: ports.runtime.process.kill, observeLiveness: ports.runtime.process.observeLiveness },
     platform: ports.runtime.env.platform() as NodeJS.Platform,
-    ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
+    readProcessIncarnation: ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation,
   };
 }
 
@@ -184,7 +182,7 @@ function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
     process: ports.runtime.process,
     runtime: ports.runtime,
     platform: ports.runtime.env.platform() as NodeJS.Platform,
-    ...(ports.readProcessIncarnation === undefined ? {} : { readProcessIncarnation: ports.readProcessIncarnation }),
+    readProcessIncarnation: ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation,
   };
 }
 
@@ -203,7 +201,7 @@ function realRoleOutcomeScheduler(ports: ProviderRoleMainPorts): RoleOutcomeSche
 function readSelfIdentity(ports: ProviderRoleMainPorts): Readonly<{ pid: number; incarnation: ProcessIncarnation }> {
   const pid = ports.runtime.env.pid();
   const platform = ports.runtime.env.platform() as NodeJS.Platform;
-  const read = ports.readProcessIncarnation ?? probeProcessIncarnation;
+  const read = ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation;
   const incarnation = read(pid, platform);
   if (incarnation === null) {
     throw new Error(`Could not read this process's own incarnation (pid ${pid}).`);
@@ -276,7 +274,8 @@ function isStillTheRecordedProcess<Scope extends symbol>(
   // never received control, so its own orphan deadline ends it. A few tens of seconds of an orphaned group
   // is the whole cost; SIGKILL to whatever else now holds the pid is not recoverable at all.
   if (!incarnationMayAuthorizeSignal(environment.platform)) return false;
-  const read = environment.readProcessIncarnation ?? probeProcessIncarnation;
+  const read = environment.readProcessIncarnation;
+  if (read === undefined) return false;
   try {
     return read(identity.pid, environment.platform) === identity.incarnation;
   } catch {

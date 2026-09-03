@@ -1,4 +1,5 @@
 import type { ListenIpcServerResult } from '#src/transport/ipc/server.js';
+import type { TerminateAllDisposition } from '#src/coordinator/live/admission.js';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizeStoreServices } from '#src/coordinator/index.js';
@@ -311,8 +312,9 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         expect(mockState.fakeDb.closed).toBe(false);
         mockState.events.push('markJobsAsError:live-store');
       }),
-      terminateAllFn: vi.fn(() => {
+      terminateAllFn: vi.fn((): TerminateAllDisposition => {
         mockState.events.push('terminateAll');
+        return { kind: 'all-observed-absent' };
       }),
       providerHostManager: {
         shutdown: vi.fn(async () => {
@@ -780,12 +782,15 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
   });
 
-  it('continues child cleanup and releases socket and discovery when one cleanup handle throws', async () => {
+  it('continues child cleanup and retains the failed handle when one cleanup throws', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const launchCoordinator = new LaunchCoordinator({ runtime: baseDeps.runtime });
-    const cleanupHandles = (launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, () => void> })
-      .cleanupHandles;
-    const laterChildCleanup = vi.fn();
+    const cleanupHandles = (
+      launchCoordinator as unknown as {
+        readonly cleanupHandles: Map<symbol, () => Promise<{ kind: 'observed-absent'; pid: number }>>;
+      }
+    ).cleanupHandles;
+    const laterChildCleanup = vi.fn(async () => ({ kind: 'observed-absent' as const, pid: 4_243 }));
     cleanupHandles.set(Symbol('throwing-child'), () => {
       throw new Error('injected child cleanup failure');
     });
@@ -804,7 +809,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
 
     expect(laterChildCleanup).toHaveBeenCalledOnce();
-    expect(cleanupHandles.size).toBe(0);
+    expect(cleanupHandles.size).toBe(1);
     expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
     expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
     expect(discussDispose).toHaveBeenCalledOnce();

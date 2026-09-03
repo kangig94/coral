@@ -89,7 +89,12 @@ export function resolveCoordinatorDefaults(
   const createExecutionService: NonNullable<CoordinatorCoreOptions['createExecutionService']> =
     options.createExecutionService ?? ((ctx: InvocationContext, deps) => new DefaultExecutionService(ctx, deps));
   const fetchFn: FetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
-  const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+  const discoveryRuntime = {
+    storage: runtime.storage,
+    env: runtime.env,
+    paths: runtime.paths,
+    process: runtime.process,
+  };
   const writeBackendInfoFn = options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
   const removeBackendInfoIfOwnerFn =
     options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));

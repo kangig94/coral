@@ -7,17 +7,34 @@ type GracefulKillRuntime = Readonly<{
   time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
 }>;
 
+type GracefulKillByPidSignalRefusal = Readonly<{
+  kind: 'signal-refused';
+  pid: number;
+  reason:
+    | 'recorded-incarnation-unavailable'
+    | 'platform-incarnation-cannot-authorize-signal'
+    | 'signal-authorizing-incarnation-unavailable'
+    | 'expected-incarnation-mismatch';
+}>;
+
+type GracefulKillByPidSignalFailure = Readonly<{
+  kind: 'signal-failed';
+  pid: number;
+  signal: 'SIGTERM' | 'SIGKILL';
+  reason: 'kill-port-returned-false';
+}>;
+
+export type GracefulKillByPidOutcome =
+  | GracefulKillByPidSignalRefusal
+  | GracefulKillByPidSignalFailure
+  | Readonly<{ kind: 'observed-absent'; pid: number }>
+  | Readonly<{ kind: 'target-unobservable'; pid: number; stage: 'after-sigterm' | 'after-sigkill' }>
+  | Readonly<{ kind: 'target-alive'; pid: number; stage: 'after-sigkill' }>;
+
 export type GracefulKillByPidDisposition =
-  | Readonly<{ kind: 'escalation-scheduled'; pid: number }>
-  | Readonly<{
-      kind: 'signal-refused';
-      pid: number;
-      reason:
-        | 'recorded-incarnation-unavailable'
-        | 'platform-incarnation-cannot-authorize-signal'
-        | 'signal-authorizing-incarnation-unavailable'
-        | 'expected-incarnation-mismatch';
-    }>;
+  | Readonly<{ kind: 'escalation-scheduled'; pid: number; settlement: Promise<GracefulKillByPidOutcome> }>
+  | GracefulKillByPidSignalRefusal
+  | GracefulKillByPidSignalFailure;
 
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {
@@ -46,16 +63,76 @@ export function gracefulKill(
   child.on('close', () => runtime.time.clearTimeout(killTimer));
 }
 
-function readSignalAuthorizingIncarnation(
+function observeRecordedTarget(
   runtime: Runtime,
   pid: number,
   platform: NodeJS.Platform,
-): ProcessIncarnation | null {
+  expectedIncarnation: ProcessIncarnation,
+): 'alive' | 'absent' | 'unobservable' {
   try {
-    return runtime.process.readProcessIncarnation(pid, platform);
+    const observedIncarnation = runtime.process.readProcessIncarnation(pid, platform);
+    if (observedIncarnation !== null) {
+      if (observedIncarnation !== expectedIncarnation) return 'absent';
+      const liveness = runtime.process.observeLiveness(pid);
+      return liveness === 'unknown' ? 'unobservable' : liveness;
+    }
+    return runtime.process.observeLiveness(pid) === 'absent' ? 'absent' : 'unobservable';
   } catch {
-    return null;
+    return 'unobservable';
   }
+}
+
+function settleAfterSigkill(
+  runtime: Runtime,
+  pid: number,
+  platform: NodeJS.Platform,
+  expectedIncarnation: ProcessIncarnation,
+): GracefulKillByPidOutcome {
+  const observation = observeRecordedTarget(runtime, pid, platform, expectedIncarnation);
+  if (observation === 'absent') return { kind: 'observed-absent', pid };
+  if (observation === 'unobservable') return { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
+  return { kind: 'target-alive', pid, stage: 'after-sigkill' };
+}
+
+function settleGracefulKillByPid(
+  runtime: Runtime,
+  pid: number,
+  platform: NodeJS.Platform,
+  expectedIncarnation: ProcessIncarnation,
+): Promise<GracefulKillByPidOutcome> {
+  try {
+    const immediateLiveness = runtime.process.observeLiveness(pid);
+    if (immediateLiveness === 'absent') return Promise.resolve({ kind: 'observed-absent', pid });
+    if (immediateLiveness === 'unknown') {
+      return Promise.resolve({ kind: 'target-unobservable', pid, stage: 'after-sigterm' });
+    }
+  } catch {
+    return Promise.resolve({ kind: 'target-unobservable', pid, stage: 'after-sigterm' });
+  }
+
+  return new Promise<GracefulKillByPidOutcome>((resolve, reject) => {
+    const escalation = runtime.time.setTimeout(() => {
+      try {
+        const observation = observeRecordedTarget(runtime, pid, platform, expectedIncarnation);
+        if (observation === 'absent') {
+          resolve({ kind: 'observed-absent', pid });
+          return;
+        }
+        if (observation === 'unobservable') {
+          resolve({ kind: 'target-unobservable', pid, stage: 'after-sigterm' });
+          return;
+        }
+        if (!runtime.process.kill(pid, 'SIGKILL')) {
+          resolve({ kind: 'signal-failed', pid, signal: 'SIGKILL', reason: 'kill-port-returned-false' });
+          return;
+        }
+        resolve(settleAfterSigkill(runtime, pid, platform, expectedIncarnation));
+      } catch (error: unknown) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }, SIGTERM_GRACE_MS);
+    escalation.unref?.();
+  });
 }
 
 export function gracefulKillByPid(
@@ -70,26 +147,27 @@ export function gracefulKillByPid(
   if (!incarnationMayAuthorizeSignal(platform)) {
     return { kind: 'signal-refused', pid, reason: 'platform-incarnation-cannot-authorize-signal' };
   }
-  const observedIncarnation = readSignalAuthorizingIncarnation(runtime, pid, platform);
+  let observedIncarnation: ProcessIncarnation | null;
+  try {
+    observedIncarnation = runtime.process.readProcessIncarnation(pid, platform);
+  } catch {
+    observedIncarnation = null;
+  }
   if (observedIncarnation === null) {
     return { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
   }
   if (observedIncarnation !== expectedIncarnation) {
     return { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
   }
-  runtime.process.kill(pid, 'SIGTERM');
+  if (!runtime.process.kill(pid, 'SIGTERM')) {
+    return { kind: 'signal-failed', pid, signal: 'SIGTERM', reason: 'kill-port-returned-false' };
+  }
 
-  const escalation = runtime.time.setTimeout(() => {
-    if (readSignalAuthorizingIncarnation(runtime, pid, platform) !== observedIncarnation) return;
-    try {
-      if (runtime.process.observeLiveness(pid) !== 'alive') return;
-    } catch {
-      return;
-    }
-    runtime.process.kill(pid, 'SIGKILL');
-  }, SIGTERM_GRACE_MS);
-  escalation.unref?.();
-  return { kind: 'escalation-scheduled', pid };
+  return {
+    kind: 'escalation-scheduled',
+    pid,
+    settlement: settleGracefulKillByPid(runtime, pid, platform, observedIncarnation),
+  };
 }
 
 export function requirePipedHandles(

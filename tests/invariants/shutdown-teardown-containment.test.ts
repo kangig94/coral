@@ -16,7 +16,6 @@ const SHUTDOWN_NON_BLOCKING_STEP_TASKS = new Set([
   'state.ownershipCheckerTeardown',
   'store.dispose',
   'stream.end',
-  'terminateAllFn',
 ]);
 const SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST = new Set([
   'waitForObservedShutdownTask(serverClosed)',

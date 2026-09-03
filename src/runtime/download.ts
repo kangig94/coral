@@ -1,5 +1,4 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Runtime } from './ports.js';
@@ -144,7 +143,7 @@ async function downloadBufferWithCommand(
   url: string,
   options: DownloadBufferOptions,
 ): Promise<Buffer> {
-  const tempDir = mkdtempSync(join(tmpdir(), 'coral-runtime-download-'));
+  const tempDir = mkdtempSync(join(runtime.env.tmpdir(), 'coral-runtime-download-'));
   const destination = join(tempDir, 'download.bin');
 
   try {

@@ -629,7 +629,12 @@ describe('execution backend server', () => {
     const pluginRoot = createProjectRoot('backend-info-flavor');
     const namespace = pluginRootNamespace(pluginRoot);
 
-    const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
+    const discoveryRuntime = {
+      storage: runtime.storage,
+      env: runtime.env,
+      paths: runtime.paths,
+      process: runtime.process,
+    };
     backendInfo.writeBackendInfo(
       {
         pid: process.pid,
@@ -6127,9 +6132,9 @@ describe('execution backend server', () => {
       expect(quiesceOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(drainOrder ?? Number.POSITIVE_INFINITY);
     });
 
-    it('hard shutdown kills children and marks jobs as error', async () => {
+    it('hard shutdown completes after child absence is confirmed and marks jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
-      const terminateAllFn = vi.fn();
+      const terminateAllFn = vi.fn(async () => ({ kind: 'all-observed-absent' as const }));
       const providerHostManager = createFakeProviderHostManager();
 
       const backend = await startBackendServer({

@@ -11,6 +11,7 @@ import type { StoreServicesRef } from './composition/store-services-ref.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
+import type { TerminateAllDisposition } from './live/admission.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -63,7 +64,7 @@ type RunShutdownSequenceContext = {
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
-  terminateAllFn: () => void;
+  terminateAllFn: () => void | TerminateAllDisposition | Promise<TerminateAllDisposition>;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   disposeLifecycleReactor: () => void | Promise<void>;
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
@@ -189,6 +190,31 @@ type ShutdownFailure = {
   readonly label: string;
   readonly error: unknown;
 };
+
+type UnsettledChildProcess = Extract<TerminateAllDisposition, { kind: 'unsettled' }>['processes'][number];
+
+function unsettledChildProcessDetail(process: UnsettledChildProcess): string {
+  switch (process.kind) {
+    case 'signal-refused':
+      return `pid ${process.pid}: ${process.reason}`;
+    case 'signal-failed':
+      return `pid ${process.pid}: ${process.signal} ${process.reason}`;
+    case 'target-unobservable':
+    case 'target-alive':
+      return `pid ${process.pid}: ${process.kind} ${process.stage}`;
+  }
+}
+
+function childTerminationConfirmation(disposition: void | TerminateAllDisposition): ShutdownStepConfirmation {
+  if (disposition === undefined) {
+    return { confirmed: false, detail: 'termination returned no disposition' };
+  }
+  if (disposition.kind === 'all-observed-absent') return { confirmed: true };
+  return {
+    confirmed: false,
+    detail: disposition.processes.map(unsettledChildProcessDetail).join('; '),
+  };
+}
 
 function recordShutdownFailure(
   failures: ShutdownFailure[],
@@ -421,7 +447,9 @@ export async function runShutdownSequence({
         reapProviderProxySets(liveProxySets, signal),
       );
     }
-    await runStep('child termination', terminateAllFn);
+    await runRequiredBudgetedStep('child termination', async () =>
+      childTerminationConfirmation(await terminateAllFn()),
+    );
   } else {
     // Phase A2 is a durability fence, not a best-effort drain. Admission is
     // closed synchronously, then every write already admitted by the old daemon

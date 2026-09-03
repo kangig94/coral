@@ -117,8 +117,10 @@ function pidRuntime(
   incarnations: readonly (ProcessIncarnation | null)[],
   observeLiveness: () => ProcessLiveness = () => 'alive',
   platform: NodeJS.Platform = 'linux',
+  killResults: readonly boolean[] = [],
 ): { runtime: Runtime; killedSignals: NodeJS.Signals[] } {
   const remainingIncarnations = [...incarnations];
+  const remainingKillResults = [...killResults];
   const killedSignals: NodeJS.Signals[] = [];
   const runtime = {
     time,
@@ -126,7 +128,7 @@ function pidRuntime(
     process: {
       kill: (_pid: number, signal: NodeJS.Signals) => {
         killedSignals.push(signal);
-        return true;
+        return remainingKillResults.shift() ?? true;
       },
       observeLiveness,
       readProcessIncarnation: () => remainingIncarnations.shift() ?? null,
@@ -143,7 +145,7 @@ describe('gracefulKillByPid', () => {
     const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation]);
 
     const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
-    expect(disposition).toEqual({ kind: 'escalation-scheduled', pid: 4_242 });
+    expect(disposition).toMatchObject({ kind: 'escalation-scheduled', pid: 4_242 });
     expect(killedSignals).toEqual(['SIGTERM']);
 
     time.tick(SIGTERM_GRACE_MS);
@@ -248,5 +250,73 @@ describe('gracefulKillByPid', () => {
       reason: 'platform-incarnation-cannot-authorize-signal',
     });
     expect(killedSignals).toEqual([]);
+  });
+
+  it('reports when SIGTERM could not be delivered', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation], () => 'alive', 'linux', [false]);
+
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
+
+    expect(disposition).toEqual({
+      kind: 'signal-failed',
+      pid: 4_242,
+      signal: 'SIGTERM',
+      reason: 'kill-port-returned-false',
+    });
+    expect(killedSignals).toEqual(['SIGTERM']);
+    time.tick(SIGTERM_GRACE_MS);
+    expect(killedSignals).toEqual(['SIGTERM']);
+  });
+
+  it('reports when SIGKILL could not be delivered', async () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation], () => 'alive', 'linux', [
+      true,
+      false,
+    ]);
+
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
+    if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
+    time.tick(SIGTERM_GRACE_MS);
+
+    await expect(disposition.settlement).resolves.toEqual({
+      kind: 'signal-failed',
+      pid: 4_242,
+      signal: 'SIGKILL',
+      reason: 'kill-port-returned-false',
+    });
+    expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('settles only after absence is observed following escalation', async () => {
+    const time = new VirtualTime();
+    const liveness = ['alive', 'alive', 'absent'] satisfies ProcessLiveness[];
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation, null], () => {
+      return liveness.shift() ?? 'absent';
+    });
+
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
+    if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
+    time.tick(SIGTERM_GRACE_MS);
+
+    await expect(disposition.settlement).resolves.toEqual({ kind: 'observed-absent', pid: 4_242 });
+    expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('reports an observed-live target after SIGKILL is delivered', async () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, Array<ProcessIncarnation>(10).fill(incarnation));
+
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
+    if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
+    time.tick(SIGTERM_GRACE_MS);
+
+    await expect(disposition.settlement).resolves.toEqual({
+      kind: 'target-alive',
+      pid: 4_242,
+      stage: 'after-sigkill',
+    });
+    expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 });

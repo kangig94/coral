@@ -461,7 +461,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: () => {},
       markJobsAsErrorFn: () => {},
-      terminateAllFn: () => {},
+      terminateAllFn: () => ({ kind: 'all-observed-absent' }),
       providerHostManager: createFakeProviderHostManager() as never,
       kbDaemonSupervisor,
       handoffQuiescePorts: () => [],

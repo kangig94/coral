@@ -524,7 +524,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         process.kill(pid, signal);
         return true;
       } catch {
-        /* already dead */
         return false;
       }
     },
