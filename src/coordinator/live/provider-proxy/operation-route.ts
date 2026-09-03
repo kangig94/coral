@@ -82,6 +82,46 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
   buildOperationControl(operation: OperationIdentity): OperationStopControl;
 }
 
+const operationControlHolds = new WeakSet<DurableProviderProxyOperationAuthority>();
+const operationControlStateKey: unique symbol = Symbol('provider-proxy-operation-control-state');
+type ProviderProxyOperationControlState = { held: boolean };
+type FencedProviderProxyOperationAuthority = DurableProviderProxyOperationAuthority & {
+  [operationControlStateKey]: ProviderProxyOperationControlState;
+};
+
+function operationControlState(
+  authority: DurableProviderProxyOperationAuthority,
+): ProviderProxyOperationControlState | null {
+  return (
+    (
+      authority as DurableProviderProxyOperationAuthority & {
+        [operationControlStateKey]?: ProviderProxyOperationControlState;
+      }
+    )[operationControlStateKey] ?? null
+  );
+}
+
+class ProviderProxyOperationControlHeldError extends Error {
+  readonly code = 'operation-control-outcome-unknown';
+
+  constructor() {
+    super('Provider proxy operation control is held because a prior mutation outcome is unknown.');
+    this.name = 'ProviderProxyOperationControlHeldError';
+    Object.setPrototypeOf(this, ProviderProxyOperationControlHeldError.prototype);
+  }
+}
+
+/** A held authority may perform observation and recovery, but may not dispatch another operation mutation. */
+export function holdProviderProxyOperationControl(authority: DurableProviderProxyOperationAuthority): void {
+  operationControlHolds.add(authority);
+  const state = operationControlState(authority);
+  if (state !== null) state.held = true;
+}
+
+export function providerProxyOperationControlIsHeld(authority: DurableProviderProxyOperationAuthority): boolean {
+  return operationControlHolds.has(authority) || operationControlState(authority)?.held === true;
+}
+
 type ProviderProxyControlEstablishedListener = (authority: DurableProviderProxyOperationAuthority) => void;
 const controlEstablishedListeners = new Set<ProviderProxyControlEstablishedListener>();
 
@@ -135,6 +175,7 @@ export function createProviderProxyOperationAuthority(deps: {
   faults: ProviderProxyAuthorityFaultLatch;
   mutationRpcTimeoutMs: number;
 }): DurableProviderProxyOperationAuthority {
+  const controlState: ProviderProxyOperationControlState = { held: false };
   const activationDeps: ProviderProxyOperationActivationDeps = {
     proxyClient: deps.clients.proxy,
     guardianClient: deps.clients.guardian,
@@ -143,8 +184,16 @@ export function createProviderProxyOperationAuthority(deps: {
     faultAuthority: deps.faults.latch,
     reportIncident: deps.faults.reportIncident,
   };
-  const authority: DurableProviderProxyOperationAuthority = {
+  // Declared as a hoisted function so `authority` below can be `const`: the body reads it only when a
+  // dispatch actually runs, long after the binding is initialized.
+  function dispatchMutation<Result>(send: () => Promise<Result>): Promise<Result> {
+    return providerProxyOperationControlIsHeld(authority)
+      ? Promise.reject(new ProviderProxyOperationControlHeldError())
+      : send();
+  }
+  const authority: FencedProviderProxyOperationAuthority = {
     ...deps.base,
+    [operationControlStateKey]: controlState,
     get autonomousDeadline() {
       return deps.base.autonomousDeadline;
     },
@@ -168,18 +217,26 @@ export function createProviderProxyOperationAuthority(deps: {
       });
     },
     setIdentity: deps.setIdentity,
-    prepareOperation: (attempt) => prepareProviderOperation(activationDeps, attempt),
+    registerSuccessionOperation: (...args) => dispatchMutation(() => deps.base.registerSuccessionOperation(...args)),
+    prepareOperation: (attempt) => dispatchMutation(() => prepareProviderOperation(activationDeps, attempt)),
     inspectOperation: (operation, prepareAttemptKey) =>
       inspectProviderOperation(activationDeps, operation, prepareAttemptKey),
-    authorizeOperation: (operation, evidence) => authorizeProviderOperation(activationDeps, operation, evidence),
-    activatePreparedOperation: (operation, evidence) => activateProviderOperation(activationDeps, operation, evidence),
+    authorizeOperation: (operation, evidence) =>
+      dispatchMutation(() => authorizeProviderOperation(activationDeps, operation, evidence)),
+    activatePreparedOperation: (operation, evidence) =>
+      dispatchMutation(() => activateProviderOperation(activationDeps, operation, evidence)),
     attachOperation: (operation, committedThroughProviderSeq) =>
-      attachProviderOperation(activationDeps, operation, committedThroughProviderSeq),
+      dispatchMutation(() => attachProviderOperation(activationDeps, operation, committedThroughProviderSeq)),
     cancelOperation: (operation, prepareAttemptNumber, prepareAttemptKey) =>
-      cancelProviderOperation(activationDeps, operation, prepareAttemptNumber, prepareAttemptKey),
+      dispatchMutation(() =>
+        cancelProviderOperation(activationDeps, operation, prepareAttemptNumber, prepareAttemptKey),
+      ),
     settleOperation: (operation, finalProviderSeq) =>
-      settleProviderOperation(activationDeps, operation, finalProviderSeq),
-    buildOperationControl: (operation) => buildProviderOperationControl(activationDeps, operation),
+      dispatchMutation(() => settleProviderOperation(activationDeps, operation, finalProviderSeq)),
+    buildOperationControl: (operation) => {
+      const control = buildProviderOperationControl(activationDeps, operation);
+      return { stop: (cause) => dispatchMutation(() => control.stop(cause)) };
+    },
   };
   return authority;
 }

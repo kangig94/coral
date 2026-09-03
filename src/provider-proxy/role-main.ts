@@ -381,8 +381,7 @@ async function reapUnheldOrdinaryProcess<Scope extends symbol>(
   await reapUnheldTarget(identity.pid, `pid=${identity.pid}`, clock, environment);
 }
 
-/** A wake later than the model's enforcement bound, or a reap that failed outright — exit code for the
- *  latter, distinct from the `0` a confirmed `containment-absent` exits with. */
+/** A non-zero exit must not be read as confirmed containment absence. */
 const ROLE_ENFORCEMENT_FAILURE_EXIT_CODE = 1;
 const ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS = 5;
 const ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS = 1_000;
@@ -414,7 +413,7 @@ function unattributableRetryDelayMs(attempts: number): number {
 }
 
 /**
- * Unattributable outcomes must keep the role alive unless explicit operator authority abandons the hold.
+ * Outcomes without confirmed absence must keep the role alive unless explicit operator authority abandons the hold.
  * Only confirmed absence may mark the deadline model exited. Close-and-exit must remain deferred so an
  * in-flight control response can reach its caller before the role closes its sockets.
  */
@@ -432,12 +431,15 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   };
 
   const handleOutcome = (outcome: EnforcementOutcome): void => {
-    if (outcome.kind === 'recorded-group-unattributable') {
+    if (outcome.kind !== 'containment-absent') {
       if (unattributableAbandoned) return;
+      if (outcome.kind === 'reap-failed') {
+        backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
+      }
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
       if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
         enforcementHoldStatus = enforcementHoldStatusSchema.parse({
-          kind: outcome.kind,
+          kind: 'recorded-group-unattributable',
           attempts,
           roleIdentity: { role: options.role, ...options.roleIdentity },
           retry: { state: 'operator-action-required' },
@@ -446,7 +448,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       }
       const delayMs = unattributableRetryDelayMs(attempts);
       enforcementHoldStatus = enforcementHoldStatusSchema.parse({
-        kind: outcome.kind,
+        kind: 'recorded-group-unattributable',
         attempts,
         roleIdentity: { role: options.role, ...options.roleIdentity },
         retry: { state: 'scheduled', nextProbeAtMs: options.now() + delayMs },
@@ -469,13 +471,8 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
     }
 
     enforcementHoldStatus = null;
-    if (outcome.kind === 'containment-absent') {
-      options.deadlines.markExited();
-      closeAndExit(0);
-      return;
-    }
-    backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
-    closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+    options.deadlines.markExited();
+    closeAndExit(0);
   };
 
   return {
@@ -727,7 +724,7 @@ export async function startProviderGuardianRole(
           await closeGuardian();
           return {
             kind: 'settled',
-            outcome: { kind: 'reap-failed', reason: 'no containment was recorded to reap' },
+            outcome: { kind: 'containment-absent', disappearanceReceipt: 'no-containment-recorded' },
           };
         }
         // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
@@ -803,10 +800,10 @@ export async function startProviderReaperRole(
     giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
       const armed = reaperRef.enforcer();
       if (armed === null) {
-        const outcome = { kind: 'reap-failed', reason: 'no containment was recorded to reap' } as const;
+        const outcome = { kind: 'containment-absent', disappearanceReceipt: 'no-containment-recorded' } as const;
         await close()
           .catch((error: unknown) => backendLog.error('reaper: close on exit failed', error))
-          .finally(() => exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE));
+          .finally(() => exitProcess(0));
         return { kind: 'settled', outcome };
       }
       // A fresh capability, minted here inside the signal handler itself: this process was signalled, and

@@ -143,6 +143,7 @@ const RESET_SCENARIO: SimulationDocument = {
   steps: [
     { type: 'boot' },
     { type: 'launch', provider: 'codex', prompt: 'simulate clean reset world' },
+    { type: 'advance', ms: 5 },
     { type: 'cycle' },
     {
       type: 'expect',
@@ -364,13 +365,13 @@ describe('deterministic simulation lifecycle replay', () => {
     worlds.push(world);
 
     expect(result.passed).toBe(true);
-    expect(result.steps[2]).toMatchObject({
+    expect(result.steps[3]).toMatchObject({
       ok: true,
       detail: {
         generation: 1,
       },
     });
-    expect(result.steps[3]).toMatchObject({
+    expect(result.steps[4]).toMatchObject({
       ok: true,
       actual: {
         jobCount: 0,
@@ -379,7 +380,7 @@ describe('deterministic simulation lifecycle replay', () => {
     });
 
     const firstLaunch = getLaunchReceipt(result.steps[1]);
-    const secondLaunch = getLaunchReceipt(result.steps[4]);
+    const secondLaunch = getLaunchReceipt(result.steps[5]);
 
     expect(secondLaunch).toMatchObject({
       jobId: firstLaunch.jobId,

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-import { SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
+import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
 import { gracefulKill, gracefulKillByPid } from '#src/infra/process-supervision.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
@@ -299,6 +299,17 @@ describe('gracefulKillByPid', () => {
     const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
     if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
     time.tick(SIGTERM_GRACE_MS);
+    let settled = false;
+    void disposition.settlement.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    time.tick(SIGKILL_GRACE_MS - 1);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    time.tick(1);
 
     await expect(disposition.settlement).resolves.toEqual({ kind: 'observed-absent', pid: 4_242 });
     expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
@@ -311,6 +322,7 @@ describe('gracefulKillByPid', () => {
     const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
     if (disposition.kind !== 'escalation-scheduled') throw new Error('expected SIGTERM delivery');
     time.tick(SIGTERM_GRACE_MS);
+    time.tick(SIGKILL_GRACE_MS);
 
     await expect(disposition.settlement).resolves.toEqual({
       kind: 'target-alive',

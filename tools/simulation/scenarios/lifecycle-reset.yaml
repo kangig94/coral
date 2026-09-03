@@ -16,6 +16,8 @@ steps:
   - type: boot
   - type: launch
     prompt: simulate clean reset world
+  - type: advance
+    ms: 5
   - type: cycle
   - type: expect
     jobCount: 0

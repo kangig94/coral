@@ -1,4 +1,4 @@
-import { MAX_BUFFER, SIGTERM_GRACE_MS } from './process-constants.js';
+import { MAX_BUFFER, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from './process-constants.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation, type ProcessLiveness } from './node-process.js';
 import type { ChildProcessLike, TimePort } from './port-types.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -87,11 +87,22 @@ function settleAfterSigkill(
   pid: number,
   platform: NodeJS.Platform,
   expectedIncarnation: ProcessIncarnation,
-): GracefulKillByPidOutcome {
-  const observation = observeRecordedTarget(runtime, pid, platform, expectedIncarnation);
-  if (observation === 'absent') return { kind: 'observed-absent', pid };
-  if (observation === 'unobservable') return { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
-  return { kind: 'target-alive', pid, stage: 'after-sigkill' };
+): Promise<GracefulKillByPidOutcome> {
+  return new Promise((resolve) => {
+    const settlement = runtime.time.setTimeout(() => {
+      const observation = observeRecordedTarget(runtime, pid, platform, expectedIncarnation);
+      if (observation === 'absent') {
+        resolve({ kind: 'observed-absent', pid });
+        return;
+      }
+      if (observation === 'unobservable') {
+        resolve({ kind: 'target-unobservable', pid, stage: 'after-sigkill' });
+        return;
+      }
+      resolve({ kind: 'target-alive', pid, stage: 'after-sigkill' });
+    }, SIGKILL_GRACE_MS);
+    settlement.unref?.();
+  });
 }
 
 function settleGracefulKillByPid(

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
+import type { TerminateAllDisposition } from '#src/coordinator/live/admission.js';
 import type {
   ProviderProxyAuthorityRegistry,
   ProviderProxySetAuthority,
@@ -258,10 +259,10 @@ describe('runShutdownSequence drain budget', () => {
     );
   });
 
-  it('fails hard shutdown and names a durable child still alive after escalation', async () => {
+  it('fails hard shutdown and names a durable child that required retry after escalation', async () => {
     const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
     harness.ctx.terminateAllFn = async () => ({
-      kind: 'unsettled',
+      kind: 'all-observed-absent-after-retry',
       processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
     });
 
@@ -271,10 +272,10 @@ describe('runShutdownSequence drain budget', () => {
     expect(detail).toContain('pid 4242: target-alive after-sigkill');
   });
 
-  it('fails hard shutdown and names a durable child whose signal authority is unavailable', async () => {
+  it('fails hard shutdown and names unavailable signal authority that required retry', async () => {
     const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
     harness.ctx.terminateAllFn = async () => ({
-      kind: 'unsettled',
+      kind: 'all-observed-absent-after-retry',
       processes: [
         {
           kind: 'signal-refused',
@@ -288,6 +289,37 @@ describe('runShutdownSequence drain budget', () => {
 
     expect(detail).toContain("Required shutdown step 'child termination' unconfirmed");
     expect(detail).toContain('pid 4243: recorded-incarnation-unavailable');
+  });
+
+  it('retains shutdown ownership after the budget until child disposal settles', async () => {
+    const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
+    let settleTermination!: (disposition: TerminateAllDisposition) => void;
+    harness.ctx.terminateAllFn = () =>
+      new Promise<TerminateAllDisposition>((resolve) => {
+        settleTermination = resolve;
+      });
+
+    let completed = false;
+    const sequence = runShutdownSequence(harness.ctx)
+      .catch((error: unknown) => error)
+      .finally(() => {
+        completed = true;
+      });
+    await flush(64);
+    harness.time.tick(SHUTDOWN_DRAIN_TIMEOUT_MS);
+    await flush(64);
+
+    expect(completed).toBe(false);
+    expect(harness.closeIpcCalled()).toBe(false);
+
+    settleTermination({
+      kind: 'all-observed-absent-after-retry',
+      processes: [{ kind: 'target-alive', pid: 4_244, stage: 'after-sigkill' }],
+    });
+    await flush(64);
+
+    await expect(sequence).resolves.toBeInstanceOf(AggregateError);
+    expect(harness.closeIpcCalled()).toBe(true);
   });
 
   it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {

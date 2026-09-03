@@ -15,7 +15,10 @@ import {
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
-import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
+import {
+  holdProviderProxyOperationControl,
+  type DurableProviderProxyOperationAuthority,
+} from '../../live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
 import {
   closeProviderProxyAcquisitionSession,
@@ -195,6 +198,7 @@ type ControlReattachmentWindow = {
 
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'reattaching' | 'reattachment-hold' | 'containing' | 'containment-wait';
+  operationControlState: 'operational' | 'outcome-unknown';
   key: ProviderProxySetKey;
   identity: ProviderProxySetIdentity;
   address: ProviderProxySetAddress;
@@ -932,7 +936,11 @@ export class ProviderProxySetLifecycle {
     const key = this.#routeIndex.get(routeKey);
     if (key === undefined) return null;
     const slot = this.#slots.get(key);
-    return slot?.kind === 'available' && slot.capacityClass === 'retained' ? slot.authority : null;
+    return slot?.kind === 'available' &&
+      slot.capacityClass === 'retained' &&
+      slot.operationControlState === 'operational'
+      ? slot.authority
+      : null;
   }
 
   authorityFor(identity: ProviderProxySetIdentity): DurableProviderProxyOperationAuthority | null {
@@ -949,6 +957,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'containment-wait' ||
       slot.kind === 'absence-delivery-pending' ||
       slot.kind === 'abandonment-delivery-pending' ||
+      slot.operationControlState === 'outcome-unknown' ||
       !providerProxySetIdentitiesEqual(slot.identity, identity)
     ) {
       return null;
@@ -1073,7 +1082,8 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'absence-delivery-pending' ||
       slot.kind === 'abandonment-delivery-pending' ||
       slot.authority !== authority ||
-      slot.attemptToken !== token
+      slot.attemptToken !== token ||
+      slot.operationControlState === 'outcome-unknown'
     ) {
       return;
     }
@@ -2140,6 +2150,7 @@ export class ProviderProxySetLifecycle {
     }
     const slot: EstablishedSlot = {
       kind: 'available',
+      operationControlState: 'operational',
       key,
       identity,
       address: providerProxySetAddress(identity),
@@ -2419,6 +2430,7 @@ export class ProviderProxySetLifecycle {
     slot.attemptToken += 1;
     const promotedToken = slot.attemptToken;
     slot.authority = promoted;
+    slot.operationControlState = 'operational';
     this.#subscribeAuthority(slot, promoted, promotedToken);
     void oldAuthority.initiateControlClose().catch((error: unknown) => {
       this.#deps.onError?.(`Displaced provider proxy control close failed: ${singleLineErrorSummary(error)}`);
@@ -3346,17 +3358,13 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  /**
-   * `operation-control-failed` with live claims present. `ProviderProxyAuthorityFault`'s member of this kind
-   * is always a `ContainmentRequiredControlCallPolicy` mutation, never a retry-safe one — those stay on the
-   * non-consuming incident channel (`#recordAuthorityIncident`'s `preserve` branch) and never reach here.
-   * The route is removed so no further mutation is dispatched through it; claims, routing eligibility
-   * otherwise, and reconciliation ownership are unchanged.
-   */
+  /** Unknown mutation outcomes must fence both future lookup and every retained reference to this authority. */
   #holdOperationControlIndeterminate(
     slot: EstablishedSlot,
     fault: Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>,
   ): void {
+    slot.operationControlState = 'outcome-unknown';
+    holdProviderProxyOperationControl(slot.authority);
     this.#removeRoute(slot);
     slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
     const decision: ProviderProxySetContainmentRefusedDecision = {

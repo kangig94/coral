@@ -25,7 +25,11 @@ import {
 } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
-import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import {
+  createProviderProxyOperationAuthority,
+  providerProxyOperationControlIsHeld,
+  type DurableProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import {
   createOwnedProviderProxyAcquisitionControlSession,
@@ -2223,12 +2227,22 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
-  it('holds a claim-bearing indeterminate operation-control fault instead of stopping-and-reaping', () => {
+  it('holds a claim-bearing indeterminate operation-control fault and fences retained mutation authority', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
-    const authority = fakeAuthority({ record, stopAndReap });
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const base = fakeAuthority({ record, stopAndReap });
+    const underlyingAuthority = createProviderProxyOperationAuthority({
+      base: base as never,
+      setIdentity: base.setIdentity,
+      clients: {} as never,
+      faults,
+      mutationRpcTimeoutMs: 1_000,
+    });
+    const authority: DurableProviderProxyOperationAuthority = { ...underlyingAuthority };
+    const retainedControl = underlyingAuthority.buildOperationControl(record.operation);
     const reportLifecycle = vi.fn();
     const lifecycle = lifecycleFor({
       claims,
@@ -2242,13 +2256,22 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
-    latchAuthorityFault(authority, {
+    faults.latch({
       kind: 'operation-control-failed',
       policy: containmentOperationPolicy,
       error: 'mutation outcome unknown',
     });
 
     expect(stopAndReap).not.toHaveBeenCalled();
+    expect(providerProxyOperationControlIsHeld(authority)).toBe(true);
+    expect(providerProxyOperationControlIsHeld(underlyingAuthority)).toBe(true);
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+    await expect(underlyingAuthority.cancelOperation(record.operation, 1, 'b'.repeat(64))).rejects.toMatchObject({
+      code: 'operation-control-outcome-unknown',
+    });
+    await expect(retainedControl.stop('user_abort')).rejects.toMatchObject({
+      code: 'operation-control-outcome-unknown',
+    });
     expect(lifecycle.snapshot().states).toEqual(['available']);
     expect(reportLifecycle.mock.calls).toEqual([
       [

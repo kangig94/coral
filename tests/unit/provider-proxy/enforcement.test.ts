@@ -332,7 +332,7 @@ describe('armed provider-proxy enforcer — pre-publication clock bound (unchang
     expect(harness.enforcer.recordedRoots()).toHaveLength(2);
   });
 
-  it('reports a reap failure rather than claiming absence', async () => {
+  it('holds a reap failure rather than claiming absence', async () => {
     // A recorded root that ignores both signals must not be reported as absent.
     const harness = createHarness({
       adoptionInMs: 0,
@@ -343,7 +343,7 @@ describe('armed provider-proxy enforcer — pre-publication clock bound (unchang
 
     const outcome = await harness.enforcer.stopAndReap(harness.mintExplicit());
 
-    expect(outcome).toMatchObject({ kind: 'settled', outcome: { kind: 'reap-failed' } });
+    expect(outcome).toMatchObject({ kind: 'holding', outcome: { kind: 'reap-failed' } });
     expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
   });
 

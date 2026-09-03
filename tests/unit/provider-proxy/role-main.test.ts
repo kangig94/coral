@@ -584,7 +584,7 @@ describe('runProviderRoleMain', () => {
     expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
-  it('closes and exits nonzero when a reaper is signalled before containment is recorded', async () => {
+  it('closes and exits cleanly when a reaper is signalled before any containment is recorded', async () => {
     const directory = scopedTempDir('coral-reaper-role-close-');
     enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(async (): Promise<never> => {
@@ -617,7 +617,7 @@ describe('runProviderRoleMain', () => {
     expect(reaperRoleCloseHarness.enforcer).toHaveBeenCalledOnce();
     expect(reaperRoleCloseHarness.reaperClose).toHaveBeenCalledOnce();
     expect(exitProcess).toHaveBeenCalledOnce();
-    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(exitProcess).toHaveBeenCalledWith(0);
     expect(reaperRoleCloseHarness.reaperClose.mock.invocationCallOrder[0]).toBeLessThan(
       exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
@@ -777,10 +777,17 @@ describe('buildEnforcementOutcomeHandlers', () => {
     expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
-  it('exits nonzero without claiming the exited state on a reap-failed outcome', async () => {
+  it('holds a reap-failed outcome for retry instead of ending the role', async () => {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const markExited = vi.fn();
     const close = vi.fn(async () => undefined);
     const exitProcess = vi.fn();
+    const retryUnattributable = vi.fn(() =>
+      Promise.resolve<EnforcementOutcome>({
+        kind: 'reap-failed',
+        reason: 'still stuck',
+      }),
+    );
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'reaper',
       roleIdentity: { pid: 4102, incarnation: testIncarnation(4102) },
@@ -788,18 +795,23 @@ describe('buildEnforcementOutcomeHandlers', () => {
       close,
       exitProcess,
       now: () => 1_000,
-      retryUnattributable: () => null,
-      schedule: (callback) => callback(),
+      retryUnattributable,
+      schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
     });
 
     handlers.onOutcome({ kind: 'reap-failed', reason: 'stuck' });
-    await new Promise((resolve) => setImmediate(resolve));
+    scheduled.shift()?.callback();
 
-    // `markExited()` throws unless teardown actually confirmed absence; asserting it was never called is what
-    // tells this outcome apart from `containment-absent` rather than merely tolerating either.
+    expect(handlers.enforcementHoldStatus()).toMatchObject({
+      kind: 'recorded-group-unattributable',
+      attempts: 1,
+      retry: { state: 'scheduled' },
+    });
+    scheduled.shift()?.callback();
+    expect(retryUnattributable).toHaveBeenCalledOnce();
     expect(markExited).not.toHaveBeenCalled();
-    expect(close).toHaveBeenCalledOnce();
-    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
   });
 
   it('still exits when close() itself rejects', async () => {

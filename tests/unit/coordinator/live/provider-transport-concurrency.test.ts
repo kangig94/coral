@@ -210,13 +210,13 @@ describe('provider transport concurrency hardening', () => {
     await expect(handle.closePromise).resolves.toBeInstanceOf(Error);
   });
 
-  it('holds a durable child that finishes launching without a signal-authorizing identity', async () => {
+  it('joins a launch in flight and reports the retry required before absence', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
     runtime.spawner.enqueueDurable({
       pid: 30_001,
       runtimeDelayMs: 5,
-      exit: null,
+      exit: { delayMs: 20, exitCode: 0, signal: null },
     });
     const launchCoordinator = new LaunchCoordinator({ runtime });
 
@@ -231,11 +231,30 @@ describe('provider transport concurrency hardening', () => {
     );
     await flushMicrotasks();
 
-    await launchCoordinator.terminateAll();
+    const termination = observePromise(launchCoordinator.terminateAll());
+    expect(termination.settled).toBe(false);
+
     runtime.time.tick(5);
     await flushMicrotasks();
 
+    expect(termination.settled).toBe(false);
+    for (let attempt = 0; attempt < 4 && !termination.settled; attempt += 1) {
+      runtime.time.tick(50);
+      await flushMicrotasks(200);
+    }
+
     expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
+    expect(termination.settled).toBe(true);
+    expect(termination.value).toEqual({
+      kind: 'all-observed-absent-after-retry',
+      processes: [
+        {
+          kind: 'signal-refused',
+          pid: 30_001,
+          reason: 'recorded-incarnation-unavailable',
+        },
+      ],
+    });
     expect(observed.settled).toBe(false);
   });
 
@@ -254,10 +273,16 @@ describe('provider transport concurrency hardening', () => {
     );
     runtime.time.tick(0);
     await flushMicrotasks();
-    vi.spyOn(runtime.process, 'kill').mockReturnValue(false);
+    const kill = runtime.process.kill.bind(runtime.process);
+    vi.spyOn(runtime.process, 'kill').mockReturnValueOnce(false).mockImplementation(kill);
 
-    await expect(launchCoordinator.terminateAll()).resolves.toEqual({
-      kind: 'unsettled',
+    const termination = launchCoordinator.terminateAll();
+    await flushMicrotasks();
+    runtime.time.tick(50);
+    await flushMicrotasks(200);
+
+    await expect(termination).resolves.toEqual({
+      kind: 'all-observed-absent-after-retry',
       processes: [
         {
           kind: 'signal-failed',
@@ -271,7 +296,7 @@ describe('provider transport concurrency hardening', () => {
     const cleanupHandles = (
       launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }
     ).cleanupHandles;
-    expect(cleanupHandles.size).toBe(1);
+    expect(cleanupHandles.size).toBe(0);
     expect(observed.settled).toBe(false);
   });
 });

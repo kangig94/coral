@@ -64,7 +64,7 @@ type RunShutdownSequenceContext = {
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
-  terminateAllFn: () => void | TerminateAllDisposition | Promise<TerminateAllDisposition>;
+  terminateAllFn: () => TerminateAllDisposition | Promise<TerminateAllDisposition>;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   disposeLifecycleReactor: () => void | Promise<void>;
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
@@ -141,35 +141,38 @@ export class RequiredShutdownStepError extends Error {
  */
 export type ShutdownStepConfirmation = Readonly<{ confirmed: true }> | Readonly<{ confirmed: false; detail: string }>;
 
-/**
- * A budgeted step whose failure is fatal to the shutdown rather than best-effort.
- *
- * It differs from `withBudget` in exactly the ways a required step must: an exhausted budget, a lost race, a
- * rejection, and an unconfirmed result all throw instead of logging. The exhausted-budget case still invokes
- * the task once, with an already-aborted signal, because a step whose job is to *trigger* releases must
- * trigger them even when there is no time left to confirm them — skipping the call would leave controls and
- * sockets held by a process that is exiting anyway.
- */
+/** A timeout remains a failure, but it cannot release ownership when `settleBeforeReturn` is required. */
 async function withRequiredBudget(
   label: string,
   task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
   remainingDrain: () => number,
   time: Pick<TimePort, 'sleep'>,
+  settleBeforeReturn = false,
 ): Promise<void> {
   const budget = remainingDrain();
   if (budget <= 0) {
-    // Observed so a rejection is never unhandled, but deliberately not awaited: there is no budget to wait
-    // in, and the synchronous prefix of the task — the triggers — has already run by the time it returns.
-    void task(AbortSignal.abort()).catch(() => {});
+    const taskResult = task(AbortSignal.abort());
+    if (settleBeforeReturn) {
+      try {
+        await taskResult;
+      } catch (error: unknown) {
+        throw new RequiredShutdownStepError(label, 'rejected', formatError(error));
+      }
+    } else {
+      // Observed so a rejection is never unhandled, but deliberately not awaited: there is no budget to wait
+      // in, and the synchronous prefix of the task — the triggers — has already run by the time it returns.
+      void taskResult.catch(() => {});
+    }
     throw new RequiredShutdownStepError(label, 'budget-exhausted', 'no drain budget remained');
   }
   const timedOut = Symbol('timedOut');
   const taskAbort = new AbortController();
   const timeoutAbort = new AbortController();
+  const taskResult = task(taskAbort.signal);
   let result: ShutdownStepConfirmation | typeof timedOut;
   try {
     result = await Promise.race<ShutdownStepConfirmation | typeof timedOut>([
-      task(taskAbort.signal),
+      taskResult,
       time.sleep(budget, { signal: timeoutAbort.signal }).then(() => timedOut),
     ]);
   } catch (error: unknown) {
@@ -179,6 +182,13 @@ async function withRequiredBudget(
   }
   if (result === timedOut) {
     taskAbort.abort();
+    if (settleBeforeReturn) {
+      try {
+        await taskResult;
+      } catch (error: unknown) {
+        throw new RequiredShutdownStepError(label, 'rejected', formatError(error));
+      }
+    }
     throw new RequiredShutdownStepError(label, 'timed-out', `exceeded ${budget}ms`);
   }
   if (!result.confirmed) {
@@ -191,9 +201,12 @@ type ShutdownFailure = {
   readonly error: unknown;
 };
 
-type UnsettledChildProcess = Extract<TerminateAllDisposition, { kind: 'unsettled' }>['processes'][number];
+type RetriedChildProcess = Extract<
+  TerminateAllDisposition,
+  { kind: 'all-observed-absent-after-retry' }
+>['processes'][number];
 
-function unsettledChildProcessDetail(process: UnsettledChildProcess): string {
+function retriedChildProcessDetail(process: RetriedChildProcess): string {
   switch (process.kind) {
     case 'signal-refused':
       return `pid ${process.pid}: ${process.reason}`;
@@ -205,14 +218,11 @@ function unsettledChildProcessDetail(process: UnsettledChildProcess): string {
   }
 }
 
-function childTerminationConfirmation(disposition: void | TerminateAllDisposition): ShutdownStepConfirmation {
-  if (disposition === undefined) {
-    return { confirmed: false, detail: 'termination returned no disposition' };
-  }
+function childTerminationConfirmation(disposition: TerminateAllDisposition): ShutdownStepConfirmation {
   if (disposition.kind === 'all-observed-absent') return { confirmed: true };
   return {
     confirmed: false,
-    detail: disposition.processes.map(unsettledChildProcessDetail).join('; '),
+    detail: `absence required retry after ${disposition.processes.map(retriedChildProcessDetail).join('; ')}`,
   };
 }
 
@@ -386,7 +396,9 @@ export async function runShutdownSequence({
   const runRequiredBudgetedStep = (
     label: string,
     task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
-  ): Promise<void> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
+    settleBeforeReturn = false,
+  ): Promise<void> =>
+    runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time, settleBeforeReturn));
   // `liveSets()` is a call-time snapshot, not a live cursor (see its doc): reading it again after this
   // shutdown has itself reaped some of what it returned is not guaranteed to exclude those sets, which would
   // let an already-torn-down set re-enter a later required step and fail it a second time for the same
@@ -447,8 +459,10 @@ export async function runShutdownSequence({
         reapProviderProxySets(liveProxySets, signal),
       );
     }
-    await runRequiredBudgetedStep('child termination', async () =>
-      childTerminationConfirmation(await terminateAllFn()),
+    await runRequiredBudgetedStep(
+      'child termination',
+      async () => childTerminationConfirmation(await terminateAllFn()),
+      true,
     );
   } else {
     // Phase A2 is a durability fence, not a best-effort drain. Admission is

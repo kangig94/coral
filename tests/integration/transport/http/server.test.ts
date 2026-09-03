@@ -5987,7 +5987,7 @@ describe('execution backend server', () => {
   describe('shutdown policy', () => {
     it('handoff shutdown preserves children and does not mark jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
-      const terminateAllFn = vi.fn();
+      const terminateAllFn = vi.fn(() => ({ kind: 'all-observed-absent' as const }));
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
@@ -6098,7 +6098,7 @@ describe('execution backend server', () => {
           removeBackendInfoIfOwnerFn: () => {},
           cleanupStaleJobsFn: () => {},
           markJobsAsErrorFn: vi.fn(),
-          terminateAllFn: vi.fn(),
+          terminateAllFn: vi.fn(() => ({ kind: 'all-observed-absent' as const })),
           providerHostManager: providerHostManager as never,
           kbDaemonSupervisor,
           handoffQuiescePorts: () => [fakeService as never],

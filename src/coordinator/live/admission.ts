@@ -41,6 +41,8 @@ type PoolState = { active: Map<string, { provider: string; owner: ExecutionOwner
 
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
+const SHUTDOWN_LAUNCH_REJECTED_MESSAGE = 'Launch rejected because shutdown has begun';
+const TERMINATION_RETRY_INTERVAL_MS = 50;
 
 function unknownLaunchPool(pool: never): never {
   throw new Error(`Launch admission invariant violated: unknown pool ${JSON.stringify(pool)}.`);
@@ -56,12 +58,13 @@ export class DuplicateLaunchReservationError extends Error {
 export type TerminateAllDisposition =
   | Readonly<{ kind: 'all-observed-absent' }>
   | Readonly<{
-      kind: 'unsettled';
+      kind: 'all-observed-absent-after-retry';
       processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
     }>;
 
 export class LaunchCoordinator {
   private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
+  private readonly pendingDurableLaunches = new Set<Promise<void>>();
   private nextProviderServerGeneration = 1;
   private readonly pools: Record<LaunchPool, PoolState> = {
     default: { active: new Map(), queued: [] },
@@ -84,6 +87,7 @@ export class LaunchCoordinator {
   }
 
   requestLaunch(jobId: string, provider: string, owner: ExecutionOwner, pool: LaunchPool = 'default'): AdmissionResult {
+    if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
     const activeLaunches = this.getActiveMap(pool);
     const queuedLaunches = this.getQueue(pool);
     this.rejectDuplicateReservation(jobId);
@@ -144,6 +148,7 @@ export class LaunchCoordinator {
     generation = this.allocateProviderServerGeneration(),
     recordContainment?: (containment: ContainedProviderServerHandle['containmentIdentity']) => void,
   ): Promise<ContainedProviderServerHandle> {
+    if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
     assertProviderHostPlatformSupported(this.runtime.env.platform());
     return spawnProviderServerTransport({
       runtime: this.runtime,
@@ -160,6 +165,7 @@ export class LaunchCoordinator {
   }
 
   spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
+    if (this.shutdownRequested) return this.rejectedPermitPromise(new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE));
     const pool = options.pool ?? 'default';
     let internalPermitJobId: string | null;
     try {
@@ -174,8 +180,8 @@ export class LaunchCoordinator {
       pool,
       internalPermitJobId,
       cleanupHandles: this.cleanupHandles,
+      pendingLaunches: this.pendingDurableLaunches,
       releaseLaunch: (jobId, nextPool) => this.releaseLaunch(jobId, nextPool),
-      shouldTerminateAfterLaunch: () => this.shutdownRequested,
     });
   }
 
@@ -209,39 +215,51 @@ export class LaunchCoordinator {
   async terminateAll(): Promise<TerminateAllDisposition> {
     this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
-    const failures: unknown[] = [];
-    const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
-    for (const cleanup of this.cleanupHandles.values()) {
-      try {
-        attempts.push({ cleanup, task: cleanup() });
-      } catch (error: unknown) {
-        failures.push(error);
+    const failures = new Map<DurableProcessCleanup, unknown>();
+    const unsettled = new Map<DurableProcessCleanup, Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>>();
+
+    while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
+      await Promise.all([...this.pendingDurableLaunches]);
+
+      const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
+      for (const cleanup of this.cleanupHandles.values()) {
+        try {
+          attempts.push({ cleanup, task: cleanup() });
+        } catch (error: unknown) {
+          failures.set(cleanup, error);
+        }
+      }
+      const outcomes = await Promise.allSettled(attempts.map(({ task }) => task));
+      for (const [index, outcome] of outcomes.entries()) {
+        const attempt = attempts[index];
+        if (attempt === undefined) continue;
+        if (outcome.status === 'rejected') {
+          failures.set(attempt.cleanup, outcome.reason);
+          continue;
+        }
+        if (outcome.value.kind !== 'observed-absent') {
+          unsettled.set(attempt.cleanup, outcome.value);
+          continue;
+        }
+        for (const [key, registeredCleanup] of this.cleanupHandles) {
+          if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
+        }
+      }
+
+      if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
+        await this.runtime.time.sleep(TERMINATION_RETRY_INTERVAL_MS);
       }
     }
-    const outcomes = await Promise.allSettled(attempts.map(({ task }) => task));
-    const unsettled: Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[] = [];
-    for (const [index, outcome] of outcomes.entries()) {
-      const attempt = attempts[index];
-      if (attempt === undefined) continue;
-      if (outcome.status === 'rejected') {
-        failures.push(outcome.reason);
-        continue;
-      }
-      if (outcome.value.kind !== 'observed-absent') {
-        unsettled.push(outcome.value);
-        continue;
-      }
-      for (const [key, registeredCleanup] of this.cleanupHandles) {
-        if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
-      }
-    }
-    if (failures.length > 0) {
+
+    if (failures.size > 0) {
       throw new AggregateError(
-        failures,
-        `Failed to terminate ${failures.length} active child process cleanup handle(s).`,
+        [...failures.values()],
+        `Child process cleanup required retries after ${failures.size} cleanup failure(s).`,
       );
     }
-    return unsettled.length === 0 ? { kind: 'all-observed-absent' } : { kind: 'unsettled', processes: unsettled };
+    return unsettled.size === 0
+      ? { kind: 'all-observed-absent' }
+      : { kind: 'all-observed-absent-after-retry', processes: [...unsettled.values()] };
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, { provider: string; owner: ExecutionOwner }> {

@@ -489,14 +489,23 @@ describe('launch admission', () => {
     const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
       .cleanupHandles;
     const cleanupKey = Symbol('refused-child');
-    cleanupHandles.set(cleanupKey, async () => ({
-      kind: 'signal-refused',
-      pid: TEST_PROVIDER_PID,
-      reason: 'recorded-incarnation-unavailable',
-    }));
+    let attempts = 0;
+    cleanupHandles.set(cleanupKey, async () => {
+      attempts += 1;
+      return attempts === 1
+        ? {
+            kind: 'signal-refused' as const,
+            pid: TEST_PROVIDER_PID,
+            reason: 'recorded-incarnation-unavailable' as const,
+          }
+        : { kind: 'observed-absent' as const, pid: TEST_PROVIDER_PID };
+    });
 
-    await expect(coordinator.terminateAll()).resolves.toEqual({
-      kind: 'unsettled',
+    const termination = coordinator.terminateAll();
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    await expect(termination).resolves.toEqual({
+      kind: 'all-observed-absent-after-retry',
       processes: [
         {
           kind: 'signal-refused',
@@ -505,7 +514,24 @@ describe('launch admission', () => {
         },
       ],
     });
-    expect(cleanupHandles.has(cleanupKey)).toBe(true);
+    expect(cleanupHandles.has(cleanupKey)).toBe(false);
+  });
+
+  it('refuses new admission after shutdown begins', async () => {
+    await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+
+    expect(() => coordinator.requestLaunch('late-job', 'codex', providerOwner('late-session'))).toThrow(
+      'Launch rejected because shutdown has begun',
+    );
+    await expect(
+      coordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/sim/jobs/late-job',
+        permitGranted: true,
+      }),
+    ).rejects.toThrow('Launch rejected because shutdown has begun');
   });
 
   it('releases cleanup ownership only after observed absence', async () => {

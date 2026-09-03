@@ -6,7 +6,10 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import type { ProviderProxyRecoveryProducerPorts } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
-import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import {
+  holdProviderProxyOperationControl,
+  type DurableProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
@@ -734,6 +737,45 @@ const cleanupRetryCases = [
     })) satisfies CancelOperation,
   },
 ] as const;
+
+describe('indeterminate operation-control hold', () => {
+  it('removes cancellation from ordinary retry until recovered control is supplied explicitly', async () => {
+    const cancelOperation = vi.fn<CancelOperation>(async () => {
+      holdProviderProxyOperationControl(harness.authority);
+      throw new Error('cancellation response was lost');
+    });
+    const harness = createHarness({ cancelOperation });
+    const initial = providerOperationRecord('prestart-cleanup-pending');
+    insertProviderOperation(harness.db, initial);
+
+    await harness.reconciler.reconcile(initial, harness.authority);
+
+    const held = readProviderOperation(harness.db, initial.operation);
+    expect(held).toMatchObject({
+      phase: 'prestart-cleanup-pending',
+      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+      lastError: { code: 'operation-control-outcome-unknown' },
+    });
+    if (held === null) throw new Error('indeterminate cancellation did not retain its operation record');
+
+    await harness.reconciler.reconcile(held);
+    expect(cancelOperation).toHaveBeenCalledOnce();
+
+    const recoveredCancel = vi.fn<CancelOperation>(async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber,
+      prepareAttemptKey,
+    }));
+    const recoveredAuthority: DurableProviderProxyOperationAuthority = {
+      ...harness.authority,
+      cancelOperation: recoveredCancel,
+    };
+
+    await harness.reconciler.reconcile(held, recoveredAuthority);
+    expect(recoveredCancel).toHaveBeenCalledOnce();
+  });
+});
 
 describe('provider host unserviceable refusal durability', () => {
   function expectStructuredTerminal(appended: readonly unknown[], message = hostUnserviceableRefusal.reason): void {

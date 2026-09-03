@@ -787,7 +787,7 @@ export type LifecycleDeps = {
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
-  readonly terminateAllFn: () => void | TerminateAllDisposition | Promise<TerminateAllDisposition>;
+  readonly terminateAllFn: () => TerminateAllDisposition | Promise<TerminateAllDisposition>;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   /**
    * The live guardian/reaper/proxy sets, absent whenever the composition layer had no real acquisition path

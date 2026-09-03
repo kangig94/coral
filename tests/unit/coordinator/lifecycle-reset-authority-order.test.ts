@@ -782,7 +782,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
   });
 
-  it('continues child cleanup and retains the failed handle when one cleanup throws', async () => {
+  it('continues child cleanup until a previously failed handle observes absence', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const launchCoordinator = new LaunchCoordinator({ runtime: baseDeps.runtime });
     const cleanupHandles = (
@@ -791,8 +791,11 @@ describe('lifecycle reset authority and finalizer order', () => {
       }
     ).cleanupHandles;
     const laterChildCleanup = vi.fn(async () => ({ kind: 'observed-absent' as const, pid: 4_243 }));
+    let throwingChildAttempts = 0;
     cleanupHandles.set(Symbol('throwing-child'), () => {
-      throw new Error('injected child cleanup failure');
+      throwingChildAttempts += 1;
+      if (throwingChildAttempts === 1) throw new Error('injected child cleanup failure');
+      return Promise.resolve({ kind: 'observed-absent', pid: 4_242 });
     });
     cleanupHandles.set(Symbol('later-child'), laterChildCleanup);
     const discussDispose = vi.fn();
@@ -809,7 +812,8 @@ describe('lifecycle reset authority and finalizer order', () => {
     await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
 
     expect(laterChildCleanup).toHaveBeenCalledOnce();
-    expect(cleanupHandles.size).toBe(1);
+    expect(throwingChildAttempts).toBe(2);
+    expect(cleanupHandles.size).toBe(0);
     expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
     expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
     expect(discussDispose).toHaveBeenCalledOnce();

@@ -31,15 +31,13 @@ async function requestDurableProcessTermination(
   pid: number,
   incarnation: ProcessIncarnation | null,
 ): Promise<GracefulKillByPidOutcome> {
-  const disposition = gracefulKillByPid(runtime, pid, incarnation);
-  const outcome = disposition.kind === 'escalation-scheduled' ? await disposition.settlement : disposition;
-  if (outcome.kind !== 'observed-absent') {
-    backendLog.warn(
-      `[durable-process:${pid}] Termination remains unsettled (${terminationOutcomeDetail(outcome)}); ` +
-        'the process remains owned.',
-    );
+  try {
+    if (runtime.process.observeLiveness(pid) === 'absent') return { kind: 'observed-absent', pid };
+  } catch {
+    // An unavailable liveness probe does not weaken the identity required to signal.
   }
-  return outcome;
+  const disposition = gracefulKillByPid(runtime, pid, incarnation);
+  return disposition.kind === 'escalation-scheduled' ? disposition.settlement : disposition;
 }
 
 export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
@@ -83,15 +81,28 @@ export async function spawnDurableJobTransport(params: {
   pool: LaunchPool;
   internalPermitJobId: string | null;
   cleanupHandles: Map<symbol, DurableProcessCleanup>;
+  pendingLaunches: Set<Promise<void>>;
   releaseLaunch: (jobId: string, pool: LaunchPool) => void;
-  shouldTerminateAfterLaunch?: () => boolean;
 }): Promise<CliExecResult> {
-  const { runtime, options, pool, cleanupHandles, releaseLaunch, shouldTerminateAfterLaunch } = params;
+  const { runtime, options, pool, cleanupHandles, pendingLaunches, releaseLaunch } = params;
   const { internalPermitJobId } = params;
   let abortHandler: (() => void) | null = null;
   let cleanupKey: symbol | null = null;
   let cleanupInFlight: Promise<GracefulKillByPidOutcome> | null = null;
   let durableExitObserved = false;
+  let lastUnsettledDetail: string | null = null;
+  let resolvePendingLaunch!: () => void;
+  let pendingLaunchOwned = true;
+  const pendingLaunch = new Promise<void>((resolve) => {
+    resolvePendingLaunch = resolve;
+  });
+  const releasePendingLaunch = (): void => {
+    if (!pendingLaunchOwned) return;
+    pendingLaunchOwned = false;
+    pendingLaunches.delete(pendingLaunch);
+    resolvePendingLaunch();
+  };
+  pendingLaunches.add(pendingLaunch);
 
   try {
     if (options.signal?.aborted) {
@@ -122,6 +133,13 @@ export async function spawnDurableJobTransport(params: {
         if (outcome.kind === 'observed-absent' && cleanupKey !== null) {
           cleanupHandles.delete(cleanupKey);
           cleanupKey = null;
+          lastUnsettledDetail = null;
+        } else if (outcome.kind !== 'observed-absent') {
+          const detail = terminationOutcomeDetail(outcome);
+          if (detail !== lastUnsettledDetail) {
+            backendLog.warn(`[durable-process:${durable.pid}] Termination remains unsettled (${detail}).`);
+            lastUnsettledDetail = detail;
+          }
         }
         return outcome;
       });
@@ -136,11 +154,7 @@ export async function spawnDurableJobTransport(params: {
       return cleanupInFlight;
     };
     cleanupHandles.set(cleanupKey, cleanup);
-    if (shouldTerminateAfterLaunch?.()) {
-      void cleanup().catch((error: unknown) => {
-        backendLog.warn(`[durable-process:${durable.pid}] Termination failed: ${errorMessage(error)}`);
-      });
-    }
+    releasePendingLaunch();
 
     let abortedBySignal = false;
     let runtimeRecord = durable.runtimeRecord;
@@ -230,6 +244,7 @@ export async function spawnDurableJobTransport(params: {
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
     }
   } finally {
+    releasePendingLaunch();
     if (durableExitObserved && cleanupKey !== null) {
       cleanupHandles.delete(cleanupKey);
     }

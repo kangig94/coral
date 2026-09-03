@@ -45,7 +45,10 @@ import {
   type ProviderOperationRecord,
   type ProviderOperationTerminalDirective,
 } from '../../store/provider-operation-record.js';
-import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
+import {
+  providerProxyOperationControlIsHeld,
+  type DurableProviderProxyOperationAuthority,
+} from '../live/provider-proxy/operation-route.js';
 import type { LocalOperationRegistry } from './operation-registry.js';
 import {
   providerOperationErrorCode,
@@ -418,6 +421,8 @@ function sameAuthority(record: ProviderOperationRecord, authority: DurableProvid
 function retryDelayMs(retryCount: number): number {
   return Math.min(TIMER_MIN_MS * 2 ** Math.min(retryCount, 6), TIMER_MAX_MS);
 }
+
+const OPERATION_CONTROL_OUTCOME_UNKNOWN = 'operation-control-outcome-unknown';
 
 function isProviderOperationRecoveryAcceptance(
   value: unknown,
@@ -957,15 +962,24 @@ export class ProviderOperationReconciler
     if (initial.phase === 'executing') {
       this.#attachments.set(operationKey(initial.operation), initial.operation);
     }
-    let authority =
-      preferredAuthority !== undefined && sameAuthority(initial, preferredAuthority) ? preferredAuthority : null;
+    const preferredOperationalAuthority =
+      preferredAuthority !== undefined &&
+      sameAuthority(initial, preferredAuthority) &&
+      !providerProxyOperationControlIsHeld(preferredAuthority)
+        ? preferredAuthority
+        : null;
+    let authority = preferredOperationalAuthority;
 
     for (let transitionCount = 0; transitionCount < 8 && record !== null; transitionCount += 1) {
       if (record.phase === 'local-recovery-pending') {
         record = await this.#driveLocalRecovery(record, signal ?? NEVER_ABORTS);
         continue;
       }
-      authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
+      if (record.lastError?.code === OPERATION_CONTROL_OUTCOME_UNKNOWN && authority === null) return;
+      authority =
+        authority !== null && sameAuthority(record, authority) && !providerProxyOperationControlIsHeld(authority)
+          ? authority
+          : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
         const acquired = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
         if (isTemporarilyUnavailableAcquisition(acquired)) {
@@ -1539,7 +1553,11 @@ export class ProviderOperationReconciler
         prepareAttemptKey: released.prepareAttemptKey,
       });
       if (verdict.kind !== 'released-never-started') {
-        await this.#recordRetry(record, new Error('Cancellation acknowledgement did not match the journal attempt.'));
+        await this.#recordRetry(
+          record,
+          new Error('Cancellation acknowledgement did not match the journal attempt.'),
+          providerProxyOperationControlIsHeld(authority),
+        );
         return null;
       }
       if (record.afterRelease.kind !== 'local-authorized') {
@@ -1550,7 +1568,7 @@ export class ProviderOperationReconciler
         this.#toLocalRecoveryPending(record, record.afterRelease.reason, this.#deps.time.now()),
       );
     } catch (error: unknown) {
-      await this.#recordRetry(record, error);
+      await this.#recordRetry(record, error, providerProxyOperationControlIsHeld(authority));
       return null;
     }
   }
@@ -2123,10 +2141,11 @@ export class ProviderOperationReconciler
     return deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
   }
 
-  async #recordRetry(record: ProviderOperationRecord, error: unknown): Promise<void> {
+  async #recordRetry(record: ProviderOperationRecord, error: unknown, operationControlHeld = false): Promise<void> {
     this.#assertActiveDrive();
     const now = this.#deps.time.now();
     const preserveHostRefusal =
+      !operationControlHeld &&
       record.phase === 'prestart-cleanup-pending' &&
       record.afterRelease.kind === 'terminal-failed' &&
       record.afterRelease.code === 'provider_host_unserviceable' &&
@@ -2135,17 +2154,17 @@ export class ProviderOperationReconciler
       ...record,
       revision: record.revision + 1,
       retryCount: record.retryCount + 1,
-      retryNotBeforeMs: now + retryDelayMs(record.retryCount),
+      retryNotBeforeMs: operationControlHeld ? Number.MAX_SAFE_INTEGER : now + retryDelayMs(record.retryCount),
       lastError: preserveHostRefusal
         ? record.lastError
         : {
             observedAtMs: now,
-            code: providerOperationErrorCode(error),
+            code: operationControlHeld ? OPERATION_CONTROL_OUTCOME_UNKNOWN : providerOperationErrorCode(error),
             message: providerOperationErrorReason(error),
           },
     });
     const transitioned = this.#transition(record, next);
-    if (transitioned !== null) this.#schedule(retryDelayMs(record.retryCount));
+    if (transitioned !== null && !operationControlHeld) this.#schedule(retryDelayMs(record.retryCount));
   }
 
   #complete(identity: ProviderOperationIdentity, result: AppServerProxyPlacementResult): void {

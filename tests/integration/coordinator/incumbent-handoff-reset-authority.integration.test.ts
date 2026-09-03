@@ -312,7 +312,7 @@ describe('incumbent handoff reset authority', () => {
         kbDaemonSupervisor: createMockKbDaemonSupervisor(),
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
-        terminateAllFn: () => {},
+        terminateAllFn: () => ({ kind: 'all-observed-absent' }),
         registerBuiltInProvidersFn: () => {},
         getConsumerStuck: () => {
           throw new Error('getConsumerStuck must not run before store services exist');

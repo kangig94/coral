@@ -41,8 +41,8 @@ export type EnforcementOutcome =
   | Readonly<{ kind: 'reap-failed'; reason: string }>
   | Readonly<{ kind: 'recorded-group-unattributable'; reason: string }>;
 
-type SettledEnforcementOutcome = Exclude<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
-type HoldingEnforcementOutcome = Extract<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
+type SettledEnforcementOutcome = Extract<EnforcementOutcome, { kind: 'containment-absent' }>;
+type HoldingEnforcementOutcome = Exclude<EnforcementOutcome, { kind: 'containment-absent' }>;
 
 type PairingLossContainmentObservation = 'absent' | 'present' | 'unobservable';
 
@@ -109,7 +109,7 @@ export type ArmedEnforcerOptions<Scope extends symbol> = Readonly<{
   acceleratedCheckMayAuthorizeAbsence: boolean;
   /** Only a permanent pairing loss may enable the independent containment-absence observation. */
   pairingLossObserved?(): boolean;
-  /** An unattributable outcome is non-terminal and may be reported again after a later probe. */
+  /** Any outcome without confirmed absence is non-terminal and may be reported again after a later probe. */
   onOutcome(outcome: EnforcementOutcome): void;
   /**
    * A wake later than the model's bound. Reported as the detected progress-premise failure it is — but it
@@ -144,7 +144,7 @@ export interface ArmedEnforcer {
   ): Promise<EnforcementConsumptionDisposition<ExplicitTeardownAuthorization>>;
   /** A local signal is irrevocable authority to attempt teardown, not to settle an unattributable result. */
   giveUp(authorization: LocalSignalTeardownAuthorization): Promise<LocalSignalTeardownDisposition>;
-  /** Re-observes a teardown-latched group only while an unattributable hold remains current. */
+  /** Re-observes a teardown-latched group only while an unconfirmed hold remains current. */
   retryUnattributable(): Promise<EnforcementOutcome> | null;
   /** Starts the independently scheduled loop. Idempotent. */
   arm(): void;
@@ -191,7 +191,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   let armedGeneration: symbol | null = null;
   let teardownInFlight: Promise<EnforcementOutcome> | null = null;
   let settledOutcome: SettledEnforcementOutcome | null = null;
-  let holdingUnattributable = false;
+  let holdingUnconfirmed = false;
   // The published-holder observation flow's own in-flight probe. A probe is bounded evidence-gathering, not
   // a destructive act, so it is safe to hold across ticks and safe to discard if a renewal supersedes it.
   let holderProbe: { forCheckAt: MonotonicInstant<Scope>; promise: Promise<HolderObservation<Scope>> } | null = null;
@@ -267,7 +267,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     }
   };
 
-  /** Concurrent teardown callers must join one reap; only an unattributable hold permits a later reap. */
+  /** Concurrent teardown callers must join one reap; only confirmed absence may prevent a later reap. */
   const teardown = (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
     if (handle !== null) {
       scheduler.cancel(handle);
@@ -275,10 +275,10 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     }
     if (settledOutcome !== null) return Promise.resolve(settledOutcome);
     if (teardownInFlight === null) {
-      holdingUnattributable = false;
+      holdingUnconfirmed = false;
       teardownInFlight = runTeardown(exitDeadline).then((outcome) => {
-        if (outcome.kind === 'recorded-group-unattributable') {
-          holdingUnattributable = true;
+        if (outcome.kind !== 'containment-absent') {
+          holdingUnconfirmed = true;
           teardownInFlight = null;
           onOutcome(outcome);
           return outcome;
@@ -296,9 +296,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       return { kind: 'authorization-superseded', authorization };
     }
     const outcome = await teardown(containmentExecutionDeadline(clock, clock.now()));
-    return outcome.kind === 'recorded-group-unattributable'
-      ? { kind: 'holding', outcome }
-      : { kind: 'settled', outcome };
+    return outcome.kind === 'containment-absent' ? { kind: 'settled', outcome } : { kind: 'holding', outcome };
   };
 
   const consumeExplicit = async (
@@ -308,9 +306,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       return { kind: 'authorization-superseded', authorization };
     }
     const outcome = await teardown(containmentExecutionDeadline(clock, clock.now()));
-    return outcome.kind === 'recorded-group-unattributable'
-      ? { kind: 'holding', outcome }
-      : { kind: 'settled', outcome };
+    return outcome.kind === 'containment-absent' ? { kind: 'settled', outcome } : { kind: 'holding', outcome };
   };
 
   const consumeLocalSignal = async (
@@ -320,9 +316,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     // capabilities above receive — there is no wake to have already spent: an actual OS signal is delivered
     // directly, not queued behind a not-before gate.
     const outcome = await teardown(clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS));
-    return outcome.kind === 'recorded-group-unattributable'
-      ? { kind: 'holding', outcome }
-      : { kind: 'settled', outcome };
+    return outcome.kind === 'containment-absent' ? { kind: 'settled', outcome } : { kind: 'holding', outcome };
   };
 
   const observationStartAt = (holderCheckAtInstant: MonotonicInstant<Scope>): MonotonicInstant<Scope> =>
@@ -498,7 +492,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     stopAndReap: consumeExplicit,
     giveUp: consumeLocalSignal,
     retryUnattributable(): Promise<EnforcementOutcome> | null {
-      if (!holdingUnattributable) return null;
+      if (!holdingUnconfirmed) return null;
       return teardown(containmentExecutionDeadline(clock, clock.now()));
     },
     arm(): void {
