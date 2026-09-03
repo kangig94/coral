@@ -679,6 +679,25 @@ export const controlTenancyHolderWireSchema = coordinatorIdentitySchema
   .pick({ instanceId: true, pid: true, incarnation: true })
   .strict();
 
+export const enforcementHoldStatusSchema = z
+  .object({
+    kind: z.literal('recorded-group-unattributable'),
+    attempts: z.number().int().safe().positive(),
+    roleIdentity: z
+      .object({
+        role: z.enum(['guardian', 'reaper']),
+        pid: nonNegativeSafeIntegerSchema,
+        incarnation: processIncarnationSchema,
+      })
+      .strict(),
+    retry: z.discriminatedUnion('state', [
+      z.object({ state: z.literal('scheduled'), nextProbeAtMs: nonNegativeSafeIntegerSchema }).strict(),
+      z.object({ state: z.literal('in-progress') }).strict(),
+      z.object({ state: z.literal('operator-action-required') }).strict(),
+    ]),
+  })
+  .strict();
+
 export const holderStatusResultSchema = z
   .object({
     disposition: holderStatusDispositionSchema,
@@ -687,6 +706,7 @@ export const holderStatusResultSchema = z
     controlEpoch: controlEpochSchema,
     transitionSequence: nonNegativeSafeIntegerSchema,
     changedAtMs: nonNegativeSafeIntegerSchema,
+    enforcementHold: enforcementHoldStatusSchema.nullable().default(null),
   })
   .strict();
 

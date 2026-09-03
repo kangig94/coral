@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +21,7 @@ const rotationDoubles = vi.hoisted(() => ({
   rehydrateBinding: vi.fn(),
   spawnProviderRoot: vi.fn(),
 }));
+const TEST_PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 
 vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ProxySetAcquisitionModule>();
@@ -578,7 +580,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   } as unknown as DurableProviderProxyOperationAuthority;
   const admission = lifecycle.beginFreshAcquisition('activation-route');
   if (admission.kind !== 'accepted') throw new Error('expected activation route admission');
-  lifecycle.acquisitionSucceeded(admission.slotId, authority);
+  lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
   return { lifecycle, authority, authorityFaults };
 }
 
@@ -1343,7 +1345,13 @@ describe('provider proxy cumulative root rotation', () => {
       (
         _entry: unknown,
         _environment: unknown,
-        onSettled: (outcome: Readonly<{ kind: 'acquired'; set: RotationSet['authority'] }>) => void,
+        onSettled: (
+          outcome: Readonly<{
+            kind: 'acquired';
+            set: RotationSet['authority'];
+            publicationReceipt: PublicationReceipt;
+          }>,
+        ) => void,
       ) => {
         const factory = factories.shift();
         if (factory === undefined) throw new Error('coordinator attempted to acquire a third rotation set');
@@ -1370,7 +1378,7 @@ describe('provider proxy cumulative root rotation', () => {
               rotationOrder.push('fresh-set-spawn');
               resolveFreshSet(set);
             }
-            onSettled({ kind: 'acquired', set: authority });
+            onSettled({ kind: 'acquired', set: authority, publicationReceipt: TEST_PUBLICATION_RECEIPT });
           },
           (error: unknown) => {
             throw error;

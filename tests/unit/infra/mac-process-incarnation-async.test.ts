@@ -8,13 +8,13 @@ vi.mock('node:child_process', () => ({ execFile: vi.fn() }));
 
 import { execFile } from 'node:child_process';
 
-import { probeProcessIncarnationAsync } from '#src/infra/node-process.js';
+import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, probeProcessIncarnationAsync } from '#src/infra/node-process.js';
 
 const mockedExecFile = vi.mocked(execFile);
 
 const BOOT_SESSION = '3F2504E0-4F89-11D3-9A0C-0305E82C3301';
 const LSTART = 'Fri Nov 14 09:41:00 2025';
-const BOUNDED = expect.objectContaining({ timeout: 2_000 });
+const BOUNDED = expect.objectContaining({ signal: expect.any(AbortSignal) });
 
 type Callback = (error: Error | null, stdout: string, stderr: string) => void;
 
@@ -54,6 +54,56 @@ describe('darwin process incarnation (async)', () => {
     );
   });
 
+  it('holds both sequential subprocesses to one end-to-end deadline', async () => {
+    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), milliseconds);
+      return controller.signal;
+    });
+    mockedExecFile.mockReset();
+    mockedExecFile.mockImplementation(((
+      file: string,
+      _args: string[],
+      options: { signal?: AbortSignal },
+      callback: Callback,
+    ) => {
+      const signal = options.signal;
+      if (signal === undefined) throw new Error('missing probe deadline');
+      const rejectAborted = (): void => callback(new Error('command aborted'), '', '');
+      if (signal.aborted) {
+        rejectAborted();
+        return {} as ReturnType<typeof execFile>;
+      }
+      signal.addEventListener('abort', rejectAborted, { once: true });
+      if (file === 'sysctl') {
+        setTimeout(() => {
+          signal.removeEventListener('abort', rejectAborted);
+          callback(null, BOOT_SESSION, '');
+        }, PROCESS_INCARNATION_PROBE_TIMEOUT_MS - 1);
+      }
+      return {} as ReturnType<typeof execFile>;
+    }) as unknown as typeof execFile);
+
+    try {
+      const probe = probeProcessIncarnationAsync(4321, 'darwin');
+      await vi.advanceTimersByTimeAsync(PROCESS_INCARNATION_PROBE_TIMEOUT_MS - 1);
+
+      expect(mockedExecFile).toHaveBeenCalledTimes(2);
+      expect((mockedExecFile.mock.calls[0]?.[2] as { signal?: AbortSignal }).signal).toBe(
+        (mockedExecFile.mock.calls[1]?.[2] as { signal?: AbortSignal }).signal,
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(probe).resolves.toBeNull();
+      expect(timeoutSpy).toHaveBeenCalledOnce();
+      expect(timeoutSpy).toHaveBeenCalledWith(PROCESS_INCARNATION_PROBE_TIMEOUT_MS);
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('reads the boot session every time rather than remembering it', async () => {
     scriptDarwin({ bootSession: new Error('sysctl unavailable') });
     await expect(probeProcessIncarnationAsync(4321, 'darwin')).resolves.toBeNull();
@@ -81,8 +131,6 @@ describe('darwin process incarnation (async)', () => {
     scriptDarwin({ lstart: 'not a date' });
     await expect(probeProcessIncarnationAsync(4321, 'darwin')).resolves.toBeNull();
 
-    // What `execFile`'s own `timeout` option produces on expiry: the callback receives an error rather than
-    // the caller ever blocking for it.
     scriptDarwin({ lstart: new Error('command timed out') });
     await expect(probeProcessIncarnationAsync(4321, 'darwin')).resolves.toBeNull();
   });

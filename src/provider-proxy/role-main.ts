@@ -58,6 +58,7 @@ import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   controlPairParamsSchema,
   controlPairResultSchema,
+  enforcementHoldStatusSchema,
   type JointContainmentReceipt,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
@@ -184,13 +185,13 @@ function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
   };
 }
 
-/** How the deferred close-and-exit below schedules itself; real callers source it from the runtime's own
- *  timer port, tests supply a synchronous stand-in so the assertion does not have to race a real timer. */
-type RoleOutcomeScheduler = (callback: () => void) => void;
+/** Close-and-exit deferral and hold retries must use the injected scheduler. */
+type RoleOutcomeScheduler = (callback: () => void, delayMs: number) => void;
 
 function realRoleOutcomeScheduler(ports: ProviderRoleMainPorts): RoleOutcomeScheduler {
-  return (callback) => {
-    ports.runtime.time.setTimeout(callback, 0);
+  return (callback, delayMs) => {
+    const handle = ports.runtime.time.setTimeout(callback, delayMs);
+    handle.unref?.();
   };
 }
 
@@ -387,59 +388,113 @@ async function reapUnheldOrdinaryProcess<Scope extends symbol>(
 /** A wake later than the model's enforcement bound, or a reap that failed outright — exit code for the
  *  latter, distinct from the `0` a confirmed `containment-absent` exits with. */
 const ROLE_ENFORCEMENT_FAILURE_EXIT_CODE = 1;
+const ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS = 5;
+const ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS = 1_000;
+const ROLE_UNATTRIBUTABLE_REAP_MAX_DELAY_MS = 30_000;
+
+type RoleEnforcementHoldStatus = z.infer<typeof enforcementHoldStatusSchema>;
 
 export type RoleEnforcementOutcomeHandlers = Readonly<{
   onOutcome(outcome: EnforcementOutcome): void;
   onProgressViolation(observedWakeLatencyMs: number): void;
+  enforcementHoldStatus(): RoleEnforcementHoldStatus | null;
 }>;
 
 export type RoleEnforcementOutcomeOptions<Scope extends symbol> = Readonly<{
   role: 'guardian' | 'reaper';
+  roleIdentity: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   deadlines: Pick<EnforcerDeadlineStateMachine<Scope>, 'markExited'>;
   /** Closes this role's own control (and, for the guardian, its reaper pairing channel too). */
   close(): Promise<void>;
   exitProcess(code: number): void;
+  now(): number;
+  localSignalTeardownAuthorized(): boolean;
+  retryUnattributable(): Promise<EnforcementOutcome> | null;
   schedule: RoleOutcomeScheduler;
 }>;
 
+function unattributableRetryDelayMs(attempts: number): number {
+  return Math.min(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS * 2 ** (attempts - 1), ROLE_UNATTRIBUTABLE_REAP_MAX_DELAY_MS);
+}
+
 /**
- * How a guardian or reaper role reacts once its own enforcer's teardown settles. A role process's only
- * reason to keep running is bounding one containment, so once that is truly done — `containment-absent` —
- * there is nothing left to hold and the process must exit; without this, the deadline model's `exited` state
- * is unreachable in production and the process leaks forever. A `reap-failed` outcome exits too, since this
- * role has no retry of its own to fall back on, but it never claims the `exited` state the model reserves
- * for a confirmed reap.
- *
- * The close-and-exit is deferred past the current synchronous continuation, not run inline: `onOutcome` is
- * invoked from *inside* `enforcement.ts`'s own `settle()`, which runs before a caller's own in-flight
- * `guardian.containment-commit.v1` RPC handler ever resumes from its `await` — closing sockets here
- * synchronously would destroy that caller's connection before its own response reaches the wire. Deferring
- * lets every microtask already queued, including that response's `write()`, run first.
+ * Unattributable outcomes must keep the role alive unless a local signal authorizes exit. Only confirmed
+ * absence may mark the deadline model exited. Close-and-exit must remain deferred so an in-flight control
+ * response can reach its caller before the role closes its sockets.
  */
 export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   options: RoleEnforcementOutcomeOptions<Scope>,
 ): RoleEnforcementOutcomeHandlers {
+  let enforcementHoldStatus: RoleEnforcementHoldStatus | null = null;
+
+  const closeAndExit = (exitCode: number): void => {
+    void options
+      .close()
+      .catch((error: unknown) => backendLog.error(`${options.role}: close on exit failed`, error))
+      .finally(() => options.exitProcess(exitCode));
+  };
+
+  const handleOutcome = (outcome: EnforcementOutcome): void => {
+    if (outcome.kind === 'recorded-group-unattributable') {
+      const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
+      if (options.localSignalTeardownAuthorized()) {
+        enforcementHoldStatus = null;
+        closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+        return;
+      }
+      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
+        enforcementHoldStatus = enforcementHoldStatusSchema.parse({
+          kind: outcome.kind,
+          attempts,
+          roleIdentity: { role: options.role, ...options.roleIdentity },
+          retry: { state: 'operator-action-required' },
+        });
+        return;
+      }
+      const delayMs = unattributableRetryDelayMs(attempts);
+      enforcementHoldStatus = enforcementHoldStatusSchema.parse({
+        kind: outcome.kind,
+        attempts,
+        roleIdentity: { role: options.role, ...options.roleIdentity },
+        retry: { state: 'scheduled', nextProbeAtMs: options.now() + delayMs },
+      });
+      options.schedule(() => {
+        if (
+          options.localSignalTeardownAuthorized() ||
+          enforcementHoldStatus?.attempts !== attempts ||
+          enforcementHoldStatus.retry.state !== 'scheduled'
+        ) {
+          return;
+        }
+        enforcementHoldStatus = enforcementHoldStatusSchema.parse({
+          ...enforcementHoldStatus,
+          retry: { state: 'in-progress' },
+        });
+        void options.retryUnattributable();
+      }, delayMs);
+      return;
+    }
+
+    enforcementHoldStatus = null;
+    if (outcome.kind === 'containment-absent') {
+      options.deadlines.markExited();
+      closeAndExit(0);
+      return;
+    }
+    backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
+    closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+  };
+
   return {
     onOutcome: (outcome) => {
-      options.schedule(() => {
-        if (outcome.kind === 'containment-absent') {
-          options.deadlines.markExited();
-        } else {
-          backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
-        }
-        void options
-          .close()
-          .catch((error: unknown) => backendLog.error(`${options.role}: close on exit failed`, error))
-          .finally(() =>
-            options.exitProcess(outcome.kind === 'containment-absent' ? 0 : ROLE_ENFORCEMENT_FAILURE_EXIT_CODE),
-          );
-      });
+      options.schedule(() => handleOutcome(outcome), 0);
     },
     onProgressViolation: (observedWakeLatencyMs) => {
       // A late wake is a detected progress-premise failure the plan requires be reported, not an execution
       // that silently counts as satisfying the enforcement guarantee — teardown still proceeds regardless.
       backendLog.warn(`${options.role}: enforcement wake exceeded the modelled bound by ${observedWakeLatencyMs}ms`);
     },
+    enforcementHoldStatus: () => enforcementHoldStatus,
   };
 }
 
@@ -559,6 +614,7 @@ export async function startProviderGuardianRole(
   };
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const schedule = realRoleOutcomeScheduler(ports);
+  const self = readSelfIdentity(ports);
 
   let reaperSpawn: SpawnedRoleProcess | null = null;
   let reaperChannel: ControlClient | null = null;
@@ -595,6 +651,7 @@ export async function startProviderGuardianRole(
     // guardian it closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
     // eslint-disable-next-line prefer-const
     let guardianRef!: Guardian;
+    let localSignalTeardownAuthorized = false;
     close = async (): Promise<void> => {
       pairedReaperChannel.close();
       await guardianRef.close();
@@ -602,11 +659,15 @@ export async function startProviderGuardianRole(
     // Captured once `close` holds its real value, so `giveUp` below closes over a function rather than the
     // `(() => Promise<void>) | null` type `close` itself carries for the rest of this attempt.
     const closeGuardian = close;
-    const { onOutcome, onProgressViolation } = buildEnforcementOutcomeHandlers({
+    const { onOutcome, onProgressViolation, enforcementHoldStatus } = buildEnforcementOutcomeHandlers({
       role: 'guardian',
+      roleIdentity: self,
       deadlines,
       close,
       exitProcess,
+      now: ports.runtime.time.now,
+      localSignalTeardownAuthorized: () => localSignalTeardownAuthorized,
+      retryUnattributable: () => guardianRef.enforcer()?.retryUnattributable() ?? null,
       schedule,
     });
     guardianRef = createGuardian({
@@ -618,10 +679,11 @@ export async function startProviderGuardianRole(
       timer,
       mintReceipt: () => ports.runtime.ids.uuid(),
       reaperChannel: pairedReaperChannel,
-      self: readSelfIdentity(ports),
+      self,
       reaperSelf: { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
       holderAuthority,
       observeHolder: buildHolderObserver(ports),
+      enforcementHoldStatus,
       onOutcome,
       onProgressViolation,
     });
@@ -651,6 +713,7 @@ export async function startProviderGuardianRole(
       proxySpawn,
       close,
       giveUp: async (): Promise<EnforcementOutcome> => {
+        localSignalTeardownAuthorized = true;
         const armed = guardian.enforcer();
         if (armed === null) {
           // Unreachable once this handle exists — `recordContainment` above always succeeds before this
@@ -688,17 +751,23 @@ export async function startProviderReaperRole(
     holderAuthority,
   );
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
+  const self = readSelfIdentity(ports);
 
   // Forward-referenced by `close` below (assigned into `createReaper`'s own `onOutcome` before the reaper it
   // closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
   // eslint-disable-next-line prefer-const
   let reaperRef!: Reaper;
+  let localSignalTeardownAuthorized = false;
   const close = (): Promise<void> => reaperRef.close();
-  const { onOutcome, onProgressViolation } = buildEnforcementOutcomeHandlers({
+  const { onOutcome, onProgressViolation, enforcementHoldStatus } = buildEnforcementOutcomeHandlers({
     role: 'reaper',
+    roleIdentity: self,
     deadlines,
     close,
     exitProcess,
+    now: ports.runtime.time.now,
+    localSignalTeardownAuthorized: () => localSignalTeardownAuthorized,
+    retryUnattributable: () => reaperRef.enforcer()?.retryUnattributable() ?? null,
     schedule: realRoleOutcomeScheduler(ports),
   });
 
@@ -710,9 +779,10 @@ export async function startProviderReaperRole(
     scheduler: buildScheduler(ports.runtime),
     timer: runtimeControlTimer(ports.runtime),
     mintReceipt: () => ports.runtime.ids.uuid(),
-    self: readSelfIdentity(ports),
+    self,
     holderAuthority,
     observeHolder: buildHolderObserver(ports),
+    enforcementHoldStatus,
     onOutcome,
     onProgressViolation,
   });
@@ -723,6 +793,7 @@ export async function startProviderReaperRole(
     reaper: reaperRef,
     close,
     giveUp: async (): Promise<EnforcementOutcome> => {
+      localSignalTeardownAuthorized = true;
       const armed = reaperRef.enforcer();
       if (armed === null) {
         // The guardian has not yet forwarded a containment to reap — nothing armed, nothing to enforce, so

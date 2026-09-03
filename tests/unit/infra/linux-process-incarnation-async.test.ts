@@ -1,8 +1,3 @@
-// The non-blocking sibling of `linux-process-incarnation.test.ts`: the same boot-id/start-tick framing, read
-// through `fs.promises.readFile` instead of `readFileSync` so a guardian/reaper answering loop never blocks
-// on it. Pins the same boot-frame and field-walk properties the sync test does, plus the bound each read is
-// held to.
-
 import type * as NodeFsPromises from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +8,7 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
 
 import { readFile } from 'node:fs/promises';
 
-import { probeProcessIncarnationAsync } from '#src/infra/node-process.js';
+import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, probeProcessIncarnationAsync } from '#src/infra/node-process.js';
 
 const mockedRead = vi.mocked(readFile);
 
@@ -44,21 +39,54 @@ describe('linux process incarnation (async)', () => {
     expect(mockedRead).toHaveBeenCalledWith('/proc/4321/stat', expect.objectContaining({ encoding: 'utf-8' }));
   });
 
-  it('bounds each read with a fresh abort signal, one per read rather than one shared', async () => {
-    scriptLinux();
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+  it('holds both sequential reads to one end-to-end deadline', async () => {
+    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), milliseconds);
+      return controller.signal;
+    });
+    mockedRead.mockReset();
+    mockedRead.mockImplementation(((path: string, options: { signal?: AbortSignal }) => {
+      const signal = options.signal;
+      if (signal === undefined) throw new Error('missing probe deadline');
+      return new Promise<string>((resolve, reject) => {
+        const rejectAborted = (): void => {
+          const error = new Error('The operation was aborted.');
+          error.name = 'AbortError';
+          reject(error);
+        };
+        if (signal.aborted) {
+          rejectAborted();
+          return;
+        }
+        signal.addEventListener('abort', rejectAborted, { once: true });
+        if (path === BOOT_ID_PATH) {
+          setTimeout(() => {
+            signal.removeEventListener('abort', rejectAborted);
+            resolve(BOOT_ID);
+          }, PROCESS_INCARNATION_PROBE_TIMEOUT_MS - 1);
+        }
+      });
+    }) as unknown as typeof readFile);
 
-    await probeProcessIncarnationAsync(4321, 'linux');
+    try {
+      const probe = probeProcessIncarnationAsync(4321, 'linux');
+      await vi.advanceTimersByTimeAsync(PROCESS_INCARNATION_PROBE_TIMEOUT_MS - 1);
 
-    // Two reads (boot id, then stat), each minting its own bound — not one signal reused across both, which
-    // could already be spent by the time the second read starts.
-    expect(timeoutSpy).toHaveBeenCalledTimes(2);
-    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 2_000);
-    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 2_000);
-    for (const call of mockedRead.mock.calls) {
-      expect((call[1] as { signal?: AbortSignal }).signal).toBeInstanceOf(AbortSignal);
+      expect(mockedRead).toHaveBeenCalledTimes(2);
+      expect((mockedRead.mock.calls[0]?.[1] as { signal?: AbortSignal }).signal).toBe(
+        (mockedRead.mock.calls[1]?.[1] as { signal?: AbortSignal }).signal,
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(probe).resolves.toBeNull();
+      expect(timeoutSpy).toHaveBeenCalledOnce();
+      expect(timeoutSpy).toHaveBeenCalledWith(PROCESS_INCARNATION_PROBE_TIMEOUT_MS);
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
     }
-    timeoutSpy.mockRestore();
   });
 
   it('separates two processes that share a pid and a start tick across a reboot', async () => {

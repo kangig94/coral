@@ -17,6 +17,7 @@ import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provi
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import type {
   DurableProviderProxyOperationAuthority,
   ProviderProxyOperationAuthority,
@@ -46,6 +47,7 @@ import {
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 const containmentProofDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
 afterAll(() => containmentProofDb.close());
@@ -1141,7 +1143,7 @@ describe('provider host pool proxy set registry', () => {
     });
     const set = fakeDurableProxySet('proxy-a');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set });
+      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
 
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
@@ -1224,7 +1226,7 @@ describe('provider host pool proxy set registry', () => {
     });
     const set = fakeDurableProxySet('proxy-routed');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set });
+      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
     const spec = createSharedSpec();
 
@@ -1253,7 +1255,7 @@ describe('provider host pool proxy set registry', () => {
     });
     const set = fakeDurableProxySet('proxy-shared');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set });
+      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
 
     const first = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-a' });
@@ -1325,7 +1327,7 @@ describe('provider host pool proxy set registry', () => {
     mockedEnsureProxySet.mockImplementation((_entry, _env, onSettled) => {
       const set = sets[nextSet++];
       if (set === undefined) throw new Error('unexpected extra proxy set acquisition');
-      onSettled({ kind: 'acquired', set });
+      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
     const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
     const providerProxyLifecycleRef = createProxySetLifecycleRef((routeKey) =>
@@ -1424,7 +1426,7 @@ describe('provider host pool proxy set registration', () => {
     });
     const set = fakeDurableProxySet('proxy-inherited');
 
-    manager.registerInheritedSet(set);
+    manager.registerInheritedSet(set, PUBLICATION_RECEIPT);
 
     expect(manager.liveSets()).toEqual([set]);
     // Inheritance never registers routing for new work — only an `ensureProxySetFor` acquisition does.
@@ -1443,12 +1445,12 @@ describe('provider host pool proxy set registration', () => {
     });
     const acquired = fakeDurableProxySet('proxy-acquired');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set: acquired });
+      onSettled({ kind: 'acquired', set: acquired, publicationReceipt: PUBLICATION_RECEIPT });
     });
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
     const inherited = fakeDurableProxySet('proxy-inherited');
 
-    manager.registerInheritedSet(inherited);
+    manager.registerInheritedSet(inherited, PUBLICATION_RECEIPT);
 
     expect(new Set(manager.liveSets().map((set) => set.proxyInstanceId))).toEqual(
       new Set([acquired.proxyInstanceId, inherited.proxyInstanceId]),

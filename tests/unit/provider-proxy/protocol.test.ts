@@ -538,7 +538,7 @@ describe('guardian control-method request schemas, shared with their one coordin
 
   it(
     'guardian.holder-status.v1/reaper.holder-status.v1: the shared result names disposition, phase, holder, ' +
-      'epoch, sequence, and change time',
+      'epoch, sequence, change time, and enforcement hold',
     () => {
       const valid = {
         disposition: 'alive',
@@ -551,8 +551,20 @@ describe('guardian control-method request schemas, shared with their one coordin
         controlEpoch: 1,
         transitionSequence: 3,
         changedAtMs: 1000,
+        enforcementHold: null,
       };
       expect(holderStatusResultSchema.safeParse(valid).success).toBe(true);
+      expect(
+        holderStatusResultSchema.safeParse({
+          ...valid,
+          enforcementHold: {
+            kind: 'recorded-group-unattributable',
+            attempts: 2,
+            roleIdentity: { role: 'guardian', pid: 7001, incarnation: testIncarnation(7001) },
+            retry: { state: 'scheduled', nextProbeAtMs: 2000 },
+          },
+        }).success,
+      ).toBe(true);
       expect(holderStatusResultSchema.safeParse({ ...valid, disposition: 'absent' }).success).toBe(false);
       expect(holderStatusResultSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
     },

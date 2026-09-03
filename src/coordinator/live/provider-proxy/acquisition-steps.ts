@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
-import { errorMessage } from '../../../infra/error-format.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../../providers/app-server-transport.js';
 import {
@@ -35,21 +34,16 @@ import {
   readHandoffCapsuleFile,
 } from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
-import type { ControlClient, ControlExchange, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   resolveProviderProxyDeadlineConfiguration,
 } from '../../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
-  acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionAbortParamsSchema,
   guardianAcquisitionAbortResultSchema,
-  guardianAcquisitionPublishParamsSchema,
-  guardianAcquisitionPublishResultSchema,
   guardianIdentitySchema,
-  proxyAcquisitionPublishParamsSchema,
-  proxyAcquisitionPublishResultSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
   type CoordinatorIdentity,
@@ -75,6 +69,7 @@ import {
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
+import { runProviderProxySetPublicationTransaction, type PublicationReceipt } from './set-publication.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
 import { createProviderProxyOperationAuthority, type ProviderProxyOperationAuthority } from './operation-route.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
@@ -164,123 +159,6 @@ const reaperOpenResultSchema = z
     reaper: reaperIdentitySchema,
   })
   .strict();
-
-type AcquisitionPublicationStageOutcome<T> =
-  | Readonly<{ kind: 'ok'; value: T }>
-  | Readonly<{ kind: 'not-attempted'; reason: string }>
-  | Readonly<{ kind: 'unknown'; reason: string }>;
-
-/** What `resultSchema` is proven not to be once `acquisitionPublicationUnknownResultSchema` has already
- *  rejected the same value: the confirmed shape a caller's own `'ok'` branch actually carries. Named once
- *  here so `exchangeAcquisitionStage` and `attemptAcquisitionStageWithRetry` state the identical guarantee
- *  rather than repeating the exclusion at each signature. */
-type AcquisitionStageConfirmed<T> = Exclude<T, z.infer<typeof acquisitionPublicationUnknownResultSchema>>;
-
-/**
- * One idempotent publication-transaction exchange, classified the same way `commitContainment`
- * (`set-authority.ts`) classifies the guardian containment commit: a decisive response — success or a
- * structured refusal — proves what happened; anything else proves only that the request may have reached its
- * role and its answer is what is missing.
- *
- * A role may also answer `acquisitionPublicationUnknownResultSchema` explicitly, saying so as a value rather
- * than leaving this generic function to infer it from a parse failure against `resultSchema` — a schema this
- * function does not own the shape of and must not assume every caller's stage shares (the proxy stage's own
- * `resultSchema` never includes it). Checked before `resultSchema`, and independently of it, for exactly that
- * reason: for the guardian stage `resultSchema` *is* a union that includes this shape, so parsing it there
- * first would read the role's explicit answer as an ordinary `'ok'` value instead. The `resultSchema.safeParse`
- * fallback below is untouched — it remains the guard against a reply neither this check nor that schema
- * planned for, not redundant with the explicit check but a second, independent reason to answer `unknown`.
- */
-export async function exchangeAcquisitionStage<T>(
-  client: ControlClient,
-  method: string,
-  params: unknown,
-  resultSchema: z.ZodType<T>,
-): Promise<AcquisitionPublicationStageOutcome<AcquisitionStageConfirmed<T>>> {
-  let exchange: ControlExchange;
-  try {
-    exchange = await client.exchange(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-  } catch (error: unknown) {
-    return { kind: 'unknown', reason: errorMessage(error) };
-  }
-  if (exchange.kind === 'not-sent') {
-    return { kind: 'not-attempted', reason: errorMessage(exchange.error) };
-  }
-  if (exchange.kind === 'response') {
-    if (exchange.response.kind === 'refusal') {
-      return { kind: 'not-attempted', reason: exchange.response.error.message };
-    }
-    const explicitOutcome = acquisitionPublicationUnknownResultSchema.safeParse(exchange.response.value);
-    if (explicitOutcome.success) {
-      return { kind: 'unknown', reason: explicitOutcome.data.reason };
-    }
-    // A decoded `result` proves the role answered, not what it published: publication is one-way, so an
-    // undecodable success reply cannot be read as `not-attempted` — the role may already have latched it.
-    const parsed = resultSchema.safeParse(exchange.response.value);
-    if (!parsed.success) {
-      return { kind: 'unknown', reason: `${method} replied with an undecodable result: ${parsed.error.message}` };
-    }
-    // `explicitOutcome` already rejected the one shape this excludes from `T`, against the same value `parsed`
-    // just decoded — so a value that also matches `resultSchema` cannot be that shape. The cast states what
-    // the two checks above already proved, not what a caller downstream is trusted to assume.
-    return { kind: 'ok', value: parsed.data as AcquisitionStageConfirmed<T> };
-  }
-  return { kind: 'unknown', reason: errorMessage(exchange.error) };
-}
-
-/** One additional attempt when the first is `unknown`. Both stages are idempotent by construction, so a
- *  retry either confirms the first attempt's own published state or genuinely re-attempts it; it never risks
- *  a second, conflicting latch. */
-async function attemptAcquisitionStageWithRetry<T>(
-  client: ControlClient,
-  method: string,
-  params: unknown,
-  resultSchema: z.ZodType<T>,
-): Promise<AcquisitionPublicationStageOutcome<AcquisitionStageConfirmed<T>>> {
-  const first = await exchangeAcquisitionStage(client, method, params, resultSchema);
-  return first.kind === 'unknown' ? exchangeAcquisitionStage(client, method, params, resultSchema) : first;
-}
-
-type AcquisitionPublicationTransactionOutcome =
-  | Readonly<{ kind: 'published' }>
-  | Readonly<{ kind: 'not-attempted'; role: 'guardian' | 'proxy'; reason: string }>
-  | Readonly<{ kind: 'unknown'; role: 'guardian' | 'proxy'; reason: string }>;
-
-/**
- * `guardian.acquisition-publish.v1` prepares and publishes the guardian and reaper together, then
- * `proxy.acquisition-publish.v1` verifies the returned certificate binding and publishes the proxy. Only a
- * `published` result from both stages means all three roles are confirmed published — the guardian's own
- * success already means the reaper is published too, since the guardian's handler forwards to it before
- * returning.
- */
-async function runAcquisitionPublicationTransaction(
-  guardianClient: ControlClient,
-  proxyClient: ControlClient,
-  guardian: GuardianIdentity,
-  reaper: ReaperIdentity,
-  proxy: ProxyIdentity,
-): Promise<AcquisitionPublicationTransactionOutcome> {
-  const guardianOutcome = await attemptAcquisitionStageWithRetry(
-    guardianClient,
-    'guardian.acquisition-publish.v1',
-    guardianAcquisitionPublishParamsSchema.parse({ guardian, reaper, proxy }),
-    guardianAcquisitionPublishResultSchema,
-  );
-  if (guardianOutcome.kind !== 'ok') return { ...guardianOutcome, role: 'guardian' };
-
-  const proxyOutcome = await attemptAcquisitionStageWithRetry(
-    proxyClient,
-    'proxy.acquisition-publish.v1',
-    proxyAcquisitionPublishParamsSchema.parse({
-      certificate: guardianOutcome.value.certificate,
-      guardian: guardianOutcome.value.guardian,
-      reaper: guardianOutcome.value.reaper,
-    }),
-    proxyAcquisitionPublishResultSchema,
-  );
-  if (proxyOutcome.kind !== 'ok') return { ...proxyOutcome, role: 'proxy' };
-  return { kind: 'published' };
-}
 
 export function createProviderProxyAcquisitionSteps(
   options: ProviderProxyAcquisitionStepsOptions,
@@ -425,7 +303,13 @@ export function createProviderProxyAcquisitionSteps(
       };
     },
 
-    async establishControl(): Promise<Readonly<{ set: ProviderProxyOperationAuthority; undo: AcquisitionUndo }>> {
+    async establishControl(): Promise<
+      Readonly<{
+        set: ProviderProxyOperationAuthority;
+        publicationReceipt: PublicationReceipt;
+        undo: AcquisitionUndo;
+      }>
+    > {
       if (minted === null || guardianSpawn === null) {
         throw new Error('createCapsules and spawnGuardian must run before establishControl.');
       }
@@ -605,14 +489,14 @@ export function createProviderProxyAcquisitionSteps(
         // gate before this attempt may return a set anyone can claim. Guardian/reaper may become published
         // before the proxy, but no claim authority exists until all three confirm — the still-provisional
         // proxy's own orphan deadline remains armed on an unpublished, claimless set the whole time.
-        const publication = await runAcquisitionPublicationTransaction(
+        const publication = await runProviderProxySetPublicationTransaction(
           guardianSession.client,
           proxySession.client,
           guardianSession.opened.guardian,
           reaperSession.opened.reaper,
           proxySession.opened.proxy,
         );
-        if (publication.kind === 'unknown') {
+        if (publication.kind === 'publication-unknown') {
           // Response loss on an idempotent publish stage cannot be un-sent: the role may already be
           // published. Preserve the capsule and every open client rather than converting a possibly-published
           // role into an uncredentialed orphan by running the undos below.
@@ -656,6 +540,7 @@ export function createProviderProxyAcquisitionSteps(
         });
         return {
           set,
+          publicationReceipt: publication.receipt,
           undo: {
             label: 'control',
             run: () => {

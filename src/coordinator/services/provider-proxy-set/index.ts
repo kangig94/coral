@@ -16,6 +16,7 @@ import {
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
+import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
 import type { ContainmentCommitOutcome } from '../../live/provider-proxy/authority.js';
 import type { OperatorTeardownAuthorization } from '../../../provider-proxy/holder-lifecycle.js';
 import type {
@@ -926,20 +927,22 @@ export class ProviderProxySetLifecycle {
   acquisitionSucceeded(
     slotId: string,
     authority: DurableProviderProxyOperationAuthority,
+    publicationReceipt: PublicationReceipt,
     capsulePath: string | null = null,
   ): void {
     const acquiring = this.#slots.get(slotId);
     if (acquiring?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
     this.#slots.delete(slotId);
-    this.#establish(authority, acquiring.routeKey, capsulePath, 'serve');
+    this.#establish(authority, publicationReceipt, acquiring.routeKey, capsulePath, 'serve');
   }
 
   registerInheritedSet(
     authority: DurableProviderProxyOperationAuthority,
+    publicationReceipt: PublicationReceipt,
     capsulePath: string | null = null,
     protection: ProviderProxySetProtection = 'protected',
   ): void {
-    this.#establish(authority, null, capsulePath, 'serve', protection);
+    this.#establish(authority, publicationReceipt, null, capsulePath, 'serve', protection);
   }
 
   routeFor(routeKey: string): DurableProviderProxyOperationAuthority | null {
@@ -2043,6 +2046,7 @@ export class ProviderProxySetLifecycle {
             this.#operatorDispositions.delete(slot.key);
             this.#establish(
               outcome.set,
+              outcome.publicationReceipt,
               slot.routeKey,
               slot.capsulePath,
               slot.routeKey === null ? 'contain-unclaimed-discovery' : 'serve',
@@ -2129,6 +2133,7 @@ export class ProviderProxySetLifecycle {
 
   #establish(
     authority: DurableProviderProxyOperationAuthority,
+    _publicationReceipt: PublicationReceipt,
     routeKey: string | null,
     capsulePath: string | null,
     intent: EstablishmentIntent,

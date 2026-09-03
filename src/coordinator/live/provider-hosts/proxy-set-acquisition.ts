@@ -7,6 +7,7 @@ import { acquireProviderProxySet } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 import { hostFingerprintFromSpec, type ProviderHostEntry } from './state.js';
 
 /**
@@ -61,7 +62,11 @@ export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisition
   }>;
 
 export type ProviderProxySetAcquisitionOutcome =
-  | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
+  | Readonly<{
+      kind: 'acquired';
+      set: ProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+    }>
   | Readonly<{
       kind: 'acquisition-publication-unknown';
       reason: string;

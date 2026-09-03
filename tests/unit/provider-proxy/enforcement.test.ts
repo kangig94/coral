@@ -2,7 +2,11 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import type { AsyncRecordedProcessObserver, ProcessLiveness } from '#src/infra/node-process.js';
+import {
+  PROCESS_INCARNATION_PROBE_TIMEOUT_MS,
+  type AsyncRecordedProcessObserver,
+  type ProcessLiveness,
+} from '#src/infra/node-process.js';
 import type { RecordedProcessIdentity } from '#src/infra/process-containment.js';
 import {
   createArmedEnforcer,
@@ -72,6 +76,8 @@ function createHarness(options: {
   acceleratedCheckMayAuthorizeAbsence?: boolean;
   /** Forces the fake `bounds().holderCheckAccelerated` this test observes, independent of `adoptionInMs`. */
   accelerated?: boolean;
+  observeContainmentLiveness?(pid: number): ProcessLiveness;
+  readContainmentIncarnation?(pid: number): RecordedProcessIdentity['incarnation'] | null;
 }) {
   let elapsedMs = 0n;
   const clock = createMonotonicClock(enforcementClockScope, {
@@ -104,6 +110,14 @@ function createHarness(options: {
   const scheduler = createManualScheduler();
   const outcomes: EnforcementOutcome[] = [];
   const violations: number[] = [];
+  const signalContainment = vi.fn((pid: number) => {
+    const targets = pid < 0 ? [...alive] : [pid];
+    for (const target of targets) {
+      if (stubborn.has(target)) continue;
+      alive.delete(target);
+    }
+    return true;
+  });
 
   const holderAuthority = createControlHolderAuthority();
   holderAuthority.install({ controlEpoch: 1, holder: HOLDER });
@@ -118,24 +132,20 @@ function createHarness(options: {
     containmentEnvironment: {
       clock,
       process: {
-        kill: (pid) => {
-          // A negative pid is a group signal, so it reaches every member rather than one process.
-          const targets = pid < 0 ? [...alive] : [pid];
-          for (const target of targets) {
-            if (stubborn.has(target)) continue;
-            alive.delete(target);
-          }
-          return true;
-        },
-        observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
+        kill: signalContainment,
+        observeLiveness:
+          options.observeContainmentLiveness ??
+          ((pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent')),
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
       // A incarnation is only readable while the process exists, which is what makes it identity evidence.
-      readProcessIncarnation: (pid) => {
-        if (!alive.has(pid)) return null;
-        return pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : testIncarnation(2_000);
-      },
+      readProcessIncarnation:
+        options.readContainmentIncarnation ??
+        ((pid) => {
+          if (!alive.has(pid)) return null;
+          return pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : testIncarnation(2_000);
+        }),
     },
     scheduler,
     holderAuthority,
@@ -152,6 +162,7 @@ function createHarness(options: {
     scheduler,
     outcomes,
     violations,
+    signalContainment,
     latchTeardown,
     markContainmentAbsent,
     renewHolderCheck,
@@ -377,6 +388,37 @@ describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', ()
     expect(outcome).toMatchObject({ kind: 'settled', outcome: { kind: 'containment-absent' } });
     expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
   });
+
+  it('returns an unattributable hold separately and permits a later absence-confirming retry', async () => {
+    let groupIsAlive = true;
+    const harness = createHarness({
+      adoptionInMs: 60_000,
+      observeContainmentLiveness: (pid) => (pid < 0 && groupIsAlive ? 'alive' : 'absent'),
+      readContainmentIncarnation: () => testIncarnation(2_000),
+    });
+
+    const first = await harness.enforcer.stopAndReap(harness.mintExplicit());
+
+    expect(first).toMatchObject({
+      kind: 'holding',
+      outcome: { kind: 'recorded-group-unattributable' },
+    });
+    expect(first).not.toHaveProperty('outcome.disappearanceReceipt');
+    expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
+    expect(harness.outcomes).toEqual([
+      {
+        kind: 'recorded-group-unattributable',
+        reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
+      },
+    ]);
+
+    groupIsAlive = false;
+    const retried = await harness.enforcer.retryUnattributable();
+
+    expect(retried?.kind).toBe('containment-absent');
+    expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
+    expect(harness.outcomes.at(-1)?.kind).toBe('containment-absent');
+  });
 });
 
 describe('giveUp — the local-signal capability (AC2, Phase 3)', () => {
@@ -406,6 +448,26 @@ describe('giveUp — the local-signal capability (AC2, Phase 3)', () => {
 });
 
 describe('published holder observation — the enforcer tick (AC3, AC4)', () => {
+  it('starts the observation one end-to-end probe bound plus one wake allowance before the holder gate', () => {
+    const observeHolder = vi.fn(() => Promise.resolve<ProcessLiveness>('alive'));
+    const observationStartInMs = 1_000;
+    const harness = createHarness({
+      adoptionInMs: observationStartInMs + PROCESS_INCARNATION_PROBE_TIMEOUT_MS + PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
+      published: true,
+      observeHolder,
+    });
+
+    harness.enforcer.arm();
+    harness.advance(observationStartInMs - 1);
+    harness.scheduler.runDue();
+    expect(observeHolder).not.toHaveBeenCalled();
+
+    harness.advance(1);
+    harness.scheduler.runDue();
+    expect(observeHolder).toHaveBeenCalledOnce();
+    harness.enforcer.disarm();
+  });
+
   it('an alive result renews the schedule and never reaps, across repeated cycles', async () => {
     const harness = createHarness({
       adoptionInMs: 5_000,
@@ -452,6 +514,60 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
 
     expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+  });
+
+  it('disarm invalidates a probe already committed for consumption', async () => {
+    let settleProbe!: (liveness: ProcessLiveness) => void;
+    const alive = new Set([CONTAINMENT.pid]);
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      alive,
+      observeHolder: () =>
+        new Promise((resolve) => {
+          settleProbe = resolve;
+        }),
+    });
+
+    harness.enforcer.arm();
+    harness.scheduler.runDue();
+    harness.scheduler.runDue();
+    expect(harness.scheduler.pending()).toBe(0);
+
+    harness.enforcer.disarm();
+    settleProbe('absent');
+    for (let flush = 0; flush < 5; flush += 1) {
+      await Promise.resolve();
+    }
+
+    expect(harness.signalContainment).not.toHaveBeenCalled();
+    expect(alive.has(CONTAINMENT.pid)).toBe(true);
+    expect(harness.scheduler.pending()).toBe(0);
+    expect(harness.outcomes).toHaveLength(0);
+  });
+
+  it('reports lateness measured when a consumed probe settles', async () => {
+    let settleProbe!: (liveness: ProcessLiveness) => void;
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      observeHolder: () =>
+        new Promise((resolve) => {
+          settleProbe = resolve;
+        }),
+    });
+
+    harness.enforcer.arm();
+    harness.scheduler.runDue();
+    harness.scheduler.runDue();
+    harness.advance(PROXY_ENFORCER_MAX_WAKE_LATENCY_MS + 1);
+    settleProbe('alive');
+    for (let flush = 0; flush < 5; flush += 1) {
+      await Promise.resolve();
+    }
+
+    expect(harness.violations).toEqual([PROXY_ENFORCER_MAX_WAKE_LATENCY_MS + 1]);
+    harness.enforcer.disarm();
   });
 
   it('a superseded absence renews the loop, observes the successor, and reaps after the successor dies', async () => {

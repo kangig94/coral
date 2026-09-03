@@ -35,6 +35,10 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../../live/provider-proxy/operation-route.js';
 import type { ProviderProxySetAcquisitionIdentity } from '../../live/provider-hosts/proxy-set-acquisition.js';
+import type {
+  ProviderProxySetPublicationUnknown,
+  PublicationReceipt,
+} from '../../live/provider-proxy/set-publication.js';
 import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
@@ -150,18 +154,32 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   onProviderEvent?(): ProviderEventHandler;
   collectContainmentProof: ProviderProxySetContainmentProver['collectContainmentProof'];
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
-  registerInheritedSet?(set: ProviderProxyOperationAuthority, protection: ProviderProxySetProtection): void;
+  registerInheritedSet?(
+    set: ProviderProxyOperationAuthority,
+    publicationReceipt: PublicationReceipt,
+    protection: ProviderProxySetProtection,
+  ): void;
 }>;
 
 export type ProviderProxySetInheritanceOutcome =
-  | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>
+  | Readonly<{
+      kind: 'inherited';
+      set: DurableProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+      protection: ProviderProxySetProtection;
+    }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
 export type ProviderProxySetRedemptionOutcome =
-  | Readonly<{ kind: 'redeemed'; set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>
+  | Readonly<{
+      kind: 'redeemed';
+      set: DurableProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+      protection: ProviderProxySetProtection;
+    }>
   | Readonly<{
       kind: 'protocol-incompatible';
       role: Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-heartbeat-indeterminate' }>['role'];
@@ -169,8 +187,11 @@ export type ProviderProxySetRedemptionOutcome =
     }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
+type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutcome, { kind: 'protocol-incompatible' }>;
+
 export type ProviderProxySetAvailabilityIncident =
   | ProviderProxyRoleControlAvailabilityIncident
+  | ProviderProxySetPublicationUnknown
   | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
 
 function dispatchProviderProxySetInheritance(
@@ -281,6 +302,8 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
       ].join(':');
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;
+    case 'publication-unknown':
+      return `${incident.kind}:${incident.role}:${incident.reason}`;
   }
 }
 
@@ -358,6 +381,8 @@ function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal)
         'capsule_identity_disagreement',
         'Provider proxy redemption identities disagree with the handoff capsule.',
       );
+    case 'publication-refused':
+      return new Error(`provider_proxy_set_publication_refused:${refusal.role}:${refusal.reason}`);
   }
 }
 
@@ -368,7 +393,13 @@ async function buildInheritedAuthority(
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
-): Promise<Readonly<{ set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>> {
+): Promise<
+  Readonly<{
+    set: DurableProviderProxyOperationAuthority;
+    publicationReceipt: PublicationReceipt;
+    protection: ProviderProxySetProtection;
+  }>
+> {
   const bundle = providerProxyControlRedemptionBundle(redemption);
   try {
     if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, bundle.setIdentity)) {
@@ -413,8 +444,8 @@ async function buildInheritedAuthority(
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
     const protection = await probeCurrentGenerationProtection(bundle.clients.guardian, capsule);
-    deps.registerInheritedSet?.(set, protection);
-    return { set, protection };
+    deps.registerInheritedSet?.(set, bundle.publicationReceipt, protection);
+    return { set, publicationReceipt: bundle.publicationReceipt, protection };
   } catch (error: unknown) {
     closeRedeemedProviderProxyControl(redemption);
     throw error;
@@ -427,7 +458,7 @@ async function redeemCapsule(
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
-): Promise<Readonly<{ set: DurableProviderProxyOperationAuthority; protection: ProviderProxySetProtection }>> {
+): Promise<ProviderProxySetRedemptionAttempt> {
   const redemption = await redeemProviderProxyControl(
     capsule,
     providerProxySetIdentityFromCapsule(capsule),
@@ -438,9 +469,13 @@ async function redeemCapsule(
     },
     signal,
   );
-  if (redemption.kind === 'unavailable') throw redemption.error;
+  if (redemption.kind === 'unavailable') {
+    if ('error' in redemption) throw redemption.error;
+    return { kind: 'temporarily-unavailable', incident: redemption.incident };
+  }
   if (redemption.kind === 'refused') throw inheritanceRefusalError(redemption.refusal);
-  return buildInheritedAuthority(redemption, capsulePath, capsule, expectedIdentity, deps, signal);
+  const inherited = await buildInheritedAuthority(redemption, capsulePath, capsule, expectedIdentity, deps, signal);
+  return { kind: 'redeemed', ...inherited };
 }
 
 async function redeem(
@@ -478,14 +513,20 @@ async function redeem(
   if (!capsuleMatchesLocator(inheritableCapsule, reference, deps.coordinatorIdentity)) {
     return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
   }
-  const { set, protection } = await redeemCapsule(
+  const redemption = await redeemCapsule(
     capsulePath,
     inheritableCapsule,
     providerProxySetIdentityFromRecord(reference),
     deps,
     signal,
   );
-  return { kind: 'inherited', set, protection };
+  if (redemption.kind !== 'redeemed') return redemption;
+  return {
+    kind: 'inherited',
+    set: redemption.set,
+    publicationReceipt: redemption.publicationReceipt,
+    protection: redemption.protection,
+  };
 }
 
 export async function attemptProviderProxySetInheritance(
@@ -559,7 +600,11 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown. `protection` carries `probeCurrentGenerationProtection`'s own verdict through unchanged. */
-  registerInheritedSet(set: ProviderProxyOperationAuthority, protection: ProviderProxySetProtection): void;
+  registerInheritedSet(
+    set: ProviderProxyOperationAuthority,
+    publicationReceipt: PublicationReceipt,
+    protection: ProviderProxySetProtection,
+  ): void;
 }>;
 
 /**
@@ -573,7 +618,11 @@ export function createProviderProxySetInheritance(
   const inFlightByIdentity = new Map<string, Promise<ProviderProxySetInheritanceOutcome>>();
 
   const deps = (
-    registerInheritedSet?: (set: ProviderProxyOperationAuthority, protection: ProviderProxySetProtection) => void,
+    registerInheritedSet?: (
+      set: ProviderProxyOperationAuthority,
+      publicationReceipt: PublicationReceipt,
+      protection: ProviderProxySetProtection,
+    ) => void,
   ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
@@ -652,7 +701,7 @@ export function createProviderProxySetInheritance(
         };
       }
       return deadline.kind === 'settled'
-        ? { kind: 'redeemed', set: deadline.value.set, protection: deadline.value.protection }
+        ? deadline.value
         : { kind: 'temporarily-unavailable', incident: deadline.incident };
     },
   };

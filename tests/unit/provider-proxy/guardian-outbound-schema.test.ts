@@ -27,6 +27,7 @@ import {
 import { createControlHolderAuthority, type ControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import type { EnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
 import {
+  enforcementHoldStatusSchema,
   guardianOperationActivateParamsSchema,
   guardianRegisterProviderRootParamsSchema,
 } from '#src/provider-proxy/protocol.js';
@@ -106,6 +107,7 @@ type GuardianHarness = ReturnType<typeof createGuardianHarness>;
 function createGuardianHarness(
   holderAuthority: ControlHolderAuthority = createControlHolderAuthority(),
   containmentFailure?: Readonly<{ latchTeardown: () => void; observeLiveness: () => never }>,
+  enforcementHoldStatus?: () => z.infer<typeof enforcementHoldStatusSchema> | null,
 ) {
   const clock = createMonotonicClock(Symbol('guardian-outbound'), { readMilliseconds: () => 0n });
   const shared = {
@@ -213,6 +215,7 @@ function createGuardianHarness(
     reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
     holderAuthority,
     observeHolder: () => Promise.resolve('unknown' as const),
+    ...(enforcementHoldStatus === undefined ? {} : { enforcementHoldStatus }),
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -302,7 +305,13 @@ describe('guardian outbound schemas', () => {
         changedAtMs: 12_000,
       }),
     };
-    const harness = createGuardianHarness(holderAuthority);
+    const enforcementHold = enforcementHoldStatusSchema.parse({
+      kind: 'recorded-group-unattributable',
+      attempts: 2,
+      roleIdentity: { role: 'guardian', pid: 5_102, incarnation: testIncarnation(902) },
+      retry: { state: 'scheduled', nextProbeAtMs: 14_000 },
+    });
+    const harness = createGuardianHarness(holderAuthority, undefined, () => enforcementHold);
     const grantId = randomUUID();
     const secret = 'f'.repeat(64);
     await harness.call(
@@ -336,6 +345,7 @@ describe('guardian outbound schemas', () => {
       controlEpoch: statusIdentity.controlEpoch,
       transitionSequence: 9,
       changedAtMs: 12_000,
+      enforcementHold,
     });
   });
 

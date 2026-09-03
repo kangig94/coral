@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   registerBackendCommands,
   type BackendStatusCommandOperations,
+  type DirectProviderProxySetHolderStatus,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import {
@@ -169,6 +170,57 @@ describe('backend status generation readiness', () => {
         '',
       ].join('\n'),
     );
+  });
+
+  it('prints direct holder status when the backend status result is unreachable', async () => {
+    const directHolderStatus: DirectProviderProxySetHolderStatus = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'a'.repeat(64),
+      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      guardian: {
+        kind: 'answered',
+        status: {
+          disposition: 'unobservable',
+          phase: 'published',
+          holder: {
+            instanceId: '33333333-3333-4333-8333-333333333333',
+            pid: 4100,
+            incarnation: testIncarnation(4100),
+          },
+          controlEpoch: 1,
+          transitionSequence: 2,
+          changedAtMs: TEST_TIME.now(),
+          enforcementHold: {
+            kind: 'recorded-group-unattributable',
+            attempts: 3,
+            roleIdentity: { role: 'guardian', pid: 4200, incarnation: testIncarnation(4200) },
+            retry: { state: 'scheduled', nextProbeAtMs: TEST_TIME.now() + 4_000 },
+          },
+        },
+      },
+      reaper: { kind: 'unreachable', reason: 'connection refused' },
+    };
+    const readProviderProxySetHolderStatusDirect = vi.fn(async () => [directHolderStatus]);
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'unreachable', detail: 'request timed out', cause: 'no_response' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(readProviderProxySetHolderStatusDirect).toHaveBeenCalledOnce();
+    expect(stderr).toBe('Backend is unreachable over IPC.\n');
+    expect(stdout).toContain('guardian: unobservable');
+    expect(stdout).toContain('hold=recorded-group-unattributable attempts=3 role=guardian:4200@');
+    expect(stdout).toContain('nextProbeAt=2026-08-03T00:00:04.000Z');
+    expect(stdout).toContain('reaper:   unreachable (connection refused)');
+    expect(process.exitCode).toBe(75);
   });
 });
 

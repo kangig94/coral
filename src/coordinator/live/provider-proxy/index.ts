@@ -1,5 +1,6 @@
 import type { ProviderProxyOperationAuthority } from './operation-route.js';
 import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
+import type { PublicationReceipt } from './set-publication.js';
 
 /**
  * Acquiring one guardian/reaper/proxy set.
@@ -28,7 +29,11 @@ export type ProviderProxyAcquisitionFailure = Readonly<{
 }>;
 
 export type ProviderProxyAcquisitionResult =
-  | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
+  | Readonly<{
+      kind: 'acquired';
+      set: ProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+    }>
   | ProviderProxyAcquisitionFailure
   | Readonly<{
       kind: 'acquisition-publication-unknown';
@@ -69,7 +74,13 @@ export interface ProviderProxyAcquisitionSteps {
    * Opens and activates control on all three endpoints, checks the strict backend identities, and confirms
    * the containment the guardian recorded. Returns the authority only once every check has passed.
    */
-  establishControl(): Promise<Readonly<{ set: ProviderProxyOperationAuthority; undo: AcquisitionUndo }>>;
+  establishControl(): Promise<
+    Readonly<{
+      set: ProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+      undo: AcquisitionUndo;
+    }>
+  >;
 }
 
 export type ProviderProxyAcquisitionOptions = Readonly<{
@@ -196,5 +207,5 @@ export async function acquireProviderProxySet(
   if (options.deadlineSignal.aborted) {
     return fail('readiness publication', 'the acquisition deadline elapsed before the set was published');
   }
-  return { kind: 'acquired', set: control.set };
+  return { kind: 'acquired', set: control.set, publicationReceipt: control.publicationReceipt };
 }

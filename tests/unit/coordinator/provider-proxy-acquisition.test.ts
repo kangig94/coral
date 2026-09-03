@@ -8,6 +8,7 @@ import {
   type ProviderProxyAcquisitionSteps,
 } from '#src/coordinator/live/provider-proxy/index.js';
 import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 
 const SET: ProviderProxyOperationAuthority = {
@@ -44,6 +45,7 @@ const SET: ProviderProxyOperationAuthority = {
     canonicalEndpoint: '/tmp/proxy.sock',
   },
 };
+const PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 
 type Recorded = { readonly log: string[]; readonly steps: ProviderProxyAcquisitionSteps };
 
@@ -73,7 +75,7 @@ function steps(options: { failAt?: 'capsules' | 'spawn' | 'control'; failUndo?: 
       establishControl: async () => {
         log.push('control');
         if (options.failAt === 'control') throw new Error('containment ACK never arrived');
-        return { set: SET, undo: undo('control') };
+        return { set: SET, publicationReceipt: PUBLICATION_RECEIPT, undo: undo('control') };
       },
     },
   };
@@ -88,7 +90,7 @@ describe('provider proxy set acquisition', () => {
 
     const result = await acquireProviderProxySet({ steps: recorded.steps, deadlineSignal: live() });
 
-    expect(result).toEqual({ kind: 'acquired', set: SET });
+    expect(result).toEqual({ kind: 'acquired', set: SET, publicationReceipt: PUBLICATION_RECEIPT });
     expect(recorded.log).toEqual(['capsules', 'spawn', 'control']);
   });
 

@@ -787,7 +787,7 @@ describe('published holder-check schedule (AC4)', () => {
     expectSameInstant(fake.clock, guardian.bounds().holderCheckAt, afterLater);
   });
 
-  it('accelerates exactly one check on pairing loss, then returns to the ordinary cadence', () => {
+  it('accelerates one check for each pairing-loss episode', () => {
     const fake = createFakeClock(guardianClockScope, 0);
     const authority = installedHolder();
     authority.publish();
@@ -800,6 +800,10 @@ describe('published holder-check schedule (AC4)', () => {
     expectSameInstant(fake.clock, guardian.bounds().holderCheckAt, pairingLossAt);
     expect(guardian.bounds().holderCheckAccelerated).toBe(true);
 
+    fake.set(6_000);
+    guardian.observePairingLoss();
+    expectSameInstant(fake.clock, guardian.bounds().holderCheckAt, pairingLossAt);
+
     // The accelerated check is performed (of any disposition) and renews from that instant — the
     // acceleration must not keep re-clamping every later cadence into a zero-delay loop.
     guardian.renewHolderCheck(pairingLossAt);
@@ -810,6 +814,14 @@ describe('published holder-check schedule (AC4)', () => {
       fake.clock.shiftMilliseconds(pairingLossAt, providerProxyAdoptionWindowMs(configuration())),
     );
     expect(guardian.bounds().holderCheckAccelerated).toBe(false);
+
+    expect(guardian.reattachControl()).toEqual({ accepted: true });
+    fake.set(7_000);
+    const secondPairingLossAt = fake.clock.now();
+
+    guardian.observePairingLoss();
+
+    expectSameInstant(fake.clock, guardian.bounds().holderCheckAt, secondPairingLossAt);
   });
 
   it('accelerates exactly one check on EOF, the same as pairing loss', () => {

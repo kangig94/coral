@@ -31,10 +31,8 @@ vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
   return { ...original, readHandoffCapsuleFile: vi.fn() };
 });
 
-import {
-  createProviderProxyAcquisitionSteps,
-  exchangeAcquisitionStage,
-} from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import { exchangeAcquisitionStage } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import {
   acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionPublishResultSchema,
@@ -567,7 +565,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const routeKey = 'fresh-reaper-heartbeat';
     const admission = lifecycle.beginFreshAcquisition(routeKey);
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
-    lifecycle.acquisitionSucceeded(admission.slotId, set);
+    lifecycle.acquisitionSucceeded(admission.slotId, set, established.publicationReceipt);
     expect(lifecycle.routeFor(routeKey)).toBe(set);
     expect(establishedEvents).toHaveBeenCalledTimes(1);
 

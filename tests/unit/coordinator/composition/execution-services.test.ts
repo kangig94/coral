@@ -9,6 +9,7 @@ import {
   type DurableProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import {
@@ -70,6 +71,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 /** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const TEST_PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 const TEST_AUTONOMOUS_DEADLINE = {
   orphanTimeoutMs: 37_000,
   adoptionWindowMs: 23_000,
@@ -312,7 +314,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
   if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
   const admission = lifecycle.beginFreshAcquisition(`shared-set-${control}`);
   if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
-  lifecycle.acquisitionSucceeded(admission.slotId, authority);
+  lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
 
   for (const record of records) {
     const sessionId = randomUUID();
@@ -718,7 +720,7 @@ describe('execution services provider-proxy proof composition', () => {
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     } as unknown as DurableProviderProxyOperationAuthority;
 
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     await flushMicrotasks();
 
     expect({
@@ -805,12 +807,12 @@ describe('execution services provider-proxy proof composition', () => {
     const admission = lifecycle.beginFreshAcquisition('fresh-publication');
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
 
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
     await vi.waitFor(() => expect(attachOperation).toHaveBeenCalledTimes(1));
     await vi.waitFor(() =>
       expect(buildOperationControl.mock.calls.length + warning.mock.calls.length).toBeGreaterThan(0),
     );
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     await flushMicrotasks();
 
     expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
@@ -1017,7 +1019,7 @@ describe('execution services provider-proxy proof composition', () => {
       initiateControlClose: async () => undefined,
       registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
     } as unknown as DurableProviderProxyOperationAuthority;
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     const incidentListener = incidentSubscription.listener;
     if (incidentListener === null) throw new Error('lifecycle did not subscribe to authority incidents');
 
@@ -1315,7 +1317,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     });
     const admission = lifecycle.beginFreshAcquisition('heartbeat-hold-route');
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
 
     return {
       time,

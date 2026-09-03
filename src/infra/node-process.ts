@@ -8,26 +8,7 @@ import { readFileSync } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { z } from 'zod';
 
-/**
- * Bounds one probe *subprocess*, not one probe: `probeMacProcessIncarnation` issues two in sequence and does
- * not cache the first, so a wedged darwin probe costs twice this.
- *
- * Best-effort, and nothing may rely on more. Node implements a synchronous timeout by sending `killSignal`
- * and then continuing to wait for the child to exit, so a child that blocks or ignores it still overruns.
- * Nothing *can* rely on hardness anyway: every deadline mechanism here is asynchronous, and none of them
- * preempt a synchronous `execFileSync`, which blocks the event loop outright. This makes a wedged probe
- * return; it does not make any caller's deadline enforceable, and the difference is not academic for callers
- * that sweep a recorded set — `docs/todo/containment-observation-deadline.md` owns that analysis, deliberately
- * rather than here, because every fact in it belongs to a module this one cannot see change.
- *
- * 2s matches the bound `env-sanitize.ts` already uses for a synchronous subprocess. There is no measurement
- * behind either number — do not add one to a comment without taking it.
- *
- * What the bound cannot do is the part that makes it safe: it turns a would-be-successful observation into a
- * throw, and every call site's existing `catch` answers `null`. It cannot fabricate a token, so it cannot
- * make an equality check newly pass. That is narrower than "it cannot authorize a signal" — not every signal
- * is equality-gated — so it is the only claim to rely on.
- */
+/** Every async platform probe must share one deadline derived from this end-to-end allowance. */
 export const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
 
 /**
@@ -309,12 +290,9 @@ export function createRecordedProcessObserver(
 // `execFileSync`/`readFileSync`, for a guardian/reaper answering loop that cannot afford either to stall.
 // -------------------------------------------------------------------------------------------------------
 
-/** The async sibling of `PROBE_EXEC_OPTIONS`: the same encoding and the same `P` bound, spent through
- *  `execFile`'s own non-blocking `timeout` handling rather than by blocking the caller. */
-const ASYNC_PROBE_EXEC_OPTIONS: ExecFileOptionsWithStringEncoding = {
-  encoding: 'utf-8',
-  timeout: PROCESS_INCARNATION_PROBE_TIMEOUT_MS,
-};
+function asyncProbeExecOptions(signal: AbortSignal): ExecFileOptionsWithStringEncoding {
+  return { encoding: 'utf-8', signal };
+}
 
 /** A plain callback-to-promise wrapper, not `util.promisify(execFile)`: `execFile`'s multi-value callback
  *  only resolves to `{ stdout, stderr }` through a promisify-custom implementation Node supplies internally,
@@ -338,18 +316,13 @@ function execFileAsync(
   });
 }
 
-/** A fresh `P`-second bound for one non-blocking file read. Minted per call: an `AbortSignal.timeout` fires
- *  once, so the two Linux reads below each need their own rather than sharing one that could already be
- *  spent by the time the second read starts. */
-function freshReadTimeoutSignal(): AbortSignal {
+function processIncarnationProbeSignal(): AbortSignal {
   return AbortSignal.timeout(PROCESS_INCARNATION_PROBE_TIMEOUT_MS);
 }
 
-async function readLinuxBootIdAsync(): Promise<string | null> {
+async function readLinuxBootIdAsync(signal: AbortSignal): Promise<string | null> {
   try {
-    const raw = (
-      await readFileAsync('/proc/sys/kernel/random/boot_id', { encoding: 'utf-8', signal: freshReadTimeoutSignal() })
-    ).trim();
+    const raw = (await readFileAsync('/proc/sys/kernel/random/boot_id', { encoding: 'utf-8', signal })).trim();
     return raw.length > 0 ? raw : null;
   } catch {
     return null;
@@ -357,22 +330,23 @@ async function readLinuxBootIdAsync(): Promise<string | null> {
 }
 
 async function probeLinuxProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
-  const bootId = await readLinuxBootIdAsync();
+  const signal = processIncarnationProbeSignal();
+  const bootId = await readLinuxBootIdAsync(signal);
   if (bootId === null) {
     return null;
   }
 
   try {
-    const stat = await readFileAsync(`/proc/${pid}/stat`, { encoding: 'utf-8', signal: freshReadTimeoutSignal() });
+    const stat = await readFileAsync(`/proc/${pid}/stat`, { encoding: 'utf-8', signal });
     return parseLinuxProcessIncarnation(bootId, stat);
   } catch {
     return null;
   }
 }
 
-async function readMacBootSessionIdAsync(): Promise<string | null> {
+async function readMacBootSessionIdAsync(signal: AbortSignal): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('sysctl', ['-n', 'kern.bootsessionuuid'], ASYNC_PROBE_EXEC_OPTIONS);
+    const { stdout } = await execFileAsync('sysctl', ['-n', 'kern.bootsessionuuid'], asyncProbeExecOptions(signal));
     const raw = stdout.trim();
     return raw.length > 0 ? raw : null;
   } catch {
@@ -381,13 +355,14 @@ async function readMacBootSessionIdAsync(): Promise<string | null> {
 }
 
 async function probeMacProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
+  const signal = processIncarnationProbeSignal();
   try {
-    const bootSessionId = await readMacBootSessionIdAsync();
+    const bootSessionId = await readMacBootSessionIdAsync(signal);
     if (bootSessionId === null) {
       return null;
     }
 
-    const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], ASYNC_PROBE_EXEC_OPTIONS);
+    const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], asyncProbeExecOptions(signal));
     const raw = stdout.trim();
     if (!raw) {
       return null;
@@ -405,7 +380,7 @@ async function probeWindowsProcessIncarnationAsync(pid: number): Promise<Process
     const { stdout } = await execFileAsync(
       'wmic',
       ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
-      ASYNC_PROBE_EXEC_OPTIONS,
+      asyncProbeExecOptions(processIncarnationProbeSignal()),
     );
     const match = stdout.match(/CreationDate=(\d{14}\.\d+[+-]\d+)/) ?? stdout.match(/CreationDate=(\d{14})/);
     const value = match?.[1];

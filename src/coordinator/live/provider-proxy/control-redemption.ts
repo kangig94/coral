@@ -38,6 +38,11 @@ import {
   ESTABLISH_CONTROL_READY_DEADLINE_MS,
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from './role-control.js';
+import {
+  runProviderProxySetPublicationTransaction,
+  type ProviderProxySetPublicationUnknown,
+  type PublicationReceipt,
+} from './set-publication.js';
 
 const redeemedProviderProxyControlBrand: unique symbol = Symbol('RedeemedProviderProxyControl');
 
@@ -64,6 +69,7 @@ export type ProviderProxyControlRedemptionBundle = Readonly<{
   reaperIdentity: ReaperHandoffRotation['reaper'];
   proxyIdentity: ProxyHandoffRedemption['proxy'];
   recoveryOperations: readonly OperationIdentity[];
+  publicationReceipt: PublicationReceipt;
 }>;
 
 export type RedeemedProviderProxyControl = Readonly<{
@@ -79,7 +85,8 @@ export type ProviderProxyControlRedemptionRefusal =
       error: ProviderProxyRoleControlUnavailableError;
     }>
   | Readonly<{ kind: 'identity-disagreement' }>
-  | Readonly<{ kind: 'operation-membership-disagreement' }>;
+  | Readonly<{ kind: 'operation-membership-disagreement' }>
+  | Readonly<{ kind: 'publication-refused'; role: 'guardian' | 'proxy'; reason: string }>;
 
 export type ProviderProxyControlRedemptionOutcome =
   | RedeemedProviderProxyControl
@@ -88,7 +95,8 @@ export type ProviderProxyControlRedemptionOutcome =
       kind: 'unavailable';
       incident: ProviderProxyRoleControlAvailabilityIncident;
       error: ProviderProxyRoleControlUnavailableError;
-    }>;
+    }>
+  | Readonly<{ kind: 'unavailable'; incident: ProviderProxySetPublicationUnknown }>;
 
 function canonicalOperationSet(operations: readonly OperationIdentity[]): string[] {
   return [
@@ -312,6 +320,26 @@ export async function redeemProviderProxyControl(
     }
 
     signal.throwIfAborted();
+    const publication = await runProviderProxySetPublicationTransaction(
+      guardianSession.client,
+      proxySession.client,
+      guardianSession.opened.guardian,
+      reaperSession.opened.reaper,
+      proxySession.opened.proxy,
+    );
+    if (publication.kind === 'publication-unknown') {
+      abandonAttempt(heartbeatAssembly, opened);
+      return { kind: 'unavailable', incident: publication };
+    }
+    if (publication.kind === 'not-attempted') {
+      abandonAttempt(heartbeatAssembly, opened);
+      return {
+        kind: 'refused',
+        refusal: { kind: 'publication-refused', role: publication.role, reason: publication.reason },
+      };
+    }
+
+    signal.throwIfAborted();
     const bundle: ProviderProxyControlRedemptionBundle = {
       setIdentity,
       clients: {
@@ -325,6 +353,7 @@ export async function redeemProviderProxyControl(
       reaperIdentity: reaperSession.opened.reaper,
       proxyIdentity: proxySession.opened.proxy,
       recoveryOperations: guardianSession.opened.operations,
+      publicationReceipt: publication.receipt,
     };
     return { kind: 'redeemed', [redeemedProviderProxyControlBrand]: bundle };
   } catch (error: unknown) {

@@ -7,6 +7,7 @@ import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import type { ProviderProxyRecoveryProducerPorts } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
@@ -72,6 +73,8 @@ function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
 }
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
+
+const TEST_PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -189,7 +192,7 @@ function lifecycleForSchedule(
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority);
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
   return lifecycle;
 }
 

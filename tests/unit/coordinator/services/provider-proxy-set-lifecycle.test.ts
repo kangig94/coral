@@ -25,6 +25,7 @@ import {
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { ProviderProxyRoleControlRemoteError } from '#src/coordinator/live/provider-proxy/role-control.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -88,6 +89,9 @@ import {
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const TEST_PUBLICATION_RECEIPT = {
+  kind: 'provider-proxy-set-published',
+} as PublicationReceipt;
 /** Mirrors the unexported `PRESERVE_REPORT_INTERVAL_MS` in `provider-proxy-set/index.ts`. */
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 
@@ -675,7 +679,7 @@ async function authorizedOperatorExitForProof(
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority);
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
   faults.reportIncident({
     kind: 'control-channel-fault',
     role: 'guardian',
@@ -899,7 +903,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident({
       kind: 'operation-control-failed',
@@ -934,7 +938,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -968,7 +972,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
     );
@@ -1007,7 +1011,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const noResponse = (): void =>
       faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
@@ -1047,7 +1051,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1085,7 +1089,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1132,7 +1136,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1180,7 +1184,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'guardian timed out' }),
@@ -1250,7 +1254,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const unusable = (error: string): void =>
       faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable', error }));
@@ -1331,7 +1335,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation(
@@ -1383,7 +1387,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(heartbeatAuthorityObservation({ kind: 'method-not-found', error: 'method not found' }));
 
@@ -1442,7 +1446,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(heartbeatAuthorityObservation({ kind: 'unusable', error: 'first unusable answer' }));
     clock.elapse(5_000);
@@ -1482,7 +1486,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const noResponse = (): void =>
       faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
@@ -1525,7 +1529,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1570,7 +1574,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1613,7 +1617,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1660,7 +1664,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     // Six incidents over 12000ms clear the span by a wide margin if they were counted.
     for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -1701,7 +1705,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const noResponse = (): void =>
       faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
@@ -1758,7 +1762,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     // The transport can name timeout and connection-closed-after-write without changing the observation:
     // both are no response to a request that was sent, and both advance the one silence window.
@@ -1804,7 +1808,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
@@ -1835,7 +1839,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     // The oldest report of all, inserted first: a live heartbeat hold that must survive eviction pressure.
     faults.reportIncident(
@@ -1920,8 +1924,8 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(firstAuthority);
-    lifecycle.registerInheritedSet(secondAuthority);
+    lifecycle.registerInheritedSet(firstAuthority, TEST_PUBLICATION_RECEIPT);
+    lifecycle.registerInheritedSet(secondAuthority, TEST_PUBLICATION_RECEIPT);
 
     const otherMethodPolicy: RetrySafeControlCallPolicy = {
       ...operationPolicy,
@@ -1989,7 +1993,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const remoteFailure = {
       kind: 'json-rpc-error' as const,
@@ -2031,7 +2035,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const incident: ProviderProxyAuthorityIncident = {
       kind: 'operation-control-failed',
@@ -2072,7 +2076,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     for (let code = 0; code < 33; code += 1) {
       faults.reportIncident({
@@ -2111,7 +2115,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     latchAuthorityFault(authority, {
       kind: 'operation-control-failed',
@@ -2160,7 +2164,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('live-claim-hold-route');
     if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
 
     trigger(faults, clock, authority);
     expect(lifecycle.snapshot().operatorDispositions).toContainEqual(expect.objectContaining({ waitingFor }));
@@ -2206,7 +2210,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('reattachment-route');
     if (admission.kind !== 'accepted') throw new Error('expected reattachment admission');
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
 
     oldFaults.reportIncident({
       kind: 'control-channel-fault',
@@ -2256,7 +2260,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('draining-reattachment');
     if (admission.kind !== 'accepted') throw new Error('expected reattachment admission');
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
     lifecycle.beginGracefulDrain(authority.setIdentity);
 
     faults.reportIncident({
@@ -2294,7 +2298,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident({
       kind: 'control-channel-fault',
@@ -2349,7 +2353,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     const firstObservedAt = clock.monotonicNow();
 
     const channelIncident = {
@@ -2417,7 +2421,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     latchAuthorityFault(authority, {
       kind: 'heartbeat-failed',
@@ -2483,7 +2487,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident({
       kind: 'control-channel-fault',
@@ -2524,7 +2528,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     latchAuthorityFault(authority, {
       kind: 'heartbeat-failed',
@@ -2563,7 +2567,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     const address = providerProxySetAddress(authority.setIdentity);
 
     expect(lifecycle.authorizeOperatorExit({ ...address, proxyInstanceId: randomUUID() })).toEqual({
@@ -2972,7 +2976,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     const address = providerProxySetAddress(authority.setIdentity);
 
     latchAuthorityFault(authority, terminalAuthorityFault());
@@ -3036,7 +3040,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     const address = providerProxySetAddress(authority.setIdentity);
 
     latchAuthorityFault(authority, terminalAuthorityFault());
@@ -3082,7 +3086,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     faults.reportIncident({
       kind: 'control-channel-fault',
       role: 'proxy',
@@ -3154,7 +3158,7 @@ describe('ProviderProxySetLifecycle', () => {
       });
       lifecycle.initializeClaimSlots();
       lifecycle.completeStartupDiscovery();
-      lifecycle.registerInheritedSet(authority);
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
       faults.reportIncident({
         kind: 'control-channel-fault',
         role: 'proxy',
@@ -3214,7 +3218,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     faults.reportIncident({
       kind: 'control-channel-fault',
       role: 'proxy',
@@ -3316,7 +3320,7 @@ describe('ProviderProxySetLifecycle', () => {
       });
       lifecycle.initializeClaimSlots();
       lifecycle.completeStartupDiscovery();
-      lifecycle.registerInheritedSet(authority);
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
       latchAuthorityFault(authority, terminalAuthorityFault());
 
@@ -3399,6 +3403,20 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority();
     const capsule = capsuleV3For(authority);
     const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    let phases: Record<'guardian' | 'reaper' | 'proxy', 'acquisition-provisional' | 'published'> = {
+      guardian: 'acquisition-provisional',
+      reaper: 'acquisition-provisional',
+      proxy: 'acquisition-provisional',
+    };
+    const completePublication = (): void => {
+      phases = { guardian: 'published', reaper: 'published', proxy: 'published' };
+      redemption.resolve({
+        kind: 'redeemed',
+        set: authority,
+        publicationReceipt: TEST_PUBLICATION_RECEIPT,
+        protection: 'protected',
+      });
+    };
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
@@ -3438,10 +3456,56 @@ describe('ProviderProxySetLifecycle', () => {
         hostFingerprint: capsule.hostFingerprint,
       }),
     ).toEqual({ kind: 'already-represented' });
+    expect(lifecycle.routeFor(routeKey)).toBeNull();
+    expect(phases).toEqual({
+      guardian: 'acquisition-provisional',
+      reaper: 'acquisition-provisional',
+      proxy: 'acquisition-provisional',
+    });
 
-    redemption.resolve({ kind: 'redeemed', set: authority, protection: 'protected' });
+    completePublication();
     await vi.waitFor(() => expect(lifecycle.routeFor(routeKey)).toBe(authority));
+    expect(phases).toEqual({ guardian: 'published', reaper: 'published', proxy: 'published' });
     expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+  });
+
+  it('holds a publication-unknown redemption instead of restoring its route', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const capsule = capsuleV3For(authority);
+    const established = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: established,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: async () => enforcersUnobservable,
+      redeemCapsule: async () => ({
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'publication-unknown', role: 'proxy', reason: 'proxy publication reply lost' },
+      }),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const routeKey = 'publication-unknown-redemption-route';
+    const admission = lifecycle.beginFreshAcquisition(routeKey, {
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+    });
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+
+    lifecycle.acquisitionPublicationUnknown(
+      admission.slotId,
+      '/capsules/publication-unknown-redemption.handoff.v3.json',
+      capsule,
+      'initial publication reply was lost',
+    );
+    await drainMicrotasks();
+
+    expect(lifecycle.routeFor(routeKey)).toBeNull();
+    expect(lifecycle.snapshot().states).toEqual(['capsule-recovering']);
+    expect(established).not.toHaveBeenCalled();
   });
 
   it('releases a publication-unknown acquisition after exact containment absence', async () => {
@@ -3551,7 +3615,12 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
-      redeemCapsule: async () => ({ kind: 'redeemed', set: authority, protection: 'protected' }),
+      redeemCapsule: async () => ({
+        kind: 'redeemed',
+        set: authority,
+        publicationReceipt: TEST_PUBLICATION_RECEIPT,
+        protection: 'protected',
+      }),
       reportLifecycle,
     });
     lifecycle.initializeClaimSlots();
@@ -3597,7 +3666,12 @@ describe('ProviderProxySetLifecycle', () => {
       retainsEveryCapsule,
     );
     claims.applyMutation({ kind: 'upserted', record });
-    redemption.resolve({ kind: 'redeemed', set: authority, protection: 'protected' });
+    redemption.resolve({
+      kind: 'redeemed',
+      set: authority,
+      publicationReceipt: TEST_PUBLICATION_RECEIPT,
+      protection: 'protected',
+    });
     await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
 
     expect(stopAndReap).not.toHaveBeenCalled();
@@ -3750,7 +3824,12 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
-      redeemCapsule: async () => ({ kind: 'redeemed', set: corrupted, protection: 'protected' }),
+      redeemCapsule: async () => ({
+        kind: 'redeemed',
+        set: corrupted,
+        publicationReceipt: TEST_PUBLICATION_RECEIPT,
+        protection: 'protected',
+      }),
       onFatal: fatals,
     });
     lifecycle.initializeClaimSlots();
@@ -3805,7 +3884,12 @@ describe('ProviderProxySetLifecycle', () => {
       setIdentity: { ...authority.setIdentity, guardianPid: authority.setIdentity.guardianPid + 1 },
     };
 
-    redemption.resolve({ kind: 'redeemed', set: corrupted, protection: 'protected' });
+    redemption.resolve({
+      kind: 'redeemed',
+      set: corrupted,
+      publicationReceipt: TEST_PUBLICATION_RECEIPT,
+      protection: 'protected',
+    });
     await drainMicrotasks();
 
     expect({
@@ -3852,7 +3936,12 @@ describe('ProviderProxySetLifecycle', () => {
       setIdentity: { ...authority.setIdentity, guardianInstanceId: randomUUID() },
     };
 
-    redemption.resolve({ kind: 'redeemed', set: corrupted, protection: 'protected' });
+    redemption.resolve({
+      kind: 'redeemed',
+      set: corrupted,
+      publicationReceipt: TEST_PUBLICATION_RECEIPT,
+      protection: 'protected',
+    });
     await drainMicrotasks();
 
     expect({
@@ -3964,7 +4053,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('codex-route');
     if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
     expect(lifecycle.routeFor('codex-route')).toBe(authority);
 
     const authorityFault: ProviderProxyAuthorityFault = {
@@ -4015,7 +4104,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
 
     lifecycle.containmentAbsent(authority.setIdentity, 'public-proof-receipt');
@@ -4058,7 +4147,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const authority = fakeAuthority({ record });
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
 
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'corrupt-disappearance-identity');
@@ -4141,7 +4230,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const authority = fakeAuthority({ record });
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
 
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'nested-disappearance-fatal');
@@ -4217,7 +4306,7 @@ describe('ProviderProxySetLifecycle', () => {
       record: first,
       stopAndReap: async () => ({ disappearanceReceipt: 'exact-absence' }),
     });
-    lifecycle.registerInheritedSet(authority, '/capsules/set.handoff.json');
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/set.handoff.json');
 
     latchAuthorityFault(authority, terminalAuthorityFault());
     await vi.waitFor(() => expect(lifecycle.snapshot().pendingOperationCounts).toEqual([1]));
@@ -4260,7 +4349,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority, '/capsules/set.handoff.json');
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/set.handoff.json');
 
     latchAuthorityFault(authority, terminalAuthorityFault());
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'exact-absence');
@@ -4311,7 +4400,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('route');
     if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
     latchAuthorityFault(authority, terminalAuthorityFault());
     expect(attempts).toBe(1);
@@ -4354,7 +4443,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('route');
     if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
 
     clock.elapse(30_000);
@@ -4419,7 +4508,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
 
     const authorities = records.map((record) => fakeAuthority({ record, stopAndReap }));
-    for (const authority of authorities) lifecycle.registerInheritedSet(authority);
+    for (const authority of authorities) lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     const drainRecord = reportLifecycle.mock.calls.find(([, message]) => message.includes('reason=excess_capacity'));
     const excessIndex = authorities.findIndex((authority) =>
       drainRecord?.[1].includes(`set=${setReference(authority.setIdentity)}`),
@@ -4486,7 +4575,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     const admission = lifecycle.beginFreshAcquisition('graceful-route');
     if (admission.kind !== 'accepted') throw new Error('expected acquisition admission');
-    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
 
     lifecycle.beginGracefulDrain(authority.setIdentity);
     expect(stopAndReap).not.toHaveBeenCalled();
@@ -4547,7 +4636,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     const unanswered = (): void =>
       faults.reportIncident(
@@ -4579,6 +4668,7 @@ describe('ProviderProxySetLifecycle', () => {
       async (): Promise<ProviderProxySetRedemptionOutcome> => ({
         kind: 'redeemed',
         set: authority,
+        publicationReceipt: TEST_PUBLICATION_RECEIPT,
         protection: 'protected',
       }),
     );
@@ -5361,7 +5451,7 @@ describe('AC10: legacy-unprotected rollout', () => {
 
     expect(lifecycle.overloadFloorReady()).toBe(true);
 
-    lifecycle.registerInheritedSet(authority, null, 'legacy-unprotected');
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'legacy-unprotected');
 
     expect(lifecycle.overloadFloorReady()).toBe(false);
     expect(lifecycle.snapshot().states).toEqual(['available']);
@@ -5385,7 +5475,7 @@ describe('AC10: legacy-unprotected rollout', () => {
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
 
-    lifecycle.registerInheritedSet(authority, null, 'legacy-unprotected');
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'legacy-unprotected');
 
     // No live claims: an admitted current-generation set would stay `available` and routable, but a
     // legacy-unprotected one is drain-only and reaches zero claims immediately, so it retires on sight
@@ -5487,7 +5577,7 @@ describe('AC3: forceProviderProxySetContainment', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority);
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
 
     faults.reportIncident(
       heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),

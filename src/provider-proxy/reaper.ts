@@ -39,6 +39,7 @@ import {
   assertNamedProxyIdentity,
   assertNamedTeardownReserve,
   containmentPrepareTokenSchema,
+  type enforcementHoldStatusSchema,
   holderStatusResultSchema,
   reaperAcquisitionPublishParamsSchema,
   reaperAcquisitionPublishResultSchema,
@@ -109,6 +110,7 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   holderAuthority: ControlHolderAuthority;
   /** The non-blocking identity-bound observer the reaper's own enforcer schedules holder checks through. */
   observeHolder: AsyncRecordedProcessObserver;
+  enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -528,6 +530,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             controlEpoch: current.identity.controlEpoch,
             transitionSequence: current.transitionSequence,
             changedAtMs: current.changedAtMs,
+            enforcementHold: options.enforcementHoldStatus?.() ?? null,
           });
         },
       },

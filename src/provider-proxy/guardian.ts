@@ -55,6 +55,7 @@ import {
   guardianProxyOperationReleaseParamsSchema as proxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema as registerProviderRootParamsSchema,
+  type enforcementHoldStatusSchema,
   holderStatusResultSchema,
   jointContainmentReceiptSchema,
   reaperAcquisitionPublishParamsSchema,
@@ -252,6 +253,7 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   holderAuthority: ControlHolderAuthority;
   /** The non-blocking identity-bound observer the guardian's own enforcer schedules holder checks through. */
   observeHolder: AsyncRecordedProcessObserver;
+  enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -868,6 +870,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             controlEpoch: current.identity.controlEpoch,
             transitionSequence: current.transitionSequence,
             changedAtMs: current.changedAtMs,
+            enforcementHold: options.enforcementHoldStatus?.() ?? null,
           });
         },
       },

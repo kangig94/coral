@@ -431,6 +431,7 @@ export interface BackendStatusCommandOperations {
   getStatus(): Promise<BackendStatusFull>;
   getLiveHandoffResult(): LiveHandoffResult | null;
   getRoutingStatus(): Promise<HandoffRoutingStatusReadResult>;
+  readProviderProxySetHolderStatusDirect?(): Promise<readonly DirectProviderProxySetHolderStatus[]>;
 }
 
 export interface HandoffRoutingStatusCommandOperations {
@@ -626,8 +627,18 @@ export async function readProviderProxySetHolderStatusDirect(
 
 function formatDirectHolderStatusReading(reading: DirectHolderStatusReading): string {
   switch (reading.kind) {
-    case 'answered':
-      return `${reading.status.disposition} (phase=${reading.status.phase}, epoch=${reading.status.controlEpoch})`;
+    case 'answered': {
+      const summary = `${reading.status.disposition} (phase=${reading.status.phase}, epoch=${reading.status.controlEpoch})`;
+      const hold = reading.status.enforcementHold;
+      if (hold === null) return summary;
+      const retry =
+        hold.retry.state === 'scheduled'
+          ? `nextProbeAt=${new Date(hold.retry.nextProbeAtMs).toISOString()}`
+          : hold.retry.state === 'in-progress'
+            ? 'nextProbe=in-progress'
+            : 'nextProbe=none, operator-action-required';
+      return `${summary}; hold=${hold.kind} attempts=${hold.attempts} role=${hold.roleIdentity.role}:${hold.roleIdentity.pid}@${hold.roleIdentity.incarnation} ${retry}`;
+    }
     case 'holder-status-unavailable':
       return `unavailable (${reading.reason})`;
     case 'unreachable':
@@ -640,12 +651,30 @@ export function formatProviderProxySetHolderStatusDirect(
 ): string {
   if (readings.length === 0) return 'No provider proxy sets discovered on disk.';
   return readings
-    .map(
-      (reading) =>
+    .map((reading) => {
+      const roles = [reading.guardian, reading.reaper]
+        .filter((role): role is Extract<DirectHolderStatusReading, { kind: 'answered' }> => role.kind === 'answered')
+        .flatMap((role) => {
+          const hold = role.status.enforcementHold;
+          return hold?.retry.state === 'operator-action-required' ? [hold.roleIdentity] : [];
+        });
+      const operatorActions =
+        roles.length === 0
+          ? ''
+          : `\n  operator exits:\n` +
+            `    coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress({
+              buildSetId: reading.buildSetId,
+              hostFingerprint: reading.hostFingerprint,
+              proxyInstanceId: reading.proxyInstanceId,
+            })} --abandon-without-absence\n` +
+            roles.map((role) => `    kill -TERM ${role.pid}  # ${role.role}@${role.incarnation}`).join('\n');
+      return (
         `set proxy=${reading.proxyInstanceId} build=${reading.buildSetId} host=${reading.hostFingerprint}\n` +
         `  guardian: ${formatDirectHolderStatusReading(reading.guardian)}\n` +
-        `  reaper:   ${formatDirectHolderStatusReading(reading.reaper)}`,
-    )
+        `  reaper:   ${formatDirectHolderStatusReading(reading.reaper)}` +
+        operatorActions
+      );
+    })
     .join('\n');
 }
 
@@ -659,6 +688,7 @@ export function createBackendStatusCommandOperations(
     getStatus: () => getBackendStatusFull(getPluginRoot()),
     getLiveHandoffResult,
     getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, statusPath),
+    readProviderProxySetHolderStatusDirect: () => readProviderProxySetHolderStatusDirect(runtime),
   };
 }
 
@@ -1073,6 +1103,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         backendStatus.getStatus(),
         backendStatus.getRoutingStatus(),
       ]);
+      if (status.status === 'unreachable') {
+        const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
+          readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
+        process.stderr.write('Backend is unreachable over IPC.\n');
+        process.stdout.write(`${formatProviderProxySetHolderStatusDirect(direct)}\n`);
+        process.exitCode = BACKEND_STATUS_EXIT_CODES.unreachable;
+        return;
+      }
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
       process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
@@ -1085,22 +1123,6 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {
-      if (error instanceof BackendUnreachableError) {
-        // Coordinator IPC is starved or absent: fall back to reading the mode-0600 handoff capsule and
-        // querying both role endpoints directly, so this command remains useful for exactly the failure this
-        // batch exists to survive. A v0.10.9 role's `method_not_found` or bare close is rendered
-        // `holder-status-unavailable`, never as absence or containment authority.
-        try {
-          const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-          const direct = await readProviderProxySetHolderStatusDirect(runtime);
-          process.stderr.write('Backend is unreachable over IPC.\n');
-          process.stdout.write(`${formatProviderProxySetHolderStatusDirect(direct)}\n`);
-          process.exitCode = BACKEND_STATUS_EXIT_CODES.unreachable;
-        } catch (directError) {
-          emitError(directError);
-        }
-        return;
-      }
       emitError(error);
     }
   });

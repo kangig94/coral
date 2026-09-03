@@ -477,9 +477,13 @@ describe('buildEnforcementOutcomeHandlers', () => {
     const exitProcess = vi.fn();
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'guardian',
+      roleIdentity: { pid: 4101, incarnation: testIncarnation(4101) },
       deadlines: { markExited },
       close,
       exitProcess,
+      now: () => 1_000,
+      localSignalTeardownAuthorized: () => false,
+      retryUnattributable: () => null,
       schedule: (callback) => {
         scheduledCallbacks.push(callback);
       },
@@ -508,9 +512,13 @@ describe('buildEnforcementOutcomeHandlers', () => {
     const exitProcess = vi.fn();
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'reaper',
+      roleIdentity: { pid: 4102, incarnation: testIncarnation(4102) },
       deadlines: { markExited },
       close,
       exitProcess,
+      now: () => 1_000,
+      localSignalTeardownAuthorized: () => false,
+      retryUnattributable: () => null,
       schedule: (callback) => callback(),
     });
 
@@ -528,11 +536,15 @@ describe('buildEnforcementOutcomeHandlers', () => {
     const exitProcess = vi.fn();
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'guardian',
+      roleIdentity: { pid: 4103, incarnation: testIncarnation(4103) },
       deadlines: { markExited: vi.fn() },
       close: vi.fn(async () => {
         throw new Error('close failed');
       }),
       exitProcess,
+      now: () => 1_000,
+      localSignalTeardownAuthorized: () => false,
+      retryUnattributable: () => null,
       schedule: (callback) => callback(),
     });
 
@@ -541,5 +553,88 @@ describe('buildEnforcementOutcomeHandlers', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(exitProcess).toHaveBeenCalledWith(0);
+  });
+
+  it('keeps an unattributable group as durable status through bounded backoff exhaustion', () => {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const retryUnattributable = vi.fn(() =>
+      Promise.resolve({ kind: 'recorded-group-unattributable' as const, reason: 'still held' }),
+    );
+    const close = vi.fn(async () => undefined);
+    const exitProcess = vi.fn();
+    const handlers = buildEnforcementOutcomeHandlers({
+      role: 'reaper',
+      roleIdentity: { pid: 4200, incarnation: testIncarnation(4200) },
+      deadlines: { markExited: vi.fn() },
+      close,
+      exitProcess,
+      now: () => 10_000,
+      localSignalTeardownAuthorized: () => false,
+      retryUnattributable,
+      schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
+    });
+
+    for (let attempts = 1; attempts < 5; attempts += 1) {
+      handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+      const deferredOutcome = scheduled.shift();
+      if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+      expect(deferredOutcome.delayMs).toBe(0);
+      deferredOutcome.callback();
+      expect(handlers.enforcementHoldStatus()).toMatchObject({
+        kind: 'recorded-group-unattributable',
+        attempts,
+        roleIdentity: { role: 'reaper', pid: 4200, incarnation: testIncarnation(4200) },
+        retry: { state: 'scheduled' },
+      });
+      const scheduledRetry = scheduled.shift();
+      if (scheduledRetry === undefined) throw new Error('expected a scheduled unattributable retry');
+      expect(scheduledRetry.delayMs).toBeGreaterThan(0);
+      scheduledRetry.callback();
+      expect(handlers.enforcementHoldStatus()?.retry.state).toBe('in-progress');
+    }
+
+    handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+    const deferredOutcome = scheduled.shift();
+    if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+    expect(deferredOutcome.delayMs).toBe(0);
+    deferredOutcome.callback();
+
+    expect(retryUnattributable).toHaveBeenCalledTimes(4);
+    expect(handlers.enforcementHoldStatus()).toEqual({
+      kind: 'recorded-group-unattributable',
+      attempts: 5,
+      roleIdentity: { role: 'reaper', pid: 4200, incarnation: testIncarnation(4200) },
+      retry: { state: 'operator-action-required' },
+    });
+    expect(scheduled).toHaveLength(0);
+    expect(close).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
+  });
+
+  it('uses local-signal authority to exit nonzero after a final unattributable reap', async () => {
+    const scheduled: Array<() => void> = [];
+    const markExited = vi.fn();
+    const close = vi.fn(async () => undefined);
+    const exitProcess = vi.fn();
+    const handlers = buildEnforcementOutcomeHandlers({
+      role: 'guardian',
+      roleIdentity: { pid: 4300, incarnation: testIncarnation(4300) },
+      deadlines: { markExited },
+      close,
+      exitProcess,
+      now: () => 10_000,
+      localSignalTeardownAuthorized: () => true,
+      retryUnattributable: () => null,
+      schedule: (callback) => scheduled.push(callback),
+    });
+
+    handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+    scheduled[0]?.();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(handlers.enforcementHoldStatus()).toBeNull();
+    expect(markExited).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
   });
 });

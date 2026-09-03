@@ -74,6 +74,7 @@ import {
   subscribeProviderProxyControlEstablished,
   type ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
@@ -518,7 +519,22 @@ async function guardianLeaseClient(
               },
             }),
           )
-        : realClient.exchange(method, params, timeoutMs),
+        : method === 'guardian.acquisition-publish.v1'
+          ? Promise.resolve(
+              controlExchangeForTest({
+                kind: 'response',
+                response: {
+                  kind: 'result',
+                  value: {
+                    state: 'acquisition-published',
+                    certificate: 'publication-certificate',
+                    guardian: openResponse.guardian,
+                    reaper: openResponse.reaper,
+                  },
+                },
+              }),
+            )
+          : realClient.exchange(method, params, timeoutMs),
     faulted: realClient.faulted,
     onFault: (listener) => realClient.onFault(listener),
     close: () => realClient.close(),
@@ -667,6 +683,13 @@ function redemptionResponses(
       operations: operationSets.proxy,
     },
     'control.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'p2' },
+    'guardian.acquisition-publish.v1': {
+      state: 'acquisition-published',
+      certificate: 'publication-certificate',
+      guardian: guardianIdentityFor(loc),
+      reaper: reaperIdentityFor(loc),
+    },
+    'proxy.acquisition-publish.v1': { state: 'acquisition-published' },
     'guardian.handoff-install.v1': installAck,
     'reaper.handoff-install.v1': installAck,
     'handoff.install.v1': installAck,
@@ -1776,11 +1799,12 @@ describe('createProviderProxySetInheritance', () => {
     expect(registerInheritedSet).not.toHaveBeenCalled();
   });
 
-  it('announces once when a claim-backed discovered capsule is later registered from its durable row', async () => {
+  it('re-publishes an already-published redeemed set as a no-op before registering it', async () => {
     const loc = locator();
     const capsule = capsuleFor(loc);
     mockedReadCapsule.mockReturnValueOnce(capsule);
-    const client = fakeClient(redemptionResponses(loc, matchingOperationSets([])), []);
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(redemptionResponses(loc, matchingOperationSets([])), calls);
     stubConnect(client);
     const established = vi.fn();
     const unsubscribe = subscribeProviderProxyControlEstablished(established);
@@ -1803,10 +1827,12 @@ describe('createProviderProxySetInheritance', () => {
       retainsEveryCapsule,
     );
     expect(established).not.toHaveBeenCalled();
-    const registerInheritedSet = vi.fn((set: ProviderProxyOperationAuthority) => {
-      if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
-      lifecycle.registerInheritedSet(set);
-    });
+    const registerInheritedSet = vi.fn(
+      (set: ProviderProxyOperationAuthority, publicationReceipt: PublicationReceipt) => {
+        if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
+        lifecycle.registerInheritedSet(set, publicationReceipt);
+      },
+    );
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
@@ -1824,10 +1850,13 @@ describe('createProviderProxySetInheritance', () => {
     expect(established).toHaveBeenCalledTimes(1);
     expect(registerInheritedSet.mock.invocationCallOrder[0]).toBeLessThan(established.mock.invocationCallOrder[0]);
     expect(mockedConnect).toHaveBeenCalledTimes(3);
+    expect(calls.map(({ method }) => method)).toEqual(
+      expect.arrayContaining(['guardian.acquisition-publish.v1', 'proxy.acquisition-publish.v1']),
+    );
     if (outcome.kind === 'inherited') {
       // A set that answered the holder-status probe registers as protected; the classification travels with
       // the set because a route may only serve a protected one.
-      expect(registerInheritedSet).toHaveBeenCalledWith(outcome.set, 'protected');
+      expect(registerInheritedSet).toHaveBeenCalledWith(outcome.set, outcome.publicationReceipt, 'protected');
     }
   });
 
@@ -1876,9 +1905,9 @@ describe('createProviderProxySetInheritance', () => {
       reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: (set) => {
+      registerInheritedSet: (set, publicationReceipt) => {
         if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
-        lifecycle.registerInheritedSet(set);
+        lifecycle.registerInheritedSet(set, publicationReceipt);
       },
     });
 
@@ -1955,9 +1984,9 @@ describe('createProviderProxySetInheritance', () => {
       reapRecordedContainment: reapRecordedEvidence,
       identity,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-      registerInheritedSet: (set) => {
+      registerInheritedSet: (set, publicationReceipt) => {
         if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
-        lifecycle.registerInheritedSet(set);
+        lifecycle.registerInheritedSet(set, publicationReceipt);
       },
     });
     const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);

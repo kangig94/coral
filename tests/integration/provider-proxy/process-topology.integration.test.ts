@@ -1146,7 +1146,7 @@ describe('provider-proxy process topology: acquisition', () => {
     if (acquired.kind !== 'acquired') throw new Error(`acquisition failed: ${JSON.stringify(acquired)}`);
     if (!isProviderProxyOperationAuthority(acquired.set)) throw new Error('expected durable authority');
     const set = acquired.set;
-    lifecycle.acquisitionSucceeded(admission.slotId, set);
+    lifecycle.acquisitionSucceeded(admission.slotId, set, acquired.publicationReceipt);
     expect(lifecycle.routeFor(routeKey)).toBe(set);
 
     const channelIncident = new Promise<ProviderProxyAuthorityObservation>((resolve) => {

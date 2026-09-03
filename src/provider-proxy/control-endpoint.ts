@@ -722,10 +722,6 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       return;
     }
     sockets.add(socket);
-    // Bounded provisional admission applies only when this role actually has two authorities and both are
-    // genuinely occupied — a role with no pairing concept at all (the proxy) has only ever had one slot to
-    // exhaust, and its existing observation methods keep the unconditional, unbounded wiring below exactly as
-    // before; narrowing that too would regress a connection this batch was never asked to change.
     if (role.pairing !== undefined && controlTaken && pairingTaken) {
       // `hasObservationMethod` is true here — the branch above already destroyed the socket otherwise — so
       // this connection may still ask an observation method, but it earns no tenancy: bound its admission to

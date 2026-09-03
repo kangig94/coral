@@ -24,11 +24,13 @@ import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/pro
 import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const mockedProbe = probeProcessIncarnation as unknown as ReturnType<typeof vi.fn>;
 const mockedCreateSteps = createProviderProxyAcquisitionSteps as unknown as ReturnType<typeof vi.fn>;
 const mockedAcquire = acquireProviderProxySet as unknown as ReturnType<typeof vi.fn>;
+const PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
 
 const environment = {
   runtime,
@@ -71,7 +73,7 @@ describe('ensureProviderProxySet', () => {
 
   it('derives the host fingerprint from the entry spec and reports the acquired set on success', async () => {
     const set = fakeSet();
-    mockedAcquire.mockResolvedValueOnce({ kind: 'acquired', set });
+    mockedAcquire.mockResolvedValueOnce({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     let outcome: unknown;
 
     const entry = createEntry({ spec: createSharedSpec() });
@@ -82,7 +84,7 @@ describe('ensureProviderProxySet', () => {
       });
     });
 
-    expect(outcome).toEqual({ kind: 'acquired', set });
+    expect(outcome).toEqual({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     expect(mockedCreateSteps).toHaveBeenCalledTimes(1);
     const stepsCall = mockedCreateSteps.mock.calls[0][0];
     expect(stepsCall.pluginRoot).toBe('/plugin/root');

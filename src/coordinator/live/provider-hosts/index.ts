@@ -44,6 +44,7 @@ import {
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set/lifecycle-ref.js';
 import type { ProviderProxySetProtection } from '../../services/provider-proxy-set/identity.js';
+import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -93,7 +94,11 @@ export interface ProviderProxySetRegistration {
    *  this coordinator's later shutdown — including a second handoff — exactly as an acquired set would.
    *  `protection` carries the discovery-time `legacy-unprotected`/`protected` classification through and
    *  defaults to `protected`, matching every caller that has no legacy classification to report. */
-  registerInheritedSet(set: ProviderProxyOperationAuthority, protection?: ProviderProxySetProtection): void;
+  registerInheritedSet(
+    set: ProviderProxyOperationAuthority,
+    publicationReceipt: PublicationReceipt,
+    protection?: ProviderProxySetProtection,
+  ): void;
 }
 
 export type ManagedAppServerSession = Readonly<{
@@ -299,6 +304,7 @@ export class DefaultProviderHostManager
   /** See `ProviderProxySetRegistration.registerInheritedSet()`'s interface doc for this seam's full contract. */
   registerInheritedSet(
     set: ProviderProxyOperationAuthority,
+    publicationReceipt: PublicationReceipt,
     protection: ProviderProxySetProtection = 'protected',
   ): void {
     const lifecycle = this.providerProxyLifecycleRef?.get();
@@ -308,7 +314,7 @@ export class DefaultProviderHostManager
     if (!isProviderProxyOperationAuthority(set)) {
       throw new Error('provider_proxy_set_inherited_authority_not_durable');
     }
-    lifecycle.registerInheritedSet(set, null, protection);
+    lifecycle.registerInheritedSet(set, publicationReceipt, null, protection);
   }
 
   /** See the `ProviderHostManager.routeAppServerOperation()` interface doc for this seam's full contract. */
@@ -360,7 +366,7 @@ export class DefaultProviderHostManager
       (outcome) => {
         if (outcome.kind === 'acquired') {
           const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
-          lifecycle.acquisitionSucceeded(admission.slotId, set);
+          lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
           return;
         }
         if (outcome.kind === 'acquisition-publication-unknown') {

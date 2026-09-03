@@ -36,11 +36,18 @@ export interface EnforcementScheduler {
 
 export type EnforcementOutcome =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
-  | Readonly<{ kind: 'reap-failed'; reason: string }>;
+  | Readonly<{ kind: 'reap-failed'; reason: string }>
+  | Readonly<{ kind: 'recorded-group-unattributable'; reason: string }>;
+
+type SettledEnforcementOutcome = Exclude<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
 
 /** A superseded capability remains in the return value so no consumer can mistake refusal for completion. */
 export type EnforcementConsumptionDisposition<Authorization> =
-  | Readonly<{ kind: 'settled'; outcome: EnforcementOutcome }>
+  | Readonly<{ kind: 'settled'; outcome: SettledEnforcementOutcome }>
+  | Readonly<{
+      kind: 'holding';
+      outcome: Extract<EnforcementOutcome, { kind: 'recorded-group-unattributable' }>;
+    }>
   | Readonly<{ kind: 'authorization-superseded'; authorization: Authorization }>;
 
 /** How many distinct provider processes one containment may hold as teardown targets. */
@@ -97,7 +104,7 @@ export type ArmedEnforcerOptions<Scope extends symbol> = Readonly<{
    * accelerated absence result waits for the next ordinary, unaccelerated check before it may be consumed.
    */
   acceleratedCheckMayAuthorizeAbsence: boolean;
-  /** Called once when teardown completes, so the role can report and exit. */
+  /** An unattributable outcome is non-terminal and may be reported again after a later probe. */
   onOutcome(outcome: EnforcementOutcome): void;
   /**
    * A wake later than the model's bound. Reported as the detected progress-premise failure it is — but it
@@ -136,6 +143,8 @@ export interface ArmedEnforcer {
    * proceeds to teardown.
    */
   giveUp(authorization: LocalSignalTeardownAuthorization): Promise<EnforcementOutcome>;
+  /** Re-observes a teardown-latched group only while an unattributable hold remains current. */
+  retryUnattributable(): Promise<EnforcementOutcome> | null;
   /** Starts the independently scheduled loop. Idempotent. */
   arm(): void;
   /** Stops the loop without reaping. Used when the set retires cleanly. */
@@ -178,22 +187,20 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   } = options;
   const roots = new Map<string, RecordedProcessIdentity>();
   let handle: { unref?: () => void } | null = null;
+  let armedGeneration: symbol | null = null;
   let teardownInFlight: Promise<EnforcementOutcome> | null = null;
-  let settledOutcome: EnforcementOutcome | null = null;
+  let settledOutcome: SettledEnforcementOutcome | null = null;
+  let holdingUnattributable = false;
   // The published-holder observation flow's own in-flight probe. A probe is bounded evidence-gathering, not
   // a destructive act, so it is safe to hold across ticks and safe to discard if a renewal supersedes it.
   let holderProbe: { forCheckAt: MonotonicInstant<Scope>; promise: Promise<HolderObservation<Scope>> } | null = null;
-  // True only from the instant `tick()` commits to consuming a settled probe until that consumption has
-  // decided what to do next. Its sole purpose is stopping a second, concurrently scheduled `tick()` from
-  // consuming the same probe a second time; it is reset before any scheduling decision is made, so it never
-  // blocks a legitimate `schedule()`.
   let consuming = false;
 
   const orderedRecordedRoots = (): readonly RecordedProcessIdentity[] => [...roots.values()];
   const wouldExceedRootCap = (root: RecordedProcessIdentity): boolean =>
     !roots.has(rootKey(root)) && roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS;
 
-  const settle = (outcome: EnforcementOutcome): EnforcementOutcome => {
+  const settle = (outcome: SettledEnforcementOutcome): SettledEnforcementOutcome => {
     if (settledOutcome === null) {
       settledOutcome = outcome;
       onOutcome(outcome);
@@ -213,34 +220,40 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
         containmentEnvironment,
       );
       if (outcome.kind === 'recorded-group-unattributable') {
-        return settle({
-          kind: 'reap-failed',
+        return {
+          kind: 'recorded-group-unattributable',
           reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
-        });
+        };
       }
     } catch (error: unknown) {
-      return settle({ kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' });
+      return { kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' };
     }
     deadlines.markContainmentAbsent();
-    return settle({
+    return {
       kind: 'containment-absent',
       disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRecordedRoots()),
-    });
+    };
   };
 
-  /**
-   * Teardown is idempotent by construction: a repeat returns the settled outcome and a concurrent call
-   * joins the one in flight. Two overlapping reaps would signal the same targets twice and let two callers
-   * disagree about a single set's fate. Every entry point converges here, so a pending wake is cancelled
-   * from this one place rather than by each caller separately.
-   */
+  /** Concurrent teardown callers must join one reap; only an unattributable hold permits a later reap. */
   const teardown = (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
     if (handle !== null) {
       scheduler.cancel(handle);
       handle = null;
     }
     if (settledOutcome !== null) return Promise.resolve(settledOutcome);
-    teardownInFlight ??= runTeardown(exitDeadline);
+    if (teardownInFlight === null) {
+      holdingUnattributable = false;
+      teardownInFlight = runTeardown(exitDeadline).then((outcome) => {
+        if (outcome.kind === 'recorded-group-unattributable') {
+          holdingUnattributable = true;
+          teardownInFlight = null;
+          onOutcome(outcome);
+          return outcome;
+        }
+        return settle(outcome);
+      });
+    }
     return teardownInFlight;
   };
 
@@ -251,7 +264,9 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       return { kind: 'authorization-superseded', authorization };
     }
     const outcome = await teardown(containmentExecutionDeadline(clock, clock.now()));
-    return { kind: 'settled', outcome };
+    return outcome.kind === 'recorded-group-unattributable'
+      ? { kind: 'holding', outcome }
+      : { kind: 'settled', outcome };
   };
 
   const consumeExplicit = async (
@@ -261,7 +276,9 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       return { kind: 'authorization-superseded', authorization };
     }
     const outcome = await teardown(containmentExecutionDeadline(clock, clock.now()));
-    return { kind: 'settled', outcome };
+    return outcome.kind === 'recorded-group-unattributable'
+      ? { kind: 'holding', outcome }
+      : { kind: 'settled', outcome };
   };
 
   const consumeLocalSignal = async (_authorization: LocalSignalTeardownAuthorization): Promise<EnforcementOutcome> => {
@@ -277,18 +294,17 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       -(PROCESS_INCARNATION_PROBE_TIMEOUT_MS + PROXY_ENFORCER_MAX_WAKE_LATENCY_MS),
     );
 
-  /**
-   * What a settled probe does next. `alive`/`unobservable` never authorize anything and always renew the
-   * schedule so the loop keeps checking; only a consumable `absent` proceeds to teardown. Resets `consuming`
-   * as its first act, before making any scheduling decision, so a `schedule()` call below (or a concurrent
-   * `arm()`) is judged against current state rather than blocked by a flag whose only job was guarding the
-   * wait for this very result.
-   */
   const consumeHolderObservation = (
+    generation: symbol,
     observation: HolderObservation<Scope>,
     checkedAt: MonotonicInstant<Scope>,
   ): void => {
+    if (armedGeneration !== generation) return;
     consuming = false;
+    const lateness = clock.millisecondsBetween(checkedAt, clock.now());
+    if (lateness > PROXY_ENFORCER_MAX_WAKE_LATENCY_MS) {
+      options.onProgressViolation(lateness);
+    }
     if (teardownInFlight !== null || settledOutcome !== null) return;
     if (observation.disposition === 'absent') {
       if (deadlines.bounds().holderCheckAccelerated && !acceleratedCheckMayAuthorizeAbsence) {
@@ -297,16 +313,18 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
         // redemption linearizer is gone, and a successor may still be in flight. Advance the schedule past
         // the acceleration and retry at the ordinary cadence, exactly as an inconclusive result would.
         deadlines.renewHolderCheck(checkedAt);
-        schedule();
+        schedule(generation);
         return;
       }
       void consumeAbsence(observation.authorization).then((disposition) => {
+        if (armedGeneration !== generation) return;
         switch (disposition.kind) {
           case 'settled':
+          case 'holding':
             return;
           case 'authorization-superseded':
             deadlines.renewHolderCheck(checkedAt);
-            schedule();
+            schedule(generation);
             return;
           default:
             return assertNever(disposition);
@@ -319,10 +337,11 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     // has no positive evidence to anchor to, so it renews from the instant this check was performed —
     // clearing any spent acceleration and avoiding a hot loop without inventing a second, unnamed cadence.
     deadlines.renewHolderCheck(observation.disposition === 'alive' ? observation.observedAt : checkedAt);
-    schedule();
+    schedule(generation);
   };
 
-  const tick = (): void => {
+  const tick = (generation: symbol): void => {
+    if (armedGeneration !== generation) return;
     handle = null;
     if (teardownInFlight !== null || settledOutcome !== null || consuming) return;
 
@@ -332,7 +351,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       const bounds = deadlines.bounds();
       const now = clock.now();
       if (clock.compare(now, bounds.adoptionDeadline) < 0) {
-        schedule();
+        schedule(generation);
         return;
       }
       const lateness = clock.millisecondsBetween(bounds.adoptionDeadline, now);
@@ -356,32 +375,30 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     if (holderProbe === null) {
       const startAt = observationStartAt(holderCheckAtInstant);
       if (clock.compare(now, startAt) < 0) {
-        schedule();
+        schedule(generation);
         return;
       }
       holderProbe = {
         forCheckAt: holderCheckAtInstant,
         promise: observeControlHolder(holderAuthority, observeHolder, clock),
       };
-      schedule();
+      schedule(generation);
       return;
     }
 
     if (clock.compare(now, holderCheckAtInstant) < 0) {
       // The probe may already be settled, but its result cannot be consumed before the not-before gate.
-      schedule();
+      schedule(generation);
       return;
-    }
-
-    const lateness = clock.millisecondsBetween(holderCheckAtInstant, now);
-    if (lateness > PROXY_ENFORCER_MAX_WAKE_LATENCY_MS) {
-      options.onProgressViolation(lateness);
     }
 
     consuming = true;
     const probe = holderProbe;
     holderProbe = null;
-    void probe.promise.then((observation) => consumeHolderObservation(observation, holderCheckAtInstant));
+    void probe.promise.then((observation) => {
+      if (armedGeneration !== generation) return;
+      consumeHolderObservation(generation, observation, holderCheckAtInstant);
+    });
   };
 
   const nextWakeTarget = (): MonotonicInstant<Scope> => {
@@ -390,14 +407,16 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     return holderProbe === null ? observationStartAt(holderCheckAtInstant) : holderCheckAtInstant;
   };
 
-  const schedule = (): void => {
-    if (handle !== null || teardownInFlight !== null || settledOutcome !== null) return;
+  const schedule = (generation: symbol): void => {
+    if (armedGeneration !== generation || handle !== null || teardownInFlight !== null || settledOutcome !== null) {
+      return;
+    }
     const target = nextWakeTarget();
     const remaining = clock.millisecondsBetween(clock.now(), target);
     // Never sleep past the wake bound: a long remaining window still gets checked often enough that a
     // deadline moved earlier by control loss cannot be missed.
     const delay = Math.max(0, Math.min(remaining, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS));
-    handle = scheduler.schedule(tick, delay);
+    handle = scheduler.schedule(() => tick(generation), delay);
     handle.unref?.();
   };
 
@@ -422,13 +441,25 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     reapAbsentHolder: consumeAbsence,
     stopAndReap: consumeExplicit,
     giveUp: consumeLocalSignal,
+    retryUnattributable(): Promise<EnforcementOutcome> | null {
+      if (!holdingUnattributable) return null;
+      return teardown(containmentExecutionDeadline(clock, clock.now()));
+    },
     arm(): void {
-      schedule();
+      if (armedGeneration !== null) return;
+      const generation = Symbol('armed-enforcer-generation');
+      armedGeneration = generation;
+      schedule(generation);
     },
     disarm(): void {
-      if (handle === null) return;
-      scheduler.cancel(handle);
-      handle = null;
+      if (armedGeneration === null) return;
+      armedGeneration = null;
+      consuming = false;
+      holderProbe = null;
+      if (handle !== null) {
+        scheduler.cancel(handle);
+        handle = null;
+      }
     },
   };
 }

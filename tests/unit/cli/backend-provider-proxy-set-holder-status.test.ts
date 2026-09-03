@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
@@ -144,6 +145,7 @@ describe('readProviderProxySetHolderStatusDirect', () => {
       expect(reading.guardian.kind).toBe('answered');
       if (reading.guardian.kind === 'answered') {
         expect(reading.guardian.status.disposition).toBe('alive');
+        expect(reading.guardian.status.enforcementHold).toBeNull();
       }
       expect(reading.reaper.kind).toBe('holder-status-unavailable');
 
@@ -165,5 +167,41 @@ describe('readProviderProxySetHolderStatusDirect', () => {
 
     expect(readings).toEqual([]);
     expect(formatProviderProxySetHolderStatusDirect(readings)).toBe('No provider proxy sets discovered on disk.');
+  });
+
+  it('names both operator exits after unattributable retry exhaustion', () => {
+    const setIdentity = {
+      buildSetId: randomUUID(),
+      hostFingerprint: 'c'.repeat(64),
+      proxyInstanceId: randomUUID(),
+    };
+    const rendered = formatProviderProxySetHolderStatusDirect([
+      {
+        ...setIdentity,
+        guardian: {
+          kind: 'answered',
+          status: {
+            disposition: 'unobservable',
+            phase: 'published',
+            holder: { instanceId: randomUUID(), pid: 900, incarnation: testIncarnation(900) },
+            controlEpoch: 1,
+            transitionSequence: 2,
+            changedAtMs: 1_000,
+            enforcementHold: {
+              kind: 'recorded-group-unattributable',
+              attempts: 5,
+              roleIdentity: { role: 'guardian', pid: 901, incarnation: testIncarnation(901) },
+              retry: { state: 'operator-action-required' },
+            },
+          },
+        },
+        reaper: { kind: 'unreachable', reason: 'connection refused' },
+      },
+    ]);
+
+    expect(rendered).toContain(
+      `coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress(setIdentity)} --abandon-without-absence`,
+    );
+    expect(rendered).toContain('kill -TERM 901');
   });
 });

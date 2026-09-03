@@ -321,11 +321,6 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   function holderCheckAt(): MonotonicInstant<Scope> {
     const natural = naturalHolderCheckAt();
     if (holderCheckAccelerationAt === null) return natural;
-    // A completed check at or after the accelerated instant has already consumed the acceleration; the
-    // clamp must not keep re-applying to every later cadence.
-    if (holderCheckAnchor !== null && clock.compare(holderCheckAnchor, holderCheckAccelerationAt) >= 0) {
-      return natural;
-    }
     return clock.earlier(natural, holderCheckAccelerationAt);
   }
 
@@ -447,6 +442,9 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       // slower probe resolving after a faster later one already renewed) cannot undo the later evidence.
       holderCheckAnchor =
         holderCheckAnchor === null || clock.compare(holderCheckAnchor, at) < 0 ? at : holderCheckAnchor;
+      if (holderCheckAccelerationAt !== null && clock.compare(at, holderCheckAccelerationAt) >= 0) {
+        holderCheckAccelerationAt = null;
+      }
     },
   });
 }
