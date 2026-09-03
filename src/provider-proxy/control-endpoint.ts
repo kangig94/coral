@@ -5,6 +5,7 @@ import { truncate } from '../infra/text.js';
 import type { ControlHolderAuthority } from './holder-lifecycle.js';
 import {
   ProxyControlProtocolError,
+  PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE,
   controlHeartbeatParamsSchema,
   controlPairParamsSchema,
   controlPairResultSchema,
@@ -315,7 +316,11 @@ function failure(id: string | number | null, code: number, message: string): Pro
  * raw `ZodError` from a handler's `.parse()` — still has to report a code from the closed set rather than
  * escape it, because a caller only ever branches on `data.code`, never on prose.
  */
-function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRpcMessage {
+function handlerFailure(
+  id: string | number,
+  error: unknown,
+  jsonRpcCode: number = JSON_RPC_INVALID_REQUEST,
+): ProxyControlJsonRpcMessage {
   const message = error instanceof Error ? error.message : 'Control request failed.';
   if (error instanceof UnknownControlMethodError) {
     // `data.code` carries `method_not_found` for the same reason every other branch below attaches one: a
@@ -331,7 +336,7 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
     return {
       jsonrpc: '2.0',
       id,
-      error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code: error.code, reason: error.reason } },
+      error: { code: jsonRpcCode, message, data: { code: error.code, reason: error.reason } },
     };
   }
   if (error instanceof ControlHeartbeatRefusedError) {
@@ -339,7 +344,7 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
       jsonrpc: '2.0',
       id,
       error: {
-        code: JSON_RPC_INVALID_REQUEST,
+        code: jsonRpcCode,
         message,
         data: {
           code: error.code,
@@ -350,7 +355,7 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
     };
   }
   if (error instanceof ProxyControlProtocolError) {
-    return { jsonrpc: '2.0', id, error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code: error.code } } };
+    return { jsonrpc: '2.0', id, error: { code: jsonRpcCode, message, data: { code: error.code } } };
   }
   // Not one of this endpoint's own errors, so it carries no domain code to relay — only `protocol_violation`,
   // the closed set's catch-all. The message is truncated rather than passed through verbatim: a ZodError's
@@ -358,7 +363,7 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
   return {
     jsonrpc: '2.0',
     id,
-    error: { code: JSON_RPC_INVALID_REQUEST, message: truncate(message, 200), data: { code: 'protocol_violation' } },
+    error: { code: jsonRpcCode, message: truncate(message, 200), data: { code: 'protocol_violation' } },
   };
 }
 
@@ -504,8 +509,14 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     return acceptedHeartbeatResult(recorded.nextChallenge);
   };
 
-  const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {
+  const dispatch = async (
+    socket: Socket,
+    method: string,
+    params: unknown,
+    markHandlerStarted: () => void,
+  ): Promise<unknown> => {
     if (method === role.heartbeatMethod) {
+      markHandlerStarted();
       return echoChallenge(socket, params);
     }
     const pairing = role.pairing;
@@ -524,6 +535,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       if (tenancy?.socket === socket) {
         throw new ProxyControlProtocolError('unauthorized_control', 'The control connection may not also pair.');
       }
+      markHandlerStarted();
       pairedSocket = socket;
       return controlPairResultSchema.parse({ state: 'paired' });
     }
@@ -532,12 +544,14 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       throw new UnknownControlMethodError(method);
     }
     if (entry.authority === 'establishes-control') {
+      markHandlerStarted();
       return establishControl(socket, entry.handle, params);
     }
     if (entry.authority === 'pairing') {
       if (pairedSocket !== socket) {
         throw new ProxyControlProtocolError('unauthorized_control', `${method} requires the paired peer channel.`);
       }
+      markHandlerStarted();
       return entry.handle(params);
     }
     if (entry.authority === 'observation') {
@@ -549,6 +563,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       // proxy's instance, build set, job, and operation together requires the runtime meta only a
       // coordinator's own store holds. The reply then discloses nothing the asker did not already name.
       // Read-only is what makes that trade sound — an observation moves no deadline and spends nothing.
+      markHandlerStarted();
       return entry.handle(params);
     }
     const live = tenancy;
@@ -561,6 +576,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       // synchronous turn it creates `tenancy`, so a live tenancy never exists without an admitted holder.
       throw new ProxyControlProtocolError('invalid_state', `${method} found no admitted holder for a live tenancy.`);
     }
+    markHandlerStarted();
     return entry.handle(params, mintActiveControlAuthorization(socket, live.epoch, admittedHolder.holder));
   };
 
@@ -575,11 +591,22 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     const { id, method, params } = message;
     let settled = false;
+    let handlerStarted = false;
+    const dispatchRequest = () =>
+      dispatch(socket, method, params, () => {
+        handlerStarted = true;
+      });
+    const requestFailure = (error: unknown) =>
+      handlerFailure(
+        id,
+        error,
+        handlerStarted ? JSON_RPC_INVALID_REQUEST : PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE,
+      );
     if (role.methods.get(method)?.budgetMs === 'caller-deadline') {
       try {
-        write(socket, success(id, await dispatch(socket, method, params)));
+        write(socket, success(id, await dispatchRequest()));
       } catch (error: unknown) {
-        write(socket, handlerFailure(id, error));
+        write(socket, requestFailure(error));
       }
       return;
     }
@@ -592,14 +619,14 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }, budgetMs);
     budget.unref?.();
     try {
-      const result = await dispatch(socket, method, params);
+      const result = await dispatchRequest();
       if (settled) return;
       settled = true;
       write(socket, success(id, result));
     } catch (error: unknown) {
       if (settled) return;
       settled = true;
-      write(socket, handlerFailure(id, error));
+      write(socket, requestFailure(error));
     } finally {
       timer.clearTimeout(budget);
     }

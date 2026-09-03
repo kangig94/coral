@@ -303,7 +303,7 @@ export function createProviderProxyAcquisitionSteps(
       };
     },
 
-    async establishControl(): Promise<
+    async establishControl(registerUndo: (undo: AcquisitionUndo) => void): Promise<
       Readonly<{
         set: ProviderProxyOperationAuthority;
         publicationReceipt: PublicationReceipt;
@@ -472,6 +472,7 @@ export function createProviderProxyAcquisitionSteps(
           handoffCapsulePath,
           runtime,
           operationRegistry: options.operationRegistry,
+          registerAcquisitionUndo: registerUndo,
           ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
         });
         const installation = await base.installRecoveryCredential(new AbortController().signal);

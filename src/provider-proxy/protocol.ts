@@ -45,6 +45,8 @@ export const MAX_HEARTBEAT_CHALLENGE_CHARACTERS = 1_024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
 export const PROXY_STATUS_RPC_TIMEOUT_MS = 500;
+/** Certifies that the endpoint refused a request before invoking its method handler. */
+export const PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE = -32_099;
 
 /**
  * How many operations one `operation.status.v1` request may name.

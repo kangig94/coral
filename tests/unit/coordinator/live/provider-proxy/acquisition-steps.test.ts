@@ -36,6 +36,7 @@ import { exchangeAcquisitionStage } from '#src/coordinator/live/provider-proxy/s
 import {
   acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionPublishResultSchema,
+  proxyAcquisitionPublishResultSchema,
 } from '#src/provider-proxy/protocol.js';
 import { readHandoffCapsuleFile, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import {
@@ -170,7 +171,13 @@ function passiveClient(): ControlClient {
   };
 }
 
-async function proxyLeaseSession(time: VirtualTime) {
+async function proxyLeaseSession(
+  time: VirtualTime,
+  publicationHandler: (params: unknown) => Promise<unknown> | unknown = () => ({
+    state: 'acquisition-published',
+  }),
+  requestTimeoutMs = 5_000,
+) {
   const socketPath = `/tmp/coral-acquisition-heartbeat-${randomUUID()}.sock`;
   const scope = Symbol('acquisition-heartbeat');
   const clock = createMonotonicClock(scope, { readMilliseconds: () => BigInt(time.now()) });
@@ -217,7 +224,7 @@ async function proxyLeaseSession(time: VirtualTime) {
             // The real `proxy.acquisition-publish.v1` verifies the certificate binding structurally; this
             // fixture proxy is not under test for that check, so it accepts unconditionally.
             authority: 'active' as const,
-            handle: () => ({ state: 'acquisition-published' }),
+            handle: publicationHandler,
           },
         ],
       ]),
@@ -226,7 +233,7 @@ async function proxyLeaseSession(time: VirtualTime) {
     observer: { onControlLost: () => undefined },
     timer: time,
     holderAuthority: createControlHolderAuthority(),
-    requestTimeoutMs: 5_000,
+    requestTimeoutMs,
   });
   await endpoint.listen();
   const client = await connectControlClient(socketPath, time, 5_000);
@@ -336,6 +343,96 @@ describe('exchangeAcquisitionStage', () => {
     const value = { state: 'acquisition-publication-unknown', reason: 'x' };
     expect(acquisitionPublicationUnknownResultSchema.safeParse(value).success).toBe(true);
   });
+
+  it('keeps an endpoint budget refusal unknown when the dispatched handler later mutates', async () => {
+    const time = new VirtualTime();
+    let releaseHandler = (): void => {
+      throw new Error('publication handler did not start');
+    };
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let handlerStarted = false;
+    let mutated = false;
+    const proxy = await proxyLeaseSession(
+      time,
+      async () => {
+        handlerStarted = true;
+        await handlerGate;
+        mutated = true;
+        return { state: 'acquisition-published' };
+      },
+      100,
+    );
+
+    try {
+      const pending = exchangeAcquisitionStage(
+        proxy.client,
+        'proxy.acquisition-publish.v1',
+        {},
+        proxyAcquisitionPublishResultSchema,
+      );
+      await vi.waitFor(() => expect(handlerStarted).toBe(true));
+      time.tick(100);
+
+      await expect(pending).resolves.toMatchObject({ kind: 'unknown' });
+      releaseHandler();
+      await flushMicrotasks();
+      expect(mutated).toBe(true);
+    } finally {
+      releaseHandler();
+      await proxy.close();
+    }
+  });
+
+  it('classifies an endpoint-certified pre-dispatch refusal as not attempted', async () => {
+    const time = new VirtualTime();
+    const socketPath = `/tmp/coral-acquisition-refusal-${randomUUID()}.sock`;
+    const handler = vi.fn(() => ({ state: 'acquisition-published' }));
+    const endpoint = createControlEndpoint({
+      socketPath,
+      role: {
+        heartbeatMethod: 'control.heartbeat.v1',
+        methods: new Map([
+          [
+            'proxy.acquisition-publish.v1',
+            {
+              authority: 'active' as const,
+              handle: handler,
+            },
+          ],
+        ]),
+      },
+      challenges: {
+        issueFirstChallenge: () => ({ accepted: false }),
+        admitSuccessor: () => ({ accepted: false }),
+        reattachControl: () => ({ accepted: false }),
+        controlIsLive: () => false,
+        echoChallenge: () => ({ accepted: false, reason: 'teardown-latched' }),
+      },
+      observer: { onControlLost: () => undefined },
+      timer: time,
+      holderAuthority: createControlHolderAuthority(),
+      requestTimeoutMs: 5_000,
+    });
+    await endpoint.listen();
+    const client = await connectControlClient(socketPath, time, 5_000);
+
+    try {
+      const outcome = await exchangeAcquisitionStage(
+        client,
+        'proxy.acquisition-publish.v1',
+        {},
+        proxyAcquisitionPublishResultSchema,
+      );
+
+      expect(outcome).toMatchObject({ kind: 'not-attempted' });
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      client.close();
+      await endpoint.close();
+    }
+  });
 });
 
 describe('createProviderProxyAcquisitionSteps', () => {
@@ -423,7 +520,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
     expect(vi.mocked(spawnRoleProcess).mock.calls.at(-1)?.[3].envAdditions).toMatchObject({
       [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
     });
-    const established = await steps.establishControl();
+    const registerUndo = vi.fn();
+    const established = await steps.establishControl(registerUndo);
+    expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.registerAcquisitionUndo).toBe(registerUndo);
 
     const observation = { recurringEchoes: proxy.acceptedEchoes() - 1, controlIsLive: proxy.controlIsLive() };
     established.set.stopHeartbeats();
@@ -530,7 +629,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await steps.spawnGuardian();
     const establishedEvents = vi.fn();
     const unsubscribe = subscribeProviderProxyControlEstablished(establishedEvents);
-    const established = await steps.establishControl();
+    const established = await steps.establishControl(() => undefined);
     if (!isProviderProxyOperationAuthority(established.set)) throw new Error('expected durable authority');
 
     // The address the real writer produced, checked here because this is the only place it is produced. The
@@ -668,7 +767,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await steps.createCapsules();
     await steps.spawnGuardian();
 
-    await expect(steps.establishControl()).rejects.toMatchObject({
+    await expect(steps.establishControl(() => undefined)).rejects.toMatchObject({
       name: 'ProviderProxyAcquisitionPublicationUnknownError',
       capsulePath: expect.stringMatching(/\.handoff\.v3\.json$/u),
       capsuleBinding: publicationUnknownCapsule,

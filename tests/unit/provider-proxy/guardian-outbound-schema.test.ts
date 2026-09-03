@@ -285,6 +285,14 @@ function refuseReceiverConsultation(harness: GuardianHarness): void {
 }
 
 describe('guardian outbound schemas', () => {
+  it('leaves acquisition publication bounded only by the caller deadline', () => {
+    createGuardianHarness();
+
+    expect(
+      (endpointHarness.options as ControlEndpointOptions).role.methods.get('guardian.acquisition-publish.v1')?.budgetMs,
+    ).toBe('caller-deadline');
+  });
+
   it('returns holder identity and disposition from one status snapshot', async () => {
     const statusIdentity = {
       controlEpoch: 7,

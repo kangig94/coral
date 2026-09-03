@@ -74,7 +74,7 @@ export interface ProviderProxyAcquisitionSteps {
    * Opens and activates control on all three endpoints, checks the strict backend identities, and confirms
    * the containment the guardian recorded. Returns the authority only once every check has passed.
    */
-  establishControl(): Promise<
+  establishControl(registerUndo: (undo: AcquisitionUndo) => void): Promise<
     Readonly<{
       set: ProviderProxyOperationAuthority;
       publicationReceipt: PublicationReceipt;
@@ -200,7 +200,9 @@ export async function acquireProviderProxySet(
   if ('kind' in spawned) return spawned;
   undos.push(spawned);
 
-  const control = await runCut('control establishment', () => options.steps.establishControl());
+  const control = await runCut('control establishment', () =>
+    options.steps.establishControl((undo) => undos.push(undo)),
+  );
   if ('kind' in control) return control;
   undos.push(control.undo);
 

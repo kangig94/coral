@@ -48,6 +48,7 @@ import {
   type RedeemedProviderProxyControl,
 } from './control-redemption.js';
 import type { ProviderProxyRoleHeartbeats } from './heartbeat.js';
+import type { AcquisitionUndo } from './index.js';
 import type {
   ContainmentCommitOutcome,
   ProviderProxyAutonomousDeadline,
@@ -185,6 +186,8 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   /** `guardian.containment-commit.v1` carries no `providerRoots` argument, so `commitContainment` does not
    *  read this; `promote()` still forwards it into the reconstructed authority it builds on redemption. */
   operationRegistry: ProviderProxyOperationSnapshot;
+  /** Fresh acquisition must transfer cleanup ownership in the same turn that writes the capsule. */
+  registerAcquisitionUndo?(undo: AcquisitionUndo): void;
 }>;
 
 export type ProviderProxySetAuthorityDependencies = ProviderProxySetAuthorityCommonDependencies &
@@ -337,6 +340,10 @@ export function createProviderProxySetAuthority(
       writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
         storage: runtime.storage,
         uid: process.getuid?.() ?? 0,
+      });
+      deps.registerAcquisitionUndo?.({
+        label: 'handoff capsule',
+        run: () => runtime.storage.rmSync(handoffCapsulePath, { force: true }),
       });
     }
     const receipt = Object.freeze({

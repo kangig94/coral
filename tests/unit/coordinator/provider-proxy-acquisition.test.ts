@@ -186,8 +186,8 @@ describe('provider proxy set acquisition', () => {
     const original = recorded.steps.establishControl;
     const racing: ProviderProxyAcquisitionSteps = {
       ...recorded.steps,
-      establishControl: async () => {
-        const result = await original();
+      establishControl: async (registerUndo) => {
+        const result = await original(registerUndo);
         deadline.abort();
         return result;
       },

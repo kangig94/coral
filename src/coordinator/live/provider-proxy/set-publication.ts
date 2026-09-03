@@ -4,6 +4,7 @@ import { errorMessage } from '../../../infra/error-format.js';
 import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE,
   acquisitionPublicationUnknownResultSchema,
   guardianAcquisitionPublishParamsSchema,
   guardianAcquisitionPublishResultSchema,
@@ -15,6 +16,7 @@ import {
 } from '../../../provider-proxy/protocol.js';
 
 const publicationReceiptBrand: unique symbol = Symbol('PublicationReceipt');
+const JSON_RPC_METHOD_NOT_FOUND = -32_601;
 
 /** A set may become claimable only after the publication transaction mints this capability. */
 export type PublicationReceipt = Readonly<{
@@ -57,7 +59,15 @@ export async function exchangeAcquisitionStage<T>(
   }
   if (exchange.kind === 'response') {
     if (exchange.response.kind === 'refusal') {
-      return { kind: 'not-attempted', reason: exchange.response.error.message };
+      const { failure, error } = exchange.response;
+      if (
+        failure.kind === 'json-rpc-error' &&
+        (failure.jsonRpcCode === PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE ||
+          (failure.jsonRpcCode === JSON_RPC_METHOD_NOT_FOUND && failure.protocolCode === 'method_not_found'))
+      ) {
+        return { kind: 'not-attempted', reason: error.message };
+      }
+      return { kind: 'unknown', reason: error.message };
     }
     const explicitOutcome = acquisitionPublicationUnknownResultSchema.safeParse(exchange.response.value);
     if (explicitOutcome.success) {

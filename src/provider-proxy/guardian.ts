@@ -763,6 +763,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       'guardian.acquisition-publish.v1',
       {
         authority: 'active',
+        budgetMs: 'caller-deadline',
         handle: async (params) => {
           const request = guardianAcquisitionPublishParamsSchema.parse(params);
           assertNamedGuardianIdentity(request.guardian, identity);
