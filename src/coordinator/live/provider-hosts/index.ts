@@ -369,12 +369,9 @@ export class DefaultProviderHostManager
           lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
           return;
         }
-        if (outcome.kind === 'acquisition-publication-unknown') {
-          lifecycle.acquisitionPublicationUnknown(
-            admission.slotId,
-            outcome.capsulePath,
-            outcome.capsuleBinding,
-            outcome.reason,
+        if (outcome.kind === 'handed-over') {
+          lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
+            this.observeGenerationCapacity(identityKey, entry, set),
           );
           return;
         }

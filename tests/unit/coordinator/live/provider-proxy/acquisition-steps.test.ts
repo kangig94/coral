@@ -32,6 +32,10 @@ vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
 });
 
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import {
+  closeProviderProxyAcquisitionSession,
+  providerProxyAcquisitionSessionDescriptor,
+} from '#src/coordinator/live/provider-proxy/control-session.js';
 import { exchangeAcquisitionStage } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import {
   acquisitionPublicationUnknownResultSchema,
@@ -522,6 +526,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     const registerUndo = vi.fn();
     const established = await steps.establishControl(registerUndo);
+    if (established.kind !== 'established') throw new Error(`expected established, received ${established.kind}`);
     expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.registerAcquisitionUndo).toBe(registerUndo);
 
     const observation = { recurringEchoes: proxy.acceptedEchoes() - 1, controlIsLive: proxy.controlIsLive() };
@@ -630,6 +635,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const establishedEvents = vi.fn();
     const unsubscribe = subscribeProviderProxyControlEstablished(establishedEvents);
     const established = await steps.establishControl(() => undefined);
+    if (established.kind !== 'established') throw new Error(`expected established, received ${established.kind}`);
     if (!isProviderProxyOperationAuthority(established.set)) throw new Error('expected durable authority');
 
     // The address the real writer produced, checked here because this is the only place it is produced. The
@@ -688,8 +694,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const guardian: ControlClient = {
       exchange: async (method: string) => {
         if (method === 'guardian.acquisition-publish.v1') {
-          // The response is lost after the request may have reached the guardian — the exact ambiguity
-          // `ProviderProxyAcquisitionPublicationUnknownError` exists to preserve everything through.
+          // The response is lost after the request may have reached the guardian.
           return controlExchangeForTest({
             kind: 'no-response',
             cause: 'connection-closed-after-write',
@@ -767,13 +772,15 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await steps.createCapsules();
     await steps.spawnGuardian();
 
-    await expect(steps.establishControl(() => undefined)).rejects.toMatchObject({
-      name: 'ProviderProxyAcquisitionPublicationUnknownError',
+    const disposition = await steps.establishControl(() => undefined);
+    if (disposition.kind !== 'handed-over') {
+      throw new Error(`expected publication handoff, received ${disposition.kind}`);
+    }
+    expect(providerProxyAcquisitionSessionDescriptor(disposition.session)).toMatchObject({
       capsulePath: expect.stringMatching(/\.handoff\.v3\.json$/u),
       capsuleBinding: publicationUnknownCapsule,
     });
-    // Not unwound: the catch that would close every opened client and delete the capsule must not run for
-    // this specific error, since the guardian may already be published.
     expect(guardianClosed.value).toBe(false);
+    closeProviderProxyAcquisitionSession(disposition.session, 'test complete');
   });
 });

@@ -18,6 +18,19 @@ import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/pro
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
+import type { ProviderProxySetRecoveryAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import {
+  createOwnedProviderProxyAcquisitionControlSession,
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyControlSessionOwner,
+  type ProviderProxyAcquisitionSessionHandedOver,
+} from '#src/coordinator/live/provider-proxy/control-session.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ProviderProxyAuthorityFaultLatch,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import { providerProxySetIdentityFromCapsule } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import type {
   DurableProviderProxyOperationAuthority,
   ProviderProxyOperationAuthority,
@@ -124,10 +137,10 @@ function fakeDurableProxySet(
     stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
     initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
   } = {},
-): DurableProviderProxyOperationAuthority {
+): DurableProviderProxyOperationAuthority & ProviderProxySetRecoveryAuthority {
   const inherited = fakeInheritedProxySet(proxyInstanceId);
   const stopAndReap = options.stopAndReap ?? inherited.stopAndReap;
-  return {
+  const authority: DurableProviderProxyOperationAuthority & ProviderProxySetRecoveryAuthority = {
     ...inherited,
     faulted: new Promise<never>(() => {}),
     onFault: () => () => undefined,
@@ -136,6 +149,11 @@ function fakeDurableProxySet(
     promoteControl: async () => {
       throw new Error('unused');
     },
+    controlReattachment: {
+      redeem: () => new Promise<never>(() => undefined),
+      promote: async () => authority,
+    },
+    installRecoveryCredential: () => new Promise<never>(() => undefined),
     prepareOperation:
       options.prepareOperation ??
       (async () => {
@@ -165,6 +183,7 @@ function fakeDurableProxySet(
     stopHeartbeats: options.stopHeartbeats ?? inherited.stopHeartbeats,
     initiateControlClose: options.initiateControlClose ?? inherited.initiateControlClose,
   };
+  return authority;
 }
 
 function publicationUnknownCapsule(spec: ProviderServerSpec): HandoffCapsuleV3 {
@@ -193,6 +212,52 @@ function publicationUnknownCapsule(spec: ProviderServerSpec): HandoffCapsuleV3 {
     containmentKind: identity.containmentKind,
     proxyIncarnation: identity.proxyIncarnation,
     proxyProcessGroupId: identity.proxyProcessGroupId,
+  };
+}
+
+function publicationUnknownHandoff(capsule: HandoffCapsuleV3): Readonly<{
+  handoff: ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
+  faults: ProviderProxyAuthorityFaultLatch;
+}> {
+  const client: ControlClient = {
+    exchange: async () =>
+      controlExchangeForTest({
+        kind: 'no-response',
+        cause: 'timeout',
+        error: new ControlClientError('control_call_failed', 'publication response was lost', 'timeout'),
+      }),
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: () => undefined,
+  };
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const session = createOwnedProviderProxyAcquisitionControlSession(
+    providerProxyControlSessionOwner.providerHostAcquisition,
+    {
+      base: fakeDurableProxySet(capsule.proxyInstanceId),
+      setIdentity: providerProxySetIdentityFromCapsule(capsule),
+      clients: { guardian: client, reaper: client, proxy: client },
+      heartbeats: {
+        guardian: { stop: () => undefined },
+        reaper: { stop: () => undefined },
+        proxy: { stop: () => undefined },
+      },
+      faults,
+      guardianIdentity: {} as never,
+      reaperIdentity: {} as never,
+      proxyIdentity: {} as never,
+      capsulePath: '/capsules/publication-unknown.handoff.v3.json',
+      capsuleBinding: capsule,
+      mutationRpcTimeoutMs: 1,
+    },
+  );
+  return {
+    handoff: handOverProviderProxyAcquisitionControlSession(
+      session,
+      providerProxyControlSessionOwner.providerHostManager,
+      { kind: 'publication-unknown', role: 'guardian', reason: 'publication response was lost' },
+    ),
+    faults,
   };
 }
 
@@ -1189,29 +1254,30 @@ describe('provider host pool proxy set registry', () => {
     });
     const spec = createSharedSpec();
     const capsuleBinding = publicationUnknownCapsule(spec);
+    const publicationUnknown = publicationUnknownHandoff(capsuleBinding);
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({
-        kind: 'acquisition-publication-unknown',
-        reason: 'publication response was lost',
-        capsulePath: '/capsules/publication-unknown.handoff.v3.json',
-        capsuleBinding,
-      });
+      onSettled(publicationUnknown.handoff);
     });
 
     const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
     const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
 
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
-    expect(lifecycleRef.get()?.snapshot()).toEqual(
-      expect.objectContaining({ represented: 1, states: ['capsule-recovering'] }),
-    );
+    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['recovering'] }));
     expect(lifecycleRef.get()?.snapshot().operatorDispositions).toContainEqual(
-      expect.objectContaining({ waitingFor: 'control-reattachment' }),
+      expect.objectContaining({ waitingFor: 'publication-confirmation-or-control-release' }),
     );
     expect(manager.routeAppServerOperation(spec)).toBeNull();
 
     first.close();
     second.close();
+    publicationUnknown.faults.latch({
+      kind: 'heartbeat-failed',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      terminalReason: 'local-failure',
+      error: 'test complete',
+    });
     await manager.shutdown();
   });
 

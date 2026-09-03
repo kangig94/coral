@@ -63,6 +63,7 @@ const SECURITY_ALLOWED = new Set([
   'src/runtime/canonical-work-dir.ts',
 ]);
 const TRANSPORT_ALLOWED = new Set([
+  'src/coordinator/services/provider-proxy-set/operator-disposition-vocabulary.ts',
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/contracts/event-stream.ts',

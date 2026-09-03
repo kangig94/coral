@@ -1,6 +1,12 @@
 import type { ProviderProxyOperationAuthority } from './operation-route.js';
-import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { PublicationReceipt } from './set-publication.js';
+import {
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyControlSessionOwner,
+  type ProviderProxyAcquisitionSessionClosed,
+  type ProviderProxyAcquisitionSessionEstablished,
+  type ProviderProxyAcquisitionSessionHandedOver,
+} from './control-session.js';
 
 /**
  * Acquiring one guardian/reaper/proxy set.
@@ -35,31 +41,12 @@ export type ProviderProxyAcquisitionResult =
       publicationReceipt: PublicationReceipt;
     }>
   | ProviderProxyAcquisitionFailure
-  | Readonly<{
-      kind: 'acquisition-publication-unknown';
-      reason: string;
-      capsulePath: string;
-      capsuleBinding: HandoffCapsuleV3;
-    }>;
+  | ProviderProxyAcquisitionSessionHandedOver<'provider-host-acquisition'>;
 
-/**
- * Thrown only when an acquisition publication stage's response was lost after the request may have reached
- * its role. The catch that would otherwise unwind capsules and kill the guardian must not run for this error:
- * an idempotent publish that already latched would be converted into an uncredentialed orphan by deleting the
- * capsule that names it, while the role itself stays alive and possibly published.
- */
-export class ProviderProxyAcquisitionPublicationUnknownError extends Error {
-  readonly capsulePath: string;
-  readonly capsuleBinding: HandoffCapsuleV3;
-
-  constructor(message: string, capsulePath: string, capsuleBinding: HandoffCapsuleV3) {
-    super(message);
-    this.capsulePath = capsulePath;
-    this.capsuleBinding = capsuleBinding;
-    this.name = 'ProviderProxyAcquisitionPublicationUnknownError';
-    Object.setPrototypeOf(this, ProviderProxyAcquisitionPublicationUnknownError.prototype);
-  }
-}
+export type ProviderProxyControlEstablishmentDisposition =
+  | (ProviderProxyAcquisitionSessionEstablished & Readonly<{ undo: AcquisitionUndo }>)
+  | ProviderProxyAcquisitionSessionHandedOver<'acquisition'>
+  | ProviderProxyAcquisitionSessionClosed;
 
 /**
  * One acquisition attempt's steps, in order. Each returns the undo for what it created, so the record is
@@ -74,13 +61,9 @@ export interface ProviderProxyAcquisitionSteps {
    * Opens and activates control on all three endpoints, checks the strict backend identities, and confirms
    * the containment the guardian recorded. Returns the authority only once every check has passed.
    */
-  establishControl(registerUndo: (undo: AcquisitionUndo) => void): Promise<
-    Readonly<{
-      set: ProviderProxyOperationAuthority;
-      publicationReceipt: PublicationReceipt;
-      undo: AcquisitionUndo;
-    }>
-  >;
+  establishControl(
+    registerUndo: (undo: AcquisitionUndo) => void,
+  ): Promise<ProviderProxyControlEstablishmentDisposition>;
 }
 
 export type ProviderProxyAcquisitionOptions = Readonly<{
@@ -165,29 +148,11 @@ export async function acquireProviderProxySet(
     strandedArtifacts: await unwind(undos, options.deadlineSignal, options.onCleanupFailure),
   });
 
-  const runCut = async <T>(
-    cut: string,
-    step: () => Promise<T>,
-  ): Promise<
-    | T
-    | ProviderProxyAcquisitionFailure
-    | Extract<ProviderProxyAcquisitionResult, { kind: 'acquisition-publication-unknown' }>
-  > => {
+  const runCut = async <T>(cut: string, step: () => Promise<T>): Promise<T | ProviderProxyAcquisitionFailure> => {
     if (options.deadlineSignal.aborted) return fail(cut, 'the acquisition deadline elapsed');
     try {
       return await step();
     } catch (error: unknown) {
-      if (error instanceof ProviderProxyAcquisitionPublicationUnknownError) {
-        // Not a failure this attempt may unwind: the capsule and every open client (and the possibly
-        // already-published guardian/reaper/proxy) stay exactly as `establishControl`'s own catch left them —
-        // see that class's doc for why deleting the capsule here would orphan a published role.
-        return {
-          kind: 'acquisition-publication-unknown',
-          reason: error.message,
-          capsulePath: error.capsulePath,
-          capsuleBinding: error.capsuleBinding,
-        };
-      }
       return fail(cut, failureReason(error));
     }
   };
@@ -203,7 +168,15 @@ export async function acquireProviderProxySet(
   const control = await runCut('control establishment', () =>
     options.steps.establishControl((undo) => undos.push(undo)),
   );
-  if ('kind' in control) return control;
+  if (control.kind === 'provider_proxy_acquisition_failed') return control;
+  if (control.kind === 'closed') return fail('control establishment', control.reason);
+  if (control.kind === 'handed-over') {
+    return handOverProviderProxyAcquisitionControlSession(
+      control.session,
+      providerProxyControlSessionOwner.providerHostAcquisition,
+      control.incident,
+    );
+  }
   undos.push(control.undo);
 
   if (options.deadlineSignal.aborted) {

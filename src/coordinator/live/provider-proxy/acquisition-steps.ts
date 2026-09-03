@@ -56,11 +56,7 @@ import {
   proxyControlOpenParamsSchema,
   reaperOpenParamsSchema,
 } from '../../../provider-proxy/protocol.js';
-import {
-  ProviderProxyAcquisitionPublicationUnknownError,
-  type AcquisitionUndo,
-  type ProviderProxyAcquisitionSteps,
-} from './index.js';
+import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from './heartbeat.js';
 import {
   establishRoleControl,
@@ -69,11 +65,17 @@ import {
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
-import { runProviderProxySetPublicationTransaction, type PublicationReceipt } from './set-publication.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
-import { createProviderProxyOperationAuthority, type ProviderProxyOperationAuthority } from './operation-route.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
+import {
+  closeProviderProxyAcquisitionSession,
+  createOwnedProviderProxyAcquisitionControlSession,
+  establishProviderProxyAcquisitionSession,
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyControlSessionOwner,
+  retryProviderProxyAcquisitionPublication,
+} from './control-session.js';
 
 /**
  * The production implementation of `ProviderProxyAcquisitionSteps`: mints one guardian/reaper/proxy set's
@@ -303,13 +305,7 @@ export function createProviderProxyAcquisitionSteps(
       };
     },
 
-    async establishControl(registerUndo: (undo: AcquisitionUndo) => void): Promise<
-      Readonly<{
-        set: ProviderProxyOperationAuthority;
-        publicationReceipt: PublicationReceipt;
-        undo: AcquisitionUndo;
-      }>
-    > {
+    async establishControl(registerUndo: (undo: AcquisitionUndo) => void) {
       if (minted === null || guardianSpawn === null) {
         throw new Error('createCapsules and spawnGuardian must run before establishControl.');
       }
@@ -486,34 +482,6 @@ export function createProviderProxyAcquisitionSteps(
           }),
         );
 
-        // Only after every control is open and the recovery credential is installed: publication is the last
-        // gate before this attempt may return a set anyone can claim. Guardian/reaper may become published
-        // before the proxy, but no claim authority exists until all three confirm — the still-provisional
-        // proxy's own orphan deadline remains armed on an unpublished, claimless set the whole time.
-        const publication = await runProviderProxySetPublicationTransaction(
-          guardianSession.client,
-          proxySession.client,
-          guardianSession.opened.guardian,
-          reaperSession.opened.reaper,
-          proxySession.opened.proxy,
-        );
-        if (publication.kind === 'publication-unknown') {
-          // Response loss on an idempotent publish stage cannot be un-sent: the role may already be
-          // published. Preserve the capsule and every open client rather than converting a possibly-published
-          // role into an uncredentialed orphan by running the undos below.
-          throw new ProviderProxyAcquisitionPublicationUnknownError(
-            `guardian.acquisition-publish.v1 / proxy.acquisition-publish.v1 outcome unknown for role '${publication.role}': ${publication.reason}`,
-            handoffCapsulePath,
-            capsuleBinding,
-          );
-        }
-        if (publication.kind === 'not-attempted') {
-          throw new Error(`provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`);
-        }
-
-        // The set-level identity `operation.prepare.v1`'s coordinator meta commit needs (W2.3): fixed for
-        // this set's whole lifetime, built from the exact same verified fields `base`'s identity checks just
-        // confirmed rather than re-derived, so the two can never disagree.
         const setIdentity: ProviderProxySetIdentity = {
           buildSetId,
           hostFingerprint,
@@ -532,16 +500,44 @@ export function createProviderProxyAcquisitionSteps(
           proxyProcessGroupId: proxyIdentity.processGroupId,
           canonicalEndpoint: setMinted.proxyEndpoint,
         };
-        const set = createProviderProxyOperationAuthority({
-          base,
-          setIdentity,
-          clients,
-          faults,
-          mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
-        });
+        const session = createOwnedProviderProxyAcquisitionControlSession(
+          providerProxyControlSessionOwner.controlEstablishment,
+          {
+            base,
+            setIdentity,
+            clients,
+            heartbeats,
+            faults,
+            guardianIdentity: guardianSession.opened.guardian,
+            reaperIdentity: reaperSession.opened.reaper,
+            proxyIdentity: proxySession.opened.proxy,
+            capsulePath: handoffCapsulePath,
+            capsuleBinding,
+            mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
+          },
+        );
+
+        // Only after every control is open and the recovery credential is installed: publication is the last
+        // gate before this attempt may return a set anyone can claim. Guardian/reaper may become published
+        // before the proxy, but no claim authority exists until all three confirm — the still-provisional
+        // proxy's own orphan deadline remains armed on an unpublished, claimless set the whole time.
+        const publication = await retryProviderProxyAcquisitionPublication(session);
+        if (publication.kind === 'publication-unknown') {
+          return handOverProviderProxyAcquisitionControlSession(
+            session,
+            providerProxyControlSessionOwner.acquisition,
+            publication,
+          );
+        }
+        if (publication.kind === 'not-attempted') {
+          return closeProviderProxyAcquisitionSession(
+            session,
+            `provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`,
+          );
+        }
+        const established = establishProviderProxyAcquisitionSession(session, publication.receipt);
         return {
-          set,
-          publicationReceipt: publication.receipt,
+          ...established,
           undo: {
             label: 'control',
             run: () => {
@@ -555,12 +551,6 @@ export function createProviderProxyAcquisitionSteps(
           },
         };
       } catch (error: unknown) {
-        if (error instanceof ProviderProxyAcquisitionPublicationUnknownError) {
-          // Preserve everything: the capsule, every open client, and the (possibly already published)
-          // guardian/reaper/proxy. See the class doc for why unwinding here is the one outcome this catch
-          // must not produce.
-          throw error;
-        }
         if (acquisitionAbortIdentities !== null) {
           // Best-effort and sent before any client is closed: publication is one-way and idempotent, and the
           // guardian keeps no state a not-yet-published acquisition needs undone, so this costs nothing when

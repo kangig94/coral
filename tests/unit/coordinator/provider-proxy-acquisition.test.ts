@@ -3,10 +3,18 @@ import { describe, expect, it } from 'vitest';
 
 import {
   acquireProviderProxySet,
-  ProviderProxyAcquisitionPublicationUnknownError,
   type AcquisitionUndo,
   type ProviderProxyAcquisitionSteps,
 } from '#src/coordinator/live/provider-proxy/index.js';
+import {
+  closeProviderProxyAcquisitionSession,
+  createOwnedProviderProxyAcquisitionControlSession,
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyAcquisitionSessionDescriptor,
+  providerProxyControlSessionOwner,
+} from '#src/coordinator/live/provider-proxy/control-session.js';
+import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
@@ -75,7 +83,12 @@ function steps(options: { failAt?: 'capsules' | 'spawn' | 'control'; failUndo?: 
       establishControl: async () => {
         log.push('control');
         if (options.failAt === 'control') throw new Error('containment ACK never arrived');
-        return { set: SET, publicationReceipt: PUBLICATION_RECEIPT, undo: undo('control') };
+        return {
+          kind: 'established',
+          set: SET as never,
+          publicationReceipt: PUBLICATION_RECEIPT,
+          undo: undo('control'),
+        };
       },
     },
   };
@@ -83,6 +96,42 @@ function steps(options: { failAt?: 'capsules' | 'spawn' | 'control'; failUndo?: 
 
 const live = (): AbortSignal => new AbortController().signal;
 const PUBLICATION_UNKNOWN_CAPSULE = { version: 3 } as HandoffCapsuleV3;
+
+function publicationUnknownHandoff() {
+  const client: ControlClient = {
+    exchange: async () => {
+      throw new Error('not used');
+    },
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: () => undefined,
+  };
+  const session = createOwnedProviderProxyAcquisitionControlSession(
+    providerProxyControlSessionOwner.controlEstablishment,
+    {
+      base: SET as never,
+      setIdentity: SET.setIdentity,
+      clients: { guardian: client, reaper: client, proxy: client },
+      heartbeats: {
+        guardian: { stop: () => undefined },
+        reaper: { stop: () => undefined },
+        proxy: { stop: () => undefined },
+      },
+      faults: createProviderProxyAuthorityFaultLatch(),
+      guardianIdentity: {} as never,
+      reaperIdentity: {} as never,
+      proxyIdentity: {} as never,
+      capsulePath: '/capsules/publication-unknown.handoff.v3.json',
+      capsuleBinding: PUBLICATION_UNKNOWN_CAPSULE,
+      mutationRpcTimeoutMs: 1,
+    },
+  );
+  return handOverProviderProxyAcquisitionControlSession(session, providerProxyControlSessionOwner.acquisition, {
+    kind: 'publication-unknown',
+    role: 'guardian',
+    reason: 'publication response was lost',
+  });
+}
 
 describe('provider proxy set acquisition', () => {
   it('publishes the set only after every step has passed', async () => {
@@ -125,25 +174,25 @@ describe('provider proxy set acquisition', () => {
     expect(cleanupFailures).toEqual(['guardian']);
   });
 
-  it('returns the retained capsule owner without unwinding a publication-unknown set', async () => {
+  it('hands over the live control-session owner without unwinding a publication-unknown set', async () => {
     const recorded = steps();
-    recorded.steps.establishControl = async () => {
-      throw new ProviderProxyAcquisitionPublicationUnknownError(
-        'publication response was lost',
-        '/capsules/publication-unknown.handoff.v3.json',
-        PUBLICATION_UNKNOWN_CAPSULE,
-      );
-    };
+    recorded.steps.establishControl = async () => publicationUnknownHandoff();
 
     const result = await acquireProviderProxySet({ steps: recorded.steps, deadlineSignal: live() });
 
-    expect(result).toEqual({
-      kind: 'acquisition-publication-unknown',
+    if (result.kind !== 'handed-over') throw new Error(`expected handoff, received ${result.kind}`);
+    expect(result.incident).toEqual({
+      kind: 'publication-unknown',
+      role: 'guardian',
       reason: 'publication response was lost',
+    });
+    expect(providerProxyAcquisitionSessionDescriptor(result.session)).toEqual({
+      setIdentity: SET.setIdentity,
       capsulePath: '/capsules/publication-unknown.handoff.v3.json',
       capsuleBinding: PUBLICATION_UNKNOWN_CAPSULE,
     });
     expect(recorded.log).toEqual(['capsules', 'spawn']);
+    closeProviderProxyAcquisitionSession(result.session, 'test complete');
   });
 
   it('does not begin a step once the acquisition deadline has elapsed', async () => {

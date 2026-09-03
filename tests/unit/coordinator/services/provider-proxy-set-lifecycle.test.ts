@@ -20,12 +20,19 @@ import type {
 import {
   ControlClientError,
   controlExchangeForTest,
+  type ControlClient,
   type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
+import {
+  createOwnedProviderProxyAcquisitionControlSession,
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyControlSessionOwner,
+  type ProviderProxyAcquisitionSessionHandedOver,
+} from '#src/coordinator/live/provider-proxy/control-session.js';
 import { ProviderProxyRoleControlRemoteError } from '#src/coordinator/live/provider-proxy/role-control.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -69,6 +76,7 @@ import type {
 import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import {
   providerProxySetAddress,
+  providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
@@ -828,6 +836,124 @@ function capsuleV3For(authority: DurableProviderProxyOperationAuthority): Handof
     containmentKind: identity.containmentKind,
     proxyIncarnation: identity.proxyIncarnation,
     proxyProcessGroupId: identity.proxyProcessGroupId,
+  };
+}
+
+function publicationSessionHandoff(
+  authority: DurableProviderProxyOperationAuthority,
+  capsule: HandoffCapsuleV3,
+  exchanges: Readonly<{
+    guardian?: () => Promise<ControlExchange> | ControlExchange;
+    proxy?: () => Promise<ControlExchange> | ControlExchange;
+  }> = {},
+): Readonly<{
+  handoff: ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
+  faults: ProviderProxyAuthorityFaultLatch;
+  closed: Record<'guardian' | 'reaper' | 'proxy', number>;
+  stopped: Record<'guardian' | 'reaper' | 'proxy', number>;
+}> {
+  const identity = providerProxySetIdentityFromCapsule(capsule);
+  const guardianIdentity = {
+    guardianInstanceId: identity.guardianInstanceId,
+    pid: identity.guardianPid,
+    incarnation: identity.guardianIncarnation,
+    generation: 'gen2' as const,
+    flavor: capsule.flavor,
+    buildSetId: identity.buildSetId,
+    hostFingerprint: identity.hostFingerprint,
+    canonicalControlEndpoint: identity.guardianControlEndpoint,
+  };
+  const reaperIdentity = {
+    reaperInstanceId: identity.reaperInstanceId,
+    pid: identity.reaperPid,
+    incarnation: identity.reaperIncarnation,
+    guardianInstanceId: identity.guardianInstanceId,
+    generation: 'gen2' as const,
+    flavor: capsule.flavor,
+    buildSetId: identity.buildSetId,
+    hostFingerprint: identity.hostFingerprint,
+    canonicalControlEndpoint: identity.reaperControlEndpoint,
+    containmentKind: 'detached-process-group' as const,
+  };
+  const proxyIdentity = {
+    proxyInstanceId: identity.proxyInstanceId,
+    pid: identity.proxyPid,
+    incarnation: identity.proxyIncarnation,
+    processGroupId: identity.proxyProcessGroupId,
+    guardianInstanceId: identity.guardianInstanceId,
+    reaperInstanceId: identity.reaperInstanceId,
+    generation: 'gen2' as const,
+    flavor: capsule.flavor,
+    buildSetId: identity.buildSetId,
+    hostFingerprint: identity.hostFingerprint,
+    canonicalEndpoint: identity.canonicalEndpoint,
+  };
+  const defaultGuardianExchange = (): ControlExchange =>
+    controlExchangeForTest({
+      kind: 'response',
+      response: {
+        kind: 'result',
+        value: {
+          state: 'acquisition-published',
+          certificate: 'publication-session-certificate',
+          guardian: guardianIdentity,
+          reaper: reaperIdentity,
+        },
+      },
+    });
+  const defaultProxyExchange = (): ControlExchange =>
+    controlExchangeForTest({
+      kind: 'response',
+      response: { kind: 'result', value: { state: 'acquisition-published' } },
+    });
+  const closed = { guardian: 0, reaper: 0, proxy: 0 };
+  const stopped = { guardian: 0, reaper: 0, proxy: 0 };
+  const client = (role: keyof typeof closed): ControlClient => ({
+    exchange: async (method) => {
+      if (method === 'guardian.acquisition-publish.v1') {
+        return (await exchanges.guardian?.()) ?? defaultGuardianExchange();
+      }
+      if (method === 'proxy.acquisition-publish.v1') {
+        return (await exchanges.proxy?.()) ?? defaultProxyExchange();
+      }
+      throw new Error(`unexpected publication method: ${method}`);
+    },
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: () => {
+      closed[role] += 1;
+    },
+  });
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const session = createOwnedProviderProxyAcquisitionControlSession(
+    providerProxyControlSessionOwner.providerHostAcquisition,
+    {
+      base: authority as never,
+      setIdentity: identity,
+      clients: { guardian: client('guardian'), reaper: client('reaper'), proxy: client('proxy') },
+      heartbeats: {
+        guardian: { stop: () => (stopped.guardian += 1) },
+        reaper: { stop: () => (stopped.reaper += 1) },
+        proxy: { stop: () => (stopped.proxy += 1) },
+      },
+      faults,
+      guardianIdentity,
+      reaperIdentity,
+      proxyIdentity,
+      capsulePath: '/capsules/publication-session.handoff.v3.json',
+      capsuleBinding: capsule,
+      mutationRpcTimeoutMs: 1,
+    },
+  );
+  return {
+    handoff: handOverProviderProxyAcquisitionControlSession(
+      session,
+      providerProxyControlSessionOwner.providerHostManager,
+      { kind: 'publication-unknown', role: 'guardian', reason: 'initial publication response was lost' },
+    ),
+    faults,
+    closed,
+    stopped,
   };
 }
 
@@ -3397,33 +3523,20 @@ describe('ProviderProxySetLifecycle', () => {
     expect(proveContainmentAbsent).not.toHaveBeenCalled();
   });
 
-  it('adopts a publication-unknown acquisition and restores its route through exact redemption', async () => {
+  it('retries publication on the retained clients and routes the set without capsule redial', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
     const capsule = capsuleV3For(authority);
-    const redemption = deferred<ProviderProxySetRedemptionOutcome>();
-    let phases: Record<'guardian' | 'reaper' | 'proxy', 'acquisition-provisional' | 'published'> = {
-      guardian: 'acquisition-provisional',
-      reaper: 'acquisition-provisional',
-      proxy: 'acquisition-provisional',
-    };
-    const completePublication = (): void => {
-      phases = { guardian: 'published', reaper: 'published', proxy: 'published' };
-      redemption.resolve({
-        kind: 'redeemed',
-        set: authority,
-        publicationReceipt: TEST_PUBLICATION_RECEIPT,
-        protection: 'protected',
-      });
-    };
+    const redeemCapsule = vi.fn(() => new Promise<ProviderProxySetRedemptionOutcome>(() => undefined));
+    const retained = publicationSessionHandoff(authority, capsule);
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
-      redeemCapsule: () => redemption.promise,
+      redeemCapsule,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -3434,173 +3547,102 @@ describe('ProviderProxySetLifecycle', () => {
     });
     if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
 
-    lifecycle.acquisitionPublicationUnknown(
-      admission.slotId,
-      '/capsules/publication-unknown.handoff.v3.json',
-      capsule,
-      'publication response was lost',
-    );
+    lifecycle.acquisitionPublicationUnknown(admission.slotId, retained.handoff, (set) => set);
 
-    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['capsule-recovering'] }));
-    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
-      expect.objectContaining({
-        setIdentity: providerProxySetAddress(authority.setIdentity),
-        disposition: 'held',
-        incidentReason: 'publication response was lost',
-        waitingFor: 'control-reattachment',
-      }),
-    );
-    expect(
-      lifecycle.beginFreshAcquisition(routeKey, {
-        buildSetId: capsule.buildSetId,
-        hostFingerprint: capsule.hostFingerprint,
-      }),
-    ).toEqual({ kind: 'already-represented' });
-    expect(lifecycle.routeFor(routeKey)).toBeNull();
-    expect(phases).toEqual({
-      guardian: 'acquisition-provisional',
-      reaper: 'acquisition-provisional',
-      proxy: 'acquisition-provisional',
-    });
-
-    completePublication();
-    await vi.waitFor(() => expect(lifecycle.routeFor(routeKey)).toBe(authority));
-    expect(phases).toEqual({ guardian: 'published', reaper: 'published', proxy: 'published' });
+    await vi.waitFor(() => expect(lifecycle.routeFor(routeKey)).not.toBeNull());
+    expect(redeemCapsule).not.toHaveBeenCalled();
+    expect(retained.closed).toEqual({ guardian: 0, reaper: 0, proxy: 0 });
+    expect(retained.stopped).toEqual({ guardian: 0, reaper: 0, proxy: 0 });
+    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['available'] }));
     expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
   });
 
-  it('holds a publication-unknown redemption instead of restoring its route', async () => {
+  it('closes the retained session on definitive publication refusal before capsule recovery', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
     const capsule = capsuleV3For(authority);
-    const established = vi.fn();
+    const redeemCapsule = vi.fn(() => new Promise<ProviderProxySetRedemptionOutcome>(() => undefined));
+    const retained = publicationSessionHandoff(authority, capsule, {
+      guardian: () =>
+        controlExchangeForTest({
+          kind: 'not-sent',
+          cause: 'connection-already-closed',
+          error: new ControlClientError('control_call_failed', 'publication refused before dispatch', 'closed'),
+        }),
+    });
     const lifecycle = lifecycleFor({
       claims,
-      controlEstablished: established,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
-      proveContainmentAbsent: async () => enforcersUnobservable,
-      redeemCapsule: async () => ({
-        kind: 'temporarily-unavailable',
-        incident: { kind: 'publication-unknown', role: 'proxy', reason: 'proxy publication reply lost' },
-      }),
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    const routeKey = 'publication-unknown-redemption-route';
+    const routeKey = 'publication-refused-route';
     const admission = lifecycle.beginFreshAcquisition(routeKey, {
       buildSetId: capsule.buildSetId,
       hostFingerprint: capsule.hostFingerprint,
     });
     if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
 
-    lifecycle.acquisitionPublicationUnknown(
-      admission.slotId,
-      '/capsules/publication-unknown-redemption.handoff.v3.json',
-      capsule,
-      'initial publication reply was lost',
-    );
+    lifecycle.acquisitionPublicationUnknown(admission.slotId, retained.handoff, (set) => set);
     await drainMicrotasks();
 
     expect(lifecycle.routeFor(routeKey)).toBeNull();
     expect(lifecycle.snapshot().states).toEqual(['capsule-recovering']);
-    expect(established).not.toHaveBeenCalled();
+    expect(retained.closed).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
+    expect(retained.stopped).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
+    expect(redeemCapsule).toHaveBeenCalledWith(
+      capsule,
+      '/capsules/publication-session.handoff.v3.json',
+      expect.any(AbortSignal),
+    );
   });
 
-  it('releases a publication-unknown acquisition after exact containment absence', async () => {
+  it('releases retained control after heartbeat failure and makes capsule redemption reachable', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
     const capsule = capsuleV3For(authority);
-    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
-    const onSlotReleased = vi.fn();
+    const redeemCapsule = vi.fn(() => new Promise<ProviderProxySetRedemptionOutcome>(() => undefined));
+    const retained = publicationSessionHandoff(authority, capsule, {
+      guardian: () => new Promise<ControlExchange>(() => undefined),
+    });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
-      proveContainmentAbsent: async () => containmentEvidence('publication-unknown-absence'),
-      redeemCapsule: async () => ({
-        kind: 'temporarily-unavailable',
-        incident: { kind: 'recovery-deadline', timeoutMs: 45_000 },
-      }),
-      retireCapsule,
-      onSlotReleased,
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    const routeKey = 'publication-unknown-absence-route';
+    const routeKey = 'publication-heartbeat-failed-route';
     const admission = lifecycle.beginFreshAcquisition(routeKey, {
       buildSetId: capsule.buildSetId,
       hostFingerprint: capsule.hostFingerprint,
     });
     if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+    lifecycle.acquisitionPublicationUnknown(admission.slotId, retained.handoff, (set) => set);
 
-    lifecycle.acquisitionPublicationUnknown(
-      admission.slotId,
-      '/capsules/publication-unknown-absence.handoff.v3.json',
-      capsule,
-      'publication response was lost',
-    );
-
-    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
-    expect(retireCapsule).toHaveBeenCalledWith('/capsules/publication-unknown-absence.handoff.v3.json');
-    expect(onSlotReleased).toHaveBeenCalledWith(routeKey);
-    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
-  });
-
-  it('lets the operator abandon a publication-unknown acquisition through the exact-set exit', async () => {
-    const claims = new ProviderProxySetClaimMirror();
-    claims.initialize([]);
-    const authority = fakeAuthority();
-    const capsule = capsuleV3For(authority);
-    const clock = new ManualClock();
-    const lifecycle = lifecycleFor({
-      claims,
-      controlEstablished: ignoreControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
-      time: clock,
-      proveContainmentAbsent: () => new Promise<ProviderProxySetContainmentEvidence>(() => undefined),
-      redeemCapsule: () => new Promise<ProviderProxySetRedemptionOutcome>(() => undefined),
+    retained.faults.latch({
+      kind: 'heartbeat-failed',
+      role: 'guardian',
+      method: 'guardian.heartbeat.v1',
+      terminalReason: 'local-failure',
+      error: 'heartbeat channel failed',
     });
-    lifecycle.initializeClaimSlots();
-    lifecycle.completeStartupDiscovery();
-    const admission = lifecycle.beginFreshAcquisition('publication-unknown-operator-route', {
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-    });
-    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
-    lifecycle.acquisitionPublicationUnknown(
-      admission.slotId,
-      '/capsules/publication-unknown-operator.handoff.v3.json',
-      capsule,
-      'publication response was lost',
-    );
+    await drainMicrotasks();
 
-    expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity))).toEqual({
-      kind: 'deadline-pending',
-      remainingMs: 30_000,
-    });
-    clock.elapse(30_000);
-    const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
-    if (authorization.kind !== 'authorized') {
-      throw new Error(`expected operator authorization, received ${authorization.kind}`);
-    }
-
-    await expect(
-      lifecycle.completeOperatorExit(
-        authorization.capability,
-        await operatorContainmentProof(authorization.capability, enforcersUnobservable),
-        true,
-      ),
-    ).resolves.toMatchObject({
-      kind: 'abandoned',
-      setIdentity: providerProxySetAddress(authority.setIdentity),
-      effect: { representationAction: 'abandonment-release-started' },
-    });
-    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
-    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+    expect(lifecycle.routeFor(routeKey)).toBeNull();
+    expect(lifecycle.snapshot().states).toEqual(['capsule-recovering']);
+    expect(retained.closed).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
+    expect(retained.stopped).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
+    expect(redeemCapsule).toHaveBeenCalledTimes(1);
   });
 
   it('contains an unmatched zero-claim redemption before evaluating publication', async () => {

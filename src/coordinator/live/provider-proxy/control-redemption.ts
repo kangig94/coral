@@ -18,17 +18,13 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../../provider-proxy/role-spawn.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import {
-  createProviderProxyAuthorityFaultLatch,
-  type ProviderProxyAuthorityFaultLatch,
-  type ProviderProxyRoleClients,
-} from '../../services/provider-proxy-authority-fault.js';
+import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import {
   createProviderProxyAuthorityHeartbeatAssembly,
   type ProviderProxyAuthorityHeartbeatAssembly,
-  type ProviderProxyRoleHeartbeats,
 } from './heartbeat.js';
+import type { ProviderProxyControlSessionBundle } from './control-session.js';
 import {
   establishRoleControl,
   ProviderProxyRoleControlRemoteError,
@@ -60,17 +56,11 @@ type ReaperHandoffRotation = z.infer<typeof reaperHandoffRotateResultSchema>;
 type ProxyHandoffRedemption = z.infer<typeof proxyHandoffRedeemResultSchema>;
 
 /** A complete three-role redemption result that is published only after identities and membership agree. */
-export type ProviderProxyControlRedemptionBundle = Readonly<{
-  setIdentity: ProviderProxySetIdentity;
-  clients: ProviderProxyRoleClients<ControlClient>;
-  heartbeats: ProviderProxyRoleHeartbeats;
-  faults: ProviderProxyAuthorityFaultLatch;
-  guardianIdentity: GuardianHandoffRedemption['guardian'];
-  reaperIdentity: ReaperHandoffRotation['reaper'];
-  proxyIdentity: ProxyHandoffRedemption['proxy'];
-  recoveryOperations: readonly OperationIdentity[];
-  publicationReceipt: PublicationReceipt;
-}>;
+export type ProviderProxyControlRedemptionBundle = ProviderProxyControlSessionBundle &
+  Readonly<{
+    recoveryOperations: readonly OperationIdentity[];
+    publicationReceipt: PublicationReceipt;
+  }>;
 
 export type RedeemedProviderProxyControl = Readonly<{
   kind: 'redeemed';

@@ -17,6 +17,17 @@ import {
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { DurableProviderProxyOperationAuthority } from '../../live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
+import {
+  closeProviderProxyAcquisitionSession,
+  establishProviderProxyAcquisitionSession,
+  handOverProviderProxyAcquisitionControlSession,
+  onProviderProxyAcquisitionSessionFault,
+  providerProxyAcquisitionSessionDescriptor,
+  providerProxyControlSessionOwner,
+  retryProviderProxyAcquisitionPublication,
+  type OwnedProviderProxyAcquisitionControlSession,
+  type ProviderProxyAcquisitionSessionHandedOver,
+} from '../../live/provider-proxy/control-session.js';
 import type { ContainmentCommitOutcome } from '../../live/provider-proxy/authority.js';
 import type { OperatorTeardownAuthorization } from '../../../provider-proxy/holder-lifecycle.js';
 import type {
@@ -47,6 +58,7 @@ import type {
   RepresentationAbandonmentDeliveryAttemptOutcome,
 } from '../provider-representation-abandonment.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
+import type { ProviderProxySetOperatorDisposition } from './operator-disposition-vocabulary.js';
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityObservation,
@@ -266,11 +278,29 @@ type ProviderProxySetSlot =
     }
   | {
       kind: 'recovering';
+      recoveryKind: 'claim';
       key: ProviderProxySetKey;
       identity: ProviderProxySetIdentity;
       address: ProviderProxySetAddress;
       capacityClass: CapacityClass;
       capsulePath: string | null;
+    }
+  | {
+      kind: 'recovering';
+      recoveryKind: 'acquisition-publication';
+      key: ProviderProxySetKey;
+      identity: ProviderProxySetIdentity;
+      address: ProviderProxySetAddress;
+      capacityClass: CapacityClass;
+      capsulePath: string;
+      capsuleBinding: HandoffCapsuleV3;
+      routeKey: string;
+      session: OwnedProviderProxyAcquisitionControlSession<'provider-proxy-set-lifecycle'>;
+      decorateAuthority(authority: DurableProviderProxyOperationAuthority): DurableProviderProxyOperationAuthority;
+      completedAttempts: number;
+      retryTimer: TimerHandle | null;
+      attemptToken: number;
+      unsubscribeFault: (() => void) | null;
     }
   | EstablishedSlot
   | PendingReleaseSlot;
@@ -351,58 +381,8 @@ export type ProviderProxySetLifecycleSnapshot = Readonly<{
   operatorDispositions: readonly ProviderProxySetOperatorDisposition[];
 }>;
 
-export type ProviderProxySetOperatorDisposition = Readonly<{
-  setIdentity: ProviderProxySetAddress;
-  setToken: string;
-  disposition: 'held' | 'awaiting-containment-absence' | 'operator-exit-refused';
-  role?: string;
-  method?: string;
-  cause?: ProviderProxyControlChannelIncident['cause'];
-  attempts?: number;
-  elapsedMs?: number;
-  boundMs?: number;
-  liveClaims?: number;
-  enforcerObservations?: ProviderProxySetEnforcerObservations;
-  incidentReason: string;
-  waitingFor:
-    | 'heartbeat-evidence-window'
-    | 'control-reattachment'
-    | 'independent-containment-absence'
-    | 'ordinary-drain'
-    | 'set-adoption-deadline'
-    | 'operator-abandonment'
-    | 'store-repair'
-    /** The guardian commit was proven not to have latched: a local `not-sent` result, or a structured
-     *  pre-commit refusal. Exits: a current active-control retry, decisive holder/containment absence,
-     *  accepted successor, or the operator override. */
-    | 'containment-authorization'
-    /** The guardian commit may have reached the guardian and its response was lost. Exits are the same as
-     *  `containment-authorization`'s — this subject differs only in what it asserts happened, never in what
-     *  ends it. */
-    | 'containment-outcome-unknown'
-    /** A silence- or answered-unusable-exhausted heartbeat window with live claims present. Neither is
-     *  decisive, so the route and heartbeat loop keep running. Exits: an accepted heartbeat, `liveClaims`
-     *  reaching zero and ordinary drain, explicit operator containment, or representation-only abandonment. */
-    | 'heartbeat-bound-live-claims'
-    /** A control-reattachment bound expiry, a non-decisive redemption refusal, or a `heartbeat-failed`
-     *  `local-failure` fault, all with live claims present — this coordinator's own failure to reach the peer,
-     *  never a disposition about it. Exits: redeemed control, decisive absence, explicit operator containment,
-     *  or representation-only abandonment. */
-    | 'control-reattachment-bound-live-claims'
-    /** A `method-not-found` heartbeat reply with live claims present: the peer answered, but not with a
-     *  protocol this build can use. Claims and routing are retained; only this role's heartbeat is marked
-     *  unavailable. Exits: compatible control, `liveClaims` reaching zero, explicit operator containment, or
-     *  representation-only abandonment. */
-    | 'heartbeat-protocol-live-claims'
-    /** An indeterminate `operation-control-failed` mutation with live claims present. The route is removed and
-     *  no further mutation is dispatched, but claims and reconciliation ownership are retained. Exits:
-     *  control/status recovery, `liveClaims` reaching zero, explicit operator containment, or
-     *  representation-only abandonment. */
-    | 'operation-control-outcome-unknown';
-}>;
-
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
-  stage: 'containment-attempt-deadline' | 'containment-retry';
+  stage: 'acquisition-publication-retry' | 'containment-attempt-deadline' | 'containment-retry';
   requestedWakeMs: number;
   observedWakeMs: number;
   latenessMs: number;
@@ -768,6 +748,7 @@ export class ProviderProxySetLifecycle {
       if (this.#slots.has(key)) continue;
       this.#slots.set(key, {
         kind: 'recovering',
+        recoveryKind: 'claim',
         key,
         identity,
         address: providerProxySetAddress(identity),
@@ -815,6 +796,9 @@ export class ProviderProxySetLifecycle {
         (slot) =>
           (slot.kind === 'acquiring' && slot.routeKey === routeKey) ||
           (slot.kind === 'capsule-recovering' && slot.routeKey === routeKey) ||
+          (slot.kind === 'recovering' &&
+            slot.recoveryKind === 'acquisition-publication' &&
+            slot.routeKey === routeKey) ||
           ((slot.kind === 'available' ||
             slot.kind === 'draining' ||
             slot.kind === 'containing' ||
@@ -853,37 +837,57 @@ export class ProviderProxySetLifecycle {
 
   acquisitionPublicationUnknown(
     slotId: string,
-    capsulePath: string,
-    capsuleBinding: HandoffCapsuleV3,
-    incidentReason: string,
+    handoff: ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>,
+    decorateAuthority: (authority: DurableProviderProxyOperationAuthority) => DurableProviderProxyOperationAuthority,
   ): void {
     const acquiring = this.#slots.get(slotId);
     if (acquiring?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
+    const refuseSession = (reason: string): never => {
+      closeProviderProxyAcquisitionSession(handoff.session, reason);
+      this.#slots.delete(slotId);
+      throw new Error(reason);
+    };
+    const {
+      setIdentity: identity,
+      capsulePath,
+      capsuleBinding,
+    } = providerProxyAcquisitionSessionDescriptor(handoff.session);
+    const capsuleIdentity = providerProxySetIdentityFromCapsule(capsuleBinding);
+    if (!providerProxySetIdentitiesEqual(identity, capsuleIdentity)) {
+      return refuseSession('provider_proxy_set_acquisition_session_identity_mismatch');
+    }
     if (
       acquiring.binding !== null &&
       (acquiring.binding.buildSetId !== capsuleBinding.buildSetId ||
         acquiring.binding.hostFingerprint !== capsuleBinding.hostFingerprint)
     ) {
-      throw new Error('provider_proxy_set_acquisition_capsule_binding_mismatch');
+      return refuseSession('provider_proxy_set_acquisition_capsule_binding_mismatch');
     }
-    const identity = providerProxySetIdentityFromCapsule(capsuleBinding);
     const address = providerProxySetAddress(identity);
     const addressKey = providerProxySetAddressKey(address);
     const duplicatePath = this.#capsuleAddresses.get(addressKey);
     if (duplicatePath !== undefined && duplicatePath !== capsulePath) {
-      throw new Error('provider_proxy_capsule_address_alias');
+      return refuseSession('provider_proxy_capsule_address_alias');
     }
     const duplicateGrantPath = this.#capsuleGrants.get(capsuleBinding.grantId);
     if (duplicateGrantPath !== undefined && duplicateGrantPath !== capsulePath) {
-      throw new Error('provider_proxy_capsule_grant_alias');
+      return refuseSession('provider_proxy_capsule_grant_alias');
     }
+    if (this.#slots.has(providerProxySetKey(identity))) {
+      return refuseSession('provider_proxy_capsule_exact_identity_alias');
+    }
+    const accepted = handOverProviderProxyAcquisitionControlSession(
+      handoff.session,
+      providerProxyControlSessionOwner.lifecycle,
+      handoff.incident,
+    );
     this.#slots.delete(slotId);
     const key = this.#identityIndex.add(identity);
-    if (this.#slots.has(key)) throw new Error('provider_proxy_capsule_exact_identity_alias');
     this.#capsuleAddresses.set(addressKey, capsulePath);
     this.#capsuleGrants.set(capsuleBinding.grantId, capsulePath);
-    const slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }> = {
-      kind: 'capsule-recovering',
+    const slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }> = {
+      kind: 'recovering',
+      recoveryKind: 'acquisition-publication',
       key,
       identity,
       capsulePath,
@@ -893,13 +897,13 @@ export class ProviderProxySetLifecycle {
       completedAttempts: 0,
       retryTimer: null,
       attemptToken: 0,
-      attemptAbort: null,
-      recoveryPhase: 'redemption',
       routeKey: acquiring.routeKey,
-      operatorExitNotBeforeMonotonicMs: this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
+      session: accepted.session,
+      decorateAuthority,
+      unsubscribeFault: null,
     };
     this.#slots.set(key, slot);
-    const incident = singleLineErrorSummary(incidentReason);
+    const incident = singleLineErrorSummary(handoff.incident.reason);
     this.#operatorDispositions.set(
       key,
       new Map([
@@ -911,17 +915,20 @@ export class ProviderProxySetLifecycle {
             disposition: 'held',
             liveClaims: this.#deps.claims.claimsFor(identity).length,
             incidentReason: incident,
-            waitingFor: 'control-reattachment',
+            waitingFor: 'publication-confirmation-or-control-release',
           },
         ],
       ]),
     );
     this.#report(
       'warn',
-      `Provider proxy set acquisition publication is unknown set=${providerProxySetReference(identity)} capsule=${capsulePath} error=${incident}`,
+      `Provider proxy set acquisition publication is unknown set=${providerProxySetReference(identity)} error=${incident}`,
     );
     this.#classifyCapacity();
-    this.#recoverExactCapsule(slot);
+    slot.unsubscribeFault = onProviderProxyAcquisitionSessionFault(slot.session, (fault) => {
+      if (fault.kind === 'heartbeat-failed') this.#releaseAcquisitionPublicationSession(slot, fault.error);
+    });
+    this.#runAcquisitionPublicationRetry(slot);
   }
 
   acquisitionSucceeded(
@@ -1666,6 +1673,9 @@ export class ProviderProxySetLifecycle {
     if (slot.kind === 'available' || slot.kind === 'draining') {
       throw new Error('provider_proxy_containment_absence_before_authority_fault');
     }
+    if (slot.kind === 'recovering' && slot.recoveryKind === 'acquisition-publication') {
+      throw new Error('provider_proxy_containment_absence_before_acquisition_control_release');
+    }
 
     const pending: Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }> = {
       ...this.#pendingReleaseFields(slot),
@@ -1779,7 +1789,11 @@ export class ProviderProxySetLifecycle {
     const claimKey = this.#identityIndex.keyForAddress(address);
     if (claimKey !== null) {
       const claimSlot = this.#slots.get(claimKey);
-      if (claimSlot?.kind !== 'recovering' || !providerProxySetCapsuleMatchesIdentity(capsule, claimSlot.identity)) {
+      if (
+        claimSlot?.kind !== 'recovering' ||
+        claimSlot.recoveryKind !== 'claim' ||
+        !providerProxySetCapsuleMatchesIdentity(capsule, claimSlot.identity)
+      ) {
         throw new Error('provider_proxy_capsule_claim_identity_mismatch');
       }
       if (claimSlot.capsulePath !== null && claimSlot.capsulePath !== path) {
@@ -1994,6 +2008,131 @@ export class ProviderProxySetLifecycle {
     return verdict.kind === 'refused'
       ? { kind: 'uninheritable', reason: verdict.reason }
       : { kind: 'inheritable', capsule: verdict.candidate };
+  }
+
+  #runAcquisitionPublicationRetry(
+    slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
+  ): void {
+    if (this.#slots.get(slot.key) !== slot) return;
+    slot.attemptToken += 1;
+    const token = slot.attemptToken;
+    void retryProviderProxyAcquisitionPublication(slot.session).then(
+      (publication) => {
+        if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+        if (publication.kind === 'published') {
+          slot.unsubscribeFault?.();
+          slot.unsubscribeFault = null;
+          if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+          let established;
+          try {
+            established = establishProviderProxyAcquisitionSession(
+              slot.session,
+              publication.receipt,
+              slot.decorateAuthority,
+            );
+          } catch (error: unknown) {
+            this.#releaseAcquisitionPublicationSession(slot, error);
+            return;
+          }
+          this.#operatorDispositions.delete(slot.key);
+          this.#establish(established.set, established.publicationReceipt, slot.routeKey, slot.capsulePath, 'serve');
+          return;
+        }
+        if (publication.kind === 'not-attempted') {
+          this.#releaseAcquisitionPublicationSession(
+            slot,
+            `provider_proxy_acquisition_publication_refused:${publication.role}:${publication.reason}`,
+          );
+          return;
+        }
+        this.#holdAcquisitionPublicationSession(slot, publication.reason);
+      },
+      (error: unknown) => {
+        if (this.#slots.get(slot.key) === slot && slot.attemptToken === token) {
+          this.#holdAcquisitionPublicationSession(slot, errorMessage(error));
+        }
+      },
+    );
+  }
+
+  #holdAcquisitionPublicationSession(
+    slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
+    reason: string,
+  ): void {
+    if (this.#slots.get(slot.key) !== slot) return;
+    slot.completedAttempts += 1;
+    const incident = singleLineErrorSummary(reason);
+    this.#operatorDispositions.set(
+      slot.key,
+      new Map([
+        [
+          JSON.stringify(['acquisition-publication', null]),
+          {
+            setIdentity: slot.address,
+            setToken: encodeProviderProxySetAddress(slot.address),
+            disposition: 'held',
+            attempts: slot.completedAttempts,
+            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+            incidentReason: incident,
+            waitingFor: 'publication-confirmation-or-control-release',
+          },
+        ],
+      ]),
+    );
+    const delayMs = retryDelayMs(slot.completedAttempts);
+    const requestedWakeMs = this.#deps.time.now() + delayMs;
+    slot.retryTimer = this.#deps.time.setTimeout(() => {
+      slot.retryTimer = null;
+      this.#recordLateness('acquisition-publication-retry', requestedWakeMs);
+      this.#runAcquisitionPublicationRetry(slot);
+    }, delayMs);
+    slot.retryTimer.unref?.();
+  }
+
+  #releaseAcquisitionPublicationSession(
+    slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
+    reason: unknown,
+  ): void {
+    if (this.#slots.get(slot.key) !== slot) return;
+    slot.attemptToken += 1;
+    slot.unsubscribeFault?.();
+    slot.unsubscribeFault = null;
+    if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+    const closed = closeProviderProxyAcquisitionSession(slot.session, singleLineErrorSummary(reason));
+    const recovering: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }> = {
+      kind: 'capsule-recovering',
+      key: slot.key,
+      identity: slot.identity,
+      capsulePath: slot.capsulePath,
+      capsuleBinding: slot.capsuleBinding,
+      address: slot.address,
+      capacityClass: slot.capacityClass,
+      completedAttempts: 0,
+      retryTimer: null,
+      attemptToken: 0,
+      attemptAbort: null,
+      recoveryPhase: 'redemption',
+      routeKey: slot.routeKey,
+      operatorExitNotBeforeMonotonicMs: this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
+    };
+    this.#slots.set(slot.key, recovering);
+    this.#operatorDispositions.set(
+      slot.key,
+      new Map([
+        [
+          JSON.stringify(['acquisition-publication', null]),
+          {
+            setIdentity: slot.address,
+            setToken: encodeProviderProxySetAddress(slot.address),
+            disposition: 'held',
+            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+            incidentReason: closed.reason,
+            waitingFor: 'control-reattachment',
+          },
+        ],
+      ]),
+    );
+    this.#recoverExactCapsule(recovering);
   }
 
   #recoverExactCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>): void {

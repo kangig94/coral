@@ -11,6 +11,7 @@ import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
 import type { ProviderProxySetEnforcerObservations } from '../provider-proxy/containment-proof-contract.js';
+import type { ProviderProxySetOperatorDisposition } from '../coordinator/services/provider-proxy-set/operator-disposition-vocabulary.js';
 
 interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -177,30 +178,17 @@ export type HealthSnapshot = {
     providerProxySets?: Array<{
       setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
       setToken: string;
-      disposition: 'held' | 'awaiting-containment-absence' | 'operator-exit-refused';
+      disposition: ProviderProxySetOperatorDisposition['disposition'];
       role?: string;
       method?: string;
-      cause?: 'closed' | 'invalid-unattributable-frame';
+      cause?: ProviderProxySetOperatorDisposition['cause'];
       attempts?: number;
       elapsedMs?: number;
       boundMs?: number;
       liveClaims?: number;
       enforcerObservations?: ProviderProxySetEnforcerObservations;
       incidentReason: string;
-      waitingFor:
-        | 'heartbeat-evidence-window'
-        | 'control-reattachment'
-        | 'independent-containment-absence'
-        | 'ordinary-drain'
-        | 'set-adoption-deadline'
-        | 'operator-abandonment'
-        | 'store-repair'
-        | 'containment-authorization'
-        | 'containment-outcome-unknown'
-        | 'heartbeat-bound-live-claims'
-        | 'control-reattachment-bound-live-claims'
-        | 'heartbeat-protocol-live-claims'
-        | 'operation-control-outcome-unknown';
+      waitingFor: ProviderProxySetOperatorDisposition['waitingFor'];
     }>;
   };
 };

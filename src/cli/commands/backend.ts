@@ -524,9 +524,6 @@ function routingStatusPath(runtime: Runtime): string {
  *  the coordinator's own unreachability already triggered. */
 const DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS = 3_000;
 
-/** One role's direct `*.holder-status.v1` reading. `holder-status-unavailable` covers both v0.10.9 failure
- *  shapes named by AC6 — `method_not_found` and a bare connection close — never rendered as absence or
- *  containment authority. */
 export type DirectHolderStatusReading =
   | Readonly<{ kind: 'answered'; status: z.infer<typeof holderStatusResultSchema> }>
   | Readonly<{ kind: 'holder-status-unavailable'; reason: string }>
@@ -576,23 +573,13 @@ async function readDirectHolderStatus(
         }
         return { kind: 'answered', status: parsed.data };
       }
-      // `ControlClientRemoteFailure` is a union: a structured `method_not_found` refusal is the named
-      // v0.10.9 method-table shape, and an unattributable `invalid-frame` reply is not decodable as anything
-      // else either — both are answers this reader cannot use, so both render `holder-status-unavailable`
-      // rather than one of them silently falling into the generic `unreachable` branch.
       const failure = exchange.response.failure;
       if (failure.kind === 'json-rpc-error' && failure.protocolCode === 'method_not_found') {
         return { kind: 'holder-status-unavailable', reason: 'method_not_found' };
       }
-      if (failure.kind === 'invalid-frame') {
-        return { kind: 'holder-status-unavailable', reason: 'invalid-frame' };
-      }
-      return { kind: 'unreachable', reason: exchange.response.error.message };
+      return { kind: 'unreachable', reason: `${failure.kind}: ${exchange.response.error.message}` };
     }
-    if (exchange.kind === 'no-response' && exchange.cause === 'connection-closed-after-write') {
-      return { kind: 'holder-status-unavailable', reason: 'connection closed without a reply' };
-    }
-    return { kind: 'unreachable', reason: errorMessage(exchange.error) };
+    return { kind: 'unreachable', reason: `${exchange.cause}: ${errorMessage(exchange.error)}` };
   } finally {
     client.close();
   }
@@ -601,8 +588,8 @@ async function readDirectHolderStatus(
 /**
  * `coral-cli backend status`'s fallback surface while coordinator IPC is starved: reads every mode-0600
  * handoff capsule directly and queries both role endpoints over their own control framing, never through the
- * coordinator. An older role's `method_not_found` or bare close is `holder-status-unavailable`, and this
- * reader never treats either as absence or containment authority — only the roles' own enforcers may.
+ * coordinator. `method_not_found` is the sole method-unavailable signal; transport ambiguity preserves its
+ * reported cause and never becomes absence or containment authority.
  */
 export async function readProviderProxySetHolderStatusDirect(
   runtime: Runtime,

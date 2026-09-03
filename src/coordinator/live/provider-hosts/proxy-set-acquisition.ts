@@ -6,8 +6,12 @@ import type { ProviderProxyOperationSnapshot } from '../../services/operation-re
 import { acquireProviderProxySet } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
-import type { HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
+import {
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyControlSessionOwner,
+  type ProviderProxyAcquisitionSessionHandedOver,
+} from '../provider-proxy/control-session.js';
 import { hostFingerprintFromSpec, type ProviderHostEntry } from './state.js';
 
 /**
@@ -67,13 +71,8 @@ export type ProviderProxySetAcquisitionOutcome =
       set: ProviderProxyOperationAuthority;
       publicationReceipt: PublicationReceipt;
     }>
-  | Readonly<{
-      kind: 'acquisition-publication-unknown';
-      reason: string;
-      capsulePath: string;
-      capsuleBinding: HandoffCapsuleV3;
-    }>
-  | Readonly<{ kind: 'failed'; reason: string }>;
+  | Readonly<{ kind: 'failed'; reason: string }>
+  | ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
 
 /**
  * Starts one acquisition attempt for `entry`'s guardian/reaper/proxy set and reports how it settled.
@@ -125,6 +124,16 @@ export function ensureProviderProxySet(
     (result) => {
       if (result.kind === 'provider_proxy_acquisition_failed') {
         onSettled({ kind: 'failed', reason: result.reason });
+        return;
+      }
+      if (result.kind === 'handed-over') {
+        onSettled(
+          handOverProviderProxyAcquisitionControlSession(
+            result.session,
+            providerProxyControlSessionOwner.providerHostManager,
+            result.incident,
+          ),
+        );
         return;
       }
       onSettled(result);

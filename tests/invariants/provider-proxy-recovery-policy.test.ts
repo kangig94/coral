@@ -701,6 +701,8 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runAcquisitionPublicationRetry :: Promise.then(rejected) :: retryProviderProxyAcquisitionPublication(slot.session).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runAcquisitionPublicationRetry :: catch#1 :: calls=[this.#releaseAcquisitionPublicationSession] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',

@@ -6,9 +6,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   acquireProviderProxySet,
-  ProviderProxyAcquisitionPublicationUnknownError,
   type ProviderProxyAcquisitionSteps,
 } from '#src/coordinator/live/provider-proxy/index.js';
+import {
+  closeProviderProxyAcquisitionSession,
+  createOwnedProviderProxyAcquisitionControlSession,
+  handOverProviderProxyAcquisitionControlSession,
+  providerProxyAcquisitionSessionDescriptor,
+  providerProxyControlSessionOwner,
+} from '#src/coordinator/live/provider-proxy/control-session.js';
 import {
   createProviderProxySetAuthority,
   type ProviderProxySetAuthorityDependencies,
@@ -24,6 +30,8 @@ import type {
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import { providerProxySetIdentityFromCapsule } from '#src/coordinator/services/provider-proxy-set/identity.js';
 
 const GUARDIAN: GuardianIdentity = {
   guardianInstanceId: '11111111-1111-4111-8111-111111111111',
@@ -142,12 +150,34 @@ function acquisitionSteps(
       const authority = createProviderProxySetAuthority(deps);
       const installation = await authority.installRecoveryCredential(new AbortController().signal);
       if (installation.kind !== 'installed') throw new Error(`unexpected installation outcome: ${installation.kind}`);
-
-      if (outcome === 'refused') {
-        throw new Error('provider_proxy_acquisition_publication_refused:guardian:request was not dispatched');
-      }
       const capsule = handoffCapsuleV3Schema.parse(JSON.parse(readFileSync(capsulePath, 'utf8')));
-      throw new ProviderProxyAcquisitionPublicationUnknownError('publication response was lost', capsulePath, capsule);
+      const session = createOwnedProviderProxyAcquisitionControlSession(
+        providerProxyControlSessionOwner.controlEstablishment,
+        {
+          base: authority,
+          setIdentity: providerProxySetIdentityFromCapsule(capsule),
+          clients: { guardian: client, reaper: client, proxy: client },
+          heartbeats: deps.heartbeats,
+          faults: createProviderProxyAuthorityFaultLatch(),
+          guardianIdentity: GUARDIAN,
+          reaperIdentity: REAPER,
+          proxyIdentity: PROXY,
+          capsulePath,
+          capsuleBinding: capsule,
+          mutationRpcTimeoutMs: 1,
+        },
+      );
+      if (outcome === 'refused') {
+        return closeProviderProxyAcquisitionSession(
+          session,
+          'provider_proxy_acquisition_publication_refused:guardian:request was not dispatched',
+        );
+      }
+      return handOverProviderProxyAcquisitionControlSession(session, providerProxyControlSessionOwner.acquisition, {
+        kind: 'publication-unknown',
+        role: 'guardian',
+        reason: 'publication response was lost',
+      });
     },
   };
   return { steps, capsulePath };
@@ -174,11 +204,12 @@ describe('fresh acquisition handoff capsule unwind', () => {
 
     const result = await acquireProviderProxySet({ steps: acquisition.steps, deadlineSignal: live() });
 
-    expect(result).toMatchObject({
-      kind: 'acquisition-publication-unknown',
+    if (result.kind !== 'handed-over') throw new Error(`expected handoff, received ${result.kind}`);
+    expect(providerProxyAcquisitionSessionDescriptor(result.session)).toMatchObject({
       capsulePath: acquisition.capsulePath,
     });
     expect(statSync(acquisition.capsulePath).isFile()).toBe(true);
+    closeProviderProxyAcquisitionSession(result.session, 'test complete');
   });
 
   it('reports the capsule when its undo fails', async () => {
