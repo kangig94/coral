@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 import {
   readProviderProxySetHolderStatusDirect,
   formatProviderProxySetHolderStatusDirect,
+  type DirectProviderProxySetHolderStatus,
+  type DirectProviderProxySetHolderStatusRow,
 } from '#src/cli/commands/backend.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
@@ -17,6 +19,14 @@ import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecyc
 import { runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+
+function requireReadableHolderStatusRow(
+  row: DirectProviderProxySetHolderStatusRow | undefined,
+): DirectProviderProxySetHolderStatus {
+  if (row === undefined) throw new Error('provider proxy set holder-status row was absent');
+  if ('kind' in row) throw new Error(`provider proxy capsule was unreadable: ${row.path} (${row.reason})`);
+  return row;
+}
 
 function passthroughChallenges(): ControlChallengeAuthority {
   return {
@@ -149,7 +159,7 @@ describe('readProviderProxySetHolderStatusDirect', () => {
       const readings = await readProviderProxySetHolderStatusDirect(runtime);
 
       expect(readings).toHaveLength(1);
-      const [reading] = readings;
+      const reading = requireReadableHolderStatusRow(readings[0]);
       expect(reading.guardian.kind).toBe('answered');
       if (reading.guardian.kind === 'answered') {
         expect(reading.guardian.status.disposition).toBe('alive');
@@ -168,7 +178,7 @@ describe('readProviderProxySetHolderStatusDirect', () => {
       const disconnectedReadings = await readProviderProxySetHolderStatusDirect(runtime);
 
       expect(disconnectedReadings).toHaveLength(1);
-      expect(disconnectedReadings[0]?.reaper).toEqual({
+      expect(requireReadableHolderStatusRow(disconnectedReadings[0]).reaper).toEqual({
         kind: 'unreachable',
         reason: expect.stringContaining('connection-closed-after-write'),
       });

@@ -18,7 +18,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { readProviderProxySetHolderStatusDirect } from '#src/cli/commands/backend.js';
+import {
+  readProviderProxySetHolderStatusDirect,
+  type DirectProviderProxySetHolderStatus,
+  type DirectProviderProxySetHolderStatusRow,
+} from '#src/cli/commands/backend.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
@@ -48,6 +52,14 @@ const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
+
+function requireReadableHolderStatusRow(
+  row: DirectProviderProxySetHolderStatusRow | undefined,
+): DirectProviderProxySetHolderStatus {
+  if (row === undefined) throw new Error('provider proxy set holder-status row was absent');
+  if ('kind' in row) throw new Error(`provider proxy capsule was unreadable: ${row.path} (${row.reason})`);
+  return row;
+}
 
 /** The requirement's own acceptance number. Every other timing vector this branch touches runs on injected
  *  time; this is the one place a real wall-clock wait is deliberate. */
@@ -479,7 +491,7 @@ describe('provider-proxy starvation (AC8)', () => {
         // only the latter is what this baseline should show.
         const baseline = await readProviderProxySetHolderStatusDirect(runtime);
         expect(baseline).toHaveLength(1);
-        const [baselineSet] = baseline;
+        const baselineSet = requireReadableHolderStatusRow(baseline[0]);
         expect(baselineSet.guardian).toMatchObject({
           kind: 'answered',
           status: { disposition: 'unobservable', phase: 'published' },
@@ -512,7 +524,7 @@ describe('provider-proxy starvation (AC8)', () => {
             const readings = await readProviderProxySetHolderStatusDirect(runtime);
             latestReadings = readings;
             expect(readings).toHaveLength(1);
-            const [set] = readings;
+            const set = requireReadableHolderStatusRow(readings[0]);
             const elapsed = Date.now() - holdStart;
             for (const role of ['guardian', 'reaper'] as const) {
               const reading = set[role];
@@ -558,8 +570,9 @@ describe('provider-proxy starvation (AC8)', () => {
         // alone, from a healthy coordinator that simply has not been silent for long enough yet. Only the
         // sequence advancing by exactly one, during the freeze, proves an observation actually happened and
         // found the holder alive rather than never running at all.
-        const guardianAfterHold = latestReadings?.[0].guardian;
-        const reaperAfterHold = latestReadings?.[0].reaper;
+        const latestSet = requireReadableHolderStatusRow(latestReadings?.[0]);
+        const guardianAfterHold = latestSet.guardian;
+        const reaperAfterHold = latestSet.reaper;
         expect(guardianAfterHold?.kind === 'answered' ? guardianAfterHold.status.transitionSequence : null).toBe(
           baselineSequence.guardian === null ? null : baselineSequence.guardian + 1,
         );
@@ -571,7 +584,7 @@ describe('provider-proxy starvation (AC8)', () => {
         // during the freeze happened to it either.
         const afterResume = await readProviderProxySetHolderStatusDirect(runtime);
         expect(afterResume).toHaveLength(1);
-        const [afterResumeSet] = afterResume;
+        const afterResumeSet = requireReadableHolderStatusRow(afterResume[0]);
         expect(afterResumeSet.guardian).toMatchObject({ kind: 'answered', status: { disposition: 'alive' } });
         expect(afterResumeSet.reaper).toMatchObject({ kind: 'answered', status: { disposition: 'alive' } });
         expect(

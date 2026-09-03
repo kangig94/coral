@@ -107,6 +107,7 @@ function createHarness(): {
     self: { pid: 5_001, incarnation: testIncarnation('reaper') },
     holderAuthority: createControlHolderAuthority(),
     observeHolder: () => Promise.resolve('unknown'),
+    abandonUnattributable: () => false,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });

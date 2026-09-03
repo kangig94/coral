@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, probeProcessIncarnationAsync } from '#src/infra/node-process.js';
 
 const mockedRead = vi.mocked(readFile);
+const terminateProbeChild = vi.fn();
 
 const BOOT_ID = '9f2a1c44-1f3e-4a8b-9d31-6c0f2b7e5a10';
 const BOOT_ID_PATH = '/proc/sys/kernel/random/boot_id';
@@ -34,7 +35,9 @@ describe('linux process incarnation (async)', () => {
   it('frames the start ticks with the boot id, without blocking the caller', async () => {
     scriptLinux();
 
-    await expect(probeProcessIncarnationAsync(4321, 'linux')).resolves.toBe(`linux:${BOOT_ID}:${START_TICKS}`);
+    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBe(
+      `linux:${BOOT_ID}:${START_TICKS}`,
+    );
     expect(mockedRead).toHaveBeenCalledWith(BOOT_ID_PATH, expect.objectContaining({ encoding: 'utf-8' }));
     expect(mockedRead).toHaveBeenCalledWith('/proc/4321/stat', expect.objectContaining({ encoding: 'utf-8' }));
   });
@@ -71,7 +74,7 @@ describe('linux process incarnation (async)', () => {
     }) as unknown as typeof readFile);
 
     try {
-      const probe = probeProcessIncarnationAsync(4321, 'linux');
+      const probe = probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux');
       await vi.advanceTimersByTimeAsync(PROCESS_INCARNATION_PROBE_TIMEOUT_MS - 1);
 
       expect(mockedRead).toHaveBeenCalledTimes(2);
@@ -91,33 +94,33 @@ describe('linux process incarnation (async)', () => {
 
   it('separates two processes that share a pid and a start tick across a reboot', async () => {
     scriptLinux();
-    const before = await probeProcessIncarnationAsync(4321, 'linux');
+    const before = await probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux');
 
     scriptLinux({ bootId: '00000000-0000-4000-8000-111111111111' });
 
-    await expect(probeProcessIncarnationAsync(4321, 'linux')).resolves.not.toBe(before);
+    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.not.toBe(before);
   });
 
   it('reads the boot id every time rather than remembering it', async () => {
     scriptLinux({ bootId: new Error('EACCES') });
-    await expect(probeProcessIncarnationAsync(4321, 'linux')).resolves.toBeNull();
+    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
 
     scriptLinux();
     await expect(
-      probeProcessIncarnationAsync(4321, 'linux'),
+      probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux'),
       'one failed read must not blind every later one',
     ).resolves.toBe(`linux:${BOOT_ID}:${START_TICKS}`);
   });
 
   it('is null, never a throw, when the stat read fails or times out', async () => {
     scriptLinux({ stat: new Error('ENOENT') });
-    await expect(probeProcessIncarnationAsync(4321, 'linux')).resolves.toBeNull();
+    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
 
     // What a `signal: AbortSignal.timeout(...)` abort actually rejects with in production; the read's own
     // `catch` treats it exactly like any other read failure.
     const timedOut = new Error('The operation was aborted.');
     timedOut.name = 'AbortError';
     scriptLinux({ stat: timedOut });
-    await expect(probeProcessIncarnationAsync(4321, 'linux')).resolves.toBeNull();
+    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
   });
 });

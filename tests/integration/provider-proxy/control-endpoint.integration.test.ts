@@ -71,6 +71,7 @@ async function startEndpoint(
     pairing?: ControlEndpointRole['pairing'];
     /** When present, the role serves `role.status.v1` under `authority: 'observation'`. */
     observation?: (params: unknown) => unknown;
+    operator?: (params: unknown) => unknown;
     /** When present, the role serves `role.authorized.v1` under `authority: 'active'`, and every dispatched
      *  call's freshly minted `ActiveControlAuthorization` is forwarded here. */
     onActiveAuthorization?: (authorization: ActiveControlAuthorization) => void;
@@ -222,6 +223,9 @@ async function startEndpoint(
     // Present only when a test opts in, so the roles every other test builds stay exactly what they were —
     // a role with no observation method, for which accept-time refusal is still the whole story.
     methodEntries.push(['role.status.v1', { authority: 'observation', handle: options.observation }]);
+  }
+  if (options.operator !== undefined) {
+    methodEntries.push(['role.operator.v1', { authority: 'operator', handle: options.operator }]);
   }
   if (options.onActiveAuthorization !== undefined) {
     methodEntries.push([
@@ -824,6 +828,25 @@ describe('provider-proxy control endpoint', () => {
     expect(status.result).toEqual({ seen: true });
     expect(second.socket.destroyed).toBe(false);
     expect(first.socket.destroyed).toBe(false);
+  });
+
+  it('refuses operator abandonment while control is live and names the coordinator-side command', async () => {
+    const operator = vi.fn(() => ({ state: 'abandoned' }));
+    const set = await startEndpoint({ operator });
+    const control = await connect(set.socketPath);
+    await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+
+    const liveAttempt = await connect(set.socketPath);
+    const refused = await liveAttempt.call('role.operator.v1', {});
+
+    expect(refused.error?.data?.code).toBe('invalid_state');
+    expect(refused.error?.message).toContain('provider-proxy-set contain <set-token> --abandon-without-absence');
+    expect(operator).not.toHaveBeenCalled();
+
+    set.lapseControl();
+    const abandoned = await connect(set.socketPath);
+    expect((await abandoned.call('role.operator.v1', {})).result).toEqual({ state: 'abandoned' });
+    expect(operator).toHaveBeenCalledOnce();
   });
 
   it(

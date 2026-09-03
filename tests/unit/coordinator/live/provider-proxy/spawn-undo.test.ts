@@ -50,6 +50,31 @@ const proxy: ProxyIdentity = {
 };
 
 describe('guardian spawn undo', () => {
+  it('reports an unconfirmed pre-control SIGTERM without treating it as completed cleanup', async () => {
+    const kill = vi.fn();
+    let now = 0;
+    const runtime = {
+      process: { kill, observeLiveness: () => 'unknown' },
+      time: {
+        now: () => now,
+        sleep: async (ms: number) => {
+          now += ms;
+        },
+      },
+    } as unknown as Runtime;
+    const undo = buildGuardianSpawnUndo(
+      runtime,
+      { pid: guardian.pid, incarnation: guardian.incarnation } as SpawnedRoleProcess,
+      'linux',
+      () => guardian.incarnation,
+    );
+
+    await expect(undo()).rejects.toThrow('guardian process-group absence was not confirmed after SIGTERM');
+
+    expect(kill).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledWith(-guardian.pid, 'SIGTERM');
+  });
+
   it('reports a control-plane teardown refusal as a stranded guardian without sending a signal', async () => {
     const kill = vi.fn();
     const runtime = {

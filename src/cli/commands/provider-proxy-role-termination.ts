@@ -1,27 +1,16 @@
 import { InvalidArgumentError, type Command } from 'commander';
-import { z } from 'zod';
 
+import { assertNever } from '../../infra/error-format.js';
 import {
-  incarnationMayAuthorizeSignal,
   probeProcessIncarnation,
   processIncarnationSchema,
   type ProcessIncarnation,
 } from '../../infra/node-process.js';
-import { assertNever } from '../../infra/error-format.js';
+import { providerProxyRoleIdentitySchema, type ProviderProxyRoleIdentity } from '../../provider-proxy/protocol.js';
 import { emitError } from '../emit.js';
 
-const providerProxyRoleIdentitySchema = z
-  .object({
-    role: z.enum(['guardian', 'reaper']),
-    pid: z.number().int().positive().safe(),
-    incarnation: processIncarnationSchema,
-  })
-  .strict();
-
-export type ProviderProxyRoleIdentity = Readonly<z.output<typeof providerProxyRoleIdentitySchema>>;
-
 export type ProviderProxyRoleTerminationResult =
-  | Readonly<{ kind: 'signalled'; roleIdentity: ProviderProxyRoleIdentity }>
+  | Readonly<{ kind: 'abandoned'; roleIdentity: ProviderProxyRoleIdentity }>
   | Readonly<{
       kind: 'identity-mismatch';
       roleIdentity: ProviderProxyRoleIdentity;
@@ -30,31 +19,31 @@ export type ProviderProxyRoleTerminationResult =
   | Readonly<{
       kind: 'identity-unobservable';
       roleIdentity: ProviderProxyRoleIdentity;
-      reason: 'incarnation-unavailable' | 'platform-cannot-authorize-signal';
-    }>;
+      reason: 'incarnation-unavailable';
+    }>
+  | Readonly<{ kind: 'refused'; roleIdentity: ProviderProxyRoleIdentity; reason: string }>
+  | Readonly<{ kind: 'unreachable'; roleIdentity: ProviderProxyRoleIdentity; reason: string }>;
+
+export type ProviderProxyRoleAbandonmentAttempt =
+  | Readonly<{ kind: 'abandoned' }>
+  | Readonly<{ kind: 'refused'; reason: string }>
+  | Readonly<{ kind: 'unreachable'; reason: string }>;
 
 export interface ProviderProxyRoleTerminationCommandOperations {
-  terminate(roleIdentity: ProviderProxyRoleIdentity): ProviderProxyRoleTerminationResult;
+  terminate(roleIdentity: ProviderProxyRoleIdentity): Promise<ProviderProxyRoleTerminationResult>;
 }
 
-export function createProviderProxyRoleTerminationCommandOperations(
-  options: {
-    platform?: NodeJS.Platform;
-    readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
-    signal?: (pid: number, signal: NodeJS.Signals) => void;
-  } = {},
-): ProviderProxyRoleTerminationCommandOperations {
+export function createProviderProxyRoleTerminationCommandOperations(options: {
+  platform?: NodeJS.Platform;
+  readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
+  abandon(roleIdentity: ProviderProxyRoleIdentity): Promise<ProviderProxyRoleAbandonmentAttempt>;
+}): ProviderProxyRoleTerminationCommandOperations {
   const platform = options.platform ?? process.platform;
   const readProcessIncarnation = options.readProcessIncarnation ?? probeProcessIncarnation;
-  const signal = options.signal ?? ((pid, processSignal) => void process.kill(pid, processSignal));
 
   return {
-    terminate: (input) => {
+    terminate: async (input) => {
       const roleIdentity = providerProxyRoleIdentitySchema.parse(input);
-      if (!incarnationMayAuthorizeSignal(platform)) {
-        return { kind: 'identity-unobservable', roleIdentity, reason: 'platform-cannot-authorize-signal' };
-      }
-
       let observedIncarnation: ProcessIncarnation | null;
       try {
         observedIncarnation = readProcessIncarnation(roleIdentity.pid, platform);
@@ -67,9 +56,7 @@ export function createProviderProxyRoleTerminationCommandOperations(
       if (observedIncarnation !== roleIdentity.incarnation) {
         return { kind: 'identity-mismatch', roleIdentity, observedIncarnation };
       }
-
-      signal(roleIdentity.pid, 'SIGTERM');
-      return { kind: 'signalled', roleIdentity };
+      return { ...(await options.abandon(roleIdentity)), roleIdentity };
     },
   };
 }
@@ -108,14 +95,16 @@ export function formatProviderProxyRoleTerminationCommand(roleIdentity: Provider
 export function formatProviderProxyRoleTerminationResult(result: ProviderProxyRoleTerminationResult): string {
   const { role, pid, incarnation } = result.roleIdentity;
   switch (result.kind) {
-    case 'signalled':
-      return `Sent SIGTERM to ${role} role pid ${pid} after re-observing its recorded incarnation ${JSON.stringify(incarnation)}.`;
+    case 'abandoned':
+      return `Authorized ${role} role pid ${pid} to finalize its unattributable containment after re-observing incarnation ${JSON.stringify(incarnation)}. No signal was sent and no absence was minted.`;
     case 'identity-mismatch':
-      return `Refusing to signal ${role} role pid ${pid}: observed incarnation ${JSON.stringify(result.observedIncarnation)} does not match recorded incarnation ${JSON.stringify(incarnation)}. No signal was sent.`;
+      return `Refusing to abandon ${role} role pid ${pid}: observed incarnation ${JSON.stringify(result.observedIncarnation)} does not match recorded incarnation ${JSON.stringify(incarnation)}. No signal was sent.`;
     case 'identity-unobservable':
-      return result.reason === 'platform-cannot-authorize-signal'
-        ? `Refusing to signal ${role} role pid ${pid}: this platform cannot use process incarnation equality to authorize a signal. No signal was sent.`
-        : `Refusing to signal ${role} role pid ${pid}: its current incarnation could not be observed. No signal was sent.`;
+      return `Refusing to abandon ${role} role pid ${pid}: its current incarnation could not be observed. No signal was sent.`;
+    case 'refused':
+      return `Refusing to abandon ${role} role pid ${pid}: ${result.reason} No signal was sent.`;
+    case 'unreachable':
+      return `Could not ask ${role} role pid ${pid} to abandon its unattributable containment: ${result.reason} No signal was sent.`;
     default:
       return assertNever(result);
   }
@@ -126,12 +115,12 @@ export function registerProviderProxyRoleTerminationCommand(
   operations: ProviderProxyRoleTerminationCommandOperations,
 ): void {
   providerProxySetCommand
-    .argument('[operator-action]', "Operator action; 'terminate-role' signals one exact role identity")
+    .argument('[operator-action]', "Operator action; 'terminate-role' abandons one exact unattributable role hold")
     .option('--role <role>', 'Recorded role shown by backend status', parseRole)
     .option('--pid <pid>', 'Recorded pid shown by backend status', parsePid)
     .option('--incarnation <incarnation>', 'Recorded incarnation shown by backend status', parseIncarnation)
     .action(
-      (
+      async (
         operatorAction: string | undefined,
         options: {
           role?: ProviderProxyRoleIdentity['role'];
@@ -147,8 +136,9 @@ export function registerProviderProxyRoleTerminationCommand(
           if (!parsed.success) {
             throw new InvalidArgumentError('Options --role, --pid, and --incarnation are required.');
           }
-          const result = operations.terminate(parsed.data);
-          const exitCode = result.kind === 'signalled' ? 0 : result.kind === 'identity-mismatch' ? 1 : 75;
+          const result = await operations.terminate(parsed.data);
+          const exitCode =
+            result.kind === 'abandoned' ? 0 : result.kind === 'identity-mismatch' || result.kind === 'refused' ? 1 : 75;
           (exitCode === 0 ? process.stdout : process.stderr).write(
             `${formatProviderProxyRoleTerminationResult(result)}\n`,
           );

@@ -683,17 +683,31 @@ export const controlTenancyHolderWireSchema = coordinatorIdentitySchema
   .pick({ instanceId: true, pid: true, incarnation: true })
   .strict();
 
+export const providerProxyRoleIdentitySchema = z
+  .object({
+    role: z.enum(['guardian', 'reaper']),
+    pid: z.number().int().positive().safe(),
+    incarnation: processIncarnationSchema,
+  })
+  .strict();
+export type ProviderProxyRoleIdentity = z.infer<typeof providerProxyRoleIdentitySchema>;
+
+export const providerProxyRoleAbandonmentParamsSchema = z
+  .object({
+    credential: z.unknown(),
+    roleIdentity: providerProxyRoleIdentitySchema,
+  })
+  .strict();
+
+export const providerProxyRoleAbandonmentResultSchema = z
+  .object({ state: z.literal('unattributable-containment-abandoned') })
+  .strict();
+
 export const enforcementHoldStatusSchema = z
   .object({
     kind: z.literal('recorded-group-unattributable'),
     attempts: z.number().int().safe().positive(),
-    roleIdentity: z
-      .object({
-        role: z.enum(['guardian', 'reaper']),
-        pid: nonNegativeSafeIntegerSchema,
-        incarnation: processIncarnationSchema,
-      })
-      .strict(),
+    roleIdentity: providerProxyRoleIdentitySchema,
     retry: z.discriminatedUnion('state', [
       z.object({ state: z.literal('scheduled'), nextProbeAtMs: nonNegativeSafeIntegerSchema }).strict(),
       z.object({ state: z.literal('in-progress') }).strict(),

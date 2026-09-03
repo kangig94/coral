@@ -36,12 +36,10 @@ import {
   type BackendStatusCommandOperations,
   type ProviderProxySetCommandOperations,
 } from '#src/cli/commands/backend.js';
-import type {
-  ProviderProxyRoleIdentity,
-  ProviderProxyRoleTerminationCommandOperations,
-} from '#src/cli/commands/provider-proxy-role-termination.js';
+import type { ProviderProxyRoleTerminationCommandOperations } from '#src/cli/commands/provider-proxy-role-termination.js';
 import { assertNever } from '#src/infra/error-format.js';
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import type { ProviderProxyRoleIdentity } from '#src/provider-proxy/protocol.js';
 import type { ShutdownReason, ShutdownResult } from '#src/transport/http/backend/shutdown.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -691,8 +689,8 @@ describe('cli main routing', () => {
         kind: 'unsupported-coordinator',
         setIdentity: request.setIdentity,
       }));
-      const terminate = vi.fn<ProviderProxyRoleTerminationCommandOperations['terminate']>((identity) => ({
-        kind: 'signalled',
+      const terminate = vi.fn<ProviderProxyRoleTerminationCommandOperations['terminate']>(async (identity) => ({
+        kind: 'abandoned',
         roleIdentity: identity,
       }));
       const program = new Command();

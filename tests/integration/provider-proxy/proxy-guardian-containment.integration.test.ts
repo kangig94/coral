@@ -337,6 +337,7 @@ async function startGuardianAndReaper() {
     self: { pid: 5_101, incarnation: testIncarnation(901) },
     holderAuthority: reaperHolderAuthority,
     observeHolder,
+    abandonUnattributable: () => false,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -371,6 +372,7 @@ async function startGuardianAndReaper() {
     reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
     holderAuthority: guardianHolderAuthority,
     observeHolder,
+    abandonUnattributable: () => false,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });

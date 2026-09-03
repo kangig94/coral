@@ -70,8 +70,10 @@ import {
   parseLinuxProcessIncarnation,
   probeProcessIncarnation,
   probeProcessIncarnationAsync,
+  type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
+import { gracefulKill } from '../infra/process-supervision.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -492,10 +494,14 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     },
   };
 
+  const terminateProcessIncarnationProbe: ProcessIncarnationProbeTerminator = (child) => {
+    gracefulKill(child as ChildProcessLike, { time }, observeProcessLiveness);
+  };
+
   // Composed once, here, so no other module needs to import the probe functions directly (see
   // `ProcessPort.observeRecordedProcessAsync`'s own doc comment for why).
   const observeRecordedProcessAsync = createAsyncRecordedProcessObserver({
-    readIncarnation: (pid) => probeProcessIncarnationAsync(pid, capturedEnv.platform),
+    readIncarnation: (pid) => probeProcessIncarnationAsync(pid, terminateProcessIncarnationProbe, capturedEnv.platform),
     observeLiveness: observeProcessLiveness,
   });
 

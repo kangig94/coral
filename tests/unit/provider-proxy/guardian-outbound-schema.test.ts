@@ -108,6 +108,7 @@ function createGuardianHarness(
   holderAuthority: ControlHolderAuthority = createControlHolderAuthority(),
   containmentFailure?: Readonly<{ latchTeardown: () => void; observeLiveness: () => never }>,
   enforcementHoldStatus?: () => z.infer<typeof enforcementHoldStatusSchema> | null,
+  abandonUnattributable: () => boolean = () => false,
 ) {
   const clock = createMonotonicClock(Symbol('guardian-outbound'), { readMilliseconds: () => 0n });
   const shared = {
@@ -216,6 +217,7 @@ function createGuardianHarness(
     holderAuthority,
     observeHolder: () => Promise.resolve('unknown' as const),
     ...(enforcementHoldStatus === undefined ? {} : { enforcementHoldStatus }),
+    abandonUnattributable,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -271,6 +273,7 @@ function createGuardianHarness(
     guardianIdentity,
     reaperIdentity,
     proxyIdentity,
+    abandonUnattributable,
     operation,
   };
 }
@@ -355,6 +358,57 @@ describe('guardian outbound schemas', () => {
       changedAtMs: 12_000,
       enforcementHold,
     });
+  });
+
+  it('authenticates exact-role abandonment with the installed capsule grant', async () => {
+    const abandonUnattributable = vi.fn(() => true);
+    const harness = createGuardianHarness(createControlHolderAuthority(), undefined, undefined, abandonUnattributable);
+    const grantId = randomUUID();
+    const secret = 'f'.repeat(64);
+    await harness.call(
+      'guardian.handoff-install.v1',
+      guardianReaperHandoffInstallParamsSchema.parse({
+        grantId,
+        secretSha256: createHash('sha256').update(secret, 'utf8').digest('hex'),
+        successor: harness.coordinatorIdentity,
+        operations: [],
+        orphanTimeoutMs: 30_000,
+        teardownReserveMs: 14_000,
+      }),
+    );
+    const credential = {
+      grantId,
+      secret,
+      generation: harness.guardianIdentity.generation,
+      flavor: harness.guardianIdentity.flavor,
+      buildSetId: harness.guardianIdentity.buildSetId,
+      hostFingerprint: harness.guardianIdentity.hostFingerprint,
+      guardianInstanceId: harness.guardianIdentity.guardianInstanceId,
+      reaperInstanceId: harness.reaperIdentity.reaperInstanceId,
+      proxyInstanceId: harness.proxyIdentity.proxyInstanceId,
+    };
+    const method = harness.method('guardian.abandon-unattributable.v1');
+    expect(method.authority).toBe('operator');
+
+    expect(() =>
+      harness.call('guardian.abandon-unattributable.v1', {
+        credential,
+        roleIdentity: { role: 'guardian', pid: 9_999, incarnation: harness.guardianIdentity.incarnation },
+      }),
+    ).toThrow(/different guardian/u);
+    expect(abandonUnattributable).not.toHaveBeenCalled();
+
+    expect(
+      harness.call('guardian.abandon-unattributable.v1', {
+        credential,
+        roleIdentity: {
+          role: 'guardian',
+          pid: harness.guardianIdentity.pid,
+          incarnation: harness.guardianIdentity.incarnation,
+        },
+      }),
+    ).toEqual({ state: 'unattributable-containment-abandoned' });
+    expect(abandonUnattributable).toHaveBeenCalledOnce();
   });
 
   it('replays one stable activation receipt for the exact membership tuple', async () => {

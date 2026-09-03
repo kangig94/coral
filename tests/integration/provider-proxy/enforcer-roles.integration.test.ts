@@ -217,6 +217,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     self: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
     holderAuthority: reaperHolderAuthority,
     observeHolder,
+    abandonUnattributable: () => false,
     onOutcome: (outcome) => reaperOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -257,6 +258,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
     holderAuthority: guardianHolderAuthority,
     observeHolder,
+    abandonUnattributable: () => false,
     onOutcome: (outcome) => guardianOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -554,6 +556,7 @@ async function startBareReaper<Scope extends symbol>(
     self: { pid: 5_101, incarnation: testIncarnation(901) },
     holderAuthority,
     observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
+    abandonUnattributable: () => false,
     onOutcome: () => {},
     onProgressViolation: () => {},
   });
@@ -756,6 +759,7 @@ describe('provider-proxy guardian and reaper', () => {
       reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
       holderAuthority: createControlHolderAuthority(),
       observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
+      abandonUnattributable: () => false,
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -1122,6 +1126,7 @@ describe('provider-proxy guardian and reaper', () => {
       reaperSelf: { pid: 5_101, incarnation: testIncarnation(901) },
       holderAuthority: createControlHolderAuthority(),
       observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
+      abandonUnattributable: () => false,
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -2166,6 +2171,7 @@ describe('provider-proxy guardian and reaper', () => {
       self: { pid: 5_101, incarnation: testIncarnation(901) },
       holderAuthority: createControlHolderAuthority(),
       observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
+      abandonUnattributable: () => false,
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -2386,6 +2392,7 @@ describe('provider-proxy guardian and reaper', () => {
       reaperSelf: { pid: reaperIdentity.pid, incarnation: reaperIdentity.incarnation },
       holderAuthority,
       observeHolder: (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const),
+      abandonUnattributable: () => false,
       onOutcome: () => {},
       onProgressViolation: () => {},
     });

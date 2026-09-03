@@ -58,6 +58,8 @@ const reaperRoleCloseHarness = vi.hoisted(() => ({
   reaperListen: vi.fn<() => Promise<void>>(),
   enforcer: vi.fn<() => unknown>(),
   onOutcome: undefined as ((outcome: EnforcementOutcome) => void) | undefined,
+  latchTeardown: undefined as (() => void) | undefined,
+  markContainmentAbsent: undefined as (() => void) | undefined,
 }));
 
 vi.mock('#src/provider-proxy/bootstrap-capsule.js', async (importOriginal) => {
@@ -172,6 +174,8 @@ vi.mock('#src/provider-proxy/reaper.js', async (importOriginal) => {
     createReaper: (...args: Parameters<typeof actual.createReaper>) => {
       if (!reaperRoleCloseHarness.enabled) return actual.createReaper(...args);
       reaperRoleCloseHarness.onOutcome = args[0].onOutcome;
+      reaperRoleCloseHarness.latchTeardown = args[0].deadlines.latchTeardown;
+      reaperRoleCloseHarness.markContainmentAbsent = args[0].deadlines.markContainmentAbsent;
       return {
         listen: reaperRoleCloseHarness.reaperListen,
         close: reaperRoleCloseHarness.reaperClose,
@@ -206,6 +210,8 @@ afterEach(() => {
   reaperRoleCloseHarness.reaperListen.mockReset();
   reaperRoleCloseHarness.enforcer.mockReset();
   reaperRoleCloseHarness.onOutcome = undefined;
+  reaperRoleCloseHarness.latchTeardown = undefined;
+  reaperRoleCloseHarness.markContainmentAbsent = undefined;
 });
 
 function scopedTempDir(prefix: string): string {
@@ -514,8 +520,49 @@ describe('runProviderRoleMain', () => {
     );
   });
 
-  it.each(['SIGTERM', 'SIGINT'] as const)('%s abandons an unattributable hold and exits nonzero', async (signal) => {
-    const directory = scopedTempDir('coral-reaper-role-signal-authority-');
+  it.each(['SIGTERM', 'SIGINT'] as const)(
+    '%s preserves an unattributable hold and keeps the role alive',
+    async (signal) => {
+      const directory = scopedTempDir('coral-reaper-role-signal-authority-');
+      enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
+        exchange: vi.fn(async (): Promise<never> => {
+          throw new Error('reaper unexpectedly opened an outbound control exchange');
+        }),
+        close: vi.fn(),
+      });
+      reaperRoleCloseHarness.enabled = true;
+      reaperRoleCloseHarness.reaperListen.mockResolvedValue();
+      reaperRoleCloseHarness.reaperClose.mockResolvedValue();
+      const unattributable = { kind: 'recorded-group-unattributable', reason: 'still held' } as const;
+      const giveUp = vi.fn(async () => {
+        reaperRoleCloseHarness.onOutcome?.(unattributable);
+        return { kind: 'holding', outcome: unattributable } as const;
+      });
+      reaperRoleCloseHarness.enforcer.mockReturnValue({ giveUp, retryUnattributable: () => null });
+
+      let shutdown: (() => void) | null = null;
+      vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+        if (event === signal) shutdown = listener as () => void;
+        return process;
+      });
+      const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+      await expect(
+        runProviderRoleMain({ role: 'reaper', capsulePath: '/unused' }, { pluginRoot: directory }),
+      ).resolves.toBe(0);
+      reaperRoleCloseHarness.reaperClose.mockClear();
+      exitProcess.mockClear();
+
+      (shutdown as (() => void) | null)?.();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(giveUp).toHaveBeenCalledOnce();
+      expect(reaperRoleCloseHarness.reaperClose).not.toHaveBeenCalled();
+      expect(exitProcess).not.toHaveBeenCalled();
+    },
+  );
+
+  it('exits 0 when signal-requested teardown confirms containment absence', async () => {
+    const directory = scopedTempDir('coral-reaper-role-signal-absence-');
     enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(async (): Promise<never> => {
         throw new Error('reaper unexpectedly opened an outbound control exchange');
@@ -525,16 +572,18 @@ describe('runProviderRoleMain', () => {
     reaperRoleCloseHarness.enabled = true;
     reaperRoleCloseHarness.reaperListen.mockResolvedValue();
     reaperRoleCloseHarness.reaperClose.mockResolvedValue();
-    const unattributable = { kind: 'recorded-group-unattributable', reason: 'still held' } as const;
+    const absent = { kind: 'containment-absent', disappearanceReceipt: 'gone' } as const;
     const giveUp = vi.fn(async () => {
-      reaperRoleCloseHarness.onOutcome?.(unattributable);
-      return { kind: 'holding', outcome: unattributable } as const;
+      reaperRoleCloseHarness.latchTeardown?.();
+      reaperRoleCloseHarness.markContainmentAbsent?.();
+      reaperRoleCloseHarness.onOutcome?.(absent);
+      return { kind: 'settled', outcome: absent } as const;
     });
     reaperRoleCloseHarness.enforcer.mockReturnValue({ giveUp, retryUnattributable: () => null });
 
     let shutdown: (() => void) | null = null;
     vi.spyOn(process, 'on').mockImplementation((event, listener) => {
-      if (event === signal) shutdown = listener as () => void;
+      if (event === 'SIGTERM') shutdown = listener as () => void;
       return process;
     });
     const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
@@ -547,8 +596,11 @@ describe('runProviderRoleMain', () => {
 
     (shutdown as (() => void) | null)?.();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(giveUp).toHaveBeenCalledOnce();
     expect(reaperRoleCloseHarness.reaperClose).toHaveBeenCalledOnce();
-    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
   it('relinquishes pairing and proxy control when semantic cancellation is unconfirmed', async () => {
@@ -587,44 +639,40 @@ describe('runProviderRoleMain', () => {
 });
 
 describe('buildEnforcementOutcomeHandlers', () => {
-  it.each([false, true])(
-    'defers, then exits 0 on containment-absent with operator abandonment %s',
-    async (operatorAbandonmentAuthorized) => {
-      const scheduledCallbacks: Array<() => void> = [];
-      const markExited = vi.fn();
-      const close = vi.fn(async () => undefined);
-      const exitProcess = vi.fn();
-      const handlers = buildEnforcementOutcomeHandlers({
-        role: 'guardian',
-        roleIdentity: { pid: 4101, incarnation: testIncarnation(4101) },
-        deadlines: { markExited },
-        close,
-        exitProcess,
-        now: () => 1_000,
-        operatorAbandonmentAuthorized: () => operatorAbandonmentAuthorized,
-        retryUnattributable: () => null,
-        schedule: (callback) => {
-          scheduledCallbacks.push(callback);
-        },
-      });
+  it('defers, then exits 0 on containment-absent', async () => {
+    const scheduledCallbacks: Array<() => void> = [];
+    const markExited = vi.fn();
+    const close = vi.fn(async () => undefined);
+    const exitProcess = vi.fn();
+    const handlers = buildEnforcementOutcomeHandlers({
+      role: 'guardian',
+      roleIdentity: { pid: 4101, incarnation: testIncarnation(4101) },
+      deadlines: { markExited },
+      close,
+      exitProcess,
+      now: () => 1_000,
+      retryUnattributable: () => null,
+      schedule: (callback) => {
+        scheduledCallbacks.push(callback);
+      },
+    });
 
-      handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'receipt' });
+    handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'receipt' });
 
-      // Deferred, not run inline: an in-flight `guardian.containment-commit.v1` caller's own response has to
-      // reach the wire before this closes anything out from under it.
-      expect(markExited).not.toHaveBeenCalled();
-      expect(close).not.toHaveBeenCalled();
-      expect(exitProcess).not.toHaveBeenCalled();
-      expect(scheduledCallbacks).toHaveLength(1);
+    // Deferred, not run inline: an in-flight `guardian.containment-commit.v1` caller's own response has to
+    // reach the wire before this closes anything out from under it.
+    expect(markExited).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
+    expect(scheduledCallbacks).toHaveLength(1);
 
-      scheduledCallbacks[0]?.();
-      await new Promise((resolve) => setImmediate(resolve));
+    scheduledCallbacks[0]?.();
+    await new Promise((resolve) => setImmediate(resolve));
 
-      expect(markExited).toHaveBeenCalledOnce();
-      expect(close).toHaveBeenCalledOnce();
-      expect(exitProcess).toHaveBeenCalledWith(0);
-    },
-  );
+    expect(markExited).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(0);
+  });
 
   it('exits nonzero without claiming the exited state on a reap-failed outcome', async () => {
     const markExited = vi.fn();
@@ -637,7 +685,6 @@ describe('buildEnforcementOutcomeHandlers', () => {
       close,
       exitProcess,
       now: () => 1_000,
-      operatorAbandonmentAuthorized: () => false,
       retryUnattributable: () => null,
       schedule: (callback) => callback(),
     });
@@ -663,7 +710,6 @@ describe('buildEnforcementOutcomeHandlers', () => {
       }),
       exitProcess,
       now: () => 1_000,
-      operatorAbandonmentAuthorized: () => false,
       retryUnattributable: () => null,
       schedule: (callback) => callback(),
     });
@@ -689,7 +735,6 @@ describe('buildEnforcementOutcomeHandlers', () => {
       close,
       exitProcess,
       now: () => 10_000,
-      operatorAbandonmentAuthorized: () => false,
       retryUnattributable,
       schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
     });
@@ -742,7 +787,6 @@ describe('buildEnforcementOutcomeHandlers', () => {
       close,
       exitProcess,
       now: () => 10_000,
-      operatorAbandonmentAuthorized: () => false,
       retryUnattributable: () => null,
       schedule: (callback) => scheduled.push(callback),
     });
@@ -770,13 +814,15 @@ describe('buildEnforcementOutcomeHandlers', () => {
       close,
       exitProcess,
       now: () => 10_000,
-      operatorAbandonmentAuthorized: () => true,
       retryUnattributable: () => null,
       schedule: (callback) => scheduled.push(callback),
     });
 
     handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
     scheduled[0]?.();
+    expect(handlers.abandonUnattributable()).toBe(true);
+    expect(handlers.abandonUnattributable()).toBe(false);
+    scheduled.at(-1)?.();
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(handlers.enforcementHoldStatus()).toBeNull();

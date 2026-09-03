@@ -1,4 +1,5 @@
 import { InvalidArgumentError, type Command } from 'commander';
+import { dirname, join } from 'node:path';
 import type { z } from 'zod';
 
 import {
@@ -39,16 +40,31 @@ import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
-import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
+import {
+  handoffRoutingStatusPathForRunDir,
+  providerHandoffCapsuleFileSuffix,
+  providerHandoffCapsulePath,
+} from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
-import { discoverProviderHandoffCapsules } from '../../coordinator/services/provider-proxy-capsule-discovery.js';
 import {
   connectControlClient,
   type ControlClient,
   type ControlClientTimer,
 } from '../../provider-proxy/control-client.js';
-import { holderStatusParamsSchema, type HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
-import { holderStatusResultSchema } from '../../provider-proxy/protocol.js';
+import {
+  HandoffCapsuleError,
+  SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
+  holderStatusParamsSchema,
+  readHandoffCapsuleFile,
+  type HandoffCapsule,
+  type HandoffCapsuleV3,
+} from '../../provider-proxy/handoff-capsule.js';
+import {
+  holderStatusResultSchema,
+  providerProxyRoleAbandonmentParamsSchema,
+  providerProxyRoleAbandonmentResultSchema,
+  type ProviderProxyRoleIdentity,
+} from '../../provider-proxy/protocol.js';
 import { runtimeControlTimer } from '../../provider-proxy/role-spawn.js';
 import {
   decodeRecoveryQuarantineKey,
@@ -135,6 +151,7 @@ import {
   createProviderProxyRoleTerminationCommandOperations,
   formatProviderProxyRoleTerminationCommand,
   registerProviderProxyRoleTerminationCommand,
+  type ProviderProxyRoleAbandonmentAttempt,
   type ProviderProxyRoleTerminationCommandOperations,
 } from './provider-proxy-role-termination.js';
 
@@ -437,7 +454,7 @@ export interface BackendStatusCommandOperations {
   getStatus(): Promise<BackendStatusFull>;
   getLiveHandoffResult(): LiveHandoffResult | null;
   getRoutingStatus(): Promise<HandoffRoutingStatusReadResult>;
-  readProviderProxySetHolderStatusDirect?(): Promise<readonly DirectProviderProxySetHolderStatus[]>;
+  readProviderProxySetHolderStatusDirect?(): Promise<readonly DirectProviderProxySetHolderStatusRow[]>;
 }
 
 export interface HandoffRoutingStatusCommandOperations {
@@ -524,6 +541,15 @@ function routingStatusPath(runtime: Runtime): string {
  *  the coordinator's own unreachability already triggered. */
 const DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS = 3_000;
 
+const DIAGNOSTIC_HANDOFF_CAPSULE_FILENAME = new RegExp(
+  `^provider-1[0-9a-f]{23}\\.(?:${[
+    ...new Set(SUPPORTED_HANDOFF_CAPSULE_VERSIONS.map((version) => providerHandoffCapsuleFileSuffix(version))),
+  ]
+    .map((suffix) => suffix.replaceAll('.', '\\.'))
+    .join('|')})$`,
+  'u',
+);
+
 export type DirectHolderStatusReading =
   | Readonly<{ kind: 'answered'; status: z.infer<typeof holderStatusResultSchema> }>
   | Readonly<{ kind: 'holder-status-unavailable'; reason: string }>
@@ -536,6 +562,41 @@ export type DirectProviderProxySetHolderStatus = Readonly<{
   guardian: DirectHolderStatusReading;
   reaper: DirectHolderStatusReading;
 }>;
+
+export type DirectProviderProxySetHolderStatusRow =
+  | DirectProviderProxySetHolderStatus
+  | Readonly<{ kind: 'unreadable-capsule'; path: string; reason: string }>;
+
+type DiagnosticProviderHandoffCapsule =
+  | Readonly<{ kind: 'readable'; capsule: HandoffCapsule }>
+  | Extract<DirectProviderProxySetHolderStatusRow, { kind: 'unreadable-capsule' }>;
+
+function readProviderHandoffCapsulesForDiagnostics(runtime: Runtime): readonly DiagnosticProviderHandoffCapsule[] {
+  const runDir = runtime.paths.coral.coordinator.runDir;
+  const baseDir = dirname(runtime.paths.coral.generation.root);
+  const uid = process.getuid?.() ?? 0;
+  const candidates = runtime.storage
+    .readdirSync(runDir)
+    .filter((entry) => DIAGNOSTIC_HANDOFF_CAPSULE_FILENAME.test(entry))
+    .sort();
+
+  return candidates.map((entry) => {
+    const path = join(runDir, entry);
+    try {
+      const capsule = readHandoffCapsuleFile(path, { storage: runtime.storage, uid });
+      if (capsule === null) {
+        return { kind: 'unreadable-capsule', path, reason: 'provider_proxy_handoff_capsule_disappeared' };
+      }
+      if (providerHandoffCapsulePath(capsule, capsule.version, { baseDir }) !== path) {
+        return { kind: 'unreadable-capsule', path, reason: 'provider_proxy_handoff_capsule_path_mismatch' };
+      }
+      return { kind: 'readable', capsule };
+    } catch (error: unknown) {
+      const reason = error instanceof HandoffCapsuleError ? `${error.code}: ${error.message}` : errorMessage(error);
+      return { kind: 'unreadable-capsule', path, reason };
+    }
+  });
+}
 
 async function readDirectHolderStatus(
   endpoint: string,
@@ -550,17 +611,7 @@ async function readDirectHolderStatus(
     return { kind: 'unreachable', reason: errorMessage(error) };
   }
   try {
-    const params = holderStatusParamsSchema.parse({
-      grantId: capsule.grantId,
-      secret: capsule.secret,
-      generation: capsule.generation,
-      flavor: capsule.flavor,
-      buildSetId: capsule.buildSetId,
-      hostFingerprint: capsule.hostFingerprint,
-      guardianInstanceId: capsule.guardianInstanceId,
-      reaperInstanceId: capsule.reaperInstanceId,
-      proxyInstanceId: capsule.proxyInstanceId,
-    });
+    const params = holderStatusCredential(capsule);
     const exchange = await client.exchange(method, params, DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS);
     if (exchange.kind === 'response') {
       if (exchange.response.kind === 'result') {
@@ -585,24 +636,101 @@ async function readDirectHolderStatus(
   }
 }
 
-/**
- * `coral-cli backend status`'s fallback surface while coordinator IPC is starved: reads every mode-0600
- * handoff capsule directly and queries both role endpoints over their own control framing, never through the
- * coordinator. `method_not_found` is the sole method-unavailable signal; transport ambiguity preserves its
- * reported cause and never becomes absence or containment authority.
- */
+function holderStatusCredential(capsule: HandoffCapsuleV3): z.infer<typeof holderStatusParamsSchema> {
+  return holderStatusParamsSchema.parse({
+    grantId: capsule.grantId,
+    secret: capsule.secret,
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+}
+
+export async function abandonProviderProxyRoleDirect(
+  runtime: Runtime,
+  roleIdentity: ProviderProxyRoleIdentity,
+): Promise<ProviderProxyRoleAbandonmentAttempt> {
+  const discovered = readProviderHandoffCapsulesForDiagnostics(runtime);
+  const capsules = discovered.flatMap((entry) => {
+    if (entry.kind !== 'readable' || entry.capsule.version !== 3) return [];
+    const capsule = entry.capsule;
+    const recorded =
+      roleIdentity.role === 'guardian'
+        ? { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation }
+        : { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation };
+    return recorded.pid === roleIdentity.pid && recorded.incarnation === roleIdentity.incarnation ? [capsule] : [];
+  });
+  if (capsules.length !== 1) {
+    const unreadable = discovered.filter((entry) => entry.kind === 'unreadable-capsule').length;
+    const reason =
+      capsules.length === 0
+        ? `no readable current handoff capsule names this role identity${unreadable === 0 ? '' : '; unreadable capsule evidence remains'}`
+        : 'more than one handoff capsule names this role identity';
+    return { kind: 'unreachable', reason };
+  }
+
+  const capsule = capsules[0];
+  if (capsule === undefined) return { kind: 'unreachable', reason: 'the matched handoff capsule disappeared' };
+  const endpoint = roleIdentity.role === 'guardian' ? capsule.guardianControlEndpoint : capsule.reaperControlEndpoint;
+  const method =
+    roleIdentity.role === 'guardian' ? 'guardian.abandon-unattributable.v1' : 'reaper.abandon-unattributable.v1';
+  let client: ControlClient;
+  try {
+    client = await connectControlClient(
+      endpoint,
+      runtimeControlTimer(runtime),
+      DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS,
+    );
+  } catch (error: unknown) {
+    return { kind: 'unreachable', reason: errorMessage(error) };
+  }
+  try {
+    const exchange = await client.exchange(
+      method,
+      providerProxyRoleAbandonmentParamsSchema.parse({
+        credential: holderStatusCredential(capsule),
+        roleIdentity,
+      }),
+      DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS,
+    );
+    if (exchange.kind !== 'response') {
+      return { kind: 'unreachable', reason: `${exchange.cause}: ${errorMessage(exchange.error)}` };
+    }
+    if (exchange.response.kind === 'refusal') {
+      return { kind: 'refused', reason: exchange.response.error.message };
+    }
+    const parsed = providerProxyRoleAbandonmentResultSchema.safeParse(exchange.response.value);
+    return parsed.success
+      ? { kind: 'abandoned' }
+      : { kind: 'unreachable', reason: `undecodable result: ${parsed.error.message}` };
+  } finally {
+    client.close();
+  }
+}
+
+function createDirectProviderProxyRoleTerminationCommandOperations(): ProviderProxyRoleTerminationCommandOperations {
+  const runtime = createRealRuntime(resolveBuildFlavor(process.env));
+  return createProviderProxyRoleTerminationCommandOperations({
+    abandon: (roleIdentity) => abandonProviderProxyRoleDirect(runtime, roleIdentity),
+  });
+}
+
 export async function readProviderProxySetHolderStatusDirect(
   runtime: Runtime,
-): Promise<readonly DirectProviderProxySetHolderStatus[]> {
-  const discovered = discoverProviderHandoffCapsules({
-    runDir: runtime.paths.coral.coordinator.runDir,
-    generationRoot: runtime.paths.coral.generation.root,
-    storage: runtime.storage,
-    uid: process.getuid?.() ?? 0,
-  });
+): Promise<readonly DirectProviderProxySetHolderStatusRow[]> {
+  const discovered = readProviderHandoffCapsulesForDiagnostics(runtime);
   const timer = runtimeControlTimer(runtime);
-  const readings: DirectProviderProxySetHolderStatus[] = [];
-  for (const { capsule } of discovered) {
+  const readings: DirectProviderProxySetHolderStatusRow[] = [];
+  for (const discoveredCapsule of discovered) {
+    if (discoveredCapsule.kind === 'unreadable-capsule') {
+      readings.push(discoveredCapsule);
+      continue;
+    }
+    const { capsule } = discoveredCapsule;
     if (capsule.version !== 3) continue;
     const [guardian, reaper] = await Promise.all([
       readDirectHolderStatus(capsule.guardianControlEndpoint, 'guardian.holder-status.v1', capsule, timer),
@@ -641,11 +769,14 @@ function formatDirectHolderStatusReading(reading: DirectHolderStatusReading): st
 }
 
 export function formatProviderProxySetHolderStatusDirect(
-  readings: readonly DirectProviderProxySetHolderStatus[],
+  readings: readonly DirectProviderProxySetHolderStatusRow[],
 ): string {
   if (readings.length === 0) return 'No provider proxy sets discovered on disk.';
   return readings
     .map((reading) => {
+      if ('kind' in reading) {
+        return `unreadable capsule path=${reading.path}\n  reason: ${reading.reason}`;
+      }
       const roles = [reading.guardian, reading.reaper]
         .filter((role): role is Extract<DirectHolderStatusReading, { kind: 'answered' }> => role.kind === 'answered')
         .flatMap((role) => {
@@ -1076,7 +1207,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
     providerProxySets = createProviderProxySetCommandOperations(),
-    providerProxyRoleTermination = createProviderProxyRoleTerminationCommandOperations(),
+    providerProxyRoleTermination = createDirectProviderProxyRoleTerminationCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 

@@ -177,7 +177,7 @@ export type ControlMethod = Readonly<
   } & (
     | { authority: 'establishes-control'; handle: ControlOpenHandler }
     | { authority: 'active'; handle: ActiveControlMethodHandler }
-    | { authority: 'pairing' | 'observation'; handle: ControlMethodHandler }
+    | { authority: 'pairing' | 'observation' | 'operator'; handle: ControlMethodHandler }
   )
 >;
 
@@ -566,6 +566,16 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       markHandlerStarted();
       return entry.handle(params);
     }
+    if (entry.authority === 'operator') {
+      if (challenges.controlIsLive()) {
+        throw new ProxyControlProtocolError(
+          'invalid_state',
+          'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set contain <set-token> --abandon-without-absence` through the coordinator.',
+        );
+      }
+      markHandlerStarted();
+      return entry.handle(params);
+    }
     const live = tenancy;
     if (live === null || live.socket !== socket || !live.active || !challenges.controlIsLive()) {
       throw new ProxyControlProtocolError('unauthorized_control', `${method} requires active control.`);
@@ -640,16 +650,18 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   // method promises exactly that, so a role that serves one must not have every connection destroyed the
   // moment control is merely held, or its one tenancy-free method becomes unreachable in the case it exists
   // for — a live tenancy is the *normal* state, not an edge case, for whoever wants to ask about it.
-  const hasObservationMethod = [...role.methods.values()].some((method) => method.authority === 'observation');
+  const hasTenancyFreeMethod = [...role.methods.values()].some(
+    (method) => method.authority === 'observation' || method.authority === 'operator',
+  );
 
   /**
    * Admits a connection that earns no tenancy of its own because both authority slots are already filled: it
    * may read exactly one bounded frame, and is destroyed once that frame is served or refused — never held
    * open for a second request, and never left waiting past `requestTimeoutMs` for a first one. This is what
-   * keeps an observation method from turning `hasObservationMethod`'s accept-time exception into an
+   * keeps a tenancy-free method from turning `hasTenancyFreeMethod`'s accept-time exception into an
    * unbounded-lifetime third socket.
    */
-  const acceptProvisionalObservationConnection = (socket: Socket): void => {
+  const acceptProvisionalTenancyFreeConnection = (socket: Socket): void => {
     let settled = false;
     const idle = timer.setTimeout(() => {
       if (settled) return;
@@ -681,6 +693,19 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         // reading this reply retries on a fresh connection, exactly as it would after a normal `control-active`
         // refusal.
         write(socket, handlerFailure(id, new ControlAdmissionRefusedError('control-active')));
+        return;
+      }
+      if (entry.authority === 'operator') {
+        write(
+          socket,
+          handlerFailure(
+            id,
+            new ProxyControlProtocolError(
+              'invalid_state',
+              'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set contain <set-token> --abandon-without-absence` through the coordinator.',
+            ),
+          ),
+        );
         return;
       }
       if (entry.authority !== 'observation') {
@@ -744,16 +769,16 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const controlTaken = tenancy !== null && !tenancy.socket.destroyed && challenges.controlIsLive();
     const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
     const noSlotAvailable = controlTaken && (role.pairing === undefined || pairingTaken);
-    if (!hasObservationMethod && noSlotAvailable) {
+    if (!hasTenancyFreeMethod && noSlotAvailable) {
       socket.destroy();
       return;
     }
     sockets.add(socket);
     if (role.pairing !== undefined && controlTaken && pairingTaken) {
-      // `hasObservationMethod` is true here — the branch above already destroyed the socket otherwise — so
-      // this connection may still ask an observation method, but it earns no tenancy: bound its admission to
+      // `hasTenancyFreeMethod` is true here — the branch above already destroyed the socket otherwise — so
+      // this connection may still ask a tenancy-free method, but it earns no tenancy: bound its admission to
       // one frame instead of the unconditional, unbounded wiring below.
-      acceptProvisionalObservationConnection(socket);
+      acceptProvisionalTenancyFreeConnection(socket);
       return;
     }
     const read = createFrameReader(

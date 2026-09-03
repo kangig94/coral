@@ -58,6 +58,8 @@ import {
   type enforcementHoldStatusSchema,
   holderStatusResultSchema,
   jointContainmentReceiptSchema,
+  providerProxyRoleAbandonmentParamsSchema,
+  providerProxyRoleAbandonmentResultSchema,
   reaperAcquisitionPublishParamsSchema,
   reaperAcquisitionPublishResultSchema,
   reaperConfirmProviderRootParamsSchema,
@@ -254,6 +256,7 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   /** The non-blocking identity-bound observer the guardian's own enforcer schedules holder checks through. */
   observeHolder: AsyncRecordedProcessObserver;
   enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
+  abandonUnattributable(): boolean;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -873,6 +876,48 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             transitionSequence: current.transitionSequence,
             changedAtMs: current.changedAtMs,
             enforcementHold: options.enforcementHoldStatus?.() ?? null,
+          });
+        },
+      },
+    ],
+    [
+      'guardian.abandon-unattributable.v1',
+      {
+        authority: 'operator',
+        handle: (params) => {
+          const request = providerProxyRoleAbandonmentParamsSchema.parse(params);
+          const credential = holderStatusParamsSchema.parse(request.credential);
+          const verified = grants.verifyInstalledGrant({
+            grantId: credential.grantId,
+            secret: credential.secret,
+            binding: {
+              generation: credential.generation,
+              flavor: credential.flavor,
+              buildSetId: credential.buildSetId,
+              hostFingerprint: credential.hostFingerprint,
+              guardianInstanceId: credential.guardianInstanceId,
+              reaperInstanceId: credential.reaperInstanceId,
+              proxyInstanceId: credential.proxyInstanceId,
+            },
+          });
+          if (!verified) {
+            throw new ProxyControlProtocolError('grant_invalid', 'Abandonment did not present the installed grant.');
+          }
+          if (
+            request.roleIdentity.role !== 'guardian' ||
+            request.roleIdentity.pid !== identity.pid ||
+            request.roleIdentity.incarnation !== identity.incarnation
+          ) {
+            throw new ProxyControlProtocolError('identity_mismatch', 'Abandonment named a different guardian.');
+          }
+          if (!options.abandonUnattributable()) {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'This guardian has no unattributable hold to abandon.',
+            );
+          }
+          return providerProxyRoleAbandonmentResultSchema.parse({
+            state: 'unattributable-containment-abandoned',
           });
         },
       },

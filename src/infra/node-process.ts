@@ -1,12 +1,15 @@
 import {
   execFile,
   execFileSync,
+  type ChildProcess,
   type ExecFileOptionsWithStringEncoding,
   type ExecFileSyncOptionsWithStringEncoding,
 } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { z } from 'zod';
+
+import { SIGTERM_GRACE_MS } from './process-constants.js';
 
 /** Every async platform probe must share one deadline derived from this end-to-end allowance. */
 export const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
@@ -290,20 +293,81 @@ export function createRecordedProcessObserver(
 // `execFileSync`/`readFileSync`, for a guardian/reaper answering loop that cannot afford either to stall.
 // -------------------------------------------------------------------------------------------------------
 
-function asyncProbeExecOptions(signal: AbortSignal): ExecFileOptionsWithStringEncoding {
+type AsyncProbeExecOptions = ExecFileOptionsWithStringEncoding & Readonly<{ signal: AbortSignal }>;
+
+export type ProcessIncarnationProbeTerminator = (child: ChildProcess) => void;
+
+function asyncProbeExecOptions(signal: AbortSignal): AsyncProbeExecOptions {
   return { encoding: 'utf-8', signal };
 }
 
-/** A plain callback-to-promise wrapper, not `util.promisify(execFile)`: `execFile`'s multi-value callback
- *  only resolves to `{ stdout, stderr }` through a promisify-custom implementation Node supplies internally,
- *  and this stays independent of that. */
+type ProcessIncarnationProbeRegistration = {
+  state: 'running' | 'terminating';
+  retryTimer: NodeJS.Timeout | null;
+  terminate: ProcessIncarnationProbeTerminator;
+};
+
+const processIncarnationProbeChildren = new Map<ChildProcess, ProcessIncarnationProbeRegistration>();
+
+function terminateProcessIncarnationProbeChild(child: ChildProcess): void {
+  const registration = processIncarnationProbeChildren.get(child);
+  if (registration?.state !== 'running') return;
+  registration.state = 'terminating';
+  try {
+    registration.terminate(child);
+  } catch (error: unknown) {
+    registration.state = 'running';
+    throw error;
+  }
+  registration.retryTimer = setTimeout(() => {
+    if (processIncarnationProbeChildren.get(child) !== registration) return;
+    registration.state = 'running';
+    registration.retryTimer = null;
+  }, SIGTERM_GRACE_MS);
+  registration.retryTimer.unref();
+}
+
+/** A probe child may not leave this registry before close, including after its caller's deadline settles. */
+export function processIncarnationProbeRegistrySize(): number {
+  return processIncarnationProbeChildren.size;
+}
+
+/** Each owned child has at most one active cleanup attempt; unresolved children remain retryable. */
+export function terminateProcessIncarnationProbes(): void {
+  for (const child of processIncarnationProbeChildren.keys()) {
+    try {
+      terminateProcessIncarnationProbeChild(child);
+    } catch {
+      // One cleanup failure must not abandon the remaining owned children.
+    }
+  }
+}
+
+function probeDeadlineError(signal: AbortSignal): Error {
+  // `AbortSignal.reason` is typed `any`, and a caller may pass a controller whose reason is not an `Error` at
+  // all, so the deadline this rejects with is narrowed here rather than at each `reject`.
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  return new Error('Process incarnation probe deadline expired');
+}
+
 function execFileAsync(
   file: string,
   args: readonly string[],
-  options: ExecFileOptionsWithStringEncoding,
+  options: AsyncProbeExecOptions,
+  terminate: ProcessIncarnationProbeTerminator,
 ): Promise<{ stdout: string; stderr: string }> {
+  const { signal, ...execOptions } = options;
+  if (signal.aborted) {
+    return Promise.reject(probeDeadlineError(signal));
+  }
+
   return new Promise((resolve, reject) => {
-    execFile(file, args as string[], options, (error, stdout, stderr) => {
+    let settled = false;
+    const child = execFile(file, args as string[], execOptions, (error, stdout, stderr) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
       if (error) {
         // `@types/node` builds `ExecFileException` as `Omit<ExecException, 'code'> & Omit<NodeJS.ErrnoException,
         // 'code'>`, and `Omit` drops the `Error` base, so this value is not statically an `Error` however
@@ -313,6 +377,28 @@ function execFileAsync(
       }
       resolve({ stdout, stderr });
     });
+
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        terminateProcessIncarnationProbeChild(child);
+      } finally {
+        reject(probeDeadlineError(signal));
+      }
+    };
+
+    processIncarnationProbeChildren.set(child, { state: 'running', retryTimer: null, terminate });
+    child.on('close', () => {
+      signal.removeEventListener('abort', onAbort);
+      const registration = processIncarnationProbeChildren.get(child);
+      if (registration?.retryTimer !== null && registration?.retryTimer !== undefined) {
+        clearTimeout(registration.retryTimer);
+      }
+      processIncarnationProbeChildren.delete(child);
+    });
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
 }
 
@@ -344,9 +430,17 @@ async function probeLinuxProcessIncarnationAsync(pid: number): Promise<ProcessIn
   }
 }
 
-async function readMacBootSessionIdAsync(signal: AbortSignal): Promise<string | null> {
+async function readMacBootSessionIdAsync(
+  signal: AbortSignal,
+  terminate: ProcessIncarnationProbeTerminator,
+): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('sysctl', ['-n', 'kern.bootsessionuuid'], asyncProbeExecOptions(signal));
+    const { stdout } = await execFileAsync(
+      'sysctl',
+      ['-n', 'kern.bootsessionuuid'],
+      asyncProbeExecOptions(signal),
+      terminate,
+    );
     const raw = stdout.trim();
     return raw.length > 0 ? raw : null;
   } catch {
@@ -354,15 +448,23 @@ async function readMacBootSessionIdAsync(signal: AbortSignal): Promise<string | 
   }
 }
 
-async function probeMacProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
+async function probeMacProcessIncarnationAsync(
+  pid: number,
+  terminate: ProcessIncarnationProbeTerminator,
+): Promise<ProcessIncarnation | null> {
   const signal = processIncarnationProbeSignal();
   try {
-    const bootSessionId = await readMacBootSessionIdAsync(signal);
+    const bootSessionId = await readMacBootSessionIdAsync(signal, terminate);
     if (bootSessionId === null) {
       return null;
     }
 
-    const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], asyncProbeExecOptions(signal));
+    const { stdout } = await execFileAsync(
+      'ps',
+      ['-o', 'lstart=', '-p', String(pid)],
+      asyncProbeExecOptions(signal),
+      terminate,
+    );
     const raw = stdout.trim();
     if (!raw) {
       return null;
@@ -375,12 +477,16 @@ async function probeMacProcessIncarnationAsync(pid: number): Promise<ProcessInca
   }
 }
 
-async function probeWindowsProcessIncarnationAsync(pid: number): Promise<ProcessIncarnation | null> {
+async function probeWindowsProcessIncarnationAsync(
+  pid: number,
+  terminate: ProcessIncarnationProbeTerminator,
+): Promise<ProcessIncarnation | null> {
   try {
     const { stdout } = await execFileAsync(
       'wmic',
       ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
       asyncProbeExecOptions(processIncarnationProbeSignal()),
+      terminate,
     );
     const match = stdout.match(/CreationDate=(\d{14}\.\d+[+-]\d+)/) ?? stdout.match(/CreationDate=(\d{14})/);
     const value = match?.[1];
@@ -390,17 +496,20 @@ async function probeWindowsProcessIncarnationAsync(pid: number): Promise<Process
   }
 }
 
-const ASYNC_PROCESS_INCARNATION_PROBES: ReadonlyMap<string, (pid: number) => Promise<ProcessIncarnation | null>> =
-  new Map([
-    ['linux', probeLinuxProcessIncarnationAsync],
-    ['darwin', probeMacProcessIncarnationAsync],
-    ['win32', probeWindowsProcessIncarnationAsync],
-  ]);
+const ASYNC_PROCESS_INCARNATION_PROBES: ReadonlyMap<
+  string,
+  (pid: number, terminate: ProcessIncarnationProbeTerminator) => Promise<ProcessIncarnation | null>
+> = new Map([
+  ['linux', probeLinuxProcessIncarnationAsync],
+  ['darwin', probeMacProcessIncarnationAsync],
+  ['win32', probeWindowsProcessIncarnationAsync],
+]);
 
 /** The non-blocking sibling of `probeProcessIncarnation`: same null-on-unreadable contract, same per-platform
  *  probes, none of them synchronous. */
 export async function probeProcessIncarnationAsync(
   pid: number,
+  terminate: ProcessIncarnationProbeTerminator,
   platform: string = process.platform,
 ): Promise<ProcessIncarnation | null> {
   if (!Number.isInteger(pid) || pid <= 0) {
@@ -408,7 +517,7 @@ export async function probeProcessIncarnationAsync(
   }
 
   const probe = ASYNC_PROCESS_INCARNATION_PROBES.get(platform);
-  return probe === undefined ? null : probe(pid);
+  return probe === undefined ? null : probe(pid, terminate);
 }
 
 /** The asynchronous three-answer question: the same shape as `RecordedProcessObserver`, resolved instead of

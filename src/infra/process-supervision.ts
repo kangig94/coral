@@ -1,6 +1,11 @@
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from './process-constants.js';
-import type { ChildProcessLike } from './port-types.js';
+import type { ProcessLiveness } from './node-process.js';
+import type { ChildProcessLike, TimePort } from './port-types.js';
 import type { Runtime } from '../runtime/ports.js';
+
+type GracefulKillRuntime = Readonly<{
+  time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+}>;
 
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {
@@ -10,9 +15,21 @@ export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void 
   }
 }
 
-export function gracefulKill(child: ChildProcessLike, runtime: Runtime): void {
+export function gracefulKill(
+  child: ChildProcessLike,
+  runtime: GracefulKillRuntime,
+  observeLiveness?: (pid: number) => ProcessLiveness,
+): void {
   safeKill(child, 'SIGTERM');
   const killTimer = runtime.time.setTimeout(() => {
+    if (observeLiveness !== undefined) {
+      if (child.pid === undefined) return;
+      try {
+        if (observeLiveness(child.pid) !== 'alive') return;
+      } catch {
+        return;
+      }
+    }
     safeKill(child, 'SIGKILL');
   }, SIGTERM_GRACE_MS);
   // Unref so a caller that fires gracefulKill on an already-closed child (whose

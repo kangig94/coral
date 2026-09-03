@@ -48,17 +48,17 @@ async function runTerminateRole(
 
 describe('backend provider-proxy-set terminate-role', () => {
   it('refuses a pid whose observed incarnation differs from the recorded role identity', async () => {
-    const signal = vi.fn();
+    const abandon = vi.fn(async () => ({ kind: 'abandoned' as const }));
     const observedIncarnation = testIncarnation(7101);
     const operations = createProviderProxyRoleTerminationCommandOperations({
       platform: 'linux',
       readProcessIncarnation: () => observedIncarnation,
-      signal,
+      abandon,
     });
 
     const output = await runTerminateRole(operations);
 
-    expect(signal).not.toHaveBeenCalled();
+    expect(abandon).not.toHaveBeenCalled();
     expect(output.stdout).toBe('');
     expect(output.stderr).toContain(`observed incarnation "${observedIncarnation}" does not match`);
     expect(output.stderr).toContain('No signal was sent.');
@@ -66,36 +66,57 @@ describe('backend provider-proxy-set terminate-role', () => {
   });
 
   it('refuses when the target incarnation cannot be observed', async () => {
-    const signal = vi.fn();
+    const abandon = vi.fn(async () => ({ kind: 'abandoned' as const }));
     const operations = createProviderProxyRoleTerminationCommandOperations({
       platform: 'linux',
       readProcessIncarnation: () => null,
-      signal,
+      abandon,
     });
 
     const output = await runTerminateRole(operations);
 
-    expect(signal).not.toHaveBeenCalled();
+    expect(abandon).not.toHaveBeenCalled();
     expect(output.stdout).toBe('');
     expect(output.stderr).toContain('current incarnation could not be observed');
     expect(process.exitCode).toBe(75);
   });
 
-  it('signals only after the observed incarnation matches the full recorded identity', async () => {
+  it('requests authenticated abandonment only after the observed incarnation matches', async () => {
     const incarnation = testIncarnation(6101);
-    const signal = vi.fn();
+    const abandon = vi.fn(async () => ({ kind: 'abandoned' as const }));
     const operations = createProviderProxyRoleTerminationCommandOperations({
       platform: 'linux',
       readProcessIncarnation: () => incarnation,
-      signal,
+      abandon,
     });
 
     const output = await runTerminateRole(operations, incarnation);
 
-    expect(signal).toHaveBeenCalledOnce();
-    expect(signal).toHaveBeenCalledWith(6101, 'SIGTERM');
+    expect(abandon).toHaveBeenCalledOnce();
+    expect(abandon).toHaveBeenCalledWith({ role: 'reaper', pid: 6101, incarnation });
     expect(output.stderr).toBe('');
-    expect(output.stdout).toContain('Sent SIGTERM to reaper role pid 6101');
+    expect(output.stdout).toContain('Authorized reaper role pid 6101');
+    expect(output.stdout).toContain('No signal was sent and no absence was minted.');
     expect(process.exitCode).toBe(0);
+  });
+
+  it('surfaces a live-coordinator refusal with the coordinator-side command', async () => {
+    const incarnation = testIncarnation(6101);
+    const operations = createProviderProxyRoleTerminationCommandOperations({
+      platform: 'linux',
+      readProcessIncarnation: () => incarnation,
+      abandon: async () => ({
+        kind: 'refused',
+        reason:
+          'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set contain <set-token> --abandon-without-absence` through the coordinator.',
+      }),
+    });
+
+    const output = await runTerminateRole(operations, incarnation);
+
+    expect(output.stdout).toBe('');
+    expect(output.stderr).toContain('coordinator control is live');
+    expect(output.stderr).toContain('provider-proxy-set contain <set-token> --abandon-without-absence');
+    expect(process.exitCode).toBe(1);
   });
 });
