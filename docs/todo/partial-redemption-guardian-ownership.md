@@ -7,30 +7,30 @@ mechanism for it exists in the six landed commits and no test references it.
 
 ## What exists
 
-`redeemProviderProxyControl` (`src/coordinator/live/provider-proxy/control-redemption.ts:206`) opens guardian,
+`redeemProviderProxyControl` (`src/coordinator/live/provider-proxy/control-redemption.ts`) opens guardian,
 then reaper, then proxy control in sequence, starting each role's heartbeat as soon as its session is
 established. Any `ProviderProxyRoleControlRemoteError` thrown at any stage of any role — including a reaper or
 proxy stage reached only after the guardian's own open-and-heartbeat sequence fully succeeded — is caught by
-one handler (`control-redemption.ts:330-341`) that calls `abandonAttempt(heartbeatAssembly, opened)`
-(`control-redemption.ts:182-186`, stopping every started heartbeat and closing every opened client, guardian
+one handler (`control-redemption.ts`) that calls `abandonAttempt(heartbeatAssembly, opened)`
+(`control-redemption.ts`, stopping every started heartbeat and closing every opened client, guardian
 included) and returns a single flat shape: `{ kind: 'refused', refusal: { kind: 'role-refused', error } }`. The
 `error` it carries is the `ProviderProxyRoleControlRemoteError` itself (`role`, `stage`, `method`,
 `remoteFailure`); no client, session, or heartbeat/fault ownership survives the return.
 
-Downstream, `#awaitControlReattachmentAbsence` (`src/coordinator/services/provider-proxy-set/index.ts:2377`)
-receives that refusal and calls `decisiveTeardownLatchedRefusal` (`index.ts:666-679`), which recognizes exactly
+Downstream, `#awaitControlReattachmentAbsence` (`src/coordinator/services/provider-proxy-set/index.ts`)
+receives that refusal and calls `decisiveTeardownLatchedRefusal` (`index.ts`), which recognizes exactly
 one shape as decisive: `refusal.kind === 'role-refused'`, `error.stage === 'heartbeat'`, and
 `remoteFailure.heartbeatRefusal?.reason === 'teardown-latched'` — i.e. a role's *first heartbeat inside
 `establishRoleControl`* was refused after its own open call already succeeded. When that matches,
-`#commitReattachmentTeardownLatched` (`index.ts:2426-2447`) issues `action: 'stop-and-reap'` through
+`#commitReattachmentTeardownLatched` (`index.ts`) issues `action: 'stop-and-reap'` through
 `#beginFaultContainment` → `#commitContainmentThenBegin` → `#runContainmentAttempt`, which sends the guardian
-commit over `slot.authority.commitContainment` (`index.ts:3391`, `set-authority.ts:452-503`) — the
+commit over `slot.authority.commitContainment` (`index.ts`, `set-authority.ts`) — the
 **pre-reattachment** authority whose control channel is what triggered this reattachment window in the first
 place, not the session `redeemProviderProxyControl` just verified and then closed. Every other refusal shape —
 including `admissionReason === 'teardown-latched'` on the redeem/rotate RPC itself (`stage === 'open'`, which
 `decisiveTeardownLatchedRefusal` does not check at all) — falls straight to the generic path:
 `#enterReattachmentHold` while live claims remain, or `#beginContainment` with `await-containment-absence` at
-zero claims (`index.ts:2389-2416`).
+zero claims (`index.ts`).
 
 ## What is missing
 
@@ -45,11 +45,11 @@ interpretation":
 > no active guardian session exists to transfer and no second commit is needed: the lifecycle enters
 > containment-outcome observation and waits for the already-latched guardian/containment to become absent.
 
-None of this exists. `ProviderProxyControlRedemptionOutcome` (`control-redemption.ts:79-87`) has no variant
+None of this exists. `ProviderProxyControlRedemptionOutcome` (`control-redemption.ts`) has no variant
 carrying a partial guardian session; `redeemProviderProxyControl`'s catch block does not distinguish which role
 or stage produced the error before calling `abandonAttempt`; and `decisiveTeardownLatchedRefusal` distinguishes
 neither "guardian succeeded, a later role refused" from "the guardian itself refused" nor `stage === 'open'`
-refusals from `stage === 'heartbeat'` ones. `commitContainment` itself (`set-authority.ts:452`) is a flat
+refusals from `stage === 'heartbeat'` ones. `commitContainment` itself (`set-authority.ts`) is a flat
 single-shot request/reply over one fixed `guardianClient` with three outcomes
 (`containment-absent | not-sent | outcome-unknown`) and no parameter for a caller-supplied session — there is
 nowhere to hand it the adopted guardian client even if one reached this far.

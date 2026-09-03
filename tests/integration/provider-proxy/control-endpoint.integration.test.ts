@@ -898,7 +898,7 @@ describe('provider-proxy control endpoint', () => {
       first,
       new Promise((resolve) => setTimeout(() => resolve('timeout'), 3_000)),
     ]);
-    expect(firstReply).toEqual({ result: { seen: true } });
+    expect((firstReply as { result: unknown }).result).toEqual({ seen: true });
     const secondReply = await Promise.race([
       second,
       new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),

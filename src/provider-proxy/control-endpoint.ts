@@ -642,6 +642,20 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         write(socket, handlerFailure(id, new UnknownControlMethodError(method)));
         return;
       }
+      if (entry.authority === 'establishes-control') {
+        // This connection earns no tenancy and never reaches the real credential check, so a genuine
+        // successor's admission is never attempted here — deliberately, since this socket is destroyed the
+        // instant this one frame is answered, and a successor actually admitted on it would be destroyed
+        // along with it a moment later. But `control-active` is still the accurate answer, not a synthesized
+        // one: this branch is only ever reached when both slots were taken at accept time, which for a role
+        // with a peer (the only role this path applies to) means control itself was live — the same fact
+        // `admitSuccessor` would have found and refused on. Answering `unauthorized_control` instead would
+        // collapse the retry/give-up distinction `ControlAdmissionRefusedError` exists to keep: a successor
+        // reading this reply retries on a fresh connection, exactly as it would after a normal `control-active`
+        // refusal.
+        write(socket, handlerFailure(id, new ControlAdmissionRefusedError('control-active')));
+        return;
+      }
       if (entry.authority !== 'observation') {
         write(
           socket,

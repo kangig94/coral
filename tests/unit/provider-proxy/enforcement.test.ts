@@ -520,6 +520,110 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
 
     expect(harness.outcomes[0]?.kind).toBe('containment-absent');
   });
+
+  it(
+    'guardian mode, proxy pairing loss during redemption: the accelerated absent result is deferred, and a ' +
+      'successor installed before the ordinary check is what the next observation targets — the incumbent ' +
+      'absence is never consumed (AC4)',
+    async () => {
+      // The real deadline machine, not the abstract harness's static bounds: this is what turns "pairing loss
+      // accelerates one check" and "a renewal consumes the acceleration" into an actual instant this test can
+      // advance past, which a fixed `bounds()` mock cannot model.
+      let elapsedMs = 0n;
+      const clock = createMonotonicClock(enforcementClockScope, {
+        readMilliseconds: () => elapsedMs,
+        sleep: (ms: number) => {
+          elapsedMs += BigInt(ms);
+          return Promise.resolve();
+        },
+      });
+      const advance = (ms: number): void => {
+        elapsedMs += BigInt(ms);
+      };
+
+      const holderAuthority = createControlHolderAuthority();
+      holderAuthority.install({ controlEpoch: 1, holder: HOLDER });
+      holderAuthority.publish();
+      let challengeCount = 0;
+      const deadlines = createEnforcerDeadlineStateMachine(
+        clock,
+        resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
+        { mintChallenge: () => `pairing-loss-${(challengeCount += 1)}` },
+        holderAuthority,
+      );
+
+      const successor = { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') } as const;
+      const observed: RecordedProcessIdentity[] = [];
+      const observeHolder = (recorded: RecordedProcessIdentity): Promise<ProcessLiveness> => {
+        observed.push(recorded);
+        // The first call is the pairing-loss-accelerated one, against the incumbent, and finds it decisively
+        // gone. Any later call targets whoever `holderAuthority` currently admits.
+        return Promise.resolve(observed.length === 1 ? 'absent' : 'alive');
+      };
+
+      const alive = new Set<number>([CONTAINMENT.pid]);
+      const scheduler = createManualScheduler();
+      const outcomes: EnforcementOutcome[] = [];
+
+      const enforcer = createArmedEnforcer({
+        clock,
+        deadlines,
+        containment: CONTAINMENT,
+        containmentEnvironment: {
+          clock,
+          process: {
+            kill: (pid) => {
+              const targets = pid < 0 ? [...alive] : [pid];
+              for (const target of targets) alive.delete(target);
+              return true;
+            },
+            observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
+          },
+          platform: 'linux',
+          maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+          readProcessIncarnation: (pid) => (alive.has(pid) ? CONTAINMENT.incarnation : null),
+        },
+        scheduler,
+        holderAuthority,
+        observeHolder,
+        // Guardian mode: its pairing peer is the proxy, not the redemption linearizer, so it may not consume
+        // an accelerated absence result on its own.
+        acceleratedCheckMayAuthorizeAbsence: false,
+        onOutcome: (outcome) => outcomes.push(outcome),
+        onProgressViolation: () => {},
+      });
+
+      enforcer.arm();
+
+      // Some time into the ordinary window, the guardian's proxy pairing is lost while a redemption is still
+      // awaiting the reaper — this accelerates the next holder check by one, without proving the redemption
+      // linearizer (the guardian itself) is gone.
+      advance(10_000);
+      deadlines.observePairingLoss();
+
+      // Only far enough to let the accelerated check settle and defer — the renewed, unaccelerated
+      // `holderCheckAt` this defers to is still ten seconds further out, so this cannot yet reach it.
+      await pump({ advance, scheduler, outcomes }, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 10);
+
+      // The accelerated check ran and found the incumbent decisively absent, but guardian mode may not spend
+      // that result yet.
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toEqual({ pid: HOLDER.pid, incarnation: HOLDER.incarnation });
+      expect(outcomes).toHaveLength(0);
+
+      // The guardian's own redemption completes: a valid successor is installed before the ordinary,
+      // unaccelerated check for this evidence epoch arrives.
+      holderAuthority.install({ controlEpoch: 2, holder: successor });
+
+      await pump({ advance, scheduler, outcomes }, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 80);
+
+      // No incumbent absence was ever consumed, and the next observation this loop ever ran targeted the
+      // successor, never a stale verdict about the incumbent.
+      expect(outcomes).toHaveLength(0);
+      expect(observed.length).toBeGreaterThanOrEqual(2);
+      expect(observed[1]).toEqual({ pid: successor.pid, incarnation: successor.incarnation });
+    },
+  );
 });
 
 describe('holder-teardown-authorization type currency (AC2)', () => {

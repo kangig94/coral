@@ -1363,6 +1363,83 @@ describe('provider-proxy guardian and reaper', () => {
     ).resolves.toMatchObject({ state: 'root-recorded' });
   });
 
+  it(
+    'a provider-root registration racing the containment-commit gate is either drained into both cumulative ' +
+      'snapshots or refused outright — never recorded on one side and not the other',
+    async () => {
+      const set = await startSet();
+      const operation = set.operationFor();
+      const reservation = randomUUID();
+
+      // Written in this order — the registration's own frame goes out first — but the guarantee below holds
+      // for whichever the guardian actually processes first: the two branches are exhaustive.
+      const registration = strictTestExchange(
+        set.proxyChannel,
+        'guardian.register-provider-root.v1',
+        {
+          proxy: set.proxyIdentity,
+          operation,
+          reservation,
+          providerPid: ROOT.pid,
+          providerIncarnation: ROOT.incarnation,
+        },
+        5_000,
+      );
+      const commit = strictTestExchange(
+        set.control,
+        'guardian.containment-commit.v1',
+        { guardian: set.guardianIdentity, reaper: set.reaperIdentity, proxy: set.proxyIdentity },
+        5_000,
+      );
+
+      const [registrationOutcome, commitOutcome] = await Promise.allSettled([registration, commit]);
+
+      if (registrationOutcome.status === 'fulfilled') {
+        // Admitted before the staging gate closed: the guardian's own drain must have waited for this
+        // registration's full round trip to the reaper before ever asking it to snapshot, so the root is a
+        // member of the exact containment this commit reaped.
+        expect(registrationOutcome.value).toMatchObject({ state: 'staged-contained' });
+        expect(commitOutcome.status).toBe('fulfilled');
+        if (commitOutcome.status !== 'fulfilled') {
+          throw new Error('a drained registration must not accompany a refused commit');
+        }
+        expect((commitOutcome.value as { disappearanceReceipt: string }).disappearanceReceipt).toContain(
+          `root:${ROOT.pid}@${ROOT.incarnation}`,
+        );
+      } else {
+        // Arrived after the gate closed: refused outright, and the commit it raced against reaped a
+        // containment that never recorded it on either side.
+        const reason = registrationOutcome.reason as { message?: string; remoteFailure?: { protocolCode?: string } };
+        expect(reason.remoteFailure?.protocolCode).toBe('invalid_state');
+        expect(reason.message).toMatch(/staging is closed/u);
+        expect(commitOutcome.status).toBe('fulfilled');
+        if (commitOutcome.status !== 'fulfilled') {
+          throw new Error('a refused registration must not accompany a refused commit');
+        }
+        expect((commitOutcome.value as { disappearanceReceipt: string }).disappearanceReceipt).not.toContain(
+          `root:${ROOT.pid}@${ROOT.incarnation}`,
+        );
+      }
+    },
+  );
+
+  it('refuses guardian.containment-commit.v1 from a lease-lapsed predecessor still on its own connection', async () => {
+    const set = await startSet();
+    // A wedged predecessor: its lease lapses while its own connection stays open. Active-tier authority
+    // requires a live lease, not merely an open socket — checked here against the real destructive method
+    // itself, not a stand-in for it.
+    set.lapseControl();
+
+    await expect(
+      strictTestExchange(
+        set.control,
+        'guardian.containment-commit.v1',
+        { guardian: set.guardianIdentity, reaper: set.reaperIdentity, proxy: set.proxyIdentity },
+        5_000,
+      ),
+    ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'unauthorized_control' } });
+  });
+
   /** Installs the identical grant on both the guardian and reaper's own active control — the credential
    *  `*.holder-status.v1` checks — and returns the fields a caller presents to name it. */
   async function installHolderStatusCredential(
@@ -1598,11 +1675,16 @@ describe('provider-proxy guardian and reaper', () => {
     );
 
     const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
-    // The endpoint answers a foreign successor by destroying the channel, so the caller sees a transport
-    // death; which errno reaches it first depends on whether the write or the read loses the race.
-    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(
-      /control channel closed|EPIPE|ECONNRESET/u,
-    );
+    // Both authority slots are held at this point — `retried` is the live control tenancy, and the proxy's
+    // pairing channel is still open — so this foreign successor's connection lands in the bounded provisional
+    // bucket an observation-only connection does, and `guardian.handoff-redeem.v1` never reaches the real
+    // credential check there. The endpoint still answers `control-active`, not a generic refusal: the same
+    // reason a normal connection gets when it reaches `establishControl` while control is live, so the caller
+    // knows to retry rather than give up. `ControlAdmissionRefusedError` exists precisely so `invalid_state`
+    // alone never has to carry that distinction.
+    await expect(redeemOn({ ...request, successor: other })).rejects.toMatchObject({
+      remoteFailure: { protocolCode: 'invalid_state', admissionReason: 'control-active' },
+    });
   });
 
   it('refuses a redemption request that still names an operation set — the field no longer exists on the wire', async () => {
