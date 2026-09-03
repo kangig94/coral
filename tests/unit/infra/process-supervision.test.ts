@@ -142,7 +142,7 @@ describe('gracefulKillByPid', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation]);
 
-    const disposition = gracefulKillByPid(runtime, 4_242);
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
     expect(disposition).toEqual({ kind: 'escalation-scheduled', pid: 4_242 });
     expect(killedSignals).toEqual(['SIGTERM']);
 
@@ -150,28 +150,28 @@ describe('gracefulKillByPid', () => {
     expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
-  it('returns a refusal and schedules no escalation when no signal-authorizing incarnation can be read', () => {
+  it('refuses every signal when no recorded incarnation is supplied', () => {
     const time = new VirtualTime();
-    const { runtime, killedSignals } = pidRuntime(time, [null]);
+    const { runtime, killedSignals } = pidRuntime(time, [incarnation]);
 
-    const disposition = gracefulKillByPid(runtime, 4_242);
+    const disposition = gracefulKillByPid(runtime, 4_242, null);
 
     expect(disposition).toEqual({
-      kind: 'escalation-refused',
+      kind: 'signal-refused',
       pid: 4_242,
-      reason: 'signal-authorizing-incarnation-unavailable',
+      reason: 'recorded-incarnation-unavailable',
     });
-    expect(killedSignals).toEqual(['SIGTERM']);
+    expect(killedSignals).toEqual([]);
 
     time.tick(SIGTERM_GRACE_MS);
-    expect(killedSignals).toEqual(['SIGTERM']);
+    expect(killedSignals).toEqual([]);
   });
 
   it('refuses escalation when the recorded incarnation cannot be re-established', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [incarnation, null]);
 
-    gracefulKillByPid(runtime, 4_242);
+    gracefulKillByPid(runtime, 4_242, incarnation);
     time.tick(SIGTERM_GRACE_MS);
 
     expect(killedSignals).toEqual(['SIGTERM']);
@@ -181,7 +181,7 @@ describe('gracefulKillByPid', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation], () => 'unknown');
 
-    gracefulKillByPid(runtime, 4_242);
+    gracefulKillByPid(runtime, 4_242, incarnation);
     time.tick(SIGTERM_GRACE_MS);
 
     expect(killedSignals).toEqual(['SIGTERM']);
@@ -193,7 +193,7 @@ describe('gracefulKillByPid', () => {
       throw new Error('observation failed');
     });
 
-    gracefulKillByPid(runtime, 4_242);
+    gracefulKillByPid(runtime, 4_242, incarnation);
     time.tick(SIGTERM_GRACE_MS);
 
     expect(killedSignals).toEqual(['SIGTERM']);
@@ -215,7 +215,7 @@ describe('gracefulKillByPid', () => {
     const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
 
     expect(disposition).toEqual({
-      kind: 'escalation-refused',
+      kind: 'signal-refused',
       pid: 4_242,
       reason: 'expected-incarnation-mismatch',
     });
@@ -229,24 +229,24 @@ describe('gracefulKillByPid', () => {
     const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
 
     expect(disposition).toEqual({
-      kind: 'escalation-refused',
+      kind: 'signal-refused',
       pid: 4_242,
       reason: 'signal-authorizing-incarnation-unavailable',
     });
     expect(killedSignals).toEqual([]);
   });
 
-  it('still sends the first SIGTERM unconditionally on a platform whose incarnation cannot authorize a signal', () => {
+  it('refuses every signal on a platform whose incarnation cannot authorize a signal', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)], () => 'alive', 'darwin');
 
     const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
 
     expect(disposition).toEqual({
-      kind: 'escalation-refused',
+      kind: 'signal-refused',
       pid: 4_242,
-      reason: 'signal-authorizing-incarnation-unavailable',
+      reason: 'platform-incarnation-cannot-authorize-signal',
     });
-    expect(killedSignals).toEqual(['SIGTERM']);
+    expect(killedSignals).toEqual([]);
   });
 });

@@ -209,8 +209,9 @@ describe('provider transport concurrency hardening', () => {
     await expect(handle.closePromise).resolves.toBeInstanceOf(Error);
   });
 
-  it('kills a durable child that finishes launching after terminateAll already drained cleanup handles', async () => {
+  it('holds a durable child that finishes launching without a signal-authorizing identity', async () => {
     const runtime = new SimulationRuntime();
+    vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
     runtime.spawner.enqueueDurable({
       pid: 30_001,
       runtimeDelayMs: 5,
@@ -218,19 +219,22 @@ describe('provider transport concurrency hardening', () => {
     });
     const launchCoordinator = new LaunchCoordinator({ runtime });
 
-    void launchCoordinator.spawnDurableJob({
-      provider: 'codex',
-      command: 'codex',
-      args: ['exec'],
-      jobDir: '/tmp/sim/jobs/late-durable',
-      permitGranted: true,
-    });
+    const observed = observePromise(
+      launchCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/sim/jobs/late-durable',
+        permitGranted: true,
+      }),
+    );
     await flushMicrotasks();
 
     launchCoordinator.terminateAll();
     runtime.time.tick(5);
     await flushMicrotasks();
 
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
+    expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
+    expect(observed.settled).toBe(false);
   });
 });

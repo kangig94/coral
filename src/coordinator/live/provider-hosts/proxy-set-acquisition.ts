@@ -8,6 +8,7 @@ import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisiti
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 import {
+  closeProviderProxyAcquisitionSession,
   handOverProviderProxyAcquisitionControlSession,
   providerProxyControlSessionOwner,
   type ProviderProxyAcquisitionSessionHandedOver,
@@ -74,10 +75,60 @@ export type ProviderProxySetAcquisitionOutcome =
   | Readonly<{ kind: 'failed'; reason: string }>
   | ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
 
+export type ProviderProxySetAcquisitionStopDisposition = 'contain' | 'handoff';
+
+export async function disposeStoppedProviderProxySetAcquisition(
+  outcome: ProviderProxySetAcquisitionOutcome,
+  disposition: ProviderProxySetAcquisitionStopDisposition,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (outcome.kind === 'failed') return;
+  if (outcome.kind === 'handed-over') {
+    closeProviderProxyAcquisitionSession(
+      outcome.session,
+      disposition === 'contain' ? 'provider host manager stopped for shutdown' : 'provider host manager handed off',
+    );
+    if (disposition === 'contain') {
+      throw new Error('provider_proxy_set_acquisition_containment_unconfirmed');
+    }
+    return;
+  }
+  if (disposition === 'contain') {
+    const containment = await outcome.set.stopAndReap(signal ?? new AbortController().signal);
+    if ('unconfirmed' in containment) {
+      throw new Error(`provider_proxy_set_acquisition_containment_unconfirmed: ${containment.unconfirmed}`);
+    }
+    return;
+  }
+
+  const releases = [
+    (() => {
+      try {
+        outcome.set.stopHeartbeats();
+        return Promise.resolve();
+      } catch (error: unknown) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    })(),
+    (() => {
+      try {
+        return Promise.resolve(outcome.set.initiateControlClose());
+      } catch (error: unknown) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    })(),
+  ];
+  const settled = await Promise.allSettled(releases);
+  const failures = settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Provider proxy set acquisition handoff release failed.');
+  }
+}
+
 /**
  * Starts one acquisition attempt for `entry`'s guardian/reaper/proxy set and reports how it settled.
  *
- * Never rejects and is never awaited by its caller: the caller of `acquireHostLease` gets its real app-server
+ * Never rejects before invoking `onSettled`: the caller of `acquireHostLease` gets its real app-server
  * session exactly as before, unaffected by whether this succeeds, fails, or is still running when that
  * session opens — a slow or failed acquisition here must add neither latency nor failure to it. Single-
  * flighting one attempt per entry is the caller's responsibility (mirrors `ensureProviderServerHandle` in
@@ -89,8 +140,8 @@ export type ProviderProxySetAcquisitionOutcome =
 export function ensureProviderProxySet(
   entry: ProviderHostEntry,
   env: ProviderProxySetAcquisitionEnvironment,
-  onSettled: (outcome: ProviderProxySetAcquisitionOutcome) => void,
-): void {
+  onSettled: (outcome: ProviderProxySetAcquisitionOutcome) => void | Promise<void>,
+): Promise<void> {
   const pid = env.runtime.env.pid();
   const platform = env.runtime.env.platform() as NodeJS.Platform;
   const incarnation = probeProcessIncarnation(pid, platform);
@@ -98,8 +149,12 @@ export function ensureProviderProxySet(
     // This process's own incarnation is not a value this file may guess at: the coordinator identity it feeds
     // the handshake is a security-relevant field, not a diagnostic one, so an unreadable read is a failed
     // attempt rather than a fabricated `0`.
-    onSettled({ kind: 'failed', reason: 'could not read this coordinator process’s own incarnation' });
-    return;
+    return Promise.resolve(
+      onSettled({
+        kind: 'failed',
+        reason: 'could not read this coordinator process’s own incarnation',
+      }),
+    );
   }
   const coordinatorIdentity: ProviderProxyCoordinatorIdentity = {
     instanceId: env.identity.instanceId,
@@ -117,29 +172,29 @@ export function ensureProviderProxySet(
     operationRegistry: env.operationRegistry,
     ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),
   });
-  void acquireProviderProxySet({
+  return acquireProviderProxySet({
     steps,
     deadlineSignal: AbortSignal.any([AbortSignal.timeout(PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS), env.signal]),
-  }).then(
-    (result) => {
-      if (result.kind === 'provider_proxy_acquisition_failed') {
-        onSettled({ kind: 'failed', reason: result.reason });
-        return;
-      }
-      if (result.kind === 'handed-over') {
-        onSettled(
-          handOverProviderProxyAcquisitionControlSession(
-            result.session,
-            providerProxyControlSessionOwner.providerHostManager,
-            result.incident,
-          ),
-        );
-        return;
-      }
-      onSettled(result);
-    },
-    (error: unknown) => {
-      onSettled({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });
-    },
-  );
+  })
+    .then(
+      (result) => {
+        if (result.kind === 'provider_proxy_acquisition_failed') {
+          return onSettled({ kind: 'failed', reason: result.reason });
+        }
+        if (result.kind === 'handed-over') {
+          return onSettled(
+            handOverProviderProxyAcquisitionControlSession(
+              result.session,
+              providerProxyControlSessionOwner.providerHostManager,
+              result.incident,
+            ),
+          );
+        }
+        return onSettled(result);
+      },
+      (error: unknown) => {
+        return onSettled({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      },
+    )
+    .then(() => undefined);
 }

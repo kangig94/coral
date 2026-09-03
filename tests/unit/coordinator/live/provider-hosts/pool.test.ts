@@ -7,7 +7,8 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 // `ensureProxySetFor` (the manager's own dedup/registry wiring) is what these tests exercise; the acquisition
 // attempt it delegates to is already covered end to end by `proxy-set-acquisition.test.ts` and the real-spawn
 // integration test, so stubbing it here keeps this suite free of process spawning.
-vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => ({
+vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   ensureProviderProxySet: vi.fn(),
 }));
 
@@ -65,7 +66,7 @@ const containmentProofDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
 afterAll(() => containmentProofDb.close());
 
-const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
+const mockedEnsureProxySet = vi.mocked(ensureProviderProxySet);
 
 /** `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap` — derived from whatever `stopAndReap`
  *  a fixture configures, so every layer built on top of this one stays observable through the surface
@@ -218,7 +219,11 @@ function publicationUnknownCapsule(spec: ProviderServerSpec): HandoffCapsuleV3 {
 function publicationUnknownHandoff(capsule: HandoffCapsuleV3): Readonly<{
   handoff: ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
   faults: ProviderProxyAuthorityFaultLatch;
+  close: ReturnType<typeof vi.fn>;
+  stop: ReturnType<typeof vi.fn>;
 }> {
+  const close = vi.fn();
+  const stop = vi.fn();
   const client: ControlClient = {
     exchange: async () =>
       controlExchangeForTest({
@@ -228,7 +233,7 @@ function publicationUnknownHandoff(capsule: HandoffCapsuleV3): Readonly<{
       }),
     faulted: new Promise<never>(() => undefined),
     onFault: () => () => undefined,
-    close: () => undefined,
+    close,
   };
   const faults = createProviderProxyAuthorityFaultLatch();
   const session = createOwnedProviderProxyAcquisitionControlSession(
@@ -238,9 +243,9 @@ function publicationUnknownHandoff(capsule: HandoffCapsuleV3): Readonly<{
       setIdentity: providerProxySetIdentityFromCapsule(capsule),
       clients: { guardian: client, reaper: client, proxy: client },
       heartbeats: {
-        guardian: { stop: () => undefined },
-        reaper: { stop: () => undefined },
-        proxy: { stop: () => undefined },
+        guardian: { stop },
+        reaper: { stop },
+        proxy: { stop },
       },
       faults,
       guardianIdentity: {} as never,
@@ -258,6 +263,8 @@ function publicationUnknownHandoff(capsule: HandoffCapsuleV3): Readonly<{
       { kind: 'publication-unknown', role: 'guardian', reason: 'publication response was lost' },
     ),
     faults,
+    close,
+    stop,
   };
 }
 
@@ -1184,13 +1191,23 @@ describe('provider host pool proxy set registry', () => {
       proxySetAcquisition,
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
+    mockedEnsureProxySet.mockImplementationOnce(
+      (_entry, env: { signal: AbortSignal }, onSettled) =>
+        new Promise<void>((resolve, reject) => {
+          env.signal.addEventListener(
+            'abort',
+            () => void Promise.resolve(onSettled({ kind: 'failed', reason: 'manager stopped' })).then(resolve, reject),
+            { once: true },
+          );
+        }),
+    );
 
     const spec = createSharedSpec();
     const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
     const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
 
     // Same shared entry both times, so the same hostKey — the second call must not start a second attempt
-    // while the first is still pending (`onSettled` was never invoked).
+    // while the first is still pending.
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
     first.close();
     second.close();
@@ -1207,8 +1224,8 @@ describe('provider host pool proxy set registry', () => {
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     const set = fakeDurableProxySet('proxy-a');
-    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
 
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
@@ -1231,8 +1248,8 @@ describe('provider host pool proxy set registry', () => {
       proxySetAcquisition,
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'failed', reason: 'guardian spawn exploded' });
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'failed', reason: 'guardian spawn exploded' });
     });
 
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
@@ -1255,8 +1272,8 @@ describe('provider host pool proxy set registry', () => {
     const spec = createSharedSpec();
     const capsuleBinding = publicationUnknownCapsule(spec);
     const publicationUnknown = publicationUnknownHandoff(capsuleBinding);
-    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled(publicationUnknown.handoff);
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled(publicationUnknown.handoff);
     });
 
     const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
@@ -1291,8 +1308,8 @@ describe('provider host pool proxy set registry', () => {
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     const set = fakeDurableProxySet('proxy-routed');
-    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
     const spec = createSharedSpec();
 
@@ -1320,15 +1337,15 @@ describe('provider host pool proxy set registry', () => {
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     const set = fakeDurableProxySet('proxy-shared');
-    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
 
     const first = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-a' });
     const second = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-b' });
 
     // Two distinct entries — the per-job isolation of the hosts themselves is unchanged — but one set.
-    const entryKeys = mockedEnsureProxySet.mock.calls.map((call) => (call[0] as ProviderHostEntry).hostKey);
+    const entryKeys = mockedEnsureProxySet.mock.calls.map((call) => call[0].hostKey);
     expect(new Set(entryKeys).size).toBe(1);
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
     expect(manager.liveSets()).toHaveLength(1);
@@ -1347,9 +1364,16 @@ describe('provider host pool proxy set registry', () => {
       proxySetAcquisition,
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    mockedEnsureProxySet.mockImplementation(() => {
-      // Every reserved slot remains pending while the fifth identity reaches the admission gate.
-    });
+    mockedEnsureProxySet.mockImplementation(
+      (_entry, env: { signal: AbortSignal }, onSettled) =>
+        new Promise<void>((resolve, reject) => {
+          env.signal.addEventListener(
+            'abort',
+            () => void Promise.resolve(onSettled({ kind: 'failed', reason: 'manager stopped' })).then(resolve, reject),
+            { once: true },
+          );
+        }),
+    );
     const specs = servers.map((_, index) => createSharedSpec({ env: { CORAL_SET_ID: String(index) } }));
     const leases = [];
     for (const [index, spec] of specs.entries()) {
@@ -1390,10 +1414,10 @@ describe('provider host pool proxy set registry', () => {
       fakeDurableProxySet('proxy-a-fresh'),
     ];
     let nextSet = 0;
-    mockedEnsureProxySet.mockImplementation((_entry, _env, onSettled) => {
+    mockedEnsureProxySet.mockImplementation(async (_entry, _env, onSettled) => {
       const set = sets[nextSet++];
       if (set === undefined) throw new Error('unexpected extra proxy set acquisition');
-      onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
+      await onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
     });
     const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
     const providerProxyLifecycleRef = createProxySetLifecycleRef((routeKey) =>
@@ -1436,11 +1460,7 @@ describe('provider host pool proxy set registry', () => {
     await manager.shutdown();
   });
 
-  it('aborts a still-pending acquisition’s signal when the manager stops, without waiting for it to settle', async () => {
-    // The defect this guards against: a job acquires a lease, its proxy-set acquisition is still mid-
-    // handshake when shutdown begins, and nothing ever cuts it off — so it can go on to populate `liveSets()`
-    // after a caller (`runShutdownSequence`) has already read it. `stopAndClose` must sever it instead of
-    // merely outliving it.
+  it('waits for a stopped acquisition to finish containment before returning', async () => {
     const server = createFakeProviderServerHandle();
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1450,9 +1470,18 @@ describe('provider host pool proxy set registry', () => {
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     let capturedSignal: AbortSignal | undefined;
-    mockedEnsureProxySet.mockImplementationOnce((_entry, env: { signal: AbortSignal }) => {
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'late-acquisition-contained' }) as const);
+    const set = fakeDurableProxySet('late-acquisition', { stopAndReap });
+    let settleAcquisition: (() => Promise<void>) | undefined;
+    mockedEnsureProxySet.mockImplementationOnce((_entry, env: { signal: AbortSignal }, onSettled) => {
       capturedSignal = env.signal;
-      // Deliberately never calls `onSettled` — this attempt is still running when shutdown begins.
+      return new Promise<void>((resolve, reject) => {
+        settleAcquisition = () =>
+          Promise.resolve(onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT })).then(
+            resolve,
+            reject,
+          );
+      });
     });
 
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
@@ -1461,11 +1490,54 @@ describe('provider host pool proxy set registry', () => {
     expect(capturedSignal?.aborted).toBe(false);
 
     lease.close();
-    // Must resolve even though the acquisition it started never calls `onSettled` — shutdown does not await
-    // acquisition completion, it cuts it off.
-    await manager.shutdown();
+    let stopped = false;
+    const shutdown = manager.shutdown().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
 
     expect(capturedSignal?.aborted).toBe(true);
+    expect(stopped).toBe(false);
+    if (settleAcquisition === undefined) throw new Error('acquisition settlement was not captured');
+    await settleAcquisition();
+    await shutdown;
+
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(manager.liveSets()).toEqual([]);
+  });
+
+  it('assigns a deadline-expired acquisition to handoff release before its callback can settle', async () => {
+    const server = createFakeProviderServerHandle();
+    const lifecycleRef = createProxySetLifecycleRef();
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: lifecycleRef,
+    });
+    const spec = createSharedSpec();
+    const retained = publicationUnknownHandoff(publicationUnknownCapsule(spec));
+    let settleAcquisition: (() => Promise<void>) | undefined;
+    mockedEnsureProxySet.mockImplementationOnce(
+      (_entry, _env, onSettled) =>
+        new Promise<void>((resolve, reject) => {
+          settleAcquisition = () => Promise.resolve(onSettled(retained.handoff)).then(resolve, reject);
+        }),
+    );
+    const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+    lease.close();
+    const deadline = new AbortController();
+
+    const drain = manager.drainForHandoff(deadline.signal);
+    deadline.abort();
+    await expect(drain).rejects.toThrow();
+    if (settleAcquisition === undefined) throw new Error('acquisition settlement was not captured');
+    await settleAcquisition();
+
+    expect(retained.stop).toHaveBeenCalledTimes(3);
+    expect(retained.close).toHaveBeenCalledTimes(3);
+    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));
   });
 });
 
@@ -1510,8 +1582,8 @@ describe('provider host pool proxy set registration', () => {
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     const acquired = fakeDurableProxySet('proxy-acquired');
-    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
-      onSettled({ kind: 'acquired', set: acquired, publicationReceipt: PUBLICATION_RECEIPT });
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'acquired', set: acquired, publicationReceipt: PUBLICATION_RECEIPT });
     });
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
     const inherited = fakeDurableProxySet('proxy-inherited');

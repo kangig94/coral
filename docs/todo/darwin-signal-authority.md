@@ -1,7 +1,6 @@
 # TODO — on macOS a process incarnation cannot authorize a signal
 
-**Status**: open, and deliberately half-closed. Decided on `refactor/process-incarnation-token` after the
-handoff half shipped and the containment half was attempted, measured against the suite, and reverted.
+**Status**: open for recorded containment. Pid-only process supervision is closed by refusal.
 
 ## The token, and the one thing it cannot do on Darwin
 
@@ -26,6 +25,14 @@ it is for: a false match reads as "still alive", which blocks a disappearance cl
 action.
 
 ## What is already closed
+
+`gracefulKillByPid` (`src/infra/process-supervision.ts`) refuses before sending SIGTERM when the caller has
+no recorded incarnation, when the platform cannot use an incarnation to authorize a signal, when a fresh
+probe is unavailable, or when the fresh incarnation differs. A pid-only termination request on Darwin
+therefore sends no signal. The cost is visible: abort, idle-timeout, and cleanup requests cannot terminate
+their own durable child through this path on Darwin, so ownership must remain until the process is observed
+absent or an identity-bearing control path becomes available. Callers that retain a real child handle can use
+`gracefulKill` with its required liveness observer instead.
 
 `verifySignalTarget` (`src/coordinator/handoff.ts`) refuses on Darwin before it reaches the anchor check. That
 was the dangerous half: a durable handoff record can be arbitrarily old and can name a pid this build never

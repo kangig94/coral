@@ -33,7 +33,12 @@ import {
   type ProviderHostContainmentReaper,
 } from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
-import { ensureProviderProxySet, type ProviderProxySetAcquisitionConfig } from './proxy-set-acquisition.js';
+import {
+  disposeStoppedProviderProxySetAcquisition,
+  ensureProviderProxySet,
+  type ProviderProxySetAcquisitionConfig,
+  type ProviderProxySetAcquisitionStopDisposition,
+} from './proxy-set-acquisition.js';
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy/authority.js';
@@ -91,9 +96,7 @@ export interface ProviderHostAdministrationAuthority {
  */
 export interface ProviderProxySetRegistration {
   /** Folds an already-redeemed set into this manager's own live sets (`liveSets()`), so it participates in
-   *  this coordinator's later shutdown — including a second handoff — exactly as an acquired set would.
-   *  `protection` carries the discovery-time `legacy-unprotected`/`protected` classification through and
-   *  defaults to `protected`, matching every caller that has no legacy classification to report. */
+   *  this coordinator's later shutdown — including a second handoff — exactly as an acquired set would. */
   registerInheritedSet(
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
@@ -227,6 +230,12 @@ type ProviderHostClosingRecord = Readonly<{
   diagnostics: ProviderHostDiagnosticsSnapshot;
 }>;
 
+type PendingProviderProxySetAcquisition = {
+  readonly releaseAdmission: () => void;
+  settlement: Promise<void> | null;
+  stop: Readonly<{ disposition: ProviderProxySetAcquisitionStopDisposition; signal?: AbortSignal }> | null;
+};
+
 function reclamationFailure(error: unknown): Error {
   return error instanceof Error ? error : new Error('Provider host reclamation failed.', { cause: error });
 }
@@ -247,6 +256,7 @@ export class DefaultProviderHostManager
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly admission: HostAdmissionCollection;
   private readonly pendingCloses = new Set<Promise<void>>();
+  private readonly pendingProxySetAcquisitions = new Set<PendingProviderProxySetAcquisition>();
   private readonly closingEntries = new Map<ProviderHostEntry, ProviderHostClosingRecord>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private nextProviderServerGeneration = 1;
@@ -261,16 +271,7 @@ export class DefaultProviderHostManager
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
   private readonly proxySetRotationEntries = new Map<string, ProviderHostEntry>();
   private readonly reclamationStop = new AbortController();
-  /**
-   * Aborted by `stopAndClose` the instant it runs, before anything in it is awaited. Threaded into every
-   * acquisition attempt (`ensureProxySetFor`) alongside that attempt's own internal deadline
-   * (`PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS`) via `AbortSignal.any`. `acquireProviderProxySet`'s own
-   * final gate before publishing a set (see its doc) means an attempt still in flight when this fires can
-   * never settle `acquired` — it is unwound and reported failed instead, no matter how far into its own
-   * handshake it already was. That guarantee is what lets `runShutdownSequence` read `liveSets()` exactly
-   * once, right after `shutdown()` / `drainForHandoff()` returns, and trust nothing still-pending can add to
-   * it afterward — rather than awaiting each attempt's own up-to-45s budget just to find out.
-   */
+  /** Abort cannot shorten an admitted handshake; `pendingProxySetAcquisitions` owns every later outcome. */
   private readonly proxySetAcquisitionStop = new AbortController();
   constructor(options: {
     runtime: Runtime;
@@ -336,10 +337,8 @@ export class DefaultProviderHostManager
 
   /**
    * Starts acquiring `entry`'s guardian/reaper/proxy set if one is not already live or in flight for it.
-   * Fire-and-forget by design (see `ensureProviderProxySet`'s own doc): the caller of `acquireHostLease` gets
-   * its real app-server session exactly as before, unaffected by whether this succeeds, fails, or is still
-   * running when that session opens. A coordinator constructed without `proxySetAcquisition` (every test that
-   * does not care about this feature) never attempts it at all.
+   * Fire-and-forget relative to the host lease. The manager retains the acquisition until its callback has
+   * either published into the lifecycle or completed the stop disposition assigned by `stopAndClose`.
    */
   private ensureProxySetFor(entry: ProviderHostEntry): void {
     const config = this.proxySetAcquisitionConfig;
@@ -360,24 +359,48 @@ export class DefaultProviderHostManager
       }
       return;
     }
-    ensureProviderProxySet(
-      entry,
-      { runtime: this.runtime, signal: this.proxySetAcquisitionStop.signal, ...config },
-      (outcome) => {
-        if (outcome.kind === 'acquired') {
-          const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
-          lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
-          return;
-        }
-        if (outcome.kind === 'handed-over') {
-          lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
-            this.observeGenerationCapacity(identityKey, entry, set),
+    const pending: PendingProviderProxySetAcquisition = {
+      releaseAdmission: () => lifecycle.acquisitionFailed(admission.slotId),
+      settlement: null,
+      stop: null,
+    };
+    this.pendingProxySetAcquisitions.add(pending);
+    const settlement = Promise.resolve(
+      ensureProviderProxySet(
+        entry,
+        { runtime: this.runtime, signal: this.proxySetAcquisitionStop.signal, ...config },
+        async (outcome) => {
+          if (pending.stop !== null) {
+            await disposeStoppedProviderProxySetAcquisition(outcome, pending.stop.disposition, pending.stop.signal);
+            return;
+          }
+          if (outcome.kind === 'acquired') {
+            const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
+            lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
+            return;
+          }
+          if (outcome.kind === 'handed-over') {
+            lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
+              this.observeGenerationCapacity(identityKey, entry, set),
+            );
+            return;
+          }
+          lifecycle.acquisitionFailed(admission.slotId);
+          backendLog.warn(
+            `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
           );
-          return;
-        }
-        lifecycle.acquisitionFailed(admission.slotId);
+        },
+      ),
+    );
+    pending.settlement = settlement;
+    void settlement.then(
+      () => this.pendingProxySetAcquisitions.delete(pending),
+      (error: unknown) => {
+        this.pendingProxySetAcquisitions.delete(pending);
         backendLog.warn(
-          `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
+          `Provider proxy set acquisition settlement failed for ${entry.spec.provider} (${identityKey}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
       },
     );
@@ -712,18 +735,24 @@ export class DefaultProviderHostManager
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<void> {
-    await this.stopAndClose('drained', signal);
+    await this.stopAndClose('drained', 'handoff', signal);
   }
 
   async shutdown(signal?: AbortSignal): Promise<void> {
-    await this.stopAndClose('shut down', signal);
+    await this.stopAndClose('shut down', 'contain', signal);
   }
 
-  private async stopAndClose(detail: string, signal?: AbortSignal): Promise<void> {
+  private async stopAndClose(
+    detail: string,
+    disposition: ProviderProxySetAcquisitionStopDisposition,
+    signal?: AbortSignal,
+  ): Promise<void> {
     this.acceptingAcquisitions = false;
-    // Cuts off every proxy-set acquisition still running before anything below is awaited — see
-    // `proxySetAcquisitionStop`'s own doc for why this is what makes `liveSets()` safe for a caller to read
-    // once this method returns, with no risk of a straggler acquisition adding to it afterward.
+    const acquisitionsToSettle = [...this.pendingProxySetAcquisitions];
+    for (const pending of acquisitionsToSettle) {
+      pending.stop ??= { disposition, ...(signal === undefined ? {} : { signal }) };
+      pending.releaseAdmission();
+    }
     this.proxySetAcquisitionStop.abort();
     const stopReclamation = (): void => this.reclamationStop.abort(signal?.reason);
     if (signal?.aborted) stopReclamation();
@@ -735,6 +764,9 @@ export class DefaultProviderHostManager
       const outcomes = await Promise.allSettled([
         ...[...entriesToClose].map((entry) => this.closeProviderServerEntry(entry, detail, closeOptions)),
         ...pendingBeforeClose.map((operation) => waitForClose(operation, signal)),
+        ...acquisitionsToSettle.flatMap((pending) =>
+          pending.settlement === null ? [] : [waitForClose(pending.settlement, signal)],
+        ),
       ]);
       const failed = outcomes.find((outcome) => outcome.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;

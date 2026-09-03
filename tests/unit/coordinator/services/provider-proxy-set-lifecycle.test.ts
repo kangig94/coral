@@ -4542,6 +4542,44 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
+  it('does not let a later not-sent retry erase an unknown containment outcome', async () => {
+    const clock = new ManualClock();
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const commitContainment = vi
+      .fn<DurableProviderProxyOperationAuthority['commitContainment']>()
+      .mockResolvedValueOnce({ kind: 'outcome-unknown', error: 'the first response was lost' })
+      .mockResolvedValueOnce({ kind: 'not-sent', error: 'the retry was refused before dispatch' });
+    const authority = fakeAuthority({ commitContainment });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    await drainMicrotasks();
+    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'containment-outcome-unknown' }),
+    );
+
+    clock.elapse(30_000);
+    clock.runDue();
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect(commitContainment).toHaveBeenCalledTimes(2);
+    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'containment-outcome-unknown' }),
+    );
+  });
+
   it('ignores a proof result that arrives after its containment attempt token was retired', async () => {
     const clock = new ManualClock();
     const claims = new ProviderProxySetClaimMirror();

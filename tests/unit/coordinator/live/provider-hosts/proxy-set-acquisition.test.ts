@@ -147,6 +147,32 @@ describe('ensureProviderProxySet', () => {
     expect(acquireCall.deadlineSignal).toBeInstanceOf(AbortSignal);
   });
 
+  it('does not settle until the ownership callback completes', async () => {
+    const set = fakeSet();
+    mockedAcquire.mockResolvedValueOnce({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT });
+    let finishCallback: (() => void) | undefined;
+    let settled = false;
+
+    const acquisition = ensureProviderProxySet(
+      createEntry({ spec: createSharedSpec() }),
+      environment,
+      () =>
+        new Promise<void>((resolve) => {
+          finishCallback = resolve;
+        }),
+    ).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    if (finishCallback === undefined) throw new Error('ownership callback was not invoked');
+    finishCallback();
+    await acquisition;
+    expect(settled).toBe(true);
+  });
+
   it('folds the caller-supplied stop signal into the deadline so an external abort reaches it too', async () => {
     // This is the seam `DefaultProviderHostManager.stopAndClose` relies on: aborting `env.signal` must reach
     // `acquireProviderProxySet` the same way the attempt's own internal timeout would, even though nothing

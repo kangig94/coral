@@ -10,9 +10,13 @@ type GracefulKillRuntime = Readonly<{
 export type GracefulKillByPidDisposition =
   | Readonly<{ kind: 'escalation-scheduled'; pid: number }>
   | Readonly<{
-      kind: 'escalation-refused';
+      kind: 'signal-refused';
       pid: number;
-      reason: 'signal-authorizing-incarnation-unavailable' | 'expected-incarnation-mismatch';
+      reason:
+        | 'recorded-incarnation-unavailable'
+        | 'platform-incarnation-cannot-authorize-signal'
+        | 'signal-authorizing-incarnation-unavailable'
+        | 'expected-incarnation-mismatch';
     }>;
 
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
@@ -42,9 +46,11 @@ export function gracefulKill(
   child.on('close', () => runtime.time.clearTimeout(killTimer));
 }
 
-function readSignalAuthorizingIncarnation(runtime: Runtime, pid: number): ProcessIncarnation | null {
-  const platform = runtime.env.platform() as NodeJS.Platform;
-  if (!incarnationMayAuthorizeSignal(platform)) return null;
+function readSignalAuthorizingIncarnation(
+  runtime: Runtime,
+  pid: number,
+  platform: NodeJS.Platform,
+): ProcessIncarnation | null {
   try {
     return runtime.process.readProcessIncarnation(pid, platform);
   } catch {
@@ -52,36 +58,29 @@ function readSignalAuthorizingIncarnation(runtime: Runtime, pid: number): Proces
   }
 }
 
-/**
- * `expectedIncarnation` is the identity a caller recorded next to `pid` when it captured it (e.g.
- * `durable_cli_process.v1`). Supplying it gates the first SIGTERM on a fresh match, not only the escalation
- * below. Gating is skipped, not refused, wherever `incarnationMayAuthorizeSignal` is false: there the
- * platform's own incarnation already cannot authorize anything (the same limit `docs/todo/darwin-signal-
- * authority.md` documents for containment), so this call keeps sending its first signal unconditionally
- * exactly as a caller that passes no `expectedIncarnation` still does everywhere.
- */
 export function gracefulKillByPid(
   runtime: Runtime,
   pid: number,
-  expectedIncarnation?: ProcessIncarnation,
+  expectedIncarnation: ProcessIncarnation | null,
 ): GracefulKillByPidDisposition {
   const platform = runtime.env.platform() as NodeJS.Platform;
-  const observedIncarnation = readSignalAuthorizingIncarnation(runtime, pid);
-  if (expectedIncarnation !== undefined && incarnationMayAuthorizeSignal(platform)) {
-    if (observedIncarnation === null) {
-      return { kind: 'escalation-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
-    }
-    if (observedIncarnation !== expectedIncarnation) {
-      return { kind: 'escalation-refused', pid, reason: 'expected-incarnation-mismatch' };
-    }
+  if (expectedIncarnation === null) {
+    return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
+  }
+  if (!incarnationMayAuthorizeSignal(platform)) {
+    return { kind: 'signal-refused', pid, reason: 'platform-incarnation-cannot-authorize-signal' };
+  }
+  const observedIncarnation = readSignalAuthorizingIncarnation(runtime, pid, platform);
+  if (observedIncarnation === null) {
+    return { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
+  }
+  if (observedIncarnation !== expectedIncarnation) {
+    return { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
   }
   runtime.process.kill(pid, 'SIGTERM');
-  if (observedIncarnation === null) {
-    return { kind: 'escalation-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
-  }
 
   const escalation = runtime.time.setTimeout(() => {
-    if (readSignalAuthorizingIncarnation(runtime, pid) !== observedIncarnation) return;
+    if (readSignalAuthorizingIncarnation(runtime, pid, platform) !== observedIncarnation) return;
     try {
       if (runtime.process.observeLiveness(pid) !== 'alive') return;
     } catch {

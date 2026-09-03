@@ -440,7 +440,7 @@ describe('guardian outbound schemas', () => {
     expect(harness.reaperExchange).toHaveBeenCalledOnce();
   });
 
-  it('returns a result with the enforcer reason when teardown latches but absence is not confirmed', async () => {
+  it('replays the enforcer hold when teardown latches but absence is not confirmed', async () => {
     const latchTeardown = vi.fn();
     const holderAuthority = createControlHolderAuthority();
     const harness = createGuardianHarness(holderAuthority, {
@@ -459,17 +459,21 @@ describe('guardian outbound schemas', () => {
     });
     await armGuardian(harness);
 
-    const result = await harness.call('guardian.containment-commit.v1', {
+    const request = {
       guardian: harness.guardianIdentity,
       reaper: harness.reaperIdentity,
       proxy: harness.proxyIdentity,
-    });
+    };
+    const result = await harness.call('guardian.containment-commit.v1', request);
+    const replay = await harness.call('guardian.containment-commit.v1', request);
 
     expect(latchTeardown).toHaveBeenCalledOnce();
     expect(result).toEqual({
       state: 'teardown-latched-absence-unconfirmed',
       reason: 'absence could not be observed',
     });
+    expect(replay).toEqual(result);
+    expect(harness.reaperExchange).toHaveBeenCalledOnce();
   });
 
   it('throws a pre-latch containment-prepare failure without latching teardown', async () => {

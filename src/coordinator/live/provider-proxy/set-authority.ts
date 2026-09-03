@@ -488,6 +488,13 @@ export function createProviderProxySetAuthority(
     }
     if (exchange.kind === 'response') {
       if (exchange.response.kind === 'refusal') {
+        if (
+          exchange.response.failure.kind === 'json-rpc-error' &&
+          exchange.response.failure.protocolCode === 'invalid_state' &&
+          exchange.response.error.message === 'A containment commit is already in progress.'
+        ) {
+          return { kind: 'outcome-unknown', error: exchange.response.error.message };
+        }
         // The wire contract reserves refusals for pre-latch rejection; post-latch uncertainty is a result.
         return { kind: 'not-sent', error: exchange.response.error.message };
       }

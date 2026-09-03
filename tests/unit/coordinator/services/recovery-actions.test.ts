@@ -39,8 +39,9 @@ function runtimeRecord(): DurableCliRuntimeRecord {
   };
 }
 
-function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown') {
+function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: NodeJS.Platform = 'linux') {
   const runtime = new SimulationRuntime();
+  vi.spyOn(runtime.env, 'platform').mockReturnValue(platform);
   const db = openTestStoreDb(runtime, ':memory:');
   const kill = vi.fn(() => true);
   const readProcessIncarnation = vi.fn(() => testIncarnation('observed'));
@@ -152,6 +153,26 @@ describe('registerRunningRecovery provider-binding holds', () => {
 
       expect(disposition.kind).toBe('quarantine');
       expect(fixture.kill).toHaveBeenCalledWith(PID, 'SIGTERM');
+      expect(fixture.settleFault).not.toHaveBeenCalled();
+      expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  it('returns a no-signal quarantine when the platform cannot authorize the recorded identity', async () => {
+    const fixture = recoveryFixture('alive', 'darwin');
+    try {
+      const incarnation = testIncarnation('matching');
+      writeDurableCliProcessRuntimeMeta(fixture.db, { version: 1, jobId: JOB_ID, pid: PID, incarnation });
+      fixture.readProcessIncarnation.mockReturnValue(incarnation);
+
+      const disposition = await fixture.run();
+
+      if (disposition.kind !== 'quarantine') throw new Error(`expected quarantine, received ${disposition.kind}`);
+      expect(disposition.detail).toContain('No signal was sent');
+      expect(disposition.detail).toContain('platform-incarnation-cannot-authorize-signal');
+      expect(fixture.kill).not.toHaveBeenCalled();
       expect(fixture.settleFault).not.toHaveBeenCalled();
       expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
     } finally {

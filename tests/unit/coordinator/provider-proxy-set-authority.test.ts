@@ -341,7 +341,7 @@ describe('createProviderProxySetAuthority: commitContainment', () => {
     expect(outcome).toEqual({ kind: 'containment-absent', disappearanceReceipt: 'gone' });
   });
 
-  it('reports not-sent for a structured refusal, proving the guardian never latched', async () => {
+  it('reports outcome-unknown for an older guardian’s already-in-progress refusal', async () => {
     const remoteFailure: ControlClientRemoteFailure = {
       kind: 'json-rpc-error',
       jsonRpcCode: -32000,
@@ -360,6 +360,42 @@ describe('createProviderProxySetAuthority: commitContainment', () => {
               error: new ControlClientError(
                 'control_call_failed',
                 'A containment commit is already in progress.',
+                'remote-response',
+                remoteFailure,
+              ),
+            },
+          }),
+        ),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const authority = authorityWithGuardianClient(guardianClient);
+
+    const outcome = await authority.commitContainment(new AbortController().signal);
+
+    expect(outcome.kind).toBe('outcome-unknown');
+  });
+
+  it('reports not-sent for a structured pre-latch refusal', async () => {
+    const remoteFailure: ControlClientRemoteFailure = {
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32000,
+      protocolCode: 'identity_mismatch',
+      admissionReason: null,
+      heartbeatRefusal: null,
+    };
+    const guardianClient: ControlClient = {
+      exchange: () =>
+        Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'refusal',
+              failure: remoteFailure,
+              error: new ControlClientError(
+                'control_call_failed',
+                'Teardown named a different reaper than this one.',
                 'remote-response',
                 remoteFailure,
               ),

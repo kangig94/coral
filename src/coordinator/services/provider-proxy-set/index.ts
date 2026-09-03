@@ -3438,8 +3438,10 @@ export class ProviderProxySetLifecycle {
             // running, and this coordinator retains reconciliation ownership until one of them, an accepted
             // successor, or the operator override resolves it.
             if (slot.kind !== 'capsule-recovering' && decision.action === 'stop-and-reap') {
-              slot.containmentCommitStatus = outcome.kind;
-              this.#recordContainmentCommitOutcome(slot, decision, outcome.kind);
+              const aggregateOutcome =
+                slot.containmentCommitStatus === 'outcome-unknown' ? 'outcome-unknown' : outcome.kind;
+              slot.containmentCommitStatus = aggregateOutcome;
+              this.#recordContainmentCommitOutcome(slot, decision, aggregateOutcome);
             }
             return;
           }

@@ -11,9 +11,9 @@
 // A rule enforced by reading is a rule enforced at whatever rate people read.
 //
 // The scan is intentionally coarse — file-level, not call-level. Every file that signals a bare pid must
-// either consult `incarnationMayAuthorizeSignal`, or carry an entry below saying what makes its number safe.
-// Coarse is the right grain: an exemption is a claim about a subsystem's evidence, and it should be written
-// down where a reader of that subsystem will meet it.
+// refuse when `incarnationMayAuthorizeSignal` says its identity is insufficient, or carry an entry below
+// saying what makes its number safe. Coarse is the right grain: an exemption is a claim about a subsystem's
+// evidence, and it should be written down where a reader of that subsystem will meet it.
 //
 // Signal 0 is not a signal. `kill(pid, 0)` and `kill(-pid, 0)` are liveness probes; the worst a recycled pid
 // does there is answer a question wrongly, which every caller already treats as inconclusive.
@@ -142,20 +142,22 @@ function signalsABarePid(source: string, fileName: string): boolean {
   return found;
 }
 
-function consultsSignalAuthority(source: string): boolean {
-  return /(^|[^.\w$])incarnationMayAuthorizeSignal\s*\(/u.test(codeTextOnly(source));
+function refusesWithoutSignalAuthority(source: string): boolean {
+  return /if\s*\(\s*!\s*incarnationMayAuthorizeSignal\s*\([^)]*\)\s*\)\s*(?:\{\s*)?return\b/u.test(
+    codeTextOnly(source),
+  );
 }
 
 describe('a signal aimed at a pid establishes that the pid is still its recorded process', () => {
-  it('no module signals a bare pid without consulting the platform rule or a written exemption', () => {
+  it('no module signals a bare pid without refusing on insufficient platform authority or a written exemption', () => {
     const violations: string[] = [];
     for (const filePath of listSourceFiles(SRC_ROOT)) {
       const canonical = canonicalSrcPath(filePath);
       if (canonical === AUTHORITY_OWNER_FILE || ALLOWLIST.has(canonical)) continue;
       const source = readFileSync(filePath, 'utf-8');
-      if (signalsABarePid(source, canonical) && !consultsSignalAuthority(source)) violations.push(canonical);
+      if (signalsABarePid(source, canonical) && !refusesWithoutSignalAuthority(source)) violations.push(canonical);
     }
-    // To resolve: consult `incarnationMayAuthorizeSignal(platform)` before signalling and compare the recorded
+    // To resolve: refuse when `incarnationMayAuthorizeSignal(platform)` is false and compare the recorded
     // incarnation against a fresh probe — or add an ALLOWLIST entry stating what else proves the pid.
     expect(violations.sort()).toEqual([]);
   });
@@ -169,11 +171,8 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     expect(stale.sort()).toEqual([]);
   });
 
-  // The scan answers "did the file consult the rule", never "did it obey the answer", and never "did it ask
-  // about the platform it is actually running on". A guard-shaped statement reading
-  // `incarnationMayAuthorizeSignal('linux')` satisfies the first two and is a constant `true` — the whole
-  // refusal deleted, in a form that still greps as present. That mutation survived the first version of this
-  // test, so the argument is checked here rather than only the shape.
+  // A refusal guard against `incarnationMayAuthorizeSignal('linux')` is still a constant no-op, so the
+  // platform argument is checked separately from the guard shape.
   it('the two gated signal paths refuse, and ask about the running platform rather than a constant', () => {
     for (const canonical of ['src/coordinator/live/provider-proxy/spawn-undo.ts', 'src/provider-proxy/role-main.ts']) {
       const raw = readFileSync(join(REPO_ROOT, canonical), 'utf-8');

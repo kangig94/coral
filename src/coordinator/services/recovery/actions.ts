@@ -190,7 +190,7 @@ async function registerRunningRecovery(
           signalDisposition =
             disposition.kind === 'escalation-scheduled'
               ? 'Cleanup was requested for the recorded process identity.'
-              : `Cleanup was refused (${disposition.reason}).`;
+              : `No signal was sent; cleanup was refused (${disposition.reason}).`;
         }
       }
       clearProcessLocalCleanup();

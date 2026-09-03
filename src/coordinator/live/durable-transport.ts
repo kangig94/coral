@@ -2,7 +2,7 @@ import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
@@ -19,11 +19,10 @@ function requestDurableProcessTermination(
   pid: number,
   incarnation: ProcessIncarnation | null,
 ): GracefulKillByPidDisposition {
-  const disposition = gracefulKillByPid(runtime, pid, incarnation ?? undefined);
-  if (disposition.kind === 'escalation-refused') {
+  const disposition = gracefulKillByPid(runtime, pid, incarnation);
+  if (disposition.kind === 'signal-refused') {
     backendLog.warn(
-      `[durable-process:${pid}] SIGKILL escalation was refused (${disposition.reason}); ` +
-        'the process may still be running.',
+      `[durable-process:${pid}] No termination signal was sent (${disposition.reason}); the process remains owned.`,
     );
   }
   return disposition;
@@ -94,7 +93,7 @@ export async function spawnDurableJobTransport(params: {
     // Captured here because this is where the pid first exists and is still known to name this child.
     // A failure to probe stays silent: the recorded identity is what makes a later `absent` verdict
     // trustworthy, so a half-record — a pid with no incarnation — would be worse than none.
-    const incarnation = probeProcessIncarnation(durable.pid, runtime.env.platform() as NodeJS.Platform);
+    const incarnation = runtime.process.readProcessIncarnation(durable.pid, runtime.env.platform() as NodeJS.Platform);
     if (incarnation !== null) {
       options.onDurableProcessIdentity?.({ pid: durable.pid, incarnation });
     }
@@ -184,15 +183,13 @@ export async function spawnDurableJobTransport(params: {
         lastOutputAt = now;
       } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
         const disposition = requestDurableProcessTermination(runtime, durable.pid, incarnation);
-        if (disposition.kind === 'escalation-refused') {
+        if (disposition.kind === 'signal-refused') {
+          lastOutputAt = now;
+        } else {
           throw new Error(
-            `Durable process ${durable.pid} exceeded ${IDLE_TIMEOUT / 60_000} minutes of inactivity, ` +
-              `but SIGKILL escalation was refused (${disposition.reason})`,
+            `Durable process ${durable.pid} termination scheduled after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
           );
         }
-        throw new Error(
-          `Durable process ${durable.pid} termination scheduled after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
-        );
       }
 
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);

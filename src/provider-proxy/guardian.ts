@@ -348,6 +348,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   let stagingGateOpen = true;
   let inFlightStagingRegistrations = 0;
   let stagingDrainWaiters: Array<() => void> = [];
+  let containmentCommit: Promise<z.infer<typeof guardianContainmentCommitResultSchema>> | null = null;
 
   const noteStagingRegistrationStart = (): void => {
     inFlightStagingRegistrations += 1;
@@ -702,63 +703,73 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
 
-          if (!stagingGateOpen) {
-            throw new ProxyControlProtocolError('invalid_state', 'A containment commit is already in progress.');
-          }
-          stagingGateOpen = false;
-          await drainStagingRegistrations();
+          if (containmentCommit !== null) return containmentCommit;
+          const attempt = (async (): Promise<z.infer<typeof guardianContainmentCommitResultSchema>> => {
+            if (!stagingGateOpen) {
+              throw new ProxyControlProtocolError('invalid_state', 'A containment commit is already in progress.');
+            }
+            stagingGateOpen = false;
+            await drainStagingRegistrations();
 
-          let prepared: z.infer<typeof reaperContainmentPrepareResultSchema> | null = null;
-          try {
-            prepared = reaperContainmentPrepareResultSchema.parse(
-              requireReaperResult(
-                'reaper.containment-prepare.v1',
-                await options.reaperChannel.exchange(
+            let prepared: z.infer<typeof reaperContainmentPrepareResultSchema> | null = null;
+            try {
+              prepared = reaperContainmentPrepareResultSchema.parse(
+                requireReaperResult(
                   'reaper.containment-prepare.v1',
-                  reaperContainmentPrepareParamsSchema.parse({}),
-                  PROXY_CONTROL_RPC_TIMEOUT_MS,
+                  await options.reaperChannel.exchange(
+                    'reaper.containment-prepare.v1',
+                    reaperContainmentPrepareParamsSchema.parse({}),
+                    PROXY_CONTROL_RPC_TIMEOUT_MS,
+                  ),
                 ),
-              ),
-            );
-            // Only after both drains: this guardian's own gate closed and drained above, the reaper's
-            // closed and drained inside `reaper.containment-prepare.v1` before it returned this snapshot.
-            assertExactRecordedSetAgreement('guardian', armed.recordedRoots(), prepared.providerRoots);
-            if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+              );
+              // Only after both drains: this guardian's own gate closed and drained above, the reaper's
+              // closed and drained inside `reaper.containment-prepare.v1` before it returned this snapshot.
+              assertExactRecordedSetAgreement('guardian', armed.recordedRoots(), prepared.providerRoots);
+              if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+                throw new ProxyControlProtocolError(
+                  'unauthorized_control',
+                  'Active control changed before this commit could latch.',
+                );
+              }
+            } catch (error: unknown) {
+              stagingGateOpen = true;
+              if (prepared !== null) await abortReaperContainmentPrepare(prepared.token);
+              throw error;
+            }
+
+            // Minted from this guardian's own current holder: the revalidation immediately above just
+            // confirmed the socket, holder, and epoch dispatch admitted this call under are still current.
+            const teardown = mintExplicitTeardownAuthorization(holderAuthority);
+            if (teardown === null) {
               throw new ProxyControlProtocolError(
-                'unauthorized_control',
-                'Active control changed before this commit could latch.',
+                'invalid_state',
+                'This guardian holds no admitted holder to tear down.',
               );
             }
+            const disposition = await armed.stopAndReap(teardown);
+            if (disposition.kind === 'authorization-superseded') {
+              throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
+            }
+            const outcome = disposition.outcome;
+            if (outcome.kind !== 'containment-absent') {
+              return guardianContainmentCommitResultSchema.parse({
+                state: 'teardown-latched-absence-unconfirmed',
+                reason: outcome.reason,
+              });
+            }
+            return guardianContainmentCommitResultSchema.parse({
+              state: 'containment-absent',
+              disappearanceReceipt: outcome.disappearanceReceipt,
+            });
+          })();
+          containmentCommit = attempt;
+          try {
+            return await attempt;
           } catch (error: unknown) {
-            stagingGateOpen = true;
-            if (prepared !== null) await abortReaperContainmentPrepare(prepared.token);
+            if (stagingGateOpen && containmentCommit === attempt) containmentCommit = null;
             throw error;
           }
-
-          // Minted from this guardian's own current holder: the revalidation immediately above just
-          // confirmed the socket, holder, and epoch dispatch admitted this call under are still current.
-          const teardown = mintExplicitTeardownAuthorization(holderAuthority);
-          if (teardown === null) {
-            throw new ProxyControlProtocolError(
-              'invalid_state',
-              'This guardian holds no admitted holder to tear down.',
-            );
-          }
-          const disposition = await armed.stopAndReap(teardown);
-          if (disposition.kind === 'authorization-superseded') {
-            throw new ProxyControlProtocolError('invalid_state', 'The teardown authorization was no longer current.');
-          }
-          const outcome = disposition.outcome;
-          if (outcome.kind !== 'containment-absent') {
-            return guardianContainmentCommitResultSchema.parse({
-              state: 'teardown-latched-absence-unconfirmed',
-              reason: outcome.reason,
-            });
-          }
-          return guardianContainmentCommitResultSchema.parse({
-            state: 'containment-absent',
-            disappearanceReceipt: outcome.disappearanceReceipt,
-          });
         },
       },
     ],
