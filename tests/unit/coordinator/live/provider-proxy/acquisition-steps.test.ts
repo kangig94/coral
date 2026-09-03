@@ -55,7 +55,7 @@ import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import type { ControlClient, ControlExchange } from '#src/provider-proxy/control-client.js';
 import {
   connectControlClient,
   ControlClientError,
@@ -109,6 +109,19 @@ const ACQUISITION_PUBLISH_REAPER_IDENTITY = {
   hostFingerprint: 'a'.repeat(64),
   canonicalControlEndpoint: '/tmp/coral-acquisition-test-reaper.sock',
   containmentKind: 'detached-process-group',
+};
+const ACQUISITION_PUBLISH_PROXY_IDENTITY = {
+  proxyInstanceId: '99999999-9999-4999-8999-999999999993',
+  guardianInstanceId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.guardianInstanceId,
+  reaperInstanceId: ACQUISITION_PUBLISH_REAPER_IDENTITY.reaperInstanceId,
+  pid: 9_003,
+  incarnation: testIncarnation(9_003),
+  processGroupId: 9_003,
+  generation: 'gen2' as const,
+  flavor: 'prod' as const,
+  buildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
+  hostFingerprint: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.hostFingerprint,
+  canonicalEndpoint: '/tmp/coral-acquisition-test-proxy.sock',
 };
 
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
@@ -295,6 +308,8 @@ async function advanceEndpointClock(
 }
 
 describe('exchangeAcquisitionStage', () => {
+  const publicationRoles = ['guardian', 'proxy'] as const;
+
   function clientAnswering(value: unknown): ControlClient {
     return {
       exchange: async () => controlExchangeForTest({ kind: 'response', response: { kind: 'result', value } }),
@@ -302,6 +317,35 @@ describe('exchangeAcquisitionStage', () => {
       onFault: () => () => undefined,
       close: () => undefined,
     };
+  }
+
+  function publicationSuccess(role: (typeof publicationRoles)[number]): ControlExchange {
+    return controlExchangeForTest({
+      kind: 'response',
+      response: {
+        kind: 'result',
+        value:
+          role === 'guardian'
+            ? {
+                state: 'acquisition-published',
+                certificate: 'test-acquisition-certificate',
+                guardian: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY,
+                reaper: ACQUISITION_PUBLISH_REAPER_IDENTITY,
+              }
+            : { state: 'acquisition-published' },
+      },
+    });
+  }
+
+  async function runPublicationWith(role: (typeof publicationRoles)[number], exchange: ControlClient['exchange']) {
+    const stageClient = { ...passiveClient(), exchange };
+    return runProviderProxySetPublicationTransaction(
+      role === 'guardian' ? stageClient : passiveClient(),
+      role === 'proxy' ? stageClient : passiveClient(),
+      ACQUISITION_PUBLISH_GUARDIAN_IDENTITY,
+      ACQUISITION_PUBLISH_REAPER_IDENTITY,
+      ACQUISITION_PUBLISH_PROXY_IDENTITY,
+    );
   }
 
   it('classifies an explicit acquisition-publication-unknown reply as unknown, never not-attempted, never ok', async () => {
@@ -325,49 +369,66 @@ describe('exchangeAcquisitionStage', () => {
     });
   });
 
-  it('classifies a proven publication non-attempt without retrying or contacting the proxy', async () => {
-    const guardianExchange = vi.fn(async () =>
+  it.each(publicationRoles)('keeps a first-attempt %s publication non-attempt without retrying', async (role) => {
+    const exchange = vi.fn(async () =>
       controlExchangeForTest({
-        kind: 'response',
-        response: {
-          kind: 'result',
-          value: { state: 'acquisition-publication-not-attempted', reason: 'reaper request was not sent' },
-        },
+        kind: 'not-sent',
+        cause: 'connection-already-closed',
+        error: new Error(`${role} connection was already closed`),
       }),
     );
-    const guardian = { ...passiveClient(), exchange: guardianExchange };
-    const proxyExchange = vi.fn(async (): Promise<never> => {
-      throw new Error('proxy publication must not be attempted');
-    });
-    const proxyClient = { ...passiveClient(), exchange: proxyExchange };
-
-    const outcome = await runProviderProxySetPublicationTransaction(
-      guardian,
-      proxyClient,
-      ACQUISITION_PUBLISH_GUARDIAN_IDENTITY,
-      ACQUISITION_PUBLISH_REAPER_IDENTITY,
-      {
-        proxyInstanceId: '99999999-9999-4999-8999-999999999993',
-        guardianInstanceId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.guardianInstanceId,
-        reaperInstanceId: ACQUISITION_PUBLISH_REAPER_IDENTITY.reaperInstanceId,
-        pid: 9_003,
-        incarnation: testIncarnation(9_003),
-        processGroupId: 9_003,
-        generation: 'gen2',
-        flavor: 'prod',
-        buildSetId: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.buildSetId,
-        hostFingerprint: ACQUISITION_PUBLISH_GUARDIAN_IDENTITY.hostFingerprint,
-        canonicalEndpoint: '/tmp/coral-acquisition-test-proxy.sock',
-      },
-    );
+    const outcome = await runPublicationWith(role, exchange);
 
     expect(outcome).toEqual({
       kind: 'not-attempted',
-      role: 'guardian',
-      reason: 'reaper request was not sent',
+      role,
+      reason: `${role} connection was already closed`,
     });
-    expect(guardianExchange).toHaveBeenCalledOnce();
-    expect(proxyExchange).not.toHaveBeenCalled();
+    expect(exchange).toHaveBeenCalledOnce();
+  });
+
+  it.each(publicationRoles)('keeps %s publication unknown when its retry was not sent', async (role) => {
+    const exchange = vi
+      .fn<ControlClient['exchange']>()
+      .mockResolvedValueOnce(
+        controlExchangeForTest({
+          kind: 'no-response',
+          cause: 'connection-closed-after-write',
+          error: new ControlClientError('control_client_closed', `${role} reply was lost`, 'closed'),
+        }),
+      )
+      .mockResolvedValueOnce(
+        controlExchangeForTest({
+          kind: 'not-sent',
+          cause: 'connection-already-closed',
+          error: new Error(`${role} retry was not sent`),
+        }),
+      );
+
+    const outcome = await runPublicationWith(role, exchange);
+
+    expect(outcome).toEqual({
+      kind: 'publication-unknown',
+      role,
+      reason: `First attempt was unknown: ${role} reply was lost; retry was not-attempted: ${role} retry was not sent`,
+    });
+    expect(exchange).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(publicationRoles)('accepts confirmed %s publication success on retry', async (role) => {
+    const exchange = vi
+      .fn<ControlClient['exchange']>()
+      .mockResolvedValueOnce(
+        controlExchangeForTest({
+          kind: 'no-response',
+          cause: 'timeout',
+          error: new ControlClientError('control_call_failed', `${role} reply timed out`, 'timeout'),
+        }),
+      )
+      .mockResolvedValueOnce(publicationSuccess(role));
+
+    await expect(runPublicationWith(role, exchange)).resolves.toMatchObject({ kind: 'published' });
+    expect(exchange).toHaveBeenCalledTimes(2);
   });
 
   it(

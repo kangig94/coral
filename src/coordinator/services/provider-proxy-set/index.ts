@@ -29,7 +29,6 @@ import {
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '../../live/provider-proxy/control-session.js';
 import type { ContainmentCommitOutcome } from '../../live/provider-proxy/authority.js';
-import type { OperatorTeardownAuthorization } from '../../../provider-proxy/holder-lifecycle.js';
 import type {
   ProviderProxyControlRedemptionOutcome,
   ProviderProxyControlRedemptionRefusal,
@@ -479,30 +478,6 @@ export type ProviderProxySetOperatorExitResult = (
   | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>
 ) &
   Readonly<{ effect: ProviderProxySetOperatorExitEffect }>;
-
-/**
- * `forceProviderProxySetContainment`'s verdict. `enforcer-signal-unavailable` names the exit that exists
- * without pretending this override signalled anything: representation stays held, and an operator retains
- * `completeOperatorExit`'s representation-only abandonment, a retry once the enforcer becomes independently
- * observed absent, or waiting for that enforcer's own holder-check verdict to resolve it autonomously.
- */
-export type ProviderProxySetForceContainmentResult =
-  | Readonly<{
-      kind: 'contained';
-      setIdentity: ProviderProxySetAddress;
-      disappearanceReceipt: string;
-      claimDischarge: ProviderProxySetOperatorClaimDischarge;
-    }>
-  | Readonly<{ kind: 'set-not-found'; setIdentity: ProviderProxySetAddress }>
-  | Readonly<{ kind: 'not-held'; setIdentity: ProviderProxySetAddress; state: ProviderProxySetLifecycleState }>
-  | Readonly<{ kind: 'authorization-stale'; setIdentity: ProviderProxySetAddress }>
-  | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>
-  | Readonly<{ kind: 'recorded-group-unattributable'; setIdentity: ProviderProxySetAddress }>
-  | Readonly<{
-      kind: 'enforcer-signal-unavailable';
-      setIdentity: ProviderProxySetAddress;
-      enforcerObservations: ProviderProxySetEnforcerObservations;
-    }>;
 
 type InitialDispositionLatch = {
   state: InitialDispositionState;
@@ -1416,124 +1391,6 @@ export class ProviderProxySetLifecycle {
       enforcerObservations: abandonmentEvidence.enforcerObservations,
       claimDischarge: await operatorExitClaimDischarge(pending.initialDisposition),
       effect: { signalsSent: [], containmentAbsent: false, representationAction: 'abandonment-release-started' },
-    };
-  }
-
-  /**
-   * The exact-set direct operator force path (AC3's uncertainty override). Separate from `completeOperatorExit`:
-   * that method's `abandonWithoutAbsence` refusal/abandonment split is not this override, and this override
-   * never passes `OperatorTeardownAuthorization` to either enforcer — it consumes it only at this boundary,
-   * revalidating the slot and the ordinary operator-exit capability before it acts.
-   *
-   * `authorization`'s only role is the type-level one its own doc states: proving the caller reached this
-   * exact boundary rather than an ordinary exit path. It carries no fields of its own to check.
-   *
-   * Target order is containment (the proxy process group and its recorded provider roots) first, then reaper,
-   * then guardian — but reaper and guardian can be force-signalled only once they are already independently
-   * observed absent (`evidence.kind === 'reap-required'`): this coordinator holds no raw process-control port
-   * for signalling a still-alive or unobservable enforcer directly, so that half of the target order names an
-   * exit — `enforcer-signal-unavailable` — rather than a signal this call cannot send.
-   */
-  async forceProviderProxySetContainment(
-    capability: ProviderProxySetOperatorExitCapability,
-    _authorization: OperatorTeardownAuthorization,
-    proof: ProviderProxySetContainmentProof,
-    signal: AbortSignal = new AbortController().signal,
-  ): Promise<ProviderProxySetForceContainmentResult> {
-    const address = providerProxySetAddress(capability.setIdentity);
-    if (capability[operatorExitCapabilityBrand] !== this) {
-      throw new Error('provider_proxy_operator_exit_capability_invalid');
-    }
-    const evidence = providerProxySetContainmentEvidenceFor(
-      proof,
-      capability.setIdentity,
-      capability.containmentProofAuthorization,
-    );
-    const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
-    if (slot === undefined) return { kind: 'set-not-found', setIdentity: address };
-    const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
-    if (
-      (slot.kind !== 'containing' &&
-        slot.kind !== 'containment-wait' &&
-        slot.kind !== 'reattaching' &&
-        slot.kind !== 'reattachment-hold' &&
-        slot.kind !== 'capsule-recovering' &&
-        !heldWhileRoutable) ||
-      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
-    ) {
-      return { kind: 'not-held', setIdentity: address, state: slot.kind };
-    }
-    const assertCapabilityCurrent = (): void => {
-      const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
-      if (
-        current !== slot ||
-        current.attemptToken !== capability.attemptToken ||
-        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
-        this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
-      ) {
-        throw new Error('provider_proxy_operator_force_containment_authorization_stale');
-      }
-    };
-    try {
-      assertCapabilityCurrent();
-    } catch {
-      return { kind: 'authorization-stale', setIdentity: address };
-    }
-    if (evidence.kind === 'store-unreadable') return { kind: 'store-unreadable', setIdentity: address };
-    if (evidence.kind !== 'reap-required') {
-      return {
-        kind: 'enforcer-signal-unavailable',
-        setIdentity: address,
-        enforcerObservations: evidence.observations,
-      };
-    }
-    let reapResult: ProviderProxySetRecordedContainmentReapResult;
-    try {
-      reapResult = await this.#reapRecordedContainment(
-        capability.setIdentity,
-        proof,
-        signal,
-        () => undefined,
-        assertCapabilityCurrent,
-      );
-    } catch (error: unknown) {
-      const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
-      const authorizationMoved =
-        current !== slot ||
-        current.attemptToken !== capability.attemptToken ||
-        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs;
-      if (authorizationMoved) return { kind: 'authorization-stale', setIdentity: address };
-      throw error;
-    }
-    assertCapabilityCurrent();
-    if (reapResult.kind === 'recorded-group-unattributable') {
-      return { kind: 'recorded-group-unattributable', setIdentity: address };
-    }
-    const decision: ProviderProxySetOperatorContainmentDecision = {
-      action: 'operator-contain',
-      reason: 'operator_exact_set_containment',
-      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-      setIdentity: slot.identity,
-    };
-    if (slot.kind === 'capsule-recovering') {
-      this.#recordOperatorDisposition(decision);
-      this.#reportDecision(decision);
-    } else {
-      this.#recordDecision(slot, decision);
-      if (
-        (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
-        slot.controlReattachmentWindow !== null
-      ) {
-        this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
-      }
-      this.#commitHeldSlotToContainment(slot);
-    }
-    const accepted = this.containmentAbsent(slot.identity, reapResult.disappearanceReceipt);
-    return {
-      kind: 'contained',
-      setIdentity: address,
-      disappearanceReceipt: reapResult.disappearanceReceipt,
-      claimDischarge: await operatorExitClaimDischarge(accepted),
     };
   }
 

@@ -711,8 +711,6 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
-  'src/coordinator/services/provider-proxy-set/index.ts :: forceProviderProxySetContainment :: catch#1 :: calls=[] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/index.ts :: forceProviderProxySetContainment :: catch#2 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.collectContainmentProof, authorizeProviderProxySetContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: buildInheritedAuthority :: catch#1 :: calls=[closeRedeemedProviderProxyControl] assignments=[]',

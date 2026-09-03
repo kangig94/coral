@@ -9,6 +9,8 @@ import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import {
   CURRENT_HANDOFF_CAPSULE_VERSION,
   writeHandoffCapsuleFile,
+  type HandoffCapsuleV1,
+  type HandoffCapsuleV2,
   type HandoffCapsuleV3,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
@@ -113,6 +115,63 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     expect(rendered).toContain(`set proxy=${validCapsules[1]?.proxyInstanceId}`);
     expect(rendered).toContain(`unreadable capsule path=${malformedPath}`);
     expect(rendered).toContain('reason: handoff_capsule_invalid: Handoff capsule is not valid strict UTF-8 JSON.');
+  });
+
+  it('reports readable legacy capsules without dialing or treating discovery as empty', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'c-hs6-'));
+    const runtime = createRealRuntime('prod', { baseDir });
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    const common = {
+      grantId: randomUUID(),
+      secret: 'b'.repeat(64),
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: randomUUID(),
+      hostFingerprint: 'd'.repeat(64),
+      guardianInstanceId: randomUUID(),
+      reaperInstanceId: randomUUID(),
+      proxyInstanceId: randomUUID(),
+      guardianControlEndpoint: join(runDir, 'legacy-guardian.sock'),
+      reaperControlEndpoint: join(runDir, 'legacy-reaper.sock'),
+      proxyEndpoint: join(runDir, 'legacy-proxy.sock'),
+      orphanTimeoutMs: 37_000,
+      teardownReserveMs: 14_000,
+    };
+    const v1: HandoffCapsuleV1 = { version: 1, ...common };
+    const v2: HandoffCapsuleV2 = {
+      version: 2,
+      ...common,
+      proxyInstanceId: randomUUID(),
+      guardianPid: 101,
+      guardianProcessStartedAtSeconds: 1_001,
+      proxyPid: 102,
+      reaperPid: 103,
+      reaperProcessStartedAtSeconds: 1_003,
+      containmentKind: 'detached-process-group',
+      proxyProcessStartedAtSeconds: 1_002,
+      proxyProcessGroupId: 102,
+    };
+    const paths = [v1, v2].map((capsule) => {
+      const path = providerHandoffCapsulePath(capsule, capsule.version, { baseDir });
+      runtime.storage.writeAtomicDurableSync(path, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
+      return path;
+    });
+
+    const readings = await readProviderProxySetHolderStatusDirect(runtime);
+    const rendered = formatProviderProxySetHolderStatusDirect(readings);
+
+    expect(readings).toHaveLength(2);
+    expect(readings).toContainEqual({ kind: 'legacy-capsule', path: paths[0], capsule: v1 });
+    expect(readings).toContainEqual({ kind: 'legacy-capsule', path: paths[1], capsule: v2 });
+    expect(rendered).toContain(`legacy capsule version=1 path=${paths[0]}`);
+    expect(rendered).toContain(`legacy capsule version=2 path=${paths[1]}`);
+    expect(rendered).toContain(`identity: build=${common.buildSetId} host=${common.hostFingerprint}`);
+    expect(rendered).toContain(
+      'recorded pids (non-authorizing): guardian=101 reaper=103 proxy=102; process incarnation unavailable',
+    );
+    expect(rendered).toContain('direct holder status: unsupported for this capsule version; no role was dialed');
+    expect(rendered).not.toContain('No provider proxy sets discovered on disk.');
   });
 
   it('names both operator exits after unattributable retry exhaustion', () => {

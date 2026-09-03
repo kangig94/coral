@@ -1,6 +1,6 @@
 # TODO — the durable-CLI signal paths hold the evidence and do not read it
 
-**Status**: open; two of five rows closed. Found on `refactor/process-incarnation-token` by the scan in
+**Status**: open; three of five rows closed. Found on `refactor/process-incarnation-token` by the scan in
 `tests/invariants/signal-authority.test.ts`, not by review — five reviewers read the same branch and none of
 these four came up, which is most of the argument for the scan existing.
 
@@ -29,6 +29,12 @@ them spell `kill` literally, and `signalsABarePid`'s AST scan cannot see a call 
 removed)" check rejects an entry for this file today, which is the fact that decided fixing this now over
 tracking it further.
 
+`src/coordinator/services/recovery/actions.ts` now reads the `durable_cli_process.v1` identity beside the
+recovered pid and passes its incarnation to `gracefulKillByPid`. A missing identity, a recorded pid mismatch,
+or a fresh incarnation mismatch refuses the signal. Its recovery-binding-failure path retains the recovery
+registry and a durable, operator-retryable quarantine until provider adoption succeeds or the recorded process
+is observed absent; a signal request alone no longer authorizes settlement.
+
 ## What exists now
 
 Signals aimed at a pid that came out of a durable record, with no check that the pid still names the process
@@ -36,16 +42,13 @@ the record was written for. Note the two columns are different things and the di
 
 | Module (what the invariant names)              | Signal paths inside it                                             |
 | ----------------------------------------------- | -------------------------------------------------------------------- |
-| `src/coordinator/services/recovery/actions.ts` | one `gracefulKillByPid`, in the recovery-binding-failure cleanup     |
 | `src/coordinator/services/recovery/service.ts` | one direct `kill`, in the abort handler for an **adopted** job       |
 | `src/jobs/reconcile/registry.ts`               | one direct `kill`, in the abort handler for a live job               |
 
 `tests/invariants/signal-authority.test.ts` is a **module**-level scan, and a helper-delivered signal is
-attributed to the helper's file rather than the caller's — which is why `recovery/actions.ts` does not appear
-in its ALLOWLIST at all, and still does not now that `durable-transport.ts`'s own entry is gone too: closing
-`durable-transport.ts`'s calls could not touch `actions.ts`, a fresh instance of the same reminder this
-document opened with. Treat the ALLOWLIST as a checklist of modules and this table as the checklist of
-behaviours; neither is a substitute for the other.
+attributed to the helper's file rather than the caller's. That is why closing `recovery/actions.ts` removed no
+ALLOWLIST entry: the behavior needed its own review and test. Treat the ALLOWLIST as a checklist of modules
+and this table as the checklist of behaviours; neither is a substitute for the other.
 
 The `recovery/service.ts` row is the sharpest. Adoption exists precisely because the record outlived the
 process that wrote it, so its pid has already survived one process boundary before anyone signals it.
@@ -53,7 +56,7 @@ process that wrote it, so its pid has already survived one process boundary befo
 ## Why this is a defect and not a nit
 
 The identity **is recorded**. `durable_cli_process.v1` (`src/jobs/runtime-meta.ts`) carries an
-`incarnation` beside the pid, and `observeProcessIdentity` already exists to compare one. These three sites
+`incarnation` beside the pid, and `observeProcessIdentity` already exists to compare one. The remaining sites
 simply do not ask. That is a different situation from
 [`darwin-signal-authority.md`](./darwin-signal-authority.md), where the evidence is too weak to use — here it
 is sitting in the same record as the number being signalled.
@@ -77,8 +80,7 @@ Read the recorded incarnation next to the pid, probe, compare, and refuse on mis
 `verifySignalTarget` already runs. `gracefulKillByPid` (`src/infra/process-supervision.ts`) took the first
 option this section used to pose as a choice: it now takes an optional `expectedIncarnation`, gating the first
 SIGTERM the same way its escalation was already gated, and a caller that omits it keeps the prior unguarded
-behaviour. `durable-transport.ts` supplies one; `recovery/actions.ts` still does not, which is the whole of
-its remaining row above.
+behaviour. `durable-transport.ts` and `recovery/actions.ts` supply one.
 
 What is still undecided is **what refusal means to an abort**. A user pressing abort expects the job to stop.
 If the identity no longer matches, the process is already gone and the abort has trivially succeeded — but the

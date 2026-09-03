@@ -98,7 +98,13 @@ async function attemptAcquisitionStageWithRetry<T>(
   resultSchema: z.ZodType<T>,
 ): Promise<AcquisitionPublicationStageOutcome<AcquisitionStageConfirmed<T>>> {
   const first = await exchangeAcquisitionStage(client, method, params, resultSchema);
-  return first.kind === 'unknown' ? exchangeAcquisitionStage(client, method, params, resultSchema) : first;
+  if (first.kind !== 'unknown') return first;
+  const retry = await exchangeAcquisitionStage(client, method, params, resultSchema);
+  if (retry.kind === 'ok') return retry;
+  return {
+    kind: 'unknown',
+    reason: `First attempt was unknown: ${first.reason}; retry was ${retry.kind}: ${retry.reason}`,
+  };
 }
 
 /** The receipt is minted only after guardian/reaper and proxy publication both return confirmed success. */

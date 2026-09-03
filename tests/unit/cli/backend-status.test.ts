@@ -201,11 +201,12 @@ describe('backend status generation readiness', () => {
       reaper: { kind: 'unreachable', reason: 'connection refused' },
     };
     const readProviderProxySetHolderStatusDirect = vi.fn(async () => [directHolderStatus]);
+    const getLiveHandoffResult = vi.fn(() => null);
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'unreachable', detail: 'request timed out', cause: 'no_response' }),
-      getLiveHandoffResult: () => null,
-      getRoutingStatus: async () => ({ kind: 'absent' }),
+      getLiveHandoffResult,
+      getRoutingStatus: async () => ({ kind: 'undeterminable', cause: 'io-failed', errcode: 5 }),
       readProviderProxySetHolderStatusDirect,
     };
     const program = new Command();
@@ -215,11 +216,15 @@ describe('backend status generation readiness', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(readProviderProxySetHolderStatusDirect).toHaveBeenCalledOnce();
-    expect(stderr).toBe('Backend is unreachable over IPC.\n');
+    expect(getLiveHandoffResult).toHaveBeenCalledOnce();
+    expect(stderr).toBe('');
+    expect(stdout).toContain('Backend state is unknown: the coordinator did not give a usable answer');
+    expect(stdout).toContain('Routing status could not be read (io-failed, errcode 5).');
     expect(stdout).toContain('guardian: unobservable');
     expect(stdout).toContain('hold=recorded-group-unattributable attempts=3 role=guardian:4200@');
     expect(stdout).toContain('nextProbeAt=2026-08-03T00:00:04.000Z');
     expect(stdout).toContain('reaper:   unreachable (connection refused)');
+    expect(stdout.indexOf('Backend state is unknown')).toBeLessThan(stdout.indexOf('set proxy='));
     expect(process.exitCode).toBe(75);
   });
 });

@@ -180,17 +180,6 @@ export type ExplicitTeardownAuthorization = Readonly<{
 }>;
 
 /**
- * The coordinator's exact-set operator override, minted only at the direct force boundary.
- * Deliberately carries no `{ controlEpoch, holder }` binding: unlike the two capabilities above, the operator
- * override must still function while the holder is observed `alive` or `unobservable`, so it cannot be the
- * kind of capability a successor's epoch change silently revokes. It cannot be passed to either enforcer
- * method above, and neither of those two can authorize the operator path — the three are mutually
- * non-substitutable, not a hierarchy.
- */
-declare const operatorTeardownBrand: unique symbol;
-export type OperatorTeardownAuthorization = Readonly<{ readonly [operatorTeardownBrand]: true }>;
-
-/**
  * Observes the authority's currently admitted holder through `observe` and maps its stricter
  * `alive | absent | unknown` onto this module's `alive | absent | unobservable`, minting
  * `ObservedHolderAbsenceAuthorization` only on canonical `absent`.

@@ -1,4 +1,3 @@
-import { backendLog } from '../../../infra/backend-log.js';
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
@@ -12,6 +11,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
 import { gracefulKillByPid } from '../../../infra/process-supervision.js';
+import { readDurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta-store.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import type {
   RecoveryDisposition,
@@ -145,6 +145,7 @@ async function registerRunningRecovery(
   ctx: RecoveryActionContext,
 ): Promise<RecoveryDisposition> {
   const {
+    progressStore,
     recoveryRegistry,
     runningRecoverable,
     log,
@@ -162,44 +163,49 @@ async function registerRunningRecovery(
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
   if (!captured.ok) {
-    // Settling here is a known gap, deliberately left in place rather than half-closed, and the argument that
-    // used to justify it was checked and found false: `profile-unavailable`, `identity-unavailable` and
-    // `subject-mismatch` are operator-repairable, so a retry after the operator restores the profile does find
-    // something new. The correct disposition is a durable quarantine — but a quarantine that hands the job back
-    // while its carrier is still running releases the only owner that can abort it, and the successor owner does
-    // not exist yet. Both halves are docs/todo/coordinator-process-disposition.md; until they ship together this
-    // path terminalizes as it always has, and this comment is the honest reason rather than a justification.
-    //
-    // What the three liveness answers do decide is the carrier:
-    // `alive`: install the pid-kill cleanup.
-    // `absent`: nothing to clean up.
-    // `unknown`: install nothing — signalling a pid nobody could observe is the one action this must not take —
-    //   but report the process that is being left behind rather than terminalizing over it in silence.
     const durableRecord = isDurableCliRuntime(action.runtimeRecord) ? action.runtimeRecord : null;
-    const durableLiveness = durableRecord === null ? 'absent' : runtime.process.observeLiveness(durableRecord.pid);
-    if (durableRecord !== null && durableLiveness === 'alive') {
-      const pid = durableRecord.pid;
-      const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
-      setProcessLocalCleanup(() => {
-        const disposition = gracefulKillByPid(runtime, pid);
-        if (disposition.kind === 'escalation-refused') {
-          backendLog.warn(
-            `[durable-process:${pid}] Recovery cleanup for job ${action.jobId} could not schedule SIGKILL ` +
-              `escalation (${disposition.reason}); the process may still be running.`,
-          );
-        }
-        releaseRegistry();
-      });
-    } else if (durableRecord !== null && durableLiveness === 'unknown') {
-      backendLog.warn(
-        `Terminalizing job ${action.jobId} for a provider binding failure while its durable process ` +
-          `(pid ${durableRecord.pid}) could not be observed; no signal was sent, so it may still be running ` +
-          'and nothing in Coral will reclaim it. That pid is not safe to act on by itself — the probe that ' +
-          'could not answer is also what would have proved the number still belongs to this job — so identify ' +
-          'the process independently before stopping it.',
-      );
-    }
     const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
+    if (durableRecord === null) {
+      clearProcessLocalCleanup();
+      const detail =
+        `${message} The running carrier has no locally observable durable process identity, so recovery ` +
+        'remains owned. Retry after repairing the provider binding so adoption can succeed.';
+      log(`Held running recovery for ${action.jobId}: ${detail}\n`);
+      return { kind: 'quarantine', detail };
+    }
+
+    const durableLiveness = runtime.process.observeLiveness(durableRecord.pid);
+    if (durableLiveness === 'alive' || durableLiveness === 'unknown') {
+      let signalDisposition = 'No signal was sent because process liveness was unobservable.';
+      if (durableLiveness === 'alive') {
+        const recordedIdentity = readDurableCliProcessRuntimeMeta(progressStore.getDb(), action.jobId);
+        if (recordedIdentity === null) {
+          signalDisposition = 'No signal was sent because the recorded process identity is unavailable.';
+        } else if (recordedIdentity.jobId !== action.jobId) {
+          signalDisposition = 'No signal was sent because the recorded process identity names a different job.';
+        } else if (recordedIdentity.pid !== durableRecord.pid) {
+          signalDisposition = 'No signal was sent because the recorded process identity names a different pid.';
+        } else {
+          const disposition = gracefulKillByPid(runtime, durableRecord.pid, recordedIdentity.incarnation);
+          signalDisposition =
+            disposition.kind === 'escalation-scheduled'
+              ? 'Cleanup was requested for the recorded process identity.'
+              : `Cleanup was refused (${disposition.reason}).`;
+        }
+      }
+      clearProcessLocalCleanup();
+      const observation =
+        durableLiveness === 'alive'
+          ? `Durable process ${durableRecord.pid} was observed alive;`
+          : `Durable process ${durableRecord.pid} could not be observed;`;
+      const detail =
+        `${message} ${observation} recovery remains ` +
+        `owned by the recovery registry. ${signalDisposition} Retry after repairing the provider binding ` +
+        'so adoption can succeed, or after the recorded process is observed absent so fault settlement can complete.';
+      log(`Held running recovery for ${action.jobId}: ${detail}\n`);
+      return { kind: 'quarantine', detail };
+    }
+
     const facts = settleFault(
       {
         kind: 'provider_binding',
@@ -209,9 +215,7 @@ async function registerRunningRecovery(
       },
       message,
     );
-    log(
-      `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
-    );
+    log(`Settled running recovery ${action.jobId} after its durable process was observed absent.\n`);
     return completed(facts, 'persisted-invalid running provider binding settled');
   }
   const { authority } = captured;

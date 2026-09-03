@@ -57,7 +57,12 @@ function requireReadableHolderStatusRow(
   row: DirectProviderProxySetHolderStatusRow | undefined,
 ): DirectProviderProxySetHolderStatus {
   if (row === undefined) throw new Error('provider proxy set holder-status row was absent');
-  if ('kind' in row) throw new Error(`provider proxy capsule was unreadable: ${row.path} (${row.reason})`);
+  if ('kind' in row) {
+    if (row.kind === 'legacy-capsule') {
+      throw new Error(`provider proxy capsule version ${row.capsule.version} is not dialable: ${row.path}`);
+    }
+    throw new Error(`provider proxy capsule was unreadable: ${row.path} (${row.reason})`);
+  }
   return row;
 }
 

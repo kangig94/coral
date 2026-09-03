@@ -498,8 +498,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     gracefulKill(child as ChildProcessLike, { time }, observeProcessLiveness);
   };
 
-  // Composed once, here, so no other module needs to import the probe functions directly (see
-  // `ProcessPort.observeRecordedProcessAsync`'s own doc comment for why).
   const observeRecordedProcessAsync = createAsyncRecordedProcessObserver({
     readIncarnation: (pid) => probeProcessIncarnationAsync(pid, terminateProcessIncarnationProbe, capturedEnv.platform),
     observeLiveness: observeProcessLiveness,
@@ -573,10 +571,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     // decides otherwise, and nothing in this process gets a turn at all. `RuntimeExecOptions.timeout` stays
     // optional so a caller may widen or tighten it, but omission must not mean unbounded — and `0`, which
     // `spawnSync` reads as no bound, is not a tightening, so it is corrected rather than honoured.
-    //
-    // `tests/invariants/sync-subprocess-timeout.test.ts` excludes port callers from its literal-requiring scan
-    // on the stated grounds that this port owns their bound. Until this line, nothing here had taken that
-    // ownership up — the exclusion named a successor that had not accepted.
     if (execOptions.timeout === undefined || execOptions.timeout <= 0) {
       execOptions.timeout = DEFAULT_SYNC_EXEC_TIMEOUT_MS;
     }

@@ -17,7 +17,6 @@ import {
   type HolderDisposition,
   type HolderObservation,
   type ObservedHolderAbsenceAuthorization,
-  type OperatorTeardownAuthorization,
 } from '#src/provider-proxy/holder-lifecycle.js';
 import type { AsyncRecordedProcessObserver, ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -53,15 +52,6 @@ function assertDisposition(
 function assertPhase(authority: ControlHolderAuthority, expected: AcquisitionPhase): void {
   expect(authority.phase()).toBe(expected);
 }
-
-/**
- * `OperatorTeardownAuthorization` has no constructor here — it is minted only at the direct operator-force
- * boundary. Its non-substitutability is proven statically in holder-teardown-authorization-boundary.test-d.ts;
- * this signature keeps the type reachable from a real (`.test.ts`) knip entry too, since a `.test-d.ts` file
- * is not one.
- */
-function acceptsOperatorTeardown(_authorization: OperatorTeardownAuthorization): void {}
-void acceptsOperatorTeardown;
 
 describe('createControlHolderAuthority', () => {
   it('holds nothing before any admission', () => {

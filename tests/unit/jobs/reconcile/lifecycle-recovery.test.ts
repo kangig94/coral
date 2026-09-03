@@ -32,6 +32,8 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type {
   RecoverPersistedDiscussFn,
   RunStartupRecoveryFn,
@@ -112,6 +114,8 @@ async function loadModules() {
     sessionLifecycleReactorModule,
     sessionsEventsModule,
     providerCapabilityModule,
+    recoveryQuarantineModule,
+    recoverySourceRegistryModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/sessions/shell.js'),
@@ -142,6 +146,8 @@ async function loadModules() {
     import('#src/sessions/lifecycle-reactor.js'),
     import('#src/sessions/events.js'),
     import('#src/providers/capability.js'),
+    import('#src/recovery/quarantine.js'),
+    import('#src/recovery/source-registry.js'),
   ]);
 
   return {
@@ -174,6 +180,8 @@ async function loadModules() {
     sessionLifecycleReactorModule,
     sessionsEventsModule,
     providerCapabilityModule,
+    recoveryQuarantineModule,
+    recoverySourceRegistryModule,
   };
 }
 
@@ -3889,139 +3897,217 @@ describe('lifecycle recovery', () => {
       { reason: 'subject-mismatch', provider: 'codex' },
     ].flatMap((failure) =>
       (['durable-alive', 'durable-absent', 'durable-unknown', 'app-server-not-addressable'] as const).map(
-        (carrier) => ({ failure, carrier }),
+        (carrier) => ({
+          failure,
+          carrier,
+          expectedDisposition: carrier === 'durable-absent' ? ('settled' as const) : ('quarantined' as const),
+        }),
       ),
     ),
-  )('14d-f. settles $failure.reason with $carrier through ordinary binding-failure recovery', async (fixture) => {
-    const modules = await loadModules();
-    const suffix = `${fixture.failure.reason}-${fixture.carrier}`;
-    const pluginRoot = createPluginRoot(`plugin-repairable-binding-${suffix}`);
-    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
-    const projectRoot = createProjectRoot(`project-repairable-binding-${suffix}`);
-    const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
-      db: openTestStoreDb(runtime, ':memory:'),
-      eventBus,
-      providers: permissiveProviderLookupPort,
-    });
-    const jobId = `repairable-binding-${suffix}`;
-    const sessionId = `${jobId}-session`;
-    const pid = 73_700;
-    const observeLiveness = vi
-      .spyOn(runtime.process, 'observeLiveness')
-      .mockReturnValue(
-        fixture.carrier === 'durable-alive' ? 'alive' : fixture.carrier === 'durable-absent' ? 'absent' : 'unknown',
+  )(
+    '14d-f. leaves $failure.reason with $carrier $expectedDisposition through binding-failure recovery',
+    async (fixture) => {
+      const modules = await loadModules();
+      const suffix = `${fixture.failure.reason}-${fixture.carrier}`;
+      const pluginRoot = createPluginRoot(`plugin-repairable-binding-${suffix}`);
+      const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+      const projectRoot = createProjectRoot(`project-repairable-binding-${suffix}`);
+      const eventBus = new modules.eventBusModule.TypedEventBus();
+      const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+        db: openTestStoreDb(runtime, ':memory:'),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      });
+      const jobId = '00000000-0000-4000-8000-000000000014';
+      const sessionId = `${jobId}-session`;
+      const pid = 73_700;
+      const observeLiveness = vi
+        .spyOn(runtime.process, 'observeLiveness')
+        .mockReturnValue(
+          fixture.carrier === 'durable-alive' ? 'alive' : fixture.carrier === 'durable-absent' ? 'absent' : 'unknown',
+        );
+      const kill = vi.spyOn(runtime.process, 'kill');
+      const captureProviderRecoveryAuthority = vi.fn(
+        async (_launchRecord: JobLaunch) =>
+          ({
+            ok: false,
+            failure: fixture.failure,
+          }) as never,
       );
-    const kill = vi.spyOn(runtime.process, 'kill');
-    const fakeService = createFakeExecutionAndRecoveryService({
-      captureProviderRecoveryAuthority: vi.fn(async () => ({
-        ok: false,
-        failure: fixture.failure,
-      })),
-    });
+      const fakeService = createFakeExecutionAndRecoveryService({
+        captureProviderRecoveryAuthority,
+      });
 
-    stubLaunchRecord(progressStore, {
-      jobId,
-      sessionId,
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: namespace,
-    });
-    if (fixture.carrier === 'app-server-not-addressable') {
-      stubAppServerRuntime(progressStore, jobId, 'codex');
-    } else {
-      stubRuntimeRecord(progressStore, { jobId, pid });
-    }
-    const runtimeProjection = progressStore.readRuntimeProjection(jobId);
-    const interruptAppServerJob = fakeService.interruptAppServerJob;
-
-    const servicesByProjectRoot = new Map([[projectRoot, fakeService]]);
-    let healthyJobId: string | null = null;
-    let healthyService: ReturnType<typeof createFakeExecutionAndRecoveryService> | null = null;
-    if (fixture.failure.reason === 'profile-unavailable' && fixture.carrier === 'durable-alive') {
-      healthyJobId = 'repairable-binding-healthy-sibling';
-      const healthySessionId = `${healthyJobId}-session`;
-      const healthyProjectRoot = createProjectRoot('project-repairable-binding-healthy-sibling');
-      healthyService = createFakeExecutionAndRecoveryService();
-      servicesByProjectRoot.set(healthyProjectRoot, healthyService);
       stubLaunchRecord(progressStore, {
-        jobId: healthyJobId,
-        sessionId: healthySessionId,
+        jobId,
+        sessionId,
         provider: 'codex',
-        projectRoot: healthyProjectRoot,
+        projectRoot,
         backendNamespace: namespace,
       });
-      appendQueuedEvent(progressStore, healthyJobId, healthySessionId, namespace, healthyProjectRoot);
-    }
-
-    const { controller, runtimeState } = createLifecycleHarness(modules, {
-      pluginRoot,
-      progressStore,
-      eventBus,
-      servicesByProjectRoot,
-      runtime,
-    });
-
-    try {
-      await controller.start();
-      expect(runtimeState.getLifecycle()).toBe('running');
-      expect(runtimeState.getLaunchFenceActive()).toBe(false);
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'provider_binding', reason: fixture.failure.reason } } },
-      });
-      expect(progressStore.readRuntimeProjection(jobId)).toEqual(runtimeProjection);
-      expect(
-        new modules.sessionManagerModule.SessionManager(
-          projectRoot,
-          runtime,
-          undefined,
-          undefined,
-          progressStore.getDb(),
-          permissiveProviderLookupPort,
-        ).get('codex', sessionId)?.activeJobId,
-      ).toBeUndefined();
-      expect(
-        progressStore
-          .getDb()
-          .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded'")
-          .get(jobId),
-      ).toEqual({ count: 1 });
-      expect(
-        progressStore
-          .getDb()
-          .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'session.claim.released'")
-          .get(sessionId),
-      ).toEqual({ count: 1 });
       if (fixture.carrier === 'app-server-not-addressable') {
-        expect(observeLiveness).not.toHaveBeenCalledWith(pid);
+        stubAppServerRuntime(progressStore, jobId, 'codex');
       } else {
-        expect(observeLiveness).toHaveBeenCalledWith(pid);
+        stubRuntimeRecord(progressStore, { jobId, pid });
+        if (fixture.carrier === 'durable-alive') {
+          const incarnation = testIncarnation(`repairable-binding-${suffix}`);
+          writeDurableCliProcessRuntimeMeta(progressStore.getDb(), { version: 1, jobId, pid, incarnation });
+          vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(incarnation);
+        }
       }
-      if (fixture.carrier === 'durable-alive') {
-        expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
-      } else {
-        expect(kill).not.toHaveBeenCalled();
+      const runtimeProjection = progressStore.readRuntimeProjection(jobId);
+      const interruptAppServerJob = fakeService.interruptAppServerJob;
+
+      const servicesByProjectRoot = new Map([[projectRoot, fakeService]]);
+      let healthyJobId: string | null = null;
+      let healthyService: ReturnType<typeof createFakeExecutionAndRecoveryService> | null = null;
+      if (fixture.failure.reason === 'profile-unavailable' && fixture.carrier === 'durable-alive') {
+        healthyJobId = 'repairable-binding-healthy-sibling';
+        const healthySessionId = `${healthyJobId}-session`;
+        const healthyProjectRoot = createProjectRoot('project-repairable-binding-healthy-sibling');
+        healthyService = createFakeExecutionAndRecoveryService();
+        servicesByProjectRoot.set(healthyProjectRoot, healthyService);
+        stubLaunchRecord(progressStore, {
+          jobId: healthyJobId,
+          sessionId: healthySessionId,
+          provider: 'codex',
+          projectRoot: healthyProjectRoot,
+          backendNamespace: namespace,
+        });
+        appendQueuedEvent(progressStore, healthyJobId, healthySessionId, namespace, healthyProjectRoot);
       }
-      expect(interruptAppServerJob).not.toHaveBeenCalled();
-      const quarantineRows = progressStore
-        .getDb()
-        .prepare(
-          `SELECT error_message, disposition_detail
-             FROM recovery_quarantine
-            WHERE boundary_id = 'coordinator-job-recovery'
-              AND subject_key = ?`,
-        )
-        .all(jobId) as Array<{ error_message: string; disposition_detail: string }>;
-      expect(quarantineRows).toHaveLength(0);
-      if (healthyJobId !== null && healthyService !== null) {
-        expect(healthyService.recoverQueuedJob).toHaveBeenCalledTimes(1);
-        expect(progressStore.readStatus(healthyJobId)?.phase).not.toBe('error');
+
+      const { controller, runtimeState } = createLifecycleHarness(modules, {
+        pluginRoot,
+        progressStore,
+        eventBus,
+        servicesByProjectRoot,
+        runtime,
+      });
+
+      try {
+        await controller.start();
+        expect(runtimeState.getLifecycle()).toBe('running');
+        expect(runtimeState.getLaunchFenceActive()).toBe(false);
+        const settled = fixture.expectedDisposition === 'settled';
+        expect(progressStore.readStatus(jobId)).toMatchObject(
+          settled
+            ? {
+                phase: 'error',
+                result: {
+                  outcome: { kind: 'job_fault', fault: { kind: 'provider_binding', reason: fixture.failure.reason } },
+                },
+              }
+            : { phase: 'running' },
+        );
+        expect(progressStore.readRuntimeProjection(jobId)).toEqual(runtimeProjection);
+        expect(
+          new modules.sessionManagerModule.SessionManager(
+            projectRoot,
+            runtime,
+            undefined,
+            undefined,
+            progressStore.getDb(),
+            permissiveProviderLookupPort,
+          ).get('codex', sessionId)?.activeJobId,
+        ).toBe(settled ? undefined : jobId);
+        expect(
+          progressStore
+            .getDb()
+            .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded'")
+            .get(jobId),
+        ).toEqual({ count: settled ? 1 : 0 });
+        expect(
+          progressStore
+            .getDb()
+            .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'session.claim.released'")
+            .get(sessionId),
+        ).toEqual({ count: settled ? 1 : 0 });
+        if (fixture.carrier === 'app-server-not-addressable') {
+          expect(observeLiveness).not.toHaveBeenCalledWith(pid);
+        } else {
+          expect(observeLiveness).toHaveBeenCalledWith(pid);
+        }
+        if (fixture.carrier === 'durable-alive') {
+          expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
+        } else {
+          expect(kill).not.toHaveBeenCalled();
+        }
+        expect(interruptAppServerJob).not.toHaveBeenCalled();
+        const quarantineRows = progressStore
+          .getDb()
+          .prepare(
+            `SELECT error_message, disposition_detail
+               FROM recovery_quarantine
+              WHERE boundary_id = 'coordinator-job-recovery'
+                AND subject_key = ?`,
+          )
+          .all(jobId) as Array<{ error_message: string; disposition_detail: string }>;
+        expect(quarantineRows).toHaveLength(settled ? 0 : 1);
+        if (!settled) {
+          expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
+          expect(quarantineRows[0]?.disposition_detail).toContain(
+            fixture.carrier === 'durable-alive'
+              ? 'was observed alive'
+              : fixture.carrier === 'durable-unknown'
+                ? 'could not be observed'
+                : 'has no locally observable durable process identity',
+          );
+        }
+        if (healthyJobId !== null && healthyService !== null) {
+          expect(healthyService.recoverQueuedJob).toHaveBeenCalledTimes(1);
+          expect(progressStore.readStatus(healthyJobId)?.phase).not.toBe('error');
+        }
+
+        if (fixture.failure.reason === 'profile-unavailable' && fixture.carrier === 'durable-alive') {
+          captureProviderRecoveryAuthority.mockImplementation(
+            async (repairedLaunchRecord: JobLaunch) =>
+              ({
+                ok: true,
+                authority: {
+                  launchRecord: repairedLaunchRecord,
+                  session: { sessionId: repairedLaunchRecord.sessionId },
+                  boundProvider: { name: repairedLaunchRecord.provider },
+                },
+              }) as never,
+          );
+          const quarantine = new modules.recoveryQuarantineModule.RecoveryQuarantineStore(
+            progressStore.getDb(),
+            runtime.time,
+          );
+          const retained = quarantine.list().find((entry) => entry.subject.key === jobId);
+          if (retained === undefined) throw new Error(`expected retained quarantine for ${jobId}`);
+          const sources = modules.recoverySourceRegistryModule.createRecoverySourceRegistry();
+          sources.register('coordinator-job-recovery', (subject, signal, quarantinePort) =>
+            modules.recoveryCoordinatorModule.createCoordinatorJobRecoveryRetryPlan(
+              progressStore.getDb(),
+              subject,
+              signal,
+              quarantinePort,
+            ),
+          );
+          const retry = modules.recoverySourceRegistryModule.createRecoveryQuarantineRetryService({
+            instanceId: 'recovery-hold-exit-test',
+            ids: { uuid: () => 'recovery-hold-exit-token' },
+            quarantine,
+            sources,
+          });
+
+          await expect(
+            retry.clear({
+              boundary: retained.boundary,
+              key: retained.subject.key,
+              revision: retained.subject.revision.kind === 'fingerprint' ? retained.subject.revision.value : null,
+            }),
+          ).resolves.toMatchObject({ disposition: 'advanced' });
+          expect(fakeService.adoptRunningJob).toHaveBeenCalledOnce();
+          expect(quarantine.read('coordinator-job-recovery', jobId)).toBeNull();
+        }
+      } finally {
+        await stopLifecycleController(controller);
       }
-    } finally {
-      await stopLifecycleController(controller);
-    }
-  });
+    },
+  );
 
   it('15. current-namespace live durable jobs stay running after startup recovery', async () => {
     const modules = await loadModules();

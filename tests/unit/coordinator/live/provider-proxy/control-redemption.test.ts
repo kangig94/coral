@@ -324,7 +324,12 @@ describe('provider proxy control redemption', () => {
 
     expect(outcome).toEqual({
       kind: 'unavailable',
-      incident: { kind: 'publication-unknown', role: 'proxy', reason: 'proxy publication reply lost' },
+      incident: {
+        kind: 'publication-unknown',
+        role: 'proxy',
+        reason:
+          'First attempt was unknown: proxy publication reply lost; retry was unknown: proxy publication reply lost',
+      },
     });
     expect(phases).toEqual({ guardian: 'published', reaper: 'published', proxy: 'acquisition-provisional' });
     expect(complete).not.toHaveBeenCalled();

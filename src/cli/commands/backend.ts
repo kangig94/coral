@@ -58,6 +58,8 @@ import {
   holderStatusParamsSchema,
   readHandoffCapsuleFile,
   type HandoffCapsule,
+  type HandoffCapsuleV1,
+  type HandoffCapsuleV2,
   type HandoffCapsuleV3,
 } from '../../provider-proxy/handoff-capsule.js';
 import {
@@ -566,6 +568,11 @@ export type DirectProviderProxySetHolderStatus = Readonly<{
 
 export type DirectProviderProxySetHolderStatusRow =
   | DirectProviderProxySetHolderStatus
+  | Readonly<{
+      kind: 'legacy-capsule';
+      path: string;
+      capsule: HandoffCapsuleV1 | HandoffCapsuleV2;
+    }>
   | Readonly<{ kind: 'unreadable-capsule'; path: string; reason: string }>
   | Readonly<{ kind: 'unreadable-run-directory'; path: string; reason: string }>;
 
@@ -740,7 +747,16 @@ export async function readProviderProxySetHolderStatusDirect(
       continue;
     }
     const { capsule } = discoveredCapsule;
-    if (capsule.version !== 3) continue;
+    if (capsule.version !== 3) {
+      readings.push({
+        kind: 'legacy-capsule',
+        path: providerHandoffCapsulePath(capsule, capsule.version, {
+          baseDir: dirname(runtime.paths.coral.generation.root),
+        }),
+        capsule,
+      });
+      continue;
+    }
     const [guardian, reaper] = await Promise.all([
       readDirectHolderStatus(capsule.guardianControlEndpoint, 'guardian.holder-status.v1', capsule, timer),
       readDirectHolderStatus(capsule.reaperControlEndpoint, 'reaper.holder-status.v1', capsule, timer),
@@ -784,9 +800,23 @@ export function formatProviderProxySetHolderStatusDirect(
   return readings
     .map((reading) => {
       if ('kind' in reading) {
-        return reading.kind === 'unreadable-run-directory'
-          ? `unreadable run directory path=${reading.path}\n  reason: ${reading.reason}`
-          : `unreadable capsule path=${reading.path}\n  reason: ${reading.reason}`;
+        if (reading.kind === 'unreadable-run-directory') {
+          return `unreadable run directory path=${reading.path}\n  reason: ${reading.reason}`;
+        }
+        if (reading.kind === 'unreadable-capsule') {
+          return `unreadable capsule path=${reading.path}\n  reason: ${reading.reason}`;
+        }
+        const processIdentity =
+          reading.capsule.version === 1
+            ? ''
+            : `\n  recorded pids (non-authorizing): guardian=${reading.capsule.guardianPid} reaper=${reading.capsule.reaperPid} proxy=${reading.capsule.proxyPid}; process incarnation unavailable`;
+        return (
+          `legacy capsule version=${reading.capsule.version} path=${reading.path}\n` +
+          `  identity: build=${reading.capsule.buildSetId} host=${reading.capsule.hostFingerprint} ` +
+          `guardian=${reading.capsule.guardianInstanceId} reaper=${reading.capsule.reaperInstanceId} ` +
+          `proxy=${reading.capsule.proxyInstanceId}${processIdentity}\n` +
+          '  direct holder status: unsupported for this capsule version; no role was dialed'
+        );
       }
       const roles = [reading.guardian, reading.reaper]
         .filter((role): role is Extract<DirectHolderStatusReading, { kind: 'answered' }> => role.kind === 'answered')
@@ -1240,17 +1270,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         backendStatus.getStatus(),
         backendStatus.getRoutingStatus(),
       ]);
+      const liveHandoffResult = backendStatus.getLiveHandoffResult();
+      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
       if (status.status === 'unreachable') {
         const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
           readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
-        process.stderr.write('Backend is unreachable over IPC.\n');
-        process.stdout.write(`${formatProviderProxySetHolderStatusDirect(direct)}\n`);
-        process.exitCode = BACKEND_STATUS_EXIT_CODES.unreachable;
-        return;
+        process.stdout.write(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
       }
-      const liveHandoffResult = backendStatus.getLiveHandoffResult();
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
       const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
         BACKEND_STATUS_EXIT_CODES[status.status],
         liveHandoffObligation.exitContribution,
