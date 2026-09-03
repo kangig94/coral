@@ -1094,14 +1094,18 @@ function createRoleShutdownProbeGate(
     cleanupInFlight = true;
     void terminateProcessIncarnationProbes().then(
       (disposition) => {
-        cleanupInFlight = false;
         if (disposition.disposition === 'hold') {
           backendLog.error(
             `${role}: shutdown remains held by unsettled process-incarnation probe children`,
             disposition.unsettled.map(({ pid, reason, exit }) => ({ pid, reason, exit })),
           );
+          void disposition.untilSettled.then(() => {
+            cleanupInFlight = false;
+            requestCleanup();
+          });
           return;
         }
+        cleanupInFlight = false;
         if (requestedExitCode !== null) {
           exited = true;
           exitProcess(requestedExitCode);

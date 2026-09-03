@@ -324,9 +324,7 @@ export function createProviderProxyAcquisitionSteps(
       const opened: ControlClient[] = [];
       const faults = createProviderProxyAuthorityFaultLatch();
       const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
-      // Set only once every role identity this abort's params require is known — the guardian's own handler
-      // asserts all three, and a coordinator that has not yet opened reaper control cannot name it. Read only
-      // by the catch below, which sends this before publication has been attempted at all.
+      // An acquisition abort must name every role identity bound to the set it concerns.
       let acquisitionAbortIdentities: Readonly<{
         client: ControlClient;
         guardian: GuardianIdentity;
@@ -558,10 +556,8 @@ export function createProviderProxyAcquisitionSteps(
         };
       } catch (error: unknown) {
         if (acquisitionAbortIdentities !== null) {
-          // Best-effort and sent before any client is closed: publication is one-way and idempotent, and the
-          // guardian keeps no state a not-yet-published acquisition needs undone, so this costs nothing when
-          // publication was never reached and closes the gap when this catch races a publish already in
-          // flight.
+          // Acquisition abort is best-effort and cannot reverse publication; definitive cleanup remains with
+          // the guardian teardown owner.
           const { client, guardian, reaper, proxy } = acquisitionAbortIdentities;
           try {
             const abortExchange = await client.exchange(
@@ -573,8 +569,7 @@ export function createProviderProxyAcquisitionSteps(
               guardianAcquisitionAbortResultSchema.parse(abortExchange.response.value);
             }
           } catch {
-            // Nothing further to do: the capsule/guardian undo below removes this attempt's whole footprint
-            // regardless of whether the abort itself was heard.
+            // Definitive cleanup remains with the guardian teardown owner when the abort is not heard.
           }
         }
         heartbeatAssembly.stop();

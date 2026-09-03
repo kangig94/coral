@@ -829,9 +829,8 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedGuardianIdentity(request.guardian, identity);
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
-          // Publication is one-way and idempotent, and this guardian keeps no state that a not-yet-published
-          // acquisition needs undone — the catch that sends this is a belt-and-suspenders assurance sent
-          // before publish is ever attempted, not a rollback of anything already recorded.
+          // Acquisition abort is best-effort and cannot reverse publication; definitive cleanup remains with
+          // the guardian teardown owner.
           return guardianAcquisitionAbortResultSchema.parse({
             state: holderAuthority.phase() === 'published' ? 'already-published' : 'acquisition-aborted',
           });

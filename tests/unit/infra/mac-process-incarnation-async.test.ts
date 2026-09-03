@@ -26,14 +26,18 @@ import { execFile } from 'node:child_process';
 
 import { SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { gracefulKill } from '#src/infra/process-supervision.js';
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import {
+  createAsyncRecordedProcessObserver,
   observeProcessLiveness,
   PROCESS_INCARNATION_PROBE_TIMEOUT_MS,
   probeProcessIncarnationAsync,
+  type ProcessIncarnation,
   processIncarnationProbeRegistrySize,
   type ProcessIncarnationProbeTerminator,
   terminateProcessIncarnationProbes,
 } from '#src/infra/node-process.js';
+import { createControlHolderAuthority, observeControlHolder } from '#src/provider-proxy/holder-lifecycle.js';
 
 const mockedExecFile = vi.mocked(execFile);
 
@@ -124,21 +128,24 @@ describe('darwin process incarnation (async)', () => {
       'darwin',
     );
 
-    await expect(terminateProcessIncarnationProbes()).resolves.toEqual({
+    const cleanup = await terminateProcessIncarnationProbes();
+    expect(cleanup).toMatchObject({
       disposition: 'hold',
       unsettled: [
         {
           child,
           pid: 4_242,
           reason: 'termination-failed',
-          exit: 'child-close-or-cleanup-retry',
+          exit: 'child-close',
           error: failure,
         },
       ],
     });
+    if (cleanup.disposition !== 'hold') throw new Error('failed cleanup unexpectedly settled');
     expect(processIncarnationProbeRegistrySize()).toBe(1);
 
     child.close();
+    await cleanup.untilSettled;
     expect(processIncarnationProbeRegistrySize()).toBe(0);
   });
 
@@ -236,23 +243,73 @@ describe('darwin process incarnation (async)', () => {
 
       expect(child.signals).toEqual(['SIGTERM']);
       expect(processIncarnationProbeRegistrySize()).toBe(1);
-      await expect(cleanup).resolves.toEqual({
+      const disposition = await cleanup;
+      expect(disposition).toMatchObject({
         disposition: 'hold',
         unsettled: [
           {
             child,
             pid: undefined,
             reason: 'close-unobserved',
-            exit: 'child-close-or-cleanup-retry',
+            exit: 'child-close',
           },
         ],
       });
-
-      const retry = terminateProcessIncarnationProbes();
-      expect(child.signals).toEqual(['SIGTERM', 'SIGTERM']);
+      if (disposition.disposition !== 'hold') throw new Error('held cleanup unexpectedly settled');
 
       child.close();
-      await expect(retry).resolves.toEqual({ disposition: 'settled' });
+      await disposition.untilSettled;
+      await expect(terminateProcessIncarnationProbes()).resolves.toEqual({ disposition: 'settled' });
+      expect(child.signals).toEqual(['SIGTERM']);
+      expect(processIncarnationProbeRegistrySize()).toBe(0);
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns unobservable for repeated target observations until the timed-out helper closes', async () => {
+    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), milliseconds);
+      return controller.signal;
+    });
+    const child = new ProbeChild();
+    const terminate = vi.fn();
+    mockedExecFile.mockReset();
+    mockedExecFile.mockImplementation(() => child as unknown as ChildProcess);
+    const observer = createAsyncRecordedProcessObserver({
+      readIncarnation: (pid) => probeProcessIncarnationAsync(pid, terminate, 'darwin'),
+      observeLiveness: () => 'alive',
+    });
+    const authority = createControlHolderAuthority();
+    authority.install({
+      controlEpoch: 1,
+      holder: {
+        instanceId: 'coordinator',
+        pid: 4_321,
+        incarnation: `darwin:${BOOT_SESSION}:0` as ProcessIncarnation,
+      },
+    });
+    const clockScope: unique symbol = Symbol('probe-coalescing-clock');
+    const clock = createMonotonicClock(clockScope, { readMilliseconds: () => 0n });
+    const observe = () => observeControlHolder(authority, observer, clock);
+
+    try {
+      const first = observe();
+      await vi.advanceTimersByTimeAsync(PROCESS_INCARNATION_PROBE_TIMEOUT_MS);
+      await expect(first).resolves.toMatchObject({ disposition: 'unobservable' });
+
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        await expect(observe()).resolves.toMatchObject({ disposition: 'unobservable' });
+      }
+
+      expect(mockedExecFile).toHaveBeenCalledOnce();
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(processIncarnationProbeRegistrySize()).toBe(1);
+
+      child.close();
       expect(processIncarnationProbeRegistrySize()).toBe(0);
     } finally {
       timeoutSpy.mockRestore();

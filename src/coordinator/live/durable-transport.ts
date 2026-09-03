@@ -1,4 +1,5 @@
 import { MAX_BUFFER } from '../../infra/process-constants.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
@@ -7,11 +8,26 @@ import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { gracefulKillByPid } from '../../infra/process-supervision.js';
+import { gracefulKillByPid, type GracefulKillByPidDisposition } from '../../infra/process-supervision.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
+
+function requestDurableProcessTermination(
+  runtime: Runtime,
+  pid: number,
+  incarnation: ProcessIncarnation | null,
+): GracefulKillByPidDisposition {
+  const disposition = gracefulKillByPid(runtime, pid, incarnation ?? undefined);
+  if (disposition.kind === 'escalation-refused') {
+    backendLog.warn(
+      `[durable-process:${pid}] SIGKILL escalation was refused (${disposition.reason}); ` +
+        'the process may still be running.',
+    );
+  }
+  return disposition;
+}
 
 export type CliExecResult = {
   stdout: string;
@@ -84,7 +100,7 @@ export async function spawnDurableJobTransport(params: {
     }
     cleanupKey = Symbol();
     const cleanup = (): void => {
-      gracefulKillByPid(runtime, durable.pid, incarnation ?? undefined);
+      requestDurableProcessTermination(runtime, durable.pid, incarnation);
     };
     cleanupHandles.set(cleanupKey, cleanup);
     if (shouldTerminateAfterLaunch?.()) {
@@ -134,7 +150,7 @@ export async function spawnDurableJobTransport(params: {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
-        gracefulKillByPid(runtime, durable.pid, incarnation ?? undefined);
+        requestDurableProcessTermination(runtime, durable.pid, incarnation);
       };
 
       if (options.signal.aborted) abortHandler();
@@ -167,8 +183,16 @@ export async function spawnDurableJobTransport(params: {
       if (tickGap > IDLE_CHECK_INTERVAL * 3) {
         lastOutputAt = now;
       } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
-        gracefulKillByPid(runtime, durable.pid, incarnation ?? undefined);
-        throw new Error(`Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`);
+        const disposition = requestDurableProcessTermination(runtime, durable.pid, incarnation);
+        if (disposition.kind === 'escalation-refused') {
+          throw new Error(
+            `Durable process ${durable.pid} exceeded ${IDLE_TIMEOUT / 60_000} minutes of inactivity, ` +
+              `but SIGKILL escalation was refused (${disposition.reason})`,
+          );
+        }
+        throw new Error(
+          `Durable process ${durable.pid} termination scheduled after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
+        );
       }
 
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);

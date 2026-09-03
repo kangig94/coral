@@ -142,11 +142,29 @@ describe('gracefulKillByPid', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [incarnation, incarnation]);
 
-    gracefulKillByPid(runtime, 4_242);
+    const disposition = gracefulKillByPid(runtime, 4_242);
+    expect(disposition).toEqual({ kind: 'escalation-scheduled', pid: 4_242 });
     expect(killedSignals).toEqual(['SIGTERM']);
 
     time.tick(SIGTERM_GRACE_MS);
     expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('returns a refusal and schedules no escalation when no signal-authorizing incarnation can be read', () => {
+    const time = new VirtualTime();
+    const { runtime, killedSignals } = pidRuntime(time, [null]);
+
+    const disposition = gracefulKillByPid(runtime, 4_242);
+
+    expect(disposition).toEqual({
+      kind: 'escalation-refused',
+      pid: 4_242,
+      reason: 'signal-authorizing-incarnation-unavailable',
+    });
+    expect(killedSignals).toEqual(['SIGTERM']);
+
+    time.tick(SIGTERM_GRACE_MS);
+    expect(killedSignals).toEqual(['SIGTERM']);
   });
 
   it('refuses escalation when the recorded incarnation cannot be re-established', () => {
@@ -194,8 +212,13 @@ describe('gracefulKillByPid', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)]);
 
-    gracefulKillByPid(runtime, 4_242, incarnation);
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
 
+    expect(disposition).toEqual({
+      kind: 'escalation-refused',
+      pid: 4_242,
+      reason: 'expected-incarnation-mismatch',
+    });
     expect(killedSignals).toEqual([]);
   });
 
@@ -203,8 +226,13 @@ describe('gracefulKillByPid', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [null]);
 
-    gracefulKillByPid(runtime, 4_242, incarnation);
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
 
+    expect(disposition).toEqual({
+      kind: 'escalation-refused',
+      pid: 4_242,
+      reason: 'signal-authorizing-incarnation-unavailable',
+    });
     expect(killedSignals).toEqual([]);
   });
 
@@ -212,8 +240,13 @@ describe('gracefulKillByPid', () => {
     const time = new VirtualTime();
     const { runtime, killedSignals } = pidRuntime(time, [testIncarnation(43)], () => 'alive', 'darwin');
 
-    gracefulKillByPid(runtime, 4_242, incarnation);
+    const disposition = gracefulKillByPid(runtime, 4_242, incarnation);
 
+    expect(disposition).toEqual({
+      kind: 'escalation-refused',
+      pid: 4_242,
+      reason: 'signal-authorizing-incarnation-unavailable',
+    });
     expect(killedSignals).toEqual(['SIGTERM']);
   });
 });

@@ -306,23 +306,38 @@ type ProcessIncarnationProbeRegistration = {
   retryTimer: NodeJS.Timeout | null;
   terminate: ProcessIncarnationProbeTerminator;
   settlementWaiters: Set<(hold: ProcessIncarnationProbeHold | null) => void>;
+  closed: Promise<void>;
+  resolveClosed(): void;
+  lease: ProcessIncarnationProbeLease;
 };
 
 const processIncarnationProbeChildren = new Map<ChildProcess, ProcessIncarnationProbeRegistration>();
 
-/** A shutdown hold keeps the exact child registered until close and remains eligible for another cleanup attempt. */
+type ProcessIncarnationProbeLease = {
+  key: string;
+  children: Set<ChildProcess>;
+  probeSettled: boolean;
+};
+
+const processIncarnationProbeLeases = new Map<string, ProcessIncarnationProbeLease>();
+
+/** A shutdown hold keeps the exact child registered, and only observing its close can settle the hold. */
 export type ProcessIncarnationProbeHold = Readonly<{
   child: ChildProcess;
   pid: number | undefined;
   reason: 'termination-failed' | 'close-unobserved';
-  exit: 'child-close-or-cleanup-retry';
+  exit: 'child-close';
   error?: unknown;
 }>;
 
 /** Probe cleanup cannot report settlement while any owned child remains registered. */
 export type ProcessIncarnationProbeCleanupDisposition =
   | Readonly<{ disposition: 'settled' }>
-  | Readonly<{ disposition: 'hold'; unsettled: readonly ProcessIncarnationProbeHold[] }>;
+  | Readonly<{
+      disposition: 'hold';
+      unsettled: readonly ProcessIncarnationProbeHold[];
+      untilSettled: Promise<void>;
+    }>;
 
 function settleProcessIncarnationProbeTermination(
   registration: ProcessIncarnationProbeRegistration,
@@ -341,9 +356,16 @@ function processIncarnationProbeHold(
     child,
     pid: child.pid,
     reason,
-    exit: 'child-close-or-cleanup-retry',
+    exit: 'child-close',
     ...(error === undefined ? {} : { error }),
   };
+}
+
+function releaseProcessIncarnationProbeLease(lease: ProcessIncarnationProbeLease): void {
+  if (!lease.probeSettled || lease.children.size > 0) return;
+  if (processIncarnationProbeLeases.get(lease.key) === lease) {
+    processIncarnationProbeLeases.delete(lease.key);
+  }
 }
 
 function terminateProcessIncarnationProbeChild(child: ChildProcess): void {
@@ -375,7 +397,7 @@ export function processIncarnationProbeRegistrySize(): number {
   return processIncarnationProbeChildren.size;
 }
 
-/** Every returned hold retains its child in the registry and names the retry that can settle it. */
+/** Every returned hold retains its child in the registry and exposes the child-close event that settles it. */
 export async function terminateProcessIncarnationProbes(): Promise<ProcessIncarnationProbeCleanupDisposition> {
   const attempts = [...processIncarnationProbeChildren.entries()].map(([child, registration]) => {
     const settled = new Promise<ProcessIncarnationProbeHold | null>((resolve) => {
@@ -387,11 +409,16 @@ export async function terminateProcessIncarnationProbes(): Promise<ProcessIncarn
       // A termination this call could not deliver decides nothing about the child: only `close` resolves the
       // settlement promise below, so a throw here must not skip the wait that reports the child as unsettled.
     }
-    return settled;
+    return settled.then((hold) => (hold === null ? null : { hold, untilSettled: registration.closed }));
   });
 
-  const unsettled = (await Promise.all(attempts)).filter((hold): hold is ProcessIncarnationProbeHold => hold !== null);
-  return unsettled.length === 0 ? { disposition: 'settled' } : { disposition: 'hold', unsettled };
+  const unsettled = (await Promise.all(attempts)).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  if (unsettled.length === 0) return { disposition: 'settled' };
+  return {
+    disposition: 'hold',
+    unsettled: unsettled.map(({ hold }) => hold),
+    untilSettled: Promise.all(unsettled.map(({ untilSettled }) => untilSettled)).then(() => undefined),
+  };
 }
 
 function probeDeadlineError(signal: AbortSignal): Error {
@@ -407,6 +434,7 @@ function execFileAsync(
   args: readonly string[],
   options: AsyncProbeExecOptions,
   terminate: ProcessIncarnationProbeTerminator,
+  lease: ProcessIncarnationProbeLease,
 ): Promise<{ stdout: string; stderr: string }> {
   const { signal, ...execOptions } = options;
   if (signal.aborted) {
@@ -439,11 +467,19 @@ function execFileAsync(
       }
     };
 
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    lease.children.add(child);
     processIncarnationProbeChildren.set(child, {
       state: 'running',
       retryTimer: null,
       terminate,
       settlementWaiters: new Set(),
+      closed,
+      resolveClosed,
+      lease,
     });
     child.on('close', () => {
       signal.removeEventListener('abort', onAbort);
@@ -452,7 +488,12 @@ function execFileAsync(
         clearTimeout(registration.retryTimer);
       }
       processIncarnationProbeChildren.delete(child);
-      if (registration !== undefined) settleProcessIncarnationProbeTermination(registration, null);
+      if (registration !== undefined) {
+        settleProcessIncarnationProbeTermination(registration, null);
+        registration.resolveClosed();
+        registration.lease.children.delete(child);
+        releaseProcessIncarnationProbeLease(registration.lease);
+      }
     });
     signal.addEventListener('abort', onAbort, { once: true });
     if (signal.aborted) onAbort();
@@ -490,6 +531,7 @@ async function probeLinuxProcessIncarnationAsync(pid: number): Promise<ProcessIn
 async function readMacBootSessionIdAsync(
   signal: AbortSignal,
   terminate: ProcessIncarnationProbeTerminator,
+  lease: ProcessIncarnationProbeLease,
 ): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
@@ -497,6 +539,7 @@ async function readMacBootSessionIdAsync(
       ['-n', 'kern.bootsessionuuid'],
       asyncProbeExecOptions(signal),
       terminate,
+      lease,
     );
     const raw = stdout.trim();
     return raw.length > 0 ? raw : null;
@@ -508,10 +551,11 @@ async function readMacBootSessionIdAsync(
 async function probeMacProcessIncarnationAsync(
   pid: number,
   terminate: ProcessIncarnationProbeTerminator,
+  lease: ProcessIncarnationProbeLease,
 ): Promise<ProcessIncarnation | null> {
   const signal = processIncarnationProbeSignal();
   try {
-    const bootSessionId = await readMacBootSessionIdAsync(signal, terminate);
+    const bootSessionId = await readMacBootSessionIdAsync(signal, terminate, lease);
     if (bootSessionId === null) {
       return null;
     }
@@ -521,6 +565,7 @@ async function probeMacProcessIncarnationAsync(
       ['-o', 'lstart=', '-p', String(pid)],
       asyncProbeExecOptions(signal),
       terminate,
+      lease,
     );
     const raw = stdout.trim();
     if (!raw) {
@@ -537,6 +582,7 @@ async function probeMacProcessIncarnationAsync(
 async function probeWindowsProcessIncarnationAsync(
   pid: number,
   terminate: ProcessIncarnationProbeTerminator,
+  lease: ProcessIncarnationProbeLease,
 ): Promise<ProcessIncarnation | null> {
   try {
     const { stdout } = await execFileAsync(
@@ -544,6 +590,7 @@ async function probeWindowsProcessIncarnationAsync(
       ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
       asyncProbeExecOptions(processIncarnationProbeSignal()),
       terminate,
+      lease,
     );
     const match = stdout.match(/CreationDate=(\d{14}\.\d+[+-]\d+)/) ?? stdout.match(/CreationDate=(\d{14})/);
     const value = match?.[1];
@@ -555,7 +602,11 @@ async function probeWindowsProcessIncarnationAsync(
 
 const ASYNC_PROCESS_INCARNATION_PROBES: ReadonlyMap<
   string,
-  (pid: number, terminate: ProcessIncarnationProbeTerminator) => Promise<ProcessIncarnation | null>
+  (
+    pid: number,
+    terminate: ProcessIncarnationProbeTerminator,
+    lease: ProcessIncarnationProbeLease,
+  ) => Promise<ProcessIncarnation | null>
 > = new Map([
   ['linux', probeLinuxProcessIncarnationAsync],
   ['darwin', probeMacProcessIncarnationAsync],
@@ -574,7 +625,19 @@ export async function probeProcessIncarnationAsync(
   }
 
   const probe = ASYNC_PROCESS_INCARNATION_PROBES.get(platform);
-  return probe === undefined ? null : probe(pid, terminate);
+  if (probe === undefined) return null;
+
+  const key = `${platform}:${pid}`;
+  if (processIncarnationProbeLeases.has(key)) return null;
+
+  const lease: ProcessIncarnationProbeLease = { key, children: new Set(), probeSettled: false };
+  processIncarnationProbeLeases.set(key, lease);
+  try {
+    return await probe(pid, terminate, lease);
+  } finally {
+    lease.probeSettled = true;
+    releaseProcessIncarnationProbeLease(lease);
+  }
 }
 
 /** The asynchronous three-answer question: the same shape as `RecordedProcessObserver`, resolved instead of

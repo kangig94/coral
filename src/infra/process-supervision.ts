@@ -7,6 +7,14 @@ type GracefulKillRuntime = Readonly<{
   time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
 }>;
 
+export type GracefulKillByPidDisposition =
+  | Readonly<{ kind: 'escalation-scheduled'; pid: number }>
+  | Readonly<{
+      kind: 'escalation-refused';
+      pid: number;
+      reason: 'signal-authorizing-incarnation-unavailable' | 'expected-incarnation-mismatch';
+    }>;
+
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {
     child.kill(signal);
@@ -52,18 +60,25 @@ function readSignalAuthorizingIncarnation(runtime: Runtime, pid: number): Proces
  * authority.md` documents for containment), so this call keeps sending its first signal unconditionally
  * exactly as a caller that passes no `expectedIncarnation` still does everywhere.
  */
-export function gracefulKillByPid(runtime: Runtime, pid: number, expectedIncarnation?: ProcessIncarnation): void {
+export function gracefulKillByPid(
+  runtime: Runtime,
+  pid: number,
+  expectedIncarnation?: ProcessIncarnation,
+): GracefulKillByPidDisposition {
   const platform = runtime.env.platform() as NodeJS.Platform;
   const observedIncarnation = readSignalAuthorizingIncarnation(runtime, pid);
-  if (
-    expectedIncarnation !== undefined &&
-    incarnationMayAuthorizeSignal(platform) &&
-    observedIncarnation !== expectedIncarnation
-  ) {
-    return;
+  if (expectedIncarnation !== undefined && incarnationMayAuthorizeSignal(platform)) {
+    if (observedIncarnation === null) {
+      return { kind: 'escalation-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
+    }
+    if (observedIncarnation !== expectedIncarnation) {
+      return { kind: 'escalation-refused', pid, reason: 'expected-incarnation-mismatch' };
+    }
   }
   runtime.process.kill(pid, 'SIGTERM');
-  if (observedIncarnation === null) return;
+  if (observedIncarnation === null) {
+    return { kind: 'escalation-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
+  }
 
   const escalation = runtime.time.setTimeout(() => {
     if (readSignalAuthorizingIncarnation(runtime, pid) !== observedIncarnation) return;
@@ -75,6 +90,7 @@ export function gracefulKillByPid(runtime: Runtime, pid: number, expectedIncarna
     runtime.process.kill(pid, 'SIGKILL');
   }, SIGTERM_GRACE_MS);
   escalation.unref?.();
+  return { kind: 'escalation-scheduled', pid };
 }
 
 export function requirePipedHandles(

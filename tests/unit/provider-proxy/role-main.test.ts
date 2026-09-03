@@ -500,7 +500,7 @@ describe('runProviderRoleMain', () => {
     expect(exitProcess).toHaveBeenCalledWith(1);
   });
 
-  it('keeps a probe cleanup hold non-finalizing and retries it on a later shutdown signal', async () => {
+  it('honours a stored exit after a held probe child closes without another shutdown signal', async () => {
     const directory = scopedTempDir('coral-proxy-role-probe-cleanup-');
     enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(
@@ -515,16 +515,26 @@ describe('runProviderRoleMain', () => {
     proxyRoleCloseHarness.enabled = true;
     proxyRoleCloseHarness.proxyListen.mockResolvedValue();
     proxyRoleCloseHarness.proxyClose.mockResolvedValue();
-    proxyRoleCloseHarness.semanticShutdown.mockResolvedValue();
+    let settleSemanticShutdown!: () => void;
+    proxyRoleCloseHarness.semanticShutdown.mockReturnValue(
+      new Promise((resolve) => {
+        settleSemanticShutdown = resolve;
+      }),
+    );
     processIncarnationProbeCleanupHarness.enabled = true;
     let settleCleanup!: (
       disposition: Awaited<ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>,
     ) => void;
-    processIncarnationProbeCleanupHarness.cleanup.mockReturnValue(
+    let settleChildren!: () => void;
+    const untilSettled = new Promise<void>((resolve) => {
+      settleChildren = resolve;
+    });
+    processIncarnationProbeCleanupHarness.cleanup.mockReturnValueOnce(
       new Promise((resolve) => {
         settleCleanup = resolve;
       }),
     );
+    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValueOnce({ disposition: 'settled' });
 
     let shutdown: (() => void) | null = null;
     vi.spyOn(process, 'on').mockImplementation((event, listener) => {
@@ -551,16 +561,22 @@ describe('runProviderRoleMain', () => {
           child: {} as never,
           pid: 4_242,
           reason: 'close-unobserved',
-          exit: 'child-close-or-cleanup-retry',
+          exit: 'child-close',
         },
       ],
+      untilSettled,
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(exitProcess).not.toHaveBeenCalled();
 
-    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValueOnce({ disposition: 'settled' });
-    (shutdown as (() => void) | null)?.();
+    settleSemanticShutdown();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledOnce();
+    expect(exitProcess).not.toHaveBeenCalled();
+
+    settleChildren();
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledTimes(2);

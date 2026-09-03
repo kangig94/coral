@@ -181,7 +181,13 @@ async function registerRunningRecovery(
       const pid = durableRecord.pid;
       const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
       setProcessLocalCleanup(() => {
-        gracefulKillByPid(runtime, pid);
+        const disposition = gracefulKillByPid(runtime, pid);
+        if (disposition.kind === 'escalation-refused') {
+          backendLog.warn(
+            `[durable-process:${pid}] Recovery cleanup for job ${action.jobId} could not schedule SIGKILL ` +
+              `escalation (${disposition.reason}); the process may still be running.`,
+          );
+        }
         releaseRegistry();
       });
     } else if (durableRecord !== null && durableLiveness === 'unknown') {
