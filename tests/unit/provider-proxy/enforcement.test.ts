@@ -20,7 +20,16 @@ import {
   type ExplicitTeardownAuthorization,
   type ObservedHolderAbsenceAuthorization,
 } from '#src/provider-proxy/holder-lifecycle.js';
-import { PROXY_ENFORCER_MAX_WAKE_LATENCY_MS } from '#src/provider-proxy/orphan-deadline.js';
+import {
+  createEnforcerDeadlineStateMachine,
+  DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
+  providerProxyAdoptionWindowMs,
+  resolveProviderProxyDeadlineConfiguration,
+  type EnforcerChallengePolicy,
+} from '#src/provider-proxy/orphan-deadline.js';
+import type { MonotonicInstant } from '#src/infra/monotonic-clock.js';
 
 const CONTAINMENT = { pid: 4_242, incarnation: testIncarnation(1_000), processGroupId: 4_242 } as const;
 const HOLDER = { instanceId: 'coordinator', pid: 4_000, incarnation: testIncarnation('coordinator') } as const;
@@ -527,5 +536,124 @@ describe('holder-teardown-authorization type currency (AC2)', () => {
     });
 
     expect(controlHolderAuthorizationIsCurrent(authority, observation.authorization)).toBe(false);
+  });
+});
+
+describe('the killed-coordinator death timetable (AC9)', () => {
+  function deadlineConfiguration() {
+    return resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
+  }
+
+  function challengePolicy(): EnforcerChallengePolicy {
+    let count = 0;
+    return { mintChallenge: () => `ac9-${(count += 1)}` };
+  }
+
+  /** Wires the real deadline machine to the real armed enforcer — production defaults, no manual `bounds`
+   *  stand-in — so a settled outcome's elapsed time is the timetable this criterion asserts, not a mock's. */
+  function createTimetableHarness(observe: () => Promise<ProcessLiveness>) {
+    let elapsedMs = 0n;
+    const clock = createMonotonicClock(enforcementClockScope, {
+      readMilliseconds: () => elapsedMs,
+      sleep: (ms: number) => {
+        elapsedMs += BigInt(ms);
+        return Promise.resolve();
+      },
+    });
+    const advance = (ms: number): void => {
+      elapsedMs += BigInt(ms);
+    };
+    const start = clock.now();
+
+    const holderAuthority = createControlHolderAuthority();
+    holderAuthority.install({ controlEpoch: 1, holder: HOLDER });
+    holderAuthority.publish();
+    const deadlines = createEnforcerDeadlineStateMachine(
+      clock,
+      deadlineConfiguration(),
+      challengePolicy(),
+      holderAuthority,
+    );
+
+    const alive = new Set<number>([CONTAINMENT.pid]);
+    const scheduler = createManualScheduler();
+    const outcomes: EnforcementOutcome[] = [];
+
+    const enforcer = createArmedEnforcer({
+      clock,
+      deadlines,
+      containment: CONTAINMENT,
+      containmentEnvironment: {
+        clock,
+        process: {
+          kill: (pid) => {
+            const targets = pid < 0 ? [...alive] : [pid];
+            for (const target of targets) alive.delete(target);
+            return true;
+          },
+          observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
+        },
+        platform: 'linux',
+        maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+        readProcessIncarnation: (pid) => (alive.has(pid) ? CONTAINMENT.incarnation : null),
+      },
+      scheduler,
+      holderAuthority,
+      observeHolder: observe,
+      acceleratedCheckMayAuthorizeAbsence: false,
+      onOutcome: (outcome) => outcomes.push(outcome),
+      onProgressViolation: () => {},
+    });
+
+    return { clock, advance, start, enforcer, scheduler, outcomes };
+  }
+
+  it('absent at the first check is reaped within adoptionWindow + teardownReserve, unchanged', async () => {
+    const harness = createTimetableHarness(() => Promise.resolve('absent'));
+
+    harness.enforcer.arm();
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 80);
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
+
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+    const totalMs = harness.clock.millisecondsBetween(harness.start, harness.clock.now());
+    const bound =
+      providerProxyAdoptionWindowMs({
+        orphanTimeoutMs: DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+        teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
+      }) + PROXY_TEARDOWN_RESERVE_MS;
+    expect(bound).toBe(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
+    expect(totalMs).toBeLessThanOrEqual(bound);
+  });
+
+  it('a holder seen alive and then killed — including one seen alive by an early-completing probe — is gone within O of that sample’s own observedAt, never from when it was consumed', async () => {
+    let calls = 0;
+    let firstAliveObservedAt: MonotonicInstant<typeof enforcementClockScope> | null = null;
+    const harness = createTimetableHarness(() => {
+      calls += 1;
+      if (calls === 1) {
+        // Captured at the instant the probe is *called*, matching what `observeControlHolder` itself reads:
+        // this fake resolves through a bare microtask with no `sleep`, so no fake-clock time separates the
+        // two reads.
+        firstAliveObservedAt = harness.clock.now();
+        return Promise.resolve('alive');
+      }
+      return Promise.resolve('absent');
+    });
+
+    harness.enforcer.arm();
+    // Run only far enough for the first (alive) observation to settle and renew the schedule; nothing may
+    // reap yet.
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 30);
+    expect(harness.outcomes).toHaveLength(0);
+    if (firstAliveObservedAt === null) throw new Error('the first observation never settled');
+
+    // The holder dies sometime before the renewed gate; the next check finds it absent.
+    await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 80);
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
+
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+    const elapsedFromSample = harness.clock.millisecondsBetween(firstAliveObservedAt, harness.clock.now());
+    expect(elapsedFromSample).toBeLessThanOrEqual(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
   });
 });
