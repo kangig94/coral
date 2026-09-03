@@ -185,6 +185,7 @@ function providerProxySetNotHeldNextStep(state: ProviderProxySetLifecycleState):
     case 'capsule-foreign':
       return 'run coral-cli backend status and use the Coral build that owns the foreign capsule';
     case 'reattaching':
+    case 'reattachment-hold':
     case 'containing':
     case 'containment-wait':
       return 'run coral-cli backend status, copy its current exact token, and retry only after the reported gate';
@@ -1160,7 +1161,11 @@ function formatRunningStatus(health: RunningHealth): string {
             waitingFor === 'operator-abandonment' ||
             waitingFor === 'store-repair' ||
             waitingFor === 'containment-authorization' ||
-            waitingFor === 'containment-outcome-unknown',
+            waitingFor === 'containment-outcome-unknown' ||
+            waitingFor === 'heartbeat-bound-live-claims' ||
+            waitingFor === 'control-reattachment-bound-live-claims' ||
+            waitingFor === 'heartbeat-protocol-live-claims' ||
+            waitingFor === 'operation-control-outcome-unknown',
         )
       ) {
         lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);

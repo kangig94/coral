@@ -695,6 +695,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #beginHeartbeatLocalFailureHold :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
@@ -702,6 +703,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
@@ -737,6 +739,9 @@ function rejectionJustification(fingerprint: string): string {
       ? 'Lifecycle retains the current containment attempt after its sanctioned exact-set reaper rejects.'
       : 'A best-effort close cannot revoke a containment the lifecycle has already entered.';
   }
+  if (fingerprint.includes(' :: #beginHeartbeatLocalFailureHold :: ')) {
+    return 'A best-effort close cannot revoke the reattachment hold the lifecycle has already entered.';
+  }
   if (fingerprint.includes(' :: #promoteControlReattachment :: ')) {
     return 'Failed promotion keeps the original hold and displaced-control close failure cannot revoke the promoted authority.';
   }
@@ -754,6 +759,9 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: #runControlReattachmentAttempt :: ')) {
     return 'Lifecycle retains the reattachment hold and schedules its bounded retry after exact-set reaping rejects.';
+  }
+  if (fingerprint.includes(' :: #runReattachmentHoldAttempt :: ')) {
+    return 'The post-bound hold retains itself and schedules its own restrained retry after exact-set reaping rejects.';
   }
   if (fingerprint.includes(' :: completeOperatorExit :: ')) {
     return fingerprint.includes('catch#1')
@@ -1122,6 +1130,12 @@ describe('provider proxy recovery policy construction', () => {
       },
       {
         occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: control-reattachment-hold',
+        justification:
+          'The post-bound hold reduces authenticated redemption and independent absence concurrently, at its own restrained cadence.',
+      },
+      {
+        occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: containment-attempt',
         justification: 'The containment race reduces stop-and-reap and proof evidence in one registered turn.',
       },
@@ -1192,6 +1206,16 @@ describe('provider proxy recovery policy construction', () => {
         occurrence:
           'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: redemption/role-control',
         justification: 'The channel hold invokes the authority-owned authenticated redemption attempt.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: absence/containment-proof',
+        justification: 'The post-bound hold observes independent containment absence alongside redemption.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: redemption/role-control',
+        justification: 'The post-bound hold invokes the authority-owned authenticated redemption attempt.',
       },
       {
         occurrence:

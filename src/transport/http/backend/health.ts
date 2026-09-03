@@ -151,7 +151,11 @@ export interface BackendHealth {
         | 'operator-abandonment'
         | 'store-repair'
         | 'containment-authorization'
-        | 'containment-outcome-unknown';
+        | 'containment-outcome-unknown'
+        | 'heartbeat-bound-live-claims'
+        | 'control-reattachment-bound-live-claims'
+        | 'heartbeat-protocol-live-claims'
+        | 'operation-control-outcome-unknown';
     }>;
   };
 }
@@ -280,7 +284,11 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
         entry.waitingFor === 'operator-abandonment' ||
         entry.waitingFor === 'store-repair' ||
         entry.waitingFor === 'containment-authorization' ||
-        entry.waitingFor === 'containment-outcome-unknown');
+        entry.waitingFor === 'containment-outcome-unknown' ||
+        entry.waitingFor === 'heartbeat-bound-live-claims' ||
+        entry.waitingFor === 'control-reattachment-bound-live-claims' ||
+        entry.waitingFor === 'heartbeat-protocol-live-claims' ||
+        entry.waitingFor === 'operation-control-outcome-unknown');
     if (!understandsEnums) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);

@@ -7,7 +7,9 @@ import type {
   RetrySafeControlCallPolicy,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type {
+  ProviderProxySetContainmentRefusedDecision,
   ProviderProxySetDecision,
+  ProviderProxySetNonAuthorizingContainmentDecision,
   ProviderProxySetOperatorAbandonmentDecision,
   ProviderProxySetOperatorContainmentDecision,
 } from '#src/coordinator/services/provider-proxy-set/decisions.js';
@@ -249,23 +251,26 @@ declare const unqualifiedHeartbeatReap: Readonly<{
 const invalidHeartbeatReap: ProviderProxySetDecision = unqualifiedHeartbeatReap;
 void invalidHeartbeatReap;
 
-declare const unqualifiedHeartbeatHoldReap: Readonly<{
-  action: 'stop-and-reap';
-  reason: 'heartbeat_hold_exhausted';
-  fault: 'heartbeat-hold-exhausted';
-  role: 'guardian';
-  method: 'guardian.heartbeat.v1';
-  error: string;
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-}>;
-
-// @ts-expect-error the coordinator's own bounded escalation must name what it observed: attempts, elapsed span, and the last incident reason — not a bare "exhausted".
-const invalidHeartbeatHoldReap: ProviderProxySetDecision = unqualifiedHeartbeatHoldReap;
-void invalidHeartbeatHoldReap;
-
-const validHeartbeatHoldReap: ProviderProxySetDecision = {
+// @ts-expect-error heartbeat_hold_exhausted no longer authorizes stop-and-reap: it joins its two siblings on
+// the non-destructive await-containment-absence action instead.
+const invalidHeartbeatHoldExhaustedStopAndReap: ProviderProxySetDecision = {
   action: 'stop-and-reap',
+  reason: 'heartbeat_hold_exhausted',
+  fault: 'heartbeat-hold-exhausted',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  lastIncidentReason: 'unanswered',
+  attempts: 3,
+  elapsedMs: 23_000,
+  schedulerLatenessMs: 0,
+  error: 'heartbeat timed out',
+  liveClaims: 1,
+  setIdentity,
+};
+void invalidHeartbeatHoldExhaustedStopAndReap;
+
+const validHeartbeatHoldExhaustedAwaitAbsence: ProviderProxySetDecision = {
+  action: 'await-containment-absence',
   reason: 'heartbeat_hold_exhausted',
   fault: 'heartbeat-hold-exhausted',
   role: 'guardian',
@@ -312,5 +317,79 @@ void [
   validHeartbeatIncident,
   containmentPolicy,
   validLocalFailureHeartbeatFault,
-  validHeartbeatHoldReap,
+  validHeartbeatHoldExhaustedAwaitAbsence,
 ];
+
+// Each of the five non-authorizing sources keeps its own field shape rather than a flattened wrapper shape —
+// `ProviderProxySetContainmentRefusedDecision.refusedDecision` is the only place they are read back from.
+const boundExpiryRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
+  reason: 'control_reattachment_bound_expired',
+  fault: 'control-channel-fault',
+  role: 'guardian',
+  cause: 'closed',
+  attempts: 3,
+  elapsedMs: 23_000,
+  boundMs: 23_000,
+  error: 'bound expired',
+};
+const localFailureRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
+  reason: 'heartbeat_local_failure',
+  fault: 'heartbeat-failed',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  terminalReason: 'local-failure',
+  error: 'cannot encode heartbeat',
+};
+const heartbeatBoundRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
+  reason: 'heartbeat_hold_exhausted',
+  fault: 'heartbeat-hold-exhausted',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  lastIncidentReason: 'unanswered',
+  attempts: 3,
+  elapsedMs: 23_000,
+  schedulerLatenessMs: 0,
+  error: 'heartbeat timed out',
+};
+const heartbeatProtocolRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
+  reason: 'heartbeat_protocol_incompatible',
+  fault: 'heartbeat-method-not-found',
+  role: 'guardian',
+  method: 'guardian.heartbeat.v1',
+  incidentReason: 'method-not-found',
+  error: 'method not found',
+};
+const operationControlRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
+  reason: 'operation_control_indeterminate',
+  fault: 'operation-control-failed',
+  policy: containmentPolicy,
+  error: 'mutation outcome unknown',
+};
+
+const heldWithLiveClaims: ProviderProxySetDecision = {
+  action: 'preserve',
+  reason: 'containment_refused_live_claims',
+  liveClaims: 1,
+  setIdentity,
+  refusedDecision: heartbeatBoundRefusal,
+};
+
+declare const flattenedContainmentRefusalShape: Readonly<{
+  action: 'preserve';
+  reason: 'containment_refused_live_claims';
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+  role: 'guardian';
+  method: 'guardian.heartbeat.v1';
+}>;
+
+// @ts-expect-error the wrapper carries its source in `refusedDecision`, never flattened onto its own fields.
+const flattenedContainmentRefusal: ProviderProxySetContainmentRefusedDecision = flattenedContainmentRefusalShape;
+
+// @ts-expect-error a bare `stop-and-reap` decision cannot be built from a non-authorizing source directly —
+// only the peer's exact `teardown-latched` refusal or zero live claims may reach `stop-and-reap`.
+const nonAuthorizingCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = localFailureRefusal;
+void nonAuthorizingCannotStop;
+
+void [boundExpiryRefusal, localFailureRefusal, heartbeatProtocolRefusal, operationControlRefusal, heldWithLiveClaims];
+void flattenedContainmentRefusal;

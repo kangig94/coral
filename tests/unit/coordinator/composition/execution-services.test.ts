@@ -1317,11 +1317,18 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
 
-    return { time, faults, stopAndReap: commitContainment, redeemedDeadline: base.autonomousDeadline, services };
+    return {
+      time,
+      faults,
+      stopAndReap: commitContainment,
+      redeemedDeadline: base.autonomousDeadline,
+      services,
+      lifecycle,
+    };
   }
 
   it("uses a redeemed set's capsule deadline instead of the successor coordinator's environment", async () => {
-    const { time, faults, stopAndReap, redeemedDeadline, services } = await createHeartbeatHoldHarness();
+    const { time, faults, stopAndReap, redeemedDeadline, services, lifecycle } = await createHeartbeatHoldHarness();
     expect(redeemedDeadline.heartbeatHoldBound).toEqual({ spanMs: 5_001, materialSchedulerLatenessMs: 1_250 });
 
     const incident = (error: string): void =>
@@ -1340,10 +1347,17 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       });
 
     incident('first');
+    expect(lifecycle.snapshot().states).toEqual(['available']);
     time.tick(redeemedDeadline.heartbeatHoldBound.spanMs);
     incident('second');
 
-    expect(stopAndReap).toHaveBeenCalledOnce();
+    // The reversal joined silence-hold-exhausted to its two siblings' `await-containment-absence` action, so
+    // exhaustion no longer sends the destructive guardian commit itself, at any claim count: it releases
+    // routing and heartbeats and waits on independent proof instead. What this test still pins is the span
+    // the wait is timed on — the redeemed capsule's, not the successor's own environment — observable as the
+    // hold entering exactly when `spanMs` elapses, not later.
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(lifecycle.snapshot().states).toEqual(['containing']);
     services.stopProviderOperationReconciler();
   });
 });

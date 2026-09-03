@@ -10,6 +10,7 @@ export const PROVIDER_PROXY_SET_LIFECYCLE_STATES = [
   'available',
   'draining',
   'reattaching',
+  'reattachment-hold',
   'containing',
   'containment-wait',
   'absence-delivery-pending',

@@ -63,7 +63,8 @@ export type ProviderProxySetPreserveDecision =
       error: string;
       liveClaims: number;
       setIdentity: ProviderProxySetIdentity;
-    }>;
+    }>
+  | ProviderProxySetContainmentRefusedDecision;
 
 export type ProviderProxySetOperationFaultStopDecision = Readonly<{
   action: 'stop-and-reap';
@@ -106,26 +107,6 @@ export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
   setIdentity: ProviderProxySetIdentity;
 }>;
 
-/**
- * This decision requires a continuous window with no peer answer and without material scheduler lateness.
- * It starts containment but must not itself settle peer disappearance.
- */
-export type ProviderProxySetHeartbeatHoldExhaustedStopDecision = Readonly<{
-  action: 'stop-and-reap';
-  reason: 'heartbeat_hold_exhausted';
-  fault: 'heartbeat-hold-exhausted';
-  role: ProviderProxyRole;
-  method: ProviderProxyHeartbeatMethod;
-  lastIncidentReason: 'unanswered';
-  attempts: number;
-  elapsedMs: number;
-  schedulerLatenessMs: number;
-  policy?: never;
-  error: string;
-  liveClaims: number;
-  setIdentity: ProviderProxySetIdentity;
-}>;
-
 type ProviderProxySetHeartbeatDispositionFields = Readonly<{
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
@@ -134,6 +115,21 @@ type ProviderProxySetHeartbeatDispositionFields = Readonly<{
   liveClaims: number;
   setIdentity: ProviderProxySetIdentity;
 }>;
+
+/**
+ * This decision requires a continuous window with no peer answer and without material scheduler lateness.
+ * With live claims present it is not itself authorized to settle peer disappearance — see
+ * `ProviderProxySetHeartbeatBoundRefusalDecision`, its non-authorizing counterpart.
+ */
+type ProviderProxySetHeartbeatHoldExhaustedFields = ProviderProxySetHeartbeatDispositionFields &
+  Readonly<{
+    reason: 'heartbeat_hold_exhausted';
+    fault: 'heartbeat-hold-exhausted';
+    lastIncidentReason: 'unanswered';
+    attempts: number;
+    elapsedMs: number;
+    schedulerLatenessMs: number;
+  }>;
 
 type ProviderProxySetHeartbeatAnswerUnusableFields = ProviderProxySetHeartbeatDispositionFields &
   Readonly<{
@@ -158,8 +154,104 @@ type ProviderProxySetHeartbeatAwaitAbsenceFields = Readonly<{
 }>;
 
 export type ProviderProxySetHeartbeatAwaitAbsenceDecision =
+  | (ProviderProxySetHeartbeatHoldExhaustedFields & ProviderProxySetHeartbeatAwaitAbsenceFields)
   | (ProviderProxySetHeartbeatAnswerUnusableFields & ProviderProxySetHeartbeatAwaitAbsenceFields)
   | (ProviderProxySetHeartbeatProtocolFields & ProviderProxySetHeartbeatAwaitAbsenceFields);
+
+/**
+ * The reattachment window's own trigger proved only that a peer answered, or that this coordinator never
+ * reached one at all — neither is the peer's decisive `teardown-latched` refusal. Carries the same fields
+ * `ProviderProxySetControlReattachmentAwaitAbsenceDecision` does, minus `action`/`liveClaims`/`setIdentity`,
+ * which the `ProviderProxySetContainmentRefusedDecision` wrapper supplies once.
+ */
+export type ProviderProxySetControlReattachmentRefusalDecision = Readonly<{
+  reason: 'control_reattachment_bound_expired' | 'control_reattachment_refused';
+  fault: 'control-channel-fault';
+  role: ProviderProxyRole;
+  cause: ProviderProxyControlChannelCause;
+  attempts: number;
+  elapsedMs: number;
+  boundMs: number;
+  error: string;
+}>;
+
+/** This process could not construct or send a heartbeat call at all — its own failure to reach the peer,
+ *  never a disposition about the peer, so it joins the reattachment lifecycle rather than committing. */
+export type ProviderProxySetHeartbeatLocalFailureRefusalDecision = Readonly<{
+  reason: 'heartbeat_local_failure';
+  fault: 'heartbeat-failed';
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  terminalReason: 'local-failure';
+  error: string;
+}>;
+
+type ProviderProxySetHeartbeatBoundRefusalFields = Readonly<{
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  attempts: number;
+  elapsedMs: number;
+  schedulerLatenessMs: number;
+  error: string;
+}>;
+
+export type ProviderProxySetHeartbeatBoundRefusalDecision =
+  | (ProviderProxySetHeartbeatBoundRefusalFields &
+      Readonly<{
+        reason: 'heartbeat_hold_exhausted';
+        fault: 'heartbeat-hold-exhausted';
+        lastIncidentReason: 'unanswered';
+      }>)
+  | (ProviderProxySetHeartbeatBoundRefusalFields &
+      Readonly<{
+        reason: 'heartbeat_answer_unusable_hold_exhausted';
+        fault: 'heartbeat-answer-unusable-hold-exhausted';
+        lastIncidentReason: 'unclassified';
+      }>);
+
+export type ProviderProxySetHeartbeatProtocolRefusalDecision = Readonly<{
+  reason: 'heartbeat_protocol_incompatible';
+  fault: 'heartbeat-method-not-found';
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  incidentReason: 'method-not-found';
+  error: string;
+}>;
+
+/** `ProviderProxyAuthorityFault`'s `operation-control-failed` member is always this containment-required
+ *  policy shape — a retry-safe mutation failure never reaches this union, it stays on the preserve channel. */
+export type ProviderProxySetOperationControlRefusalDecision = Readonly<{
+  reason: 'operation_control_indeterminate';
+  fault: 'operation-control-failed';
+  policy: ContainmentRequiredControlCallPolicy;
+  error: string;
+}>;
+
+/**
+ * Every source this gate declined to treat as decisive, preserved with its own field shape rather than
+ * flattened into one. `#recordOperatorDisposition`/`renderProviderProxySetDecision` branch on `reason`
+ * within this union instead of reading a wrapper-level field that would collide across sources.
+ */
+export type ProviderProxySetNonAuthorizingContainmentDecision =
+  | ProviderProxySetControlReattachmentRefusalDecision
+  | ProviderProxySetHeartbeatLocalFailureRefusalDecision
+  | ProviderProxySetHeartbeatBoundRefusalDecision
+  | ProviderProxySetHeartbeatProtocolRefusalDecision
+  | ProviderProxySetOperationControlRefusalDecision;
+
+/**
+ * The claim-bearing counterpart of `stop-and-reap`/`await-containment-absence`: evidence that would have
+ * authorized destruction with zero live claims present instead holds, because live claims are present.
+ * `action: 'preserve'` reuses the existing rate-limited reporting lifecycle rather than a bespoke one.
+ */
+export type ProviderProxySetContainmentRefusedDecision = FaultlessDecisionFields &
+  Readonly<{
+    action: 'preserve';
+    reason: 'containment_refused_live_claims';
+    liveClaims: number;
+    setIdentity: ProviderProxySetIdentity;
+    refusedDecision: ProviderProxySetNonAuthorizingContainmentDecision;
+  }>;
 
 export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
   Readonly<{
@@ -201,8 +293,7 @@ export type ProviderProxySetOperatorDecision =
 
 export type ProviderProxySetAuthorityStopDecision =
   | ProviderProxySetOperationFaultStopDecision
-  | ProviderProxySetHeartbeatFaultStopDecision
-  | ProviderProxySetHeartbeatHoldExhaustedStopDecision;
+  | ProviderProxySetHeartbeatFaultStopDecision;
 
 export type ProviderProxySetContainmentDecision =
   | ProviderProxySetAuthorityStopDecision
@@ -230,6 +321,7 @@ export function renderProviderProxySetDecision(
   const severity: ProviderProxySetLogSeverity =
     decision.reason === 'provider_authority_lost' ||
     decision.reason === 'heartbeat_hold_exhausted' ||
+    decision.reason === 'containment_refused_live_claims' ||
     decision.action === 'await-containment-absence' ||
     decision.action === 'operator-contain' ||
     decision.action === 'abandon'
@@ -289,9 +381,33 @@ export function renderProviderProxySetDecision(
       subject = 'operator';
       error = 'process absence was not observed';
       break;
+    case 'containment_refused_live_claims': {
+      const refused = decision.refusedDecision;
+      fault = refused.fault;
+      subject = refused.reason === 'operation_control_indeterminate' ? refused.policy.method : refused.role;
+      error = refused.error;
+      break;
+    }
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.reason === 'containment_refused_live_claims' ? refusedDecisionDetail(decision.refusedDecision) : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
+}
+
+function refusedDecisionDetail(refused: ProviderProxySetNonAuthorizingContainmentDecision): string {
+  switch (refused.reason) {
+    case 'control_reattachment_bound_expired':
+    case 'control_reattachment_refused':
+      return ` cause=${refused.cause} attempts=${refused.attempts} elapsedMs=${refused.elapsedMs} boundMs=${refused.boundMs}`;
+    case 'heartbeat_local_failure':
+      return ` terminalReason=${refused.terminalReason}`;
+    case 'heartbeat_hold_exhausted':
+    case 'heartbeat_answer_unusable_hold_exhausted':
+      return ` attempts=${refused.attempts} elapsedMs=${refused.elapsedMs} schedulerLatenessMs=${refused.schedulerLatenessMs} lastIncidentReason=${refused.lastIncidentReason}`;
+    case 'heartbeat_protocol_incompatible':
+      return ` incidentReason=${refused.incidentReason}`;
+    case 'operation_control_indeterminate':
+      return '';
+  }
 }

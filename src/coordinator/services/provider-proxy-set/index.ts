@@ -20,8 +20,10 @@ import type { ContainmentCommitOutcome } from '../../live/provider-proxy/authori
 import type { OperatorTeardownAuthorization } from '../../../provider-proxy/holder-lifecycle.js';
 import type {
   ProviderProxyControlRedemptionOutcome,
+  ProviderProxyControlRedemptionRefusal,
   RedeemedProviderProxyControl,
 } from '../../live/provider-proxy/control-redemption.js';
+import type { ProviderProxyRoleControlRemoteError } from '../../live/provider-proxy/role-control.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
 import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
 import {
@@ -47,8 +49,11 @@ import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityObservation,
+  ProviderProxyControlChannelCause,
   ProviderProxyControlChannelIncident,
+  ProviderProxyHeartbeatMethod,
   ProviderProxyHeartbeatObservation,
+  ProviderProxyRole,
 } from '../provider-proxy-authority-fault.js';
 import type {
   ProviderProxyForeignCapsuleRetirementRetryIncident,
@@ -61,12 +66,15 @@ import {
   type ProviderProxySetAuthorityStopDecision,
   type ProviderProxySetClaimBearingRetirementReason,
   type ProviderProxySetContainmentDecision,
+  type ProviderProxySetContainmentRefusedDecision,
   type ProviderProxySetControlReattachmentAwaitAbsenceDecision,
+  type ProviderProxySetControlReattachmentRefusalDecision,
   type ProviderProxySetDecision,
   type ProviderProxySetDrainDecision,
   type ProviderProxySetHeartbeatAwaitAbsenceDecision,
-  type ProviderProxySetHeartbeatHoldExhaustedStopDecision,
+  type ProviderProxySetHeartbeatLocalFailureRefusalDecision,
   type ProviderProxySetLogSeverity,
+  type ProviderProxySetNonAuthorizingContainmentDecision,
   type ProviderProxySetOperatorAbandonmentDecision,
   type ProviderProxySetOperatorContainmentDecision,
   type ProviderProxySetPreserveDecision,
@@ -89,6 +97,10 @@ import {
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
+/** The post-bound reattachment hold's own retry cadence: deliberately slower than the active window's
+ *  exponential backoff (capped at 30 s by `retryDelayMs`) because the bound already expired without proof of
+ *  anything decisive — there is no deadline left to race against, only a peer to keep politely asking after. */
+const REATTACHMENT_HOLD_RETRY_MS = 60_000;
 
 declare const processContainmentEvidenceBrand: unique symbol;
 declare const durableClaimDischargeBrand: unique symbol;
@@ -152,7 +164,14 @@ type PreserveReportState = {
 type ControlReattachmentWindow = {
   returnKind: 'available' | 'draining';
   firstObservedAtMonotonicMs: bigint;
-  trigger: Pick<ProviderProxyControlChannelIncident, 'role' | 'cause' | 'error'>;
+  /** `cause`/`error` are widened past `ProviderProxyControlChannelIncident`'s own fields so a window opened
+   *  directly from a `heartbeat-failed`/`local-failure` authority fault (no control-channel incident at all)
+   *  fits the same shape; only a control-channel-sourced window ever reaches `controlChannelCause`. */
+  trigger: Readonly<{
+    role: ProviderProxyRole;
+    cause: ProviderProxyControlChannelCause | 'heartbeat-local-failure';
+    error: unknown;
+  }>;
   attempts: number;
   boundMs: number;
   deadlineMonotonicMs: bigint;
@@ -162,7 +181,7 @@ type ControlReattachmentWindow = {
 };
 
 type EstablishedSlot = {
-  kind: 'available' | 'draining' | 'reattaching' | 'containing' | 'containment-wait';
+  kind: 'available' | 'draining' | 'reattaching' | 'reattachment-hold' | 'containing' | 'containment-wait';
   key: ProviderProxySetKey;
   identity: ProviderProxySetIdentity;
   address: ProviderProxySetAddress;
@@ -355,7 +374,26 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
     /** The guardian commit may have reached the guardian and its response was lost. Exits are the same as
      *  `containment-authorization`'s — this subject differs only in what it asserts happened, never in what
      *  ends it. */
-    | 'containment-outcome-unknown';
+    | 'containment-outcome-unknown'
+    /** A silence- or answered-unusable-exhausted heartbeat window with live claims present. Neither is
+     *  decisive, so the route and heartbeat loop keep running. Exits: an accepted heartbeat, `liveClaims`
+     *  reaching zero and ordinary drain, explicit operator containment, or representation-only abandonment. */
+    | 'heartbeat-bound-live-claims'
+    /** A control-reattachment bound expiry, a non-decisive redemption refusal, or a `heartbeat-failed`
+     *  `local-failure` fault, all with live claims present — this coordinator's own failure to reach the peer,
+     *  never a disposition about it. Exits: redeemed control, decisive absence, explicit operator containment,
+     *  or representation-only abandonment. */
+    | 'control-reattachment-bound-live-claims'
+    /** A `method-not-found` heartbeat reply with live claims present: the peer answered, but not with a
+     *  protocol this build can use. Claims and routing are retained; only this role's heartbeat is marked
+     *  unavailable. Exits: compatible control, `liveClaims` reaching zero, explicit operator containment, or
+     *  representation-only abandonment. */
+    | 'heartbeat-protocol-live-claims'
+    /** An indeterminate `operation-control-failed` mutation with live claims present. The route is removed and
+     *  no further mutation is dispatched, but claims and reconciliation ownership are retained. Exits:
+     *  control/status recovery, `liveClaims` reaching zero, explicit operator containment, or
+     *  representation-only abandonment. */
+    | 'operation-control-outcome-unknown';
 }>;
 
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
@@ -558,6 +596,25 @@ function preserveErrorIdentity(error: unknown): string {
   ]);
 }
 
+/** Mirrors `#recordPreserveDecision`'s own `subject` derivation for the three existing preserve sources —
+ *  the wrapper carries none of those fields at its own level, so its five sources need the same key computed
+ *  from `refusedDecision` instead. */
+function refusedDecisionSubjectKey(refused: ProviderProxySetNonAuthorizingContainmentDecision): string {
+  switch (refused.reason) {
+    case 'control_reattachment_bound_expired':
+    case 'control_reattachment_refused':
+      return `${refused.role}:${refused.cause}`;
+    case 'heartbeat_local_failure':
+      return `${refused.role}:${refused.method}`;
+    case 'heartbeat_hold_exhausted':
+    case 'heartbeat_answer_unusable_hold_exhausted':
+    case 'heartbeat_protocol_incompatible':
+      return refused.method;
+    case 'operation_control_indeterminate':
+      return refused.policy.method;
+  }
+}
+
 /**
  * Whether every process a capsule recorded is provably gone.
  *
@@ -581,6 +638,44 @@ function recordedProcessesAllAbsent(capsule: HandoffCapsule, observe: RecordedPr
 
 function retryDelayMs(completedAttempts: number): number {
   return Math.min(1_000 * 2 ** Math.min(Math.max(completedAttempts - 1, 0), 5), 30_000);
+}
+
+/** Only a control-channel-sourced reattachment window ever reaches the active bounded reporting path — a
+ *  heartbeat-local-failure window opens directly in the post-bound hold and never calls this. */
+function controlChannelCause(cause: ControlReattachmentWindow['trigger']['cause']): ProviderProxyControlChannelCause {
+  if (cause === 'heartbeat-local-failure') {
+    throw new Error('provider_proxy_control_reattachment_active_window_cause_invalid');
+  }
+  return cause;
+}
+
+function isProviderProxyHeartbeatMethod(value: unknown): value is ProviderProxyHeartbeatMethod {
+  return value === 'control.heartbeat.v1' || value === 'guardian.heartbeat.v1' || value === 'reaper.heartbeat.v1';
+}
+
+/**
+ * The redemption channel's own decisive answer during reattachment: an exact structured `teardown-latched`
+ * heartbeat refusal from `establishHeartbeat`'s verification call (role-control.ts), and nothing else — a
+ * connect/open-stage remote refusal or any other heartbeat refusal reason proves only that a peer answered,
+ * not which peer. `ControlClientRemoteFailure` carries `heartbeatRefusal` on its `json-rpc-error` member
+ * only; its `invalid-frame` member is this call's own inability to decode the reply, never the peer speaking,
+ * so it is refused explicitly rather than read past. `error.method`'s declared type is not provably a
+ * `ProviderProxyHeartbeatMethod` from `stage` alone, so it is checked rather than asserted: an unrecognized
+ * value is refused, not assumed.
+ */
+function decisiveTeardownLatchedRefusal(refusal: ProviderProxyControlRedemptionRefusal): Readonly<{
+  role: ProviderProxyRole;
+  method: ProviderProxyHeartbeatMethod;
+  error: ProviderProxyRoleControlRemoteError;
+}> | null {
+  if (refusal.kind !== 'role-refused') return null;
+  const { error } = refusal;
+  if (error.stage !== 'heartbeat') return null;
+  const { remoteFailure } = error;
+  if (remoteFailure.kind !== 'json-rpc-error') return null;
+  if (remoteFailure.heartbeatRefusal?.reason !== 'teardown-latched') return null;
+  if (!isProviderProxyHeartbeatMethod(error.method)) return null;
+  return { role: error.role, method: error.method, error };
 }
 
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
@@ -789,6 +884,7 @@ export class ProviderProxySetLifecycle {
         (slot.kind === 'available' ||
           slot.kind === 'draining' ||
           slot.kind === 'reattaching' ||
+          slot.kind === 'reattachment-hold' ||
           slot.kind === 'containing' ||
           slot.kind === 'containment-wait') &&
         slot.protection === 'legacy-unprotected'
@@ -808,6 +904,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'capsule-foreign' ||
       slot.kind === 'recovering' ||
       slot.kind === 'reattaching' ||
+      slot.kind === 'reattachment-hold' ||
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait' ||
       slot.kind === 'absence-delivery-pending' ||
@@ -824,6 +921,7 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'available' ||
       slot.kind === 'draining' ||
       slot.kind === 'reattaching' ||
+      slot.kind === 'reattachment-hold' ||
       slot.kind === 'containing' ||
       slot.kind === 'containment-wait'
         ? [slot.authority]
@@ -839,7 +937,18 @@ export class ProviderProxySetLifecycle {
 
   claimsChanged(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
-    if (slot?.kind !== 'draining' || slot.retirementDecision === null) return;
+    if (slot === undefined) return;
+    // A reattachment hold never became decisive on its own evidence, but zero claims makes ordinary
+    // retirement safe regardless of source: nothing this coordinator still has a claim in is destroyed.
+    if (slot.kind === 'reattachment-hold') {
+      const window = slot.controlReattachmentWindow;
+      if (window === null || this.#deps.claims.claimsFor(slot.identity).length !== 0) return;
+      this.#clearControlReattachment(slot, window);
+      this.#operatorDispositions.delete(slot.key);
+      this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, 'graceful_idle', 0));
+      return;
+    }
+    if (slot.kind !== 'draining' || slot.retirementDecision === null) return;
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
     if (liveClaims !== 0) return;
     this.#beginRetirementContainment(
@@ -874,10 +983,12 @@ export class ProviderProxySetLifecycle {
       return;
     }
     if (incident.kind === 'control-channel-fault') {
-      if (slot.kind !== 'reattaching') this.#beginControlReattachment(slot, incident);
+      if (slot.kind !== 'reattaching' && slot.kind !== 'reattachment-hold') {
+        this.#beginControlReattachment(slot, incident);
+      }
       return;
     }
-    if (slot.kind === 'reattaching') return;
+    if (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') return;
     if (incident.kind === 'heartbeat-observation') {
       this.#recordHeartbeatObservation(slot, incident);
       return;
@@ -917,10 +1028,45 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
-    if (slot.kind === 'reattaching' || slot.kind === 'containing' || slot.kind === 'containment-wait') {
+    if (
+      slot.kind === 'reattaching' ||
+      slot.kind === 'reattachment-hold' ||
+      slot.kind === 'containing' ||
+      slot.kind === 'containment-wait'
+    ) {
       return;
     }
-    this.#beginFaultContainment(slot, this.#authorityFaultDecision(slot, fault));
+    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+    if (liveClaims === 0 || (fault.kind === 'heartbeat-failed' && fault.terminalReason === 'teardown-latched')) {
+      this.#beginFaultContainment(slot, this.#authorityFaultDecision(slot, fault));
+      return;
+    }
+    if (fault.kind === 'heartbeat-failed') {
+      this.#beginHeartbeatLocalFailureHold(slot, fault);
+      return;
+    }
+    this.#holdOperationControlIndeterminate(slot, fault);
+  }
+
+  /**
+   * True for an `available`/`draining` slot carrying a heartbeat-bound, protocol-incompatible, or
+   * operation-control-indeterminate hold — the three live-claims holds that deliberately never move
+   * `slot.kind` away from `available`/`draining` so routing and heartbeats keep running. Reattachment holds
+   * are excluded: `slot.kind === 'reattachment-hold'` already names that case on its own.
+   */
+  #hasLiveClaimsHold(slot: EstablishedSlot): boolean {
+    const dispositions = this.#operatorDispositions.get(slot.key);
+    if (dispositions === undefined) return false;
+    for (const disposition of dispositions.values()) {
+      if (
+        disposition.waitingFor === 'heartbeat-bound-live-claims' ||
+        disposition.waitingFor === 'heartbeat-protocol-live-claims' ||
+        disposition.waitingFor === 'operation-control-outcome-unknown'
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   authorizeOperatorExit(address: ProviderProxySetAddress): ProviderProxySetOperatorExitAuthorization {
@@ -928,7 +1074,14 @@ export class ProviderProxySetLifecycle {
     if (key === null) return { kind: 'set-not-found' };
     const slot = this.#slots.get(key);
     if (slot === undefined) return { kind: 'set-not-found' };
-    if (slot.kind !== 'reattaching' && slot.kind !== 'containing' && slot.kind !== 'containment-wait') {
+    const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
+    if (
+      slot.kind !== 'reattaching' &&
+      slot.kind !== 'reattachment-hold' &&
+      slot.kind !== 'containing' &&
+      slot.kind !== 'containment-wait' &&
+      !heldWhileRoutable
+    ) {
       if (slot.kind === 'available' || slot.kind === 'draining') {
         this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
       }
@@ -975,8 +1128,13 @@ export class ProviderProxySetLifecycle {
     );
     const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
     if (slot === undefined) return { kind: 'set-not-found', setIdentity: address, effect: noEffect };
+    const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
     if (
-      (slot.kind !== 'containing' && slot.kind !== 'containment-wait' && slot.kind !== 'reattaching') ||
+      (slot.kind !== 'containing' &&
+        slot.kind !== 'containment-wait' &&
+        slot.kind !== 'reattaching' &&
+        slot.kind !== 'reattachment-hold' &&
+        !heldWhileRoutable) ||
       !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
     ) {
       return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
@@ -1006,7 +1164,7 @@ export class ProviderProxySetLifecycle {
         }
       };
       const attemptSignal =
-        slot.kind === 'reattaching'
+        slot.kind === 'reattaching' || slot.kind === 'reattachment-hold'
           ? slot.controlReattachmentWindow?.attemptAbort?.signal
           : slot.containmentAttemptAbort?.signal;
       const reapingSignal = attemptSignal === undefined ? signal : AbortSignal.any([signal, attemptSignal]);
@@ -1074,6 +1232,10 @@ export class ProviderProxySetLifecycle {
           [operatorAbandonmentEvidenceBrand]: true as const,
         });
         const pending = this.#commitOperatorAbandonment(slot, abandonmentEvidence);
+        // `close()` destroys this process's own socket locally; it carries no protocol message the peer could
+        // read as a verdict, and connection loss on the role's own side only accelerates its next holder-check
+        // (never authorizes teardown by itself). Skipping it would abandon the client's file descriptors along
+        // with the set's representation.
         void slot.authority.initiateControlClose().catch((error: unknown) => {
           this.#deps.onError?.(
             `Provider proxy control close after operator abandonment failed: ${singleLineErrorSummary(error)}`,
@@ -1104,9 +1266,13 @@ export class ProviderProxySetLifecycle {
         setIdentity: slot.identity,
       };
       this.#recordDecision(slot, decision);
-      if (slot.kind === 'reattaching' && slot.controlReattachmentWindow !== null) {
+      if (
+        (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
+        slot.controlReattachmentWindow !== null
+      ) {
         this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
       }
+      this.#commitHeldSlotToContainment(slot);
       const accepted = this.containmentAbsent(slot.identity, disappearanceReceipt);
       return {
         kind: 'contained',
@@ -1146,6 +1312,10 @@ export class ProviderProxySetLifecycle {
       [operatorAbandonmentEvidenceBrand]: true as const,
     });
     const pending = this.#commitOperatorAbandonment(slot, abandonmentEvidence);
+    // `close()` destroys this process's own socket locally; it carries no protocol message the peer could
+    // read as a verdict, and connection loss on the role's own side only accelerates its next holder-check
+    // (never authorizes teardown by itself). Skipping it would abandon the client's file descriptors along
+    // with the set's representation.
     void slot.authority.initiateControlClose().catch((error: unknown) => {
       this.#deps.onError?.(
         `Provider proxy control close after operator abandonment failed: ${singleLineErrorSummary(error)}`,
@@ -1198,8 +1368,13 @@ export class ProviderProxySetLifecycle {
     );
     const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
     if (slot === undefined) return { kind: 'set-not-found', setIdentity: address };
+    const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
     if (
-      (slot.kind !== 'containing' && slot.kind !== 'containment-wait' && slot.kind !== 'reattaching') ||
+      (slot.kind !== 'containing' &&
+        slot.kind !== 'containment-wait' &&
+        slot.kind !== 'reattaching' &&
+        slot.kind !== 'reattachment-hold' &&
+        !heldWhileRoutable) ||
       !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
     ) {
       return { kind: 'not-held', setIdentity: address, state: slot.kind };
@@ -1257,9 +1432,10 @@ export class ProviderProxySetLifecycle {
       setIdentity: slot.identity,
     };
     this.#recordDecision(slot, decision);
-    if (slot.kind === 'reattaching' && slot.controlReattachmentWindow !== null) {
+    if ((slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') && slot.controlReattachmentWindow !== null) {
       this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
     }
+    this.#commitHeldSlotToContainment(slot);
     const accepted = this.containmentAbsent(slot.identity, reapResult.disappearanceReceipt);
     return {
       kind: 'contained',
@@ -1846,6 +2022,7 @@ export class ProviderProxySetLifecycle {
         (existing.kind === 'available' ||
           existing.kind === 'draining' ||
           existing.kind === 'reattaching' ||
+          existing.kind === 'reattachment-hold' ||
           existing.kind === 'containing' ||
           existing.kind === 'containment-wait') &&
         existing.authority === authority
@@ -1945,6 +2122,19 @@ export class ProviderProxySetLifecycle {
     if (slot.routeKey !== null && this.#routeIndex.get(slot.routeKey) === slot.key) {
       this.#routeIndex.delete(slot.routeKey);
     }
+  }
+
+  /**
+   * `#commitContainmentAbsence`'s guard refuses absence from `available`/`draining` (#308: a stray fault
+   * reaped a set that still looked healthy). A heartbeat-bound or operation-control hold deliberately never
+   * moves the slot on its own, so the operator's already-decisive `reap-required` proof must make the same
+   * commitment `#beginContainment` makes for every other destructive path, at the same boundary — once
+   * evidence has decided the set is gone, not before. A no-op once the slot has already left that pair.
+   */
+  #commitHeldSlotToContainment(slot: EstablishedSlot): void {
+    if (slot.kind !== 'available' && slot.kind !== 'draining') return;
+    this.#removeRoute(slot);
+    slot.kind = 'containing';
   }
 
   #beginControlReattachment(slot: EstablishedSlot, incident: ProviderProxyControlChannelIncident): void {
@@ -2080,7 +2270,7 @@ export class ProviderProxySetLifecycle {
   #isCurrentControlReattachment(slot: EstablishedSlot, window: ControlReattachmentWindow, token: number): boolean {
     return (
       this.#slots.get(slot.key) === slot &&
-      slot.kind === 'reattaching' &&
+      (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
       slot.controlReattachmentWindow === window &&
       slot.attemptToken === token &&
       window.attemptToken === token
@@ -2167,7 +2357,7 @@ export class ProviderProxySetLifecycle {
       reason: 'control_channel_reattaching',
       fault: 'control-channel-fault',
       role: window.trigger.role,
-      cause: window.trigger.cause,
+      cause: controlChannelCause(window.trigger.cause),
       attempts: window.attempts,
       elapsedMs: Number(this.#deps.time.monotonicNow() - window.firstObservedAtMonotonicMs),
       boundMs: window.boundMs,
@@ -2177,13 +2367,40 @@ export class ProviderProxySetLifecycle {
     };
   }
 
+  /**
+   * With zero live claims, bound expiry or a non-decisive refusal remains the decisive
+   * `await-containment-absence` path it always was — nothing is destroyed by releasing routing, heartbeats,
+   * and control and waiting for independent proof. With live claims present, the same evidence enters the
+   * unbounded reattachment hold instead: `#enterReattachmentHold` never destroys anything on its own. An
+   * exact structured `teardown-latched` refusal is decisive regardless of live claims and commits directly.
+   */
   #awaitControlReattachmentAbsence(
     slot: EstablishedSlot,
     window: ControlReattachmentWindow,
     reason: ProviderProxySetControlReattachmentAwaitAbsenceDecision['reason'],
-    error: unknown = new Error('provider_proxy_control_reattachment_bound_expired'),
+    refusal?: ProviderProxyControlRedemptionRefusal,
   ): void {
     if (this.#slots.get(slot.key) !== slot || slot.controlReattachmentWindow !== window) return;
+    const decisive = refusal === undefined ? null : decisiveTeardownLatchedRefusal(refusal);
+    if (decisive !== null) {
+      this.#commitReattachmentTeardownLatched(slot, window, decisive);
+      return;
+    }
+    const error = singleLineErrorSummary(refusal ?? new Error('provider_proxy_control_reattachment_bound_expired'));
+    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
+    if (liveClaims > 0) {
+      this.#enterReattachmentHold(slot, window, {
+        reason,
+        fault: 'control-channel-fault',
+        role: window.trigger.role,
+        cause: controlChannelCause(window.trigger.cause),
+        attempts: window.attempts,
+        elapsedMs: Number(this.#deps.time.monotonicNow() - window.firstObservedAtMonotonicMs),
+        boundMs: window.boundMs,
+        error,
+      });
+      return;
+    }
     slot.attemptToken += 1;
     this.#clearControlReattachment(slot, window);
     this.#operatorDispositions.delete(slot.key);
@@ -2192,14 +2409,192 @@ export class ProviderProxySetLifecycle {
       reason,
       fault: 'control-channel-fault',
       role: window.trigger.role,
-      cause: window.trigger.cause,
+      cause: controlChannelCause(window.trigger.cause),
       attempts: window.attempts,
       elapsedMs: Number(this.#deps.time.monotonicNow() - window.firstObservedAtMonotonicMs),
       boundMs: window.boundMs,
-      error: singleLineErrorSummary(error),
+      error,
+      liveClaims,
+      setIdentity: slot.identity,
+    });
+  }
+
+  /**
+   * The redemption channel's own decisive answer, reachable from both the active window and the post-bound
+   * hold — decisiveness does not depend on which one observed it.
+   */
+  #commitReattachmentTeardownLatched(
+    slot: EstablishedSlot,
+    window: ControlReattachmentWindow,
+    decisive: Readonly<{
+      role: ProviderProxyRole;
+      method: ProviderProxyHeartbeatMethod;
+      error: ProviderProxyRoleControlRemoteError;
+    }>,
+  ): void {
+    slot.attemptToken += 1;
+    this.#clearControlReattachment(slot, window);
+    this.#operatorDispositions.delete(slot.key);
+    this.#beginFaultContainment(slot, {
+      action: 'stop-and-reap',
+      reason: 'provider_authority_lost',
+      fault: 'heartbeat-failed',
+      role: decisive.role,
+      method: decisive.method,
+      terminalReason: 'teardown-latched',
+      error: singleLineErrorSummary(decisive.error),
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     });
+  }
+
+  /**
+   * Moves the slot into the unbounded post-bound hold: the window's own deadline is no longer enforced, and
+   * redemption plus containment observation continue at a restrained cadence instead of the active window's
+   * backoff. Reachable only with live claims present — the liveClaims===0 case stays on the decisive
+   * `await-containment-absence` path, which destroys nothing this coordinator still has a claim in.
+   */
+  #enterReattachmentHold(
+    slot: EstablishedSlot,
+    window: ControlReattachmentWindow,
+    refusedDecision:
+      | ProviderProxySetControlReattachmentRefusalDecision
+      | ProviderProxySetHeartbeatLocalFailureRefusalDecision,
+  ): void {
+    if (this.#slots.get(slot.key) !== slot || slot.controlReattachmentWindow !== window) return;
+    window.attemptAbort?.abort(new Error('provider_proxy_control_reattachment_hold_entered'));
+    window.attemptAbort = null;
+    if (window.deadlineTimer !== null) this.#deps.time.clearTimeout(window.deadlineTimer);
+    window.deadlineTimer = null;
+    if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+    slot.retryTimer = null;
+    slot.kind = 'reattachment-hold';
+    // Already in the past when this hold followed an expired active window's own deadline — that lets the
+    // operator override apply immediately rather than waiting a second grace period. A window opened directly
+    // from a heartbeat local-failure fault has no prior deadline, so this is the one that arms it.
+    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+    const decision: ProviderProxySetContainmentRefusedDecision = {
+      action: 'preserve',
+      reason: 'containment_refused_live_claims',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+      refusedDecision,
+    };
+    this.#recordDecision(slot, decision);
+    // Restrained cadence starts from the hold's own entry, not from an immediate re-attempt: the active
+    // window already just tried and was refused or timed out, so retrying again at once would defeat the
+    // point of slowing down.
+    this.#scheduleReattachmentHoldRetry(slot, window);
+  }
+
+  /**
+   * The reattachment hold's own retry loop: the same redemption and absence sources as the active window, at
+   * a restrained cadence and with no deadline to expire against — the bound already expired, so nothing here
+   * re-arms it. `#isCurrentControlReattachment` doubles as this loop's own currency check.
+   */
+  #runReattachmentHoldAttempt(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
+    if (
+      this.#slots.get(slot.key) !== slot ||
+      slot.kind !== 'reattachment-hold' ||
+      slot.controlReattachmentWindow !== window
+    ) {
+      return;
+    }
+    slot.attemptToken += 1;
+    window.attemptToken = slot.attemptToken;
+    window.attempts += 1;
+    const token = window.attemptToken;
+    const abort = new AbortController();
+    window.attemptAbort = abort;
+    const authority = slot.authority;
+    const turn = this.#deps.recoveryDispatcher.begin(
+      'control-reattachment-hold',
+      { setIdentity: slot.identity },
+      {
+        evidence: (value, sourceId) => {
+          if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          window.attemptAbort = null;
+          if (sourceId === 'absence') {
+            const proof = value as ProviderProxySetContainmentProof;
+            const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
+            if (evidence.kind !== 'reap-required') {
+              this.#scheduleReattachmentHoldRetry(slot, window);
+              return;
+            }
+            const reapAbort = new AbortController();
+            window.attemptAbort = reapAbort;
+            void this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then(
+              (outcome) => {
+                if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+                window.attemptAbort = null;
+                if (outcome.kind === 'recorded-group-unattributable') {
+                  this.#scheduleReattachmentHoldRetry(slot, window);
+                  return;
+                }
+                this.#clearControlReattachment(slot, window);
+                this.#operatorDispositions.delete(slot.key);
+                this.containmentAbsent(slot.identity, outcome.disappearanceReceipt);
+              },
+              (error: unknown) => {
+                if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+                window.attemptAbort = null;
+                this.#deps.onError?.(
+                  `Provider proxy reattachment hold containment reap failed: ${singleLineErrorSummary(error)}`,
+                );
+                this.#scheduleReattachmentHoldRetry(slot, window);
+              },
+            );
+            return;
+          }
+          const outcome = value as ProviderProxyControlRedemptionOutcome;
+          if (outcome.kind === 'refused') {
+            const decisive = decisiveTeardownLatchedRefusal(outcome.refusal);
+            if (decisive !== null) {
+              this.#commitReattachmentTeardownLatched(slot, window, decisive);
+              return;
+            }
+            this.#scheduleReattachmentHoldRetry(slot, window);
+            return;
+          }
+          if (outcome.kind === 'redeemed') void this.#promoteControlReattachment(slot, window, token, outcome);
+        },
+        retry: () => {
+          if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          window.attemptAbort = null;
+          this.#scheduleReattachmentHoldRetry(slot, window);
+        },
+        fatal: () => {
+          if (this.#isCurrentControlReattachment(slot, window, token)) window.attemptAbort = null;
+        },
+      },
+    );
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'role-control',
+      input: { signal: abort.signal, run: (signal) => authority.redeemControl(signal) },
+      abort: (reason) => abort.abort(reason),
+    });
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: { identity: slot.identity, signal: abort.signal },
+      abort: (reason) => abort.abort(reason),
+    });
+  }
+
+  #scheduleReattachmentHoldRetry(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
+    if (
+      this.#slots.get(slot.key) !== slot ||
+      slot.kind !== 'reattachment-hold' ||
+      slot.controlReattachmentWindow !== window
+    ) {
+      return;
+    }
+    slot.retryTimer = this.#deps.time.setTimeout(() => {
+      slot.retryTimer = null;
+      this.#runReattachmentHoldAttempt(slot, window);
+    }, REATTACHMENT_HOLD_RETRY_MS);
+    slot.retryTimer.unref?.();
   }
 
   #beginFaultContainment(slot: EstablishedSlot, decision: ProviderProxySetAuthorityStopDecision): void {
@@ -2288,13 +2683,18 @@ export class ProviderProxySetLifecycle {
     if (
       decision.action === 'preserve' &&
       decision.fault !== 'heartbeat-indeterminate' &&
-      decision.fault !== 'control-channel-fault'
+      decision.fault !== 'control-channel-fault' &&
+      decision.reason !== 'containment_refused_live_claims'
     ) {
       return;
     }
     const setKey = providerProxySetKey(decision.setIdentity);
     if (decision.action === 'drain') {
       this.#operatorDispositions.delete(setKey);
+      return;
+    }
+    if (decision.reason === 'containment_refused_live_claims') {
+      this.#recordNonAuthorizingDisposition(setKey, decision);
       return;
     }
     const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
@@ -2344,6 +2744,56 @@ export class ProviderProxySetLifecycle {
     });
   }
 
+  /**
+   * Branches on `refusedDecision.reason` rather than a wrapper-level field: the five sources keep their own
+   * shape, so `role`/`method`/`cause` are read from the nested decision instead of the (absent) wrapper ones.
+   */
+  #recordNonAuthorizingDisposition(
+    setKey: ProviderProxySetKey,
+    decision: ProviderProxySetContainmentRefusedDecision,
+  ): void {
+    const refused = decision.refusedDecision;
+    const role = 'role' in refused ? refused.role : undefined;
+    const method = 'method' in refused ? refused.method : 'policy' in refused ? refused.policy.method : undefined;
+    const subjectKey = JSON.stringify([role ?? null, method ?? null]);
+    let dispositions = this.#operatorDispositions.get(setKey);
+    if (dispositions === undefined) {
+      dispositions = new Map();
+      this.#operatorDispositions.set(setKey, dispositions);
+    }
+    const incidentReason =
+      'incidentReason' in refused
+        ? refused.incidentReason
+        : 'lastIncidentReason' in refused
+          ? refused.lastIncidentReason
+          : 'terminalReason' in refused
+            ? refused.terminalReason
+            : refused.reason;
+    const waitingFor: ProviderProxySetOperatorDisposition['waitingFor'] =
+      refused.reason === 'control_reattachment_bound_expired' ||
+      refused.reason === 'control_reattachment_refused' ||
+      refused.reason === 'heartbeat_local_failure'
+        ? 'control-reattachment-bound-live-claims'
+        : refused.reason === 'heartbeat_hold_exhausted' || refused.reason === 'heartbeat_answer_unusable_hold_exhausted'
+          ? 'heartbeat-bound-live-claims'
+          : refused.reason === 'heartbeat_protocol_incompatible'
+            ? 'heartbeat-protocol-live-claims'
+            : 'operation-control-outcome-unknown';
+    dispositions.set(subjectKey, {
+      setIdentity: providerProxySetAddress(decision.setIdentity),
+      setToken: encodeProviderProxySetAddress(providerProxySetAddress(decision.setIdentity)),
+      liveClaims: decision.liveClaims,
+      ...(role === undefined ? {} : { role }),
+      ...(method === undefined ? {} : { method }),
+      ...('cause' in refused
+        ? { cause: refused.cause, attempts: refused.attempts, elapsedMs: refused.elapsedMs, boundMs: refused.boundMs }
+        : {}),
+      disposition: 'held',
+      incidentReason,
+      waitingFor,
+    });
+  }
+
   #recordOperatorExitRefusal(
     slot: EstablishedSlot,
     incidentReason: string,
@@ -2374,11 +2824,13 @@ export class ProviderProxySetLifecycle {
   ): void {
     const now = this.#deps.time.now();
     const subject =
-      decision.fault === 'operation-control-failed'
-        ? decision.policy.method
-        : decision.fault === 'control-channel-fault'
-          ? `${decision.role}:${decision.cause}`
-          : decision.method;
+      decision.reason === 'containment_refused_live_claims'
+        ? refusedDecisionSubjectKey(decision.refusedDecision)
+        : decision.fault === 'operation-control-failed'
+          ? decision.policy.method
+          : decision.fault === 'control-channel-fault'
+            ? `${decision.role}:${decision.cause}`
+            : decision.method;
     const key = JSON.stringify([subject, errorIdentity]);
     const report = slot.preserveReports.get(key);
     if (report === undefined) {
@@ -2428,15 +2880,66 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  #applyHeartbeatDisposition(
-    slot: EstablishedSlot,
-    disposition: ProviderProxySetHeartbeatHoldExhaustedStopDecision | ProviderProxySetHeartbeatAwaitAbsenceDecision,
-  ): void {
-    if (disposition.action === 'stop-and-reap') {
-      this.#beginFaultContainment(slot, disposition);
+  /**
+   * With zero live claims, every heartbeat evidence source stays the decisive `await-containment-absence`
+   * path it always was. With live claims present, none of the three may authorize destruction on their own —
+   * see `#holdHeartbeatDisposition`.
+   */
+  #applyHeartbeatDisposition(slot: EstablishedSlot, disposition: ProviderProxySetHeartbeatAwaitAbsenceDecision): void {
+    if (disposition.liveClaims === 0) {
+      this.#beginContainment(slot, disposition);
       return;
     }
-    this.#beginContainment(slot, disposition);
+    this.#holdHeartbeatDisposition(slot, disposition);
+  }
+
+  #holdHeartbeatDisposition(slot: EstablishedSlot, disposition: ProviderProxySetHeartbeatAwaitAbsenceDecision): void {
+    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+    // Each branch narrows `disposition.reason` to one literal before reading `fault`/`lastIncidentReason` off
+    // it, so the constructed object matches exactly one variant of the target union — reading them through a
+    // shared expression would type them as the union of both variants' values, an unpaired combination no
+    // single member of `ProviderProxySetNonAuthorizingContainmentDecision` accepts.
+    const refusedDecision: ProviderProxySetNonAuthorizingContainmentDecision =
+      disposition.reason === 'heartbeat_protocol_incompatible'
+        ? {
+            reason: disposition.reason,
+            fault: disposition.fault,
+            role: disposition.role,
+            method: disposition.method,
+            incidentReason: disposition.incidentReason,
+            error: disposition.error,
+          }
+        : disposition.reason === 'heartbeat_hold_exhausted'
+          ? {
+              reason: disposition.reason,
+              fault: disposition.fault,
+              role: disposition.role,
+              method: disposition.method,
+              lastIncidentReason: disposition.lastIncidentReason,
+              attempts: disposition.attempts,
+              elapsedMs: disposition.elapsedMs,
+              schedulerLatenessMs: disposition.schedulerLatenessMs,
+              error: disposition.error,
+            }
+          : {
+              reason: disposition.reason,
+              fault: disposition.fault,
+              role: disposition.role,
+              method: disposition.method,
+              lastIncidentReason: disposition.lastIncidentReason,
+              attempts: disposition.attempts,
+              elapsedMs: disposition.elapsedMs,
+              schedulerLatenessMs: disposition.schedulerLatenessMs,
+              error: disposition.error,
+            };
+    const decision: ProviderProxySetContainmentRefusedDecision = {
+      action: 'preserve',
+      reason: 'containment_refused_live_claims',
+      liveClaims: disposition.liveClaims,
+      setIdentity: disposition.setIdentity,
+      refusedDecision,
+    };
+    this.#recordDecision(slot, decision);
   }
 
   #recordHeartbeatObservation(slot: EstablishedSlot, incident: ProviderProxyHeartbeatObservation): void {
@@ -2510,9 +3013,11 @@ export class ProviderProxySetLifecycle {
     hold: Extract<HeartbeatEvidenceWindow, { kind: 'silence' }>,
     error: unknown,
     nowMonotonicMs: bigint,
-  ): ProviderProxySetHeartbeatHoldExhaustedStopDecision {
+  ): ProviderProxySetHeartbeatAwaitAbsenceDecision {
+    const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
     return {
-      action: 'stop-and-reap',
+      action: 'await-containment-absence',
+      liveClaims,
       reason: 'heartbeat_hold_exhausted',
       fault: 'heartbeat-hold-exhausted',
       role: incident.role,
@@ -2524,7 +3029,6 @@ export class ProviderProxySetLifecycle {
       // leaves bigint for a plain millisecond count.
       elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
       error: singleLineErrorSummary(error),
-      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     };
   }
@@ -2586,13 +3090,15 @@ export class ProviderProxySetLifecycle {
       if (dispositions?.size === 0) this.#operatorDispositions.delete(setKey);
     }
     for (const [key, report] of slot.preserveReports) {
-      if (
-        report.decision.fault !== 'heartbeat-indeterminate' ||
-        report.decision.role !== role ||
-        report.decision.method !== method
-      ) {
-        continue;
-      }
+      const recovers =
+        (report.decision.fault === 'heartbeat-indeterminate' &&
+          report.decision.role === role &&
+          report.decision.method === method) ||
+        (report.decision.reason === 'containment_refused_live_claims' &&
+          'method' in report.decision.refusedDecision &&
+          report.decision.refusedDecision.role === role &&
+          report.decision.refusedDecision.method === method);
+      if (!recovers) continue;
       slot.preserveReports.delete(key);
       this.#reportDecision(report.decision, `summary=recovered suppressed=${report.suppressed}`);
     }
@@ -2697,6 +3203,77 @@ export class ProviderProxySetLifecycle {
           terminalReason: fault.terminalReason,
         };
     }
+  }
+
+  /**
+   * `heartbeat-failed` with `local-failure` and live claims present: this process's own failure to reach the
+   * peer, never a disposition about the peer. Opens a fresh reattachment window directly in the hold phase —
+   * there is no bounded active window to run first, because a local send failure already is the same "our own
+   * failure to reach the peer" conclusion the bound exists to reach.
+   */
+  #beginHeartbeatLocalFailureHold(
+    slot: EstablishedSlot,
+    fault: Extract<ProviderProxyAuthorityFault, { kind: 'heartbeat-failed' }>,
+  ): void {
+    if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
+    const returnKind = slot.kind;
+    const firstObservedAtMonotonicMs = this.#deps.time.monotonicNow();
+    slot.attemptToken += 1;
+    const window: ControlReattachmentWindow = {
+      returnKind,
+      firstObservedAtMonotonicMs,
+      trigger: { role: fault.role, cause: 'heartbeat-local-failure', error: fault.error },
+      attempts: 0,
+      boundMs: 0,
+      deadlineMonotonicMs: firstObservedAtMonotonicMs,
+      attemptToken: slot.attemptToken,
+      attemptAbort: null,
+      deadlineTimer: null,
+    };
+    slot.controlReattachmentWindow = window;
+    this.#removeRoute(slot);
+    slot.authority.stopHeartbeats();
+    void slot.authority.initiateControlClose().catch((error: unknown) => {
+      this.#deps.onError?.(
+        `Provider proxy control close before reattachment hold failed: ${singleLineErrorSummary(error)}`,
+      );
+    });
+    this.#enterReattachmentHold(slot, window, {
+      reason: 'heartbeat_local_failure',
+      fault: 'heartbeat-failed',
+      role: fault.role,
+      method: fault.method,
+      terminalReason: 'local-failure',
+      error: singleLineErrorSummary(fault.error),
+    });
+  }
+
+  /**
+   * `operation-control-failed` with live claims present. `ProviderProxyAuthorityFault`'s member of this kind
+   * is always a `ContainmentRequiredControlCallPolicy` mutation, never a retry-safe one — those stay on the
+   * non-consuming incident channel (`#recordAuthorityIncident`'s `preserve` branch) and never reach here.
+   * The route is removed so no further mutation is dispatched through it; claims, routing eligibility
+   * otherwise, and reconciliation ownership are unchanged.
+   */
+  #holdOperationControlIndeterminate(
+    slot: EstablishedSlot,
+    fault: Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>,
+  ): void {
+    this.#removeRoute(slot);
+    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+    const decision: ProviderProxySetContainmentRefusedDecision = {
+      action: 'preserve',
+      reason: 'containment_refused_live_claims',
+      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+      setIdentity: slot.identity,
+      refusedDecision: {
+        reason: 'operation_control_indeterminate',
+        fault: 'operation-control-failed',
+        policy: fault.policy,
+        error: singleLineErrorSummary(fault.error),
+      },
+    };
+    this.#recordDecision(slot, decision);
   }
 
   #drainDecision(

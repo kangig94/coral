@@ -68,6 +68,7 @@ export const PROVIDER_PROXY_RECOVERY_CONSUMER_SEAMS = [
   'ordinary-set-inheritance',
   'containment-attempt',
   'control-reattachment',
+  'control-reattachment-hold',
   'exact-capsule-recovery',
   'capsule-retirement',
   'foreign-capsule-retirement',
@@ -695,7 +696,7 @@ export function createProviderProxyRecoveryDispatcher(
           reduceExactCapsule();
           return;
         }
-        if (seam === 'control-reattachment') {
+        if (seam === 'control-reattachment' || seam === 'control-reattachment-hold') {
           reattachmentSources.set(sourceId, observation);
           reduceControlReattachment();
           return;

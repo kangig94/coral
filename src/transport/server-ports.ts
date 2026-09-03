@@ -196,7 +196,11 @@ export type HealthSnapshot = {
         | 'operator-abandonment'
         | 'store-repair'
         | 'containment-authorization'
-        | 'containment-outcome-unknown';
+        | 'containment-outcome-unknown'
+        | 'heartbeat-bound-live-claims'
+        | 'control-reattachment-bound-live-claims'
+        | 'heartbeat-protocol-live-claims'
+        | 'operation-control-outcome-unknown';
     }>;
   };
 };
