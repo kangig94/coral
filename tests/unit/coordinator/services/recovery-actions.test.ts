@@ -62,6 +62,15 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
   );
   runtime.process.observeLiveness = vi.fn(observeLiveness);
   runtime.process.readProcessIncarnation = readProcessIncarnation;
+  runtime.process.observeProcessIdentities = async (owners) =>
+    owners.map((owner) => {
+      const observed = observeLiveness(owner.pid);
+      if (observed === 'absent') return { owner, evidence: { kind: 'pid-absent' as const } };
+      if (observed === 'unknown') {
+        return { owner, evidence: { kind: 'unobservable' as const, cause: 'probe-failed' as const } };
+      }
+      return { owner, evidence: { kind: 'incarnation' as const, incarnation: observedIncarnation } };
+    });
   runtime.process.kill = kill;
   const recoveryRegistry = new RecoveryRegistry();
   const settleFault = vi.fn(() => COORDINATOR_NOT_APPLICABLE_FACTS);

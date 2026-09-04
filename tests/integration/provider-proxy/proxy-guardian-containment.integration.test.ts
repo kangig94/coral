@@ -1,4 +1,5 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
+import type { RecordedProcessIdentity } from '#src/infra/process-containment.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -270,6 +271,8 @@ async function startGuardianAndReaper() {
       },
       observeLiveness: (pid: number) =>
         ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent') as ProcessLiveness,
+      observeRecordedProcessAsync: async (identity: RecordedProcessIdentity) =>
+        alive.has(identity.pid) && identity.incarnation === CONTAINMENT.incarnation ? 'alive' : 'absent',
     },
     platform: 'linux' as const,
     maxRecordedRoots: 128,

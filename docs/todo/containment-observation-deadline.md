@@ -1,9 +1,9 @@
 # TODO — observation cost sits outside every deadline that bounds containment
 
-**Status**: open, observed in the field. The orphan population is reproduced; the arithmetic below remains
-derived from constants, not from an instrumented teardown or an observed coordinator exit.
+**Status**: closed. The orphan population was observed in the field; the bounds remain derived from constants,
+not from an instrumented coordinator exit.
 
-## What exists
+## What existed before the fix
 
 On 2026-08-30, three complete provider-proxy sets — guardian, reaper, and proxy — were alive on a developer
 machine with no coordinator running and no live jobs: `coral-cli jobs` reported no jobs in a live phase. Each
@@ -94,39 +94,19 @@ the full 14,000ms; only the holder-observed-absence path lost it.
   entry is about, but an earlier revision of this bullet claimed the whole discovery path was out of reach and
   that was wrong.
 
-## Required shape
+## Resolution and bound
 
-The honest fix is an observation that a deadline can interrupt, which means asynchronous — `readIncarnation`
-behind a port that accepts an `AbortSignal`, so `waitForAbsence` can check its budget between roots and the
-existing per-call model extends to observation unchanged. That is a larger change than it sounds: the probe is
-synchronous at every call site, including `observeContainment`, and `ProcessContainmentEnvironment` is
-synchronous throughout.
+Budgeted containment now uses the runtime's asynchronous identity-bound observer. The observer accepts the
+caller's `AbortSignal`, so cancellation settles the observation without waiting for a synchronous subprocess.
+The recorded-set sweep checks its monotonic deadline before each target and after every awaited probe. If a
+probe crosses the deadline, the partial sweep is `unobservable`; it cannot become absence. Absence-only waits
+also stop at the first present target because the remaining roots cannot change that verdict.
 
-Three smaller things are worth doing first and none needs that. The first is the one that actually caps the
-overshoot; the other two only reduce the multiplier:
-
-- **Check the deadline inside the observation loop.** `observeRecordedSet`
-  (`src/infra/process-containment.ts`) already receives an environment carrying `environment.clock`,
-  and `waitForAbsence` already holds `waitDeadline`. Threading it in and breaking when it passes bounds a
-  sweep to the deadline plus one in-flight probe — roughly 4s on darwin — instead of the figure above. It
-  changes no disposition: a sweep that stops early has not observed all targets absent, which is already the
-  `false` return `waitForAbsence` has for running out of time.
-
-- **Batch the Darwin sweep.** Read the boot session id once per sweep rather than once per root, halving the
-  subprocess count. `readMacBootSessionId`'s comment (`src/infra/node-process.ts`) already weighed
-  this and declined: it notes that what remains after the health response stopped being the hot caller is
-  "probes of _other_ pids, where the `ps` call has to happen anyway and saving one of two forks buys little."
-  That reasoning is sound per probe and was never applied to a sweep — at 129 targets re-observed every 25ms,
-  one of two forks is half of the figure above. The disagreement is about magnitude, not about the argument,
-  and a sweep-scoped read leaves the module-level cache it rejected still rejected.
-- **Short-circuit the observation.** `waitForAbsence` needs to know whether _all_ targets are absent; the
-  first non-absent answer settles that. `observeRecordedSet` continues because it also collects a
-  `firstFailure` to throw, so the two purposes have to be separated before the loop can stop early.
-
-## What would have to be true to start
-
-Met on 2026-08-30 by the field sighting above. It is the measured case this entry required: complete orphaned
-sets existed after their coordinator and persisted for hours, so the population is not arithmetic alone. No
-further field sighting blocks starting. The 516-second figure is still only a product of worst-case constants,
-however; implementation still needs an instrumented reproduction or failing test that measures observation
-against its deadline rather than treating that product as a measured duration.
+The maximum-root multiplier no longer controls deadline overshoot. A sweep can start one probe immediately
+before its deadline, so the operation's modeled bound is its deadline plus one
+`PROCESS_INCARNATION_PROBE_TIMEOUT_MS` interval. The Darwin probe shares one 2,000ms abort signal across its
+`sysctl` and `ps` subprocesses; the earlier 516-second estimate incorrectly charged 2,000ms to each subprocess
+instead of to their shared probe. The holder-absence path therefore has a modeled worst case of about 15
+seconds (13,000ms plus 2,000ms), while paths granted the full 14,000ms reserve have a modeled worst case of
+about 16 seconds. Those are end-to-end return bounds under the runtime timer model, not claims that every
+target can be observed inside the reserve.

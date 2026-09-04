@@ -45,6 +45,18 @@ describe('interrupted provider-operation carrier reclamation', () => {
         nowMs += BigInt(milliseconds);
       },
     });
+    const observedProcess = {
+      observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
+      observeRecordedProcessAsync: async (identity: { pid: number; incarnation: ProcessIncarnation }) => {
+        const observed = live.get(identity.pid);
+        return observed === undefined ? 'absent' : observed === identity.incarnation ? 'alive' : 'absent';
+      },
+      kill: (pid: number, signal: NodeJS.Signals | 0) => {
+        signals.push({ pid, signal });
+        if (signal === 'SIGKILL') live.clear();
+        return true;
+      },
+    };
 
     try {
       const reclamation = reapProviderOperationCarrier(record, {
@@ -52,14 +64,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
         clock,
         platform: 'linux',
         signal: controller.signal,
-        process: {
-          observeLiveness: (pid) => (live.has(pid) ? 'alive' : 'absent'),
-          kill: (pid, signal) => {
-            signals.push({ pid, signal });
-            if (signal === 'SIGKILL') live.clear();
-            return true;
-          },
-        },
+        process: observedProcess,
         readProcessIncarnation: (pid) => live.get(pid) ?? null,
       });
       await graceStarted.promise;
@@ -114,14 +119,23 @@ describe('interrupted provider-operation carrier reclamation', () => {
       [record.providerRoot.pid, record.providerRoot.incarnation],
     ]);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const termDelivered = createDeferred<void>();
     const runtime = {
       ...baseRuntime,
       process: {
         ...baseRuntime.process,
         observeLiveness: (pid: number) => (live.has(pid) ? 'alive' : 'absent') as ProcessLiveness,
         readProcessIncarnation: (pid: number) => live.get(pid) ?? null,
+        observeProcessIdentities: async (owners: readonly { pid: number; incarnation: ProcessIncarnation }[]) =>
+          owners.map((owner) => ({
+            owner,
+            evidence: live.has(owner.pid)
+              ? { kind: 'incarnation' as const, incarnation: live.get(owner.pid)! }
+              : { kind: 'pid-absent' as const },
+          })),
         kill: (pid: number, signal: NodeJS.Signals | 0) => {
           signals.push({ pid, signal });
+          if (signals.length === 2) termDelivered.resolve();
           if (signal === 'SIGKILL') live.clear();
           return true;
         },
@@ -196,6 +210,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
         signal: controller.signal,
         onCommitStart: () => undefined,
       });
+      await termDelivered.promise;
       expect(signals).toEqual([
         { pid: -record.locator.containment.processGroupId, signal: 'SIGTERM' },
         { pid: record.providerRoot.pid, signal: 'SIGTERM' },

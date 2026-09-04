@@ -108,7 +108,7 @@ describe('durable transport', () => {
     expect(tailWatermark).toBeGreaterThan(0);
   });
 
-  it('reaps surviving process-group descendants before returning a provider result', async () => {
+  it('holds the provider result until an unattributable surviving descendant exits', async () => {
     const jobDir = join(tmpRoot, 'job-with-descendant');
     mkdirSync(jobDir, { recursive: true });
 
@@ -119,7 +119,7 @@ describe('durable transport', () => {
         '-e',
         [
           "const { spawn } = require('node:child_process');",
-          "const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+          "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 250)'], { stdio: 'ignore' });",
           "process.stdout.write(String(descendant.pid) + '\\n');",
           'descendant.unref();',
         ].join(''),

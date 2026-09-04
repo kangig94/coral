@@ -4003,6 +4003,20 @@ describe('lifecycle recovery', () => {
         vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(
           fixture.carrier === 'durable-absent' ? null : incarnation,
         );
+        vi.spyOn(runtime.process, 'observeRecordedProcessAsync').mockImplementation(async () =>
+          fixture.carrier === 'durable-alive' ? 'alive' : fixture.carrier === 'durable-absent' ? 'absent' : 'unknown',
+        );
+        vi.spyOn(runtime.process, 'observeProcessIdentities').mockImplementation(async (owners) =>
+          owners.map((owner) => ({
+            owner,
+            evidence:
+              fixture.carrier === 'durable-absent'
+                ? { kind: 'pid-absent' as const }
+                : fixture.carrier === 'durable-unknown'
+                  ? { kind: 'unobservable' as const, cause: 'probe-failed' as const }
+                  : { kind: 'incarnation' as const, incarnation },
+          })),
+        );
       }
       const runtimeProjection = progressStore.readRuntimeProjection(jobId);
       const interruptAppServerJob = fakeService.interruptAppServerJob;
@@ -4072,7 +4086,7 @@ describe('lifecycle recovery', () => {
             .prepare("SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = 'session.claim.released'")
             .get(sessionId),
         ).toEqual({ count: settled ? 1 : 0 });
-        if (fixture.carrier === 'app-server-not-addressable') {
+        if (fixture.carrier === 'app-server-not-addressable' || fixture.carrier === 'durable-unknown') {
           expect(observeLiveness).not.toHaveBeenCalledWith(-pid);
         } else {
           expect(observeLiveness).toHaveBeenCalledWith(-pid);

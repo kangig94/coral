@@ -36,15 +36,21 @@ function createFakeEnvironment(
     refusedPids?: ReadonlySet<number>;
     groupLiveness?: ProcessLiveness;
     leaderIncarnation?: ProcessIncarnation;
+    observationCostMs?: number;
+    platform?: NodeJS.Platform;
+    knownLivePids?: ReadonlySet<number>;
+    exitedPids?: ReadonlySet<number>;
   } = {},
 ): {
   environment: ProcessContainmentEnvironment<typeof containmentClockScope>;
   now: () => number;
   observedPids: number[];
+  observedIdentityPids: number[];
   signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }>;
 } {
   let elapsedMs = 0;
   const observedPids: number[] = [];
+  const observedIdentityPids: number[] = [];
   const signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }> = [];
   const observeLiveness = (pid: number): ProcessLiveness => {
     observedPids.push(pid);
@@ -63,14 +69,34 @@ function createFakeEnvironment(
     },
   });
 
+  const readProcessIncarnation = (pid: number): ProcessIncarnation | null => {
+    if (options.unreadablePids?.has(pid)) return null;
+    if (pid === containment.pid && state.leaderAlive) {
+      return options.leaderIncarnation ?? containment.incarnation;
+    }
+    if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.incarnation;
+    return null;
+  };
+
   return {
     now: () => elapsedMs,
     observedPids,
+    observedIdentityPids,
     signals,
     environment: {
       clock,
       process: {
         observeLiveness,
+        observeRecordedProcessAsync: async (identity, signal) => {
+          observedIdentityPids.push(identity.pid);
+          if (signal?.aborted) return 'unknown';
+          elapsedMs += options.observationCostMs ?? 0;
+          const liveness = observeLiveness(identity.pid);
+          if (liveness === 'absent') return 'absent';
+          const observedIncarnation = readProcessIncarnation(identity.pid);
+          if (observedIncarnation === null || liveness === 'unknown') return 'unknown';
+          return observedIncarnation === identity.incarnation ? 'alive' : 'absent';
+        },
         kill: (pid, signal) => {
           signals.push({ pid, signal, at: elapsedMs });
           elapsedMs += options.signalCostMs ?? 0;
@@ -82,16 +108,13 @@ function createFakeEnvironment(
           return observeLiveness(pid) !== 'absent';
         },
       },
-      platform: 'linux',
+      platform: options.platform ?? 'linux',
       maxRecordedRoots: 128,
-      readProcessIncarnation: (pid) => {
-        if (options.unreadablePids?.has(pid)) return null;
-        if (pid === containment.pid && state.leaderAlive) {
-          return options.leaderIncarnation ?? containment.incarnation;
-        }
-        if (pid === providerRoot.pid && state.providerRootAlive) return providerRoot.incarnation;
-        return null;
-      },
+      readProcessIncarnation,
+      knownLiveChildFor: (pid) =>
+        options.knownLivePids?.has(pid) === true
+          ? { pid, hasExited: () => options.exitedPids?.has(pid) === true }
+          : undefined,
     },
   };
 }
@@ -183,6 +206,74 @@ describe('recorded process containment', () => {
       { pid: 101, signal: 'SIGKILL', at: 5_375 },
     ]);
     expect(fake.now()).toBe(6_500);
+  });
+
+  it('returns a retained refusal on Darwin when no live child handle authorizes the signals', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: true },
+      { platform: 'darwin' },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), fake.environment),
+    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+    expect(fake.signals).toEqual([]);
+  });
+
+  it('allows Darwin signals while live child handles still own every target', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: true },
+      { platform: 'darwin', knownLivePids: new Set([containment.pid, providerRoot.pid]) },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), fake.environment),
+    ).resolves.toEqual({ kind: 'containment-absent' });
+    expect(fake.signals.map(({ signal }) => signal)).toEqual(['SIGTERM', 'SIGTERM', 'SIGKILL', 'SIGKILL']);
+  });
+
+  it('refuses Darwin signals after a retained child handle has observed exit', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+      {
+        platform: 'darwin',
+        knownLivePids: new Set([containment.pid]),
+        exitedPids: new Set([containment.pid]),
+      },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 6_500), fake.environment),
+    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+    expect(fake.signals).toEqual([]);
+  });
+
+  it('stops a partial observation at the deadline without reporting absence', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: false, leaderAlive: false, providerRootAlive: false },
+      { observationCostMs: 1_000 },
+    );
+    const roots = [
+      providerRoot,
+      { pid: 102, incarnation: testIncarnation(3) },
+      { pid: 103, incarnation: testIncarnation(4) },
+    ];
+
+    await expect(
+      reapRecordedContainment(containment, roots, deadlineAfter(fake.environment, 1_500), fake.environment),
+    ).rejects.toMatchObject({ code: 'process_containment_reap_failed' });
+    expect(fake.observedIdentityPids).toEqual([containment.pid, providerRoot.pid]);
+    expect(fake.signals).toEqual([]);
+  });
+
+  it('does not probe remaining roots once a wait observes the containment present', async () => {
+    const fake = createFakeEnvironment({ groupAlive: true, leaderAlive: true, providerRootAlive: true });
+
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 100), fake.environment),
+    ).rejects.toMatchObject({ code: 'process_containment_reap_failed' });
+    expect(fake.observedIdentityPids.filter((pid) => pid === providerRoot.pid)).toHaveLength(2);
+    expect(fake.signals.map(({ signal }) => signal)).toEqual(['SIGTERM', 'SIGTERM']);
   });
 
   it('revalidates caller authority immediately before each signal and reports only delivered signals', async () => {

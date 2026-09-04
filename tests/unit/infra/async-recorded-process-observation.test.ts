@@ -17,7 +17,7 @@ const SOMEONE_ELSE = testIncarnation('someone-else');
 const PID = 4321;
 
 type Readers = Readonly<{
-  readIncarnation: (pid: number) => Promise<ProcessIncarnation | null>;
+  readIncarnation: (pid: number, signal?: AbortSignal) => Promise<ProcessIncarnation | null>;
   observeLiveness: (pid: number) => ProcessLiveness;
 }>;
 
@@ -74,11 +74,22 @@ describe('async recorded process observation', () => {
     ).resolves.toBe('unknown');
   });
 
+  it('decides absent when the pid disappears during the identity read', async () => {
+    const observeLiveness = vi.fn<() => ProcessLiveness>().mockReturnValueOnce('alive').mockReturnValue('absent');
+    const { observe } = observerWith({
+      observeLiveness,
+      readIncarnation: () => Promise.resolve(null),
+    });
+
+    await expect(observe({ pid: PID, incarnation: RECORDED })).resolves.toBe('absent');
+    expect(observeLiveness).toHaveBeenCalledTimes(2);
+  });
+
   it('answers unknown on a probe timeout, the same as any other unreadable token', async () => {
     // The reader contract is: a timed-out platform probe resolves null exactly like any other unreadable
     // read (see linux/mac-process-incarnation-async.test.ts for the bound that produces this null). This
-    // combinator does not and cannot distinguish "timed out" from "unreadable for another reason" — both
-    // answer unknown, never absent and never alive.
+    // combinator cannot distinguish "timed out" from "unreadable for another reason". Neither licenses
+    // pid-only life; only a second liveness check that proves disappearance may answer absent.
     const { observe } = observerWith({
       observeLiveness: () => 'alive',
       readIncarnation: () => Promise.resolve(null),
@@ -140,5 +151,24 @@ describe('async recorded process observation', () => {
     } finally {
       clearInterval(interval);
     }
+  });
+
+  it('answers unknown immediately when its caller aborts an in-flight read', async () => {
+    let settleRead!: (value: ProcessIncarnation | null) => void;
+    const { observe, readIncarnation } = observerWith({
+      observeLiveness: () => 'alive',
+      readIncarnation: () =>
+        new Promise((resolve) => {
+          settleRead = resolve;
+        }),
+    });
+    const abort = new AbortController();
+    const observation = observe({ pid: PID, incarnation: RECORDED }, abort.signal);
+
+    abort.abort(new Error('deadline expired'));
+
+    await expect(observation).resolves.toBe('unknown');
+    expect(readIncarnation).toHaveBeenCalledWith(PID, abort.signal);
+    settleRead(RECORDED);
   });
 });

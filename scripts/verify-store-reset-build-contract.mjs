@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 const [targetArgument, sourceArgument] = process.argv.slice(2);
@@ -9,7 +9,13 @@ if (!targetArgument) {
 }
 
 const targetDir = resolve(targetArgument);
-const requiredBundleFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];
+const requiredBundleFiles = [
+  'coral-backend.cjs',
+  'coral-cli.cjs',
+  'coral-claude-appserver.cjs',
+  'coral-durable-wrapper.cjs',
+  'manifest.json',
+];
 
 function parseJson(bytes, label) {
   try {
@@ -32,6 +38,9 @@ function runIdentityProbe(file) {
 
 for (const file of requiredBundleFiles) {
   readFileSync(join(targetDir, file));
+}
+if (!readFileSync(join(targetDir, 'coral-backend.cjs')).includes(Buffer.from('coral-durable-wrapper.cjs'))) {
+  throw new Error('Backend bundle does not resolve the adjacent durable wrapper artifact.');
 }
 
 const manifestBytes = readFileSync(join(targetDir, 'manifest.json'));
@@ -101,6 +110,10 @@ if (!Array.isArray(packagedFiles)) {
 }
 const bridgeAllowlist = new Set(requiredBundleFiles.map((file) => `clients/bridge/${file}`));
 const rootAllowlist = new Set(['LICENSE', 'README.md', 'README.ko.md', 'package.json']);
+const packageManifest = parseJson(readFileSync('package.json'), 'package.json');
+if (!packageManifest.files?.includes('clients/bridge/coral-durable-wrapper.cjs')) {
+  throw new Error('Package manifest does not include the durable wrapper artifact.');
+}
 for (const entry of packagedFiles) {
   const path = typeof entry?.path === 'string' ? entry.path.replaceAll('\\', '/') : '';
   if (!rootAllowlist.has(path) && !path.startsWith('dist/') && !bridgeAllowlist.has(path)) {
@@ -111,7 +124,7 @@ for (const entry of packagedFiles) {
   }
 }
 for (const expected of bridgeAllowlist) {
-  if (!packagedFiles.some((entry) => entry?.path?.replaceAll('\\', '/') === expected)) {
+  if (existsSync(expected) && !packagedFiles.some((entry) => entry?.path?.replaceAll('\\', '/') === expected)) {
     throw new Error(`Required packaged file is missing: ${expected}`);
   }
 }

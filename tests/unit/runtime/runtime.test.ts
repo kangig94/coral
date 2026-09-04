@@ -162,6 +162,7 @@ describe('createRealRuntime', () => {
       const exit = await runtime.process.durable.waitForExit(durable);
 
       expect(durable.pid).toBeGreaterThan(0);
+      expect(durable.launchHandle).toEqual(expect.any(String));
       expect(exit).toMatchObject({ exitCode: 0, signal: null });
       expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
       expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
@@ -238,6 +239,34 @@ describe('createRealRuntime', () => {
       signal: 'SIGKILL',
     });
     expect(runtime.process.observeLiveness(durable.pid)).toBe('absent');
+  }, 10_000);
+
+  it('refuses an exit promise from a different launch handle', async () => {
+    const runtime = createRealRuntime('prod');
+    const rootDir = createTempDir('coral-runtime-launch-handle-');
+    const firstJobDir = join(rootDir, 'job-1');
+    const secondJobDir = join(rootDir, 'job-2');
+    runtime.storage.mkdirSync(firstJobDir, { recursive: true });
+    runtime.storage.mkdirSync(secondJobDir, { recursive: true });
+
+    const first = await runtime.process.durable.launch({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 100);'],
+      jobDir: firstJobDir,
+    });
+    const second = await runtime.process.durable.launch({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 100);'],
+      jobDir: secondJobDir,
+    });
+
+    await expect(runtime.process.durable.waitForExit({ ...first, launchHandle: second.launchHandle })).rejects.toThrow(
+      `Durable launch ${second.launchHandle} is not attached to process ${first.pid}.`,
+    );
+    await expect(runtime.process.durable.waitForExit(first)).resolves.toMatchObject({ exitCode: 0, signal: null });
+    await expect(runtime.process.durable.waitForExit(second)).resolves.toMatchObject({ exitCode: 0, signal: null });
   });
 
   it('does not settle a failed wrapper while its recorded child is still running', async () => {

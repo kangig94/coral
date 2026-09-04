@@ -22,6 +22,7 @@ const OUTPUTS = {
   backend: 'clients/build/coral-backend.cjs',
   cli: 'clients/build/coral-cli.cjs',
   claudeAppserver: 'clients/build/coral-claude-appserver.cjs',
+  durableWrapper: 'clients/build/coral-durable-wrapper.cjs',
   manifest: 'clients/build/manifest.json',
 } as const;
 
@@ -56,6 +57,10 @@ function createFreshBuildFixture(): string {
         path: OUTPUTS.claudeAppserver,
         sha256: sha256(`output:${OUTPUTS.claudeAppserver}`),
       },
+      durableWrapper: {
+        path: OUTPUTS.durableWrapper,
+        sha256: sha256(`output:${OUTPUTS.durableWrapper}`),
+      },
       manifest: { path: OUTPUTS.manifest, sha256: sha256(`output:${OUTPUTS.manifest}`) },
     },
   };
@@ -73,7 +78,7 @@ function captureFreshnessResult(root: string): string {
 }
 
 describe('lifecycle bundle build freshness', () => {
-  it('accepts a valid four-output receipt', () => {
+  it('accepts a valid lifecycle bundle receipt', () => {
     const root = createFreshBuildFixture();
 
     expect(() => assertLifecycleBundleSetFresh(root)).not.toThrow();

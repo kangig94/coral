@@ -115,6 +115,12 @@ function createHarness(options: {
     options.observeContainmentLiveness ??
       ((pid: number) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent')),
   );
+  const readContainmentIncarnation =
+    options.readContainmentIncarnation ??
+    ((pid: number) => {
+      if (!alive.has(pid)) return null;
+      return pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : testIncarnation(2_000);
+    });
   const signalContainment = vi.fn((pid: number) => {
     const targets = pid < 0 ? [...alive] : [pid];
     for (const target of targets) {
@@ -139,16 +145,17 @@ function createHarness(options: {
       process: {
         kill: signalContainment,
         observeLiveness: observeContainmentLiveness,
+        observeRecordedProcessAsync: async (identity) => {
+          const liveness = observeContainmentLiveness(identity.pid);
+          if (liveness !== 'alive') return liveness;
+          const observed = readContainmentIncarnation(identity.pid);
+          return observed === null ? 'unknown' : observed === identity.incarnation ? 'alive' : 'absent';
+        },
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
       // A incarnation is only readable while the process exists, which is what makes it identity evidence.
-      readProcessIncarnation:
-        options.readContainmentIncarnation ??
-        ((pid) => {
-          if (!alive.has(pid)) return null;
-          return pid === CONTAINMENT.pid ? CONTAINMENT.incarnation : testIncarnation(2_000);
-        }),
+      readProcessIncarnation: readContainmentIncarnation,
     },
     scheduler,
     holderAuthority,
@@ -861,6 +868,8 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
               return true;
             },
             observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
+            observeRecordedProcessAsync: async (identity) =>
+              alive.has(identity.pid) && identity.incarnation === CONTAINMENT.incarnation ? 'alive' : 'absent',
           },
           platform: 'linux',
           maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
@@ -979,6 +988,8 @@ describe('the killed-coordinator death timetable (AC9)', () => {
             return true;
           },
           observeLiveness: (pid) => ((pid < 0 ? alive.has(-pid) : alive.has(pid)) ? 'alive' : 'absent'),
+          observeRecordedProcessAsync: async (identity) =>
+            alive.has(identity.pid) && identity.incarnation === CONTAINMENT.incarnation ? 'alive' : 'absent',
         },
         platform: 'linux',
         maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,

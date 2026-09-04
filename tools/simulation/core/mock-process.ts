@@ -22,6 +22,7 @@ import type {
 import type { RecordedProcessIdentity } from '../../../src/infra/process-containment.js';
 import type {
   DurableExecutionTransport,
+  DurableLaunchHandle,
   DurableLaunchOptions,
   DurableLaunchResult,
   RuntimeExecOptions,
@@ -484,6 +485,7 @@ export class MockProcessSpawner {
     }
 
     return {
+      launchHandle: `simulation-durable-launch:${leader.incarnation}` as DurableLaunchHandle,
       pid,
       stdoutPath,
       stderrPath,

@@ -89,12 +89,36 @@ function createProviderProcessRuntime(
   const readProcessIncarnation = vi.fn<ProcessPort['readProcessIncarnation']>((targetPid) =>
     targetPid === pid && processAlive ? incarnation : null,
   );
+  const observeProcessIdentities: ProcessPort['observeProcessIdentities'] = async (owners) =>
+    owners.map((owner) => {
+      if (observeLiveness(owner.pid) === 'absent') {
+        return { owner, evidence: { kind: 'pid-absent' as const } };
+      }
+      const observed = readProcessIncarnation(owner.pid, platform as NodeJS.Platform);
+      return observed === null
+        ? { owner, evidence: { kind: 'unobservable' as const, cause: 'incarnation-unavailable' as const } }
+        : { owner, evidence: { kind: 'incarnation' as const, incarnation: observed } };
+    });
+  const observeRecordedProcessAsync: ProcessPort['observeRecordedProcessAsync'] = async (owner) => {
+    const liveness = observeLiveness(owner.pid);
+    if (liveness !== 'alive') return liveness;
+    const observed = readProcessIncarnation(owner.pid, platform as NodeJS.Platform);
+    return observed === owner.incarnation ? 'alive' : observed === null ? 'unknown' : 'absent';
+  };
   const readPlatform = vi.fn(() => platform);
   return {
     runtime: {
       ...base,
       env: { ...base.env, platform: readPlatform },
-      process: { ...base.process, spawn, kill: processKill, observeLiveness, readProcessIncarnation },
+      process: {
+        ...base.process,
+        spawn,
+        kill: processKill,
+        observeLiveness,
+        readProcessIncarnation,
+        observeRecordedProcessAsync,
+        observeProcessIdentities,
+      },
     },
     spawn,
     childKill,
@@ -180,7 +204,12 @@ describe('launch admission', () => {
         expect(fake.processKill).not.toHaveBeenCalled();
         expect(fake.childKill).not.toHaveBeenCalled();
       }
-      await manager.shutdown();
+      if (platform === 'darwin' && capabilities.canProbeStartTime && capabilities.canSignalProcessGroup) {
+        await expect(manager.shutdown()).rejects.toMatchObject({ code: 'process_identity_unverified' });
+        expect(fake.processKill).not.toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+      } else {
+        await manager.shutdown();
+      }
     },
   );
 
@@ -666,7 +695,7 @@ describe('launch admission', () => {
       cleanupFailures: 0,
       owner: 'launch-coordinator',
     });
-    expect(runtime.process.kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(runtime.process.kill).not.toHaveBeenCalled();
   });
 
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
@@ -750,8 +779,7 @@ describe('launch admission', () => {
       processGroupId: TEST_PROVIDER_PID,
       childRoot: { pid: childPid, incarnation },
     });
-    expect(runtime.process.kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
-    expect(runtime.process.kill).toHaveBeenCalledWith(childPid, 'SIGTERM');
+    expect(runtime.process.kill).not.toHaveBeenCalled();
     rejectLaunch(new Error('synthetic launch settlement'));
     await expect(spawn).rejects.toThrow('synthetic launch settlement');
   });

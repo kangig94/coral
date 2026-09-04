@@ -954,6 +954,7 @@ function guardianUndoRuntime(
   killCalls: SignalCall[],
   observe?: () => ProcessLiveness,
   onKill?: (signal: NodeJS.Signals | 0) => void,
+  identityMatches = true,
 ): Runtime {
   let monotonicNow = 0n;
   return {
@@ -973,6 +974,10 @@ function guardianUndoRuntime(
         return true;
       },
       observeLiveness: () => observe?.() ?? (isAlive() ? 'alive' : 'absent'),
+      observeRecordedProcessAsync: async () => {
+        const liveness = observe?.() ?? (isAlive() ? 'alive' : 'absent');
+        return liveness === 'alive' && !identityMatches ? 'absent' : liveness;
+      },
     },
   } as unknown as Runtime;
 }
@@ -1066,7 +1071,7 @@ describe('buildGuardianSpawnUndo', () => {
 
   it('refuses to signal once the recorded incarnation no longer matches (recycled pid)', async () => {
     const killCalls: SignalCall[] = [];
-    const runtime = guardianUndoRuntime(() => true, killCalls);
+    const runtime = guardianUndoRuntime(() => true, killCalls, undefined, undefined, false);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
     // A different incarnation than what this acquisition recorded at spawn time: pid 4242 now names some
     // other process, and signalling it would kill a stranger.

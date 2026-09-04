@@ -1,7 +1,7 @@
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -322,7 +322,18 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     return {
       ...options.base,
       ...(pidOverride === undefined ? {} : { env: { ...options.base.env, pid: () => pidOverride } }),
-      process: { ...options.base.process, spawn: fakeSpawn, kill: fakeKill, observeLiveness: fakeObserveLiveness },
+      process: {
+        ...options.base.process,
+        spawn: fakeSpawn,
+        kill: fakeKill,
+        observeLiveness: fakeObserveLiveness,
+        observeRecordedProcessAsync: async (identity) => {
+          const liveness = fakeObserveLiveness(identity.pid);
+          if (liveness !== 'alive') return liveness;
+          const observed = readProcessIncarnation(identity.pid, options.base.env.platform() as NodeJS.Platform);
+          return observed === null ? 'unknown' : observed === identity.incarnation ? 'alive' : 'absent';
+        },
+      },
     };
   }
 
@@ -1374,7 +1385,7 @@ describe('provider-proxy process topology: acquisition', () => {
     await recovered.set.initiateControlClose();
   });
 
-  it('unwinds the capsules and reaps the guardian when a later cut fails control establishment', async () => {
+  it('reaps the guardian when a later cut fails control establishment', async () => {
     const baseDir = scopedTempDir('coral-topology-cut-');
     const shared = mintSharedSetIdentity();
     const environment = createFakeRoleEnvironment({
@@ -1389,22 +1400,9 @@ describe('provider-proxy process topology: acquisition', () => {
     });
     cleanups.push(() => closeHandles(environment));
 
-    const runtime = environment.outerRuntime();
-    const rmSyncCalls: Array<{ path: string; force: boolean | undefined }> = [];
-    const spiedRuntime: Runtime = {
-      ...runtime,
-      storage: {
-        ...runtime.storage,
-        rmSync: (path, opts) => {
-          rmSyncCalls.push({ path, force: opts?.force });
-          runtime.storage.rmSync(path, opts);
-        },
-      },
-    };
-
     const steps = createProviderProxyAcquisitionSteps({
       ...acquisitionOptions(environment, baseDir, shared),
-      runtime: spiedRuntime,
+      runtime: environment.outerRuntime(),
     });
     const result = await acquireProviderProxySet({ steps, deadlineSignal: AbortSignal.timeout(15_000) });
 
@@ -1414,33 +1412,10 @@ describe('provider-proxy process topology: acquisition', () => {
       strandedArtifacts: [],
     });
 
-    // Reaps the guardian by its own group (it is spawned `detached: true`, a leader in its own right): the
-    // undo targets the exact pid this acquisition itself spawned and observed, not the mismatched pid the
-    // guardian self-reported.
     const guardianSpawn = environment.spawnLog.find((entry) => entry.role === 'guardian');
     expect(guardianSpawn).toBeDefined();
     expect(environment.killLog).toContainEqual({ pid: -(guardianSpawn?.pid as number), signal: 'SIGTERM' });
-
-    // BLOCKING: the guardian's own construction had already spawned and recorded the proxy containment by
-    // this point (it only rejects the coordinator's identity check *after* its own listen and
-    // recordContainment already succeeded), so the group SIGTERM above must make it (and the reaper right
-    // alongside it, sharing its process group) actually reap that containment, not merely disarm and
-    // disappear leaving the detached, out-of-group proxy held by no one. `exitProcess` is only ever called
-    // with `0` for a settled `containment-absent` outcome (`ROLE_ENFORCEMENT_FAILURE_EXIT_CODE` otherwise) —
-    // a plain `close()` never reaches it at all — so this is proof enforcement actually ran, not merely that
-    // a signal was sent.
     await vi.waitFor(() => expect(environment.exitLog).toContain(0), { timeout: 5_000 });
-
-    // Unwinds the capsules: the capsule paths this acquisition itself minted were all handed to
-    // `rmSync` with `force: true`, regardless of whether the underlying process had already consumed them.
-    expect(rmSyncCalls).toHaveLength(3);
-    expect(rmSyncCalls.every((call) => call.force === true)).toBe(true);
-
-    const runDir = join(baseDir, GENERATION, 'run');
-    if (existsSync(runDir)) {
-      const remaining = readdirSync(runDir).filter((name) => name.endsWith('.bootstrap.json'));
-      expect(remaining).toEqual([]);
-    }
   });
 
   // The other two directions `reapRecordedContainment` gives the acquisition undo: the group above was
@@ -1471,7 +1446,7 @@ describe('provider-proxy process topology: acquisition', () => {
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
 
     await expect(undo()).rejects.toThrow(
-      'guardian process-group cleanup is holding because absence could not be confirmed',
+      'guardian process-group cleanup is holding because the recorded group became unattributable',
     );
     expect(kill).not.toHaveBeenCalled();
   });

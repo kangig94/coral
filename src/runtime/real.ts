@@ -31,6 +31,7 @@ import {
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
@@ -47,6 +48,7 @@ import type {
 import type {
   DurableExecutionTransport,
   DurableCliProcessSubject,
+  DurableLaunchHandle,
   IdPort,
   ProcessPort,
   Runtime,
@@ -60,7 +62,6 @@ import {
   EXEC_TIMEOUT_CODE,
   SPAWN_SYNC_MAXBUFFER_ERRNO,
   MAX_BUFFER,
-  SIGTERM_GRACE_MS,
 } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
@@ -79,10 +80,13 @@ import {
 import { observeRecordedContainment, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import { gracefulKill } from '../infra/process-supervision.js';
 
+declare const __BUNDLE_DIR__: string | undefined;
+
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
 const ENV_RECORD_FILE = 'env.json';
+const DURABLE_WRAPPER_BUNDLE_FILE = 'coral-durable-wrapper.cjs';
 
 type ProcessIdentityObservationEnvironment = Readonly<{
   platform: string;
@@ -199,103 +203,37 @@ function openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }):
   };
 }
 
-const WRAPPER_SCRIPT = `
-const { spawn } = require('child_process');
-const { openSync, closeSync, readFileSync } = require('fs');
-const { join } = require('path');
-
-const jobDir = process.argv[1];
-const command = process.argv[2];
-const args = JSON.parse(process.argv[3]);
-const env = JSON.parse(readFileSync(join(jobDir, 'env.json'), 'utf8'));
-const cwd = process.argv[4] || undefined;
-const prompt = process.argv[5] || '';
-const startTime = process.argv[6];
-const CHILD_KILL_GRACE_MS = ${Math.max(1, Math.floor(SIGTERM_GRACE_MS / 2))};
-
-const stdoutPath = join(jobDir, 'stdout');
-const stderrPath = join(jobDir, 'stderr');
-
-const stdoutFd = openSync(stdoutPath, 'w', 0o600);
-const stderrFd = openSync(stderrPath, 'w', 0o600);
-
-function shouldUseWindowsCommandShell(value) {
-  if (process.platform !== 'win32') return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized.endsWith('.cmd') || normalized.endsWith('.bat');
+function durableWrapperEntrypoint(): string {
+  if (typeof __BUNDLE_DIR__ === 'string') {
+    return join(__BUNDLE_DIR__, DURABLE_WRAPPER_BUNDLE_FILE);
+  }
+  return fileURLToPath(new URL('../../dist/runtime/durable-cli-wrapper.js', import.meta.url));
 }
 
-let child = null;
-let requestedSignal = null;
-let childKillTimer = null;
-
-function terminateChild(signal) {
-  requestedSignal = signal;
-  if (child === null) return;
-  try { child.kill(signal); } catch {}
-  if (childKillTimer !== null) return;
-  childKillTimer = setTimeout(() => {
-    try { child.kill('SIGKILL'); } catch {}
-  }, CHILD_KILL_GRACE_MS);
-  childKillTimer.unref?.();
-}
-
-for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-  process.on(signal, () => terminateChild(signal));
-}
-
-child = spawn(command, args, {
-  stdio: ['pipe', stdoutFd, stderrFd],
-  cwd,
-  env,
-  shell: shouldUseWindowsCommandShell(command),
-});
-
-if (requestedSignal !== null) terminateChild(requestedSignal);
-
-function readSpawnedChildRoot(pid) {
-  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
-  try {
-    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-    const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
-    const closeParen = stat.lastIndexOf(')');
-    if (bootId.length === 0 || closeParen === -1) return null;
-    const fields = stat.slice(closeParen + 2).trim().split(/\\s+/);
-    const parentPid = Number(fields[1]);
-    const processGroupId = Number(fields[2]);
-    const startTicks = fields[19];
-    if (parentPid !== process.pid || processGroupId !== process.pid || !/^\\d+$/.test(startTicks || '')) return null;
-    return { pid, incarnation: 'linux:' + bootId + ':' + startTicks };
-  } catch {
-    return null;
+async function waitForRecordedDurableExit(
+  processSubject: DurableCliProcessSubject,
+  pid: number,
+  platform: NodeJS.Platform,
+  time: TimePort,
+): Promise<never> {
+  let exitedAt = null as number | null;
+  while (true) {
+    const observation = observeRecordedContainment(processSubject, {
+      process: { observeLiveness: observeProcessLiveness },
+      platform,
+      readProcessIncarnation: probeProcessIncarnation,
+    });
+    if (observation.kind === 'absent') {
+      exitedAt ??= time.now();
+      if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
+        throw new Error(`Durable process ${pid} exited before the wrapper reported completion`);
+      }
+    } else {
+      exitedAt = null;
+    }
+    await time.sleep(DURABLE_POLL_INTERVAL_MS);
   }
 }
-
-const runtimeRecord = {
-  transport: 'durable-cli',
-  pid: process.pid,
-  stdoutPath,
-  stderrPath,
-  startTime,
-};
-const childRoot = readSpawnedChildRoot(child.pid);
-process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord, childRoot }) + '\\n');
-
-if (prompt) child.stdin.write(prompt);
-child.stdin.end();
-
-function writeExit(code, signal, exitCode) {
-  if (childKillTimer !== null) clearTimeout(childKillTimer);
-  try { closeSync(stdoutFd); } catch {}
-  try { closeSync(stderrFd); } catch {}
-  const exitRecord = { exitCode: code, signal: signal || null, endTime: new Date().toISOString() };
-  process.stdout.write(JSON.stringify({ type: 'exit', exitRecord }) + '\\n');
-  process.exit(exitCode);
-}
-
-child.on('close', (code, signal) => writeExit(code, signal, 0));
-child.on('error', () => writeExit(null, null, 1));
-`.trim();
 
 type CapturedEnvState = {
   fullEnv: Readonly<Record<string, string>>;
@@ -310,6 +248,7 @@ type DurableControlMessage =
   | {
       type: 'runtime';
       runtimeRecord: DurableCliRuntimeRecord;
+      leaderIncarnation: ProcessIncarnation | null;
       childRoot: RecordedProcessIdentity | null;
     }
   | {
@@ -470,7 +409,14 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     return options.env ?? buildSpawnEnv();
   };
 
-  const durableExitPromises = new Map<number, Promise<DurableProcessExit>>();
+  const durableExitRegistrations = new Map<
+    DurableLaunchHandle,
+    Readonly<{
+      pid: number;
+      processSubject: DurableCliProcessSubject;
+      exitPromise: Promise<DurableProcessExit>;
+    }>
+  >();
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
@@ -482,8 +428,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       const wrapper = spawnChild(
         process.execPath,
         [
-          '-e',
-          WRAPPER_SCRIPT,
+          durableWrapperEntrypoint(),
           options.jobDir,
           options.command,
           JSON.stringify(options.args),
@@ -499,15 +444,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       );
       wrapper.unref();
 
-      let leaderIncarnation: ProcessIncarnation | null = null;
+      let initiallyObservedLeaderIncarnation: ProcessIncarnation | null = null;
       if (wrapper.pid !== undefined) {
         try {
-          leaderIncarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
+          initiallyObservedLeaderIncarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
         } catch {
-          leaderIncarnation = null;
+          initiallyObservedLeaderIncarnation = null;
         }
         try {
-          options.onWrapperSpawned?.({ pid: wrapper.pid, leaderIncarnation });
+          options.onWrapperSpawned?.({ pid: wrapper.pid, leaderIncarnation: initiallyObservedLeaderIncarnation });
         } catch (error: unknown) {
           gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
           throw error;
@@ -518,16 +463,30 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         time,
         wrapper,
       });
-      const { runtimeRecord, childRoot, exitPromise } = await readiness;
-      const processSubject: DurableCliProcessSubject | null =
-        leaderIncarnation !== null && childRoot !== null
-          ? {
-              pid: runtimeRecord.pid,
-              incarnation: leaderIncarnation,
-              processGroupId: runtimeRecord.pid,
-              childRoot,
-            }
-          : null;
+      const { runtimeRecord, reportedLeaderIncarnation, childRoot, exitPromise } = await readiness;
+      if (
+        initiallyObservedLeaderIncarnation !== null &&
+        reportedLeaderIncarnation !== null &&
+        initiallyObservedLeaderIncarnation !== reportedLeaderIncarnation
+      ) {
+        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        void exitPromise.catch(() => {});
+        throw new Error('Durable wrapper identity changed before launch readiness. Retry the job.');
+      }
+      const leaderIncarnation = initiallyObservedLeaderIncarnation ?? reportedLeaderIncarnation;
+      if (leaderIncarnation === null || childRoot === null) {
+        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        void exitPromise.catch(() => {});
+        throw new Error(
+          'Durable launch could not establish a recoverable process identity. Retry the job; if this persists, verify process inspection permissions.',
+        );
+      }
+      const processSubject: DurableCliProcessSubject = {
+        pid: runtimeRecord.pid,
+        incarnation: leaderIncarnation,
+        processGroupId: runtimeRecord.pid,
+        childRoot,
+      };
       try {
         options.onSpawned?.({ runtimeRecord, leaderIncarnation, childRoot });
       } catch (error: unknown) {
@@ -535,9 +494,11 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         void exitPromise.catch(() => {});
         throw error;
       }
-      durableExitPromises.set(runtimeRecord.pid, exitPromise);
+      const launchHandle = randomUUID() as DurableLaunchHandle;
+      durableExitRegistrations.set(launchHandle, { pid: runtimeRecord.pid, processSubject, exitPromise });
 
       return {
+        launchHandle,
         pid: runtimeRecord.pid,
         stdoutPath: runtimeRecord.stdoutPath,
         stderrPath: runtimeRecord.stderrPath,
@@ -546,43 +507,28 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       };
     },
     waitForExit: async (handle) => {
-      const exitPromise = durableExitPromises.get(handle.pid);
-      if (!exitPromise) {
-        let exitedAt = null as number | null;
-        while (true) {
-          const observation =
-            handle.processSubject === null || handle.processSubject === undefined
-              ? { kind: 'unobservable' as const }
-              : observeRecordedContainment(handle.processSubject, {
-                  process: { observeLiveness: observeProcessLiveness },
-                  platform: capturedEnv.platform,
-                  readProcessIncarnation: probeProcessIncarnation,
-                });
-          if (observation.kind === 'absent') {
-            exitedAt ??= time.now();
-            if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
-              throw new Error(`Durable process ${handle.pid} exited before the wrapper reported completion`);
-            }
-          } else {
-            exitedAt = null;
-          }
-
-          await time.sleep(DURABLE_POLL_INTERVAL_MS);
-          const pending = durableExitPromises.get(handle.pid);
-          if (pending) {
-            return durable.waitForExit(handle);
-          }
-        }
+      const registration = durableExitRegistrations.get(handle.launchHandle);
+      if (
+        registration === undefined ||
+        registration.pid !== handle.pid ||
+        registration.processSubject.pid !== handle.processSubject.pid ||
+        registration.processSubject.incarnation !== handle.processSubject.incarnation ||
+        registration.processSubject.processGroupId !== handle.processSubject.processGroupId ||
+        registration.processSubject.childRoot.pid !== handle.processSubject.childRoot.pid ||
+        registration.processSubject.childRoot.incarnation !== handle.processSubject.childRoot.incarnation
+      ) {
+        throw new Error(`Durable launch ${handle.launchHandle} is not attached to process ${handle.pid}.`);
       }
 
       try {
-        return await exitPromise;
+        return await registration.exitPromise;
       } catch (error: unknown) {
-        durableExitPromises.delete(handle.pid);
-        await durable.waitForExit(handle);
+        await waitForRecordedDurableExit(registration.processSubject, registration.pid, capturedEnv.platform, time);
         throw error;
       } finally {
-        durableExitPromises.delete(handle.pid);
+        if (durableExitRegistrations.get(handle.launchHandle) === registration) {
+          durableExitRegistrations.delete(handle.launchHandle);
+        }
       }
     },
   };
@@ -853,6 +799,7 @@ function isRecordedProcessIdentity(value: unknown): value is RecordedProcessIden
 
 function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<typeof spawnChild> }): Promise<{
   runtimeRecord: DurableCliRuntimeRecord;
+  reportedLeaderIncarnation: ProcessIncarnation | null;
   childRoot: RecordedProcessIdentity | null;
   exitPromise: Promise<DurableProcessExit>;
 }> {
@@ -868,6 +815,7 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
   const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
   const exitDeferred = createDeferred<DurableProcessExit>();
   let runtimeRecord: DurableCliRuntimeRecord | null = null;
+  let reportedLeaderIncarnation: ProcessIncarnation | null = null;
   let childRoot: RecordedProcessIdentity | null = null;
   let exitRecord: DurableProcessExit | null = null;
   let stderrBuffer = '';
@@ -894,6 +842,7 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
       if (
         !isDurableCliRuntime(message.runtimeRecord) ||
         message.runtimeRecord.pid !== options.wrapper.pid ||
+        (message.leaderIncarnation !== null && !isProcessIncarnation(message.leaderIncarnation)) ||
         (message.childRoot !== null && !isRecordedProcessIdentity(message.childRoot))
       ) {
         const wrapped = buildError('Durable wrapper emitted an invalid runtime record');
@@ -902,6 +851,7 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
         return;
       }
       runtimeRecord = message.runtimeRecord;
+      reportedLeaderIncarnation = message.leaderIncarnation;
       childRoot = message.childRoot;
       runtimeDeferred.resolve(message.runtimeRecord);
       return;
@@ -974,6 +924,7 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
     .then((record) => {
       return {
         runtimeRecord: record,
+        reportedLeaderIncarnation,
         childRoot,
         exitPromise: exitDeferred.promise,
       };

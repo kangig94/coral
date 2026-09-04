@@ -353,13 +353,11 @@ function signalParametersByFunction(
   return signalParameters;
 }
 
-/** Every literal signal a module routes to the real `.kill()` primitive, by walking its AST and following
- *  local parameter flow. Comments and unrelated strings are structurally invisible to this walk. */
-function handRolledEscalationSignals(source: string): Set<KillSignal> {
+/** Static template bodies must be scanned as source because executable wrappers may not remain AST strings. */
+function collectHandRolledEscalationSignals(source: string, signals: Set<KillSignal>): void {
   const sourceFile = ts.createSourceFile('scan.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const functions = localFunctions(sourceFile);
   const signalParameters = signalParametersByFunction(functions);
-  const signals = new Set<KillSignal>();
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const directSignal = isKillPrimitiveCall(node) ? literalSignal(signalArgument(node)) : null;
@@ -373,9 +371,17 @@ function handRolledEscalationSignals(source: string): Set<KillSignal> {
         }
       }
     }
+    if (ts.isNoSubstitutionTemplateLiteral(node) && node.text.trim().length > 0) {
+      collectHandRolledEscalationSignals(node.text, signals);
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+}
+
+function handRolledEscalationSignals(source: string): Set<KillSignal> {
+  const signals = new Set<KillSignal>();
+  collectHandRolledEscalationSignals(source, signals);
   return signals;
 }
 
@@ -516,6 +522,17 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
         forward(pid, 'SIGKILL');
       }
     `;
+
+    expect(handRolledEscalationSignals(mutation)).toEqual(new Set<KillSignal>(['SIGTERM', 'SIGKILL']));
+  });
+
+  it('detects an escalation hidden in a static executable template mutation', () => {
+    const mutation = [
+      'const wrapper = String.raw`',
+      "  process.kill(pid, 'SIGTERM');",
+      "  process.kill(pid, 'SIGKILL');",
+      '`;',
+    ].join('\n');
 
     expect(handRolledEscalationSignals(mutation)).toEqual(new Set<KillSignal>(['SIGTERM', 'SIGKILL']));
   });

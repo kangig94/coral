@@ -179,6 +179,14 @@ const claudeAppserverBuild = await esbuild.build({
 });
 console.log('Built clients/build/coral-claude-appserver.cjs');
 
+const durableWrapperBuild = await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/runtime/durable-cli-wrapper.ts'],
+  outfile: 'clients/build/coral-durable-wrapper.cjs',
+  metafile: true,
+});
+console.log('Built clients/build/coral-durable-wrapper.cjs');
+
 const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
 const cliHash = createHash('sha256').update(readFileSync('clients/build/coral-cli.cjs')).digest('hex').slice(0, 16);
 const claudeAppserverHash = createHash('sha256')
@@ -248,6 +256,7 @@ const receiptInputs = [
     ...Object.keys(backendBuild.metafile.inputs),
     ...Object.keys(cliBuild.metafile.inputs),
     ...Object.keys(claudeAppserverBuild.metafile.inputs),
+    ...Object.keys(durableWrapperBuild.metafile.inputs),
     ...requiredReceiptInputs,
   ].map(canonicalReceiptInput)),
 ].sort();
@@ -255,6 +264,7 @@ const receiptOutputs = {
   backend: { path: 'clients/build/coral-backend.cjs' },
   cli: { path: 'clients/build/coral-cli.cjs' },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
+  durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
   manifest: { path: 'clients/build/manifest.json' },
 };
 for (const output of Object.values(receiptOutputs)) {
@@ -282,7 +292,13 @@ if (release) {
   // shipped bundle runs, keeping inject/methods/agents co-located with both.
   const bridgeDir = 'clients/bridge';
   mkdirSync(bridgeDir, { recursive: true });
-  const bridgeFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];
+  const bridgeFiles = [
+    'coral-backend.cjs',
+    'coral-cli.cjs',
+    'coral-claude-appserver.cjs',
+    'coral-durable-wrapper.cjs',
+    'manifest.json',
+  ];
   // Sweep stale leftovers from prior releases so bridge contains only the current bundle surface.
   const expected = new Set(bridgeFiles);
   for (const entry of readdirSync(bridgeDir)) {

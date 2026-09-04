@@ -1,4 +1,4 @@
-import type { ProcessLiveness } from '#src/infra/node-process.js';
+import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -671,8 +671,28 @@ describe('provider-operation carrier reap', () => {
         if (pid === -providerOperationCarrier.locator.containment.processGroupId) {
           return state.groupAlive ? 'alive' : 'absent';
         }
+        if (pid === providerOperationCarrier.locator.proxy.pid) {
+          return state.groupAlive ? 'alive' : 'absent';
+        }
         if (pid === providerOperationCarrier.providerRoot.pid) {
           return state.providerRootAlive ? 'alive' : 'absent';
+        }
+        return 'absent';
+      },
+      observeRecordedProcessAsync: async (identity: { pid: number; incarnation: ProcessIncarnation }) => {
+        const liveness = process.observeLiveness(identity.pid);
+        if (liveness !== 'alive') return liveness;
+        if (
+          identity.pid === providerOperationCarrier.locator.proxy.pid &&
+          identity.incarnation === providerOperationCarrier.locator.proxy.incarnation
+        ) {
+          return 'alive';
+        }
+        if (
+          identity.pid === providerOperationCarrier.providerRoot.pid &&
+          identity.incarnation === providerOperationCarrier.providerRoot.incarnation
+        ) {
+          return 'alive';
         }
         return 'absent';
       },
@@ -721,7 +741,11 @@ describe('provider-operation carrier reap', () => {
 
   it('leaves the saga in place when absence cannot be confirmed', async () => {
     const db = seededDb();
-    const process = { observeLiveness: () => 'alive' as const, kill: () => true };
+    const process = {
+      observeLiveness: () => 'alive' as const,
+      observeRecordedProcessAsync: async () => 'unknown' as const,
+      kill: () => true,
+    };
 
     try {
       await expect(

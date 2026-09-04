@@ -200,6 +200,10 @@ function createGuardianHarness(
       process: {
         kill: () => true,
         observeLiveness: containmentFailure?.observeLiveness ?? (() => 'alive' as const),
+        observeRecordedProcessAsync: async () => {
+          if (containmentFailure === undefined) return 'alive';
+          return containmentFailure.observeLiveness();
+        },
       },
       platform: 'linux',
       maxRecordedRoots: 128,

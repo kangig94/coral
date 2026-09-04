@@ -83,12 +83,18 @@ export type DurableProvisionalLaunch = Readonly<{
   childRoot: RecordedProcessIdentity | null;
 }>;
 
+declare const durableLaunchHandleBrand: unique symbol;
+
+/** Only the runtime that accepted a launch may mint its exit-registration handle. */
+export type DurableLaunchHandle = string & { readonly [durableLaunchHandleBrand]: true };
+
 export type DurableLaunchResult = {
+  launchHandle: DurableLaunchHandle;
   pid: number;
   stdoutPath: string;
   stderrPath: string;
   runtimeRecord: DurableCliRuntimeRecord;
-  processSubject?: DurableCliProcessSubject | null;
+  processSubject: DurableCliProcessSubject;
 };
 
 export interface DurableExecutionTransport {

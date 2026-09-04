@@ -92,6 +92,7 @@ function environment(
     clock,
     process: {
       observeLiveness: runtime.process.observeLiveness,
+      observeRecordedProcessAsync: runtime.process.observeRecordedProcessAsync,
       kill: (pid, signal) => {
         signals.push({ pid, signal });
         return runtime.process.kill(pid, signal);
@@ -135,7 +136,7 @@ afterEach(async () => {
 
 describe('real recorded process containment', () => {
   // @flaky — process scheduling and OS signal delivery are timing-sensitive.
-  it('creates and signals a detached group as one containment', { retry: 2 }, async () => {
+  it('retains a detached group after its leader identity can no longer authorize a signal', { retry: 2 }, async () => {
     const leader = spawnDetached(
       `
           import { spawn } from 'node:child_process';
@@ -156,16 +157,18 @@ describe('real recorded process containment', () => {
     expect(observeProcessLiveness(memberPid)).toBe('alive');
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
-    await reapRecordedContainment(
-      containmentFor(leaderIdentity),
-      [],
-      clock.shiftMilliseconds(clock.now(), 12_000),
-      environment(signals),
-    );
+    await expect(
+      reapRecordedContainment(
+        containmentFor(leaderIdentity),
+        [],
+        clock.shiftMilliseconds(clock.now(), 12_000),
+        environment(signals),
+      ),
+    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
 
-    expect(signals).toContainEqual({ pid: -leaderIdentity.pid, signal: 'SIGTERM' });
+    expect(signals).toEqual([]);
     expect(observeProcessLiveness(leaderIdentity.pid)).toBe('absent');
-    expect(observeProcessLiveness(memberPid)).toBe('absent');
+    expect(observeProcessLiveness(memberPid)).toBe('alive');
   });
 
   // @flaky — process scheduling and OS signal delivery are timing-sensitive.

@@ -148,7 +148,12 @@ function buildContainmentEnvironment<Scope extends symbol>(
   return {
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock,
-    process: { kill: ports.runtime.process.kill, observeLiveness: ports.runtime.process.observeLiveness },
+    process: {
+      kill: ports.runtime.process.kill,
+      observeLiveness: ports.runtime.process.observeLiveness,
+      observeRecordedProcessAsync:
+        ports.observeRecordedProcessAsync ?? ports.runtime.process.observeRecordedProcessAsync,
+    },
     platform: ports.runtime.env.platform() as NodeJS.Platform,
     readProcessIncarnation: ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation,
   };
@@ -282,8 +287,6 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
     reason,
     retry,
   });
-  // A hoisted declaration so `holding` above can name it: the binding is read only when a caller invokes the
-  // retry it was handed, never while this function is still building the disposition.
   async function retry(): Promise<GuardianConstructionCleanupDisposition> {
     try {
       const outcome = await reapRecordedContainment(

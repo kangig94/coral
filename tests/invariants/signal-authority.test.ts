@@ -63,14 +63,6 @@ const ALLOWLIST = new Map<string, string>([
   ],
   ['src/cli/commands/backend.ts', 'signals its own pid to re-raise a continuation signal'],
   [
-    'src/infra/process-containment.ts',
-    // The known gap, deliberately open rather than hidden: closing it here breaks coordinator-local provider
-    // host teardown, which has no reclaimer. Both the reasoning and the shape of the real fix are in
-    // docs/todo/darwin-signal-authority.md, and this entry is what keeps that document from being the only
-    // place it is recorded.
-    'deliberately open on darwin — see docs/todo/darwin-signal-authority.md',
-  ],
-  [
     'src/runtime/exec-builder.ts',
     // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.
     // The exposure is real but a different size: the window is the single event-loop

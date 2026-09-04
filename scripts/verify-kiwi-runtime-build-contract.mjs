@@ -17,6 +17,7 @@ const expectedBuildFiles = new Set([
   'coral-backend.cjs',
   'coral-cli.cjs',
   'coral-claude-appserver.cjs',
+  'coral-durable-wrapper.cjs',
   'manifest.json',
 ]);
 if (!existsSync(buildDir)) {
@@ -29,7 +30,7 @@ const unexpectedBuildFiles = buildFiles.filter(
 );
 if (missingBuildFiles.length > 0 || unexpectedBuildFiles.length > 0) {
   throw new Error(
-    `Kiwi build contract expected the four bundle files and optional build receipt, with no WASM staged beside them; got: ${buildFiles.sort().join(', ')}`,
+    `Kiwi build contract expected the lifecycle bundle files and optional build receipt, with no WASM staged beside them; got: ${buildFiles.sort().join(', ')}`,
   );
 }
 

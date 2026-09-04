@@ -644,6 +644,7 @@ export async function probeProcessIncarnationAsync(
  *  returned, so a caller can await it without blocking the loop it answers on. */
 export type AsyncRecordedProcessObserver = (
   recorded: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
+  signal?: AbortSignal,
 ) => Promise<ProcessLiveness>;
 
 /**
@@ -654,25 +655,47 @@ export type AsyncRecordedProcessObserver = (
  *
  * Liveness (`kill(pid, 0)`, synchronous and free of I/O) is checked first: a genuine `ESRCH` is decisive on
  * its own and short-circuits the identity read, which is bounded but never free. Otherwise the token is read
- * and compared. An unreadable token answers `unknown` outright — never the sync sibling's pid-only `alive`
- * fallback, including when the read failure is a probe timeout. A readable, mismatched token answers `absent`
- * (pid reuse) regardless of what the liveness check believed. And a liveness check that could not itself
+ * and compared. An unreadable token cannot prove identity; only a second liveness check that finds the pid
+ * absent may decide the process disappeared. A readable, mismatched token answers `absent` (pid reuse)
+ * regardless of what the liveness check believed. And a liveness check that could not itself
  * conclude alive-or-absent keeps the overall answer `unknown` even when the token happens to read back a
  * match: "liveness ... cannot be observed" is its own trigger for `unknown`, independent of whether identity
  * could be.
  */
 export function createAsyncRecordedProcessObserver(
   readers: Readonly<{
-    readIncarnation: (pid: number) => Promise<ProcessIncarnation | null>;
+    readIncarnation: (pid: number, signal?: AbortSignal) => Promise<ProcessIncarnation | null>;
     observeLiveness: (pid: number) => ProcessLiveness;
   }>,
 ): AsyncRecordedProcessObserver {
-  return async (recorded) => {
+  const readWhileAuthorized = (pid: number, signal: AbortSignal | undefined): Promise<ProcessIncarnation | null> => {
+    if (signal === undefined) return readers.readIncarnation(pid);
+    if (signal.aborted) return Promise.resolve(null);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value: ProcessIncarnation | null): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      };
+      const onAbort = (): void => finish(null);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      void readers.readIncarnation(pid, signal).then(finish, () => finish(null));
+    });
+  };
+
+  return async (recorded, signal) => {
     try {
       const liveness = readers.observeLiveness(recorded.pid);
       if (liveness === 'absent') return 'absent';
-      const observed = await readers.readIncarnation(recorded.pid);
-      if (observed === null) return 'unknown';
+      const observed = await readWhileAuthorized(recorded.pid, signal);
+      if (observed === null) return readers.observeLiveness(recorded.pid) === 'absent' ? 'absent' : 'unknown';
       if (observed !== recorded.incarnation) return 'absent';
       return liveness === 'unknown' ? 'unknown' : 'alive';
     } catch {

@@ -61,6 +61,7 @@ describe('guardian spawn undo', () => {
       process: {
         kill,
         observeLiveness: (pid: number) => (pid === -guardian.pid && deliveredSignal === 'SIGKILL' ? 'absent' : 'alive'),
+        observeRecordedProcessAsync: async () => 'alive' as const,
       },
       time: {
         monotonicNow: () => monotonicNow,
@@ -95,6 +96,7 @@ describe('guardian spawn undo', () => {
           groupObservations += 1;
           return groupObservations <= 2 ? 'alive' : 'unknown';
         },
+        observeRecordedProcessAsync: async () => 'alive' as const,
       },
       time: {
         monotonicNow: () => 0n,
