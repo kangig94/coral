@@ -215,15 +215,37 @@ async function runContain(
 }
 
 describe('backend provider-proxy-set contain', () => {
+  it('routes abandon through the operator-exit lifecycle mode', async () => {
+    const contain = vi.fn<ProviderProxySetCommandOperations['contain']>(async (request) => ({
+      kind: 'set-not-found',
+      setIdentity: request.setIdentity,
+      effect: noEffect,
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { providerProxySets: { contain } });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'provider-proxy-set',
+      'abandon',
+      encodeProviderProxySetAddress(address),
+    ]);
+
+    expect(contain).toHaveBeenCalledExactlyOnceWith({ setIdentity: address, mode: 'abandon' });
+  });
+
   it('documents unattributable recorded groups as abandonment-authorized holds', () => {
     const program = new Command();
     registerBackendCommands(program);
     const backend = program.commands.find((command) => command.name() === 'backend');
     const providerProxySet = backend?.commands.find((command) => command.name() === 'provider-proxy-set');
-    const contain = providerProxySet?.commands.find((command) => command.name() === 'contain');
-    if (contain === undefined) throw new Error('expected provider-proxy-set contain command');
+    const abandon = providerProxySet?.commands.find((command) => command.name() === 'abandon');
+    if (abandon === undefined) throw new Error('expected provider-proxy-set abandon command');
 
-    expect(contain.helpInformation()).toContain('unattributable recorded group');
+    expect(abandon.helpInformation()).toContain('unattributable recorded group');
   });
 
   it.each(containCommandCases)(
@@ -320,7 +342,7 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    const result = operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
+    const result = operations.contain({ setIdentity: address, mode: 'contain' });
     await expect(result).resolves.toEqual({
       kind: 'unsupported-coordinator',
       setIdentity: address,
@@ -356,7 +378,7 @@ describe('backend provider-proxy-set contain', () => {
     });
 
     expect(output.stderr).toContain('cannot be proven to belong to this set');
-    expect(output.stderr).toContain('--abandon-without-absence');
+    expect(output.stderr).toContain(`provider-proxy-set abandon ${encodeProviderProxySetAddress(address)}`);
     expect(output.stderr).toContain("releases Coral's representation without asserting absence");
     expect(process.exitCode).toBe(75);
   });
@@ -369,7 +391,7 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    const result = await operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
+    const result = await operations.contain({ setIdentity: address, mode: 'contain' });
     expect(result).toEqual({
       kind: 'coordinator-draining',
       setIdentity: address,
@@ -390,11 +412,11 @@ describe('backend provider-proxy-set contain', () => {
       getClient: async () => ({ request }) as never,
     });
 
-    const result = await operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
+    const result = await operations.contain({ setIdentity: address, mode: 'contain' });
 
     expect(request).toHaveBeenCalledWith(
       'coordinator.provider_proxy_set.contain',
-      { setIdentity: address, abandonWithoutAbsence: false },
+      { setIdentity: address, mode: 'contain' },
       expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
     );
     expect(result).toEqual({ kind: 'timeout', setIdentity: address });
@@ -418,7 +440,7 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    await expect(operations.contain({ setIdentity: address, abandonWithoutAbsence: false })).resolves.toEqual({
+    await expect(operations.contain({ setIdentity: address, mode: 'contain' })).resolves.toEqual({
       kind: 'unsupported-coordinator-result',
       setIdentity: address,
     });
@@ -496,7 +518,7 @@ describe('backend provider-proxy-set contain', () => {
         }) as never,
     });
 
-    const result = await operations.contain({ setIdentity: address, abandonWithoutAbsence: false });
+    const result = await operations.contain({ setIdentity: address, mode: 'contain' });
     expect(result).toEqual({ kind: 'unsupported-coordinator-result', setIdentity: address });
     await runContain(result);
     expect(process.exitCode).toBe(75);

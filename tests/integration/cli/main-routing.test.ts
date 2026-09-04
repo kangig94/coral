@@ -490,11 +490,15 @@ describe('cli main routing', () => {
                       proxyInstanceId: '22222222-2222-4222-8222-222222222222',
                     },
                     setToken: token,
-                    disposition: 'held',
                     liveClaims: 1,
-                    incidentReason: 'control_channel_reattaching',
-                    waitingFor: 'control-reattachment',
-                    operatorAction: 'contain',
+                    operatorExit: { kind: 'contain' },
+                    holds: [
+                      {
+                        disposition: 'held',
+                        incidentReason: 'control_channel_reattaching',
+                        waitingFor: 'control-reattachment',
+                      },
+                    ],
                   },
                 ],
               },
@@ -511,7 +515,7 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('does not print a containment command for a set whose operator action is wait', async () => {
+  it('renders the asserted wait exit before shutdown', async () => {
     const token = 'pps1.waiting-set';
     const program = new Command();
     program.exitOverride();
@@ -530,10 +534,15 @@ describe('cli main routing', () => {
                       proxyInstanceId: '22222222-2222-4222-8222-222222222222',
                     },
                     setToken: token,
-                    disposition: 'held',
-                    incidentReason: 'publication_result_unknown',
-                    waitingFor: 'publication-confirmation-or-control-release',
-                    operatorAction: 'wait',
+                    liveClaims: 0,
+                    operatorExit: { kind: 'none' },
+                    holds: [
+                      {
+                        disposition: 'held',
+                        incidentReason: 'publication_result_unknown',
+                        waitingFor: 'publication-confirmation-or-control-release',
+                      },
+                    ],
                   },
                 ],
               },
@@ -546,11 +555,11 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${token}`);
-    expect(stdout).toContain('had no currently authorized containment action');
+    expect(stdout).toContain('action=wait; Coral retries publication automatically');
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('reports an incomplete pre-shutdown set read without printing an unverified command', async () => {
+  it('names a skipped set without offering a command this build cannot verify', async () => {
     const token = 'pps1.opaque-set';
     const program = new Command();
     program.exitOverride();
@@ -571,9 +580,12 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(stdout).not.toContain(token);
+    expect(stdout).toContain(`skipped set=${token}`);
+    expect(stdout).not.toContain(`provider-proxy-set contain ${token}`);
+    expect(stdout).not.toContain(`provider-proxy-set abandon ${token}`);
     expect(stdout).toContain('could not interpret 1 provider proxy set row(s)');
     expect(stdout).toContain('could not confirm that every preserved set was named');
+    expect(stdout).toContain('Run coral-cli backend status from a build that understands the row.');
     expect(stdout).not.toContain('No held provider proxy sets were reported');
   });
 
@@ -745,21 +757,13 @@ describe('cli main routing', () => {
       return { program, contain, terminate, retryReap };
     }
 
-    it('routes contain to the child operation when the parent accepts an operator action', async () => {
+    it('routes abandon to the child operation when the parent accepts an operator action', async () => {
       const { program, contain, terminate, retryReap } = routingProgram();
 
-      await program.parseAsync([
-        'node',
-        'coral-cli',
-        'backend',
-        'provider-proxy-set',
-        'contain',
-        setToken,
-        '--abandon-without-absence',
-      ]);
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'provider-proxy-set', 'abandon', setToken]);
 
       expect(contain).toHaveBeenCalledOnce();
-      expect(contain).toHaveBeenCalledWith({ setIdentity, abandonWithoutAbsence: true });
+      expect(contain).toHaveBeenCalledWith({ setIdentity, mode: 'abandon' });
       expect(terminate).not.toHaveBeenCalled();
       expect(retryReap).not.toHaveBeenCalled();
     });

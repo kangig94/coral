@@ -208,7 +208,7 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     ]);
 
     expect(rendered).toContain(
-      `coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress(setIdentity)} --abandon-without-absence`,
+      `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(setIdentity)}`,
     );
     expect(rendered).toContain(
       `coral-cli backend provider-proxy-set terminate-role --role guardian --pid 901 --incarnation '${testIncarnation(901)}'`,
@@ -256,7 +256,7 @@ describe('readProviderProxySetHolderStatusDirect', () => {
       `coral-cli backend provider-proxy-set terminate-role --role reaper --pid 902 --incarnation '${testIncarnation(902)}'`,
     );
     expect(rendered).not.toContain(
-      `coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress(setIdentity)} --abandon-without-absence`,
+      `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(setIdentity)}`,
     );
   });
 });

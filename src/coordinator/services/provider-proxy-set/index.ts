@@ -66,7 +66,11 @@ import type {
   RepresentationAbandonmentDeliveryAttemptOutcome,
 } from '../provider-representation-abandonment.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
-import type { ProviderProxySetOperatorDisposition } from '../../../provider-proxy/operator-disposition-vocabulary.js';
+import type {
+  ProviderProxySetOperatorDisposition,
+  ProviderProxySetOperatorExit,
+  ProviderProxySetOperatorStatus,
+} from '../../../provider-proxy/operator-disposition-vocabulary.js';
 import type {
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityObservation,
@@ -390,9 +394,8 @@ export type ProviderProxySetLifecycleSnapshot = Readonly<{
   states: readonly ProviderProxySetLifecycleState[];
   pendingOperationCounts: readonly number[];
   operatorDispositions: readonly ProviderProxySetOperatorDisposition[];
+  operatorSets: readonly ProviderProxySetOperatorStatus[];
 }>;
-
-type RecordedProviderProxySetOperatorDisposition = Omit<ProviderProxySetOperatorDisposition, 'operatorAction'>;
 
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
   stage: 'acquisition-publication-retry' | 'containment-attempt-deadline' | 'containment-retry';
@@ -708,10 +711,7 @@ export class ProviderProxySetLifecycle {
   readonly #capsuleAddresses = new Map<string, string>();
   readonly #capsuleGrants = new Map<string, string>();
   readonly #foreignRetirementOwners = new Map<string, ForeignCapsuleRetirementOwner>();
-  readonly #operatorDispositions = new Map<
-    ProviderProxySetKey,
-    Map<string, RecordedProviderProxySetOperatorDisposition>
-  >();
+  readonly #operatorDispositions = new Map<ProviderProxySetKey, Map<string, ProviderProxySetOperatorDisposition>>();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
 
@@ -991,10 +991,7 @@ export class ProviderProxySetLifecycle {
         [
           JSON.stringify(['acquisition-publication', null]),
           {
-            setIdentity: address,
-            setToken: encodeProviderProxySetAddress(address),
             disposition: 'held',
-            liveClaims: this.#deps.claims.claimsFor(identity).length,
             incidentReason: incident,
             waitingFor: 'publication-confirmation-or-control-release',
           },
@@ -1252,6 +1249,36 @@ export class ProviderProxySetLifecycle {
     if (notBeforeMonotonicMs === null) return { kind: 'not-held', state: slot.kind };
     const remainingMs = Number(notBeforeMonotonicMs - this.#deps.time.monotonicNow());
     return remainingMs > 0 ? { kind: 'deadline-pending', remainingMs, slot } : { kind: 'authorized', slot };
+  }
+
+  #operatorExit(
+    slot: ProviderProxySetSlot,
+    dispositions: ReadonlyMap<string, ProviderProxySetOperatorDisposition>,
+  ): ProviderProxySetOperatorExit {
+    const availability = this.#operatorExitAvailability(slot);
+    if (availability.kind === 'not-held') return { kind: 'none' };
+    if (availability.kind === 'deadline-pending') {
+      return { kind: 'gated', remainingMs: availability.remainingMs };
+    }
+    const refusal = [...dispositions.values()].find(
+      (disposition) => disposition.disposition === 'operator-exit-refused',
+    );
+    if (refusal === undefined) return { kind: 'contain' };
+    switch (refusal.incidentReason) {
+      case 'operator_exit_enforcer-alive':
+        return { kind: 'refused', ground: 'enforcer-alive' };
+      case 'operator_exit_enforcer-unobservable':
+        return { kind: 'refused', ground: 'enforcer-unobservable' };
+      case 'operator_exit_recorded_group_unattributable':
+        return { kind: 'refused', ground: 'recorded-group-unattributable' };
+      case 'operator_exit_store_unreadable':
+        return { kind: 'refused', ground: 'store-unreadable' };
+      case 'operator_exit_deadline_pending':
+      case 'operator_exit_requires_held_set':
+        return { kind: 'contain' };
+      default:
+        return { kind: 'none' };
+    }
   }
 
   authorizeOperatorExit(address: ProviderProxySetAddress): ProviderProxySetOperatorExitAuthorization {
@@ -1738,6 +1765,9 @@ export class ProviderProxySetLifecycle {
 
   snapshot(): ProviderProxySetLifecycleSnapshot {
     const slots = [...this.#slots.values()];
+    const operatorDispositions = [...this.#operatorDispositions.values()].flatMap((dispositions) => [
+      ...dispositions.values(),
+    ]);
     return {
       startupDiscoveryCompleted: this.#startupDiscoveryCompleted,
       represented: slots.length,
@@ -1748,11 +1778,20 @@ export class ProviderProxySetLifecycle {
           ? [slot.pendingOperations.size]
           : [],
       ),
-      operatorDispositions: [...this.#operatorDispositions].flatMap(([key, dispositions]) => {
+      operatorDispositions,
+      operatorSets: [...this.#operatorDispositions].flatMap(([key, dispositions]) => {
         const slot = this.#slots.get(key);
-        const operatorAction =
-          slot !== undefined && this.#operatorExitAvailability(slot).kind === 'authorized' ? 'contain' : 'wait';
-        return [...dispositions.values()].map((disposition) => ({ ...disposition, operatorAction }));
+        if (slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign') return [];
+        const setIdentity = providerProxySetAddress(slot.identity);
+        return [
+          {
+            setIdentity,
+            setToken: encodeProviderProxySetAddress(setIdentity),
+            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+            operatorExit: this.#operatorExit(slot, dispositions),
+            holds: [...dispositions.values()],
+          },
+        ];
       }),
     };
   }
@@ -2083,11 +2122,8 @@ export class ProviderProxySetLifecycle {
         [
           JSON.stringify(['acquisition-publication', null]),
           {
-            setIdentity: slot.address,
-            setToken: encodeProviderProxySetAddress(slot.address),
             disposition: 'held',
             attempts: slot.completedAttempts,
-            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
             incidentReason: incident,
             waitingFor: 'publication-confirmation-or-control-release',
           },
@@ -2147,10 +2183,7 @@ export class ProviderProxySetLifecycle {
         [
           JSON.stringify(['acquisition-publication', null]),
           {
-            setIdentity: slot.address,
-            setToken: encodeProviderProxySetAddress(slot.address),
             disposition: 'held',
-            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
             incidentReason: closed.reason,
             waitingFor: 'control-reattachment',
           },
@@ -3011,9 +3044,6 @@ export class ProviderProxySetLifecycle {
             ? decision.terminalReason
             : decision.reason;
     const shared = {
-      setIdentity: providerProxySetAddress(decision.setIdentity),
-      setToken: encodeProviderProxySetAddress(providerProxySetAddress(decision.setIdentity)),
-      liveClaims: decision.liveClaims,
       ...(role === undefined ? {} : { role }),
       ...(method === undefined ? {} : { method }),
       ...('cause' in decision
@@ -3077,9 +3107,6 @@ export class ProviderProxySetLifecycle {
             ? 'heartbeat-protocol-live-claims'
             : 'operation-control-outcome-unknown';
     dispositions.set(subjectKey, {
-      setIdentity: providerProxySetAddress(decision.setIdentity),
-      setToken: encodeProviderProxySetAddress(providerProxySetAddress(decision.setIdentity)),
-      liveClaims: decision.liveClaims,
       ...(role === undefined ? {} : { role }),
       ...(method === undefined ? {} : { method }),
       ...('cause' in refused
@@ -3104,10 +3131,7 @@ export class ProviderProxySetLifecycle {
       this.#operatorDispositions.set(setKey, dispositions);
     }
     dispositions.set(JSON.stringify(['operator-exit', null]), {
-      setIdentity: slot.address,
-      setToken: encodeProviderProxySetAddress(slot.address),
       disposition: 'operator-exit-refused',
-      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       ...(enforcerObservations === undefined ? {} : { enforcerObservations }),
       incidentReason,
       waitingFor,

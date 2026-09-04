@@ -11,6 +11,7 @@ import {
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
+  formatProviderProxySetContainResult,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
 import {
@@ -1280,6 +1281,71 @@ describe('backend status recovery quarantine propagation', () => {
 });
 
 describe('backend status provider proxy dispositions', () => {
+  it('renders every asserted set exit and shares refusal guidance with the command result', () => {
+    const setIdentity = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'a'.repeat(64),
+      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+    };
+    const setToken = encodeProviderProxySetAddress(setIdentity);
+    const hold = {
+      disposition: 'held',
+      incidentReason: 'control_channel_reattaching',
+      waitingFor: 'control-reattachment',
+    } as const;
+    const base = {
+      status: 'ok',
+      kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+      version: '0.10.4',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      instanceId: 'instance-1',
+      uptimeMs: 1_000,
+      active: 0,
+      activeJobs: 0,
+      queueDepth: 0,
+      inflightRequests: 0,
+      textProjectionState: 'idle',
+      components: [],
+    } as const;
+    const status = runningStatusFromHealthPayload({
+      ...base,
+      diagnostics: {
+        providerProxySets: [
+          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'none' }, holds: [hold] },
+          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'gated', remainingMs: 1200.2 }, holds: [hold] },
+          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'contain' }, holds: [hold] },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'refused', ground: 'enforcer-unobservable' },
+            holds: [hold],
+          },
+        ],
+      },
+    });
+    const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
+    const commandGuidance = formatProviderProxySetContainResult({
+      kind: 'enforcer-unobservable',
+      setIdentity,
+      enforcerObservations: [
+        { role: 'guardian', observation: 'unknown' },
+        { role: 'reaper', observation: 'absent' },
+      ],
+      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+    })
+      .split('\n')
+      .find((line) => line.startsWith('Next step:'));
+
+    expect(rendered).toContain('action=wait for control-reattachment');
+    expect(rendered).toContain(`action=wait ~1201ms for the operator-exit gate, then contain ${setToken}`);
+    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
+    expect(commandGuidance).toBeDefined();
+    expect(rendered).toContain(`action=${commandGuidance?.slice('Next step: '.length)}`);
+  });
+
   it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {
     const tokens = {
       first: encodeProviderProxySetAddress({
@@ -1330,15 +1396,20 @@ describe('backend status provider proxy dispositions', () => {
               proxyInstanceId: '22222222-2222-4222-8222-222222222222',
             },
             setToken: tokens.first,
-            disposition: 'awaiting-containment-absence',
-            role: 'guardian',
-            method: 'guardian.heartbeat.v1',
-            incidentReason: 'method-not-found',
-            waitingFor: 'independent-containment-absence',
-            operatorAction: 'contain',
-            enforcerObservations: [
-              { role: 'guardian', observation: 'alive' },
-              { role: 'reaper', observation: 'unknown' },
+            liveClaims: 0,
+            operatorExit: { kind: 'contain' },
+            holds: [
+              {
+                disposition: 'awaiting-containment-absence',
+                role: 'guardian',
+                method: 'guardian.heartbeat.v1',
+                incidentReason: 'method-not-found',
+                waitingFor: 'independent-containment-absence',
+                enforcerObservations: [
+                  { role: 'guardian', observation: 'alive' },
+                  { role: 'reaper', observation: 'unknown' },
+                ],
+              },
             ],
           },
           {
@@ -1348,29 +1419,25 @@ describe('backend status provider proxy dispositions', () => {
               proxyInstanceId: '44444444-4444-4444-8444-444444444444',
             },
             setToken: tokens.second,
-            disposition: 'held',
-            role: 'proxy',
-            cause: 'invalid-unattributable-frame',
-            attempts: 3,
-            elapsedMs: 1250,
-            boundMs: 23000,
             liveClaims: 2,
-            incidentReason: 'control_channel_reattaching',
-            waitingFor: 'control-reattachment',
-            operatorAction: 'wait',
-          },
-          {
-            setIdentity: {
-              buildSetId: '33333333-3333-4333-8333-333333333333',
-              hostFingerprint: 'b'.repeat(64),
-              proxyInstanceId: '44444444-4444-4444-8444-444444444444',
-            },
-            setToken: tokens.second,
-            disposition: 'operator-exit-refused',
-            liveClaims: 2,
-            incidentReason: 'operator_exit_deadline_pending',
-            waitingFor: 'set-adoption-deadline',
-            operatorAction: 'wait',
+            operatorExit: { kind: 'none' },
+            holds: [
+              {
+                disposition: 'held',
+                role: 'proxy',
+                cause: 'invalid-unattributable-frame',
+                attempts: 3,
+                elapsedMs: 1250,
+                boundMs: 23000,
+                incidentReason: 'control_channel_reattaching',
+                waitingFor: 'control-reattachment',
+              },
+              {
+                disposition: 'operator-exit-refused',
+                incidentReason: 'operator_exit_deadline_pending',
+                waitingFor: 'set-adoption-deadline',
+              },
+            ],
           },
           {
             setIdentity: {
@@ -1379,9 +1446,15 @@ describe('backend status provider proxy dispositions', () => {
               proxyInstanceId: '66666666-6666-4666-8666-666666666666',
             },
             setToken: tokens.third,
-            disposition: 'released-by-successor',
-            incidentReason: 'successor-adopted',
-            waitingFor: 'successor-acknowledgement',
+            liveClaims: 0,
+            operatorExit: { kind: 'contain' },
+            holds: [
+              {
+                disposition: 'released-by-successor',
+                incidentReason: 'successor-adopted',
+                waitingFor: 'successor-acknowledgement',
+              },
+            ],
           },
           {
             setIdentity: {
@@ -1390,9 +1463,14 @@ describe('backend status provider proxy dispositions', () => {
               proxyInstanceId: '88888888-8888-4888-8888-888888888888',
             },
             setToken: tokens.fourth,
-            disposition: 'held',
-            incidentReason: 'successor-adopted',
-            waitingFor: 'successor-acknowledgement',
+            liveClaims: 0,
+            holds: [
+              {
+                disposition: 'held',
+                incidentReason: 'successor-adopted',
+                waitingFor: 'successor-acknowledgement',
+              },
+            ],
           },
         ],
       },
@@ -1402,7 +1480,7 @@ describe('backend status provider proxy dispositions', () => {
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
       [
         'Provider proxy sets:',
-        `  set=${tokens.first} liveClaims=unknown`,
+        `  set=${tokens.first} liveClaims=0`,
         '    identity buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
         '    - disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence enforcers=guardian:alive,reaper:unknown',
@@ -1428,10 +1506,10 @@ describe('backend status provider proxy dispositions', () => {
     expect(rendered).toContain(
       '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
     );
-    expect(rendered).not.toContain(tokens.third);
-    expect(rendered).not.toContain(tokens.fourth);
     expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
     expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
+    expect(rendered).toContain(`skipped set=${tokens.third}`);
+    expect(rendered).toContain(`skipped set=${tokens.fourth}`);
 
     const operations: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
@@ -1476,10 +1554,15 @@ describe('backend status provider proxy dispositions', () => {
           {
             setIdentity,
             setToken,
-            disposition: 'held',
-            incidentReason: 'publication_result_unknown',
-            waitingFor: 'publication-confirmation-or-control-release',
-            operatorAction: 'wait',
+            liveClaims: 0,
+            operatorExit: { kind: 'none' },
+            holds: [
+              {
+                disposition: 'held',
+                incidentReason: 'publication_result_unknown',
+                waitingFor: 'publication-confirmation-or-control-release',
+              },
+            ],
           },
         ],
       },

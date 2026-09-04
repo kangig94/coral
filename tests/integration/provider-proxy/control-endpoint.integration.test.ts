@@ -838,7 +838,7 @@ describe('provider-proxy control endpoint', () => {
     const refused = await liveAttempt.call('role.operator.v1', {});
 
     expect(refused.error?.data?.code).toBe('invalid_state');
-    expect(refused.error?.message).toContain('provider-proxy-set contain <set-token> --abandon-without-absence');
+    expect(refused.error?.message).toContain('provider-proxy-set abandon <set-token>');
     expect(operator).not.toHaveBeenCalled();
 
     set.lapseControl();

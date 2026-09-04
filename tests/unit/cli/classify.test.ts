@@ -177,6 +177,7 @@ describe('command class coverage', () => {
       { path: 'backend provider-proxy-set terminate-role', isLeaf: true, commandClass: 'mutate' },
       { path: 'backend provider-proxy-set retry-role-reap', isLeaf: true, commandClass: 'mutate' },
       { path: 'backend provider-proxy-set contain', isLeaf: true, commandClass: 'mutate' },
+      { path: 'backend provider-proxy-set abandon', isLeaf: true, commandClass: 'mutate' },
     ]);
   });
 });

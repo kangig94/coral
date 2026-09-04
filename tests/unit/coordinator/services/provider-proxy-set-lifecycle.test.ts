@@ -1588,11 +1588,6 @@ describe('ProviderProxySetLifecycle', () => {
     // Only the guardian was observed, so only the guardian's subject has a disposition.
     expect(lifecycle.snapshot().operatorDispositions).toEqual([
       expect.objectContaining({
-        setIdentity: {
-          buildSetId: authority.setIdentity.buildSetId,
-          hostFingerprint: authority.setIdentity.hostFingerprint,
-          proxyInstanceId: authority.setIdentity.proxyInstanceId,
-        },
         disposition: 'awaiting-containment-absence',
         role: 'guardian',
         method: 'guardian.heartbeat.v1',
@@ -2940,18 +2935,21 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'deadline-pending', remainingMs: 2_000 });
     expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
       expect.objectContaining({
-        setIdentity: address,
-        setToken: expect.stringMatching(/^pps1\./u),
         disposition: 'operator-exit-refused',
-        liveClaims: 1,
         incidentReason: 'operator_exit_deadline_pending',
         waitingFor: 'set-adoption-deadline',
       }),
+    );
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({ setIdentity: address, operatorExit: { kind: 'gated', remainingMs: 2_000 } }),
     );
 
     clock.elapse(2_000);
     const authorization = lifecycle.authorizeOperatorExit(address);
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({ setIdentity: address, operatorExit: { kind: 'contain' } }),
+    );
 
     await expect(
       lifecycle.completeOperatorExit(
@@ -2983,6 +2981,12 @@ describe('ProviderProxySetLifecycle', () => {
           { role: 'guardian', observation: 'alive' },
           { role: 'reaper', observation: 'unknown' },
         ],
+      }),
+    );
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: address,
+        operatorExit: { kind: 'refused', ground: 'enforcer-alive' },
       }),
     );
 
@@ -3019,6 +3023,12 @@ describe('ProviderProxySetLifecycle', () => {
         disposition: 'operator-exit-refused',
         incidentReason: 'operator_exit_store_unreadable',
         waitingFor: 'store-repair',
+      }),
+    );
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: address,
+        operatorExit: { kind: 'refused', ground: 'store-unreadable' },
       }),
     );
   });
@@ -3830,7 +3840,6 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().operatorDispositions).toEqual([
       expect.objectContaining({
         waitingFor: 'publication-confirmation-or-control-release',
-        operatorAction: 'wait',
       }),
     ]);
     expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'not-held', state: 'recovering' });
@@ -3854,12 +3863,12 @@ describe('ProviderProxySetLifecycle', () => {
     expect(retained.stopped).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
     expect(redeemCapsule).toHaveBeenCalledOnce();
 
-    const actionableDispositions = lifecycle
+    const actionableSets = lifecycle
       .snapshot()
-      .operatorDispositions.filter((disposition) => disposition.operatorAction === 'contain');
-    expect(actionableDispositions).not.toHaveLength(0);
-    for (const disposition of actionableDispositions) {
-      expect(lifecycle.authorizeOperatorExit(disposition.setIdentity).kind).toBe('authorized');
+      .operatorSets.filter(({ operatorExit }) => operatorExit.kind === 'contain');
+    expect(actionableSets).not.toHaveLength(0);
+    for (const set of actionableSets) {
+      expect(lifecycle.authorizeOperatorExit(set.setIdentity).kind).toBe('authorized');
     }
 
     const authorization = lifecycle.authorizeOperatorExit(address);
@@ -4270,6 +4279,7 @@ describe('ProviderProxySetLifecycle', () => {
         states: ['capsule-recovering'],
         pendingOperationCounts: [],
         operatorDispositions: [],
+        operatorSets: [],
       },
       activeTimers: 0,
     });

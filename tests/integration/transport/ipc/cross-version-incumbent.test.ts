@@ -253,7 +253,7 @@ describe('cross-version incumbent', () => {
 
     const containment = await createProviderProxySetCommandOperations().contain({
       setIdentity: providerProxySetAddress,
-      abandonWithoutAbsence: false,
+      mode: 'contain',
     });
     const discardProviderOperation = createRecoveryQuarantineCommandOperations().discardProviderOperation;
     if (discardProviderOperation === undefined) throw new Error('discard command is not configured');

@@ -1019,7 +1019,7 @@ export function createCoordinatorCore(
           signal ?? new AbortController().signal,
         );
         return providerProxySetContainResponseSchema.parse(
-          await lifecycle.completeOperatorExit(authorization.capability, proof, request.abandonWithoutAbsence, signal),
+          await lifecycle.completeOperatorExit(authorization.capability, proof, request.mode === 'abandon', signal),
         );
       },
     },
@@ -1185,7 +1185,7 @@ export function createCoordinatorCore(
           diagnostics.consumerStuck = consumerStuck;
         }
         const providerProxySets = [
-          ...(world.providerProxyLifecycleRef.get()?.snapshot().operatorDispositions ?? []),
+          ...(world.providerProxyLifecycleRef.get()?.snapshot().operatorSets ?? []),
         ] satisfies NonNullable<NonNullable<HealthSnapshot['diagnostics']>['providerProxySets']>;
         if (providerProxySets.length > 0) {
           diagnostics.providerProxySets = providerProxySets;

@@ -18,6 +18,7 @@ export type StaticCommandPath =
   | 'backend provider-host inspect'
   | 'backend provider-host evict'
   | 'backend provider-proxy-set contain'
+  | 'backend provider-proxy-set abandon'
   | 'backend provider-proxy-set terminate-role'
   | 'backend provider-proxy-set retry-role-reap'
   | 'expansion list'
@@ -75,6 +76,7 @@ export const commandClassMap = {
   'backend provider-host inspect': 'servedRead',
   'backend provider-host evict': 'mutate',
   'backend provider-proxy-set contain': 'mutate',
+  'backend provider-proxy-set abandon': 'mutate',
   'backend provider-proxy-set terminate-role': 'mutate',
   'backend provider-proxy-set retry-role-reap': 'mutate',
   'expansion list': 'directRead',

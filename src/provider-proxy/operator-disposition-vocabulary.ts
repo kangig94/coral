@@ -55,12 +55,16 @@ export const PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR = [
 export type ProviderProxySetOperatorDispositionWaitingFor =
   (typeof PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR)[number];
 
-export const PROVIDER_PROXY_SET_OPERATOR_ACTIONS = ['contain', 'wait'] as const;
-export type ProviderProxySetOperatorAction = (typeof PROVIDER_PROXY_SET_OPERATOR_ACTIONS)[number];
+export type ProviderProxySetOperatorExit =
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'gated'; remainingMs: number }>
+  | Readonly<{ kind: 'contain' }>
+  | Readonly<{
+      kind: 'refused';
+      ground: 'enforcer-alive' | 'enforcer-unobservable' | 'recorded-group-unattributable' | 'store-unreadable';
+    }>;
 
 export type ProviderProxySetOperatorDisposition = Readonly<{
-  setIdentity: ProviderProxySetAddress;
-  setToken: string;
   disposition: ProviderProxySetOperatorDispositionKind;
   role?: string;
   method?: string;
@@ -68,9 +72,15 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
   attempts?: number;
   elapsedMs?: number;
   boundMs?: number;
-  liveClaims?: number;
   enforcerObservations?: ProviderProxySetEnforcerObservations;
   incidentReason: string;
   waitingFor: ProviderProxySetOperatorDispositionWaitingFor;
-  operatorAction: ProviderProxySetOperatorAction;
+}>;
+
+export type ProviderProxySetOperatorStatus = Readonly<{
+  setIdentity: ProviderProxySetAddress;
+  setToken: string;
+  liveClaims: number;
+  operatorExit: ProviderProxySetOperatorExit;
+  holds: readonly ProviderProxySetOperatorDisposition[];
 }>;

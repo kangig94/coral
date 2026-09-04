@@ -28,11 +28,31 @@ import { encodeProviderProxySetAddress } from '../../provider-proxy/set-address.
 import type { ProviderProxySetContainResponse } from '../../transport/rpc/catalog.js';
 import type { UnreadableProviderOperationDiscardResult } from '../../recovery/unreadable-provider-operation.js';
 import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
+import type { ProviderProxySetOperatorExit } from '../../provider-proxy/operator-disposition-vocabulary.js';
 import { isProviderOperationRecordKey } from '../../store/provider-operation-journal.js';
 import { formatHandoffPublicationFailureSuccessor } from './handoff-publication.js';
 
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
+
+type ProviderProxySetOperatorRefusalGround = Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'];
+
+function providerProxySetOperatorRefusalGuidance(ground: ProviderProxySetOperatorRefusalGround, token: string): string {
+  const contain = `coral-cli backend provider-proxy-set contain ${token}`;
+  const abandon = `coral-cli backend provider-proxy-set abandon ${token}`;
+  switch (ground) {
+    case 'enforcer-alive':
+      return `after external verification, run ${abandon}`;
+    case 'enforcer-unobservable':
+      return `restore process observation and run ${contain}; after external verification, the explicit alternative is ${abandon}`;
+    case 'recorded-group-unattributable':
+      return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence or signalling the group`;
+    case 'store-unreadable':
+      return 'run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable';
+    default:
+      return assertNever(ground);
+  }
+}
 
 function formatProviderProxySetClaimDischarge(
   discharge: Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>['claimDischarge'],
@@ -126,7 +146,7 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         `Observed: ${observations(result.enforcerObservations)}.`,
         'Not observed: absence of the proxy process group and recorded provider roots.',
         `Effect: ${effect}.`,
-        `Next step: after external verification, run ${retry} --abandon-without-absence.`,
+        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
       ].join('\n');
     case 'enforcer-unobservable':
       return [
@@ -134,7 +154,7 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         `Observed: ${observations(result.enforcerObservations)}.`,
         'Not observed: absence of both enforcers or of the recorded containment.',
         `Effect: ${effect}.`,
-        `Next step: restore process observation and run ${retry}; after external verification, the explicit alternative is ${retry} --abandon-without-absence.`,
+        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
       ].join('\n');
     case 'recorded-group-unattributable':
       return [
@@ -142,15 +162,15 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         'Observed: the pid no longer identifies the recorded process-group leader.',
         'Not observed: absence of the recorded process group or authority to signal its numeric group id.',
         `Effect: ${effect}.`,
-        `Next step: after external verification, run ${retry} --abandon-without-absence; abandonment releases Coral's representation without asserting absence or signalling the group.`,
+        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
       ].join('\n');
     case 'store-unreadable':
       return [
         `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root.`,
         'Observed: the durable provider-operation scan contains an unreadable row attributable to this set.',
         'Not observed: enforcer state and the complete recorded target set were not established.',
-        `Effect: ${effect}. --abandon-without-absence cannot override this store fence.`,
-        'Next step: run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable.',
+        `Effect: ${effect}. The abandon command cannot override this store fence.`,
+        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
       ].join('\n');
     default:
       return assertNever(result);
@@ -1093,6 +1113,28 @@ function formatRecoveryRevisionValue(revision: string | null): string {
 type RunningHealth = Extract<BackendStatusFull, { status: 'ok' }>['health'];
 type RuntimeComponent = BackendHealth['components'][number];
 type DegradedReason = Extract<RuntimeComponent, { phase: 'degraded' }>['reason'];
+type ProviderProxySetStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
+
+export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
+  switch (set.operatorExit.kind) {
+    case 'contain':
+      return `action=coral-cli backend provider-proxy-set contain ${set.setToken}`;
+    case 'gated':
+      return (
+        `action=wait ~${Math.ceil(set.operatorExit.remainingMs)}ms for the operator-exit gate, ` +
+        `then contain ${set.setToken}`
+      );
+    case 'refused':
+      return `action=${providerProxySetOperatorRefusalGuidance(set.operatorExit.ground, set.setToken)}.`;
+    case 'none':
+      if (set.holds.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
+        return 'action=wait; Coral retries publication automatically until publication is confirmed or control is released.';
+      }
+      return `action=wait for ${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
+    default:
+      return assertNever(set.operatorExit);
+  }
+}
 
 function formatRunningStatus(health: RunningHealth): string {
   const componentLines: string[] = [];
@@ -1119,18 +1161,12 @@ function formatRunningStatus(health: RunningHealth): string {
   const skippedProviderProxySetRows = health.skippedProviderProxySetRows;
   if (providerProxySets.length > 0 || skippedProviderProxySetRows > 0) {
     lines.push('', 'Provider proxy sets:');
-    const grouped = new Map<string, typeof providerProxySets>();
     for (const set of providerProxySets) {
-      grouped.set(set.setToken, [...(grouped.get(set.setToken) ?? []), set]);
-    }
-    for (const [setToken, incidents] of grouped) {
-      const current = incidents[0];
-      if (current === undefined) continue;
       lines.push(
-        `  set=${setToken} liveClaims=${current.liveClaims ?? 'unknown'}`,
-        `    identity buildSetId=${current.setIdentity.buildSetId} proxyInstanceId=${current.setIdentity.proxyInstanceId} hostFingerprint=${current.setIdentity.hostFingerprint}`,
+        `  set=${set.setToken} liveClaims=${set.liveClaims ?? 'unknown'}`,
+        `    identity buildSetId=${set.setIdentity.buildSetId} proxyInstanceId=${set.setIdentity.proxyInstanceId} hostFingerprint=${set.setIdentity.hostFingerprint}`,
       );
-      for (const incident of incidents) {
+      for (const incident of set.holds) {
         const subject = [incident.role, incident.method].filter((value) => value !== undefined).join(' ');
         const reattachment =
           incident.cause === undefined
@@ -1140,21 +1176,13 @@ function formatRunningStatus(health: RunningHealth): string {
           `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}`,
         );
       }
-      if (incidents.some(({ operatorAction }) => operatorAction === 'contain')) {
-        lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);
-      } else if (incidents.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
-        lines.push(
-          '    action=wait; Coral retries publication automatically until publication is confirmed or control is released.',
-        );
-      } else {
-        const waitingFor = [...new Set(incidents.map((incident) => incident.waitingFor))].join(',');
-        lines.push(`    action=wait for ${waitingFor}`);
-      }
+      lines.push(`    ${formatProviderProxySetOperatorExit(set)}`);
     }
     if (skippedProviderProxySetRows > 0) {
       lines.push(
         `  Provider proxy set rows this build could not read: ${skippedProviderProxySetRows}; backend status is not showing ${skippedProviderProxySetRows === 1 ? 'its disposition, cause, or waiting condition' : 'their dispositions, causes, or waiting conditions'}.`,
       );
+      lines.push(...health.skippedProviderProxySetTokens.map((token) => `    skipped set=${token}`));
       lines.push(
         '    No containment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
       );

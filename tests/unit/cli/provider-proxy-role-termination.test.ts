@@ -168,7 +168,7 @@ describe('backend provider-proxy-set terminate-role', () => {
       abandon: async () => ({
         kind: 'refused',
         reason:
-          'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set contain <set-token> --abandon-without-absence` through the coordinator.',
+          'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set abandon <set-token>` through the coordinator.',
       }),
     });
 
@@ -176,7 +176,7 @@ describe('backend provider-proxy-set terminate-role', () => {
 
     expect(output.stdout).toBe('');
     expect(output.stderr).toContain('coordinator control is live');
-    expect(output.stderr).toContain('provider-proxy-set contain <set-token> --abandon-without-absence');
+    expect(output.stderr).toContain('provider-proxy-set abandon <set-token>');
     expect(process.exitCode).toBe(1);
   });
 

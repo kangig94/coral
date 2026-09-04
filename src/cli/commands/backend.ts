@@ -144,6 +144,7 @@ import {
   formatRecoveryQuarantineList,
   formatUnreadableProviderOperationDiscard,
   formatProviderProxySetContainResult,
+  formatProviderProxySetOperatorExit,
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
@@ -892,11 +893,11 @@ export function formatProviderProxySetHolderStatusDirect(
           return hold?.retry.state === 'operator-action-required' ? [hold] : [];
         });
       const setAbandonment = holds.some((hold) => hold.kind === 'recorded-group-unattributable')
-        ? `    coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress({
+        ? `    coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress({
             buildSetId: reading.buildSetId,
             hostFingerprint: reading.hostFingerprint,
             proxyInstanceId: reading.proxyInstanceId,
-          })} --abandon-without-absence\n`
+          })}\n`
         : '';
       const operatorActions =
         holds.length === 0
@@ -1490,22 +1491,18 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
       let preservedSetRead: Readonly<{
-        actionableTokens: readonly string[];
-        waitingRows: number;
+        operatorExits: readonly string[];
         skippedRows: number;
+        skippedTokens: readonly string[];
       }> | null = null;
       try {
         const statusBeforeShutdown = await backendStatus.getStatus();
         if (statusBeforeShutdown.status === 'ok') {
           const providerProxySets = statusBeforeShutdown.health.diagnostics?.providerProxySets ?? [];
           preservedSetRead = {
-            actionableTokens: [
-              ...new Set([
-                ...providerProxySets.filter((set) => set.operatorAction === 'contain').map((set) => set.setToken),
-              ]),
-            ],
-            waitingRows: providerProxySets.filter((set) => set.operatorAction === 'wait').length,
+            operatorExits: providerProxySets.map(formatProviderProxySetOperatorExit),
             skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
+            skippedTokens: statusBeforeShutdown.health.skippedProviderProxySetTokens,
           };
         }
       } catch {
@@ -1519,29 +1516,22 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           if (preservedSetRead === null) {
             return 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.';
           }
-          if (
-            preservedSetRead.actionableTokens.length === 0 &&
-            preservedSetRead.waitingRows === 0 &&
-            preservedSetRead.skippedRows === 0
-          ) {
+          if (preservedSetRead.operatorExits.length === 0 && preservedSetRead.skippedRows === 0) {
             return 'No held provider proxy sets were reported before shutdown.';
           }
-          const lines = preservedSetRead.actionableTokens.length
+          const lines = preservedSetRead.operatorExits.length
             ? [
-                'Provider proxy set tokens reported before shutdown:',
-                ...preservedSetRead.actionableTokens.map(
-                  (token) => `  coral-cli backend provider-proxy-set contain ${token}`,
-                ),
+                'Provider proxy set exits reported before shutdown:',
+                ...preservedSetRead.operatorExits.map((operatorExit) => `  ${operatorExit}`),
               ]
             : [];
-          if (preservedSetRead.waitingRows > 0) {
-            lines.push(
-              `${preservedSetRead.waitingRows} provider proxy set row(s) had no currently authorized containment action; inspect backend status after the successor starts.`,
-            );
-          }
           if (preservedSetRead.skippedRows > 0) {
             lines.push(
               `The pre-shutdown status read could not interpret ${preservedSetRead.skippedRows} provider proxy set row(s), so it could not confirm that every preserved set was named.`,
+            );
+            lines.push(...preservedSetRead.skippedTokens.map((token) => `  skipped set=${token}`));
+            lines.push(
+              '  No containment or abandonment command is offered for a skipped set because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
             );
           }
           return lines.join('\n');
@@ -1617,34 +1607,43 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .command('contain')
     .description('Resolve one exact held provider-proxy set after its state-specific operator-exit gate')
     .argument('<set-token>', 'Canonical pps1 token copied from `coral-cli backend status`', parseProviderProxySetToken)
-    .option(
-      '--abandon-without-absence',
-      'After external verification, release Coral representation for a live/unobservable enforcer or unattributable recorded group',
-    )
     .addHelpText(
       'after',
       [
         '',
-        'Default mode requires guardian and reaper absence, then reaps the recorded proxy process group and every recorded provider root.',
-        '--abandon-without-absence performs no recorded-containment reap, signals no process, and releases Coral representation despite observed life, unknown observation, or an unattributable recorded group.',
-        'Neither mode signals the guardian or reaper.',
+        'Containment requires guardian and reaper absence, then reaps the recorded proxy process group and every recorded provider root.',
+        'Containment does not signal the guardian or reaper.',
         'A reattachment hold is gated by its control-adoption deadline; containing and containment-wait are gated by their current containment-attempt deadline.',
       ].join('\n'),
     );
-  let abandonWithoutAbsenceSeen = false;
-  containProviderProxySetCommand.on('option:abandon-without-absence', () => {
-    if (abandonWithoutAbsenceSeen) {
-      throw new InvalidArgumentError('Option --abandon-without-absence may only be specified once.');
+  containProviderProxySetCommand.action(async (setIdentity: ProviderProxySetAddress) => {
+    try {
+      const result = await providerProxySets.contain({ setIdentity, mode: 'contain' });
+      if (isProviderProxySetContainNoVerdict(result)) {
+        process.stderr.write(`${formatProviderProxySetContainNoVerdict(result)}\n`);
+        process.exitCode = 75;
+        return;
+      }
+      const exitCode = providerProxySetContainExitCode(result);
+      (exitCode === 0 ? process.stdout : process.stderr).write(`${formatProviderProxySetContainResult(result)}\n`);
+      process.exitCode = exitCode;
+    } catch (error: unknown) {
+      emitError(error);
     }
-    abandonWithoutAbsenceSeen = true;
   });
-  containProviderProxySetCommand.action(
-    async (setIdentity: ProviderProxySetAddress, options: { abandonWithoutAbsence?: boolean }) => {
+  providerProxySetCommand
+    .command('abandon')
+    .description(
+      'Release one exact held provider-proxy set without absence proof, including an unattributable recorded group; signals no process and performs no reap',
+    )
+    .argument('<set-token>', 'Canonical pps1 token copied from `coral-cli backend status`', parseProviderProxySetToken)
+    .addHelpText(
+      'after',
+      '\nAfter external verification, abandonment releases Coral representation despite observed life, unknown observation, or an unattributable recorded group. It cannot override an unreadable-store fence.',
+    )
+    .action(async (setIdentity: ProviderProxySetAddress) => {
       try {
-        const result = await providerProxySets.contain({
-          setIdentity,
-          abandonWithoutAbsence: options.abandonWithoutAbsence ?? false,
-        });
+        const result = await providerProxySets.contain({ setIdentity, mode: 'abandon' });
         if (isProviderProxySetContainNoVerdict(result)) {
           process.stderr.write(`${formatProviderProxySetContainNoVerdict(result)}\n`);
           process.exitCode = 75;
@@ -1656,8 +1655,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       } catch (error: unknown) {
         emitError(error);
       }
-    },
-  );
+    });
   recoveryQuarantineCommand
     .command('clear')
     .description('Retry one exact retained recovery failure through the canonical coordinator')

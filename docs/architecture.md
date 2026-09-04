@@ -37,7 +37,7 @@ Claude Code
 clients/bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
-  ├── Admin commands (`backend status|shutdown`, `backend provider-proxy-set contain`, `backend routing-status resolve|discard|quarantine list|quarantine clear`, `backend provider-host list|inspect|evict`, `backend store-reset list|report|discard`, `backend recovery-quarantine list|clear|discard-provider-operation`, `backend kb-commit quarantine`)
+  ├── Admin commands (`backend status|shutdown`, `backend provider-proxy-set contain|abandon`, `backend routing-status resolve|discard|quarantine list|quarantine clear`, `backend provider-host list|inspect|evict`, `backend store-reset list|report|discard`, `backend recovery-quarantine list|clear|discard-provider-operation`, `backend kb-commit quarantine`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
@@ -237,7 +237,7 @@ The channel hold also has an exact-set operator exit after its recorded monotoni
 `coral-cli backend provider-proxy-set contain <pps1-token>`, where `backend status` supplies the canonical token
 and live-claim count. Its opaque capability can be minted only for a held set after that deadline. Confirmed
 absence enters the ordinary disappearance path; observed-live and unobservable enforcers remain refusals unless
-the operator explicitly chooses `--abandon-without-absence`, which releases representation through a separate
+the operator explicitly runs `coral-cli backend provider-proxy-set abandon <pps1-token>`, which releases representation through a separate
 faultless action and claim-acceptance path without minting absence. A local unreadable-row fence cannot be
 overridden. Ordinary shutdown remains handoff and reports every decoded set token plus whether its best-effort
 inventory was complete. A fault-driven `containing` or `containment-wait` hold uses a fixed 30-second

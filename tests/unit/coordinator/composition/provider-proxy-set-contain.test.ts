@@ -151,7 +151,7 @@ describe('provider proxy set operator RPC composition', () => {
     const proof = vi.spyOn(harness.prover, 'collectContainmentProof');
     const complete = vi.spyOn(harness.lifecycle, 'completeOperatorExit');
 
-    await expect(harness.contain({ setIdentity: address, abandonWithoutAbsence: false })).resolves.toEqual({
+    await expect(harness.contain({ setIdentity: address, mode: 'contain' })).resolves.toEqual({
       kind: 'set-not-found',
       setIdentity: address,
       effect: noEffect,
@@ -172,7 +172,7 @@ describe('provider proxy set operator RPC composition', () => {
     });
     const signal = new AbortController().signal;
 
-    const pending = harness.contain({ setIdentity: address, abandonWithoutAbsence: false }, signal);
+    const pending = harness.contain({ setIdentity: address, mode: 'contain' }, signal);
     expect(proof).toHaveBeenCalledExactlyOnceWith(proofAuthorization, harness.db, signal);
     expect(complete).not.toHaveBeenCalled();
     stale = true;
@@ -229,9 +229,7 @@ describe('provider proxy set operator RPC composition', () => {
     const complete = vi.spyOn(harness.lifecycle, 'completeOperatorExit').mockResolvedValue(result);
     const signal = new AbortController().signal;
 
-    await expect(harness.contain({ setIdentity: address, abandonWithoutAbsence: false }, signal)).resolves.toEqual(
-      result,
-    );
+    await expect(harness.contain({ setIdentity: address, mode: 'contain' }, signal)).resolves.toEqual(result);
     expect(proof).toHaveBeenCalledExactlyOnceWith(proofAuthorization, harness.db, signal);
     expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, false, signal);
   });
@@ -260,9 +258,7 @@ describe('provider proxy set operator RPC composition', () => {
     const complete = vi.spyOn(harness.lifecycle, 'completeOperatorExit').mockResolvedValue(result);
     const signal = new AbortController().signal;
 
-    await expect(harness.contain({ setIdentity: address, abandonWithoutAbsence: true }, signal)).resolves.toEqual(
-      result,
-    );
+    await expect(harness.contain({ setIdentity: address, mode: 'abandon' }, signal)).resolves.toEqual(result);
     expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, true, signal);
   });
 });

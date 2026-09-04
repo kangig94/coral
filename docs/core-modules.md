@@ -155,7 +155,8 @@ Channel loss is now structurally excluded from the terminal-fault union. Close a
 independent absence run concurrently under one absolute monotonic adoption-window deadline. A branded success
 rebuilds and promotes the complete operation authority before establishment notification, while refusal or
 expiry enters the awaiting-absence path without sending `stopAndReap`; once both enforcers are proven absent, the read-only prover supplies the exact targets and the lifecycle reaps the orphaned proxy group. Ordinary `backend shutdown` is handoff, not a forced exit. The explicit exit is
-`coral-cli backend provider-proxy-set contain <pps1-token>`.
+`coral-cli backend provider-proxy-set contain <pps1-token>` or, after external verification, the destructive
+`coral-cli backend provider-proxy-set abandon <pps1-token>`.
 
 ## Runtime Components
 

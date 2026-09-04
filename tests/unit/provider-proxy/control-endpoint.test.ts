@@ -171,9 +171,7 @@ describe('control endpoint operator authority', () => {
       throw new Error('operator abandonment did not return a protocol refusal');
     }
     expect(refused.response.failure.protocolCode).toBe('invalid_state');
-    expect(refused.response.error.message).toContain(
-      'provider-proxy-set contain <set-token> --abandon-without-absence',
-    );
+    expect(refused.response.error.message).toContain('provider-proxy-set abandon <set-token>');
     expect(operator).not.toHaveBeenCalled();
   });
 });

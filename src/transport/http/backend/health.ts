@@ -1,17 +1,15 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
-import {
-  providerProxySetEnforcerObservationsSchema,
-  type ProviderProxySetEnforcerObservations,
-} from '../../../provider-proxy/containment-proof-contract.js';
+import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import {
-  PROVIDER_PROXY_SET_OPERATOR_ACTIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
   type ProviderProxySetOperatorDisposition,
+  type ProviderProxySetOperatorExit,
+  type ProviderProxySetOperatorStatus,
 } from '../../../provider-proxy/operator-disposition-vocabulary.js';
 
 /**
@@ -136,22 +134,7 @@ export interface BackendHealth {
       contentSeq?: number;
       metadataSeq?: number;
     }>;
-    providerProxySets?: Array<{
-      setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
-      setToken: string;
-      disposition: ProviderProxySetOperatorDisposition['disposition'];
-      role?: string;
-      method?: string;
-      cause?: ProviderProxySetOperatorDisposition['cause'];
-      attempts?: number;
-      elapsedMs?: number;
-      boundMs?: number;
-      liveClaims?: number;
-      enforcerObservations?: ProviderProxySetEnforcerObservations;
-      incidentReason: string;
-      waitingFor: ProviderProxySetOperatorDisposition['waitingFor'];
-      operatorAction: ProviderProxySetOperatorDisposition['operatorAction'];
-    }>;
+    providerProxySets?: ProviderProxySetOperatorStatus[];
   };
 }
 
@@ -218,27 +201,75 @@ type ProviderProxySetsParseResult = Readonly<{
   skippedSetTokens: string[];
 }>;
 
-/** A row without `operatorAction` was produced before the action contract existed, so only the
- *  waiting conditions that predate the contract are decidable here. A waiting condition this build
- *  added after the contract cannot reach an action-less row, and guessing one would invent an
- *  operator instruction from evidence the producer never sent: leave it undecidable and let the
- *  caller skip the row. */
-function preActionContractOperatorAction(
-  waitingFor: string,
-): ProviderProxySetOperatorDisposition['operatorAction'] | null {
-  switch (waitingFor) {
-    case 'control-reattachment':
-    case 'independent-containment-absence':
-    case 'set-adoption-deadline':
-    case 'operator-abandonment':
-    case 'store-repair':
-      return 'contain';
-    case 'heartbeat-evidence-window':
-    case 'ordinary-drain':
-      return 'wait';
+const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
+  'enforcer-alive',
+  'enforcer-unobservable',
+  'recorded-group-unattributable',
+  'store-unreadable',
+] as const;
+
+function parseProviderProxySetOperatorExit(value: unknown): ProviderProxySetOperatorExit | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  switch (value.kind) {
+    case 'none':
+    case 'contain':
+      return { kind: value.kind };
+    case 'gated':
+      return isNonNegativeFiniteNumber(value.remainingMs) ? { kind: 'gated', remainingMs: value.remainingMs } : null;
+    case 'refused':
+      return (PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS as readonly unknown[]).includes(value.ground)
+        ? {
+            kind: 'refused',
+            ground: value.ground as Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'],
+          }
+        : null;
     default:
       return null;
   }
+}
+
+function parseProviderProxySetHold(value: unknown): ProviderProxySet['holds'][number] | null {
+  if (
+    !isRecord(value) ||
+    typeof value.disposition !== 'string' ||
+    (value.cause !== undefined && typeof value.cause !== 'string') ||
+    typeof value.incidentReason !== 'string' ||
+    typeof value.waitingFor !== 'string' ||
+    !(PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS as readonly string[]).includes(value.disposition) ||
+    (value.cause !== undefined &&
+      !(PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES as readonly string[]).includes(value.cause)) ||
+    !(PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR as readonly string[]).includes(value.waitingFor) ||
+    (value.role !== undefined && typeof value.role !== 'string') ||
+    (value.method !== undefined && typeof value.method !== 'string') ||
+    (value.attempts !== undefined && !isNonNegativeInteger(value.attempts)) ||
+    (value.elapsedMs !== undefined && !isNonNegativeFiniteNumber(value.elapsedMs)) ||
+    (value.boundMs !== undefined && !isNonNegativeFiniteNumber(value.boundMs)) ||
+    (value.cause !== undefined &&
+      (value.attempts === undefined || value.elapsedMs === undefined || value.boundMs === undefined))
+  ) {
+    return null;
+  }
+  const observations =
+    value.enforcerObservations === undefined
+      ? undefined
+      : providerProxySetEnforcerObservationsSchema.safeParse(value.enforcerObservations);
+  if (observations !== undefined && !observations.success) return null;
+  return {
+    disposition: value.disposition as ProviderProxySetOperatorDisposition['disposition'],
+    ...(value.role === undefined ? {} : { role: value.role }),
+    ...(value.method === undefined ? {} : { method: value.method }),
+    ...(value.cause === undefined
+      ? {}
+      : {
+          cause: value.cause as ProviderProxySetOperatorDisposition['cause'],
+          attempts: value.attempts as number,
+          elapsedMs: value.elapsedMs as number,
+          boundMs: value.boundMs as number,
+        }),
+    ...(observations === undefined ? {} : { enforcerObservations: observations.data }),
+    incidentReason: value.incidentReason,
+    waitingFor: value.waitingFor as ProviderProxySetOperatorDisposition['waitingFor'],
+  };
 }
 
 function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | null {
@@ -278,73 +309,29 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       continue;
     }
 
-    if (
-      typeof entry.disposition !== 'string' ||
-      (entry.cause !== undefined && typeof entry.cause !== 'string') ||
-      typeof entry.incidentReason !== 'string' ||
-      typeof entry.waitingFor !== 'string' ||
-      (entry.operatorAction !== undefined && typeof entry.operatorAction !== 'string')
-    ) {
+    if (!isNonNegativeInteger(entry.liveClaims) || !Array.isArray(entry.holds)) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);
       continue;
     }
-
-    const understandsEnums =
-      (PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS as readonly string[]).includes(entry.disposition) &&
-      (entry.cause === undefined ||
-        (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES as readonly string[]).includes(entry.cause)) &&
-      (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR as readonly string[]).includes(entry.waitingFor) &&
-      (entry.operatorAction === undefined ||
-        (PROVIDER_PROXY_SET_OPERATOR_ACTIONS as readonly string[]).includes(entry.operatorAction));
-    if (!understandsEnums) {
+    const operatorExit = parseProviderProxySetOperatorExit(entry.operatorExit);
+    const holds = entry.holds.map(parseProviderProxySetHold);
+    if (operatorExit === null || holds.some((hold) => hold === null)) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);
       continue;
     }
-    const operatorAction =
-      entry.operatorAction === undefined
-        ? preActionContractOperatorAction(entry.waitingFor)
-        : (entry.operatorAction as ProviderProxySetOperatorDisposition['operatorAction']);
-    if (operatorAction === null) {
-      skippedRows += 1;
-      skippedSetTokens.push(entry.setToken);
-      continue;
-    }
-
-    if (
-      (entry.role !== undefined && typeof entry.role !== 'string') ||
-      (entry.method !== undefined && typeof entry.method !== 'string') ||
-      (entry.attempts !== undefined && !isNonNegativeInteger(entry.attempts)) ||
-      (entry.elapsedMs !== undefined && !isNonNegativeFiniteNumber(entry.elapsedMs)) ||
-      (entry.boundMs !== undefined && !isNonNegativeFiniteNumber(entry.boundMs)) ||
-      (entry.liveClaims !== undefined && !isNonNegativeInteger(entry.liveClaims)) ||
-      (entry.cause !== undefined &&
-        (entry.attempts === undefined ||
-          entry.elapsedMs === undefined ||
-          entry.boundMs === undefined ||
-          entry.liveClaims === undefined))
-    ) {
-      skippedRows += 1;
-      skippedSetTokens.push(entry.setToken);
-      continue;
-    }
-
-    const enforcerObservations =
-      entry.enforcerObservations === undefined
-        ? undefined
-        : providerProxySetEnforcerObservationsSchema.safeParse(entry.enforcerObservations);
-    if (enforcerObservations !== undefined && !enforcerObservations.success) {
-      skippedRows += 1;
-      skippedSetTokens.push(entry.setToken);
-      continue;
-    }
-
     understoodRows.push({
-      ...entry,
-      operatorAction,
-      ...(enforcerObservations === undefined ? {} : { enforcerObservations: enforcerObservations.data }),
-    } as ProviderProxySet);
+      setIdentity: {
+        buildSetId: entry.setIdentity.buildSetId,
+        hostFingerprint: entry.setIdentity.hostFingerprint,
+        proxyInstanceId: entry.setIdentity.proxyInstanceId,
+      },
+      setToken: entry.setToken,
+      liveClaims: entry.liveClaims,
+      operatorExit,
+      holds: holds as ProviderProxySet['holds'],
+    });
   }
 
   return { understoodRows, skippedRows, skippedSetTokens };

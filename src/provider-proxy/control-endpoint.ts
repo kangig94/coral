@@ -562,7 +562,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       if (challenges.controlIsLive()) {
         throw new ProxyControlProtocolError(
           'invalid_state',
-          'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set contain <set-token> --abandon-without-absence` through the coordinator.',
+          'Operator abandonment is refused while coordinator control is live. Use `coral-cli backend provider-proxy-set abandon <set-token>` through the coordinator.',
         );
       }
       markHandlerStarted();

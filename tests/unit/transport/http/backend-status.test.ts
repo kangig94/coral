@@ -603,15 +603,26 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         hostFingerprint: 'a'.repeat(64),
         proxyInstanceId: '22222222-2222-4222-8222-222222222222',
       }),
-      disposition: 'held',
-      incidentReason: 'control_channel_reattaching',
-      waitingFor: 'control-reattachment',
-      operatorAction: 'contain',
+      liveClaims: 0,
+      operatorExit: { kind: 'contain' },
+      holds: [
+        {
+          disposition: 'held',
+          incidentReason: 'control_channel_reattaching',
+          waitingFor: 'control-reattachment',
+        },
+      ],
     };
     const forwardShapedDetailed = {
       ...JSON.parse(detailed('ok')),
       diagnostics: {
-        providerProxySets: [understoodRow, { ...understoodRow, disposition: 'released-by-successor' }],
+        providerProxySets: [
+          understoodRow,
+          {
+            ...understoodRow,
+            holds: [{ ...understoodRow.holds[0], disposition: 'released-by-successor' }],
+          },
+        ],
       },
     };
     stubProbes(

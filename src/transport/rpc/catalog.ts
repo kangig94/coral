@@ -155,7 +155,7 @@ export type ProviderHostEvictResponse = z.output<typeof providerHostEvictRespons
 export const providerProxySetContainRequestSchema = z
   .object({
     setIdentity: providerProxySetAddressSchema,
-    abandonWithoutAbsence: z.boolean(),
+    mode: z.enum(['contain', 'abandon']),
   })
   .strict();
 
@@ -264,7 +264,6 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
 
 export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema;
 
-/** Exact-set containment input; abandonment authority must be chosen explicitly by the caller. */
 export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
 /** Exhaustive wire verdict including observable effects of a partially completed containment attempt. */
 export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;
