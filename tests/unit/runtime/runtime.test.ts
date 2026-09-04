@@ -177,6 +177,64 @@ describe('createRealRuntime', () => {
     }
   });
 
+  it('publishes the wrapper cleanup identity before durable runtime readiness settles', async () => {
+    const runtime = createRealRuntime('prod');
+    const rootDir = createTempDir('coral-runtime-provisional-');
+    const jobDir = join(rootDir, 'job-1');
+    runtime.storage.mkdirSync(jobDir, { recursive: true });
+    const onSpawned = vi.fn();
+
+    const launch = runtime.process.durable.launch({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 25);'],
+      jobDir,
+      onSpawned,
+    });
+
+    expect(onSpawned).toHaveBeenCalledOnce();
+    const provisional = onSpawned.mock.calls[0]?.[0];
+    expect(provisional).toMatchObject({
+      runtimeRecord: {
+        transport: 'durable-cli',
+        pid: expect.any(Number),
+        stdoutPath: join(jobDir, 'stdout'),
+        stderrPath: join(jobDir, 'stderr'),
+      },
+      incarnation: expect.any(String),
+    });
+
+    const durable = await launch;
+    expect(durable.runtimeRecord).toEqual(provisional?.runtimeRecord);
+    await runtime.process.durable.waitForExit(durable);
+  });
+
+  it('keeps the wrapper alive until a signalled durable child exits', async () => {
+    const runtime = createRealRuntime('prod');
+    const rootDir = createTempDir('coral-runtime-wrapper-owner-');
+    const jobDir = join(rootDir, 'job-1');
+    runtime.storage.mkdirSync(jobDir, { recursive: true });
+
+    const durable = await runtime.process.durable.launch({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"],
+      jobDir,
+    });
+    const readyDeadline = Date.now() + 2_000;
+    while (!runtime.storage.readFileSync(durable.stdoutPath, 'utf-8').includes('ready')) {
+      if (Date.now() >= readyDeadline) throw new Error('durable child did not become ready');
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(runtime.process.kill(durable.pid, 'SIGTERM')).toBe(true);
+    await expect(runtime.process.durable.waitForExit(durable)).resolves.toMatchObject({
+      exitCode: null,
+      signal: 'SIGKILL',
+    });
+    expect(runtime.process.observeLiveness(durable.pid)).toBe('absent');
+  });
+
   it('writes and appends through durable storage operations', () => {
     const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-durable-');

@@ -267,6 +267,7 @@ type FakeRoleEnvironmentOptions = Readonly<{
    *  else here can reach: everything up to it has already succeeded. */
   onProxySpawning?(): void;
   onGuardianListening?(): void;
+  incarnationAfterSigterm?(role: ProviderRole, pid: number): ProcessIncarnation | null | undefined;
 }>;
 
 type FakeRoleEnvironment = Readonly<{
@@ -415,6 +416,14 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     for (const target of targets) {
       const handle = pidHandles.get(target);
       if (handle === undefined) continue;
+      const role = spawnLog.find((entry) => entry.pid === target)?.role;
+      if (signal === 'SIGTERM' && role !== undefined) {
+        const replacement = options.incarnationAfterSigterm?.(role, target);
+        if (replacement !== undefined) {
+          incarnationByPid.set(target, replacement);
+          continue;
+        }
+      }
       pidHandles.delete(target);
       if (signal !== 'SIGTERM') continue; // SIGKILL is not catchable; nothing left to run.
       // Mirrors `runProviderRoleMain`'s own shutdown dispatch: a guardian or reaper must reap what it holds
@@ -984,6 +993,33 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper']);
     const reaperPid = environment.spawnLog[0]?.pid;
     expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
+  });
+
+  it.each([
+    ['a reused pid', testIncarnation('replacement')],
+    ['an unobservable pid', null],
+  ] as const)('does not escalate guardian-construction cleanup against %s', async (_label, afterSigterm) => {
+    const baseDir = scopedTempDir('coral-topology-pairing-reuse-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+      incarnationAfterSigterm: (role) => (role === 'reaper' ? afterSigterm : undefined),
+    });
+    cleanups.push(() => closeHandles(environment));
+    const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared, {
+      reaperGuardianReaperAuthSecret: randomBytes(32).toString('hex'),
+    });
+
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
+      /shared secret/u,
+    );
+
+    const reaperPid = environment.spawnLog[0]?.pid;
+    expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
+    expect(environment.killLog).not.toContainEqual({ pid: reaperPid, signal: 'SIGKILL' });
   });
 
   it('leaves no live child when the guardian endpoint itself fails to bind', async () => {

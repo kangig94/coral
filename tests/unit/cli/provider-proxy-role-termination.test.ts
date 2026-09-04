@@ -1,14 +1,21 @@
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { registerBackendCommands } from '#src/cli/commands/backend.js';
+import {
+  abandonProviderProxyRoleDirect,
+  registerBackendCommands,
+  retryProviderProxyRoleReapDirect,
+} from '#src/cli/commands/backend.js';
 import {
   createProviderProxyRoleTerminationCommandOperations,
   type ProviderProxyRoleTerminationCommandOperations,
 } from '#src/cli/commands/provider-proxy-role-termination.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   process.exitCode = undefined;
 });
@@ -48,6 +55,32 @@ async function runTerminateRole(
 }
 
 describe('backend provider-proxy-set terminate-role', () => {
+  it.each([
+    ['terminate-role', abandonProviderProxyRoleDirect],
+    ['retry-role-reap', retryProviderProxyRoleReapDirect],
+  ] as const)('refuses managed children before %s can read a handoff capsule', async (_name, action) => {
+    vi.stubEnv('CORAL_CHILD', '1');
+    const base = createRealRuntime('prod');
+    const runtime: Runtime = {
+      ...base,
+      storage: new Proxy(base.storage, {
+        get: () => {
+          throw new Error('managed-child refusal accessed capsule storage');
+        },
+      }),
+    };
+    const roleIdentity = {
+      role: 'reaper',
+      pid: 6101,
+      incarnation: testIncarnation(6101),
+    } as const;
+
+    await expect(action(runtime, roleIdentity)).resolves.toEqual({
+      kind: 'refused',
+      reason: 'Provider-proxy role operator actions are unavailable from Coral-managed child processes.',
+    });
+  });
+
   it('refuses a pid whose observed incarnation differs from the recorded role identity', async () => {
     const abandon = vi.fn(async () => ({ kind: 'abandoned' as const }));
     const observedIncarnation = testIncarnation(7101);

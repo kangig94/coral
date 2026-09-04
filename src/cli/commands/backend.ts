@@ -43,6 +43,7 @@ import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../infra/node-process.js';
 import { handoffRoutingStatusPathForRunDir, providerHandoffCapsulePath } from '../../infra/path/index.js';
+import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import {
   connectControlClient,
@@ -690,6 +691,12 @@ export async function abandonProviderProxyRoleDirect(
   runtime: Runtime,
   roleIdentity: ProviderProxyRoleIdentity,
 ): Promise<ProviderProxyRoleAbandonmentAttempt> {
+  if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
+    return {
+      kind: 'refused',
+      reason: 'Provider-proxy role operator actions are unavailable from Coral-managed child processes.',
+    };
+  }
   const lookup = findProviderProxyRoleCapsule(runtime, roleIdentity);
   if (lookup.kind === 'unreachable') return lookup;
   const { capsule } = lookup;
@@ -734,6 +741,12 @@ export async function retryProviderProxyRoleReapDirect(
   runtime: Runtime,
   roleIdentity: ProviderProxyRoleIdentity,
 ): Promise<ProviderProxyRoleReapRetryAttempt> {
+  if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
+    return {
+      kind: 'refused',
+      reason: 'Provider-proxy role operator actions are unavailable from Coral-managed child processes.',
+    };
+  }
   const lookup = findProviderProxyRoleCapsule(runtime, roleIdentity);
   if (lookup.kind === 'unreachable') return lookup;
   const { capsule } = lookup;

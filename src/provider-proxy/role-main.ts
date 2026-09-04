@@ -261,43 +261,38 @@ export type ProxyRoleHandle = Readonly<{
 
 export type ProviderRoleHandle = GuardianRoleHandle | ReaperRoleHandle | ProxyRoleHandle;
 
-/** Whether `identity` still names the exact process it was recorded from. A readable-but-different start
- *  time means a different process now holds this pid; an unreadable one means it is already gone, or was
- *  never reachable. Either way, a mismatch means there is nothing this identity still names — signalling the
- *  bare pid would risk hitting whatever now holds it. */
+type RecordedProcessObservation = 'matched' | 'absent' | 'unobservable';
+
+/** A readable mismatch proves that the recorded process is absent; an unreadable identity decides nothing. */
 function isStillTheRecordedProcess<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
-): boolean {
-  // Where an incarnation cannot authorize a signal, a match is not evidence and this answers no. It is the
-  // conservative direction: the caller declines to reap, and the role it declined to reap is a role that
-  // never received control, so its own orphan deadline ends it. A few tens of seconds of an orphaned group
-  // is the whole cost; SIGKILL to whatever else now holds the pid is not recoverable at all.
-  if (!incarnationMayAuthorizeSignal(environment.platform)) return false;
+): RecordedProcessObservation {
+  if (!incarnationMayAuthorizeSignal(environment.platform)) return 'unobservable';
   const read = environment.readProcessIncarnation;
-  if (read === undefined) return false;
+  if (read === undefined) return 'unobservable';
   try {
-    return read(identity.pid, environment.platform) === identity.incarnation;
+    const observed = read(identity.pid, environment.platform);
+    if (observed === identity.incarnation) return 'matched';
+    if (observed !== null) return 'absent';
+    return 'unobservable';
   } catch {
-    return false;
+    return 'unobservable';
   }
 }
 
-/**
- * Deliberate exception to the shared escalation helpers: guardian-construction unwind must handle both a
- * detached proxy group and an ordinary, non-detached reaper pid. `reapRecordedContainment` cannot represent
- * the latter without falsely claiming it is a process-group leader, while `gracefulKill` does not confirm
- * absence. This keeps the required monotonic disappear-then-confirm discipline for both target shapes, so a
- * target that flickers dead-then-alive across one lucky poll is not mistaken for reaped. The exception is
- * documented and kept live by `timeout-kill-escalation.test.ts`.
- */
+/** A signal requires a fresh incarnation match and absence requires a stable confirmation window. */
 async function signalAndConfirmAbsence<Scope extends symbol>(
+  identity: RecordedProcessIdentity,
   target: number,
   signal: NodeJS.Signals,
   graceMs: number,
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<ProcessLiveness> {
+  const observation = isStillTheRecordedProcess(identity, environment);
+  if (observation === 'absent') return 'absent';
+  if (observation === 'unobservable') return 'unknown';
   environment.process.kill(target, signal);
   const waitDeadline = clock.shiftMilliseconds(clock.now(), graceMs);
   while (environment.process.observeLiveness(target) === 'alive' && clock.compare(clock.now(), waitDeadline) < 0) {
@@ -317,37 +312,28 @@ async function signalAndConfirmAbsence<Scope extends symbol>(
 }
 
 async function reapUnheldTarget<Scope extends symbol>(
+  identity: RecordedProcessIdentity,
   target: number,
   targetLabel: string,
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
-  const afterTerm = await signalAndConfirmAbsence(target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment);
+  const afterTerm = await signalAndConfirmAbsence(identity, target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment);
   if (afterTerm === 'absent') return;
   // Escalation needs observed life. `unknown` is not permission to send SIGKILL — the target may have exited
   // during the grace and had its id reused, and this path signals a bare number.
   if (afterTerm === 'unknown') {
     throw new Error(`Could not observe ${targetLabel} after SIGTERM; refusing to escalate to SIGKILL.`);
   }
-  if ((await signalAndConfirmAbsence(target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment)) === 'absent') return;
+  const afterKill = await signalAndConfirmAbsence(identity, target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment);
+  if (afterKill === 'absent') return;
+  if (afterKill === 'unknown') {
+    throw new Error(`Could not observe ${targetLabel} while authorizing or confirming SIGKILL.`);
+  }
   throw new Error(`Could not confirm ${targetLabel} exited after SIGTERM and SIGKILL.`);
 }
 
-/**
- * Best-effort cleanup for a detached role process (the proxy: spawned with `detached: true`) this attempt
- * itself spawned but can no longer hold, because a later cut in the same construction failed. A detached
- * spawn is its own process-group leader by that OS guarantee — the identical fact
- * `guardian.recordContainment`'s own `processGroupId: proxySpawn.pid` call already relies on — so this takes
- * a full `RecordedContainmentIdentity` and asserts that shape rather than trusting a bare pid plus an
- * easily-mistyped "signal the group" flag.
- *
- * Not a call to `reapRecordedContainment` itself: that function observes whether its target is already
- * absent *before* ever signalling it — correct for a containment that may be reaped long after it was
- * recorded, but wrong here, where the target is a process this very construction attempt spawned moments ago
- * and is expected to still be alive. Skipping straight to "already absent" on an unrelated liveness-probe gap
- * would silently abandon a real cleanup. This reuses that function's
- * monotonic-clock, confirm-after-signal discipline directly instead of its observe-first entry point.
- */
+/** A detached group is signalable only while its recorded leader still has the recorded incarnation. */
 async function reapUnheldProcessGroup<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
   clock: MonotonicClock<Scope>,
@@ -358,8 +344,8 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
       `Recorded containment pid=${containment.pid} is not its own process-group leader (processGroupId=${containment.processGroupId}).`,
     );
   }
-  if (!isStillTheRecordedProcess(containment, environment)) return;
   await reapUnheldTarget(
+    containment,
     -containment.processGroupId,
     `process group ${containment.processGroupId}`,
     clock,
@@ -367,18 +353,13 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
   );
 }
 
-/**
- * Best-effort cleanup for an ordinary (non-detached) role process (the reaper) this attempt itself spawned
- * but can no longer hold. Signalled by its own pid, never a group: an undetached child shares its parent's
- * process group rather than establishing one of its own, so it never had a group to target.
- */
+/** An undetached child is signalled by its identity-bound pid, never by its parent's process group. */
 async function reapUnheldOrdinaryProcess<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
-  if (!isStillTheRecordedProcess(identity, environment)) return;
-  await reapUnheldTarget(identity.pid, `pid=${identity.pid}`, clock, environment);
+  await reapUnheldTarget(identity, identity.pid, `pid=${identity.pid}`, clock, environment);
 }
 
 /** A non-zero exit must not be read as confirmed containment absence. */

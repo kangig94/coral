@@ -2,7 +2,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
-import { acquireProviderProxySet } from '../provider-proxy/index.js';
+import { acquireProviderProxySet, type ProviderProxyAcquisitionHeld } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
@@ -72,6 +72,7 @@ export type ProviderProxySetAcquisitionOutcome =
       publicationReceipt: PublicationReceipt;
     }>
   | Readonly<{ kind: 'failed'; reason: string; strandedArtifacts: readonly string[] }>
+  | ProviderProxyAcquisitionHeld<'provider-host-manager'>
   | ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
 
 export type ProviderProxySetAcquisitionStopDisposition = 'contain' | 'handoff';
@@ -82,6 +83,11 @@ export async function disposeStoppedProviderProxySetAcquisition(
   signal?: AbortSignal,
 ): Promise<void> {
   if (outcome.kind === 'failed') return;
+  if (outcome.kind === 'provider_proxy_acquisition_held') {
+    const recovery = await outcome.recoveryCapability.retry(signal ?? new AbortController().signal);
+    if (recovery.kind === 'held') throw new Error(`provider_proxy_set_acquisition_cleanup_held: ${recovery.reason}`);
+    return;
+  }
   if (outcome.kind === 'handed-over') {
     closeProviderProxyAcquisitionSession(
       outcome.session,
@@ -180,6 +186,9 @@ export function ensureProviderProxySet(
       (result) => {
         if (result.kind === 'provider_proxy_acquisition_failed') {
           return onSettled({ kind: 'failed', reason: result.reason, strandedArtifacts: result.strandedArtifacts });
+        }
+        if (result.kind === 'provider_proxy_acquisition_held') {
+          return onSettled({ ...result, owner: 'provider-host-manager' });
         }
         if (result.kind === 'handed-over') {
           return onSettled(

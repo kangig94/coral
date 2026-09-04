@@ -371,7 +371,15 @@ export class DefaultProviderHostManager
         { runtime: this.runtime, signal: this.proxySetAcquisitionStop.signal, ...config },
         async (outcome) => {
           if (pending.stop !== null) {
+            if (outcome.kind === 'provider_proxy_acquisition_held') {
+              const acceptance = lifecycle.acquisitionCleanupHeld(admission.slotId, outcome);
+              if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+                throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+              }
+              return;
+            }
             await disposeStoppedProviderProxySetAcquisition(outcome, pending.stop.disposition, pending.stop.signal);
+            pending.releaseAdmission();
             return;
           }
           if (outcome.kind === 'acquired') {
@@ -383,6 +391,13 @@ export class DefaultProviderHostManager
             lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
               this.observeGenerationCapacity(identityKey, entry, set),
             );
+            return;
+          }
+          if (outcome.kind === 'provider_proxy_acquisition_held') {
+            const acceptance = lifecycle.acquisitionCleanupHeld(admission.slotId, outcome);
+            if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+              throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+            }
             return;
           }
           lifecycle.acquisitionFailed(admission.slotId);
@@ -755,7 +770,6 @@ export class DefaultProviderHostManager
     const acquisitionsToSettle = [...this.pendingProxySetAcquisitions];
     for (const pending of acquisitionsToSettle) {
       pending.stop ??= { disposition, ...(signal === undefined ? {} : { signal }) };
-      pending.releaseAdmission();
     }
     this.proxySetAcquisitionStop.abort();
     const stopReclamation = (): void => this.reclamationStop.abort(signal?.reason);

@@ -1268,6 +1268,51 @@ describe('provider host pool proxy set registry', () => {
     await manager.shutdown();
   });
 
+  it('keeps an acquisition slot reserved while lifecycle owns a held guardian cleanup', async () => {
+    const server = createFakeProviderServerHandle();
+    const lifecycleRef = createProxySetLifecycleRef();
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: lifecycleRef,
+    });
+    const recovery = createDeferred<
+      | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
+      | Readonly<{ kind: 'held'; reason: string }>
+    >();
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({
+        kind: 'provider_proxy_acquisition_held',
+        owner: 'provider-host-manager',
+        cut: 'control establishment',
+        reason: 'guardian teardown was unobservable',
+        strandedArtifacts: ['guardian'],
+        guardianIdentity: {
+          pid: 101,
+          incarnation: testIncarnation(101),
+          processGroupId: 101,
+        },
+        recoveryCapability: { retry: () => recovery.promise },
+      });
+    });
+    const spec = createSharedSpec();
+
+    const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+    const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
+
+    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['acquiring'] }));
+    first.close();
+    second.close();
+    await manager.shutdown();
+    recovery.resolve({ kind: 'absence-confirmed', strandedArtifacts: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));
+  });
+
   it('keeps a publication-unknown acquisition represented and single-flighted by executable identity', async () => {
     const server = createFakeProviderServerHandle();
     const lifecycleRef = createProxySetLifecycleRef();

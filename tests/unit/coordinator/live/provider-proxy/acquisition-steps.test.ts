@@ -369,7 +369,7 @@ describe('exchangeAcquisitionStage', () => {
     });
   });
 
-  it.each(publicationRoles)('keeps a first-attempt %s publication non-attempt without retrying', async (role) => {
+  it.each(publicationRoles)('does not retry a first-attempt %s publication non-attempt', async (role) => {
     const exchange = vi.fn(async () =>
       controlExchangeForTest({
         kind: 'not-sent',
@@ -380,7 +380,7 @@ describe('exchangeAcquisitionStage', () => {
     const outcome = await runPublicationWith(role, exchange);
 
     expect(outcome).toEqual({
-      kind: 'not-attempted',
+      kind: role === 'guardian' ? 'not-attempted' : 'publication-unknown',
       role,
       reason: `${role} connection was already closed`,
     });

@@ -20,6 +20,7 @@ import {
   type DurableProviderProxyOperationAuthority,
 } from '../../live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
+import type { ProviderProxyAcquisitionHeld } from '../../live/provider-proxy/index.js';
 import {
   closeProviderProxyAcquisitionSession,
   establishProviderProxyAcquisitionSession,
@@ -250,6 +251,9 @@ type ProviderProxySetSlot =
       routeKey: string;
       address: ProviderProxySetAddress | null;
       binding: Readonly<{ buildSetId: string; hostFingerprint: string }> | null;
+      cleanupHold: ProviderProxyAcquisitionHeld<'provider-host-manager'> | null;
+      cleanupRetryTimer: TimerHandle | null;
+      cleanupAttemptToken: number;
     }
   | {
       kind: 'capsule-recovering';
@@ -796,13 +800,68 @@ export class ProviderProxySetLifecycle {
       return { kind: 'capacity', code: 'provider_proxy_set_capacity' };
     }
     const slotId = `acquiring-${this.#nextSlotId++}`;
-    this.#slots.set(slotId, { kind: 'acquiring', slotId, routeKey, address: null, binding: binding ?? null });
+    this.#slots.set(slotId, {
+      kind: 'acquiring',
+      slotId,
+      routeKey,
+      address: null,
+      binding: binding ?? null,
+      cleanupHold: null,
+      cleanupRetryTimer: null,
+      cleanupAttemptToken: 0,
+    });
     return { kind: 'accepted', slotId };
   }
 
   acquisitionFailed(slotId: string): void {
     const slot = this.#slots.get(slotId);
-    if (slot?.kind === 'acquiring') this.#slots.delete(slotId);
+    if (slot?.kind === 'acquiring' && slot.cleanupHold === null) this.#slots.delete(slotId);
+  }
+
+  acquisitionCleanupHeld(
+    slotId: string,
+    hold: ProviderProxyAcquisitionHeld<'provider-host-manager'>,
+  ): Readonly<{ kind: 'accepted'; owner: 'provider-proxy-set-lifecycle' }> {
+    const slot = this.#slots.get(slotId);
+    if (slot?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
+    if (slot.cleanupHold !== null) throw new Error('provider_proxy_set_acquisition_cleanup_already_owned');
+    slot.cleanupHold = hold;
+    this.#report(
+      'warn',
+      `Provider proxy set acquisition cleanup is held guardianPid=${hold.guardianIdentity.pid} error=${singleLineErrorSummary(hold.reason)}`,
+    );
+    this.#runAcquisitionCleanupRetry(slot);
+    return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
+  }
+
+  #runAcquisitionCleanupRetry(slot: Extract<ProviderProxySetSlot, { kind: 'acquiring' }>): void {
+    const hold = slot.cleanupHold;
+    if (hold === null) return;
+    const token = ++slot.cleanupAttemptToken;
+    void hold.recoveryCapability.retry(AbortSignal.timeout(CONTAINMENT_ATTEMPT_MS)).then((outcome) => {
+      const current = this.#slots.get(slot.slotId);
+      if (current !== slot || slot.cleanupAttemptToken !== token) return;
+      if (outcome.kind === 'absence-confirmed') {
+        this.#slots.delete(slot.slotId);
+        if (outcome.strandedArtifacts.length > 0) {
+          this.#report(
+            'warn',
+            `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
+          );
+        }
+        this.#deps.onSlotReleased?.(slot.routeKey);
+        return;
+      }
+      this.#report(
+        'warn',
+        `Provider proxy set acquisition cleanup remains held guardianPid=${hold.guardianIdentity.pid} error=${singleLineErrorSummary(outcome.reason)}`,
+      );
+      slot.cleanupRetryTimer = this.#deps.time.setTimeout(() => {
+        slot.cleanupRetryTimer = null;
+        this.#runAcquisitionCleanupRetry(slot);
+      }, REATTACHMENT_HOLD_RETRY_MS);
+      slot.cleanupRetryTimer.unref?.();
+    });
   }
 
   acquisitionPublicationUnknown(

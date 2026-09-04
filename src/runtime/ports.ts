@@ -66,7 +66,14 @@ export type DurableLaunchOptions = {
   envAdditions?: Record<string, string>;
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;
+  /** Must run synchronously after the detached wrapper exists and before launch waits for wrapper readiness. */
+  onSpawned?(launch: DurableProvisionalLaunch): void;
 };
+
+export type DurableProvisionalLaunch = Readonly<{
+  runtimeRecord: DurableCliRuntimeRecord;
+  incarnation: ProcessIncarnation | null;
+}>;
 
 export type DurableLaunchResult = {
   pid: number;

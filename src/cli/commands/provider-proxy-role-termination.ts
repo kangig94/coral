@@ -162,55 +162,39 @@ export function registerProviderProxyRoleTerminationCommand(
   providerProxySetCommand: Command,
   operations: ProviderProxyRoleTerminationCommandOperations,
 ): void {
-  providerProxySetCommand
-    .argument(
-      '[operator-action]',
-      "Operator action; 'terminate-role' abandons an unattributable hold, while 'retry-role-reap' retries a failed reap",
-    )
-    .option('--role <role>', 'Recorded role shown by backend status', parseRole)
-    .option('--pid <pid>', 'Recorded pid shown by backend status', parsePid)
-    .option('--incarnation <incarnation>', 'Recorded incarnation shown by backend status', parseIncarnation)
-    .action(
-      async (
-        operatorAction: string | undefined,
-        options: {
-          role?: ProviderProxyRoleIdentity['role'];
-          pid?: number;
-          incarnation?: ProcessIncarnation;
-        },
-      ) => {
-        try {
-          if (operatorAction !== 'terminate-role' && operatorAction !== 'retry-role-reap') {
-            throw new InvalidArgumentError(
-              "Provider-proxy set operator action must be 'terminate-role' or 'retry-role-reap'.",
-            );
-          }
-          const parsed = providerProxyRoleIdentitySchema.safeParse(options);
-          if (!parsed.success) {
-            throw new InvalidArgumentError('Options --role, --pid, and --incarnation are required.');
-          }
-          let result: ProviderProxyRoleTerminationResult | ProviderProxyRoleReapRetryResult;
-          let output: string;
-          if (operatorAction === 'terminate-role') {
-            const termination = await operations.terminate(parsed.data);
-            result = termination;
-            output = formatProviderProxyRoleTerminationResult(termination);
-          } else {
-            const retry = await operations.retryReap(parsed.data);
-            result = retry;
-            output = formatProviderProxyRoleReapRetryResult(retry);
-          }
-          const exitCode =
-            result.kind === 'abandoned' || result.kind === 'reap-retry-requested'
-              ? 0
-              : result.kind === 'identity-mismatch' || result.kind === 'refused'
-                ? 1
-                : 75;
-          (exitCode === 0 ? process.stdout : process.stderr).write(`${output}\n`);
-          process.exitCode = exitCode;
-        } catch (error: unknown) {
-          emitError(error);
-        }
-      },
-    );
+  const withRoleIdentity = (command: Command): Command =>
+    command
+      .requiredOption('--role <role>', 'Recorded role shown by backend status', parseRole)
+      .requiredOption('--pid <pid>', 'Recorded pid shown by backend status', parsePid)
+      .requiredOption('--incarnation <incarnation>', 'Recorded incarnation shown by backend status', parseIncarnation);
+  const exitCodeFor = (result: ProviderProxyRoleTerminationResult | ProviderProxyRoleReapRetryResult): 0 | 1 | 75 => {
+    if (result.kind === 'abandoned' || result.kind === 'reap-retry-requested') return 0;
+    return result.kind === 'identity-mismatch' || result.kind === 'refused' ? 1 : 75;
+  };
+
+  withRoleIdentity(
+    providerProxySetCommand.command('terminate-role').description('Abandon one exact unattributable role hold'),
+  ).action(async (options: ProviderProxyRoleIdentity) => {
+    try {
+      const result = await operations.terminate(providerProxyRoleIdentitySchema.parse(options));
+      const exitCode = exitCodeFor(result);
+      (exitCode === 0 ? process.stdout : process.stderr).write(`${formatProviderProxyRoleTerminationResult(result)}\n`);
+      process.exitCode = exitCode;
+    } catch (error: unknown) {
+      emitError(error);
+    }
+  });
+
+  withRoleIdentity(
+    providerProxySetCommand.command('retry-role-reap').description('Retry one exact failed role reap'),
+  ).action(async (options: ProviderProxyRoleIdentity) => {
+    try {
+      const result = await operations.retryReap(providerProxyRoleIdentitySchema.parse(options));
+      const exitCode = exitCodeFor(result);
+      (exitCode === 0 ? process.stdout : process.stderr).write(`${formatProviderProxyRoleReapRetryResult(result)}\n`);
+      process.exitCode = exitCode;
+    } catch (error: unknown) {
+      emitError(error);
+    }
+  });
 }

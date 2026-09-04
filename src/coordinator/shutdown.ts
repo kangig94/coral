@@ -203,17 +203,6 @@ function retriedChildProcessDetail(process: RetriedChildProcess): string {
 
 function childTerminationConfirmation(disposition: TerminateAllDisposition): ShutdownStepConfirmation {
   if (disposition.kind === 'all-observed-absent') return { confirmed: true };
-  if (disposition.kind === 'unpublished-launches-at-deadline') {
-    const observations = disposition.processes.map(retriedChildProcessDetail).join('; ');
-    return {
-      confirmed: false,
-      detail:
-        `${disposition.pendingLaunches} unpublished launch(es) and ${disposition.cleanupHandles} cleanup handle(s) ` +
-        `remain owned by the launch coordinator until runtime identity is published or launch settles without a child` +
-        `${observations.length === 0 ? '' : ` (${observations})`}. ` +
-        'Durable job recovery has not accepted this work; coral-cli backend status reports the retained jobs.',
-    };
-  }
   if (disposition.kind === 'unresolved-at-deadline') {
     const observations = disposition.processes.map(retriedChildProcessDetail).join('; ');
     return {

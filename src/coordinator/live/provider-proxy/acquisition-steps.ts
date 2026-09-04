@@ -301,8 +301,10 @@ export function createProviderProxyAcquisitionSteps(
       guardianSpawn = spawned;
       guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
       return {
+        kind: 'guardian-containment',
         label: 'guardian',
         run: guardianSpawnUndo,
+        guardianIdentity: guardianSpawnUndo.guardianIdentity,
       };
     },
 
@@ -525,10 +527,7 @@ export function createProviderProxyAcquisitionSteps(
           },
         );
 
-        // Only after every control is open and the recovery credential is installed: publication is the last
-        // gate before this attempt may return a set anyone can claim. Guardian/reaper may become published
-        // before the proxy, but no claim authority exists until all three confirm — the still-provisional
-        // proxy's own orphan deadline remains armed on an unpublished, claimless set the whole time.
+        // No claim authority exists until every publication stage confirms.
         assertPublicationMayBegin();
         const publication = await retryProviderProxyAcquisitionPublication(session);
         if (publication.kind === 'publication-unknown') {

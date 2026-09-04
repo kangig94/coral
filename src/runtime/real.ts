@@ -59,6 +59,7 @@ import {
   EXEC_TIMEOUT_CODE,
   SPAWN_SYNC_MAXBUFFER_ERRNO,
   MAX_BUFFER,
+  SIGTERM_GRACE_MS,
 } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
@@ -70,6 +71,7 @@ import {
   parseLinuxProcessIncarnation,
   probeProcessIncarnation,
   probeProcessIncarnationAsync,
+  type ProcessIncarnation,
   type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
@@ -206,6 +208,8 @@ const args = JSON.parse(process.argv[3]);
 const env = JSON.parse(readFileSync(join(jobDir, 'env.json'), 'utf8'));
 const cwd = process.argv[4] || undefined;
 const prompt = process.argv[5] || '';
+const startTime = process.argv[6];
+const CHILD_KILL_GRACE_MS = ${Math.max(1, Math.floor(SIGTERM_GRACE_MS / 2))};
 
 const stdoutPath = join(jobDir, 'stdout');
 const stderrPath = join(jobDir, 'stderr');
@@ -219,19 +223,40 @@ function shouldUseWindowsCommandShell(value) {
   return normalized.endsWith('.cmd') || normalized.endsWith('.bat');
 }
 
-const child = spawn(command, args, {
+let child = null;
+let requestedSignal = null;
+let childKillTimer = null;
+
+function terminateChild(signal) {
+  requestedSignal = signal;
+  if (child === null) return;
+  try { child.kill(signal); } catch {}
+  if (childKillTimer !== null) return;
+  childKillTimer = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch {}
+  }, CHILD_KILL_GRACE_MS);
+  childKillTimer.unref?.();
+}
+
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(signal, () => terminateChild(signal));
+}
+
+child = spawn(command, args, {
   stdio: ['pipe', stdoutFd, stderrFd],
   cwd,
   env,
   shell: shouldUseWindowsCommandShell(command),
 });
 
+if (requestedSignal !== null) terminateChild(requestedSignal);
+
 const runtimeRecord = {
   transport: 'durable-cli',
-  pid: child.pid,
+  pid: process.pid,
   stdoutPath,
   stderrPath,
-  startTime: new Date().toISOString(),
+  startTime,
 };
 process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord }) + '\\n');
 
@@ -239,6 +264,7 @@ if (prompt) child.stdin.write(prompt);
 child.stdin.end();
 
 function writeExit(code, signal, exitCode) {
+  if (childKillTimer !== null) clearTimeout(childKillTimer);
   try { closeSync(stdoutFd); } catch {}
   try { closeSync(stderrFd); } catch {}
   const exitRecord = { exitCode: code, signal: signal || null, endTime: new Date().toISOString() };
@@ -426,6 +452,9 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
+      const stdoutPath = join(options.jobDir, 'stdout');
+      const stderrPath = join(options.jobDir, 'stderr');
+      const startTime = new Date(time.now()).toISOString();
       storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
         mode: 0o600,
       });
@@ -440,6 +469,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           JSON.stringify(options.args),
           options.cwd ?? '',
           options.prompt ?? '',
+          startTime,
         ],
         {
           detached: true,
@@ -449,10 +479,34 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       );
       wrapper.unref();
 
-      const { runtimeRecord, exitPromise } = await waitForDurableRuntime({
+      const readiness = waitForDurableRuntime({
         time,
         wrapper,
       });
+      if (wrapper.pid !== undefined) {
+        const runtimeRecord: DurableCliRuntimeRecord = {
+          transport: 'durable-cli',
+          pid: wrapper.pid,
+          stdoutPath,
+          stderrPath,
+          startTime,
+        };
+        let incarnation: ProcessIncarnation | null;
+        try {
+          incarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
+        } catch {
+          incarnation = null;
+        }
+        try {
+          options.onSpawned?.({ runtimeRecord, incarnation });
+        } catch (error: unknown) {
+          gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+          void readiness.catch(() => {});
+          throw error;
+        }
+      }
+
+      const { runtimeRecord, exitPromise } = await readiness;
       durableExitPromises.set(runtimeRecord.pid, exitPromise);
 
       return {
@@ -764,6 +818,7 @@ function waitForDurableRuntime(options: {
   const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
   const exitDeferred = createDeferred<DurableProcessExit>();
   let runtimeRecord: DurableCliRuntimeRecord | null = null;
+  let exitRecord: DurableProcessExit | null = null;
   let stderrBuffer = '';
   let lineBuffer = '';
 
@@ -803,7 +858,7 @@ function waitForDurableRuntime(options: {
       return;
     }
 
-    exitDeferred.resolve(message.exitRecord);
+    exitRecord = message.exitRecord;
   };
 
   stdout.on('data', (chunk: string | Buffer) => {
@@ -834,6 +889,11 @@ function waitForDurableRuntime(options: {
             : `Durable wrapper exited before reporting runtime (exit ${code})`,
         ),
       );
+      return;
+    }
+
+    if (exitRecord !== null) {
+      exitDeferred.resolve(exitRecord);
       return;
     }
 

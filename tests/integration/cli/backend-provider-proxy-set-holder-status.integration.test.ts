@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   readProviderProxySetHolderStatusDirect,
@@ -19,6 +19,10 @@ import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecyc
 import { runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function requireReadableHolderStatusRow(
   row: DirectProviderProxySetHolderStatusRow | undefined,
@@ -117,7 +121,8 @@ async function startClosingRole(socketPath: string): Promise<() => Promise<void>
 }
 
 describe('readProviderProxySetHolderStatusDirect', () => {
-  it('distinguishes method unavailability from a connection closed after write', async () => {
+  it('keeps managed-child diagnostics available and distinguishes transport failures', async () => {
+    vi.stubEnv('CORAL_CHILD', '1');
     const baseDir = mkdtempSync(join(tmpdir(), 'c-hs-'));
     const runtime = createRealRuntime('prod', { baseDir });
     const runDir = runtime.paths.coral.coordinator.runDir;

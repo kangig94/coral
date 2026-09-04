@@ -213,6 +213,31 @@ describe('ensureProviderProxySet', () => {
     expect(outcome).toEqual({ kind: 'failed', reason: 'boom', strandedArtifacts: ['guardian'] });
   });
 
+  it('preserves an acquisition cleanup hold and its recovery capability', async () => {
+    const retry = vi.fn(async () => ({ kind: 'held' as const, reason: 'still unobservable' }));
+    const held = {
+      kind: 'provider_proxy_acquisition_held' as const,
+      owner: 'provider-host-acquisition' as const,
+      cut: 'control establishment',
+      reason: 'guardian teardown was unobservable',
+      strandedArtifacts: ['guardian'],
+      guardianIdentity: { pid: 101, incarnation: testIncarnation(101), processGroupId: 101 },
+      recoveryCapability: { retry },
+    };
+    mockedAcquire.mockResolvedValueOnce(held);
+    let outcome: unknown;
+
+    await new Promise<void>((resolve) => {
+      ensureProviderProxySet(createEntry({ spec: createSharedSpec() }), environment, (result) => {
+        outcome = result;
+        resolve();
+      });
+    });
+
+    expect(outcome).toEqual({ ...held, owner: 'provider-host-manager' });
+    expect(retry).not.toHaveBeenCalled();
+  });
+
   it('hands the publication-unknown live session to the provider host manager', async () => {
     const capsuleBinding = { version: 3 } as HandoffCapsuleV3;
     mockedAcquire.mockResolvedValueOnce(publicationUnknownAcquisitionHandoff(capsuleBinding));

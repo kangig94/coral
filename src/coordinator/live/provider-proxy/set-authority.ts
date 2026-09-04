@@ -342,6 +342,7 @@ export function createProviderProxySetAuthority(
         uid: process.getuid?.() ?? 0,
       });
       deps.registerAcquisitionUndo?.({
+        kind: 'recovery-capability',
         label: 'handoff capsule',
         run: () => runtime.storage.rmSync(handoffCapsulePath, { force: true }),
       });

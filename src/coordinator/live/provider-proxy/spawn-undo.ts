@@ -1,7 +1,11 @@
 import { errorMessage } from '../../../infra/error-format.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { ProcessContainmentError, reapRecordedContainment } from '../../../infra/process-containment.js';
+import {
+  ProcessContainmentError,
+  reapRecordedContainment,
+  type RecordedContainmentIdentity,
+} from '../../../infra/process-containment.js';
 import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import {
@@ -25,6 +29,7 @@ const guardianSpawnUndoClockScope: unique symbol = Symbol('coral.provider-proxy.
 
 export type GuardianSpawnUndo = (() => Promise<void>) &
   Readonly<{
+    guardianIdentity: RecordedContainmentIdentity;
     bindControl(control: GuardianControlTeardown): void;
   }>;
 
@@ -52,24 +57,30 @@ export function buildGuardianSpawnUndo(
   readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): GuardianSpawnUndo {
   let control: GuardianControlTeardown | null = null;
+  let absenceConfirmed = false;
+  let pending: Promise<void> | null = null;
+  const guardianIdentity: RecordedContainmentIdentity = {
+    pid: spawned.pid,
+    incarnation: spawned.incarnation,
+    processGroupId: spawned.pid,
+  };
 
-  const run = async (): Promise<void> => {
+  const perform = async (): Promise<void> => {
+    if (absenceConfirmed) return;
     if (control !== null) {
       const established = control;
-      try {
-        const exchange = await established.client.exchange(
-          'guardian.containment-commit.v1',
-          guardianContainmentCommitParamsSchema.parse({
-            guardian: established.guardian,
-            reaper: established.reaper,
-            proxy: established.proxy,
-          }),
-          PROXY_TEARDOWN_RESERVE_MS,
-        );
-        requireAcknowledgedAbsence(exchange);
-      } finally {
-        established.client.close();
-      }
+      const exchange = await established.client.exchange(
+        'guardian.containment-commit.v1',
+        guardianContainmentCommitParamsSchema.parse({
+          guardian: established.guardian,
+          reaper: established.reaper,
+          proxy: established.proxy,
+        }),
+        PROXY_TEARDOWN_RESERVE_MS,
+      );
+      requireAcknowledgedAbsence(exchange);
+      absenceConfirmed = true;
+      established.client.close();
       return;
     }
 
@@ -85,7 +96,7 @@ export function buildGuardianSpawnUndo(
     });
     try {
       const result = await reapRecordedContainment(
-        { pid: spawned.pid, incarnation: spawned.incarnation, processGroupId: spawned.pid },
+        guardianIdentity,
         [],
         clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
         {
@@ -99,6 +110,7 @@ export function buildGuardianSpawnUndo(
       if (result.kind === 'recorded-group-unattributable') {
         throw new Error('guardian process-group cleanup is holding because the recorded group became unattributable');
       }
+      absenceConfirmed = true;
     } catch (error: unknown) {
       if (error instanceof ProcessContainmentError) {
         throw new Error('guardian process-group cleanup is holding because absence could not be confirmed', {
@@ -108,7 +120,16 @@ export function buildGuardianSpawnUndo(
       throw error;
     }
   };
+  const run = (): Promise<void> => {
+    if (absenceConfirmed) return Promise.resolve();
+    if (pending !== null) return pending;
+    pending = perform().finally(() => {
+      pending = null;
+    });
+    return pending;
+  };
   return Object.assign(run, {
+    guardianIdentity,
     bindControl: (established: GuardianControlTeardown): void => {
       control = established;
     },

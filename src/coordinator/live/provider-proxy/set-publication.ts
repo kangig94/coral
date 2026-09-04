@@ -38,7 +38,7 @@ type AcquisitionStageConfirmed<T> = Exclude<
 
 export type ProviderProxySetPublicationOutcome =
   | Readonly<{ kind: 'published'; receipt: PublicationReceipt }>
-  | Readonly<{ kind: 'not-attempted'; role: 'guardian' | 'proxy'; reason: string }>
+  | Readonly<{ kind: 'not-attempted'; role: 'guardian'; reason: string }>
   | Readonly<{ kind: 'publication-unknown'; role: 'guardian' | 'proxy'; reason: string }>;
 
 export type ProviderProxySetPublicationUnknown = Extract<
@@ -138,9 +138,7 @@ export async function runProviderProxySetPublicationTransaction(
     proxyAcquisitionPublishResultSchema,
   );
   if (proxyOutcome.kind !== 'ok') {
-    return proxyOutcome.kind === 'unknown'
-      ? { kind: 'publication-unknown', role: 'proxy', reason: proxyOutcome.reason }
-      : { ...proxyOutcome, role: 'proxy' };
+    return { kind: 'publication-unknown', role: 'proxy', reason: proxyOutcome.reason };
   }
   return {
     kind: 'published',

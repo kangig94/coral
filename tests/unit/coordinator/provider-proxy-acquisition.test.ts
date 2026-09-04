@@ -174,6 +174,59 @@ describe('provider proxy set acquisition', () => {
     expect(cleanupFailures).toEqual(['guardian']);
   });
 
+  it('retains recovery capability until a held guardian retry confirms absence', async () => {
+    const log: string[] = [];
+    let guardianAbsent = false;
+    const guardianIdentity = {
+      pid: 101,
+      incarnation: testIncarnation(101),
+      processGroupId: 101,
+    };
+    const acquisitionSteps: ProviderProxyAcquisitionSteps = {
+      createCapsules: async () => ({
+        label: 'capsules',
+        run: () => {
+          log.push('undo:capsules');
+        },
+      }),
+      spawnGuardian: async () => ({
+        kind: 'guardian-containment',
+        label: 'guardian',
+        guardianIdentity,
+        run: () => {
+          log.push('undo:guardian');
+          if (!guardianAbsent) throw new Error('guardian absence is unobservable');
+        },
+      }),
+      establishControl: async (registerUndo) => {
+        registerUndo({
+          kind: 'recovery-capability',
+          label: 'handoff capsule',
+          run: () => {
+            log.push('undo:handoff capsule');
+          },
+        });
+        throw new Error('publication refused');
+      },
+    };
+
+    const result = await acquireProviderProxySet({ steps: acquisitionSteps, deadlineSignal: live() });
+
+    expect(result).toMatchObject({
+      kind: 'provider_proxy_acquisition_held',
+      guardianIdentity,
+      strandedArtifacts: ['guardian'],
+    });
+    expect(log).toEqual(['undo:guardian', 'undo:capsules']);
+    if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
+    guardianAbsent = true;
+    await expect(result.recoveryCapability.retry(live())).resolves.toEqual({
+      kind: 'absence-confirmed',
+      strandedArtifacts: [],
+    });
+    expect(log).toEqual(['undo:guardian', 'undo:capsules', 'undo:guardian', 'undo:handoff capsule']);
+  });
+
   it('hands over the live control-session owner without unwinding a publication-unknown set', async () => {
     const recorded = steps();
     recorded.steps.establishControl = async () => publicationUnknownHandoff();

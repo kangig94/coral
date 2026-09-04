@@ -771,16 +771,17 @@ describe('cli main routing', () => {
       expect(contain).not.toHaveBeenCalled();
     });
 
-    it('refuses an unrecognized parent operator action and names the accepted action', async () => {
+    it('refuses an unrecognized provider-proxy-set subcommand', async () => {
       const { program, contain, terminate, retryReap } = routingProgram();
 
-      await program.parseAsync(['node', 'coral-cli', 'backend', 'provider-proxy-set', 'nonsense']);
+      await expect(
+        program.parseAsync(['node', 'coral-cli', 'backend', 'provider-proxy-set', 'nonsense']),
+      ).rejects.toThrow("error: unknown command 'nonsense'");
 
       expect(contain).not.toHaveBeenCalled();
       expect(terminate).not.toHaveBeenCalled();
       expect(retryReap).not.toHaveBeenCalled();
-      expect(stderr).toContain("Provider-proxy set operator action must be 'terminate-role' or 'retry-role-reap'.");
-      expect(process.exitCode).toBe(2);
+      expect(stderr).toContain("error: unknown command 'nonsense'");
     });
   });
 

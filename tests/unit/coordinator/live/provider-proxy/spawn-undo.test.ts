@@ -116,22 +116,30 @@ describe('guardian spawn undo', () => {
     expect(kill).toHaveBeenCalledWith(-guardian.pid, 'SIGTERM');
   });
 
-  it('reports a control-plane teardown refusal as a stranded guardian without sending a signal', async () => {
+  it('keeps the control recovery channel open after a teardown refusal without sending a signal', async () => {
     const kill = vi.fn();
     const runtime = {
       process: { kill },
       time: { now: () => 0, sleep: async () => undefined },
     } as unknown as Runtime;
     const close = vi.fn();
-    const exchange = vi.fn(async () =>
-      controlExchangeForTest({
-        kind: 'response',
-        response: {
-          kind: 'result',
-          value: { state: 'teardown-latched-absence-unconfirmed', reason: 'containment is unattributable' },
-        },
-      }),
-    );
+    const exchange = vi
+      .fn<ControlClient['exchange']>()
+      .mockResolvedValueOnce(
+        controlExchangeForTest({
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: { state: 'teardown-latched-absence-unconfirmed', reason: 'containment is unattributable' },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        controlExchangeForTest({
+          kind: 'response',
+          response: { kind: 'result', value: { state: 'containment-absent', disappearanceReceipt: 'gone' } },
+        }),
+      );
     const client = {
       exchange,
       faulted: new Promise<never>(() => undefined),
@@ -147,7 +155,12 @@ describe('guardian spawn undo', () => {
     undo.bindControl({ client, guardian, reaper, proxy });
     const steps: ProviderProxyAcquisitionSteps = {
       createCapsules: async () => ({ label: 'capsules', run: () => undefined }),
-      spawnGuardian: async () => ({ label: 'guardian', run: undo }),
+      spawnGuardian: async () => ({
+        kind: 'guardian-containment',
+        label: 'guardian',
+        run: undo,
+        guardianIdentity: undo.guardianIdentity,
+      }),
       establishControl: async () => {
         throw new Error('publication failed');
       },
@@ -159,16 +172,23 @@ describe('guardian spawn undo', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'provider_proxy_acquisition_failed',
+      kind: 'provider_proxy_acquisition_held',
       cut: 'control establishment',
       strandedArtifacts: ['guardian'],
+      guardianIdentity: undo.guardianIdentity,
     });
     expect(exchange).toHaveBeenCalledWith(
       'guardian.containment-commit.v1',
       { guardian, reaper, proxy },
       expect.any(Number),
     );
-    expect(close).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
     expect(kill).not.toHaveBeenCalled();
+    if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
+    await expect(result.recoveryCapability.retry(new AbortController().signal)).resolves.toEqual({
+      kind: 'absence-confirmed',
+      strandedArtifacts: [],
+    });
+    expect(close).toHaveBeenCalledOnce();
   });
 });

@@ -105,7 +105,8 @@ function installedClient(): ControlClient {
 function acquisitionSteps(
   outcome: 'refused' | 'unknown',
   cleanupFails = false,
-): Readonly<{ steps: ProviderProxyAcquisitionSteps; capsulePath: string }> {
+  guardianCleanupHeld = false,
+): Readonly<{ steps: ProviderProxyAcquisitionSteps; capsulePath: string; confirmGuardianAbsent(): void }> {
   const root = mkdtempSync(join(tmpdir(), 'coral-acquisition-capsule-'));
   tempRoots.push(root);
   const capsulePath = join(root, 'provider.handoff.v3.json');
@@ -123,10 +124,18 @@ function acquisitionSteps(
       }
     : realRuntime;
   const client = installedClient();
+  let guardianAbsent = !guardianCleanupHeld;
 
   const steps: ProviderProxyAcquisitionSteps = {
     createCapsules: async () => ({ label: 'capsules', run: () => undefined }),
-    spawnGuardian: async () => ({ label: 'guardian', run: () => undefined }),
+    spawnGuardian: async () => ({
+      kind: 'guardian-containment',
+      label: 'guardian',
+      guardianIdentity: { pid: GUARDIAN.pid, incarnation: GUARDIAN.incarnation, processGroupId: GUARDIAN.pid },
+      run: () => {
+        if (!guardianAbsent) throw new Error('guardian absence is unobservable');
+      },
+    }),
     establishControl: async (registerUndo) => {
       const deps: ProviderProxySetAuthorityDependencies = {
         proxyInstanceId: PROXY.proxyInstanceId,
@@ -180,7 +189,13 @@ function acquisitionSteps(
       });
     },
   };
-  return { steps, capsulePath };
+  return {
+    steps,
+    capsulePath,
+    confirmGuardianAbsent: () => {
+      guardianAbsent = true;
+    },
+  };
 }
 
 const live = (): AbortSignal => new AbortController().signal;
@@ -222,5 +237,24 @@ describe('fresh acquisition handoff capsule unwind', () => {
       strandedArtifacts: ['handoff capsule'],
     });
     expect(statSync(acquisition.capsulePath).isFile()).toBe(true);
+  });
+
+  it('retains the capsule until held guardian cleanup later confirms absence', async () => {
+    const acquisition = acquisitionSteps('refused', false, true);
+
+    const result = await acquireProviderProxySet({ steps: acquisition.steps, deadlineSignal: live() });
+
+    expect(result).toMatchObject({
+      kind: 'provider_proxy_acquisition_held',
+      strandedArtifacts: ['guardian'],
+    });
+    expect(statSync(acquisition.capsulePath).isFile()).toBe(true);
+    if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
+    acquisition.confirmGuardianAbsent();
+    await expect(result.recoveryCapability.retry(live())).resolves.toEqual({
+      kind: 'absence-confirmed',
+      strandedArtifacts: [],
+    });
+    expect(() => statSync(acquisition.capsulePath)).toThrow();
   });
 });

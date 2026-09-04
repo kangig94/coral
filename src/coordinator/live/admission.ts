@@ -68,15 +68,6 @@ export type TerminateAllDisposition =
       cleanupHandles: number;
       cleanupFailures: number;
       successorOwner: 'durable-job-recovery';
-    }>
-  | Readonly<{
-      kind: 'unpublished-launches-at-deadline';
-      processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
-      pendingLaunches: number;
-      cleanupHandles: number;
-      cleanupFailures: number;
-      owner: 'launch-coordinator';
-      exit: 'runtime-published-or-launch-settled-without-child';
     }>;
 
 export class LaunchCoordinator {
@@ -245,36 +236,24 @@ export class LaunchCoordinator {
     const onAbort = (): void => resolveAborted?.(aborted);
     if (signal?.aborted === true) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
-    const unresolvedAtDeadline = (): TerminateAllDisposition => {
-      const processes = [...unsettled.values()];
-      const pendingLaunches = this.pendingDurableLaunches.size;
-      const cleanupHandles = this.cleanupHandles.size;
-      const cleanupFailures = failures.size;
-      return pendingLaunches > 0
-        ? {
-            kind: 'unpublished-launches-at-deadline',
-            processes,
-            pendingLaunches,
-            cleanupHandles,
-            cleanupFailures,
-            owner: 'launch-coordinator',
-            exit: 'runtime-published-or-launch-settled-without-child',
-          }
+    const dispositionAtDeadline = (): TerminateAllDisposition =>
+      this.pendingDurableLaunches.size === 0 && this.cleanupHandles.size === 0
+        ? { kind: 'all-observed-absent' }
         : {
             kind: 'unresolved-at-deadline',
-            processes,
+            processes: [...unsettled.values()],
             pendingLaunches: 0,
-            cleanupHandles,
-            cleanupFailures,
+            cleanupHandles: this.cleanupHandles.size,
+            cleanupFailures: failures.size,
             successorOwner: 'durable-job-recovery',
           };
-    };
 
     try {
       while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
-        const pendingLaunches = Promise.all([...this.pendingDurableLaunches]);
-        const launches = abort === null ? await pendingLaunches : await Promise.race([pendingLaunches, abort]);
-        if (launches === aborted) return unresolvedAtDeadline();
+        if (this.pendingDurableLaunches.size > 0) {
+          await Promise.all([...this.pendingDurableLaunches]);
+          continue;
+        }
 
         const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
         for (const cleanup of this.cleanupHandles.values()) {
@@ -286,7 +265,7 @@ export class LaunchCoordinator {
         }
         const pendingOutcomes = Promise.allSettled(attempts.map(({ task }) => task));
         const outcomes = abort === null ? await pendingOutcomes : await Promise.race([pendingOutcomes, abort]);
-        if (outcomes === aborted) return unresolvedAtDeadline();
+        if (outcomes === aborted) return dispositionAtDeadline();
         for (const [index, outcome] of outcomes.entries()) {
           const attempt = attempts[index];
           if (attempt === undefined) continue;
@@ -306,7 +285,7 @@ export class LaunchCoordinator {
         if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
           const retryDelay = this.runtime.time.sleep(TERMINATION_RETRY_INTERVAL_MS).then(() => undefined);
           const retry = abort === null ? await retryDelay : await Promise.race([retryDelay, abort]);
-          if (retry === aborted) return unresolvedAtDeadline();
+          if (retry === aborted) return dispositionAtDeadline();
         }
       }
 

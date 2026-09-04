@@ -549,43 +549,56 @@ describe('launch admission', () => {
     expect(cleanupHandles.has(cleanupKey)).toBe(true);
   });
 
-  it('retains an unpublished launch when its abort signal bounds launch resolution', async () => {
+  it('publishes cleanup ownership before an unresolved durable launch can meet shutdown', async () => {
     const base = createRealRuntime('prod');
     let rejectLaunch!: (error: Error) => void;
-    const launch = vi.fn(
-      () =>
-        new Promise<never>((_resolve, reject) => {
-          rejectLaunch = reject;
-        }),
-    );
+    const incarnation = testIncarnation(7_001);
+    const launch = vi.fn((options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
+      options.onSpawned?.({
+        runtimeRecord: {
+          transport: 'durable-cli',
+          pid: TEST_PROVIDER_PID,
+          stdoutPath: '/tmp/unpublished-launch/stdout',
+          stderrPath: '/tmp/unpublished-launch/stderr',
+          startTime: new Date(0).toISOString(),
+        },
+        incarnation,
+      });
+      return new Promise<never>((_resolve, reject) => {
+        rejectLaunch = reject;
+      });
+    });
     const runtime: Runtime = {
       ...base,
       process: {
         ...base.process,
+        observeLiveness: () => 'absent',
+        readProcessIncarnation: () => incarnation,
         durable: { ...base.process.durable, launch },
       },
     };
     const localCoordinator = new LaunchCoordinator({ runtime });
+    const onRuntimeRecord = vi.fn();
+    const onDurableProcessIdentity = vi.fn();
     const spawn = localCoordinator.spawnDurableJob({
       provider: 'codex',
       command: 'codex',
       args: ['exec'],
       jobDir: '/tmp/unpublished-launch',
       permitGranted: true,
+      onRuntimeRecord,
+      onDurableProcessIdentity,
     });
     const controller = new AbortController();
     const termination = localCoordinator.terminateAll(controller.signal);
 
     controller.abort();
 
-    await expect(termination).resolves.toEqual({
-      kind: 'unpublished-launches-at-deadline',
-      processes: [],
-      pendingLaunches: 1,
-      cleanupHandles: 0,
-      cleanupFailures: 0,
-      owner: 'launch-coordinator',
-      exit: 'runtime-published-or-launch-settled-without-child',
+    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    expect(onRuntimeRecord).toHaveBeenCalledOnce();
+    expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({
+      pid: TEST_PROVIDER_PID,
+      incarnation,
     });
     rejectLaunch(new Error('synthetic launch settlement'));
     await expect(spawn).rejects.toThrow('synthetic launch settlement');

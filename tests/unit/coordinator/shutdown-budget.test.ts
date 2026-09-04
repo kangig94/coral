@@ -328,43 +328,6 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
-  it('continues remaining hard teardown without transferring an unpublished launch to recovery', async () => {
-    const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
-    let terminationSignal: AbortSignal | undefined;
-    harness.ctx.terminateAllFn = (signal) =>
-      new Promise((resolve) => {
-        terminationSignal = signal;
-        const finish = (): void => {
-          resolve({
-            kind: 'unpublished-launches-at-deadline',
-            processes: [],
-            pendingLaunches: 1,
-            cleanupHandles: 0,
-            cleanupFailures: 0,
-            owner: 'launch-coordinator',
-            exit: 'runtime-published-or-launch-settled-without-child',
-          });
-        };
-        if (signal.aborted) finish();
-        else signal.addEventListener('abort', finish, { once: true });
-      });
-    harness.ctx.discussStores.set('retained', {
-      dispose: () => {
-        harness.callLog.push('discuss.dispose');
-      },
-    } as never);
-
-    const sequence = runShutdownSequence(harness.ctx).catch((error: unknown) => error);
-    await flush(64);
-    harness.time.tick(SHUTDOWN_DRAIN_TIMEOUT_MS);
-    await flush(64);
-
-    await expect(sequence).resolves.toBeInstanceOf(AggregateError);
-    expect(terminationSignal?.aborted).toBe(true);
-    expect(harness.callLog).toContain('discuss.dispose');
-    expect(harness.closeIpcCalled()).toBe(true);
-  });
-
   it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {
     // Provider-host drain consumes the entire budget so subsequent steps see
     // remaining=0 and emit the "skipped" message rather than the "exceeded"
