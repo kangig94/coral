@@ -35,8 +35,6 @@ export type HolderStatusSnapshot = Readonly<{
 }>;
 
 export type ControlHolderAuthorityOptions = Readonly<{
-  /** Wall-clock source for `changedAtMs`. Defaults to `Date.now`, matching `createMonotonicClock`'s own
-   *  default ambient reader — production composition (`role-main.ts`) supplies the runtime's own port. */
   wallClockNow?: () => number;
   /** Fired synchronously, exactly once per recorded transition — never on a repeated identical observation,
    *  and never batched. */

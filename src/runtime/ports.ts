@@ -98,10 +98,7 @@ export interface ProcessPort {
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   observeLiveness(pid: number): ProcessLiveness;
   readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
-  /** The non-blocking sibling of `observeLiveness`/`readProcessIncarnation`, bound to one already-recorded
-   *  `{ pid, incarnation }` pair: the same stricter three-answer question `AsyncRecordedProcessObserver`
-   *  names, composed once here so a guardian/reaper answering loop never imports the probe functions
-   *  directly (see `infra/node-process.js`'s `createAsyncRecordedProcessObserver`). */
+  /** Non-blocking tri-state observation bound to one recorded `{ pid, incarnation }` identity. */
   observeRecordedProcessAsync: AsyncRecordedProcessObserver;
   observeProcessIdentities(
     owners: readonly RecordedProcessIdentity[],

@@ -671,12 +671,6 @@ export const proxyAcquisitionAbortResultSchema = z
   .object({ state: z.enum(['acquisition-aborted', 'already-published']) })
   .strict();
 
-/**
- * `guardian.holder-status.v1` and `reaper.holder-status.v1` share this exact result shape. The complete
- * holder identity is the same three fields `ControlTenancyHolder` (`control-endpoint.ts`) compares — derived
- * here through `.pick()` rather than imported directly, since `control-endpoint.ts` imports this module and a
- * reverse import would close a cycle.
- */
 export const holderStatusDispositionSchema = z.enum(['alive', 'unobservable', 'departed']);
 export const holderLifecyclePhaseSchema = z.enum(['acquisition-provisional', 'published']);
 export const controlTenancyHolderWireSchema = coordinatorIdentitySchema
@@ -703,18 +697,31 @@ export const providerProxyRoleAbandonmentResultSchema = z
   .object({ state: z.literal('unattributable-containment-abandoned') })
   .strict();
 
-export const enforcementHoldStatusSchema = z
-  .object({
-    kind: z.literal('recorded-group-unattributable'),
-    attempts: z.number().int().safe().positive(),
-    roleIdentity: providerProxyRoleIdentitySchema,
-    retry: z.discriminatedUnion('state', [
-      z.object({ state: z.literal('scheduled'), nextProbeAtMs: nonNegativeSafeIntegerSchema }).strict(),
-      z.object({ state: z.literal('in-progress') }).strict(),
-      z.object({ state: z.literal('operator-action-required') }).strict(),
-    ]),
-  })
-  .strict();
+const enforcementHoldRetrySchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('scheduled'), nextProbeAtMs: nonNegativeSafeIntegerSchema }).strict(),
+  z.object({ state: z.literal('in-progress') }).strict(),
+  z.object({ state: z.literal('operator-action-required') }).strict(),
+]);
+
+const enforcementHoldStatusBaseSchema = z.object({
+  attempts: z.number().int().safe().positive(),
+  roleIdentity: providerProxyRoleIdentitySchema,
+  retry: enforcementHoldRetrySchema,
+});
+
+export const enforcementHoldStatusSchema = z.discriminatedUnion('kind', [
+  enforcementHoldStatusBaseSchema
+    .extend({
+      kind: z.literal('recorded-group-unattributable'),
+    })
+    .strict(),
+  enforcementHoldStatusBaseSchema
+    .extend({
+      kind: z.literal('reap-failed'),
+      reason: z.literal('process-containment-reap-failed'),
+    })
+    .strict(),
+]);
 
 export const holderStatusResultSchema = z
   .object({

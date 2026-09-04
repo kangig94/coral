@@ -1162,6 +1162,66 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
+  it('arms each recovered heartbeat hold with a fresh operator-exit gate and capability generation', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({
+      record,
+      faults,
+      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    const address = providerProxySetAddress(authority.setIdentity);
+    const unanswered = (): void =>
+      faults.reportIncident(heartbeatAuthorityObservation({ kind: 'no-response-before-deadline' }));
+
+    unanswered();
+    clock.elapse(2);
+    unanswered();
+    clock.elapse(30_000);
+    const firstAuthorization = lifecycle.authorizeOperatorExit(address);
+    if (firstAuthorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${firstAuthorization.kind}`);
+    }
+
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
+    expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'not-held', state: 'available' });
+
+    unanswered();
+    clock.elapse(2);
+    unanswered();
+
+    expect(lifecycle.authorizeOperatorExit(address)).toEqual({
+      kind: 'deadline-pending',
+      remainingMs: 30_000,
+    });
+    await expect(
+      lifecycle.completeOperatorExit(
+        firstAuthorization.capability,
+        await operatorContainmentProof(firstAuthorization.capability, {
+          kind: 'enforcers-observed',
+          observations: [
+            { role: 'guardian', observation: 'unknown' },
+            { role: 'reaper', observation: 'unknown' },
+          ],
+        }),
+        true,
+      ),
+    ).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address, effect: noOperatorExitEffect });
+  });
+
   it('reports summary=periodic for a heartbeat hold past the suppression window, the same as for operation-control', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();

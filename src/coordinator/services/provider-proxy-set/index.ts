@@ -163,6 +163,7 @@ export type ProviderProxySetOperatorExitCapability = Readonly<{
   setIdentity: ProviderProxySetIdentity;
   containmentProofAuthorization: ProviderProxySetContainmentProofAuthorization;
   notBeforeMonotonicMs: bigint;
+  operatorExitGeneration: number;
   attemptToken: number;
   [operatorExitCapabilityBrand]: ProviderProxySetLifecycle;
 }>;
@@ -180,9 +181,6 @@ type PreserveReportState = {
 type ControlReattachmentWindow = {
   returnKind: 'available' | 'draining';
   firstObservedAtMonotonicMs: bigint;
-  /** `cause`/`error` are widened past `ProviderProxyControlChannelIncident`'s own fields so a window opened
-   *  directly from a `heartbeat-failed`/`local-failure` authority fault (no control-channel incident at all)
-   *  fits the same shape; only a control-channel-sourced window ever reaches `controlChannelCause`. */
   trigger: Readonly<{
     role: ProviderProxyRole;
     cause: ProviderProxyControlChannelCause | 'heartbeat-local-failure';
@@ -217,6 +215,7 @@ type EstablishedSlot = {
   controlReattachmentBoundMs: number;
   controlReattachmentWindow: ControlReattachmentWindow | null;
   operatorExitNotBeforeMonotonicMs: bigint | null;
+  operatorExitGeneration: number;
   protection: ProviderProxySetProtection;
   /** Set only while this slot is `containing`/`containment-wait` for a `stop-and-reap` decision, and cleared
    *  once containment absence is confirmed. Distinguishes the two AC3 holds for status reporting; the retry
@@ -267,6 +266,7 @@ type ProviderProxySetSlot =
       recoveryPhase: 'redemption' | 'containment-wait';
       routeKey: string | null;
       operatorExitNotBeforeMonotonicMs: bigint;
+      operatorExitGeneration: number;
     }
   /**
    * A capsule this build must not dial. It holds an address and nothing else — no timer, no attempt, no
@@ -605,8 +605,7 @@ function retryDelayMs(completedAttempts: number): number {
   return Math.min(1_000 * 2 ** Math.min(Math.max(completedAttempts - 1, 0), 5), 30_000);
 }
 
-/** Only a control-channel-sourced reattachment window ever reaches the active bounded reporting path — a
- *  heartbeat-local-failure window opens directly in the post-bound hold and never calls this. */
+/** Active bounded reattachment accepts only control-channel causes. */
 function controlChannelCause(cause: ControlReattachmentWindow['trigger']['cause']): ProviderProxyControlChannelCause {
   if (cause === 'heartbeat-local-failure') {
     throw new Error('provider_proxy_control_reattachment_active_window_cause_invalid');
@@ -618,16 +617,7 @@ function isProviderProxyHeartbeatMethod(value: unknown): value is ProviderProxyH
   return value === 'control.heartbeat.v1' || value === 'guardian.heartbeat.v1' || value === 'reaper.heartbeat.v1';
 }
 
-/**
- * The redemption channel's own decisive answer during reattachment: an exact structured `teardown-latched`
- * heartbeat refusal from `establishHeartbeat`'s verification call (role-control.ts), and nothing else — a
- * connect/open-stage remote refusal or any other heartbeat refusal reason proves only that a peer answered,
- * not which peer. `ControlClientRemoteFailure` carries `heartbeatRefusal` on its `json-rpc-error` member
- * only; its `invalid-frame` member is this call's own inability to decode the reply, never the peer speaking,
- * so it is refused explicitly rather than read past. `error.method`'s declared type is not provably a
- * `ProviderProxyHeartbeatMethod` from `stage` alone, so it is checked rather than asserted: an unrecognized
- * value is refused, not assumed.
- */
+/** Only an exact structured teardown-latched heartbeat refusal is decisive. */
 function decisiveTeardownLatchedRefusal(refusal: ProviderProxyControlRedemptionRefusal): Readonly<{
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
@@ -1154,6 +1144,7 @@ export class ProviderProxySetLifecycle {
         setIdentity: slot.identity,
         containmentProofAuthorization: authorizeProviderProxySetContainmentProof(slot.identity),
         notBeforeMonotonicMs,
+        operatorExitGeneration: slot.operatorExitGeneration,
         attemptToken: slot.attemptToken,
         [operatorExitCapabilityBrand]: this,
       }) as ProviderProxySetOperatorExitCapability,
@@ -1196,6 +1187,7 @@ export class ProviderProxySetLifecycle {
     }
     if (
       slot.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+      slot.operatorExitGeneration !== capability.operatorExitGeneration ||
       slot.attemptToken !== capability.attemptToken ||
       this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
     ) {
@@ -1213,6 +1205,7 @@ export class ProviderProxySetLifecycle {
           current !== slot ||
           current.attemptToken !== capability.attemptToken ||
           current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+          current.operatorExitGeneration !== capability.operatorExitGeneration ||
           this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
         ) {
           throw new Error('provider_proxy_operator_exit_authorization_stale');
@@ -1241,7 +1234,8 @@ export class ProviderProxySetLifecycle {
         const authorizationMoved =
           current !== slot ||
           current.attemptToken !== capability.attemptToken ||
-          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs;
+          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+          current.operatorExitGeneration !== capability.operatorExitGeneration;
         if (authorizationMoved) {
           return {
             kind: 'authorization-stale',
@@ -1255,7 +1249,8 @@ export class ProviderProxySetLifecycle {
       if (
         current !== slot ||
         current.attemptToken !== capability.attemptToken ||
-        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs
+        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+        current.operatorExitGeneration !== capability.operatorExitGeneration
       ) {
         return {
           kind: 'authorization-stale',
@@ -1734,6 +1729,7 @@ export class ProviderProxySetLifecycle {
       recoveryPhase: 'redemption',
       routeKey: null,
       operatorExitNotBeforeMonotonicMs: this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
+      operatorExitGeneration: 0,
     });
   }
 
@@ -1991,6 +1987,7 @@ export class ProviderProxySetLifecycle {
       recoveryPhase: 'redemption',
       routeKey: slot.routeKey,
       operatorExitNotBeforeMonotonicMs,
+      operatorExitGeneration: 0,
     };
     this.#slots.set(slot.key, recovering);
     this.#operatorDispositions.set(
@@ -2169,6 +2166,7 @@ export class ProviderProxySetLifecycle {
       controlReattachmentBoundMs: authority.autonomousDeadline.adoptionWindowMs,
       controlReattachmentWindow: null,
       operatorExitNotBeforeMonotonicMs: null,
+      operatorExitGeneration: 0,
       protection,
       containmentCommitStatus: null,
     };
@@ -2990,11 +2988,7 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  /**
-   * With zero live claims, every heartbeat evidence source stays the decisive `await-containment-absence`
-   * path it always was. With live claims present, none of the three may authorize destruction on their own —
-   * see `#holdHeartbeatDisposition`.
-   */
+  /** A heartbeat disposition may enter containment only when no live claim would lose representation. */
   #applyHeartbeatDisposition(slot: EstablishedSlot, disposition: ProviderProxySetHeartbeatAwaitAbsenceDecision): void {
     if (disposition.liveClaims === 0) {
       this.#beginContainment(slot, disposition);
@@ -3004,11 +2998,10 @@ export class ProviderProxySetLifecycle {
   }
 
   #holdHeartbeatDisposition(slot: EstablishedSlot, disposition: ProviderProxySetHeartbeatAwaitAbsenceDecision): void {
-    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
-    // Each branch narrows `disposition.reason` to one literal before reading `fault`/`lastIncidentReason` off
-    // it, so the constructed object matches exactly one variant of the target union — reading them through a
-    // shared expression would type them as the union of both variants' values, an unpaired combination no
-    // single member of `ProviderProxySetNonAuthorizingContainmentDecision` accepts.
+    if (slot.operatorExitNotBeforeMonotonicMs === null) {
+      slot.operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+      slot.operatorExitGeneration += 1;
+    }
     const refusedDecision: ProviderProxySetNonAuthorizingContainmentDecision =
       disposition.reason === 'heartbeat_protocol_incompatible'
         ? {
@@ -3195,9 +3188,15 @@ export class ProviderProxySetLifecycle {
     const dispositions = this.#operatorDispositions.get(setKey);
     const subjectKey = JSON.stringify([role, method]);
     const operatorDisposition = dispositions?.get(subjectKey);
+    let recoveredLiveClaimsHold = false;
     if (operatorDisposition?.disposition === 'held') {
       dispositions?.delete(subjectKey);
+      recoveredLiveClaimsHold = true;
       if (dispositions?.size === 0) this.#operatorDispositions.delete(setKey);
+    }
+    if (recoveredLiveClaimsHold && !this.#hasLiveClaimsHold(slot)) {
+      slot.operatorExitNotBeforeMonotonicMs = null;
+      slot.operatorExitGeneration += 1;
     }
     for (const [key, report] of slot.preserveReports) {
       const recovers =

@@ -436,10 +436,14 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       if (outcome.kind === 'reap-failed') {
         backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
       }
+      const reportedOutcome =
+        outcome.kind === 'reap-failed'
+          ? ({ kind: outcome.kind, reason: 'process-containment-reap-failed' } as const)
+          : ({ kind: outcome.kind } as const);
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
       if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
         enforcementHoldStatus = enforcementHoldStatusSchema.parse({
-          kind: 'recorded-group-unattributable',
+          ...reportedOutcome,
           attempts,
           roleIdentity: { role: options.role, ...options.roleIdentity },
           retry: { state: 'operator-action-required' },
@@ -448,7 +452,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       }
       const delayMs = unattributableRetryDelayMs(attempts);
       enforcementHoldStatus = enforcementHoldStatusSchema.parse({
-        kind: 'recorded-group-unattributable',
+        ...reportedOutcome,
         attempts,
         roleIdentity: { role: options.role, ...options.roleIdentity },
         retry: { state: 'scheduled', nextProbeAtMs: options.now() + delayMs },

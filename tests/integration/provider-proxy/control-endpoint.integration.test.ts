@@ -871,6 +871,34 @@ describe('provider-proxy control endpoint', () => {
     },
   );
 
+  it('flushes a backpressured provisional reply before closing its one-frame connection', async () => {
+    const payload = 'x'.repeat(8 * 1024 * 1024);
+    const observation = vi.fn(() => ({ payload }));
+    const { socketPath } = await startEndpoint({
+      pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },
+      observation,
+    });
+    const control = await connect(socketPath);
+    await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    const pairing = await connect(socketPath);
+    await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+
+    const provisional = await connect(socketPath);
+    provisional.socket.pause();
+    const pendingReply = provisional.call('role.status.v1', {});
+    await vi.waitFor(() => expect(observation).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    provisional.socket.resume();
+
+    const reply = await Promise.race([
+      pendingReply,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 5_000)),
+    ]);
+    expect(reply).not.toBe('timeout');
+    expect((reply as EndpointReply).result).toEqual({ payload });
+    await vi.waitFor(() => expect(provisional.socket.destroyed).toBe(true));
+  });
+
   it('refuses and closes a third connection that asks anything other than an observation method', async () => {
     const { socketPath } = await startEndpoint({
       pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' },

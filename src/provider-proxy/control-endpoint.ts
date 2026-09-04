@@ -394,14 +394,7 @@ function mintActiveControlAuthorization(
   return authorization;
 }
 
-/**
- * Mints an `ActiveControlAuthorization` outside `dispatch`'s own admission flow. Production code never calls
- * this — every real call is minted by `dispatch`, bound to the socket, holder, and epoch it just admitted.
- * This exists for a harness that drives a role's `active` handler directly, without a live tenancy of its
- * own to admit one: it stores the identical `WeakMap` record `mintActiveControlAuthorization` would, so
- * `activeControlAuthorizationIsCurrent` answers truthfully about the result rather than being bypassed by a
- * value that only carries the brand.
- */
+/** Test-only minting must install the same opaque authorization record as ordinary admission. */
 export function mintActiveControlAuthorizationForTesting(
   socket: Socket,
   controlEpoch: ControlEpoch,
@@ -428,9 +421,12 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   // type mismatch alone.
   const pendingPushes = new Map<string, PendingPush>();
 
-  const write = (socket: Socket, message: ProxyControlJsonRpcMessage): void => {
-    if (socket.destroyed) return;
-    socket.write(encodeProxyControlFrame(message));
+  const write = (socket: Socket, message: ProxyControlJsonRpcMessage, onWritten?: () => void): void => {
+    if (socket.destroyed) {
+      onWritten?.();
+      return;
+    }
+    socket.write(encodeProxyControlFrame(message), onWritten);
   };
 
   /**
@@ -593,13 +589,17 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   const serveRequest = async (
     socket: Socket,
     message: ProxyControlJsonRpcMessage,
+    reply: (response: ProxyControlJsonRpcMessage) => Promise<void> = (response) => {
+      write(socket, response);
+      return Promise.resolve();
+    },
   ): Promise<'control-admitted' | 'no-control-admitted'> => {
     if (!('method' in message)) {
       // Reached only by a response this endpoint has nothing outstanding for — a reply to a `pushOnTenancy`
       // is matched and consumed before dispatch ever gets here. The ordinary way to arrive is a benign race:
       // an ack that crossed its own push's timeout, which already dropped the pending entry. The refusal
       // carries a null id, which the peer's client drops, so answering costs one frame and never loops.
-      write(socket, failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
+      await reply(failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
       return 'no-control-admitted';
     }
     const { id, method, params } = message;
@@ -617,10 +617,10 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       );
     if (role.methods.get(method)?.budgetMs === 'caller-deadline') {
       try {
-        write(socket, success(id, await dispatchRequest()));
+        await reply(success(id, await dispatchRequest()));
         return tenancy?.socket === socket ? 'control-admitted' : 'no-control-admitted';
       } catch (error: unknown) {
-        write(socket, requestFailure(error));
+        await reply(requestFailure(error));
         return 'no-control-admitted';
       }
     }
@@ -629,7 +629,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const budget = timer.setTimeout(() => {
       if (settled) return;
       settled = true;
-      write(socket, failure(id, JSON_RPC_INTERNAL_ERROR, `${method} exceeded its ${budgetMs}ms budget.`));
+      void reply(failure(id, JSON_RPC_INTERNAL_ERROR, `${method} exceeded its ${budgetMs}ms budget.`)).catch(() => {
+        socket.destroy();
+      });
     }, budgetMs);
     budget.unref?.();
     try {
@@ -637,12 +639,12 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       const disposition = tenancy?.socket === socket ? 'control-admitted' : 'no-control-admitted';
       if (settled) return disposition;
       settled = true;
-      write(socket, success(id, result));
+      await reply(success(id, result));
       return disposition;
     } catch (error: unknown) {
       if (settled) return 'no-control-admitted';
       settled = true;
-      write(socket, requestFailure(error));
+      await reply(requestFailure(error));
       return 'no-control-admitted';
     } finally {
       timer.clearTimeout(budget);
@@ -729,6 +731,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
 
   const acceptProvisionalTenancyFreeConnection = (socket: Socket): void => {
     let settled = false;
+    let responseFlushBudget: { unref?: () => void } | null = null;
     const idle = timer.setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -739,18 +742,25 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const serveOneFrame = async (
       message: ProxyControlJsonRpcMessage,
     ): Promise<'control-admitted' | 'no-control-admitted'> => {
+      const flushReply = (response: ProxyControlJsonRpcMessage): Promise<void> => {
+        if (responseFlushBudget === null) {
+          responseFlushBudget = timer.setTimeout(() => socket.destroy(), requestTimeoutMs);
+          responseFlushBudget.unref?.();
+        }
+        return new Promise<void>((resolve) => write(socket, response, resolve));
+      };
       if (!('method' in message)) {
-        write(socket, failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
+        await flushReply(failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
         return 'no-control-admitted';
       }
       const { id, method } = message;
       const entry = role.methods.get(method);
       if (entry === undefined) {
-        write(socket, handlerFailure(id, new UnknownControlMethodError(method)));
+        await flushReply(handlerFailure(id, new UnknownControlMethodError(method)));
         return 'no-control-admitted';
       }
       if (entry.authority === 'establishes-control' && challenges.controlIsLive()) {
-        write(socket, handlerFailure(id, new ControlAdmissionRefusedError('control-active')));
+        await flushReply(handlerFailure(id, new ControlAdmissionRefusedError('control-active')));
         return 'no-control-admitted';
       }
       if (
@@ -758,8 +768,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         entry.authority !== 'operator' &&
         entry.authority !== 'observation'
       ) {
-        write(
-          socket,
+        await flushReply(
           handlerFailure(
             id,
             new ProxyControlProtocolError(
@@ -770,7 +779,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         );
         return 'no-control-admitted';
       }
-      return serveRequest(socket, message);
+      return serveRequest(socket, message, flushReply);
     };
 
     const onError = (): void => {
@@ -779,6 +788,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const onClose = (): void => {
       settled = true;
       timer.clearTimeout(idle);
+      if (responseFlushBudget !== null) timer.clearTimeout(responseFlushBudget);
       sockets.delete(socket);
     };
     const promoteToAdmittedConnection = (): void => {
@@ -803,11 +813,15 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         }
         void serveOneFrame(message).then(
           (disposition) => {
+            if (responseFlushBudget !== null) {
+              timer.clearTimeout(responseFlushBudget);
+              responseFlushBudget = null;
+            }
             if (disposition === 'control-admitted' && !socket.destroyed) {
               promoteToAdmittedConnection();
               return;
             }
-            socket.destroy();
+            if (!socket.destroyed) socket.end();
           },
           () => socket.destroy(),
         );

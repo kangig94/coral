@@ -803,7 +803,8 @@ describe('buildEnforcementOutcomeHandlers', () => {
     scheduled.shift()?.callback();
 
     expect(handlers.enforcementHoldStatus()).toMatchObject({
-      kind: 'recorded-group-unattributable',
+      kind: 'reap-failed',
+      reason: 'process-containment-reap-failed',
       attempts: 1,
       retry: { state: 'scheduled' },
     });

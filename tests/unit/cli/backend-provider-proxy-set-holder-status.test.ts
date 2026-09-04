@@ -215,4 +215,45 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     );
     expect(rendered).not.toContain('kill -TERM');
   });
+
+  it('reports reap failure without recommending the unattributable-group override', () => {
+    const setIdentity = {
+      buildSetId: randomUUID(),
+      hostFingerprint: 'd'.repeat(64),
+      proxyInstanceId: randomUUID(),
+    };
+    const roleIdentity = { role: 'reaper' as const, pid: 902, incarnation: testIncarnation(902) };
+    const rendered = formatProviderProxySetHolderStatusDirect([
+      {
+        ...setIdentity,
+        guardian: { kind: 'unreachable', reason: 'connection refused' },
+        reaper: {
+          kind: 'answered',
+          status: {
+            disposition: 'unobservable',
+            phase: 'published',
+            holder: { instanceId: randomUUID(), pid: 900, incarnation: testIncarnation(900) },
+            controlEpoch: 1,
+            transitionSequence: 2,
+            changedAtMs: 1_000,
+            enforcementHold: {
+              kind: 'reap-failed',
+              reason: 'process-containment-reap-failed',
+              attempts: 5,
+              roleIdentity,
+              retry: { state: 'operator-action-required' },
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(rendered).toContain('hold=reap-failed reason=process-containment-reap-failed');
+    expect(rendered).toContain(
+      `coral-cli backend provider-proxy-set terminate-role --role reaper --pid 902 --incarnation '${testIncarnation(902)}'`,
+    );
+    expect(rendered).not.toContain(
+      `coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress(setIdentity)} --abandon-without-absence`,
+    );
+  });
 });

@@ -273,12 +273,6 @@ function assertExitedTransition(state: EnforcerDeadlineState): void {
   }
 }
 
-/**
- * What the enforcer needs from its composer to construct its challenge authority: how to mint a challenge.
- * Minting joins this construction rather than staying a `createControlEndpoint` option, the same shape
- * `createGrantRegistry(mintReceipt)` already establishes — the authority that admits a tenancy is the
- * authority that mints its challenges.
- */
 export type EnforcerChallengePolicy = Readonly<{
   mintChallenge(): string;
 }>;
@@ -293,9 +287,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     throw new Error('Provider proxy deadline configuration must be validated before use.');
   }
   let state: EnforcerDeadlineState = 'accepting-control';
-  // Deliberately not on `ControlLeaseEvidence`: that class is round-trip evidence for one control
-  // tenancy, and the standalone proxy holds it with no `adoptionDeadline` of its own to accelerate.
-  // Pairing loss is a third, independent input — this machine's own state, not the lease's.
+  // Pairing loss is independent of round-trip lease evidence and may only move adoption earlier.
   let pairingLossAt: MonotonicInstant<Scope> | null = null;
   // `holderCheckAt`'s own acceleration input, independent of `pairingLossAt` above: that field keeps
   // flooring `adoptionDeadline()` every tick once pairing is lost, while this one accelerates the
@@ -359,12 +351,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   };
   const sampleBeforeQueuedWork = (): MonotonicInstant<Scope> | null => {
     const now = clock.now();
-    // Sampling before any queued work is what makes equality and processed-after lose: a handler that was
-    // enqueued while the set was still adoptable must not act on that stale belief. Once a holder has been
-    // published, this stops being the site that decides teardown from elapsed time — `runTeardown`
-    // (enforcement.ts) latches synchronously before its first await, and this only samples that latch. A
-    // late but genuine heartbeat from a recovering coordinator is therefore not refused on the strength of
-    // silence alone. Before publication the pure clock bound remains authoritative.
+    // Queued work must re-sample the deadline; elapsed silence alone cannot latch teardown after publication.
     if (holderAuthority.phase() === 'acquisition-provisional' && clock.compare(now, adoptionDeadline()) >= 0) {
       latchTeardown();
     }

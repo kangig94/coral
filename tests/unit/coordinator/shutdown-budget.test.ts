@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
-import type { TerminateAllDisposition } from '#src/coordinator/live/admission.js';
 import type {
   ProviderProxyAuthorityRegistry,
   ProviderProxySetAuthority,
@@ -291,34 +290,41 @@ describe('runShutdownSequence drain budget', () => {
     expect(detail).toContain('pid 4243: recorded-incarnation-unavailable');
   });
 
-  it('retains shutdown ownership after the budget until child disposal settles', async () => {
+  it('continues remaining hard teardown when child liveness stays unobservable through the deadline', async () => {
     const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
-    let settleTermination!: (disposition: TerminateAllDisposition) => void;
-    harness.ctx.terminateAllFn = () =>
-      new Promise<TerminateAllDisposition>((resolve) => {
-        settleTermination = resolve;
+    harness.ctx.terminateAllFn = (signal) =>
+      new Promise((resolve) => {
+        const finish = (): void => {
+          resolve({
+            kind: 'unresolved-at-deadline',
+            processes: [{ kind: 'target-unobservable', pid: 4_244, stage: 'after-sigkill' }],
+            pendingLaunches: 0,
+            cleanupHandles: 1,
+            cleanupFailures: 0,
+            successorOwner: 'durable-job-recovery',
+          });
+        };
+        if (signal.aborted) finish();
+        else signal.addEventListener('abort', finish, { once: true });
       });
+    harness.ctx.hooks = {
+      onShutdown: async () => {
+        harness.callLog.push('hooks.onShutdown');
+      },
+    };
+    harness.ctx.discussStores.set('retained', {
+      dispose: () => {
+        harness.callLog.push('discuss.dispose');
+      },
+    } as never);
 
-    let completed = false;
-    const sequence = runShutdownSequence(harness.ctx)
-      .catch((error: unknown) => error)
-      .finally(() => {
-        completed = true;
-      });
+    const sequence = runShutdownSequence(harness.ctx).catch((error: unknown) => error);
     await flush(64);
     harness.time.tick(SHUTDOWN_DRAIN_TIMEOUT_MS);
     await flush(64);
 
-    expect(completed).toBe(false);
-    expect(harness.closeIpcCalled()).toBe(false);
-
-    settleTermination({
-      kind: 'all-observed-absent-after-retry',
-      processes: [{ kind: 'target-alive', pid: 4_244, stage: 'after-sigkill' }],
-    });
-    await flush(64);
-
     await expect(sequence).resolves.toBeInstanceOf(AggregateError);
+    expect(harness.callLog).toContain('discuss.dispose');
     expect(harness.closeIpcCalled()).toBe(true);
   });
 

@@ -60,6 +60,14 @@ export type TerminateAllDisposition =
   | Readonly<{
       kind: 'all-observed-absent-after-retry';
       processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
+    }>
+  | Readonly<{
+      kind: 'unresolved-at-deadline';
+      processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
+      pendingLaunches: number;
+      cleanupHandles: number;
+      cleanupFailures: number;
+      successorOwner: 'durable-job-recovery';
     }>;
 
 export class LaunchCoordinator {
@@ -212,54 +220,83 @@ export class LaunchCoordinator {
     return this.queuedHandle(entry, pool);
   }
 
-  async terminateAll(): Promise<TerminateAllDisposition> {
+  async terminateAll(signal?: AbortSignal): Promise<TerminateAllDisposition> {
     this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
     const failures = new Map<DurableProcessCleanup, unknown>();
     const unsettled = new Map<DurableProcessCleanup, Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>>();
+    const aborted = Symbol('aborted');
+    let resolveAborted: ((value: typeof aborted) => void) | null = null;
+    const abort =
+      signal === undefined
+        ? null
+        : new Promise<typeof aborted>((resolve) => {
+            resolveAborted = resolve;
+          });
+    const onAbort = (): void => resolveAborted?.(aborted);
+    if (signal?.aborted === true) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    const unresolvedAtDeadline = (): TerminateAllDisposition => ({
+      kind: 'unresolved-at-deadline',
+      processes: [...unsettled.values()],
+      pendingLaunches: this.pendingDurableLaunches.size,
+      cleanupHandles: this.cleanupHandles.size,
+      cleanupFailures: failures.size,
+      successorOwner: 'durable-job-recovery',
+    });
 
-    while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
-      await Promise.all([...this.pendingDurableLaunches]);
+    try {
+      while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
+        const pendingLaunches = Promise.all([...this.pendingDurableLaunches]);
+        const launches = abort === null ? await pendingLaunches : await Promise.race([pendingLaunches, abort]);
+        if (launches === aborted) return unresolvedAtDeadline();
 
-      const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
-      for (const cleanup of this.cleanupHandles.values()) {
-        try {
-          attempts.push({ cleanup, task: cleanup() });
-        } catch (error: unknown) {
-          failures.set(cleanup, error);
+        const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
+        for (const cleanup of this.cleanupHandles.values()) {
+          try {
+            attempts.push({ cleanup, task: cleanup() });
+          } catch (error: unknown) {
+            failures.set(cleanup, error);
+          }
+        }
+        const pendingOutcomes = Promise.allSettled(attempts.map(({ task }) => task));
+        const outcomes = abort === null ? await pendingOutcomes : await Promise.race([pendingOutcomes, abort]);
+        if (outcomes === aborted) return unresolvedAtDeadline();
+        for (const [index, outcome] of outcomes.entries()) {
+          const attempt = attempts[index];
+          if (attempt === undefined) continue;
+          if (outcome.status === 'rejected') {
+            failures.set(attempt.cleanup, outcome.reason);
+            continue;
+          }
+          if (outcome.value.kind !== 'observed-absent') {
+            unsettled.set(attempt.cleanup, outcome.value);
+            continue;
+          }
+          for (const [key, registeredCleanup] of this.cleanupHandles) {
+            if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
+          }
+        }
+
+        if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
+          const retryDelay = this.runtime.time.sleep(TERMINATION_RETRY_INTERVAL_MS).then(() => undefined);
+          const retry = abort === null ? await retryDelay : await Promise.race([retryDelay, abort]);
+          if (retry === aborted) return unresolvedAtDeadline();
         }
       }
-      const outcomes = await Promise.allSettled(attempts.map(({ task }) => task));
-      for (const [index, outcome] of outcomes.entries()) {
-        const attempt = attempts[index];
-        if (attempt === undefined) continue;
-        if (outcome.status === 'rejected') {
-          failures.set(attempt.cleanup, outcome.reason);
-          continue;
-        }
-        if (outcome.value.kind !== 'observed-absent') {
-          unsettled.set(attempt.cleanup, outcome.value);
-          continue;
-        }
-        for (const [key, registeredCleanup] of this.cleanupHandles) {
-          if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
-        }
-      }
 
-      if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
-        await this.runtime.time.sleep(TERMINATION_RETRY_INTERVAL_MS);
+      if (failures.size > 0) {
+        throw new AggregateError(
+          [...failures.values()],
+          `Child process cleanup required retries after ${failures.size} cleanup failure(s).`,
+        );
       }
+      return unsettled.size === 0
+        ? { kind: 'all-observed-absent' }
+        : { kind: 'all-observed-absent-after-retry', processes: [...unsettled.values()] };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
-
-    if (failures.size > 0) {
-      throw new AggregateError(
-        [...failures.values()],
-        `Child process cleanup required retries after ${failures.size} cleanup failure(s).`,
-      );
-    }
-    return unsettled.size === 0
-      ? { kind: 'all-observed-absent' }
-      : { kind: 'all-observed-absent-after-retry', processes: [...unsettled.values()] };
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, { provider: string; owner: ExecutionOwner }> {

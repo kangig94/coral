@@ -771,7 +771,8 @@ function formatDirectHolderStatusReading(reading: DirectHolderStatusReading): st
           : hold.retry.state === 'in-progress'
             ? 'nextProbe=in-progress'
             : 'nextProbe=none, operator-action-required';
-      return `${summary}; hold=${hold.kind} attempts=${hold.attempts} role=${hold.roleIdentity.role}:${hold.roleIdentity.pid}@${hold.roleIdentity.incarnation} ${retry}`;
+      const reason = hold.kind === 'reap-failed' ? ` reason=${hold.reason}` : '';
+      return `${summary}; hold=${hold.kind}${reason} attempts=${hold.attempts} role=${hold.roleIdentity.role}:${hold.roleIdentity.pid}@${hold.roleIdentity.incarnation} ${retry}`;
     }
     case 'holder-status-unavailable':
       return `unavailable (${reading.reason})`;
@@ -805,22 +806,25 @@ export function formatProviderProxySetHolderStatusDirect(
           '  direct holder status: unsupported for this capsule version; no role was dialed'
         );
       }
-      const roles = [reading.guardian, reading.reaper]
+      const holds = [reading.guardian, reading.reaper]
         .filter((role): role is Extract<DirectHolderStatusReading, { kind: 'answered' }> => role.kind === 'answered')
         .flatMap((role) => {
           const hold = role.status.enforcementHold;
-          return hold?.retry.state === 'operator-action-required' ? [hold.roleIdentity] : [];
+          return hold?.retry.state === 'operator-action-required' ? [hold] : [];
         });
+      const setAbandonment = holds.some((hold) => hold.kind === 'recorded-group-unattributable')
+        ? `    coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress({
+            buildSetId: reading.buildSetId,
+            hostFingerprint: reading.hostFingerprint,
+            proxyInstanceId: reading.proxyInstanceId,
+          })} --abandon-without-absence\n`
+        : '';
       const operatorActions =
-        roles.length === 0
+        holds.length === 0
           ? ''
           : `\n  operator exits:\n` +
-            `    coral-cli backend provider-proxy-set contain ${encodeProviderProxySetAddress({
-              buildSetId: reading.buildSetId,
-              hostFingerprint: reading.hostFingerprint,
-              proxyInstanceId: reading.proxyInstanceId,
-            })} --abandon-without-absence\n` +
-            roles.map((role) => `    ${formatProviderProxyRoleTerminationCommand(role)}`).join('\n');
+            setAbandonment +
+            holds.map((hold) => `    ${formatProviderProxyRoleTerminationCommand(hold.roleIdentity)}`).join('\n');
       return (
         `set proxy=${reading.proxyInstanceId} build=${reading.buildSetId} host=${reading.hostFingerprint}\n` +
         `  guardian: ${formatDirectHolderStatusReading(reading.guardian)}\n` +

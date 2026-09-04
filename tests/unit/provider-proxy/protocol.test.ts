@@ -570,6 +570,30 @@ describe('guardian control-method request schemas, shared with their one coordin
           },
         }).success,
       ).toBe(true);
+      expect(
+        holderStatusResultSchema.safeParse({
+          ...valid,
+          enforcementHold: {
+            kind: 'reap-failed',
+            reason: 'process-containment-reap-failed',
+            attempts: 2,
+            roleIdentity: { role: 'guardian', pid: 7001, incarnation: testIncarnation(7001) },
+            retry: { state: 'operator-action-required' },
+          },
+        }).success,
+      ).toBe(true);
+      expect(
+        holderStatusResultSchema.safeParse({
+          ...valid,
+          enforcementHold: {
+            kind: 'reap-failed',
+            reason: 'arbitrary remote failure text',
+            attempts: 2,
+            roleIdentity: { role: 'guardian', pid: 7001, incarnation: testIncarnation(7001) },
+            retry: { state: 'operator-action-required' },
+          },
+        }).success,
+      ).toBe(false);
       expect(holderStatusResultSchema.safeParse({ ...valid, disposition: 'absent' }).success).toBe(false);
       expect(holderStatusResultSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
     },

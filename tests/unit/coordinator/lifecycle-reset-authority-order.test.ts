@@ -784,7 +784,14 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('continues child cleanup until a previously failed handle observes absence', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
-    const launchCoordinator = new LaunchCoordinator({ runtime: baseDeps.runtime });
+    const runtime: Runtime = {
+      ...baseDeps.runtime,
+      time: {
+        ...baseDeps.runtime.time,
+        sleep: (ms, options) => (ms === 50 ? Promise.resolve() : baseDeps.runtime.time.sleep(ms, options)),
+      },
+    };
+    const launchCoordinator = new LaunchCoordinator({ runtime });
     const cleanupHandles = (
       launchCoordinator as unknown as {
         readonly cleanupHandles: Map<symbol, () => Promise<{ kind: 'observed-absent'; pid: number }>>;
@@ -802,6 +809,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const reactorDispose = vi.fn(async () => {});
     const deps: LifecycleDeps = {
       ...baseDeps,
+      runtime,
       disposeLifecycleReactor: reactorDispose,
       terminateAllFn: vi.fn(() => launchCoordinator.terminateAll()),
     };

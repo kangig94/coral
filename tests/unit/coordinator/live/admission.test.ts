@@ -517,6 +517,38 @@ describe('launch admission', () => {
     expect(cleanupHandles.has(cleanupKey)).toBe(false);
   });
 
+  it('returns unresolved ownership when its abort signal bounds an unobservable child', async () => {
+    const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
+      .cleanupHandles;
+    const cleanupKey = Symbol('unobservable-child');
+    cleanupHandles.set(cleanupKey, async () => ({
+      kind: 'target-unobservable',
+      pid: TEST_PROVIDER_PID,
+      stage: 'after-sigkill',
+    }));
+    const controller = new AbortController();
+    const termination = coordinator.terminateAll(controller.signal);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+
+    await expect(termination).resolves.toEqual({
+      kind: 'unresolved-at-deadline',
+      processes: [
+        {
+          kind: 'target-unobservable',
+          pid: TEST_PROVIDER_PID,
+          stage: 'after-sigkill',
+        },
+      ],
+      pendingLaunches: 0,
+      cleanupHandles: 1,
+      cleanupFailures: 0,
+      successorOwner: 'durable-job-recovery',
+    });
+    expect(cleanupHandles.has(cleanupKey)).toBe(true);
+  });
+
   it('refuses new admission after shutdown begins', async () => {
     await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
 
