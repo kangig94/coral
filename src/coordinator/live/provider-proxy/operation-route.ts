@@ -184,8 +184,6 @@ export function createProviderProxyOperationAuthority(deps: {
     faultAuthority: deps.faults.latch,
     reportIncident: deps.faults.reportIncident,
   };
-  // Declared as a hoisted function so `authority` below can be `const`: the body reads it only when a
-  // dispatch actually runs, long after the binding is initialized.
   function dispatchMutation<Result>(send: () => Promise<Result>): Promise<Result> {
     return providerProxyOperationControlIsHeld(authority)
       ? Promise.reject(new ProviderProxyOperationControlHeldError())

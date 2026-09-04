@@ -598,8 +598,6 @@ export async function startProviderGuardianRole(
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const schedule = realRoleOutcomeScheduler(ports);
   const self = readSelfIdentity(ports);
-  let grantWasInstalled = false;
-
   let reaperSpawn: SpawnedRoleProcess | null = null;
   let reaperChannel: ControlClient | null = null;
   let close: (() => Promise<void>) | null = null;
@@ -649,7 +647,7 @@ export async function startProviderGuardianRole(
         deadlines,
         close,
         exitProcess,
-        grantWasInstalled: () => grantWasInstalled,
+        grantWasInstalled: () => holderAuthority.phase() === 'published',
         now: ports.runtime.time.now,
         retryUnattributable: () => guardianRef.enforcer()?.retryUnattributable() ?? null,
         schedule,
@@ -669,9 +667,6 @@ export async function startProviderGuardianRole(
       observeHolder: buildHolderObserver(ports),
       enforcementHoldStatus,
       abandonUnattributable,
-      onGrantInstalled: () => {
-        grantWasInstalled = true;
-      },
       onOutcome,
       onProgressViolation,
     });
@@ -743,8 +738,6 @@ export async function startProviderReaperRole(
   );
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const self = readSelfIdentity(ports);
-  let grantWasInstalled = false;
-
   // Forward-referenced by `close` below (assigned into `createReaper`'s own `onOutcome` before the reaper it
   // closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
   // eslint-disable-next-line prefer-const
@@ -757,7 +750,7 @@ export async function startProviderReaperRole(
       deadlines,
       close,
       exitProcess,
-      grantWasInstalled: () => grantWasInstalled,
+      grantWasInstalled: () => holderAuthority.phase() === 'published',
       now: ports.runtime.time.now,
       retryUnattributable: () => reaperRef.enforcer()?.retryUnattributable() ?? null,
       schedule: realRoleOutcomeScheduler(ports),
@@ -776,9 +769,6 @@ export async function startProviderReaperRole(
     observeHolder: buildHolderObserver(ports),
     enforcementHoldStatus,
     abandonUnattributable,
-    onGrantInstalled: () => {
-      grantWasInstalled = true;
-    },
     onOutcome,
     onProgressViolation,
   });

@@ -297,17 +297,23 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
           pid: childPid,
           incarnation: childIncarnation,
         };
+  let childCompletionSettled = false;
+  const settleChildCompletion = (exit: PendingExit): void => {
+    if (childCompletionSettled) return;
+    childCompletionSettled = true;
+    void settleContainedGroup(exit);
+  };
+  child.once('close', (code, signal) => {
+    settleChildCompletion({ code, signal, wrapperExitCode: 0 });
+  });
+  child.once('error', () => {
+    settleChildCompletion({ code: null, signal: null, wrapperExitCode: 1 });
+  });
+  childStdin.on('error', () => undefined);
   process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord, leaderIncarnation, childRoot }) + '\n');
 
   if (launch.prompt) childStdin.write(launch.prompt);
   childStdin.end();
-
-  child.on('close', (code, signal) => {
-    void settleContainedGroup({ code, signal, wrapperExitCode: 0 });
-  });
-  child.on('error', () => {
-    void settleContainedGroup({ code: null, signal: null, wrapperExitCode: 1 });
-  });
 }
 
 const [modeOrPayloadPath, processGroupIdArgument, exitArgument] = process.argv.slice(2);

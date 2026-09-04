@@ -116,7 +116,6 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   observeHolder: AsyncRecordedProcessObserver;
   enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   abandonUnattributable(): boolean;
-  onGrantInstalled?(): void;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A late wake is diagnostic and does not itself authorize teardown. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -343,7 +342,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
           });
-          options.onGrantInstalled?.();
           return result;
         },
       },

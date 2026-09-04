@@ -65,7 +65,7 @@ import {
   MAX_BUFFER,
 } from '../infra/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
-import { isDurableCliRuntime, type DurableCliRuntimeRecord, type DurableProcessExit } from './durable-runtime.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
 import { createRealTimePort } from '../infra/time.js';
 import {
@@ -826,25 +826,62 @@ function trimStderr(stderr: string): string {
   return trimmed.length > 0 ? `: ${trimmed}` : '';
 }
 
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function isDurableRuntimeRecord(value: unknown): value is DurableCliRuntimeRecord {
+  const keys =
+    value !== null && typeof value === 'object' && Object.hasOwn(value, 'tailWatermark')
+      ? ['transport', 'pid', 'stdoutPath', 'stderrPath', 'startTime', 'tailWatermark']
+      : ['transport', 'pid', 'stdoutPath', 'stderrPath', 'startTime'];
+  return (
+    hasExactKeys(value, keys) &&
+    value.transport === 'durable-cli' &&
+    typeof value.pid === 'number' &&
+    Number.isSafeInteger(value.pid) &&
+    value.pid > 0 &&
+    typeof value.stdoutPath === 'string' &&
+    typeof value.stderrPath === 'string' &&
+    typeof value.startTime === 'string' &&
+    (!Object.hasOwn(value, 'tailWatermark') ||
+      (typeof value.tailWatermark === 'number' &&
+        Number.isSafeInteger(value.tailWatermark) &&
+        value.tailWatermark >= 0))
+  );
+}
+
 function isExitRecord(value: unknown): value is DurableProcessExit {
   return (
-    value !== null &&
-    typeof value === 'object' &&
-    typeof (value as { endTime?: unknown }).endTime === 'string' &&
-    ((value as { exitCode?: unknown }).exitCode === null ||
-      typeof (value as { exitCode?: unknown }).exitCode === 'number') &&
-    ((value as { signal?: unknown }).signal === null || typeof (value as { signal?: unknown }).signal === 'string')
+    hasExactKeys(value, ['exitCode', 'signal', 'endTime']) &&
+    typeof value.endTime === 'string' &&
+    (value.exitCode === null || (typeof value.exitCode === 'number' && Number.isSafeInteger(value.exitCode))) &&
+    (value.signal === null || typeof value.signal === 'string')
   );
 }
 
 function isRecordedProcessIdentity(value: unknown): value is RecordedProcessIdentity {
   return (
-    value !== null &&
-    typeof value === 'object' &&
-    Number.isSafeInteger((value as { pid?: unknown }).pid) &&
-    Number((value as { pid?: unknown }).pid) > 0 &&
-    isProcessIncarnation((value as { incarnation?: unknown }).incarnation)
+    hasExactKeys(value, ['pid', 'incarnation']) &&
+    typeof value.pid === 'number' &&
+    Number.isSafeInteger(value.pid) &&
+    value.pid > 0 &&
+    isProcessIncarnation(value.incarnation)
   );
+}
+
+function isDurableControlMessage(value: unknown, expectedPid: number | undefined): value is DurableControlMessage {
+  if (hasExactKeys(value, ['type', 'runtimeRecord', 'leaderIncarnation', 'childRoot']) && value.type === 'runtime') {
+    return (
+      isDurableRuntimeRecord(value.runtimeRecord) &&
+      value.runtimeRecord.pid === expectedPid &&
+      (value.leaderIncarnation === null || isProcessIncarnation(value.leaderIncarnation)) &&
+      (value.childRoot === null || isRecordedProcessIdentity(value.childRoot))
+    );
+  }
+  return hasExactKeys(value, ['type', 'exitRecord']) && value.type === 'exit' && isExitRecord(value.exitRecord);
 }
 
 function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<typeof spawnChild> }): Promise<{
@@ -864,42 +901,44 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
 
   const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
   const exitDeferred = createDeferred<DurableProcessExit>();
+  void exitDeferred.promise.catch(() => undefined);
   let runtimeRecord: DurableCliRuntimeRecord | null = null;
   let reportedLeaderIncarnation: ProcessIncarnation | null = null;
   let childRoot: RecordedProcessIdentity | null = null;
   let exitRecord: DurableProcessExit | null = null;
   let stderrBuffer = '';
+  let stderrTruncated = false;
   let lineBuffer = '';
+  let controlFailed = false;
 
   const buildError = (detail: string): Error => new Error(`${detail}${trimStderr(stderrBuffer)}`);
+  const rejectControl = (error: Error): void => {
+    if (controlFailed) return;
+    controlFailed = true;
+    if (runtimeRecord === null) runtimeDeferred.reject(error);
+    else exitDeferred.reject(error);
+  };
 
   const handleControlLine = (line: string): void => {
     if (line.trim().length === 0) {
       return;
     }
 
-    let message: DurableControlMessage;
+    let parsed: unknown;
     try {
-      message = JSON.parse(line) as DurableControlMessage;
+      parsed = JSON.parse(line) as unknown;
     } catch (error: unknown) {
-      const wrapped = buildError(`Durable wrapper emitted invalid control JSON (${errorMessage(error)})`);
-      runtimeDeferred.reject(wrapped);
-      exitDeferred.reject(wrapped);
+      rejectControl(buildError(`Durable wrapper emitted invalid control JSON (${errorMessage(error)})`));
       return;
     }
 
+    if (!isDurableControlMessage(parsed, options.wrapper.pid)) {
+      rejectControl(buildError('Durable wrapper emitted an invalid control message'));
+      return;
+    }
+
+    const message = parsed;
     if (message.type === 'runtime') {
-      if (
-        !isDurableCliRuntime(message.runtimeRecord) ||
-        message.runtimeRecord.pid !== options.wrapper.pid ||
-        (message.leaderIncarnation !== null && !isProcessIncarnation(message.leaderIncarnation)) ||
-        (message.childRoot !== null && !isRecordedProcessIdentity(message.childRoot))
-      ) {
-        const wrapped = buildError('Durable wrapper emitted an invalid runtime record');
-        runtimeDeferred.reject(wrapped);
-        exitDeferred.reject(wrapped);
-        return;
-      }
       runtimeRecord = message.runtimeRecord;
       reportedLeaderIncarnation = message.leaderIncarnation;
       childRoot = message.childRoot;
@@ -907,33 +946,47 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
       return;
     }
 
-    if (!isExitRecord(message.exitRecord)) {
-      const wrapped = buildError('Durable wrapper emitted an invalid exit record');
-      runtimeDeferred.reject(wrapped);
-      exitDeferred.reject(wrapped);
-      return;
-    }
-
     exitRecord = message.exitRecord;
   };
 
   stdout.on('data', (chunk: string | Buffer) => {
-    lineBuffer += chunk.toString();
-    const lines = lineBuffer.split('\n');
-    lineBuffer = lines.pop() ?? '';
-    for (const line of lines) {
+    if (controlFailed) return;
+    const text = chunk.toString();
+    let offset = 0;
+    while (offset < text.length) {
+      const newline = text.indexOf('\n', offset);
+      const end = newline === -1 ? text.length : newline;
+      const segment = text.slice(offset, end);
+      if (lineBuffer.length + segment.length > MAX_BUFFER) {
+        lineBuffer = '';
+        rejectControl(buildError(`Durable wrapper control line exceeded the ${MAX_BUFFER}-character limit`));
+        return;
+      }
+      lineBuffer += segment;
+      if (newline === -1) return;
+      const line = lineBuffer;
+      lineBuffer = '';
       handleControlLine(line);
+      if (controlFailed) return;
+      offset = newline + 1;
     }
   });
 
   stderr.on('data', (chunk: string | Buffer) => {
-    stderrBuffer += chunk.toString();
+    if (stderrTruncated) return;
+    const text = chunk.toString();
+    const suffix = '\n[stderr truncated at buffer limit]';
+    const remaining = MAX_BUFFER - suffix.length - stderrBuffer.length;
+    if (text.length <= remaining) {
+      stderrBuffer += text;
+      return;
+    }
+    stderrBuffer += text.slice(0, Math.max(0, remaining)) + suffix;
+    stderrTruncated = true;
   });
 
   options.wrapper.on('error', (error: Error) => {
-    const wrapped = buildError(`Durable wrapper failed: ${error.message}`);
-    runtimeDeferred.reject(wrapped);
-    exitDeferred.reject(wrapped);
+    rejectControl(buildError(`Durable wrapper failed: ${error.message}`));
   });
 
   options.wrapper.on('close', (code, signal) => {
@@ -962,12 +1015,34 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
     );
   });
 
-  const timeout = options.time.setTimeout(() => {
-    const wrapped = buildError(`Durable wrapper failed to report runtime within ${DURABLE_POLL_TIMEOUT_MS}ms`);
-    runtimeDeferred.reject(wrapped);
-    exitDeferred.reject(wrapped);
-  }, DURABLE_POLL_TIMEOUT_MS);
-  timeout.unref?.();
+  let readinessDeadline = options.time.monotonicNow() + BigInt(DURABLE_POLL_TIMEOUT_MS);
+  let requestedWake = readinessDeadline;
+  let postWakeTurnPending = false;
+  let timeout: ReturnType<TimePort['setTimeout']> | null = null;
+  const armReadinessCheck = (delayMs: number): void => {
+    requestedWake = options.time.monotonicNow() + BigInt(delayMs);
+    timeout = options.time.setTimeout(checkReadinessDeadline, delayMs);
+    timeout.unref?.();
+  };
+  function checkReadinessDeadline(): void {
+    if (runtimeRecord !== null || controlFailed) return;
+    const now = options.time.monotonicNow();
+    if (now > requestedWake) {
+      readinessDeadline += now - requestedWake;
+      postWakeTurnPending = false;
+    }
+    if (now < readinessDeadline) {
+      armReadinessCheck(Number(readinessDeadline - now));
+      return;
+    }
+    if (!postWakeTurnPending) {
+      postWakeTurnPending = true;
+      armReadinessCheck(0);
+      return;
+    }
+    rejectControl(buildError(`Durable wrapper failed to report runtime within ${DURABLE_POLL_TIMEOUT_MS}ms`));
+  }
+  armReadinessCheck(DURABLE_POLL_TIMEOUT_MS);
 
   return runtimeDeferred.promise
     .finally(() => options.time.clearTimeout(timeout))

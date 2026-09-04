@@ -49,7 +49,7 @@ const FOLLOW_TIMEOUT_SECONDS = BASH_TOOL_TIMEOUT_CEILING_SECONDS - WAIT_FLUSH_MA
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 const ABORT_SUCCEEDED_EXIT_CODE = 1;
-const ABORT_REFUSED_EXIT_CODE = 3;
+export const ABORT_REFUSED_EXIT_CODE = 3;
 const ABORT_REQUEST_FAILED_FALLBACK_EXIT_CODE = 70;
 
 type BackoffScheduler = (delayMs: number) => Promise<void>;
@@ -332,8 +332,6 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
   let retriesLeft = TRANSIENT_RETRY_LIMIT;
   let hasOpenedSubscription = false;
   let sigintCount = 0;
-  // A holder rather than a `let`: the SIGINT handler below assigns it, and TypeScript's control flow
-  // cannot see a closure's write, so a bare binding narrows to `null` at every later read.
   const abortState: { promise: Promise<AbortAttempt> | null } = { promise: null };
 
   const onSigint = () => {
