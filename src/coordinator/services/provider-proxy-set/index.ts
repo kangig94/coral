@@ -568,9 +568,6 @@ function preserveErrorIdentity(error: unknown): string {
   ]);
 }
 
-/** Mirrors `#recordPreserveDecision`'s own `subject` derivation for the three existing preserve sources —
- *  the wrapper carries none of those fields at its own level, so its five sources need the same key computed
- *  from `refusedDecision` instead. */
 function refusedDecisionSubjectKey(refused: ProviderProxySetNonAuthorizingContainmentDecision): string {
   switch (refused.reason) {
     case 'control_reattachment_bound_expired':

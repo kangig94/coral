@@ -386,6 +386,7 @@ export type RoleEnforcementOutcomeOptions<Scope extends symbol> = Readonly<{
   /** Closes this role's own control (and, for the guardian, its reaper pairing channel too). */
   close(): Promise<void>;
   exitProcess(code: number): void;
+  grantWasInstalled(): boolean;
   now(): number;
   retryUnattributable(): Promise<EnforcementOutcome> | null;
   schedule: RoleOutcomeScheduler;
@@ -424,7 +425,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
           ? ({ kind: outcome.kind, reason: 'process-containment-reap-failed' } as const)
           : ({ kind: outcome.kind } as const);
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
-      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
+      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS && options.grantWasInstalled()) {
         enforcementHoldStatus = enforcementHoldStatusSchema.parse({
           ...reportedOutcome,
           attempts,
@@ -467,8 +468,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       options.schedule(() => handleOutcome(outcome), 0);
     },
     onProgressViolation: (observedWakeLatencyMs) => {
-      // A late wake is a detected progress-premise failure the plan requires be reported, not an execution
-      // that silently counts as satisfying the enforcement guarantee — teardown still proceeds regardless.
+      // A late wake is diagnostic and does not itself authorize teardown.
       backendLog.warn(`${options.role}: enforcement wake exceeded the modelled bound by ${observedWakeLatencyMs}ms`);
     },
     enforcementHoldStatus: () => enforcementHoldStatus,
@@ -598,6 +598,7 @@ export async function startProviderGuardianRole(
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const schedule = realRoleOutcomeScheduler(ports);
   const self = readSelfIdentity(ports);
+  let grantWasInstalled = false;
 
   let reaperSpawn: SpawnedRoleProcess | null = null;
   let reaperChannel: ControlClient | null = null;
@@ -648,6 +649,7 @@ export async function startProviderGuardianRole(
         deadlines,
         close,
         exitProcess,
+        grantWasInstalled: () => grantWasInstalled,
         now: ports.runtime.time.now,
         retryUnattributable: () => guardianRef.enforcer()?.retryUnattributable() ?? null,
         schedule,
@@ -667,6 +669,9 @@ export async function startProviderGuardianRole(
       observeHolder: buildHolderObserver(ports),
       enforcementHoldStatus,
       abandonUnattributable,
+      onGrantInstalled: () => {
+        grantWasInstalled = true;
+      },
       onOutcome,
       onProgressViolation,
     });
@@ -738,6 +743,7 @@ export async function startProviderReaperRole(
   );
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const self = readSelfIdentity(ports);
+  let grantWasInstalled = false;
 
   // Forward-referenced by `close` below (assigned into `createReaper`'s own `onOutcome` before the reaper it
   // closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
@@ -751,6 +757,7 @@ export async function startProviderReaperRole(
       deadlines,
       close,
       exitProcess,
+      grantWasInstalled: () => grantWasInstalled,
       now: ports.runtime.time.now,
       retryUnattributable: () => reaperRef.enforcer()?.retryUnattributable() ?? null,
       schedule: realRoleOutcomeScheduler(ports),
@@ -769,6 +776,9 @@ export async function startProviderReaperRole(
     observeHolder: buildHolderObserver(ports),
     enforcementHoldStatus,
     abandonUnattributable,
+    onGrantInstalled: () => {
+      grantWasInstalled = true;
+    },
     onOutcome,
     onProgressViolation,
   });

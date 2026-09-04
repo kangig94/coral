@@ -753,6 +753,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 1_000,
       retryUnattributable: () => null,
       schedule: (callback) => {
@@ -794,6 +795,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 1_000,
       retryUnattributable,
       schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
@@ -825,6 +827,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
         throw new Error('close failed');
       }),
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 1_000,
       retryUnattributable: () => null,
       schedule: (callback) => callback(),
@@ -850,6 +853,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited: vi.fn() },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 10_000,
       retryUnattributable,
       schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
@@ -892,6 +896,59 @@ describe('buildEnforcementOutcomeHandlers', () => {
     expect(exitProcess).not.toHaveBeenCalled();
   });
 
+  it('keeps retrying at a fixed cadence until an ungranted role confirms absence', async () => {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const retryUnattributable = vi.fn(() =>
+      Promise.resolve({ kind: 'recorded-group-unattributable' as const, reason: 'still held' }),
+    );
+    const close = vi.fn(async () => undefined);
+    const exitProcess = vi.fn();
+    const handlers = buildEnforcementOutcomeHandlers({
+      role: 'reaper',
+      roleIdentity: { pid: 4225, incarnation: testIncarnation(4225) },
+      deadlines: { markExited: vi.fn() },
+      close,
+      exitProcess,
+      grantWasInstalled: () => false,
+      now: () => 10_000,
+      retryUnattributable,
+      schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
+    });
+    const retryDelays: number[] = [];
+
+    for (let attempts = 1; attempts <= 7; attempts += 1) {
+      handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+      const deferredOutcome = scheduled.shift();
+      if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+      deferredOutcome.callback();
+      expect(handlers.enforcementHoldStatus()).toMatchObject({
+        attempts,
+        retry: { state: 'scheduled' },
+      });
+      const scheduledRetry = scheduled.shift();
+      if (scheduledRetry === undefined) throw new Error('expected a scheduled unattributable retry');
+      retryDelays.push(scheduledRetry.delayMs);
+      scheduledRetry.callback();
+    }
+
+    expect(retryDelays.slice(-2)).toEqual([30_000, 30_000]);
+    expect(retryUnattributable).toHaveBeenCalledTimes(7);
+    expect(handlers.enforcementHoldStatus()).toMatchObject({
+      attempts: 7,
+      retry: { state: 'in-progress' },
+    });
+    expect(close).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
+
+    handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'observed-absent' });
+    scheduled.shift()?.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(handlers.enforcementHoldStatus()).toBeNull();
+    expect(close).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(0);
+  });
+
   it('keeps an unattributable hold without operator abandonment', () => {
     const scheduled: Array<() => void> = [];
     const close = vi.fn(async () => undefined);
@@ -902,6 +959,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited: vi.fn() },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 10_000,
       retryUnattributable: () => null,
       schedule: (callback) => scheduled.push(callback),
@@ -929,6 +987,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited: vi.fn() },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 10_000,
       retryUnattributable,
       schedule: (callback) => scheduled.push(callback),
@@ -957,6 +1016,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited: vi.fn() },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 10_000,
       retryUnattributable: () => null,
       schedule: (callback) => scheduled.push(callback),
@@ -984,6 +1044,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
       deadlines: { markExited },
       close,
       exitProcess,
+      grantWasInstalled: () => true,
       now: () => 10_000,
       retryUnattributable: () => null,
       schedule: (callback) => scheduled.push(callback),

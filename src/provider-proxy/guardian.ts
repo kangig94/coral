@@ -257,8 +257,9 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   observeHolder: AsyncRecordedProcessObserver;
   enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   abandonUnattributable(): boolean;
+  onGrantInstalled?(): void;
   onOutcome(outcome: EnforcementOutcome): void;
-  /** A wake later than the model's bound. Reported, but teardown still proceeds. */
+  /** A late wake is diagnostic and does not itself authorize teardown. */
   onProgressViolation(observedWakeLatencyMs: number): void;
 }>;
 
@@ -425,13 +426,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedCoordinatorBuild(request.successor, capsule);
           assertNamedTeardownReserve(request.teardownReserveMs, PROXY_TEARDOWN_RESERVE_MS);
           assertNamedOrphanTimeout(request.orphanTimeoutMs, deadlines.orphanTimeoutMs());
-          return grants.install({
+          const result = grants.install({
             grantId: request.grantId,
             secretSha256: request.secretSha256,
             ...setIdentity,
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
           });
+          options.onGrantInstalled?.();
+          return result;
         },
       },
     ],

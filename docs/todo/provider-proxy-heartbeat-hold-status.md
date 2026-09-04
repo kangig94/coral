@@ -44,10 +44,17 @@ the persistence work adds a source to those products rather than creating anothe
 
 ### Conditions on this deferral
 
+The deferral was re-checked against the live role and recovery paths. The objection that a coordinator crash
+necessarily creates an obligation gap was refuted: unobservable work remains owned by a live role, granted
+roles expose supported recovery and operator surfaces, and roles that were never granted continue probing
+rather than parking for an operator that cannot discover or authenticate to them.
+
 The deferral remains honest only while all of these stay checkable:
 
-1. Every in-memory hold's subject either self-terminates on a deadline armed at spawn or is durably
-   identifiable.
+1. Self-terminates whenever termination is observable; otherwise the obligation is retained by a live role
+   whose hold is grant-readable and whose exits are named. For a granted role, a parked hold is reachable
+   through the direct capsule-credentialed holder-status and abandon paths, a successor coordinator's
+   `contain`, and absence delivery to the parked role.
 2. Shutdown never reports confirmed past a live hold.
 3. A crash can create a status gap, never an obligation gap.
 
