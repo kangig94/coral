@@ -304,7 +304,8 @@ function capsuleMatchesLocator(
 
 function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal): Error {
   switch (refusal.kind) {
-    case 'role-refused':
+    case 'guardian-role-refused':
+    case 'downstream-role-refused':
       return refusal.error;
     case 'protocol-incompatible':
       return refusal.error;
@@ -409,7 +410,13 @@ async function redeemCapsule(
     if ('error' in redemption) throw redemption.error;
     return { kind: 'temporarily-unavailable', incident: redemption.incident };
   }
-  if (redemption.kind === 'refused') throw inheritanceRefusalError(redemption.refusal);
+  if (redemption.kind === 'refused') {
+    if (redemption.refusal.kind === 'downstream-role-refused') {
+      redemption.refusal.guardianAuthority.stopHeartbeats();
+      await redemption.refusal.guardianAuthority.initiateControlClose();
+    }
+    throw inheritanceRefusalError(redemption.refusal);
+  }
   const inherited = await buildInheritedAuthority(redemption, capsulePath, capsule, expectedIdentity, deps, signal);
   return { kind: 'redeemed', ...inherited };
 }

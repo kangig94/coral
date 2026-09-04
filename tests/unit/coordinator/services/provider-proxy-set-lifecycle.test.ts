@@ -38,6 +38,7 @@ import {
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
 import { ProviderProxyRoleControlRemoteError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import type { ProviderProxyGuardianRedemptionAuthority } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
   createProviderProxyAuthorityFaultLatch,
   type ContainmentRequiredControlCallPolicy,
@@ -2697,26 +2698,57 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
-  it('commits despite live claims when redemption is refused with an exact teardown-latched reason', async () => {
+  it.each([
+    {
+      stage: 'heartbeat' as const,
+      method: 'reaper.heartbeat.v1' as const,
+      remoteFailure: {
+        kind: 'json-rpc-error' as const,
+        jsonRpcCode: -32_000,
+        protocolCode: null,
+        admissionReason: null,
+        heartbeatRefusal: { reason: 'teardown-latched' as const, nextHeartbeatChallenge: null },
+      },
+    },
+    {
+      stage: 'open' as const,
+      method: 'reaper.handoff-rotate.v1' as const,
+      remoteFailure: {
+        kind: 'json-rpc-error' as const,
+        jsonRpcCode: -32_600,
+        protocolCode: 'invalid_state' as const,
+        admissionReason: 'teardown-latched' as const,
+        heartbeatRefusal: null,
+      },
+    },
+  ])('uses the redeemed guardian for a $stage teardown-latched refusal', async ({ stage, method, remoteFailure }) => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
     const faults = createProviderProxyAuthorityFaultLatch();
     const teardownLatchedRefusal = new ProviderProxyRoleControlRemoteError(
       'reaper',
-      'heartbeat',
-      'reaper.heartbeat.v1',
-      new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
-        kind: 'json-rpc-error',
-        jsonRpcCode: -32_000,
-        protocolCode: null,
-        admissionReason: null,
-        heartbeatRefusal: { reason: 'teardown-latched', nextHeartbeatChallenge: null },
-      }),
+      stage,
+      method,
+      new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', remoteFailure),
     );
+    const guardianFaults = createProviderProxyAuthorityFaultLatch();
+    const commitContainment = vi.fn(async () => ({ kind: 'outcome-unknown' as const, error: 'still live' }));
+    const guardianAuthority: ProviderProxyGuardianRedemptionAuthority = {
+      faulted: guardianFaults.faulted,
+      onFault: guardianFaults.onFault,
+      onIncident: guardianFaults.onIncident,
+      commitContainment,
+      stopHeartbeats: vi.fn(),
+      initiateControlClose: vi.fn(async () => undefined),
+    };
     const redeemControl = vi.fn(async () => ({
       kind: 'refused' as const,
-      refusal: { kind: 'role-refused' as const, error: teardownLatchedRefusal },
+      refusal: {
+        kind: 'downstream-role-refused' as const,
+        error: teardownLatchedRefusal,
+        guardianAuthority,
+      },
     }));
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still live' }) as const);
     const authority = fakeAuthority({ record, faults, redeemControl, stopAndReap, adoptionWindowMs: 100 });
@@ -2743,12 +2775,13 @@ describe('ProviderProxySetLifecycle', () => {
     await drainMicrotasks();
 
     expect(redeemControl).toHaveBeenCalledOnce();
-    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(commitContainment).toHaveBeenCalledOnce();
+    expect(stopAndReap).not.toHaveBeenCalled();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
       expect.stringContaining(
-        `action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=reaper liveClaims=1`,
+        `action=stop-and-reap reason=provider_authority_lost fault=control-redemption-refused subject=reaper liveClaims=1`,
       ),
     );
   });

@@ -1502,11 +1502,17 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
               disposition: containmentStatus,
             });
             this.deps.abortRegistry.releaseHold(jobId);
-            this.appendProgressEvent(
-              jobId,
-              requestForRoute.sessionId,
-              `Durable containment pid=${identity.pid} was abandoned without proof of process absence or termination.`,
-            );
+            try {
+              this.appendProgressEvent(
+                jobId,
+                requestForRoute.sessionId,
+                `Durable containment pid=${identity.pid} was abandoned without proof of process absence or termination.`,
+              );
+            } catch (error: unknown) {
+              backendLog.warn(
+                `Failed to append durable containment abandonment progress for ${jobId}: ${errorMessage(error)}`,
+              );
+            }
         }
       },
     );

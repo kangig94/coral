@@ -15,11 +15,18 @@ import {
   reaperHandoffRotateParamsSchema,
   type CoordinatorIdentity,
   type OperationIdentity,
+  type ProxyIdentity,
 } from '../../../provider-proxy/protocol.js';
 import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../../provider-proxy/role-spawn.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
+import {
+  createProviderProxyAuthorityFaultLatch,
+  type ProviderProxyAuthorityFault,
+  type ProviderProxyAuthorityObservation,
+  type ProviderProxyAuthorityFaultLatch,
+} from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
+import { commitProviderProxyGuardianContainment, type ProviderProxyContainmentAuthority } from './authority.js';
 import {
   createProviderProxyAuthorityHeartbeatAssembly,
   type ProviderProxyAuthorityHeartbeatAssembly,
@@ -54,6 +61,11 @@ export const proxyHandoffRedeemResultSchema = proxyHandoffRedeemFieldsSchema.ext
 type GuardianHandoffRedemption = z.infer<typeof guardianHandoffRedeemResultSchema>;
 type ReaperHandoffRotation = z.infer<typeof reaperHandoffRotateResultSchema>;
 type ProxyHandoffRedemption = z.infer<typeof proxyHandoffRedeemResultSchema>;
+type EstablishedGuardianSession = Readonly<{
+  client: ControlClient;
+  opened: GuardianHandoffRedemption;
+  nextHeartbeatChallenge: string;
+}>;
 
 /** A complete three-role redemption result that is published only after identities and membership agree. */
 export type ProviderProxyControlRedemptionBundle = ProviderProxyControlSessionBundle &
@@ -67,8 +79,19 @@ export type RedeemedProviderProxyControl = Readonly<{
   [redeemedProviderProxyControlBrand]: ProviderProxyControlRedemptionBundle;
 }>;
 
+export interface ProviderProxyGuardianRedemptionAuthority extends ProviderProxyContainmentAuthority {
+  readonly faulted: Promise<ProviderProxyAuthorityFault>;
+  onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
+  onIncident(listener: (observation: ProviderProxyAuthorityObservation) => void): () => void;
+}
+
 export type ProviderProxyControlRedemptionRefusal =
-  | Readonly<{ kind: 'role-refused'; error: ProviderProxyRoleControlRemoteError }>
+  | Readonly<{ kind: 'guardian-role-refused'; error: ProviderProxyRoleControlRemoteError }>
+  | Readonly<{
+      kind: 'downstream-role-refused';
+      error: ProviderProxyRoleControlRemoteError;
+      guardianAuthority: ProviderProxyGuardianRedemptionAuthority;
+    }>
   | Readonly<{
       kind: 'protocol-incompatible';
       incident: Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-heartbeat-indeterminate' }>;
@@ -115,12 +138,26 @@ function identityFieldsAgree(
   return Object.entries(expected).every(([field, value]) => actual[field] === value);
 }
 
-function returnedIdentitiesMatch(
+function expectedProxyIdentity(target: ProviderProxySetIdentity, successor: CoordinatorIdentity): ProxyIdentity {
+  return {
+    proxyInstanceId: target.proxyInstanceId,
+    pid: target.proxyPid,
+    incarnation: target.proxyIncarnation,
+    processGroupId: target.proxyProcessGroupId,
+    guardianInstanceId: target.guardianInstanceId,
+    reaperInstanceId: target.reaperInstanceId,
+    generation: successor.generation,
+    flavor: successor.flavor,
+    buildSetId: target.buildSetId,
+    hostFingerprint: target.hostFingerprint,
+    canonicalEndpoint: target.canonicalEndpoint,
+  };
+}
+
+function returnedGuardianIdentityMatches(
   target: ProviderProxySetIdentity,
   successor: CoordinatorIdentity,
   guardian: GuardianHandoffRedemption,
-  reaper: ReaperHandoffRotation,
-  proxy: ProxyHandoffRedemption,
 ): boolean {
   const shared = {
     generation: successor.generation,
@@ -146,23 +183,41 @@ function returnedIdentitiesMatch(
       canonicalControlEndpoint: target.guardianControlEndpoint,
     }) &&
     identityFieldsAgree(guardian.reaper, expectedReaper) &&
-    identityFieldsAgree(reaper.reaper, expectedReaper) &&
     identityFieldsAgree(guardian.containment, {
       pid: target.proxyPid,
       incarnation: target.proxyIncarnation,
       processGroupId: target.proxyProcessGroupId,
       containmentKind: target.containmentKind,
-    }) &&
-    identityFieldsAgree(proxy.proxy, {
-      ...shared,
-      proxyInstanceId: target.proxyInstanceId,
-      pid: target.proxyPid,
-      incarnation: target.proxyIncarnation,
-      processGroupId: target.proxyProcessGroupId,
-      guardianInstanceId: target.guardianInstanceId,
-      reaperInstanceId: target.reaperInstanceId,
-      canonicalEndpoint: target.canonicalEndpoint,
     })
+  );
+}
+
+function returnedIdentitiesMatch(
+  target: ProviderProxySetIdentity,
+  successor: CoordinatorIdentity,
+  guardian: GuardianHandoffRedemption,
+  reaper: ReaperHandoffRotation,
+  proxy: ProxyHandoffRedemption,
+): boolean {
+  const shared = {
+    generation: successor.generation,
+    flavor: successor.flavor,
+    buildSetId: target.buildSetId,
+    hostFingerprint: target.hostFingerprint,
+  };
+  const expectedReaper = {
+    ...shared,
+    reaperInstanceId: target.reaperInstanceId,
+    pid: target.reaperPid,
+    incarnation: target.reaperIncarnation,
+    guardianInstanceId: target.guardianInstanceId,
+    canonicalControlEndpoint: target.reaperControlEndpoint,
+    containmentKind: target.containmentKind,
+  };
+  return (
+    returnedGuardianIdentityMatches(target, successor, guardian) &&
+    identityFieldsAgree(reaper.reaper, expectedReaper) &&
+    identityFieldsAgree(proxy.proxy, expectedProxyIdentity(target, successor))
   );
 }
 
@@ -183,6 +238,33 @@ function abandonAttempt(
 ): void {
   heartbeatAssembly.stop();
   for (const client of opened) client.close();
+}
+
+function guardianRedemptionAuthority(
+  setIdentity: ProviderProxySetIdentity,
+  coordinatorIdentity: CoordinatorIdentity,
+  guardianSession: EstablishedGuardianSession,
+  heartbeatAssembly: ProviderProxyAuthorityHeartbeatAssembly,
+  opened: readonly ControlClient[],
+  faults: ProviderProxyAuthorityFaultLatch,
+): ProviderProxyGuardianRedemptionAuthority {
+  const clients = [...opened];
+  const containment = {
+    client: guardianSession.client,
+    guardian: guardianSession.opened.guardian,
+    reaper: guardianSession.opened.reaper,
+    proxy: expectedProxyIdentity(setIdentity, coordinatorIdentity),
+  };
+  return {
+    faulted: faults.faulted,
+    onFault: (listener) => faults.onFault(listener),
+    onIncident: (listener) => faults.onIncident(listener),
+    commitContainment: (signal) => commitProviderProxyGuardianContainment(containment, signal),
+    stopHeartbeats: () => heartbeatAssembly.stop(),
+    initiateControlClose: async () => {
+      for (const client of clients) client.close();
+    },
+  };
 }
 
 export function providerProxyControlRedemptionBundle(
@@ -218,9 +300,10 @@ export async function redeemProviderProxyControl(
   const opened: ControlClient[] = [];
   const faults = createProviderProxyAuthorityFaultLatch();
   const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
+  let guardianSession: EstablishedGuardianSession | null = null;
 
   try {
-    const guardianSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
+    guardianSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
       role: 'guardian',
       endpoint: capsule.guardianControlEndpoint,
       openMethod: 'guardian.handoff-redeem.v1',
@@ -237,6 +320,10 @@ export async function redeemProviderProxyControl(
       nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
       instanceId: guardianSession.opened.guardian.guardianInstanceId,
     });
+    if (!returnedGuardianIdentityMatches(setIdentity, coordinatorIdentity, guardianSession.opened)) {
+      abandonAttempt(heartbeatAssembly, opened);
+      return { kind: 'refused', refusal: { kind: 'identity-disagreement' } };
+    }
     signal.throwIfAborted();
 
     const reaperSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
@@ -347,8 +434,8 @@ export async function redeemProviderProxyControl(
     };
     return { kind: 'redeemed', [redeemedProviderProxyControlBrand]: bundle };
   } catch (error: unknown) {
-    abandonAttempt(heartbeatAssembly, opened);
     if (error instanceof ProviderProxyRoleControlUnavailableError) {
+      abandonAttempt(heartbeatAssembly, opened);
       if (
         error.incident.kind === 'role-heartbeat-indeterminate' &&
         error.incident.observation.kind === 'reply' &&
@@ -362,8 +449,27 @@ export async function redeemProviderProxyControl(
       return { kind: 'unavailable', incident: error.incident, error };
     }
     if (error instanceof ProviderProxyRoleControlRemoteError) {
-      return { kind: 'refused', refusal: { kind: 'role-refused', error } };
+      if (guardianSession !== null && error.role !== 'guardian') {
+        return {
+          kind: 'refused',
+          refusal: {
+            kind: 'downstream-role-refused',
+            error,
+            guardianAuthority: guardianRedemptionAuthority(
+              setIdentity,
+              coordinatorIdentity,
+              guardianSession,
+              heartbeatAssembly,
+              opened,
+              faults,
+            ),
+          },
+        };
+      }
+      abandonAttempt(heartbeatAssembly, opened);
+      return { kind: 'refused', refusal: { kind: 'guardian-role-refused', error } };
     }
+    abandonAttempt(heartbeatAssembly, opened);
     throw error;
   }
 }

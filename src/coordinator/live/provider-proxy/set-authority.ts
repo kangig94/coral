@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { errorMessage } from '../../../infra/error-format.js';
 import {
   guardianReaperHandoffInstallParamsSchema,
   handoffSecretDigest,
@@ -14,7 +13,6 @@ import {
 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
-  PROXY_TEARDOWN_RESERVE_MS,
   providerProxyAdoptionWindowMs,
   providerProxyHeartbeatHoldBound,
   resolveProviderProxyDeadlineConfiguration,
@@ -23,8 +21,6 @@ import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   canonicalUuidSchema,
-  guardianContainmentCommitParamsSchema,
-  guardianContainmentCommitResultSchema,
   providerHostEvictParamsSchema,
   providerHostEvictResultSchema,
   providerHostInspectParamsSchema,
@@ -54,6 +50,7 @@ import type {
   ProviderProxyAutonomousDeadline,
   ProviderProxySetAuthority,
 } from './authority.js';
+import { commitProviderProxyGuardianContainment } from './authority.js';
 
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
@@ -145,23 +142,6 @@ function requireControlResult(method: string, exchange: ControlExchange): unknow
   }
   if (exchange.error instanceof Error) throw exchange.error;
   throw new Error(`${method} could not be sent.`, { cause: exchange.error });
-}
-
-/** Lets `signal` cut a pending exchange short without requiring `ControlClient.exchange` itself to understand
- *  `AbortSignal` — it only ever takes a millisecond budget. If the signal wins the race the pending exchange is
- *  left to settle on its own; a lost race can never distinguish a request that never reached the guardian from
- *  one whose response is merely delayed, so `commitContainment` treats it the same as a lost response —
- *  `outcome-unknown`, never a proof that no latch occurred. */
-function raceAgainstAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(new Error('the caller deadline elapsed before the containment commit resolved'));
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    pending.then(resolve, reject);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 type ProviderProxySetAuthorityCommonDependencies = Readonly<{
@@ -457,67 +437,18 @@ export function createProviderProxySetAuthority(
     },
   };
 
-  const commitContainment = async (signal: AbortSignal): Promise<ContainmentCommitOutcome> => {
-    // Parsed against the exact schema `guardian.ts` parses this request with on receipt, so a malformed
-    // payload fails at this sender rather than at the guardian's own `.strict()` refusal. The guardian's own
-    // enforcer supplies the authoritative cumulative root set to destroy; this coordinator nominates none.
-    const guardianContainmentCommitPayload = guardianContainmentCommitParamsSchema.parse({
-      guardian: guardianIdentity,
-      reaper: reaperIdentity,
-      proxy: proxyIdentityFields,
-    });
-    let exchange: ControlExchange;
-    try {
-      exchange = await raceAgainstAbort(
-        guardianClient.exchange(
-          'guardian.containment-commit.v1',
-          guardianContainmentCommitPayload,
-          // A legitimate commit can spend the TERM and KILL graces plus disappearance confirmation; the
-          // caller signal remains the actual bound.
-          PROXY_TEARDOWN_RESERVE_MS,
-        ),
-        signal,
-      );
-    } catch (error: unknown) {
-      // The caller's own deadline elapsed before the exchange settled. That proves nothing about whether the
-      // request reached the guardian — it cannot be un-sent by racing against it.
-      return { kind: 'outcome-unknown', error: error instanceof Error ? error.message : String(error) };
-    }
-    if (exchange.kind === 'not-sent') {
-      // Proven never to have left this process: no latch could have occurred.
-      return { kind: 'not-sent', error: errorMessage(exchange.error) };
-    }
-    if (exchange.kind === 'response') {
-      if (exchange.response.kind === 'refusal') {
-        if (
-          exchange.response.failure.kind === 'json-rpc-error' &&
-          exchange.response.failure.protocolCode === 'invalid_state' &&
-          exchange.response.error.message === 'A containment commit is already in progress.'
-        ) {
-          return { kind: 'outcome-unknown', error: exchange.response.error.message };
-        }
-        // The wire contract reserves refusals for pre-latch rejection; post-latch uncertainty is a result.
-        return { kind: 'not-sent', error: exchange.response.error.message };
-      }
-      // A decoded `result` response proves the guardian answered, not what it did: an undecodable shape is
-      // not a disposition about the peer (validation.md), and this process cannot mint `not-sent` from a
-      // reply that reached it — the commit may already have latched. That makes this `outcome-unknown`, the
-      // same as any other reply this sender cannot use.
-      const parsed = guardianContainmentCommitResultSchema.safeParse(exchange.response.value);
-      if (!parsed.success) {
-        return {
-          kind: 'outcome-unknown',
-          error: `guardian.containment-commit.v1 replied with an undecodable result: ${parsed.error.message}`,
-        };
-      }
-      if (parsed.data.state === 'teardown-latched-absence-unconfirmed') {
-        return { kind: 'outcome-unknown', error: parsed.data.reason };
-      }
-      return { kind: 'containment-absent', disappearanceReceipt: parsed.data.disappearanceReceipt };
-    }
-    // 'no-response' | 'delivery-unconfirmed' | 'channel-fault': the request may have reached the guardian and
-    // its answer is what is missing, not the request.
-    return { kind: 'outcome-unknown', error: errorMessage(exchange.error) };
+  const commitContainment = (signal: AbortSignal): Promise<ContainmentCommitOutcome> => {
+    // The guardian's enforcer supplies the authoritative cumulative root set to destroy; this coordinator
+    // nominates none.
+    return commitProviderProxyGuardianContainment(
+      {
+        client: guardianClient,
+        guardian: guardianIdentity,
+        reaper: reaperIdentity,
+        proxy: proxyIdentityFields,
+      },
+      signal,
+    );
   };
 
   return {

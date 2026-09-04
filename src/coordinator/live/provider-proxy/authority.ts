@@ -1,4 +1,14 @@
-import type { ProviderHostInventoryRecordWire } from '../../../provider-proxy/protocol.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
+import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
+import {
+  guardianContainmentCommitParamsSchema,
+  guardianContainmentCommitResultSchema,
+  type ProviderHostInventoryRecordWire,
+  type GuardianIdentity,
+  type ProxyIdentity,
+  type ReaperIdentity,
+} from '../../../provider-proxy/protocol.js';
 import type { ProviderProxyHeartbeatHoldBound } from '../../../provider-proxy/orphan-deadline.js';
 import type { HostRef } from '../../../providers/contract.js';
 
@@ -21,8 +31,81 @@ export type ContainmentCommitOutcome =
   | Readonly<{ kind: 'not-sent'; error: string }>
   | Readonly<{ kind: 'outcome-unknown'; error: string }>;
 
+export interface ProviderProxyContainmentAuthority {
+  /** Classifies whether the guardian commit was absent, proven unsent, or left with an unknown outcome. */
+  commitContainment(signal: AbortSignal): Promise<ContainmentCommitOutcome>;
+  /** Heartbeats must stop before control closes so no lease is renewed during relinquishment. */
+  stopHeartbeats(): void;
+  /** All owned control closes must be initiated before the returned confirmation settles. */
+  initiateControlClose(): Promise<void>;
+}
+
+function raceContainmentCommitAgainstAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error('the caller deadline elapsed before the containment commit resolved'));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    pending.then(resolve, reject);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export async function commitProviderProxyGuardianContainment(
+  control: Readonly<{
+    client: ControlClient;
+    guardian: GuardianIdentity;
+    reaper: ReaperIdentity;
+    proxy: ProxyIdentity;
+  }>,
+  signal: AbortSignal,
+): Promise<ContainmentCommitOutcome> {
+  const payload = guardianContainmentCommitParamsSchema.parse({
+    guardian: control.guardian,
+    reaper: control.reaper,
+    proxy: control.proxy,
+  });
+  let exchange: ControlExchange;
+  try {
+    exchange = await raceContainmentCommitAgainstAbort(
+      control.client.exchange('guardian.containment-commit.v1', payload, PROXY_TEARDOWN_RESERVE_MS),
+      signal,
+    );
+  } catch (error: unknown) {
+    return { kind: 'outcome-unknown', error: error instanceof Error ? error.message : String(error) };
+  }
+  if (exchange.kind === 'not-sent') {
+    return { kind: 'not-sent', error: errorMessage(exchange.error) };
+  }
+  if (exchange.kind === 'response') {
+    if (exchange.response.kind === 'refusal') {
+      if (
+        exchange.response.failure.kind === 'json-rpc-error' &&
+        exchange.response.failure.protocolCode === 'invalid_state' &&
+        exchange.response.error.message === 'A containment commit is already in progress.'
+      ) {
+        return { kind: 'outcome-unknown', error: exchange.response.error.message };
+      }
+      return { kind: 'not-sent', error: exchange.response.error.message };
+    }
+    const parsed = guardianContainmentCommitResultSchema.safeParse(exchange.response.value);
+    if (!parsed.success) {
+      return {
+        kind: 'outcome-unknown',
+        error: `guardian.containment-commit.v1 replied with an undecodable result: ${parsed.error.message}`,
+      };
+    }
+    if (parsed.data.state === 'teardown-latched-absence-unconfirmed') {
+      return { kind: 'outcome-unknown', error: parsed.data.reason };
+    }
+    return { kind: 'containment-absent', disappearanceReceipt: parsed.data.disappearanceReceipt };
+  }
+  return { kind: 'outcome-unknown', error: errorMessage(exchange.error) };
+}
+
 /** One live set, as shutdown sees it. */
-export interface ProviderProxySetAuthority {
+export interface ProviderProxySetAuthority extends ProviderProxyContainmentAuthority {
   /** Names the set in failure reports, so an aggregate says which carrier could not be released. */
   readonly proxyInstanceId: string;
   /**
@@ -30,24 +113,6 @@ export interface ProviderProxySetAuthority {
    * are confirmed absent. Observing the proxy leader's exit is not that confirmation.
    */
   stopAndReap(signal: AbortSignal): Promise<Readonly<{ disappearanceReceipt: string } | { unconfirmed: string }>>;
-  /**
-   * Sends the guardian's own `guardian.containment-commit.v1` — the sole destructive containment linearization
-   * point — and classifies the result into `commitContainment`'s three-way outcome instead of `stopAndReap`'s
-   * coarse confirmed/unconfirmed split. Callers that must distinguish a commit proven not to have started from
-   * one whose response was merely lost use this instead of `stopAndReap`.
-   */
-  commitContainment(signal: AbortSignal): Promise<ContainmentCommitOutcome>;
-  /**
-   * Stops this set's heartbeat scheduler. Synchronous so the ordered release boundary can stop every one
-   * before any close is initiated — a heartbeat that lands mid-release would renew the very lease the
-   * shutdown is giving up.
-   */
-  stopHeartbeats(): void;
-  /**
-   * Initiates control close and returns its confirmation. It must not await internally: the boundary needs
-   * every close *triggered* before it waits on any of them, so one slow set cannot delay the rest.
-   */
-  initiateControlClose(): Promise<void>;
   readonly providerHosts?: Readonly<{
     list(): Promise<readonly ProviderHostInventoryRecordWire[]>;
     inspect(hostRef: HostRef): Promise<ProviderHostInventoryRecordWire | null>;

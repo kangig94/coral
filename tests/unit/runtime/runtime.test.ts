@@ -1,10 +1,12 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRealRuntime, waitForRecordedDurableExit } from '#src/runtime/real.js';
+import { createRealRuntime, waitForDurableRuntime, waitForRecordedDurableExit } from '#src/runtime/real.js';
 import type { ChildProcessLike, TimePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -91,6 +93,41 @@ async function readPipedOutput(child: ChildProcessLike): Promise<{
 }
 
 describe('createRealRuntime', () => {
+  it('rejects a silent durable wrapper after a late zero-delay post-wake turn', async () => {
+    let monotonicMs = 0n;
+    const pending: Array<{ callback: () => void; delayMs: number }> = [];
+    const time: TimePort = {
+      now: () => Number(monotonicMs),
+      monotonicNow: () => monotonicMs,
+      sleep: async () => undefined,
+      setTimeout: (callback, delayMs) => {
+        pending.push({ callback, delayMs });
+        return {};
+      },
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    const wrapper = Object.assign(new EventEmitter(), {
+      pid: 101,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    const readiness = waitForDurableRuntime({ time, wrapper: wrapper as never });
+    const runNext = (): void => {
+      const timer = pending.shift();
+      if (timer === undefined) throw new Error('expected a pending readiness timer');
+      monotonicMs += BigInt(timer.delayMs === 0 ? 1 : timer.delayMs);
+      timer.callback();
+    };
+
+    runNext();
+    runNext();
+
+    await expect(readiness).rejects.toThrow('Durable wrapper failed to report runtime within 5000ms');
+    expect(pending).toEqual([]);
+  });
+
   it('measures durable exit confirmation across a forward wall-clock jump with monotonic time', async () => {
     const result = await confirmExitGraceAcrossWallClockJump(60_000);
 

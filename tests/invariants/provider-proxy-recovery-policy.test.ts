@@ -696,10 +696,12 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: catch#1 :: calls=[submit, classifyRejection] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginHeartbeatLocalFailureHold :: Promise.catch :: slot.authority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #commitOperatorAbandonment :: Promise.catch :: slot.containmentAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #releasePartialRedemption :: Promise.catch :: refusal.guardianAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runAcquisitionPublicationRetry :: Promise.then(rejected) :: retryProviderProxyAcquisitionPublication(slot.session).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runAcquisitionPublicationRetry :: catch#1 :: calls=[this.#releaseAcquisitionPublicationSession] assignments=[]',
@@ -709,7 +711,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.collectContainmentProof, authorizeProviderProxySetContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
@@ -742,6 +744,9 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.includes(' :: #beginHeartbeatLocalFailureHold :: ')) {
     return 'A best-effort close cannot revoke the reattachment hold the lifecycle has already entered.';
   }
+  if (fingerprint.includes(' :: #commitOperatorAbandonment :: ')) {
+    return 'A partial guardian close failure cannot revoke accepted operator abandonment.';
+  }
   if (fingerprint.includes(' :: #promoteControlReattachment :: ')) {
     return 'Failed promotion keeps the original hold and displaced-control close failure cannot revoke the promoted authority.';
   }
@@ -756,6 +761,9 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: #recoverExactCapsule :: ')) {
     return 'Lifecycle retains and retries exact-capsule recovery after its sanctioned exact-set reaper rejects.';
+  }
+  if (fingerprint.includes(' :: #releasePartialRedemption :: ')) {
+    return 'A partial guardian close failure cannot revoke the hold that succeeded redemption still owns.';
   }
   if (fingerprint.includes(' :: #runControlReattachmentAttempt :: ')) {
     return 'Lifecycle retains the reattachment hold and schedules its bounded retry after exact-set reaping rejects.';

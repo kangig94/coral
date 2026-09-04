@@ -25,6 +25,7 @@ import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import { readDurableCliContainmentStatus } from '#src/jobs/runtime-meta-store.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -68,6 +69,7 @@ import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import {
   TEST_CODEX_BINDING,
   TEST_CODEX_SCOPE,
@@ -960,6 +962,105 @@ describe('ExecutionService launch', () => {
     expect(runtimeRecord?.tailWatermark).toBeGreaterThan(0);
     expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-1'))).toBe(true);
     expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-2'))).toBe(true);
+  });
+
+  it('keeps durable abandonment committed when its progress diagnostic fails', async () => {
+    const base = createRealRuntime('prod');
+    const retryHandle = {};
+    let retryActive = false;
+    const clearInterval = vi.fn(() => {
+      retryActive = false;
+    });
+    const kill = vi.fn(() => true);
+    const runtimeRecord = {
+      transport: 'durable-cli' as const,
+      pid: 91_001,
+      stdoutPath: join(mockState.tmpRoot, 'abandonment-stdout'),
+      stderrPath: join(mockState.tmpRoot, 'abandonment-stderr'),
+      startTime: new Date(0).toISOString(),
+    };
+    runtime = {
+      ...base,
+      env: { ...base.env, platform: () => 'darwin' },
+      time: {
+        ...base.time,
+        setInterval: () => {
+          retryActive = true;
+          return retryHandle;
+        },
+        clearInterval,
+      },
+      process: {
+        ...base.process,
+        kill,
+        readProcessIncarnation: () => null,
+        observeLiveness: () => 'unknown',
+        durable: {
+          launch: async (options) => {
+            const processSubject = {
+              pid: runtimeRecord.pid,
+              incarnation: testIncarnation('abandonment-wrapper'),
+              processGroupId: runtimeRecord.pid,
+              childRoot: { pid: runtimeRecord.pid + 1, incarnation: testIncarnation('abandonment-child') },
+            };
+            options.onSpawned?.({
+              runtimeRecord,
+              leaderIncarnation: processSubject.incarnation,
+              childRoot: processSubject.childRoot,
+            });
+            return {
+              launchHandle: 'abandonment-launch' as never,
+              pid: runtimeRecord.pid,
+              stdoutPath: runtimeRecord.stdoutPath,
+              stderrPath: runtimeRecord.stderrPath,
+              runtimeRecord,
+              processSubject,
+            };
+          },
+          waitForExit: async () => ({ exitCode: 0, signal: null, endTime: new Date(1).toISOString() }),
+        },
+      },
+    };
+    launchCoordinator = new LaunchCoordinator({ runtime });
+    const provider: Provider = {
+      name: 'codex',
+      execute: (_request, providerRuntime) =>
+        streamProviderEvents(async (emit) => {
+          if (providerRuntime.transport !== 'standalone') throw new Error('expected standalone runtime');
+          const result = await providerRuntime.runCli({ command: 'fixture', args: [] });
+          emit(providerTerminalEvent({ content: result.stdout, outcome: { kind: 'completed' }, durationMs: 0 }));
+        }),
+    };
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore } = getInternals(service);
+    const appendProgress = progressStore.appendProgress.bind(progressStore);
+    let statusAtDiagnosticFailure: ReturnType<typeof readDurableCliContainmentStatus> | null = null;
+    vi.spyOn(progressStore, 'appendProgress').mockImplementation((jobId, sessionId, message) => {
+      if (message.includes('was abandoned without proof')) {
+        statusAtDiagnosticFailure = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
+        throw new Error('synthetic progress append failure');
+      }
+      return appendProgress(jobId, sessionId, message);
+    });
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    await vi.waitFor(() => expect(retryActive).toBe(true));
+
+    expect(abortRegistry.abort([decision.jobId]).refused).toHaveLength(1);
+    expect(abortRegistry.abort([decision.jobId])).toEqual({ aborted: [decision.jobId], notFound: [] });
+    await vi.waitFor(() => expect(retryActive).toBe(false));
+
+    expect(statusAtDiagnosticFailure).toMatchObject({
+      kind: 'valid',
+      status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },
+    });
+    expect(clearInterval).toHaveBeenCalledWith(retryHandle);
+    const signalCount = kill.mock.calls.length;
+    await Promise.resolve();
+    expect(kill).toHaveBeenCalledTimes(signalCount);
   });
 
   it('records provider artifact handle events through the launch session API before continuity checkpoints', async () => {

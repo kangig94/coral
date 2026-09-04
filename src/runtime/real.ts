@@ -884,7 +884,7 @@ function isDurableControlMessage(value: unknown, expectedPid: number | undefined
   return hasExactKeys(value, ['type', 'exitRecord']) && value.type === 'exit' && isExitRecord(value.exitRecord);
 }
 
-function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<typeof spawnChild> }): Promise<{
+export function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<typeof spawnChild> }): Promise<{
   runtimeRecord: DurableCliRuntimeRecord;
   reportedLeaderIncarnation: ProcessIncarnation | null;
   childRoot: RecordedProcessIdentity | null;
@@ -1027,9 +1027,8 @@ function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<ty
   function checkReadinessDeadline(): void {
     if (runtimeRecord !== null || controlFailed) return;
     const now = options.time.monotonicNow();
-    if (now > requestedWake) {
+    if (!postWakeTurnPending && now > requestedWake) {
       readinessDeadline += now - requestedWake;
-      postWakeTurnPending = false;
     }
     if (now < readinessDeadline) {
       armReadinessCheck(Number(readinessDeadline - now));

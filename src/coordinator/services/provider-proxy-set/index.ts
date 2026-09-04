@@ -33,7 +33,10 @@ import {
   type OwnedProviderProxyAcquisitionControlSession,
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '../../live/provider-proxy/control-session.js';
-import type { ContainmentCommitOutcome } from '../../live/provider-proxy/authority.js';
+import type {
+  ContainmentCommitOutcome,
+  ProviderProxyContainmentAuthority,
+} from '../../live/provider-proxy/authority.js';
 import type {
   ProviderProxyControlRedemptionOutcome,
   ProviderProxyControlRedemptionRefusal,
@@ -209,6 +212,7 @@ type EstablishedSlot = {
   completedAttempts: number;
   attemptToken: number;
   containmentAttemptAbort: AbortController | null;
+  containmentAuthority: ProviderProxyContainmentAuthority | null;
   retryTimer: TimerHandle | null;
   retirementDecision: ProviderProxySetDrainDecision | null;
   preserveReports: Map<string, PreserveReportState>;
@@ -378,7 +382,7 @@ type ContainmentAbsenceCommit =
   | Readonly<{
       kind: 'committed';
       pending: AbsenceDeliveryPendingSlot;
-      authorityToClose: DurableProviderProxyOperationAuthority | null;
+      authoritiesToClose: readonly ProviderProxyContainmentAuthority[];
     }>;
 
 export type ProviderProxySetLifecycleSnapshot = Readonly<{
@@ -621,20 +625,38 @@ function isProviderProxyHeartbeatMethod(value: unknown): value is ProviderProxyH
   return value === 'control.heartbeat.v1' || value === 'guardian.heartbeat.v1' || value === 'reaper.heartbeat.v1';
 }
 
-/** Only an exact structured teardown-latched heartbeat refusal is decisive. */
+/** Decisiveness requires a structured teardown latch and verified guardian containment ownership. */
 function decisiveTeardownLatchedRefusal(refusal: ProviderProxyControlRedemptionRefusal): Readonly<{
   role: ProviderProxyRole;
-  method: ProviderProxyHeartbeatMethod;
+  stage: 'open' | 'heartbeat';
+  method: NonNullable<ProviderProxyRoleControlRemoteError['method']>;
   error: ProviderProxyRoleControlRemoteError;
+  authority: ProviderProxyContainmentAuthority;
 }> | null {
-  if (refusal.kind !== 'role-refused') return null;
+  if (refusal.kind !== 'downstream-role-refused') return null;
   const { error } = refusal;
-  if (error.stage !== 'heartbeat') return null;
   const { remoteFailure } = error;
   if (remoteFailure.kind !== 'json-rpc-error') return null;
+  if (error.stage === 'open') {
+    if (remoteFailure.admissionReason !== 'teardown-latched' || error.method === null) return null;
+    return {
+      role: error.role,
+      stage: error.stage,
+      method: error.method,
+      error,
+      authority: refusal.guardianAuthority,
+    };
+  }
+  if (error.stage !== 'heartbeat') return null;
   if (remoteFailure.heartbeatRefusal?.reason !== 'teardown-latched') return null;
   if (!isProviderProxyHeartbeatMethod(error.method)) return null;
-  return { role: error.role, method: error.method, error };
+  return {
+    role: error.role,
+    stage: error.stage,
+    method: error.method,
+    error,
+    authority: refusal.guardianAuthority,
+  };
 }
 
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
@@ -1523,18 +1545,18 @@ export class ProviderProxySetLifecycle {
     const processEvidence = this.#processContainmentEvidence(disappearanceReceipt);
     const commit = this.#commitContainmentAbsence(identity, processEvidence);
     if (commit.kind === 'unchanged') return this.#absenceAcceptance(commit.pending);
-    const { pending, authorityToClose } = commit;
+    const { pending, authoritiesToClose } = commit;
     this.#report(
       'info',
       `Provider proxy containment disappeared set=${providerProxySetReference(pending.identity)} receipt=${JSON.stringify(disappearanceReceipt).slice(1, -1)}`,
     );
 
-    if (authorityToClose !== null) {
+    for (const authority of authoritiesToClose) {
       // Deferred to confirmed absence rather than the containment attempt's own start: a `stop-and-reap`
       // decision keeps its heartbeat lease live for as long as the guardian commit is unconfirmed, so a
       // retry always has a current lease to commit against instead of one this coordinator tore down itself.
-      authorityToClose.stopHeartbeats();
-      void authorityToClose
+      authority.stopHeartbeats();
+      void authority
         .initiateControlClose()
         .catch((error: unknown) =>
           this.#deps.onError?.(
@@ -1676,9 +1698,14 @@ export class ProviderProxySetLifecycle {
       slot.containmentAttemptAbort = null;
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     }
-    const authorityToClose = slot.kind === 'recovering' || slot.kind === 'capsule-recovering' ? null : slot.authority;
+    const authoritiesToClose =
+      slot.kind === 'recovering' || slot.kind === 'capsule-recovering'
+        ? []
+        : slot.containmentAuthority === null
+          ? [slot.authority]
+          : [slot.authority, slot.containmentAuthority];
     this.#slots.set(key, pending);
-    return { kind: 'committed', pending, authorityToClose };
+    return { kind: 'committed', pending, authoritiesToClose };
   }
 
   #commitOperatorAbandonment(
@@ -1703,6 +1730,12 @@ export class ProviderProxySetLifecycle {
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
       this.#removeRoute(slot);
       slot.authority.stopHeartbeats();
+      if (slot.containmentAuthority !== null) {
+        slot.containmentAuthority.stopHeartbeats();
+        void slot.containmentAuthority.initiateControlClose().catch((error: unknown) => {
+          this.#deps.onError?.(`Partial provider proxy control close failed: ${singleLineErrorSummary(error)}`);
+        });
+      }
     }
     this.#slots.set(slot.key, pending);
     return pending;
@@ -2281,6 +2314,7 @@ export class ProviderProxySetLifecycle {
       completedAttempts: 0,
       attemptToken: 0,
       containmentAttemptAbort: null,
+      containmentAuthority: null,
       retryTimer: null,
       retirementDecision: null,
       preserveReports: new Map(),
@@ -2435,7 +2469,13 @@ export class ProviderProxySetLifecycle {
       { setIdentity: slot.identity },
       {
         evidence: (value, sourceId) => {
-          if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          if (!this.#isCurrentControlReattachment(slot, window, token)) {
+            if (sourceId === 'redemption') {
+              const outcome = value as ProviderProxyControlRedemptionOutcome;
+              if (outcome.kind === 'refused') this.#releasePartialRedemption(outcome.refusal);
+            }
+            return;
+          }
           window.attemptAbort = null;
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetContainmentProof;
@@ -2468,6 +2508,12 @@ export class ProviderProxySetLifecycle {
           }
           const outcome = value as ProviderProxyControlRedemptionOutcome;
           if (outcome.kind === 'refused') {
+            const decisive = decisiveTeardownLatchedRefusal(outcome.refusal);
+            if (decisive !== null) {
+              this.#commitReattachmentTeardownLatched(slot, window, decisive);
+              return;
+            }
+            this.#releasePartialRedemption(outcome.refusal);
             this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_refused', outcome.refusal);
             return;
           }
@@ -2659,18 +2705,22 @@ export class ProviderProxySetLifecycle {
     window: ControlReattachmentWindow,
     decisive: Readonly<{
       role: ProviderProxyRole;
-      method: ProviderProxyHeartbeatMethod;
+      stage: 'open' | 'heartbeat';
+      method: NonNullable<ProviderProxyRoleControlRemoteError['method']>;
       error: ProviderProxyRoleControlRemoteError;
+      authority: ProviderProxyContainmentAuthority;
     }>,
   ): void {
     slot.attemptToken += 1;
     this.#clearControlReattachment(slot, window);
     this.#operatorDispositions.delete(slot.key);
+    slot.containmentAuthority = decisive.authority;
     this.#beginFaultContainment(slot, {
       action: 'stop-and-reap',
       reason: 'provider_authority_lost',
-      fault: 'heartbeat-failed',
+      fault: 'control-redemption-refused',
       role: decisive.role,
+      stage: decisive.stage,
       method: decisive.method,
       terminalReason: 'teardown-latched',
       error: singleLineErrorSummary(decisive.error),
@@ -2743,7 +2793,13 @@ export class ProviderProxySetLifecycle {
       { setIdentity: slot.identity },
       {
         evidence: (value, sourceId) => {
-          if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          if (!this.#isCurrentControlReattachment(slot, window, token)) {
+            if (sourceId === 'redemption') {
+              const outcome = value as ProviderProxyControlRedemptionOutcome;
+              if (outcome.kind === 'refused') this.#releasePartialRedemption(outcome.refusal);
+            }
+            return;
+          }
           window.attemptAbort = null;
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetContainmentProof;
@@ -2784,6 +2840,7 @@ export class ProviderProxySetLifecycle {
               this.#commitReattachmentTeardownLatched(slot, window, decisive);
               return;
             }
+            this.#releasePartialRedemption(outcome.refusal);
             this.#scheduleReattachmentHoldRetry(slot, window);
             return;
           }
@@ -2826,6 +2883,14 @@ export class ProviderProxySetLifecycle {
       this.#runReattachmentHoldAttempt(slot, window);
     }, REATTACHMENT_HOLD_RETRY_MS);
     slot.retryTimer.unref?.();
+  }
+
+  #releasePartialRedemption(refusal: ProviderProxyControlRedemptionRefusal): void {
+    if (refusal.kind !== 'downstream-role-refused') return;
+    refusal.guardianAuthority.stopHeartbeats();
+    void refusal.guardianAuthority.initiateControlClose().catch((error: unknown) => {
+      this.#deps.onError?.(`Partial provider proxy control close failed: ${singleLineErrorSummary(error)}`);
+    });
   }
 
   #beginFaultContainment(slot: EstablishedSlot, decision: ProviderProxySetAuthorityStopDecision): void {
@@ -3618,7 +3683,10 @@ export class ProviderProxySetLifecycle {
       turn.start({
         sourceId: 'stop-and-reap',
         producerId: 'role-control',
-        input: { signal: abort.signal, run: (signal) => slot.authority.commitContainment(signal) },
+        input: {
+          signal: abort.signal,
+          run: (signal) => (slot.containmentAuthority ?? slot.authority).commitContainment(signal),
+        },
         abort: (reason) => abort.abort(reason),
       });
     }

@@ -6,6 +6,7 @@ import type {
   ProviderProxyRole,
   RetrySafeControlCallPolicy,
 } from '../provider-proxy-authority-fault.js';
+import type { ProviderProxyRoleOpenMethod } from '../../live/provider-proxy/role-control.js';
 import { providerProxySetReference, type ProviderProxySetIdentity } from './identity.js';
 
 type FaultlessDecisionFields = Readonly<{
@@ -101,6 +102,20 @@ export type ProviderProxySetHeartbeatFaultStopDecision = Readonly<{
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
   terminalReason: ProviderProxyHeartbeatTerminalReason;
+  policy?: never;
+  error: string;
+  liveClaims: number;
+  setIdentity: ProviderProxySetIdentity;
+}>;
+
+export type ProviderProxySetRedemptionTeardownLatchedStopDecision = Readonly<{
+  action: 'stop-and-reap';
+  reason: 'provider_authority_lost';
+  fault: 'control-redemption-refused';
+  role: ProviderProxyRole;
+  stage: 'open' | 'heartbeat';
+  method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod;
+  terminalReason: 'teardown-latched';
   policy?: never;
   error: string;
   liveClaims: number;
@@ -293,7 +308,8 @@ export type ProviderProxySetOperatorDecision =
 
 export type ProviderProxySetAuthorityStopDecision =
   | ProviderProxySetOperationFaultStopDecision
-  | ProviderProxySetHeartbeatFaultStopDecision;
+  | ProviderProxySetHeartbeatFaultStopDecision
+  | ProviderProxySetRedemptionTeardownLatchedStopDecision;
 
 export type ProviderProxySetContainmentDecision =
   | ProviderProxySetAuthorityStopDecision
@@ -391,7 +407,7 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.reason === 'containment_refused_live_claims' ? refusedDecisionDetail(decision.refusedDecision) : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'control-redemption-refused' ? ` stage=${decision.stage} method=${decision.method} terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.reason === 'containment_refused_live_claims' ? refusedDecisionDetail(decision.refusedDecision) : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }
 

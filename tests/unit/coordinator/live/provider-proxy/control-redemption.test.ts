@@ -388,6 +388,49 @@ describe('provider proxy control redemption', () => {
     );
 
     expect(refused.kind).toBe('refused');
+    if (refused.kind !== 'refused') throw new Error('expected guardian refusal');
+    expect(refused.refusal.kind).toBe('guardian-role-refused');
     expect(unavailable.kind).toBe('unavailable');
+  });
+
+  it('returns verified guardian ownership when a downstream role refuses', async () => {
+    const [guardian] = sessions();
+    const remote = new ProviderProxyRoleControlRemoteError(
+      'reaper',
+      'open',
+      'reaper.handoff-rotate.v1',
+      new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_600,
+        protocolCode: 'invalid_state',
+        admissionReason: 'teardown-latched',
+        heartbeatRefusal: null,
+      }),
+    );
+    mockedEstablishRoleControl.mockImplementationOnce(async (opened) => {
+      opened.push(guardian.client);
+      return guardian as never;
+    });
+    mockedEstablishRoleControl.mockRejectedValueOnce(remote);
+
+    const outcome = await redeemProviderProxyControl(
+      capsule,
+      setIdentity,
+      { runtime: runtimeWithNow(), coordinatorIdentity },
+      new AbortController().signal,
+    );
+
+    expect(outcome.kind).toBe('refused');
+    if (outcome.kind !== 'refused' || outcome.refusal.kind !== 'downstream-role-refused') {
+      throw new Error('expected downstream refusal with guardian ownership');
+    }
+    expect(stop).not.toHaveBeenCalled();
+    expect(guardian.client.close).not.toHaveBeenCalled();
+
+    outcome.refusal.guardianAuthority.stopHeartbeats();
+    await outcome.refusal.guardianAuthority.initiateControlClose();
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(guardian.client.close).toHaveBeenCalledOnce();
   });
 });
