@@ -76,7 +76,7 @@ export type CoordinatorCoreOptions = {
   cleanupStaleJobsFn?: (currentBundleHash: string) => void | Promise<void>;
   markJobsAsErrorFn?: (message: string) => void | Promise<void>;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
-  terminateAllFn?: () => TerminateAllDisposition | Promise<TerminateAllDisposition>;
+  terminateAllFn?: (signal: AbortSignal) => TerminateAllDisposition | Promise<TerminateAllDisposition>;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;

@@ -693,17 +693,21 @@ describe('cli main routing', () => {
         kind: 'abandoned',
         roleIdentity: identity,
       }));
+      const retryReap = vi.fn<ProviderProxyRoleTerminationCommandOperations['retryReap']>(async (identity) => ({
+        kind: 'reap-retry-requested',
+        roleIdentity: identity,
+      }));
       const program = new Command();
       program.exitOverride();
       registerBackendCommands(program, {
         providerProxySets: { contain },
-        providerProxyRoleTermination: { terminate },
+        providerProxyRoleTermination: { terminate, retryReap },
       });
-      return { program, contain, terminate };
+      return { program, contain, terminate, retryReap };
     }
 
     it('routes contain to the child operation when the parent accepts an operator action', async () => {
-      const { program, contain, terminate } = routingProgram();
+      const { program, contain, terminate, retryReap } = routingProgram();
 
       await program.parseAsync([
         'node',
@@ -718,10 +722,11 @@ describe('cli main routing', () => {
       expect(contain).toHaveBeenCalledOnce();
       expect(contain).toHaveBeenCalledWith({ setIdentity, abandonWithoutAbsence: true });
       expect(terminate).not.toHaveBeenCalled();
+      expect(retryReap).not.toHaveBeenCalled();
     });
 
     it('routes terminate-role to the parent operation with its parsed identity', async () => {
-      const { program, contain, terminate } = routingProgram();
+      const { program, contain, terminate, retryReap } = routingProgram();
 
       await program.parseAsync([
         'node',
@@ -739,17 +744,42 @@ describe('cli main routing', () => {
 
       expect(terminate).toHaveBeenCalledOnce();
       expect(terminate).toHaveBeenCalledWith(roleIdentity);
+      expect(retryReap).not.toHaveBeenCalled();
+      expect(contain).not.toHaveBeenCalled();
+    });
+
+    it('routes retry-role-reap to the non-abandoning role recovery operation', async () => {
+      const { program, contain, terminate, retryReap } = routingProgram();
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'backend',
+        'provider-proxy-set',
+        'retry-role-reap',
+        '--role',
+        roleIdentity.role,
+        '--pid',
+        String(roleIdentity.pid),
+        '--incarnation',
+        roleIdentity.incarnation,
+      ]);
+
+      expect(retryReap).toHaveBeenCalledOnce();
+      expect(retryReap).toHaveBeenCalledWith(roleIdentity);
+      expect(terminate).not.toHaveBeenCalled();
       expect(contain).not.toHaveBeenCalled();
     });
 
     it('refuses an unrecognized parent operator action and names the accepted action', async () => {
-      const { program, contain, terminate } = routingProgram();
+      const { program, contain, terminate, retryReap } = routingProgram();
 
       await program.parseAsync(['node', 'coral-cli', 'backend', 'provider-proxy-set', 'nonsense']);
 
       expect(contain).not.toHaveBeenCalled();
       expect(terminate).not.toHaveBeenCalled();
-      expect(stderr).toContain("Provider-proxy set operator action must be 'terminate-role'.");
+      expect(retryReap).not.toHaveBeenCalled();
+      expect(stderr).toContain("Provider-proxy set operator action must be 'terminate-role' or 'retry-role-reap'.");
       expect(process.exitCode).toBe(2);
     });
   });

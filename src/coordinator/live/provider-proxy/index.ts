@@ -63,6 +63,7 @@ export interface ProviderProxyAcquisitionSteps {
    */
   establishControl(
     registerUndo: (undo: AcquisitionUndo) => void,
+    assertPublicationMayBegin: () => void,
   ): Promise<ProviderProxyControlEstablishmentDisposition>;
 }
 
@@ -77,6 +78,8 @@ export type ProviderProxyAcquisitionOptions = Readonly<{
   deadlineSignal: AbortSignal;
   onCleanupFailure?(label: string, error: unknown): void;
 }>;
+
+class PublicationDeadlineElapsedError extends Error {}
 
 function failureReason(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown error';
@@ -153,7 +156,10 @@ export async function acquireProviderProxySet(
     try {
       return await step();
     } catch (error: unknown) {
-      return fail(cut, failureReason(error));
+      return fail(
+        error instanceof PublicationDeadlineElapsedError ? 'readiness publication' : cut,
+        failureReason(error),
+      );
     }
   };
 
@@ -166,7 +172,14 @@ export async function acquireProviderProxySet(
   undos.push(spawned);
 
   const control = await runCut('control establishment', () =>
-    options.steps.establishControl((undo) => undos.push(undo)),
+    options.steps.establishControl(
+      (undo) => undos.push(undo),
+      () => {
+        if (options.deadlineSignal.aborted) {
+          throw new PublicationDeadlineElapsedError('the acquisition deadline elapsed before the set was published');
+        }
+      },
+    ),
   );
   if (control.kind === 'provider_proxy_acquisition_failed') return control;
   if (control.kind === 'closed') return fail('control establishment', control.reason);
@@ -178,9 +191,5 @@ export async function acquireProviderProxySet(
     );
   }
   undos.push(control.undo);
-
-  if (options.deadlineSignal.aborted) {
-    return fail('readiness publication', 'the acquisition deadline elapsed before the set was published');
-  }
   return { kind: 'acquired', set: control.set, publicationReceipt: control.publicationReceipt };
 }

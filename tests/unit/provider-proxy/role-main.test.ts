@@ -947,6 +947,32 @@ describe('buildEnforcementOutcomeHandlers', () => {
     expect(exitProcess).not.toHaveBeenCalled();
   });
 
+  it('refuses unattributable abandonment for a reap-failed hold', () => {
+    const scheduled: Array<() => void> = [];
+    const close = vi.fn(async () => undefined);
+    const exitProcess = vi.fn();
+    const handlers = buildEnforcementOutcomeHandlers({
+      role: 'reaper',
+      roleIdentity: { pid: 4280, incarnation: testIncarnation(4280) },
+      deadlines: { markExited: vi.fn() },
+      close,
+      exitProcess,
+      now: () => 10_000,
+      retryUnattributable: () => null,
+      schedule: (callback) => scheduled.push(callback),
+    });
+
+    handlers.onOutcome({ kind: 'reap-failed', reason: 'signal failed' });
+    scheduled.shift()?.();
+
+    expect(() => handlers.abandonUnattributable()).toThrow(
+      'failed containment reap, not an unattributable recorded group',
+    );
+    expect(handlers.enforcementHoldStatus()).toMatchObject({ kind: 'reap-failed' });
+    expect(close).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
+  });
+
   it('uses explicit operator-abandonment authority to exit nonzero after an unattributable reap', async () => {
     const scheduled: Array<() => void> = [];
     const markExited = vi.fn();

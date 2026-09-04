@@ -73,6 +73,7 @@ function createHarness() {
     pluginRoot,
     runtime,
     info,
+    defaultsPlan,
     defaults: defaultsPlan.eager,
   };
 }
@@ -141,5 +142,32 @@ describe('resolveCoordinatorDefaults eager defaults', () => {
     harness.defaults.writeBackendInfoFn(harness.info);
     harness.defaults.removeBackendInfoIfOwnerFn('some-other-instance');
     expect(readBackendInfo(discoveryRuntime)).not.toBeNull();
+  });
+
+  it('forwards the shutdown signal to the world-bound launch coordinator', async () => {
+    const harness = createHarness();
+    let receivedSignal: AbortSignal | undefined;
+    const terminateAll = vi.fn(
+      (signal?: AbortSignal): Promise<{ readonly kind: 'all-observed-absent' }> =>
+        new Promise((resolve) => {
+          receivedSignal = signal;
+          const finish = (): void => resolve({ kind: 'all-observed-absent' });
+          if (signal?.aborted === true) finish();
+          else signal?.addEventListener('abort', finish, { once: true });
+        }),
+    );
+    const defaults = harness.defaultsPlan.finalizeWithWorld({
+      bindHost: '127.0.0.1',
+      getProgressStore: () => null,
+      launchCoordinator: { terminateAll },
+      log: () => {},
+    });
+    const controller = new AbortController();
+
+    const termination = defaults.terminateAllFn(controller.signal);
+    expect(receivedSignal).toBe(controller.signal);
+
+    controller.abort();
+    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
   });
 });

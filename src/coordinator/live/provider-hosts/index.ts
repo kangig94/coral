@@ -386,8 +386,12 @@ export class DefaultProviderHostManager
             return;
           }
           lifecycle.acquisitionFailed(admission.slotId);
+          const strandedArtifacts =
+            outcome.strandedArtifacts.length === 0
+              ? ''
+              : `; stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`;
           backendLog.warn(
-            `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
+            `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}${strandedArtifacts}`,
           );
         },
       ),

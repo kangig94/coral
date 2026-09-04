@@ -71,7 +71,7 @@ export type ProviderProxySetAcquisitionOutcome =
       set: ProviderProxyOperationAuthority;
       publicationReceipt: PublicationReceipt;
     }>
-  | Readonly<{ kind: 'failed'; reason: string }>
+  | Readonly<{ kind: 'failed'; reason: string; strandedArtifacts: readonly string[] }>
   | ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
 
 export type ProviderProxySetAcquisitionStopDisposition = 'contain' | 'handoff';
@@ -152,6 +152,7 @@ export function ensureProviderProxySet(
       onSettled({
         kind: 'failed',
         reason: 'could not read this coordinator process’s own incarnation',
+        strandedArtifacts: [],
       }),
     );
   }
@@ -178,7 +179,7 @@ export function ensureProviderProxySet(
     .then(
       (result) => {
         if (result.kind === 'provider_proxy_acquisition_failed') {
-          return onSettled({ kind: 'failed', reason: result.reason });
+          return onSettled({ kind: 'failed', reason: result.reason, strandedArtifacts: result.strandedArtifacts });
         }
         if (result.kind === 'handed-over') {
           return onSettled(
@@ -192,7 +193,11 @@ export function ensureProviderProxySet(
         return onSettled(result);
       },
       (error: unknown) => {
-        return onSettled({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });
+        return onSettled({
+          kind: 'failed',
+          reason: error instanceof Error ? error.message : String(error),
+          strandedArtifacts: [],
+        });
       },
     )
     .then(() => undefined);

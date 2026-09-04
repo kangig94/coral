@@ -105,7 +105,9 @@ describe('ensureProviderProxySet', () => {
       outcomes.push(outcome);
     });
 
-    expect(outcomes).toEqual([{ kind: 'failed', reason: expect.stringContaining('incarnation') }]);
+    expect(outcomes).toEqual([
+      { kind: 'failed', reason: expect.stringContaining('incarnation'), strandedArtifacts: [] },
+    ]);
     expect(mockedCreateSteps).not.toHaveBeenCalled();
     expect(mockedAcquire).not.toHaveBeenCalled();
   });
@@ -197,7 +199,7 @@ describe('ensureProviderProxySet', () => {
       kind: 'provider_proxy_acquisition_failed',
       cut: 'guardian spawn',
       reason: 'boom',
-      strandedArtifacts: [],
+      strandedArtifacts: ['guardian'],
     });
     let outcome: unknown;
 
@@ -208,7 +210,7 @@ describe('ensureProviderProxySet', () => {
       });
     });
 
-    expect(outcome).toEqual({ kind: 'failed', reason: 'boom' });
+    expect(outcome).toEqual({ kind: 'failed', reason: 'boom', strandedArtifacts: ['guardian'] });
   });
 
   it('hands the publication-unknown live session to the provider host manager', async () => {
@@ -248,6 +250,6 @@ describe('ensureProviderProxySet', () => {
       });
     });
 
-    expect(outcome).toEqual({ kind: 'failed', reason: 'spawn exploded' });
+    expect(outcome).toEqual({ kind: 'failed', reason: 'spawn exploded', strandedArtifacts: [] });
   });
 });

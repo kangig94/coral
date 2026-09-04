@@ -366,6 +366,28 @@ describe('planRecovery', () => {
     ]);
   });
 
+  it('does not adopt a launching job without a published runtime identity', () => {
+    const status = makeStatus('unpublished-launch-job', 'launching');
+    const snapshot = new InMemoryRecoverySnapshot().addJob({
+      jobId: 'unpublished-launch-job',
+      status,
+      launch: makeLaunch('unpublished-launch-job'),
+      hasLaunchRequest: true,
+      hasRuntimeStart: false,
+    });
+
+    const plan = planRecovery(snapshot);
+    expect(plan.register).toEqual([]);
+    expect(plan.cleanup).toEqual([
+      {
+        type: 'markError',
+        jobId: 'unpublished-launch-job',
+        fault: { kind: 'ghost_launch' },
+        status,
+      },
+    ]);
+  });
+
   it('marks stale daemon-owned internal KB jobs as wrapper_lost instead of provider recovery', () => {
     const status = makeStatus('kb-reindex-job', 'running', {
       sessionId: null,

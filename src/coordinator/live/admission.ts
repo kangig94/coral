@@ -64,10 +64,19 @@ export type TerminateAllDisposition =
   | Readonly<{
       kind: 'unresolved-at-deadline';
       processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
-      pendingLaunches: number;
+      pendingLaunches: 0;
       cleanupHandles: number;
       cleanupFailures: number;
       successorOwner: 'durable-job-recovery';
+    }>
+  | Readonly<{
+      kind: 'unpublished-launches-at-deadline';
+      processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
+      pendingLaunches: number;
+      cleanupHandles: number;
+      cleanupFailures: number;
+      owner: 'launch-coordinator';
+      exit: 'runtime-published-or-launch-settled-without-child';
     }>;
 
 export class LaunchCoordinator {
@@ -236,14 +245,30 @@ export class LaunchCoordinator {
     const onAbort = (): void => resolveAborted?.(aborted);
     if (signal?.aborted === true) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
-    const unresolvedAtDeadline = (): TerminateAllDisposition => ({
-      kind: 'unresolved-at-deadline',
-      processes: [...unsettled.values()],
-      pendingLaunches: this.pendingDurableLaunches.size,
-      cleanupHandles: this.cleanupHandles.size,
-      cleanupFailures: failures.size,
-      successorOwner: 'durable-job-recovery',
-    });
+    const unresolvedAtDeadline = (): TerminateAllDisposition => {
+      const processes = [...unsettled.values()];
+      const pendingLaunches = this.pendingDurableLaunches.size;
+      const cleanupHandles = this.cleanupHandles.size;
+      const cleanupFailures = failures.size;
+      return pendingLaunches > 0
+        ? {
+            kind: 'unpublished-launches-at-deadline',
+            processes,
+            pendingLaunches,
+            cleanupHandles,
+            cleanupFailures,
+            owner: 'launch-coordinator',
+            exit: 'runtime-published-or-launch-settled-without-child',
+          }
+        : {
+            kind: 'unresolved-at-deadline',
+            processes,
+            pendingLaunches: 0,
+            cleanupHandles,
+            cleanupFailures,
+            successorOwner: 'durable-job-recovery',
+          };
+    };
 
     try {
       while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {

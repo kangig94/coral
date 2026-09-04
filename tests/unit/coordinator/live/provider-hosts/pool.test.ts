@@ -1196,7 +1196,10 @@ describe('provider host pool proxy set registry', () => {
         new Promise<void>((resolve, reject) => {
           env.signal.addEventListener(
             'abort',
-            () => void Promise.resolve(onSettled({ kind: 'failed', reason: 'manager stopped' })).then(resolve, reject),
+            () =>
+              void Promise.resolve(
+                onSettled({ kind: 'failed', reason: 'manager stopped', strandedArtifacts: [] }),
+              ).then(resolve, reject),
             { once: true },
           );
         }),
@@ -1239,7 +1242,7 @@ describe('provider host pool proxy set registry', () => {
     await manager.shutdown();
   });
 
-  it('a failed acquisition does not fail openSession and leaves liveSets() empty', async () => {
+  it('a failed acquisition reports stranded artifacts without failing openSession', async () => {
     const server = createFakeProviderServerHandle();
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1248,13 +1251,19 @@ describe('provider host pool proxy set registry', () => {
       proxySetAcquisition,
       providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
+    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
-      await onSettled({ kind: 'failed', reason: 'guardian spawn exploded' });
+      await onSettled({
+        kind: 'failed',
+        reason: 'guardian spawn exploded',
+        strandedArtifacts: ['guardian', 'handoff capsule'],
+      });
     });
 
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
 
     expect(manager.liveSets()).toEqual([]);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('stranded artifacts: guardian, handoff capsule'));
     lease.close();
     await manager.shutdown();
   });
@@ -1369,7 +1378,10 @@ describe('provider host pool proxy set registry', () => {
         new Promise<void>((resolve, reject) => {
           env.signal.addEventListener(
             'abort',
-            () => void Promise.resolve(onSettled({ kind: 'failed', reason: 'manager stopped' })).then(resolve, reject),
+            () =>
+              void Promise.resolve(
+                onSettled({ kind: 'failed', reason: 'manager stopped', strandedArtifacts: [] }),
+              ).then(resolve, reject),
             { once: true },
           );
         }),

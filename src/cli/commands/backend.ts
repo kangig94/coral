@@ -41,6 +41,7 @@ import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
+import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../infra/node-process.js';
 import { handoffRoutingStatusPathForRunDir, providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import {
@@ -150,9 +151,11 @@ import { formatStoreResetList, formatStoreResetReport } from '../format/store-re
 import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '../routing-status-discard.js';
 import {
   createProviderProxyRoleTerminationCommandOperations,
+  formatProviderProxyRoleReapRetryCommand,
   formatProviderProxyRoleTerminationCommand,
   registerProviderProxyRoleTerminationCommand,
   type ProviderProxyRoleAbandonmentAttempt,
+  type ProviderProxyRoleReapRetryAttempt,
   type ProviderProxyRoleTerminationCommandOperations,
 } from './provider-proxy-role-termination.js';
 
@@ -651,10 +654,14 @@ function holderStatusCredential(capsule: HandoffCapsuleV3): z.infer<typeof holde
   });
 }
 
-export async function abandonProviderProxyRoleDirect(
+type ProviderProxyRoleCapsuleLookup =
+  | Readonly<{ kind: 'found'; capsule: HandoffCapsuleV3 }>
+  | Readonly<{ kind: 'unreachable'; reason: string }>;
+
+function findProviderProxyRoleCapsule(
   runtime: Runtime,
   roleIdentity: ProviderProxyRoleIdentity,
-): Promise<ProviderProxyRoleAbandonmentAttempt> {
+): ProviderProxyRoleCapsuleLookup {
   const discovered = readProviderHandoffCapsulesForDiagnostics(runtime);
   const capsules = discovered.flatMap((entry) => {
     if (entry.kind !== 'readable' || entry.capsule.version !== 3) return [];
@@ -676,6 +683,16 @@ export async function abandonProviderProxyRoleDirect(
 
   const capsule = capsules[0];
   if (capsule === undefined) return { kind: 'unreachable', reason: 'the matched handoff capsule disappeared' };
+  return { kind: 'found', capsule };
+}
+
+export async function abandonProviderProxyRoleDirect(
+  runtime: Runtime,
+  roleIdentity: ProviderProxyRoleIdentity,
+): Promise<ProviderProxyRoleAbandonmentAttempt> {
+  const lookup = findProviderProxyRoleCapsule(runtime, roleIdentity);
+  if (lookup.kind === 'unreachable') return lookup;
+  const { capsule } = lookup;
   const endpoint = roleIdentity.role === 'guardian' ? capsule.guardianControlEndpoint : capsule.reaperControlEndpoint;
   const method =
     roleIdentity.role === 'guardian' ? 'guardian.abandon-unattributable.v1' : 'reaper.abandon-unattributable.v1';
@@ -713,12 +730,65 @@ export async function abandonProviderProxyRoleDirect(
   }
 }
 
+export async function retryProviderProxyRoleReapDirect(
+  runtime: Runtime,
+  roleIdentity: ProviderProxyRoleIdentity,
+): Promise<ProviderProxyRoleReapRetryAttempt> {
+  const lookup = findProviderProxyRoleCapsule(runtime, roleIdentity);
+  if (lookup.kind === 'unreachable') return lookup;
+  const { capsule } = lookup;
+  const endpoint = roleIdentity.role === 'guardian' ? capsule.guardianControlEndpoint : capsule.reaperControlEndpoint;
+  const method = roleIdentity.role === 'guardian' ? 'guardian.holder-status.v1' : 'reaper.holder-status.v1';
+  const status = await readDirectHolderStatus(endpoint, method, capsule, runtimeControlTimer(runtime));
+  if (status.kind !== 'answered') {
+    return {
+      kind: 'unreachable',
+      reason: `holder status ${status.kind === 'unreachable' ? status.reason : `is unavailable: ${status.reason}`}`,
+    };
+  }
+  const hold = status.status.enforcementHold;
+  if (
+    hold?.kind !== 'reap-failed' ||
+    hold.retry.state !== 'operator-action-required' ||
+    hold.roleIdentity.role !== roleIdentity.role ||
+    hold.roleIdentity.pid !== roleIdentity.pid ||
+    hold.roleIdentity.incarnation !== roleIdentity.incarnation
+  ) {
+    return { kind: 'refused', reason: 'the role does not report this exact reap-failed operator hold' };
+  }
+  const platform = runtime.env.platform() as NodeJS.Platform;
+  if (!incarnationMayAuthorizeSignal(platform)) {
+    return { kind: 'refused', reason: 'this platform cannot bind a process signal to the recorded incarnation' };
+  }
+  let observedIncarnation: ProcessIncarnation | null;
+  try {
+    observedIncarnation = runtime.process.readProcessIncarnation(roleIdentity.pid, platform);
+  } catch {
+    observedIncarnation = null;
+  }
+  if (observedIncarnation === null) {
+    return { kind: 'refused', reason: 'the role incarnation became unobservable before SIGTERM' };
+  }
+  if (observedIncarnation !== roleIdentity.incarnation) {
+    return { kind: 'refused', reason: 'the role incarnation changed before SIGTERM' };
+  }
+  try {
+    if (!runtime.process.kill(roleIdentity.pid, 'SIGTERM')) {
+      return { kind: 'unreachable', reason: 'the role process did not accept SIGTERM' };
+    }
+  } catch (error: unknown) {
+    return { kind: 'unreachable', reason: errorMessage(error) };
+  }
+  return { kind: 'reap-retry-requested' };
+}
+
 function createDirectProviderProxyRoleTerminationCommandOperations(): ProviderProxyRoleTerminationCommandOperations {
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
   return createProviderProxyRoleTerminationCommandOperations({
     platform: runtime.env.platform() as NodeJS.Platform,
     readProcessIncarnation: runtime.process.readProcessIncarnation,
     abandon: (roleIdentity) => abandonProviderProxyRoleDirect(runtime, roleIdentity),
+    retryReap: (roleIdentity) => retryProviderProxyRoleReapDirect(runtime, roleIdentity),
   });
 }
 
@@ -822,9 +892,18 @@ export function formatProviderProxySetHolderStatusDirect(
       const operatorActions =
         holds.length === 0
           ? ''
-          : `\n  operator exits:\n` +
+          : `\n  operator actions:\n` +
             setAbandonment +
-            holds.map((hold) => `    ${formatProviderProxyRoleTerminationCommand(hold.roleIdentity)}`).join('\n');
+            holds
+              .map(
+                (hold) =>
+                  `    ${
+                    hold.kind === 'recorded-group-unattributable'
+                      ? formatProviderProxyRoleTerminationCommand(hold.roleIdentity)
+                      : formatProviderProxyRoleReapRetryCommand(hold.roleIdentity)
+                  }`,
+              )
+              .join('\n');
       return (
         `set proxy=${reading.proxyInstanceId} build=${reading.buildSetId} host=${reading.hostFingerprint}\n` +
         `  guardian: ${formatDirectHolderStatusReading(reading.guardian)}\n` +
@@ -1507,7 +1586,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   const providerProxySetCommand = backend
     .command('provider-proxy-set')
-    .description('Contain or abandon one exact held provider-proxy set, or terminate one exact enforcer role');
+    .description('Contain or abandon one exact held provider-proxy set, or act on one exact enforcer role');
   registerProviderProxyRoleTerminationCommand(providerProxySetCommand, providerProxyRoleTermination);
   const containProviderProxySetCommand = providerProxySetCommand
     .command('contain')

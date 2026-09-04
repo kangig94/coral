@@ -491,6 +491,12 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
     enforcementHoldStatus: () => enforcementHoldStatus,
     abandonUnattributable: () => {
       if (enforcementHoldStatus === null || unattributableAbandoned) return false;
+      if (enforcementHoldStatus.kind !== 'recorded-group-unattributable') {
+        throw new ProxyControlProtocolError(
+          'invalid_state',
+          `This ${options.role} has a failed containment reap, not an unattributable recorded group. Retry the reap without relinquishing containment ownership.`,
+        );
+      }
       if (enforcementHoldStatus.retry.state === 'in-progress') {
         throw new ProxyControlProtocolError(
           'invalid_state',

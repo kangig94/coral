@@ -642,7 +642,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
     });
     const registerUndo = vi.fn();
-    const established = await steps.establishControl(registerUndo);
+    const established = await steps.establishControl(registerUndo, () => undefined);
     if (established.kind !== 'established') throw new Error(`expected established, received ${established.kind}`);
     expect(mockedCreateSetAuthority.mock.calls[0]?.[0]?.registerAcquisitionUndo).toBe(registerUndo);
 
@@ -757,7 +757,10 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await steps.spawnGuardian();
     const establishedEvents = vi.fn();
     const unsubscribe = subscribeProviderProxyControlEstablished(establishedEvents);
-    const established = await steps.establishControl(() => undefined);
+    const established = await steps.establishControl(
+      () => undefined,
+      () => undefined,
+    );
     if (established.kind !== 'established') throw new Error(`expected established, received ${established.kind}`);
     if (!isProviderProxyOperationAuthority(established.set)) throw new Error('expected durable authority');
 
@@ -895,7 +898,10 @@ describe('createProviderProxyAcquisitionSteps', () => {
     await steps.createCapsules();
     await steps.spawnGuardian();
 
-    const disposition = await steps.establishControl(() => undefined);
+    const disposition = await steps.establishControl(
+      () => undefined,
+      () => undefined,
+    );
     if (disposition.kind !== 'handed-over') {
       throw new Error(`expected publication handoff, received ${disposition.kind}`);
     }

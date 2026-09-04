@@ -250,6 +250,9 @@ describe('readProviderProxySetHolderStatusDirect', () => {
 
     expect(rendered).toContain('hold=reap-failed reason=process-containment-reap-failed');
     expect(rendered).toContain(
+      `coral-cli backend provider-proxy-set retry-role-reap --role reaper --pid 902 --incarnation '${testIncarnation(902)}'`,
+    );
+    expect(rendered).not.toContain(
       `coral-cli backend provider-proxy-set terminate-role --role reaper --pid 902 --incarnation '${testIncarnation(902)}'`,
     );
     expect(rendered).not.toContain(

@@ -229,14 +229,14 @@ describe('provider proxy set acquisition', () => {
     expect(recorded.log).toContain('undo:capsules');
   });
 
-  it('refuses to publish a set whose deadline elapsed while the last handshake was in flight', async () => {
+  it('keeps an already-published set when the deadline elapses after control establishment returns', async () => {
     const recorded = steps();
     const deadline = new AbortController();
     const original = recorded.steps.establishControl;
     const racing: ProviderProxyAcquisitionSteps = {
       ...recorded.steps,
-      establishControl: async (registerUndo) => {
-        const result = await original(registerUndo);
+      establishControl: async (registerUndo, assertPublicationMayBegin) => {
+        const result = await original(registerUndo, assertPublicationMayBegin);
         deadline.abort();
         return result;
       },
@@ -244,9 +244,32 @@ describe('provider proxy set acquisition', () => {
 
     const result = await acquireProviderProxySet({ steps: racing, deadlineSignal: deadline.signal });
 
-    // The caller has already given up, so publishing here would hand out a set nobody is holding — and it
-    // would reap itself on a deadline nobody is watching.
-    expect(result).toMatchObject({ kind: 'provider_proxy_acquisition_failed', cut: 'readiness publication' });
+    expect(result).toEqual({ kind: 'acquired', set: SET, publicationReceipt: PUBLICATION_RECEIPT });
+    expect(recorded.log.filter((entry) => entry.startsWith('undo:'))).toEqual([]);
+  });
+
+  it('refuses to begin publication after the acquisition deadline has elapsed', async () => {
+    const recorded = steps();
+    const deadline = new AbortController();
+    recorded.steps.establishControl = async (registerUndo, assertPublicationMayBegin) => {
+      registerUndo({
+        label: 'control',
+        run: () => {
+          recorded.log.push('undo:control');
+        },
+      });
+      deadline.abort();
+      assertPublicationMayBegin();
+      throw new Error('publication began after its gate');
+    };
+
+    const result = await acquireProviderProxySet({ steps: recorded.steps, deadlineSignal: deadline.signal });
+
+    expect(result).toMatchObject({
+      kind: 'provider_proxy_acquisition_failed',
+      cut: 'readiness publication',
+      reason: 'the acquisition deadline elapsed before the set was published',
+    });
     expect(recorded.log.filter((entry) => entry.startsWith('undo:'))).toEqual([
       'undo:control',
       'undo:guardian',

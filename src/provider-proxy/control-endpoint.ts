@@ -753,6 +753,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         await flushReply(failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
         return 'no-control-admitted';
       }
+      if (role.pairing === undefined) {
+        return serveRequest(socket, message, flushReply);
+      }
       const { id, method } = message;
       const entry = role.methods.get(method);
       if (entry === undefined) {
@@ -840,11 +843,6 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   };
 
   const acceptConnection = (socket: Socket): void => {
-    // One connection holds control and, when the role has a peer, one more may hold pairing. A third
-    // connection is refused only once both slots are already filled — before the peer has ever paired, or
-    // while an incumbent's lease has merely lapsed, a connection is admitted holding neither authority yet.
-    // It is tracked in `sockets` below regardless, so it is not a party sitting unaccounted-for on the
-    // endpoint: close() still reaches it even if it never claims a slot.
     const controlTaken = tenancy !== null && !tenancy.socket.destroyed && challenges.controlIsLive();
     const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
     const noSlotAvailable = controlTaken && (role.pairing === undefined || pairingTaken);
@@ -853,7 +851,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       return;
     }
     sockets.add(socket);
-    if (role.pairing !== undefined && controlTaken && pairingTaken) {
+    if (noSlotAvailable) {
       acceptProvisionalTenancyFreeConnection(socket);
       return;
     }

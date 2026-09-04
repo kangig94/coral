@@ -149,6 +149,7 @@ function recordingTimer(): { timer: ControlEndpointTimer; budgets: number[] } {
 function controlledTimer(): {
   timer: ControlEndpointTimer;
   readMilliseconds: () => bigint;
+  pendingCount(): number;
   advance(ms: number): void;
 } {
   let elapsedMs = 0;
@@ -157,6 +158,7 @@ function controlledTimer(): {
   const pending = new Map<number, Handle>();
   return {
     readMilliseconds: () => BigInt(elapsedMs),
+    pendingCount: () => pending.size,
     timer: {
       setTimeout: (callback, ms) => {
         const handle: Handle = {
@@ -337,6 +339,42 @@ async function startProxy(
   };
   return { control, operation, proxy, capsule };
 }
+
+describe('provider-proxy proxy: tenancy-free connection bounds', () => {
+  it('reclaims idle probes before another equal-sized wave is admitted', async () => {
+    const controlled = controlledTimer();
+    const { capsule } = await startProxy(fakeHost(), controlled.timer);
+
+    for (let wave = 0; wave < 2; wave += 1) {
+      const probes = await Promise.all(
+        Array.from({ length: 64 }, () => connectControlClient(capsule.canonicalEndpoint, timer, 5_000)),
+      );
+      cleanups.push(() => probes.forEach((probe) => probe.close()));
+      await vi.waitFor(() => expect(controlled.pendingCount()).toBe(probes.length));
+
+      controlled.advance(PROXY_CONTROL_RPC_TIMEOUT_MS);
+
+      await expect(Promise.all(probes.map((probe) => probe.faulted))).resolves.toEqual(
+        probes.map(() => expect.objectContaining({ code: 'control_client_closed' })),
+      );
+    }
+  });
+
+  it('flushes one observation reply on an extra socket and then closes it', async () => {
+    const { capsule, operation } = await startProxy(fakeHost());
+    const observer = await connectControlClient(capsule.canonicalEndpoint, timer, 5_000);
+    cleanups.push(() => observer.close());
+    const nonce = randomUUID();
+
+    await expect(
+      strictTestExchange(observer, 'operation.status.v1', { operations: [operation], nonce }, 5_000),
+    ).resolves.toMatchObject({
+      proxy: { proxyInstanceId: capsule.proxyInstanceId, buildSetId: capsule.buildSetId },
+      nonce,
+    });
+    await expect(observer.faulted).resolves.toMatchObject({ code: 'control_client_closed' });
+  });
+});
 
 describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)', () => {
   it('releases a staged provider root when operation.stop.v1 stops before activation', async () => {

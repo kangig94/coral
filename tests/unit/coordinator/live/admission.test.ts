@@ -549,6 +549,48 @@ describe('launch admission', () => {
     expect(cleanupHandles.has(cleanupKey)).toBe(true);
   });
 
+  it('retains an unpublished launch when its abort signal bounds launch resolution', async () => {
+    const base = createRealRuntime('prod');
+    let rejectLaunch!: (error: Error) => void;
+    const launch = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectLaunch = reject;
+        }),
+    );
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const spawn = localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/unpublished-launch',
+      permitGranted: true,
+    });
+    const controller = new AbortController();
+    const termination = localCoordinator.terminateAll(controller.signal);
+
+    controller.abort();
+
+    await expect(termination).resolves.toEqual({
+      kind: 'unpublished-launches-at-deadline',
+      processes: [],
+      pendingLaunches: 1,
+      cleanupHandles: 0,
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
+      exit: 'runtime-published-or-launch-settled-without-child',
+    });
+    rejectLaunch(new Error('synthetic launch settlement'));
+    await expect(spawn).rejects.toThrow('synthetic launch settlement');
+  });
+
   it('refuses new admission after shutdown begins', async () => {
     await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
 

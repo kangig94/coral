@@ -815,18 +815,16 @@ describe('provider-proxy control endpoint', () => {
     expect(first.socket.destroyed).toBe(false);
   });
 
-  it('admits a second connection to serve an observation method while control is held live', async () => {
+  it('serves one observation frame on an unpaired role while control is held live, then closes it', async () => {
     const { socketPath } = await startEndpoint({ observation: () => ({ seen: true }) });
     const first = await connect(socketPath);
     await first.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
 
-    // Unlike the role above, this one serves a method that claims no slot — so a second connection must not
-    // be destroyed at accept time just because control is already held; it must live long enough to ask.
     const second = await connect(socketPath);
     const status = await second.call('role.status.v1', {});
 
     expect(status.result).toEqual({ seen: true });
-    expect(second.socket.destroyed).toBe(false);
+    await vi.waitFor(() => expect(second.socket.destroyed).toBe(true));
     expect(first.socket.destroyed).toBe(false);
   });
 

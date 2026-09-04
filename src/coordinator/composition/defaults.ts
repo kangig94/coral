@@ -158,7 +158,7 @@ export function resolveCoordinatorDefaults(
           if (progressStore === null) return;
           return markJobsAsError(progressStore, message, runtime.time.now(), signal, (cb) => progressStore.commit(cb));
         });
-      const terminateAllFn = options.terminateAllFn ?? (() => bindings.launchCoordinator.terminateAll());
+      const terminateAllFn = options.terminateAllFn ?? ((signal) => bindings.launchCoordinator.terminateAll(signal));
 
       return {
         ...eager,

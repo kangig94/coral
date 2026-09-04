@@ -16,6 +16,7 @@ afterEach(() => {
 async function runTerminateRole(
   operations: ProviderProxyRoleTerminationCommandOperations,
   incarnation = testIncarnation(6101),
+  action: 'terminate-role' | 'retry-role-reap' = 'terminate-role',
 ): Promise<Readonly<{ stdout: string; stderr: string }>> {
   let stdout = '';
   let stderr = '';
@@ -35,7 +36,7 @@ async function runTerminateRole(
     'coral-cli',
     'backend',
     'provider-proxy-set',
-    'terminate-role',
+    action,
     '--role',
     'reaper',
     '--pid',
@@ -54,6 +55,7 @@ describe('backend provider-proxy-set terminate-role', () => {
       platform: 'linux',
       readProcessIncarnation: () => observedIncarnation,
       abandon,
+      retryReap: async () => ({ kind: 'reap-retry-requested' }),
     });
 
     const output = await runTerminateRole(operations);
@@ -71,6 +73,7 @@ describe('backend provider-proxy-set terminate-role', () => {
       platform: 'linux',
       readProcessIncarnation: () => null,
       abandon,
+      retryReap: async () => ({ kind: 'reap-retry-requested' }),
     });
 
     const output = await runTerminateRole(operations);
@@ -88,6 +91,7 @@ describe('backend provider-proxy-set terminate-role', () => {
       platform: 'linux',
       readProcessIncarnation: () => incarnation,
       abandon,
+      retryReap: async () => ({ kind: 'reap-retry-requested' }),
     });
 
     const output = await runTerminateRole(operations, incarnation);
@@ -105,6 +109,7 @@ describe('backend provider-proxy-set terminate-role', () => {
     const operations = createProviderProxyRoleTerminationCommandOperations({
       platform: 'linux',
       readProcessIncarnation: () => incarnation,
+      retryReap: async () => ({ kind: 'reap-retry-requested' }),
       abandon: async () => ({
         kind: 'refused',
         reason:
@@ -126,6 +131,7 @@ describe('backend provider-proxy-set terminate-role', () => {
     const operations = createProviderProxyRoleTerminationCommandOperations({
       platform: 'linux',
       readProcessIncarnation: () => incarnation,
+      retryReap: async () => ({ kind: 'reap-retry-requested' }),
       abandon: async () => ({
         kind: 'refused',
         reason:
@@ -139,5 +145,26 @@ describe('backend provider-proxy-set terminate-role', () => {
     expect(output.stderr).toContain('coordinator control is live');
     expect(output.stderr).toContain('provider-proxy-set contain <set-token> --abandon-without-absence');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('routes reap-failed recovery through the retry action without authorizing abandonment', async () => {
+    const incarnation = testIncarnation(6101);
+    const abandon = vi.fn(async () => ({ kind: 'abandoned' as const }));
+    const retryReap = vi.fn(async () => ({ kind: 'reap-retry-requested' as const }));
+    const operations = createProviderProxyRoleTerminationCommandOperations({
+      platform: 'linux',
+      readProcessIncarnation: () => incarnation,
+      abandon,
+      retryReap,
+    });
+
+    const output = await runTerminateRole(operations, incarnation, 'retry-role-reap');
+
+    expect(abandon).not.toHaveBeenCalled();
+    expect(retryReap).toHaveBeenCalledWith({ role: 'reaper', pid: 6101, incarnation });
+    expect(output.stderr).toBe('');
+    expect(output.stdout).toContain('Requested another containment reap');
+    expect(output.stdout).toContain('retains containment ownership unless it confirms absence');
+    expect(process.exitCode).toBe(0);
   });
 });
