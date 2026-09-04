@@ -84,7 +84,7 @@ import {
   readDurableCliProcessRuntimeEvidence,
   writeDurableCliContainmentStatus,
 } from '../../../jobs/runtime-meta-store.js';
-import type { DurableCliProcessRuntimeEvidence } from '../../../jobs/runtime-meta.js';
+import type { DurableCliContainmentStatus, DurableCliProcessRuntimeEvidence } from '../../../jobs/runtime-meta.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -1013,9 +1013,30 @@ export function createRecoveryCoordinator(
           }
         };
 
-        const containment = observeDurableRecoveryContainment(jobId, runtimeRecord);
         const persistedContainment = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
-        const operatorAbandoned = persistedContainment?.disposition.kind === 'operator-abandoned';
+        if (persistedContainment.kind === 'corrupt') {
+          const reason = 'The durable containment status is corrupt.';
+          progressStore.appendProgress(
+            jobId,
+            launchRecord.sessionId,
+            `${reason} Repair or remove the status row and retry the coordinator-job-recovery quarantine, or run ` +
+              `coral-cli abort ${jobId} to abandon job ownership without proving process absence or sending a signal.`,
+          );
+          state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
+          controls.clearProcessLocalCleanup();
+          controls.report(`Held durable recovery job with corrupt containment status: ${jobId}\n`);
+          return {
+            kind: 'quarantine',
+            detail:
+              `${reason} Repair or remove the status row and retry this quarantine, or run coral-cli abort ` +
+              `${jobId} to abandon job ownership without proving process absence or sending a signal.`,
+          };
+        }
+
+        const containment = observeDurableRecoveryContainment(jobId, runtimeRecord);
+        const operatorAbandoned =
+          persistedContainment.kind === 'valid' &&
+          persistedContainment.status.disposition.kind === 'operator-abandoned';
         if (containment.observation.kind === 'absent' || operatorAbandoned) {
           if (operatorAbandoned) state.cancelledRecoveryJobIds.add(jobId);
           drainRecoveredProgress();
@@ -1525,9 +1546,31 @@ export function createRecoveryCoordinator(
     };
 
     abandonHeldRecoveryJob = (jobId): RecordedContainmentAbortResult => {
-      const status = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
-      if (status?.disposition.kind !== 'held') {
+      const statusRead = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
+      const runtimeRecord = progressStore.readRuntimeProjection(jobId);
+      if (
+        statusRead.kind === 'missing' ||
+        (statusRead.kind === 'valid' && statusRead.status.disposition.kind !== 'held') ||
+        (statusRead.kind === 'corrupt' && (runtimeRecord === null || !isDurableCliRuntime(runtimeRecord)))
+      ) {
         return { kind: 'refused', reason: 'no active durable containment hold is recorded for this job' };
+      }
+
+      let abandonedStatus: DurableCliContainmentStatus;
+      if (statusRead.kind === 'valid') {
+        abandonedStatus = {
+          ...statusRead.status,
+          disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
+        };
+      } else {
+        if (runtimeRecord === null || !isDurableCliRuntime(runtimeRecord)) {
+          return { kind: 'refused', reason: 'no durable runtime identity is recorded for this job' };
+        }
+        abandonedStatus = {
+          jobId,
+          evidence: readDurableCliProcessRuntimeEvidence(progressStore.getDb(), jobId, runtimeRecord.pid),
+          disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
+        };
       }
 
       try {
@@ -1542,10 +1585,7 @@ export function createRecoveryCoordinator(
           if (quarantineRow?.state === 'retrying') {
             throw new Error('coordinator job recovery already owns this hold retry');
           }
-          writeDurableCliContainmentStatus(progressStore.getDb(), {
-            ...status,
-            disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
-          });
+          writeDurableCliContainmentStatus(progressStore.getDb(), abandonedStatus);
           progressStore
             .getDb()
             .prepare<[string, string]>('DELETE FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?')
@@ -1584,11 +1624,12 @@ export function createRecoveryCoordinator(
       return { kind: 'accepted' };
     };
 
-    for (const status of listDurableCliContainmentStatuses(progressStore.getDb())) {
-      if (status.disposition.kind !== 'held') continue;
-      const launchRecord = progressStore.readLaunchProjection(status.jobId);
-      const runtimeRecord = progressStore.readRuntimeProjection(status.jobId);
-      const jobStatus = progressStore.readStatus(status.jobId);
+    for (const statusRead of listDurableCliContainmentStatuses(progressStore.getDb())) {
+      if (statusRead.kind === 'valid' && statusRead.status.disposition.kind !== 'held') continue;
+      const jobId = statusRead.kind === 'valid' ? statusRead.status.jobId : statusRead.jobId;
+      const launchRecord = progressStore.readLaunchProjection(jobId);
+      const runtimeRecord = progressStore.readRuntimeProjection(jobId);
+      const jobStatus = progressStore.readStatus(jobId);
       if (
         launchRecord === null ||
         runtimeRecord === null ||
@@ -1598,7 +1639,7 @@ export function createRecoveryCoordinator(
       ) {
         continue;
       }
-      recoveryRegistry.register(status.jobId, launchRecord, runtimeRecord, () => abandonHeldRecoveryJob(status.jobId));
+      recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => abandonHeldRecoveryJob(jobId));
     }
 
     coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
@@ -1679,7 +1720,7 @@ export function createRecoveryCoordinator(
     signal.throwIfAborted();
     resetRecoveryState();
     const durableHoldRemains = listDurableCliContainmentStatuses(progressStore.getDb()).some(
-      (status) => status.disposition.kind === 'held',
+      (statusRead) => statusRead.kind === 'corrupt' || statusRead.status.disposition.kind === 'held',
     );
     log(
       durableHoldRemains

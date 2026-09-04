@@ -27,6 +27,7 @@ import {
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from '../../infra/process-constants.js';
+import type { DurableContainmentOperatorControl, DurableProcessIdentityCallback } from '../../providers/cli-runner.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
@@ -145,11 +146,6 @@ async function requestDurableProcessTermination(
 
 export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
 
-export type DurableContainmentOperatorControl = Readonly<{
-  retry(): void;
-  abandon(): boolean;
-}>;
-
 type DurableProviderResultDisposition =
   | Readonly<{ kind: 'absence-confirmed' }>
   | Readonly<{ kind: 'held'; reason: string }>
@@ -180,11 +176,7 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
   onRuntimeRecord?: (record: JobRuntime) => void;
   /** A partial containment identity must not cross the durable publication boundary. */
-  onDurableProcessIdentity?: (
-    identity: DurableCliProcessSubject,
-    status?: DurableContainmentStatus,
-    control?: DurableContainmentOperatorControl,
-  ) => void;
+  onDurableProcessIdentity?: DurableProcessIdentityCallback;
 };
 
 export async function spawnDurableJobTransport(params: {

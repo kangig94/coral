@@ -574,8 +574,6 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     const admittedHolder = holderAuthority.current();
     if (admittedHolder === null) {
-      // Unreachable by construction: `establishControl` always installs into `holderAuthority` in the same
-      // synchronous turn it creates `tenancy`, so a live tenancy never exists without an admitted holder.
       throw new ProxyControlProtocolError('invalid_state', `${method} found no admitted holder for a live tenancy.`);
     }
     markHandlerStarted();
@@ -647,14 +645,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
   };
 
-  // Whether this role ever answers a connection that claims neither slot. `establishControl` already
-  // refuses a second control tenancy on its own (the challenge authority's `admitSuccessor` refusal), and
-  // the pairing branch in `dispatch` already refuses a second peer the same way — so accept-time refusal
-  // below protects nothing an RPC-level refusal does not already cover for a connection that goes on to
-  // request one of those slots. It does matter for a connection that never asks for either: an `observation`
-  // method promises exactly that, so a role that serves one must not have every connection destroyed the
-  // moment control is merely held, or its one tenancy-free method becomes unreachable in the case it exists
-  // for — a live tenancy is the *normal* state, not an edge case, for whoever wants to ask about it.
+  // Tenancy-free methods must remain reachable while control and pairing slots are occupied.
   const hasTenancyFreeMethod = [...role.methods.values()].some(
     (method) => method.authority === 'observation' || method.authority === 'operator',
   );

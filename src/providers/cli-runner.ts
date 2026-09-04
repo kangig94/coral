@@ -1,7 +1,18 @@
 import { type DurableCliRuntimeRecord, isDurableCliRuntime } from '../runtime/durable-runtime.js';
-import type { DurableCliProcessSubject } from '../runtime/ports.js';
+import type { DurableCliProcessSubject, DurableContainmentStatus } from '../runtime/ports.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { ProviderCliRunner } from './protocol.js';
+
+export type DurableContainmentOperatorControl = Readonly<{
+  retry(): void;
+  abandon(): boolean;
+}>;
+
+export type DurableProcessIdentityCallback = (
+  identity: DurableCliProcessSubject,
+  status?: DurableContainmentStatus,
+  control?: DurableContainmentOperatorControl,
+) => void;
 
 export interface ProviderDurableSpawner {
   spawnDurableJob(options: {
@@ -18,7 +29,7 @@ export interface ProviderDurableSpawner {
     exactEnv?: Record<string, string>;
     jobDir: string;
     onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void;
-    onDurableProcessIdentity?: (identity: DurableCliProcessSubject) => void;
+    onDurableProcessIdentity?: DurableProcessIdentityCallback;
   }): Promise<{
     stdout: string;
     stderr: string;
@@ -34,7 +45,7 @@ export function bindProviderRunner(
   pool: LaunchPool,
   jobDir: string,
   onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void,
-  onDurableProcessIdentity?: (identity: DurableCliProcessSubject) => void,
+  onDurableProcessIdentity?: DurableProcessIdentityCallback,
 ): ProviderCliRunner {
   return (request) =>
     launchCoordinator.spawnDurableJob({

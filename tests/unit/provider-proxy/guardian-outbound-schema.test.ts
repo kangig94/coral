@@ -32,7 +32,7 @@ import {
   guardianRegisterProviderRootParamsSchema,
 } from '#src/provider-proxy/protocol.js';
 
-const endpointHarness = vi.hoisted(() => ({ options: undefined as unknown }));
+const endpointHarness = vi.hoisted(() => ({ options: undefined as unknown, activeAuthorizationCurrent: true }));
 
 vi.mock('#src/provider-proxy/control-endpoint.js', async (importOriginal) => {
   const actual = await importOriginal<{ createControlEndpoint: typeof createControlEndpointType }>();
@@ -43,7 +43,7 @@ vi.mock('#src/provider-proxy/control-endpoint.js', async (importOriginal) => {
       return {
         listen: async (): Promise<void> => {},
         close: async (): Promise<void> => {},
-        activeControlAuthorizationIsCurrent: () => true,
+        activeControlAuthorizationIsCurrent: () => endpointHarness.activeAuthorizationCurrent,
         pushOnTenancy: async (): Promise<never> => {
           throw new Error('unused tenancy push');
         },
@@ -68,6 +68,7 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   endpointHarness.options = undefined;
+  endpointHarness.activeAuthorizationCurrent = true;
   vi.restoreAllMocks();
 });
 
@@ -688,6 +689,32 @@ describe('guardian outbound schemas', () => {
       expect(published.certificate).toEqual(expect.any(String));
     },
   );
+
+  it('keeps the guardian provisional when active control is revoked during reaper publication', async () => {
+    const holderAuthority = createControlHolderAuthority();
+    const harness = createGuardianHarness(holderAuthority);
+    const publishRequest = {
+      guardian: harness.guardianIdentity,
+      reaper: harness.reaperIdentity,
+      proxy: harness.proxyIdentity,
+    };
+    harness.reaperExchange.mockImplementationOnce(async () => {
+      endpointHarness.activeAuthorizationCurrent = false;
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'acquisition-published' } },
+      });
+    });
+
+    await expect(harness.call('guardian.acquisition-publish.v1', publishRequest)).resolves.toMatchObject({
+      state: 'acquisition-publication-unknown',
+    });
+    expect(holderAuthority.phase()).toBe('acquisition-provisional');
+    expect(harness.mintReceipt).not.toHaveBeenCalled();
+    expect(await harness.call('guardian.acquisition-abort.v1', publishRequest)).toEqual({
+      state: 'acquisition-aborted',
+    });
+  });
 
   it('answers acquisition-publication-not-attempted when transport evidence proves the reaper request never left', async () => {
     const harness = createGuardianHarness();

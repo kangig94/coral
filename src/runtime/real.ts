@@ -211,13 +211,13 @@ function durableWrapperEntrypoint(): string {
   return fileURLToPath(new URL('../../dist/runtime/durable-cli-wrapper.js', import.meta.url));
 }
 
-async function waitForRecordedDurableExit(
+export async function waitForRecordedDurableExit(
   processSubject: DurableCliProcessSubject,
   pid: number,
   platform: NodeJS.Platform,
-  time: TimePort,
+  time: Pick<TimePort, 'monotonicNow' | 'sleep'>,
 ): Promise<never> {
-  let exitedAt = null as number | null;
+  let exitedAt = null as bigint | null;
   while (true) {
     const observation = observeRecordedContainment(processSubject, {
       process: { observeLiveness: observeProcessLiveness },
@@ -225,8 +225,8 @@ async function waitForRecordedDurableExit(
       readProcessIncarnation: probeProcessIncarnation,
     });
     if (observation.kind === 'absent') {
-      exitedAt ??= time.now();
-      if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
+      exitedAt ??= time.monotonicNow();
+      if (time.monotonicNow() - exitedAt >= BigInt(DURABLE_EXIT_GRACE_MS)) {
         throw new Error(`Durable process ${pid} exited before the wrapper reported completion`);
       }
     } else {

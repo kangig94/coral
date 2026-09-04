@@ -8,6 +8,7 @@ const canonicalUuidSchema = z
   .string()
   .length(36)
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
 
 export const DURABLE_CLI_PROCESS_RUNTIME_META_VERSION = 2 as const;
@@ -16,8 +17,9 @@ export const DURABLE_CLI_CONTAINMENT_STATUS_VERSION = 1 as const;
 
 export const durableCliProcessRuntimeMetaV1Schema = z
   .object({
+    version: z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_PREDECESSOR_VERSION),
     jobId: canonicalUuidSchema,
-    pid: positiveSafeIntegerSchema,
+    pid: nonNegativeSafeIntegerSchema,
     incarnation: processIncarnationSchema,
   })
   .strict()

@@ -8,15 +8,23 @@ const NO_CLI_RESULT = { stdout: '', stderr: '', code: 0, aborted: false };
 describe('bindProviderRunner', () => {
   it('forwards onDurableProcessIdentity to the spawner, and the spawner call reaches the caller', async () => {
     let capturedOptionsHadCallback = false;
+    const identity = {
+      pid: 4242,
+      incarnation: testIncarnation(1_000),
+      processGroupId: 4242,
+      childRoot: { pid: 4243, incarnation: testIncarnation(1_001) },
+    };
+    const status = {
+      kind: 'held' as const,
+      reason: 'containment observation unavailable',
+      retryIntervalMs: 500,
+      abandonment: 'abort-job' as const,
+    };
+    const control = { retry: vi.fn(), abandon: vi.fn(() => true) };
     const spawner: ProviderDurableSpawner = {
       spawnDurableJob: (options) => {
         capturedOptionsHadCallback = typeof options.onDurableProcessIdentity === 'function';
-        options.onDurableProcessIdentity?.({
-          pid: 4242,
-          incarnation: testIncarnation(1_000),
-          processGroupId: 4242,
-          childRoot: { pid: 4243, incarnation: testIncarnation(1_001) },
-        });
+        options.onDurableProcessIdentity?.(identity, status, control);
         return Promise.resolve(NO_CLI_RESULT);
       },
     };
@@ -34,12 +42,7 @@ describe('bindProviderRunner', () => {
     await runCli({ command: 'codex', args: [] });
 
     expect(capturedOptionsHadCallback).toBe(true);
-    expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({
-      pid: 4242,
-      incarnation: testIncarnation(1_000),
-      processGroupId: 4242,
-      childRoot: { pid: 4243, incarnation: testIncarnation(1_001) },
-    });
+    expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith(identity, status, control);
   });
 
   it('passes no onDurableProcessIdentity through when the caller supplies none', async () => {

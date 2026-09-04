@@ -778,7 +778,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       {
         authority: 'active',
         budgetMs: 'caller-deadline',
-        handle: async (params) => {
+        handle: async (params, authorization) => {
           const request = guardianAcquisitionPublishParamsSchema.parse(params);
           assertNamedGuardianIdentity(request.guardian, identity);
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
@@ -818,6 +818,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             return guardianAcquisitionPublishResultSchema.parse({
               state: 'acquisition-publication-unknown',
               reason: truncate(reason, 500),
+            });
+          }
+          if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+            return guardianAcquisitionPublishResultSchema.parse({
+              state: 'acquisition-publication-unknown',
+              reason: 'Active control changed after reaper publication was confirmed.',
             });
           }
           holderAuthority.publish();

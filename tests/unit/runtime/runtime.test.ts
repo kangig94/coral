@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRealRuntime } from '#src/runtime/real.js';
-import type { ChildProcessLike } from '#src/infra/port-types.js';
+import { createRealRuntime, waitForRecordedDurableExit } from '#src/runtime/real.js';
+import type { ChildProcessLike, TimePort } from '#src/infra/port-types.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const createdDirs: string[] = [];
 
@@ -21,6 +22,42 @@ function createTempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   createdDirs.push(dir);
   return dir;
+}
+
+async function confirmExitGraceAcrossWallClockJump(wallClockJumpMs: number): Promise<{
+  wallClockMs: number;
+  sleepCount: number;
+}> {
+  let wallClockMs = 1_700_000_000_000;
+  let monotonicMs = 0n;
+  let sleepCount = 0;
+  const time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'> = {
+    now: () => wallClockMs,
+    monotonicNow: () => monotonicMs,
+    sleep: (milliseconds) => {
+      sleepCount += 1;
+      if (sleepCount === 1) wallClockMs += wallClockJumpMs;
+      monotonicMs += BigInt(milliseconds);
+      return Promise.resolve();
+    },
+  };
+  const pid = 2_000_000_000;
+
+  await expect(
+    waitForRecordedDurableExit(
+      {
+        pid,
+        incarnation: testIncarnation('absent-wrapper'),
+        processGroupId: pid,
+        childRoot: { pid: pid + 1, incarnation: testIncarnation('absent-child') },
+      },
+      pid,
+      'linux',
+      time,
+    ),
+  ).rejects.toThrow(`Durable process ${pid} exited before the wrapper reported completion`);
+
+  return { wallClockMs, sleepCount };
 }
 
 function waitForClose(child: ChildProcessLike): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
@@ -54,6 +91,18 @@ async function readPipedOutput(child: ChildProcessLike): Promise<{
 }
 
 describe('createRealRuntime', () => {
+  it('measures durable exit confirmation across a forward wall-clock jump with monotonic time', async () => {
+    const result = await confirmExitGraceAcrossWallClockJump(60_000);
+
+    expect(result).toEqual({ wallClockMs: 1_700_000_060_000, sleepCount: 50 });
+  });
+
+  it('measures durable exit confirmation across a backward wall-clock jump with monotonic time', async () => {
+    const result = await confirmExitGraceAcrossWallClockJump(-60_000);
+
+    expect(result).toEqual({ wallClockMs: 1_699_999_940_000, sleepCount: 50 });
+  });
+
   it('captures a sealed CORAL_* snapshot once', () => {
     vi.stubEnv('CORAL_OWNER', 'owner-a');
     vi.stubEnv('CORAL_EFFORT', 'high');

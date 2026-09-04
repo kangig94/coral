@@ -1,4 +1,8 @@
-import { bindProviderRunner, type ProviderDurableSpawner } from '../../providers/cli-runner.js';
+import {
+  bindProviderRunner,
+  type DurableContainmentOperatorControl,
+  type ProviderDurableSpawner,
+} from '../../providers/cli-runner.js';
 import type {
   HostRef,
   ProviderEventBody,
@@ -71,7 +75,6 @@ import type {
 import { readProviderOperationJobLaunchEventSeq } from '../provider-operation-state.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
-type DurableContainmentOperatorControl = Readonly<{ retry(): void; abandon(): boolean }>;
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
 function providerOperationEnvironment(input?: ProviderOperationEnvironmentInput): Readonly<{
   env: Readonly<Record<string, string>>;

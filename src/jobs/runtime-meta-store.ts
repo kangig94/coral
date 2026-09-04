@@ -13,10 +13,17 @@ import {
   type DurableCliProcessRuntimeMeta,
 } from './runtime-meta.js';
 
-type MetaRow = { value: string };
+type MetaRow = { key: string; value: string };
+
+export type DurableCliContainmentStatusRead =
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'corrupt'; jobId: string }>
+  | Readonly<{ kind: 'valid'; status: DurableCliContainmentStatus }>;
+
+export type ListedDurableCliContainmentStatus = Exclude<DurableCliContainmentStatusRead, { kind: 'missing' }>;
 
 function readMetaValue(db: Database, key: string): string | null {
-  const row = db.prepare<[string], MetaRow>('SELECT value FROM meta WHERE key = ?').get(key);
+  const row = db.prepare<[string], Pick<MetaRow, 'value'>>('SELECT value FROM meta WHERE key = ?').get(key);
   return row?.value ?? null;
 }
 
@@ -63,18 +70,22 @@ export function writeDurableCliProcessRuntimeMeta(db: Database, meta: DurableCli
   );
 }
 
-export function readDurableCliContainmentStatus(db: Database, jobId: string): DurableCliContainmentStatus | null {
-  return decodeDurableCliContainmentStatus(readMetaValue(db, durableCliContainmentStatusKey(jobId)));
+export function readDurableCliContainmentStatus(db: Database, jobId: string): DurableCliContainmentStatusRead {
+  const raw = readMetaValue(db, durableCliContainmentStatusKey(jobId));
+  if (raw === null) return { kind: 'missing' };
+  const status = decodeDurableCliContainmentStatus(raw);
+  return status === null || status.jobId !== jobId ? { kind: 'corrupt', jobId } : { kind: 'valid', status };
 }
 
-export function listDurableCliContainmentStatuses(db: Database): readonly DurableCliContainmentStatus[] {
+export function listDurableCliContainmentStatuses(db: Database): readonly ListedDurableCliContainmentStatus[] {
   const prefix = durableCliContainmentStatusKey('');
   const rows = db
-    .prepare<[string], MetaRow>("SELECT value FROM meta WHERE key LIKE ? ESCAPE '\\' ORDER BY key ASC")
+    .prepare<[string], MetaRow>("SELECT key, value FROM meta WHERE key LIKE ? ESCAPE '\\' ORDER BY key ASC")
     .all(`${prefix.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`);
-  return rows.flatMap((row) => {
+  return rows.map((row) => {
+    const jobId = row.key.slice(prefix.length);
     const status = decodeDurableCliContainmentStatus(row.value);
-    return status === null ? [] : [status];
+    return status === null || status.jobId !== jobId ? { kind: 'corrupt', jobId } : { kind: 'valid', status };
   });
 }
 
@@ -93,6 +104,7 @@ export function deleteDurableCliContainmentStatus(db: Database, jobId: string): 
 export function deleteDurableCliProcessRuntimeMeta(db: Database, jobId: string): void {
   withImmediate(db, () => {
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProcessRuntimeMetaKey(jobId));
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProcessRuntimeMetaV1Key(jobId));
     deleteDurableCliContainmentStatus(db, jobId);
   });
 }

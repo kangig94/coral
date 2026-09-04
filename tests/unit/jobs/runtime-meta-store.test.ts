@@ -4,14 +4,17 @@ import { describe, expect, it } from 'vitest';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { encodeHistoricalDurableCliProcessRuntimeMeta } from '#tests/helpers/historical-durable-cli-runtime-meta.js';
 import {
   deleteDurableCliProcessRuntimeMeta,
+  listDurableCliContainmentStatuses,
   readDurableCliContainmentStatus,
   readDurableCliProcessRuntimeMeta,
   readDurableCliProcessRuntimeEvidence,
   writeDurableCliContainmentStatus,
   writeDurableCliProcessRuntimeMeta,
 } from '#src/jobs/runtime-meta-store.js';
+import { decodeDurableCliProcessRuntimeMetaV1 } from '#src/jobs/runtime-meta.js';
 
 const JOB_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -50,13 +53,34 @@ describe('durable CLI process runtime meta store', () => {
     const db = createDb();
     db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(
       `durable_cli_process.v1:${JOB_ID}`,
-      JSON.stringify({ jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) }),
+      encodeHistoricalDurableCliProcessRuntimeMeta({
+        version: 1,
+        jobId: JOB_ID,
+        pid: 4242,
+        incarnation: testIncarnation(1_000),
+      }),
     );
 
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toBeNull();
     expect(readDurableCliProcessRuntimeEvidence(db, JOB_ID, 4242)).toEqual({
       kind: 'predecessor',
-      record: { jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) },
+      record: { version: 1, jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) },
+    });
+  });
+
+  it('accepts the predecessor encoder numeric boundary', () => {
+    const raw = encodeHistoricalDurableCliProcessRuntimeMeta({
+      version: 1,
+      jobId: JOB_ID,
+      pid: 0,
+      incarnation: testIncarnation(1_000),
+    });
+
+    expect(decodeDurableCliProcessRuntimeMetaV1(raw)).toEqual({
+      version: 1,
+      jobId: JOB_ID,
+      pid: 0,
+      incarnation: testIncarnation(1_000),
     });
   });
 
@@ -86,13 +110,27 @@ describe('durable CLI process runtime meta store', () => {
     });
 
     expect(readDurableCliContainmentStatus(db, JOB_ID)).toEqual({
-      jobId: JOB_ID,
-      evidence,
-      disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
+      kind: 'valid',
+      status: {
+        jobId: JOB_ID,
+        evidence,
+        disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
+      },
     });
 
     deleteDurableCliProcessRuntimeMeta(db, JOB_ID);
-    expect(readDurableCliContainmentStatus(db, JOB_ID)).toBeNull();
+    expect(readDurableCliContainmentStatus(db, JOB_ID)).toEqual({ kind: 'missing' });
+  });
+
+  it('reports malformed containment status bytes without dropping the listed row', () => {
+    const db = createDb();
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      `durable_cli_containment_status.v1:${JOB_ID}`,
+      '{not-json',
+    );
+
+    expect(readDurableCliContainmentStatus(db, JOB_ID)).toEqual({ kind: 'corrupt', jobId: JOB_ID });
+    expect(listDurableCliContainmentStatuses(db)).toEqual([{ kind: 'corrupt', jobId: JOB_ID }]);
   });
 
   it('replaces an earlier record for the same job on a second write', () => {
@@ -107,9 +145,22 @@ describe('durable CLI process runtime meta store', () => {
   it('deletes the recorded row, and deleting an already-absent row is a no-op rather than an error', () => {
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, runtimeMeta(4242, 1_000));
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      `durable_cli_process.v1:${JOB_ID}`,
+      encodeHistoricalDurableCliProcessRuntimeMeta({
+        version: 1,
+        jobId: JOB_ID,
+        pid: 4242,
+        incarnation: testIncarnation(1_000),
+      }),
+    );
 
     deleteDurableCliProcessRuntimeMeta(db, JOB_ID);
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toBeNull();
+    expect(readDurableCliProcessRuntimeEvidence(db, JOB_ID, 4242)).toEqual({
+      kind: 'unavailable',
+      reason: 'missing',
+    });
 
     // The retention prune that owns this call can legitimately run twice for the same job.
     expect(() => deleteDurableCliProcessRuntimeMeta(db, JOB_ID)).not.toThrow();

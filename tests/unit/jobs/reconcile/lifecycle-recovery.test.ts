@@ -34,6 +34,7 @@ import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { readDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { encodeHistoricalDurableCliProcessRuntimeMeta } from '#tests/helpers/historical-durable-cli-runtime-meta.js';
 import type {
   RecoverPersistedDiscussFn,
   RunStartupRecoveryFn,
@@ -2467,7 +2468,12 @@ describe('lifecycle recovery', () => {
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
       .run(
         `durable_cli_process.v1:${jobId}`,
-        JSON.stringify({ jobId, pid: wrapperPid, incarnation: testIncarnation(wrapperPid) }),
+        encodeHistoricalDurableCliProcessRuntimeMeta({
+          version: 1,
+          jobId,
+          pid: wrapperPid,
+          incarnation: testIncarnation(wrapperPid),
+        }),
       );
 
     const { controller } = createLifecycleHarness(modules, {
@@ -2483,8 +2489,11 @@ describe('lifecycle recovery', () => {
       await controller.start();
       expect(adoptSpy).not.toHaveBeenCalled();
       expect(readDurableCliContainmentStatus(progressStore.getDb(), jobId)).toMatchObject({
-        evidence: { kind: 'predecessor', record: { pid: wrapperPid } },
-        disposition: { kind: 'held', abandonment: 'abort-job' },
+        kind: 'valid',
+        status: {
+          evidence: { kind: 'predecessor', record: { version: 1, pid: wrapperPid } },
+          disposition: { kind: 'held', abandonment: 'abort-job' },
+        },
       });
       expect(
         progressStore

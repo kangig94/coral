@@ -762,10 +762,71 @@ describe('recovery coordinator shutdown', () => {
       expect(harness.fakeService.adoptRunningJob).not.toHaveBeenCalled();
       expect(observeLiveness).toHaveBeenCalled();
       expect(readDurableCliContainmentStatus(harness.progressStore.getDb(), RUNNING_ADOPTION_JOB_ID)).toMatchObject({
-        disposition: { kind: 'held', abandonment: 'abort-job' },
+        kind: 'valid',
+        status: { disposition: { kind: 'held', abandonment: 'abort-job' } },
       });
       expect(harness.controller.getRecoveryRegistry()?.has(RUNNING_ADOPTION_JOB_ID)).toBe(true);
       expect(harness.progressStore.readStatus(RUNNING_ADOPTION_JOB_ID)?.phase).toBe('running');
+    } finally {
+      await stopLifecycleController(harness.controller);
+    }
+  });
+
+  it('quarantines a corrupt durable containment status and lets operator abort resolve it without adoption', async () => {
+    const modules = await loadModules();
+    const runtime = createRealRuntime('prod');
+    const pluginRoot = createPluginRoot('plugin-corrupt-containment-status');
+    const projectRoot = createProjectRoot('project-corrupt-containment-status');
+    const killSpy = vi.spyOn(runtime.process, 'kill');
+    const harness = createCoordinatorShutdownHarness({ modules, runtime, pluginRoot, projectRoot });
+
+    stubRuntimeRecord(harness.progressStore, runtime, {
+      jobId: RUNNING_ADOPTION_JOB_ID,
+      pid: process.pid,
+    });
+    harness.progressStore
+      .getDb()
+      .prepare('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(`durable_cli_containment_status.v1:${RUNNING_ADOPTION_JOB_ID}`, '{not-json');
+
+    try {
+      await harness.controller.start();
+
+      expect(harness.fakeService.adoptRunningJob).not.toHaveBeenCalled();
+      expect(readDurableCliContainmentStatus(harness.progressStore.getDb(), RUNNING_ADOPTION_JOB_ID)).toEqual({
+        kind: 'corrupt',
+        jobId: RUNNING_ADOPTION_JOB_ID,
+      });
+      expect(
+        harness.progressStore
+          .getDb()
+          .prepare('SELECT state, stage FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?')
+          .get('coordinator-job-recovery', RUNNING_ADOPTION_JOB_ID),
+      ).toEqual({ state: 'active', stage: 'settle' });
+
+      expect(harness.controller.getRecoveryRegistry()?.abort([RUNNING_ADOPTION_JOB_ID])).toEqual({
+        aborted: [RUNNING_ADOPTION_JOB_ID],
+        notFound: [],
+      });
+      await vi.waitFor(() => {
+        expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+          expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: RUNNING_ADOPTION_JOB_ID }) }),
+          expect.objectContaining({ pid: process.pid }),
+          expect.objectContaining({ cancelled: true }),
+          expect.any(Object),
+        );
+      });
+      expect(readDurableCliContainmentStatus(harness.progressStore.getDb(), RUNNING_ADOPTION_JOB_ID)).toMatchObject({
+        kind: 'valid',
+        status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },
+      });
+      expect(
+        harness.progressStore
+          .getDb()
+          .prepare('SELECT state FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?')
+          .get('coordinator-job-recovery', RUNNING_ADOPTION_JOB_ID),
+      ).toBeUndefined();
+      expect(killSpy).not.toHaveBeenCalled();
     } finally {
       await stopLifecycleController(harness.controller);
     }
