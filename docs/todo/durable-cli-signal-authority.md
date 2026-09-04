@@ -38,8 +38,6 @@ recovery enumeration are the readers.
 ## Remaining implementation
 
 - Persist each durable-transport signal refusal and its transition out of refusal on the jobs stream.
-- Make the recovered-job abort registries carry the v2 subject to their signal boundary and preserve
-  ownership when signaling is refused.
 - Expose the refusal through existing backend status and startup recovery views.
 
 Do not solve this with a unified jobs-and-proxy hold store. It would erase owner vocabulary, violate the

@@ -40,8 +40,23 @@ export type RecordedContainmentIdentity = RecordedProcessIdentity &
     processGroupId: number;
   }>;
 
+/** Absence of this subject requires absence of both the detached group and its additional process root. */
+export type RecordedContainmentSubject = RecordedContainmentIdentity &
+  Readonly<{
+    childRoot: RecordedProcessIdentity;
+  }>;
+
+/** Observation authority must not expose process-control capability. */
+export type ProcessContainmentObservationEnvironment = {
+  readonly process: {
+    observeLiveness(pid: number): ProcessLiveness;
+  };
+  readonly platform: NodeJS.Platform;
+  readonly readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
+};
+
 /** Runtime capabilities required to reap one recorded containment. */
-export type ProcessContainmentEnvironment<Scope extends symbol> = {
+export type ProcessContainmentEnvironment<Scope extends symbol> = ProcessContainmentObservationEnvironment & {
   /**
    * The largest recorded set this containment will act on. It is injected because "how many targets" is the
    * caller's bound, not a process-control constant — naming a provider concept here would put a domain
@@ -97,6 +112,15 @@ type RecordedSetObservation = Readonly<{
 }>;
 
 type RecordedSetAbsenceVerdict = 'absent' | 'not-confirmed' | 'recorded-group-unattributable';
+
+export type RecordedContainmentObservation =
+  | Readonly<{ kind: 'alive' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unobservable'; reason: string }>;
+
+export type RecordedContainmentAbortResult =
+  | Readonly<{ kind: 'accepted' }>
+  | Readonly<{ kind: 'refused'; reason: string }>;
 
 export type RecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent' }>
@@ -157,9 +181,9 @@ function assertRecordedSet(
   }
 }
 
-function readIncarnation<Scope extends symbol>(
+function readIncarnation(
   identity: RecordedProcessIdentity,
-  environment: ProcessContainmentEnvironment<Scope>,
+  environment: ProcessContainmentObservationEnvironment,
 ): ProcessIncarnation | null {
   const read = environment.readProcessIncarnation ?? probeProcessIncarnation;
   try {
@@ -169,9 +193,9 @@ function readIncarnation<Scope extends symbol>(
   }
 }
 
-function observeProcessIdentity<Scope extends symbol>(
+function observeProcessIdentity(
   identity: RecordedProcessIdentity,
-  environment: ProcessContainmentEnvironment<Scope>,
+  environment: ProcessContainmentObservationEnvironment,
 ): TargetObservation {
   const observedIncarnation = readIncarnation(identity, environment);
   if (observedIncarnation === identity.incarnation) {
@@ -190,9 +214,9 @@ function observeProcessIdentity<Scope extends symbol>(
   );
 }
 
-function observeContainment<Scope extends symbol>(
+function observeContainment(
   containment: RecordedContainmentIdentity,
-  environment: ProcessContainmentEnvironment<Scope>,
+  environment: ProcessContainmentObservationEnvironment,
 ): TargetObservation {
   const observedIncarnation = readIncarnation(containment, environment);
   if (observedIncarnation !== null && observedIncarnation !== containment.incarnation) {
@@ -231,10 +255,10 @@ function observeContainment<Scope extends symbol>(
   return groupLiveness === 'alive' ? 'present' : 'absent';
 }
 
-function observeRecordedSet<Scope extends symbol>(
+function observeRecordedSet(
   containment: RecordedContainmentIdentity,
   recordedRoots: readonly RecordedProcessIdentity[],
-  environment: ProcessContainmentEnvironment<Scope>,
+  environment: ProcessContainmentObservationEnvironment,
 ): RecordedSetObservation {
   const roots: TargetObservation[] = [];
   let firstFailure: unknown;
@@ -269,6 +293,25 @@ function recordedSetAbsenceVerdict(observation: RecordedSetObservation): Recorde
   return allRecordedTargetsAbsent(observation) ? 'absent' : 'not-confirmed';
 }
 
+/** Absence requires both group and child-root absence; unanswerable evidence must remain unobservable. */
+export function observeRecordedContainment(
+  subject: RecordedContainmentSubject,
+  environment: ProcessContainmentObservationEnvironment,
+): RecordedContainmentObservation {
+  try {
+    assertRecordedSet(subject, [subject.childRoot], 1);
+    const verdict = recordedSetAbsenceVerdict(observeRecordedSet(subject, [subject.childRoot], environment));
+    if (verdict === 'absent') return { kind: 'absent' };
+    if (verdict === 'not-confirmed') return { kind: 'alive' };
+    return { kind: 'unobservable', reason: 'the recorded process group is no longer attributable' };
+  } catch (error: unknown) {
+    return {
+      kind: 'unobservable',
+      reason: error instanceof Error ? error.message : 'recorded containment observation failed',
+    };
+  }
+}
+
 function assertSignalCallWithinBounds<Scope extends symbol>(
   callStartedAt: MonotonicInstant<Scope>,
   exitDeadline: MonotonicInstant<Scope>,
@@ -299,7 +342,7 @@ function signalRecordedSet<Scope extends symbol>(
   signal: NodeJS.Signals,
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): void {
+): number {
   assertContainmentAuthorized(environment.signal);
   const callStartedAt = environment.clock.now();
   if (environment.clock.compare(callStartedAt, exitDeadline) >= 0) {
@@ -308,6 +351,7 @@ function signalRecordedSet<Scope extends symbol>(
     });
   }
 
+  let delivered = 0;
   const signalPid = (pid: number): void => {
     // The model bounds each process-control call, not the sweep: with a full recorded set a sweep of fast
     // syscalls would otherwise exceed the per-call bound and abandon a reap that was progressing fine. The
@@ -316,7 +360,10 @@ function signalRecordedSet<Scope extends symbol>(
     assertContainmentAuthorized(environment.signal);
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
     environment.assertSignalAuthorized?.();
-    if (environment.process.kill(pid, signal)) environment.onSignal?.({ pid, signal });
+    if (environment.process.kill(pid, signal)) {
+      delivered += 1;
+      environment.onSignal?.({ pid, signal });
+    }
     assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
   };
 
@@ -332,6 +379,51 @@ function signalRecordedSet<Scope extends symbol>(
   } catch (error: unknown) {
     if (error instanceof ProcessContainmentError) throw error;
     throw reapFailure(`Recorded containment ${signal} delivery failed.`, { signal });
+  }
+  return delivered;
+}
+
+/** A recycled leader forbids every signal, and a signal attempt cannot erase a refusal disposition. */
+export function abortRecordedContainment<Scope extends symbol>(
+  subject: RecordedContainmentSubject,
+  exitDeadline: MonotonicInstant<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): RecordedContainmentAbortResult {
+  try {
+    assertRecordedSet(subject, [subject.childRoot], 1);
+    const leaderIncarnation = readIncarnation(subject, environment);
+    if (leaderIncarnation !== null && leaderIncarnation !== subject.incarnation) {
+      return { kind: 'refused', reason: 'the recorded containment leader pid has been recycled' };
+    }
+
+    const observation = observeRecordedSet(subject, [subject.childRoot], environment);
+    const verdict = recordedSetAbsenceVerdict(observation);
+    if (verdict === 'recorded-group-unattributable') {
+      return { kind: 'refused', reason: 'the recorded process group is no longer attributable' };
+    }
+    if (verdict === 'absent') return { kind: 'accepted' };
+
+    const delivered = signalRecordedSet(
+      subject,
+      [subject.childRoot],
+      observation,
+      'SIGTERM',
+      exitDeadline,
+      environment,
+    );
+    const targeted =
+      (observation.containment === 'present' ? 1 : 0) +
+      observation.recordedRoots.filter((root) => root === 'present').length;
+    if (delivered === targeted) return { kind: 'accepted' };
+
+    return observeRecordedContainment(subject, environment).kind === 'absent'
+      ? { kind: 'accepted' }
+      : { kind: 'refused', reason: 'SIGTERM was not accepted for every recorded containment target' };
+  } catch (error: unknown) {
+    return {
+      kind: 'refused',
+      reason: error instanceof Error ? error.message : 'recorded containment abort was refused',
+    };
   }
 }
 

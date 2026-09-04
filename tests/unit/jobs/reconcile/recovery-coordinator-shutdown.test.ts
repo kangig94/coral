@@ -28,6 +28,10 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
+import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+
+const RUNNING_ADOPTION_JOB_ID = '00000000-0000-4000-8000-000000000777';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -275,6 +279,18 @@ function stubRuntimeRecord(
     stderrPath: join(jobsDir(runtime.env), options.jobId, 'stderr'),
     startTime: options.startTime ?? '2026-04-17T00:00:00.000Z',
   });
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(options.jobId)) {
+    const incarnation =
+      runtime.process.readProcessIncarnation(options.pid, runtime.env.platform() as NodeJS.Platform) ??
+      testIncarnation(options.pid);
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
+      jobId: options.jobId,
+      pid: options.pid,
+      incarnation,
+      processGroupId: options.pid,
+      childRoot: { pid: options.pid, incarnation },
+    });
+  }
 }
 
 function stubRecoverableWorkflow(
@@ -512,7 +528,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   );
 
   seedTestJobSession(progressStore, {
-    jobId: 'running-adoption-job',
+    jobId: RUNNING_ADOPTION_JOB_ID,
     sessionId: 'running-adoption-session',
     provider: 'codex',
     projectRoot,
@@ -520,7 +536,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     initialPhase: 'running',
   });
   stubLaunchRecord(progressStore, {
-    jobId: 'running-adoption-job',
+    jobId: RUNNING_ADOPTION_JOB_ID,
     sessionId: 'running-adoption-session',
     provider: 'codex',
     projectRoot,
@@ -582,7 +598,7 @@ describe('recovery coordinator shutdown', () => {
     controller = harness.controller;
 
     stubRuntimeRecord(harness.progressStore, runtime, {
-      jobId: 'running-adoption-job',
+      jobId: RUNNING_ADOPTION_JOB_ID,
       pid: process.pid,
       startTime: '2026-03-11T00:00:00.000Z',
     });
@@ -627,7 +643,7 @@ describe('recovery coordinator shutdown', () => {
         captureProviderRecoveryAuthority: vi.fn(async () => captureBlocked),
       },
     });
-    harness.progressStore.appendRuntimeStarted('running-adoption-job', {
+    harness.progressStore.appendRuntimeStarted(RUNNING_ADOPTION_JOB_ID, {
       transport: 'app-server',
       startTime: '2026-04-17T00:00:00.000Z',
       providerMeta: { provider: 'codex', leaseState: 'waiting' },
@@ -640,7 +656,7 @@ describe('recovery coordinator shutdown', () => {
     releaseCapture({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
 
     expect(((await startup) as Error).name).toBe('AbortError');
-    expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('running');
+    expect(harness.progressStore.readStatus(RUNNING_ADOPTION_JOB_ID)?.phase).toBe('running');
   });
 
   it('cleans up an adopted running job on shutdown after the recovery poller is live and suppresses late completion', async () => {
@@ -687,7 +703,7 @@ describe('recovery coordinator shutdown', () => {
     controller = harness.controller;
 
     stubRuntimeRecord(harness.progressStore, runtime, {
-      jobId: 'running-adoption-job',
+      jobId: RUNNING_ADOPTION_JOB_ID,
       pid,
     });
 
@@ -763,7 +779,7 @@ describe('recovery coordinator shutdown', () => {
     });
     controller = harness.controller;
 
-    stubRuntimeRecord(harness.progressStore, runtime, { jobId: 'running-adoption-job', pid });
+    stubRuntimeRecord(harness.progressStore, runtime, { jobId: RUNNING_ADOPTION_JOB_ID, pid });
 
     try {
       await controller.start().catch(() => undefined);
@@ -887,7 +903,7 @@ describe('recovery coordinator shutdown', () => {
       },
     });
     stubRuntimeRecord(harness.progressStore, runtime, {
-      jobId: 'running-adoption-job',
+      jobId: RUNNING_ADOPTION_JOB_ID,
       pid,
     });
 
@@ -900,7 +916,7 @@ describe('recovery coordinator shutdown', () => {
 
       await vi.waitFor(() => {
         expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1);
-        expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('error');
+        expect(harness.progressStore.readStatus(RUNNING_ADOPTION_JOB_ID)?.phase).toBe('error');
         expect(cleanupSpy).toHaveBeenCalledTimes(1);
       });
       const recoveredSession = modules.sessionQueriesModule
@@ -942,7 +958,7 @@ describe('recovery coordinator shutdown', () => {
       },
     });
     stubRuntimeRecord(harness.progressStore, runtime, {
-      jobId: 'running-adoption-job',
+      jobId: RUNNING_ADOPTION_JOB_ID,
       pid,
     });
 
@@ -987,7 +1003,7 @@ describe('recovery coordinator shutdown', () => {
       },
     });
     stubRuntimeRecord(harness.progressStore, runtime, {
-      jobId: 'running-adoption-job',
+      jobId: RUNNING_ADOPTION_JOB_ID,
       pid,
     });
 
@@ -1030,7 +1046,7 @@ describe('recovery coordinator shutdown', () => {
         }),
       },
     });
-    harness.progressStore.appendRuntimeStarted('running-adoption-job', {
+    harness.progressStore.appendRuntimeStarted(RUNNING_ADOPTION_JOB_ID, {
       transport: 'app-server',
       startTime: '2026-04-17T00:00:00.000Z',
       providerMeta: {

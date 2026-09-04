@@ -241,6 +241,36 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
+  it('reaps cleanup obligations from an independent snapshot after provider-host shutdown rejects', async () => {
+    const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
+    const stopAndReap = vi.fn(async () => ({ kind: 'containment-absent' as const }));
+    const retry = vi.fn(async () => ({ kind: 'absence-confirmed' as const, strandedArtifacts: [] }));
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
+      shutdown: async () => {
+        throw new Error('injected provider close failure');
+      },
+      cleanupObligations: () => ({
+        liveProxySets: [{ proxyInstanceId: 'retained-proxy', stopAndReap }] as never,
+        acquisitionCleanupHolds: [
+          {
+            guardianIdentity: { pid: 4_245, incarnation: testIncarnation(4_245), processGroupId: 4_245 },
+            recoveryCapability: { retry },
+          },
+        ] as never,
+      }),
+    };
+
+    await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
+
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it('continues hard shutdown when crash terminalization throws', async () => {
     const harness = buildHarness({
       hooksOnShutdown: async () => {},
@@ -318,9 +348,11 @@ describe('runShutdownSequence drain budget', () => {
             kind: 'unresolved-at-deadline',
             processes: [{ kind: 'target-unobservable', pid: 4_244, stage: 'after-sigkill' }],
             pendingLaunches: 0,
+            retainedLaunches: [],
             cleanupHandles: 1,
+            retainedProcesses: [],
             cleanupFailures: 0,
-            successorOwner: 'durable-job-recovery',
+            owner: 'launch-coordinator',
           });
         };
         if (signal.aborted) finish();

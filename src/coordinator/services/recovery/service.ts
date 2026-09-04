@@ -345,11 +345,6 @@ export class RecoveryService {
       this.deps.jobPools.set(jobId, pool);
       this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
       this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
-
-      const pid = runtimeRecord.pid;
-      this.deps.abortRegistry.register(jobId, () => {
-        this.deps.runtime.process.kill(pid, 'SIGTERM');
-      });
     } catch (error: unknown) {
       this.cleanupRecoveryRegistration(jobId, pool);
       throw error;

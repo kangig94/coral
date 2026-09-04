@@ -70,8 +70,6 @@ const ALLOWLIST = new Map<string, string>([
     // place it is recorded.
     'deliberately open on darwin — see docs/todo/darwin-signal-authority.md',
   ],
-  ['src/jobs/reconcile/registry.ts', 'UNGUARDED, tracked in docs/todo/durable-cli-signal-authority.md'],
-  ['src/coordinator/services/recovery/service.ts', 'UNGUARDED, tracked in docs/todo/durable-cli-signal-authority.md'],
   [
     'src/runtime/exec-builder.ts',
     // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.
@@ -173,8 +171,8 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
 
   // A refusal guard against `incarnationMayAuthorizeSignal('linux')` is still a constant no-op, so the
   // platform argument is checked separately from the guard shape.
-  it('the two gated signal paths refuse, and ask about the running platform rather than a constant', () => {
-    for (const canonical of ['src/coordinator/live/provider-proxy/spawn-undo.ts', 'src/provider-proxy/role-main.ts']) {
+  it('the gated signal path refuses, and asks about the running platform rather than a constant', () => {
+    for (const canonical of ['src/coordinator/live/provider-proxy/spawn-undo.ts']) {
       const raw = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
       expect(
         /if\s*\(\s*!\s*incarnationMayAuthorizeSignal\s*\([^)]*\)\s*\)\s*return/u.test(codeTextOnly(raw)),

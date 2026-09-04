@@ -236,6 +236,48 @@ describe('createRealRuntime', () => {
     expect(runtime.process.observeLiveness(durable.pid)).toBe('absent');
   });
 
+  it('does not settle a failed wrapper while its recorded child is still running', async () => {
+    const runtime = createRealRuntime('prod');
+    const rootDir = createTempDir('coral-runtime-child-survives-wrapper-');
+    const jobDir = join(rootDir, 'job-1');
+    runtime.storage.mkdirSync(jobDir, { recursive: true });
+
+    const durable = await runtime.process.durable.launch({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"],
+      jobDir,
+    });
+    const childPid = durable.processSubject?.childRoot.pid;
+    if (childPid === undefined) throw new Error('durable launch did not capture its child root');
+    const readyDeadline = Date.now() + 2_000;
+    while (!runtime.storage.readFileSync(durable.stdoutPath, 'utf-8').includes('ready')) {
+      if (Date.now() >= readyDeadline) throw new Error('durable child did not become ready');
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+
+    const completion = runtime.process.durable.waitForExit(durable);
+    try {
+      expect(runtime.process.kill(durable.pid, 'SIGKILL')).toBe(true);
+      const earlyDisposition = await Promise.race([
+        completion.then(
+          () => 'settled',
+          () => 'settled',
+        ),
+        new Promise<'held'>((resolve) => setTimeout(() => resolve('held'), 250)),
+      ]);
+      expect(earlyDisposition).toBe('held');
+
+      expect(runtime.process.kill(childPid, 'SIGKILL')).toBe(true);
+      await expect(completion).rejects.toThrow(
+        `Durable process ${durable.pid} exited before the wrapper reported completion`,
+      );
+    } finally {
+      runtime.process.kill(-durable.pid, 'SIGKILL');
+      runtime.process.kill(childPid, 'SIGKILL');
+    }
+  }, 10_000);
+
   it('writes and appends through durable storage operations', () => {
     const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-durable-');

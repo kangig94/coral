@@ -183,6 +183,7 @@ import {
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { PROVIDER_ROLE_FLAGS, type ProviderRole } from '#src/provider-proxy/role-argv.js';
 import {
+  GuardianConstructionCleanupHeldError,
   runProviderRoleMain,
   startProviderGuardianRole,
   startProviderProxyRole,
@@ -267,6 +268,7 @@ type FakeRoleEnvironmentOptions = Readonly<{
    *  else here can reach: everything up to it has already succeeded. */
   onProxySpawning?(): void;
   onGuardianListening?(): void;
+  observeSpawnedProcessBeforeRoleReady?: boolean;
   incarnationAfterSigterm?(role: ProviderRole, pid: number): ProcessIncarnation | null | undefined;
 }>;
 
@@ -304,11 +306,15 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
   const handles: FakeRoleEnvironment['handles'] = {};
   const sequenceLog: string[] = [];
   const exitLog: number[] = [];
+  const livePids = new Set<number>();
   const pidHandles = new Map<number, ProviderRoleHandle>();
   const incarnationByPid = new Map<number, ProcessIncarnation | null>();
 
   const readProcessIncarnation = (pid: number, platform: NodeJS.Platform): ProcessIncarnation | null => {
-    if (incarnationByPid.has(pid)) return incarnationByPid.get(pid) ?? null;
+    if (incarnationByPid.has(pid)) {
+      if (options.observeSpawnedProcessBeforeRoleReady && !livePids.has(pid)) return null;
+      return incarnationByPid.get(pid) ?? null;
+    }
     return probeProcessIncarnation(pid, platform);
   };
 
@@ -325,10 +331,11 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
    *  instead whichever fake role handles this environment still has registered. A negative pid is the
    *  process-group convention: alive while any registered handle's group leader is that group. */
   function fakeObserveLiveness(pid: number): ProcessLiveness {
+    const observablePids = options.observeSpawnedProcessBeforeRoleReady ? livePids : new Set(pidHandles.keys());
     if (pid < 0) {
-      return [...pidHandles.keys()].some((candidate) => groupLeaderPidOf(candidate) === -pid) ? 'alive' : 'absent';
+      return [...observablePids].some((candidate) => groupLeaderPidOf(candidate) === -pid) ? 'alive' : 'absent';
     }
-    return pidHandles.has(pid) ? 'alive' : 'absent';
+    return observablePids.has(pid) ? 'alive' : 'absent';
   }
 
   function portsFor(pidOverride: number | undefined): ProviderRoleMainPorts {
@@ -359,6 +366,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     nextPid += 1;
     const selfPid = options.selfPidFor?.(role, pid) ?? pid;
     const incarnation = (options.incarnationFor ?? ((_role, p) => testIncarnation(`base-${p}`)))(role, pid);
+    livePids.add(pid);
     incarnationByPid.set(pid, incarnation);
     if (selfPid !== pid) incarnationByPid.set(selfPid, incarnation);
     spawnLog.push({ role, capsulePath, detached: spawnOptions.detached === true, pid });
@@ -380,15 +388,15 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
         if (role === 'guardian') {
           const handle = await startProviderGuardianRole(capsulePath, rolePorts);
           handles.guardian = handle;
-          pidHandles.set(pid, handle);
+          if (!options.observeSpawnedProcessBeforeRoleReady || livePids.has(pid)) pidHandles.set(pid, handle);
         } else if (role === 'reaper') {
           const handle = await startProviderReaperRole(capsulePath, rolePorts);
           handles.reaper = handle;
-          pidHandles.set(pid, handle);
+          if (!options.observeSpawnedProcessBeforeRoleReady || livePids.has(pid)) pidHandles.set(pid, handle);
         } else {
           const handle = await startProviderProxyRole(capsulePath, rolePorts);
           handles.proxy = handle;
-          pidHandles.set(pid, handle);
+          if (!options.observeSpawnedProcessBeforeRoleReady || livePids.has(pid)) pidHandles.set(pid, handle);
         }
       } catch (error: unknown) {
         nestedErrors.push(error);
@@ -411,11 +419,10 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     killLog.push({ pid, signal: String(signal) });
     // A negative pid is the group-signal convention: every registered handle whose group leader is `-pid`
     // receives it, exactly as a real OS `kill(-pid, …)` reaches every process in that group.
-    const targets =
-      pid < 0 ? [...pidHandles.keys()].filter((candidate) => groupLeaderPidOf(candidate) === -pid) : [pid];
+    const observablePids = options.observeSpawnedProcessBeforeRoleReady ? livePids : new Set(pidHandles.keys());
+    const targets = pid < 0 ? [...observablePids].filter((candidate) => groupLeaderPidOf(candidate) === -pid) : [pid];
     for (const target of targets) {
       const handle = pidHandles.get(target);
-      if (handle === undefined) continue;
       const role = spawnLog.find((entry) => entry.pid === target)?.role;
       if (signal === 'SIGTERM' && role !== undefined) {
         const replacement = options.incarnationAfterSigterm?.(role, target);
@@ -424,7 +431,9 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
           continue;
         }
       }
+      livePids.delete(target);
       pidHandles.delete(target);
+      if (handle === undefined) continue;
       if (signal !== 'SIGTERM') continue; // SIGKILL is not catchable; nothing left to run.
       // Mirrors `runProviderRoleMain`'s own shutdown dispatch: a guardian or reaper must reap what it holds
       // before it exits (`giveUp`); the proxy holds no containment of its own and just closes.
@@ -1067,6 +1076,7 @@ describe('provider-proxy process topology: guardian role main', () => {
       onProxySpawning: () => {
         void environment.handles.reaper?.close();
       },
+      observeSpawnedProcessBeforeRoleReady: true,
     });
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
@@ -1084,6 +1094,40 @@ describe('provider-proxy process topology: guardian role main', () => {
     const proxyPid = environment.spawnLog[1]?.pid;
     expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
     expect(environment.killLog).toContainEqual({ pid: -proxyPid, signal: 'SIGTERM' });
+  });
+
+  it('holds the exact detached proxy group when its leader disappears but the group remains', async () => {
+    const baseDir = scopedTempDir('coral-topology-forward-holds-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+      onProxySpawning: () => {
+        void environment.handles.reaper?.close();
+      },
+      observeSpawnedProcessBeforeRoleReady: true,
+      incarnationAfterSigterm: (role) => (role === 'proxy' ? testIncarnation('reused-proxy-pid') : undefined),
+    });
+    cleanups.push(() => closeHandles(environment));
+    const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
+
+    const failure = await startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts()).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
+    const hold = (failure as GuardianConstructionCleanupHeldError).hold;
+    const proxyPid = environment.spawnLog.find((entry) => entry.role === 'proxy')?.pid;
+    expect(hold.proxyIdentity).toMatchObject({ pid: proxyPid, processGroupId: proxyPid });
+    expect(hold.reason).toContain('unattributable');
+    expect(environment.killLog).toContainEqual({ pid: -proxyPid!, signal: 'SIGTERM' });
+    expect(environment.killLog).not.toContainEqual({ pid: -proxyPid!, signal: 'SIGKILL' });
+    await expect(hold.retry()).resolves.toMatchObject({
+      kind: 'holding',
+      proxyIdentity: { pid: proxyPid, processGroupId: proxyPid },
+    });
   });
 });
 

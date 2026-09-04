@@ -542,11 +542,112 @@ describe('launch admission', () => {
         },
       ],
       pendingLaunches: 0,
+      retainedLaunches: [],
       cleanupHandles: 1,
+      retainedProcesses: [],
       cleanupFailures: 0,
-      successorOwner: 'durable-job-recovery',
+      owner: 'launch-coordinator',
     });
     expect(cleanupHandles.has(cleanupKey)).toBe(true);
+  });
+
+  it('bounds a pending wrapper join and reports the retained launch identity', async () => {
+    const base = createRealRuntime('prod');
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: {
+          ...base.process.durable,
+          launch: () => new Promise<never>(() => undefined),
+        },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    void localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/pending-wrapper',
+      permitGranted: true,
+    });
+    const controller = new AbortController();
+    const termination = localCoordinator.terminateAll(controller.signal);
+
+    controller.abort();
+
+    await expect(termination).resolves.toEqual({
+      kind: 'unresolved-at-deadline',
+      processes: [],
+      pendingLaunches: 1,
+      retainedLaunches: [{ kind: 'awaiting-wrapper-identity', provider: 'codex', jobDir: '/tmp/pending-wrapper' }],
+      cleanupHandles: 0,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
+    });
+  });
+
+  it('retains the wrapper identity when readiness rejects after provisional publication', async () => {
+    const base = createRealRuntime('prod');
+    const incarnation = testIncarnation(7_001);
+    const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
+      options.onWrapperSpawned?.({ pid: TEST_PROVIDER_PID, leaderIncarnation: incarnation });
+      throw new Error('synthetic readiness rejection');
+    });
+    const runtime: Runtime = {
+      ...base,
+      time: {
+        ...base.time,
+        sleep: () => new Promise<never>(() => undefined),
+      },
+      process: {
+        ...base.process,
+        kill: vi.fn(() => true),
+        observeLiveness: () => 'alive',
+        readProcessIncarnation: () => incarnation,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+
+    await expect(
+      localCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/readiness-rejection',
+        permitGranted: true,
+      }),
+    ).rejects.toThrow('synthetic readiness rejection');
+
+    const controller = new AbortController();
+    const termination = localCoordinator.terminateAll(controller.signal);
+    controller.abort();
+
+    await expect(termination).resolves.toEqual({
+      kind: 'unresolved-at-deadline',
+      processes: [],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [
+        {
+          kind: 'recorded-wrapper-group',
+          provider: 'codex',
+          jobDir: '/tmp/readiness-rejection',
+          containment: {
+            pid: TEST_PROVIDER_PID,
+            incarnation,
+            processGroupId: TEST_PROVIDER_PID,
+            childRoot: null,
+          },
+        },
+      ],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
+    });
+    expect(runtime.process.kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
   });
 
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
@@ -605,9 +706,23 @@ describe('launch admission', () => {
       kind: 'unresolved-at-deadline',
       processes: [],
       pendingLaunches: 0,
+      retainedLaunches: [],
       cleanupHandles: 1,
+      retainedProcesses: [
+        {
+          kind: 'recorded-wrapper-group',
+          provider: 'codex',
+          jobDir: '/tmp/unpublished-launch',
+          containment: {
+            pid: TEST_PROVIDER_PID,
+            incarnation,
+            processGroupId: TEST_PROVIDER_PID,
+            childRoot: { pid: childPid, incarnation },
+          },
+        },
+      ],
       cleanupFailures: 0,
-      successorOwner: 'durable-job-recovery',
+      owner: 'launch-coordinator',
     });
     expect(onRuntimeRecord).toHaveBeenCalledOnce();
     expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({

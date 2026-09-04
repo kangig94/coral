@@ -650,15 +650,28 @@ function stubRuntimeRecord(
     stdoutPath?: string;
     stderrPath?: string;
     startTime?: string;
+    recordContainment?: boolean;
   },
 ): void {
+  const pid = overrides.pid ?? process.pid;
   progressStore.appendRuntimeStarted(overrides.jobId, {
     transport: 'durable-cli',
-    pid: overrides.pid ?? process.pid,
+    pid,
     stdoutPath: overrides.stdoutPath ?? join(progressStore.jobDir(overrides.jobId), 'stdout'),
     stderrPath: overrides.stderrPath ?? join(progressStore.jobDir(overrides.jobId), 'stderr'),
     startTime: overrides.startTime ?? new Date().toISOString(),
   });
+  if (overrides.recordContainment) {
+    const incarnation =
+      runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform) ?? testIncarnation(pid);
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
+      jobId: overrides.jobId,
+      pid,
+      incarnation,
+      processGroupId: pid,
+      childRoot: { pid, incarnation },
+    });
+  }
 }
 
 function stubAppServerRuntime(
@@ -2260,7 +2273,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('2. running durable-cli job with a live PID is adopted before the launch fence lifts', async () => {
+  it('2. a durable-cli job whose child survives its wrapper is adopted before the launch fence lifts', async () => {
     const modules = await loadModules();
     const pluginRoot = createPluginRoot('plugin-running');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -2282,18 +2295,33 @@ describe('lifecycle recovery', () => {
       projectRoot,
     });
     const adoptSpy = vi.spyOn(service, 'adoptRunningJob');
+    const finalizeSpy = vi.spyOn(service, 'finalizeInterruptedDurableJob');
+    const jobId = '00000000-0000-4000-8000-000000000701';
+    const wrapperPid = 999_990;
+    const childIncarnation = runtime.process.readProcessIncarnation(
+      process.pid,
+      runtime.env.platform() as NodeJS.Platform,
+    );
+    if (childIncarnation === null) return;
 
     stubLaunchRecord(progressStore, {
-      jobId: 'running-live',
+      jobId,
       sessionId: 'session-running-live',
       provider: 'codex',
       projectRoot,
       backendNamespace: namespace,
     });
     stubRuntimeRecord(progressStore, {
-      jobId: 'running-live',
-      pid: process.pid,
+      jobId,
+      pid: wrapperPid,
       startTime: '2026-04-12T00:00:00.000Z',
+    });
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
+      jobId,
+      pid: wrapperPid,
+      incarnation: testIncarnation(wrapperPid),
+      processGroupId: wrapperPid,
+      childRoot: { pid: process.pid, incarnation: childIncarnation },
     });
 
     const { controller, runtimeState } = createLifecycleHarness(modules, {
@@ -2308,10 +2336,11 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(adoptSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'running-live' }) }),
-        expect.objectContaining({ pid: process.pid }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId }) }),
+        expect.objectContaining({ pid: wrapperPid }),
       );
-      expect(launchCoordinator.getActiveJobIds()).toContain('running-live');
+      expect(finalizeSpy).not.toHaveBeenCalled();
+      expect(launchCoordinator.getActiveJobIds()).toContain(jobId);
       const adoptOrder = adoptSpy.mock.invocationCallOrder[0];
       const fenceOffOrder = runtimeState.setLaunchFenceActive.mock.invocationCallOrder.find(
         (_call: number, index: number) => runtimeState.setLaunchFenceActive.mock.calls[index]?.[0] === false,
@@ -2347,7 +2376,7 @@ describe('lifecycle recovery', () => {
       pluginRoot,
       projectRoot,
     });
-    const jobId = 'running-adopted-abort';
+    const jobId = '00000000-0000-4000-8000-000000000702';
     // Real PID adoption/kill semantics require an actual child process here.
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], { stdio: 'ignore' });
     await new Promise<void>((resolve, reject) => {
@@ -2369,6 +2398,7 @@ describe('lifecycle recovery', () => {
       jobId,
       pid: child.pid,
       startTime: '2026-04-12T00:00:00.000Z',
+      recordContainment: true,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -2470,7 +2500,11 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const fakeService = createFakeExecutionAndRecoveryService();
-    const jobId = `foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`;
+    const jobId = durableRuntime
+      ? livePid
+        ? '00000000-0000-4000-8000-000000000709'
+        : '00000000-0000-4000-8000-000000000707'
+      : `foreign-${phase}-${appServerRuntime ? 'app' : 'none'}`;
     const foreignNamespace = 'foreign-namespace';
 
     stubLaunchRecord(progressStore, {
@@ -2487,6 +2521,7 @@ describe('lifecycle recovery', () => {
       stubRuntimeRecord(progressStore, {
         jobId,
         pid: livePid ? process.pid : 999_991,
+        recordContainment: true,
       });
     }
     if (appServerRuntime) {
@@ -2658,17 +2693,19 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const fakeService = createFakeExecutionAndRecoveryService();
+    const jobId = '00000000-0000-4000-8000-000000000711';
 
     stubLaunchRecord(progressStore, {
-      jobId: 'dead-running',
+      jobId,
       sessionId: 'dead-running-session',
       provider: 'codex',
       projectRoot,
       backendNamespace: namespace,
     });
     stubRuntimeRecord(progressStore, {
-      jobId: 'dead-running',
+      jobId,
       pid: 999_999,
+      recordContainment: true,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -2681,7 +2718,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
-        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'dead-running' }) }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId }) }),
         expect.objectContaining({ transport: 'durable-cli', pid: 999_999 }),
         expect.objectContaining({ exit: null, terminal: null, cancelled: false }),
         expect.objectContaining({ signal: expect.any(AbortSignal), onCommitStart: expect.any(Function) }),
@@ -2704,7 +2741,7 @@ describe('lifecycle recovery', () => {
       eventBus,
       providers: permissiveProviderLookupPort,
     });
-    const jobId = 'dead-finalizer-blocked-job';
+    const jobId = '00000000-0000-4000-8000-000000000712';
     const fakeService = createFakeExecutionAndRecoveryService({
       finalizeInterruptedDurableJob: vi.fn(async () => {
         throw new Error('exact session CAS went stale');
@@ -2718,7 +2755,7 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: namespace,
     });
-    stubRuntimeRecord(progressStore, { jobId, pid: 999_998 });
+    stubRuntimeRecord(progressStore, { jobId, pid: 999_998, recordContainment: true });
 
     const { controller, runtimeState } = createLifecycleHarness(modules, {
       pluginRoot,
@@ -4233,17 +4270,19 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const fakeService = createFakeExecutionAndRecoveryService();
+    const jobId = '00000000-0000-4000-8000-000000000717';
 
     stubLaunchRecord(progressStore, {
-      jobId: 'foreign-history',
+      jobId,
       sessionId: 'foreign-history-session',
       provider: 'codex',
       projectRoot,
       backendNamespace: 'foreign-history-namespace',
     });
     stubRuntimeRecord(progressStore, {
-      jobId: 'foreign-history',
+      jobId,
       pid: 999_992,
+      recordContainment: true,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -4255,7 +4294,7 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      const history = progressStore.readJobEvents('foreign-history');
+      const history = progressStore.readJobEvents(jobId);
       expect(history).not.toContainEqual(
         expect.objectContaining({
           type: 'terminal',
@@ -4264,7 +4303,7 @@ describe('lifecycle recovery', () => {
       );
       expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
         expect.objectContaining({
-          launchRecord: expect.objectContaining({ jobId: 'foreign-history' }),
+          launchRecord: expect.objectContaining({ jobId }),
         }),
         expect.objectContaining({ transport: 'durable-cli', pid: 999_992 }),
         expect.objectContaining({ exit: null, terminal: null, cancelled: false }),
@@ -4453,17 +4492,19 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const fakeService = createFakeExecutionAndRecoveryService();
+    const jobId = '00000000-0000-4000-8000-000000000722';
 
     stubLaunchRecord(progressStore, {
-      jobId: 'foreign-no-adopt',
+      jobId,
       sessionId: 'foreign-no-adopt-session',
       provider: 'codex',
       projectRoot,
       backendNamespace: 'foreign-no-adopt-namespace',
     });
     stubRuntimeRecord(progressStore, {
-      jobId: 'foreign-no-adopt',
+      jobId,
       pid: 999_993,
+      recordContainment: true,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -4478,7 +4519,7 @@ describe('lifecycle recovery', () => {
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
       expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
         expect.objectContaining({
-          launchRecord: expect.objectContaining({ jobId: 'foreign-no-adopt' }),
+          launchRecord: expect.objectContaining({ jobId }),
         }),
         expect.objectContaining({ transport: 'durable-cli', pid: 999_993 }),
         expect.objectContaining({ exit: null, terminal: null, cancelled: false }),

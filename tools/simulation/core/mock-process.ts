@@ -429,6 +429,12 @@ export class MockProcessSpawner {
     leader.onSignal = (signal) => {
       this.applyKill(child, signal);
     };
+    try {
+      options.onWrapperSpawned?.({ pid, leaderIncarnation: leader.incarnation });
+    } catch (error: unknown) {
+      child.complete({ exitCode: null, signal: 'SIGTERM' });
+      throw error;
+    }
 
     for (const chunk of asChunks(script.stdout)) {
       this.schedule(child, chunk.delayMs ?? 0, () => {

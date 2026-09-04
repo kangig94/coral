@@ -46,6 +46,7 @@ import type {
 } from '../infra/port-types.js';
 import type {
   DurableExecutionTransport,
+  DurableCliProcessSubject,
   IdPort,
   ProcessPort,
   Runtime,
@@ -74,7 +75,7 @@ import {
   type ProcessIncarnation,
   type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
-import type { RecordedProcessIdentity } from '../infra/process-containment.js';
+import { observeRecordedContainment, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import { gracefulKill } from '../infra/process-supervision.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
@@ -478,10 +479,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       );
       wrapper.unref();
 
-      const readiness = waitForDurableRuntime({
-        time,
-        wrapper,
-      });
       let leaderIncarnation: ProcessIncarnation | null = null;
       if (wrapper.pid !== undefined) {
         try {
@@ -489,9 +486,36 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         } catch {
           leaderIncarnation = null;
         }
+        try {
+          options.onWrapperSpawned?.({ pid: wrapper.pid, leaderIncarnation });
+        } catch (error: unknown) {
+          gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+          throw error;
+        }
       }
 
+      const readiness = waitForDurableRuntime({
+        time,
+        wrapper,
+      });
       const { runtimeRecord, childPid, exitPromise } = await readiness;
+      let childIncarnation: ProcessIncarnation | null = null;
+      if (childPid !== null) {
+        try {
+          childIncarnation = probeProcessIncarnation(childPid, capturedEnv.platform);
+        } catch {
+          childIncarnation = null;
+        }
+      }
+      const processSubject: DurableCliProcessSubject | null =
+        leaderIncarnation !== null && childPid !== null && childIncarnation !== null
+          ? {
+              pid: runtimeRecord.pid,
+              incarnation: leaderIncarnation,
+              processGroupId: runtimeRecord.pid,
+              childRoot: { pid: childPid, incarnation: childIncarnation },
+            }
+          : null;
       try {
         options.onSpawned?.({ runtimeRecord, leaderIncarnation, childPid });
       } catch (error: unknown) {
@@ -506,6 +530,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stdoutPath: runtimeRecord.stdoutPath,
         stderrPath: runtimeRecord.stderrPath,
         runtimeRecord,
+        processSubject,
       };
     },
     waitForExit: async (handle) => {
@@ -513,9 +538,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       if (!exitPromise) {
         let exitedAt = null as number | null;
         while (true) {
-          // Only an observed absence ends the wait. An unanswerable probe leaves the wrapper exactly as it
-          // was — failing a durable job here would abandon a process that may still be running.
-          if (observeProcessLiveness(handle.pid) === 'absent') {
+          const observation =
+            handle.processSubject === null || handle.processSubject === undefined
+              ? { kind: 'unobservable' as const }
+              : observeRecordedContainment(handle.processSubject, {
+                  process: { observeLiveness: observeProcessLiveness },
+                  platform: capturedEnv.platform,
+                  readProcessIncarnation: probeProcessIncarnation,
+                });
+          if (observation.kind === 'absent') {
             exitedAt ??= time.now();
             if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
               throw new Error(`Durable process ${handle.pid} exited before the wrapper reported completion`);
@@ -527,16 +558,20 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           await time.sleep(DURABLE_POLL_INTERVAL_MS);
           const pending = durableExitPromises.get(handle.pid);
           if (pending) {
-            return pending.finally(() => {
-              durableExitPromises.delete(handle.pid);
-            });
+            return durable.waitForExit(handle);
           }
         }
       }
 
-      return exitPromise.finally(() => {
+      try {
+        return await exitPromise;
+      } catch (error: unknown) {
         durableExitPromises.delete(handle.pid);
-      });
+        await durable.waitForExit(handle);
+        throw error;
+      } finally {
+        durableExitPromises.delete(handle.pid);
+      }
     },
   };
 

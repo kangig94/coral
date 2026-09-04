@@ -2,7 +2,11 @@ import { ZodError } from 'zod';
 
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { StoreDecodeError } from '../../../store/body-codec.js';
-import { ProcessContainmentError } from '../../../infra/process-containment.js';
+import {
+  observeRecordedContainment,
+  ProcessContainmentError,
+  type RecordedContainmentObservation,
+} from '../../../infra/process-containment.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
@@ -72,6 +76,7 @@ import { normalizeProviderSession } from '../../../sessions/entry-normalization.
 import { InterruptedRecoveryCommitError, RecoveryOwnershipReleaseError } from './interrupted-finalizer.js';
 import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
 import type { ProviderOperationStartupOwnership } from '../../../jobs/startup.js';
+import { readMatchingDurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta-store.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -570,11 +575,28 @@ export function createRecoveryCoordinator(
   };
 
   const releaseAdoptedJob = (jobId: string): void => {
+    if (state.recoveryRegistry?.has(jobId)) return;
     clearRecoveryPoller(jobId);
     state.adoptedRunningPids.delete(jobId);
+    state.recoveryRegistry?.remove(jobId);
     state.recoveryRegistry?.clearCancelled(jobId);
     takeAdoptedJobCleanup(jobId)?.();
     maybeReleaseRecoveryRegistry();
+  };
+
+  const observeDurableRecoveryContainment = (
+    jobId: string,
+    runtimeRecord: Extract<RunningRecoverableJob['runtimeRecord'], { transport: 'durable-cli' }>,
+  ): RecordedContainmentObservation => {
+    const recorded = readMatchingDurableCliProcessRuntimeMeta(progressStore.getDb(), jobId, runtimeRecord.pid);
+    if (recorded === null) {
+      return { kind: 'unobservable', reason: 'the recorded durable process containment is unavailable' };
+    }
+    return observeRecordedContainment(recorded, {
+      process: runtime.process,
+      platform: runtime.env.platform() as NodeJS.Platform,
+      readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+    });
   };
 
   const resetRecoveryState = (options: { forceRegistryRelease?: boolean } = {}): void => {
@@ -967,8 +989,7 @@ export function createRecoveryCoordinator(
           }
         };
 
-        // Only an observed absence finalizes.
-        if (runtime.process.observeLiveness(runtimeRecord.pid) === 'absent') {
+        if (observeDurableRecoveryContainment(jobId, runtimeRecord).kind === 'absent') {
           drainRecoveredProgress();
           await startTrackedFinalization(jobId, signal, (fence) =>
             finalizeDeadAdoptedJob({
@@ -1030,11 +1051,8 @@ export function createRecoveryCoordinator(
 
         const pollInterval = runtime.time.setInterval(() => {
           drainRecoveredProgress();
-          // Only an observed absence finalizes. Unknown re-asks — but silently re-asking forever is how an
-          // adoption never settles, so a run of them is reported once and the job stays visibly adopted
-          // rather than quietly stuck.
-          const liveness = runtime.process.observeLiveness(runtimeRecord.pid);
-          if (liveness === 'unknown') {
+          const observation = observeDurableRecoveryContainment(jobId, runtimeRecord);
+          if (observation.kind === 'unobservable') {
             const unanswered = (state.unansweredAdoptionProbes.get(jobId) ?? 0) + 1;
             state.unansweredAdoptionProbes.set(jobId, unanswered);
             if (unanswered === UNANSWERED_ADOPTION_PROBE_REPORT_THRESHOLD) {
@@ -1042,14 +1060,14 @@ export function createRecoveryCoordinator(
               // flushed once at the end of startup — long before ten poll ticks. The report would never have
               // been seen, which is exactly the silence this counter exists to break.
               backendLog.warn(
-                `Liveness of adopted job ${jobId} (pid ${runtimeRecord.pid}) has been unobservable for ` +
+                `Containment of adopted job ${jobId} (pid ${runtimeRecord.pid}) has been unobservable for ` +
                   `${unanswered} checks; it stays adopted until a probe answers.`,
               );
             }
             return;
           }
           state.unansweredAdoptionProbes.delete(jobId);
-          if (liveness === 'alive') return;
+          if (observation.kind === 'alive') return;
 
           clearRecoveryPoller(jobId);
           state.adoptedRunningPids.delete(jobId);
@@ -1069,6 +1087,7 @@ export function createRecoveryCoordinator(
               summary: `Adopted durable recovery finalization for ${jobId}`,
               settle: async (finalItem, finalControls) => {
                 finalControls.setProcessLocalCleanup(() => {
+                  state.recoveryRegistry?.remove(jobId);
                   state.recoveryRegistry?.clearCancelled(jobId);
                   retainedCleanup?.();
                   maybeReleaseRecoveryRegistry();
@@ -1124,6 +1143,7 @@ export function createRecoveryCoordinator(
         }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
         state.recoveryPollIntervals.set(jobId, pollInterval);
+        controls.clearProcessLocalCleanup();
         controls.report(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
         return {
           kind: 'advanced',
@@ -1264,8 +1284,7 @@ export function createRecoveryCoordinator(
     }
 
     const plan = planRecovery(buildRecoverySnapshot([item], runtime.process));
-    const recoveryRegistry =
-      state.recoveryRegistry ?? new RecoveryRegistry(runtime.process, state.cancelledRecoveryJobIds);
+    const recoveryRegistry = state.recoveryRegistry ?? new RecoveryRegistry(state.cancelledRecoveryJobIds);
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];
@@ -1384,7 +1403,7 @@ export function createRecoveryCoordinator(
     const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
     state.teardownRequested = false;
     runtimeState.setLaunchFenceActive(true);
-    const recoveryRegistry = new RecoveryRegistry(runtime.process, state.cancelledRecoveryJobIds);
+    const recoveryRegistry = new RecoveryRegistry(state.cancelledRecoveryJobIds);
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];

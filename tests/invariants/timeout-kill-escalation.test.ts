@@ -53,6 +53,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/provider-proxy/spawn-undo.ts',
   'src/provider-proxy/enforcement.ts',
+  'src/provider-proxy/role-main.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/services/recovery/actions.ts',
   'src/coordinator/services/recovery/interrupted-performer.ts',
@@ -212,13 +213,6 @@ const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
   [
     'src/providers/claude/appserver/print-controller.ts',
     'pre-existing Claude appserver child-shutdown escalation (shutdown()), not yet migrated to gracefulKill',
-  ],
-  [
-    'src/provider-proxy/role-main.ts',
-    // Guardian-construction unwind must synchronously confirm both a detached proxy group and an ordinary,
-    // non-detached reaper pid absent on its monotonic clock. `reapRecordedContainment` cannot represent the
-    // latter without falsely claiming it is a process-group leader; `gracefulKill` does not confirm absence.
-    'guardian-construction unwind confirms an ordinary non-detached child pid that neither sanctioned helper can represent without losing absence confirmation',
   ],
 ]);
 

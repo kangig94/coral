@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 import {
+  abortRecordedContainment,
+  observeRecordedContainment,
   ProcessContainmentError,
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
@@ -31,6 +33,7 @@ function createFakeEnvironment(
   options: {
     signalCostMs?: number;
     unreadablePids?: ReadonlySet<number>;
+    refusedPids?: ReadonlySet<number>;
     groupLiveness?: ProcessLiveness;
     leaderIncarnation?: ProcessIncarnation;
   } = {},
@@ -71,6 +74,7 @@ function createFakeEnvironment(
         kill: (pid, signal) => {
           signals.push({ pid, signal, at: elapsedMs });
           elapsedMs += options.signalCostMs ?? 0;
+          if (options.refusedPids?.has(pid)) return false;
           if (signal === 'SIGKILL') {
             if (pid === -containment.processGroupId) state.groupAlive = false;
             if (pid === providerRoot.pid) state.providerRootAlive = false;
@@ -100,6 +104,65 @@ function deadlineAfter(
 }
 
 describe('recorded process containment', () => {
+  it('observes a surviving child after the wrapper and group disappear', () => {
+    const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: true });
+
+    expect(observeRecordedContainment({ ...containment, childRoot: providerRoot }, fake.environment)).toEqual({
+      kind: 'alive',
+    });
+  });
+
+  it('observes absence only after the wrapper group and child root are all absent', () => {
+    const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: false });
+
+    expect(observeRecordedContainment({ ...containment, childRoot: providerRoot }, fake.environment)).toEqual({
+      kind: 'absent',
+    });
+  });
+
+  it('keeps an unattributable recorded group unobservable', () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+      { leaderIncarnation: testIncarnation('recycled') },
+    );
+
+    expect(observeRecordedContainment({ ...containment, childRoot: providerRoot }, fake.environment)).toMatchObject({
+      kind: 'unobservable',
+    });
+  });
+
+  it('refuses an abort before signaling when the wrapper pid was recycled', () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: true },
+      { leaderIncarnation: testIncarnation('recycled') },
+    );
+
+    expect(
+      abortRecordedContainment(
+        { ...containment, childRoot: providerRoot },
+        deadlineAfter(fake.environment, 1_001),
+        fake.environment,
+      ),
+    ).toMatchObject({ kind: 'refused' });
+    expect(fake.signals).toEqual([]);
+  });
+
+  it('refuses an abort when any live containment target rejects SIGTERM', () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: true },
+      { refusedPids: new Set([providerRoot.pid]) },
+    );
+
+    expect(
+      abortRecordedContainment(
+        { ...containment, childRoot: providerRoot },
+        deadlineAfter(fake.environment, 1_001),
+        fake.environment,
+      ),
+    ).toMatchObject({ kind: 'refused' });
+    expect(fake.signals.map(({ pid }) => pid)).toEqual([-containment.processGroupId, providerRoot.pid]);
+  });
+
   it('uses TERM then KILL and confirms absence within one absolute deadline', async () => {
     const fake = createFakeEnvironment(
       { groupAlive: true, leaderAlive: true, providerRootAlive: true },

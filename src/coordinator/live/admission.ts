@@ -1,7 +1,10 @@
 import type { Runtime } from '../../runtime/ports.js';
 import {
   type CliExecResult,
+  type DurableProcessRetention,
   type DurableProcessCleanup,
+  type PendingDurableLaunch,
+  type PendingDurableLaunchIdentity,
   type SpawnDurableJobOptions,
   spawnDurableJobTransport,
 } from './durable-transport.js';
@@ -64,15 +67,18 @@ export type TerminateAllDisposition =
   | Readonly<{
       kind: 'unresolved-at-deadline';
       processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
-      pendingLaunches: 0;
+      pendingLaunches: number;
+      retainedLaunches: readonly PendingDurableLaunchIdentity[];
       cleanupHandles: number;
+      retainedProcesses: readonly DurableProcessRetention[];
       cleanupFailures: number;
-      successorOwner: 'durable-job-recovery';
+      owner: 'launch-coordinator';
     }>;
 
 export class LaunchCoordinator {
   private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
-  private readonly pendingDurableLaunches = new Set<Promise<void>>();
+  private readonly cleanupRetentions = new Map<DurableProcessCleanup, DurableProcessRetention>();
+  private readonly pendingDurableLaunches = new Set<PendingDurableLaunch>();
   private nextProviderServerGeneration = 1;
   private readonly pools: Record<LaunchPool, PoolState> = {
     default: { active: new Map(), queued: [] },
@@ -188,6 +194,7 @@ export class LaunchCoordinator {
       pool,
       internalPermitJobId,
       cleanupHandles: this.cleanupHandles,
+      cleanupRetentions: this.cleanupRetentions,
       pendingLaunches: this.pendingDurableLaunches,
       releaseLaunch: (jobId, nextPool) => this.releaseLaunch(jobId, nextPool),
     });
@@ -242,16 +249,23 @@ export class LaunchCoordinator {
         : {
             kind: 'unresolved-at-deadline',
             processes: [...unsettled.values()],
-            pendingLaunches: 0,
+            pendingLaunches: this.pendingDurableLaunches.size,
+            retainedLaunches: [...this.pendingDurableLaunches].map((launch) => launch.retainedIdentity()),
             cleanupHandles: this.cleanupHandles.size,
+            retainedProcesses: [...new Set(this.cleanupHandles.values())].flatMap((cleanup) => {
+              const retention = this.cleanupRetentions.get(cleanup);
+              return retention === undefined ? [] : [retention];
+            }),
             cleanupFailures: failures.size,
-            successorOwner: 'durable-job-recovery',
+            owner: 'launch-coordinator',
           };
 
     try {
       while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
         if (this.pendingDurableLaunches.size > 0) {
-          await Promise.all([...this.pendingDurableLaunches]);
+          const pendingSettlements = Promise.all([...this.pendingDurableLaunches].map((launch) => launch.settled));
+          const joined = abort === null ? await pendingSettlements : await Promise.race([pendingSettlements, abort]);
+          if (joined === aborted) return dispositionAtDeadline();
           continue;
         }
 
@@ -280,6 +294,7 @@ export class LaunchCoordinator {
           for (const [key, registeredCleanup] of this.cleanupHandles) {
             if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
           }
+          this.cleanupRetentions.delete(attempt.cleanup);
         }
 
         if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {

@@ -40,20 +40,53 @@ function terminationOutcomeDetail(outcome: Exclude<GracefulKillByPidOutcome, { k
   }
 }
 
+export type DurableProcessRetention =
+  | Readonly<{
+      kind: 'recorded-wrapper-group';
+      provider: string;
+      jobDir: string;
+      containment: Readonly<{
+        pid: number;
+        incarnation: ProcessIncarnation;
+        processGroupId: number;
+        childRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
+      }>;
+    }>
+  | Readonly<{
+      kind: 'unverified-wrapper-pid';
+      provider: string;
+      jobDir: string;
+      pid: number;
+    }>;
+
+export type PendingDurableLaunchIdentity = Readonly<{
+  kind: 'awaiting-wrapper-identity';
+  provider: string;
+  jobDir: string;
+}>;
+
+export type PendingDurableLaunch = Readonly<{
+  settled: Promise<void>;
+  retainedIdentity(): PendingDurableLaunchIdentity;
+}>;
+
 async function requestDurableProcessTermination(
   runtime: Runtime,
-  pid: number,
-  subject: DurableCliProcessSubject | null,
+  retained: DurableProcessRetention,
 ): Promise<GracefulKillByPidOutcome> {
-  if (subject === null) return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
+  if (retained.kind === 'unverified-wrapper-pid') {
+    return { kind: 'signal-refused', pid: retained.pid, reason: 'recorded-incarnation-unavailable' };
+  }
+  const { containment } = retained;
+  const pid = containment.pid;
   const clock = createMonotonicClock(durableProcessCleanupClockScope, {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
   });
   try {
     const outcome = await reapRecordedContainment(
-      { pid: subject.pid, incarnation: subject.incarnation, processGroupId: subject.processGroupId },
-      [subject.childRoot],
+      containment,
+      containment.childRoot === null ? [] : [containment.childRoot],
       clock.shiftMilliseconds(clock.now(), DURABLE_PROCESS_CLEANUP_DEADLINE_MS),
       {
         maxRecordedRoots: 1,
@@ -110,10 +143,11 @@ export async function spawnDurableJobTransport(params: {
   pool: LaunchPool;
   internalPermitJobId: string | null;
   cleanupHandles: Map<symbol, DurableProcessCleanup>;
-  pendingLaunches: Set<Promise<void>>;
+  cleanupRetentions: Map<DurableProcessCleanup, DurableProcessRetention>;
+  pendingLaunches: Set<PendingDurableLaunch>;
   releaseLaunch: (jobId: string, pool: LaunchPool) => void;
 }): Promise<CliExecResult> {
-  const { runtime, options, pool, cleanupHandles, pendingLaunches, releaseLaunch } = params;
+  const { runtime, options, pool, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
   const { internalPermitJobId } = params;
   let abortHandler: (() => void) | null = null;
   let cleanupKey: symbol | null = null;
@@ -122,11 +156,20 @@ export async function spawnDurableJobTransport(params: {
   let lastUnsettledDetail: string | null = null;
   let publishedPid: number | null = null;
   let publishedSubject: DurableCliProcessSubject | null = null;
+  let retainedProcess: DurableProcessRetention | null = null;
   let resolvePendingLaunch!: () => void;
   let pendingLaunchOwned = true;
-  const pendingLaunch = new Promise<void>((resolve) => {
+  const pendingSettlement = new Promise<void>((resolve) => {
     resolvePendingLaunch = resolve;
   });
+  const pendingLaunch: PendingDurableLaunch = {
+    settled: pendingSettlement,
+    retainedIdentity: () => ({
+      kind: 'awaiting-wrapper-identity',
+      provider: options.provider,
+      jobDir: options.jobDir,
+    }),
+  };
   const releasePendingLaunch = (): void => {
     if (!pendingLaunchOwned) return;
     pendingLaunchOwned = false;
@@ -137,12 +180,13 @@ export async function spawnDurableJobTransport(params: {
 
   const cleanup = (): Promise<GracefulKillByPidOutcome> => {
     if (cleanupInFlight !== null) return cleanupInFlight;
-    if (publishedPid === null)
+    if (publishedPid === null || retainedProcess === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
-    cleanupInFlight = requestDurableProcessTermination(runtime, pid, publishedSubject).then((outcome) => {
+    cleanupInFlight = requestDurableProcessTermination(runtime, retainedProcess).then((outcome) => {
       if (outcome.kind === 'observed-absent' && cleanupKey !== null) {
         cleanupHandles.delete(cleanupKey);
+        cleanupRetentions.delete(cleanup);
         cleanupKey = null;
         lastUnsettledDetail = null;
       } else if (outcome.kind !== 'observed-absent') {
@@ -165,18 +209,40 @@ export async function spawnDurableJobTransport(params: {
     return cleanupInFlight;
   };
 
+  const publishWrapperSpawned = (launch: { pid: number; leaderIncarnation: ProcessIncarnation | null }): void => {
+    if (publishedPid !== null) {
+      if (publishedPid !== launch.pid) {
+        throw new Error('Durable launch changed process identity after provisional publication.');
+      }
+      return;
+    }
+    publishedPid = launch.pid;
+    retainedProcess =
+      launch.leaderIncarnation === null
+        ? { kind: 'unverified-wrapper-pid', provider: options.provider, jobDir: options.jobDir, pid: launch.pid }
+        : {
+            kind: 'recorded-wrapper-group',
+            provider: options.provider,
+            jobDir: options.jobDir,
+            containment: {
+              pid: launch.pid,
+              incarnation: launch.leaderIncarnation,
+              processGroupId: launch.pid,
+              childRoot: null,
+            },
+          };
+    cleanupKey = Symbol();
+    cleanupHandles.set(cleanupKey, cleanup);
+    cleanupRetentions.set(cleanup, retainedProcess);
+    releasePendingLaunch();
+  };
+
   const publishSpawned = (launch: {
     runtimeRecord: Extract<JobRuntime, { transport: 'durable-cli' }>;
     leaderIncarnation: ProcessIncarnation | null;
     childPid: number | null;
   }): void => {
-    if (publishedPid !== null) {
-      if (publishedPid !== launch.runtimeRecord.pid) {
-        throw new Error('Durable launch changed process identity after provisional publication.');
-      }
-      return;
-    }
-    publishedPid = launch.runtimeRecord.pid;
+    publishWrapperSpawned({ pid: launch.runtimeRecord.pid, leaderIncarnation: launch.leaderIncarnation });
     let childIncarnation: ProcessIncarnation | null = null;
     if (launch.childPid !== null) {
       try {
@@ -195,12 +261,16 @@ export async function spawnDurableJobTransport(params: {
         processGroupId: launch.runtimeRecord.pid,
         childRoot: { pid: launch.childPid, incarnation: childIncarnation },
       };
+      retainedProcess = {
+        kind: 'recorded-wrapper-group',
+        provider: options.provider,
+        jobDir: options.jobDir,
+        containment: { ...publishedSubject, childRoot: publishedSubject.childRoot },
+      };
+      cleanupRetentions.set(cleanup, retainedProcess);
     }
-    cleanupKey = Symbol();
-    cleanupHandles.set(cleanupKey, cleanup);
     if (publishedSubject !== null) options.onDurableProcessIdentity?.(publishedSubject);
     options.onRuntimeRecord?.(launch.runtimeRecord);
-    releasePendingLaunch();
   };
 
   try {
@@ -208,7 +278,7 @@ export async function spawnDurableJobTransport(params: {
       return { stdout: '', stderr: '', code: null, aborted: true };
     }
 
-    const durable = await runtime.process.durable.launch({
+    const launchOptions = {
       provider: options.provider,
       command: options.command,
       args: options.args,
@@ -217,8 +287,10 @@ export async function spawnDurableJobTransport(params: {
       jobDir: options.jobDir,
       envAdditions: options.extraEnv,
       env: options.exactEnv,
+      onWrapperSpawned: publishWrapperSpawned,
       onSpawned: publishSpawned,
-    });
+    };
+    const durable = await runtime.process.durable.launch(launchOptions);
     if (publishedPid === null) {
       let leaderIncarnation: ProcessIncarnation | null;
       try {
@@ -324,6 +396,7 @@ export async function spawnDurableJobTransport(params: {
     releasePendingLaunch();
     if (durableExitObserved && cleanupKey !== null) {
       cleanupHandles.delete(cleanupKey);
+      cleanupRetentions.delete(cleanup);
     }
     if (abortHandler && options.signal) {
       options.signal.removeEventListener('abort', abortHandler);

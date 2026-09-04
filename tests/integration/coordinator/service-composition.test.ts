@@ -2415,14 +2415,14 @@ describe('ExecutionService', () => {
         cleanup();
       });
 
-      it('routes abort through runtime.process.kill', async () => {
+      it('does not expose recovered durable containment through the void abort registry', async () => {
         const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => true);
         const service = createService(ctx);
         const { progressStore, abortRegistry } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
           getInternals(service);
 
-        const jobId = `adopt-abort-${randomUUID()}`;
+        const jobId = randomUUID();
         const sessionId = `session-adopt-abort-${randomUUID()}`;
         trackJob(jobId);
 
@@ -2444,17 +2444,16 @@ describe('ExecutionService', () => {
         const runtimeRecord = makeRuntimeRecord({ pid: 54321 });
         progressStore.appendLaunchRequested(jobId, launchRecord);
         progressStore.appendRuntimeStarted(jobId, runtimeRecord);
-
         const { cleanup } = await service.adoptRunningJob(
           await captureRecoveryAuthority(service, launchRecord),
           runtimeRecord,
         );
 
         expect(abortRegistry.abort([jobId])).toEqual({
-          aborted: [jobId],
-          notFound: [],
+          aborted: [],
+          notFound: [jobId],
         });
-        expect(killSpy).toHaveBeenCalledWith(54321, 'SIGTERM');
+        expect(killSpy).not.toHaveBeenCalled();
 
         cleanup();
       });

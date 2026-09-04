@@ -17,6 +17,15 @@ export function readDurableCliProcessRuntimeMeta(db: Database, jobId: string): D
   return decodeDurableCliProcessRuntimeMeta(readMetaValue(db, durableCliProcessRuntimeMetaKey(jobId)));
 }
 
+export function readMatchingDurableCliProcessRuntimeMeta(
+  db: Database,
+  jobId: string,
+  journalPid: number,
+): DurableCliProcessRuntimeMeta | null {
+  const meta = readDurableCliProcessRuntimeMeta(db, jobId);
+  return meta?.jobId === jobId && meta.pid === journalPid ? meta : null;
+}
+
 export function writeDurableCliProcessRuntimeMeta(db: Database, meta: DurableCliProcessRuntimeMeta): void {
   db.prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
     durableCliProcessRuntimeMetaKey(meta.jobId),

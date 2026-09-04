@@ -64,6 +64,7 @@ export interface ProviderHostManager {
   ): Promise<ManagedAppServerSession | null>;
   drainForHandoff(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt>;
   shutdown(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt>;
+  cleanupObligations?(): ProviderHostCleanupObligations;
   /**
    * The live proxy set's operation-routing capability for `spec`'s executable identity, or `null` when no
    * set is live for it yet. Never triggers or waits on an acquisition — that stays fire-and-forget, started
@@ -79,7 +80,13 @@ export type ProviderHostQuiescenceReceipt = Readonly<{
   acquisitionCleanupHolds: readonly ProviderProxyAcquisitionHeld<'provider-host-manager'>[];
 }>;
 
-export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
+export type ProviderHostCleanupObligations = Pick<
+  ProviderHostQuiescenceReceipt,
+  'liveProxySets' | 'acquisitionCleanupHolds'
+>;
+
+export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'> &
+  Partial<Pick<ProviderHostManager, 'cleanupObligations'>>;
 
 /** Re-evaluates one host after a durable carrier fact changes. */
 export interface ProviderHostRetirementReevaluation {
@@ -307,6 +314,14 @@ export class DefaultProviderHostManager
    *  `ProviderProxyAuthorityRegistry.liveSets()`'s own doc for what this snapshot does and does not promise. */
   liveSets(): readonly ProviderProxySetAuthority[] {
     return this.providerProxyLifecycleRef?.get()?.liveSets() ?? [];
+  }
+
+  cleanupObligations(): ProviderHostCleanupObligations {
+    const lifecycle = this.providerProxyLifecycleRef?.get();
+    return {
+      liveProxySets: lifecycle?.liveSets() ?? [],
+      acquisitionCleanupHolds: lifecycle?.acquisitionCleanupHolds() ?? [],
+    };
   }
 
   /** See `ProviderProxySetRegistration.registerInheritedSet()`'s interface doc for this seam's full contract. */
@@ -795,11 +810,9 @@ export class DefaultProviderHostManager
       ]);
       const failed = outcomes.find((outcome) => outcome.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
-      const lifecycle = this.providerProxyLifecycleRef?.get();
       return {
         kind: 'provider-hosts-quiesced',
-        liveProxySets: lifecycle?.liveSets() ?? [],
-        acquisitionCleanupHolds: lifecycle?.acquisitionCleanupHolds() ?? [],
+        ...this.cleanupObligations(),
       };
     } finally {
       signal?.removeEventListener('abort', stopReclamation);

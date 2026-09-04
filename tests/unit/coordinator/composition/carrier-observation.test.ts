@@ -334,7 +334,7 @@ describe('createObserveCarriers', () => {
       pid: DEAD_PID,
       incarnation: testIncarnation(1),
       processGroupId: DEAD_PID,
-      childRoot: { pid: DEAD_PID + 1, incarnation: testIncarnation(2) },
+      childRoot: { pid: DEAD_PID - 1, incarnation: testIncarnation(2) },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 9);
 
@@ -363,6 +363,32 @@ describe('createObserveCarriers', () => {
       processGroupId: process.pid,
       childRoot: { pid: process.pid, incarnation: ownIncarnation },
     });
+    const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
+
+    expect(await observe([DURABLE_JOB_ID])).toEqual([
+      { jobId: DURABLE_JOB_ID, liveness: 'live', storedPhase: 'running', observedMaxJournalSeq: 7 },
+    ]);
+  });
+
+  it('reports a durable CLI job as live while its child survives the wrapper and group', async () => {
+    const runtime: JobRuntime = {
+      transport: 'durable-cli',
+      pid: 4242,
+      stdoutPath: '/tmp/o',
+      stderrPath: '/tmp/e',
+      startTime: '2026-04-19T00:00:00.000Z',
+    };
+    const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
+    const db = createDb();
+    writeDurableCliProcessRuntimeMeta(db, {
+      jobId: DURABLE_JOB_ID,
+      pid: 4242,
+      incarnation: testIncarnation(1),
+      processGroupId: 4242,
+      childRoot: { pid: 4243, incarnation: testIncarnation(2) },
+    });
+    mockedProbe.mockReturnValueOnce(null).mockReturnValueOnce(testIncarnation(2));
+    mockedIsAlive.mockReturnValueOnce('absent').mockReturnValueOnce('absent');
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
     expect(await observe([DURABLE_JOB_ID])).toEqual([

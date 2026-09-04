@@ -1411,13 +1411,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       (record) => {
         this.deps.progressStore.appendRuntimeStarted(jobId, record);
       },
-      // Recorded once, at the only moment it can be captured honestly (see `durable-transport.ts`). Never a
-      // substitute for the `job.runtime.started` append above — this is `meta`, not journal truth.
-      //
-      // Which is why a failed write must not fail the launch. This callback runs between the child's spawn
-      // and its cleanup registration, so a throw here would fault the job over bookkeeping and strand the
-      // very process it was describing. Losing the record only costs a later carrier verdict its `absent`,
-      // leaving `unknown` — the conservative direction the tri-state exists to fall back to.
+      // Losing optional observation metadata may only degrade a later carrier verdict to `unknown`; it must
+      // not fault the launch.
       (identity) => {
         try {
           writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {

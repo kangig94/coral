@@ -63,7 +63,7 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
   runtime.process.observeLiveness = vi.fn(observeLiveness);
   runtime.process.readProcessIncarnation = readProcessIncarnation;
   runtime.process.kill = kill;
-  const recoveryRegistry = new RecoveryRegistry(runtime.process);
+  const recoveryRegistry = new RecoveryRegistry();
   const settleFault = vi.fn(() => COORDINATOR_NOT_APPLICABLE_FACTS);
   let cleanup: (() => void) | null = null;
 

@@ -642,7 +642,7 @@ describe('coordinator continuity lifecycle integration', () => {
       pid: deadPid,
       incarnation: testIncarnation(1),
       processGroupId: deadPid,
-      childRoot: { pid: deadPid + 1, incarnation: testIncarnation(2) },
+      childRoot: { pid: deadPid - 1, incarnation: testIncarnation(2) },
     });
     const expectedStoredPhase = progressStore.readStatus(jobId)?.phase;
 

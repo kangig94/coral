@@ -10,11 +10,18 @@ import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
-import { readDurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta-store.js';
+import {
+  readDurableCliProcessRuntimeMeta,
+  readMatchingDurableCliProcessRuntimeMeta,
+} from '../../../jobs/runtime-meta-store.js';
 import type { DurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../../infra/process-containment.js';
+import {
+  abortRecordedContainment,
+  reapRecordedContainment,
+  type RecordedContainmentAbortResult,
+} from '../../../infra/process-containment.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
@@ -35,6 +42,7 @@ const DURABLE_RECOVERY_REAP_DEADLINE_MS =
   SIGKILL_GRACE_MS +
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS +
   2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS;
+const DURABLE_RECOVERY_ABORT_DEADLINE_MS = 2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS + 1;
 
 export const COORDINATOR_NOT_APPLICABLE_FACTS: readonly RecoverySettlementFact[] = Object.freeze([
   Object.freeze({ obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'not-applicable' as const }),
@@ -77,6 +85,26 @@ async function reapDurableCliProcess(
   } catch (error: unknown) {
     return { kind: 'held', reason: errorMessage(error) };
   }
+}
+
+function abortDurableCliProcess(
+  runtime: Runtime,
+  record: DurableCliProcessRuntimeMeta | null,
+): RecordedContainmentAbortResult {
+  if (record === null) {
+    return { kind: 'refused', reason: 'the recorded durable process containment is unavailable' };
+  }
+  const clock = createMonotonicClock(durableRecoveryClockScope, {
+    readMilliseconds: () => runtime.time.monotonicNow(),
+    sleep: (milliseconds) => runtime.time.sleep(milliseconds),
+  });
+  return abortRecordedContainment(record, clock.shiftMilliseconds(clock.now(), DURABLE_RECOVERY_ABORT_DEADLINE_MS), {
+    maxRecordedRoots: 1,
+    clock,
+    process: runtime.process,
+    platform: runtime.env.platform() as NodeJS.Platform,
+    readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+  });
 }
 
 type RecoveryActionContext = {
@@ -204,7 +232,15 @@ async function registerRunningRecovery(
     clearProcessLocalCleanup,
   } = ctx;
   const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
-  recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord);
+  const recordedContainment = isDurableCliRuntime(action.runtimeRecord)
+    ? readMatchingDurableCliProcessRuntimeMeta(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
+    : null;
+  recoveryRegistry.register(
+    action.jobId,
+    action.launchRecord,
+    action.runtimeRecord,
+    isDurableCliRuntime(action.runtimeRecord) ? () => abortDurableCliProcess(runtime, recordedContainment) : undefined,
+  );
   setProcessLocalCleanup(() => recoveryRegistry.remove(action.jobId));
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
@@ -262,9 +298,12 @@ async function registerRunningRecovery(
       void service.interruptAppServerJob(authority, runtimeRecord).catch((error: unknown) => {
         log(`Failed to interrupt recovered app-server job ${action.jobId}: ${formatError(error)}\n`);
       });
+      return { kind: 'accepted' };
     });
   } else {
-    recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord);
+    recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord, () =>
+      abortDurableCliProcess(runtime, recordedContainment),
+    );
   }
   runningRecoverable.push({
     jobId: action.jobId,

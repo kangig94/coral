@@ -201,12 +201,23 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
   if (disposition.kind === 'all-observed-absent') return { confirmed: true };
   if (disposition.kind === 'unresolved-at-deadline') {
     const observations = disposition.processes.map(retriedChildProcessDetail).join('; ');
+    const retainedLaunches = disposition.retainedLaunches
+      .map((launch) => `${launch.provider}:${launch.jobDir} awaiting wrapper identity`)
+      .join('; ');
+    const retainedProcesses = disposition.retainedProcesses
+      .map((process) =>
+        process.kind === 'recorded-wrapper-group'
+          ? `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`
+          : `${process.provider}:${process.jobDir} unverified pid ${process.pid}`,
+      )
+      .join('; ');
+    const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
     return {
       confirmed: false,
       detail:
         `${disposition.cleanupHandles} cleanup handle(s) and ${disposition.pendingLaunches} pending launch(es) ` +
-        `remain owned by ${disposition.successorOwner}` +
-        `${observations.length === 0 ? '' : ` (${observations})`}. ` +
+        `remain owned by ${disposition.owner}` +
+        `${observations.length === 0 && retained.length === 0 ? '' : ` (${[observations, retained].filter(Boolean).join('; ')})`}. ` +
         'Run coral-cli backend status, then coral-cli abort <job-id> for each retained job.',
     };
   }
@@ -437,8 +448,9 @@ export async function runShutdownSequence({
       providerHostQuiescence.receipt = await providerHostManager.shutdown(signal);
       return { confirmed: true };
     });
-    liveProxySets = providerHostQuiescence.receipt?.liveProxySets ?? [];
-    acquisitionCleanupHolds = providerHostQuiescence.receipt?.acquisitionCleanupHolds ?? [];
+    const cleanupObligations = providerHostManager.cleanupObligations?.() ?? providerHostQuiescence.receipt;
+    liveProxySets = cleanupObligations?.liveProxySets ?? [];
+    acquisitionCleanupHolds = cleanupObligations?.acquisitionCleanupHolds ?? [];
     if (liveProxySets.length > 0 || acquisitionCleanupHolds.length > 0) {
       await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
         reapProviderProxySets(liveProxySets, acquisitionCleanupHolds, signal),

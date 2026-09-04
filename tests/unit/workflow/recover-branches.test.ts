@@ -1411,7 +1411,7 @@ describe('workflow recovery branch rules', () => {
     }
   });
 
-  it('releases real adopted child state and continues to a healthy workflow after recovery fails', async () => {
+  it('retains an adopted child without containment evidence and continues to a healthy workflow after recovery fails', async () => {
     const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
     const failedWorkflowId = 'workflow-adopted-child';
     const healthyWorkflowId = 'workflow-after-adopted-child';
@@ -1630,9 +1630,9 @@ describe('workflow recovery branch rules', () => {
 
       expect(backend.progressStore.readStatus(failedWorkflowId)?.phase).toBe('error');
       expect(backend.progressStore.readStatus(healthyWorkflowId)?.phase).toBe('completed');
-      expect(kill).toHaveBeenCalledWith(durable.pid, 'SIGTERM');
-      expect(releaseLaunch).toHaveBeenCalledWith(childJobId, 'default');
-      expect(backend.launchCoordinator.getActiveJobIds()).not.toContain(childJobId);
+      expect(kill).not.toHaveBeenCalled();
+      expect(releaseLaunch).not.toHaveBeenCalledWith(childJobId, 'default');
+      expect(backend.launchCoordinator.getActiveJobIds()).toContain(childJobId);
       expect(backend.service.abort([childJobId])).toEqual({ aborted: [], notFound: [childJobId] });
       expect(
         createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,

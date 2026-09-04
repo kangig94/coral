@@ -1,7 +1,6 @@
 import type { JobLaunch, JobRuntime } from '../records.js';
-import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { AbortResult } from '../contracts/abort-registry.js';
-import type { ProcessPort } from '../../runtime/ports.js';
+import type { RecordedContainmentAbortResult } from '../../infra/process-containment.js';
 
 export interface RecoveryEntry {
   launchRecord: JobLaunch;
@@ -10,29 +9,26 @@ export interface RecoveryEntry {
 
 export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
-  private readonly abortHandlers = new Map<string, () => void>();
+  private readonly abortHandlers = new Map<string, () => RecordedContainmentAbortResult>();
   private readonly cancelledJobIds: Set<string>;
 
-  private readonly runtimeProcess?: Pick<ProcessPort, 'kill'>;
-  constructor(runtimeProcess?: Pick<ProcessPort, 'kill'>, cancelledJobIds: Set<string> = new Set()) {
-    this.runtimeProcess = runtimeProcess;
+  constructor(cancelledJobIds: Set<string> = new Set()) {
     this.cancelledJobIds = cancelledJobIds;
   }
 
-  register(jobId: string, launchRecord: JobLaunch, runtimeRecord?: JobRuntime, abortHandler?: () => void): void {
+  register(
+    jobId: string,
+    launchRecord: JobLaunch,
+    runtimeRecord?: JobRuntime,
+    abortHandler?: () => RecordedContainmentAbortResult,
+  ): void {
     this.entries.set(jobId, { launchRecord, runtimeRecord });
 
     if (abortHandler) {
       this.abortHandlers.set(jobId, abortHandler);
       return;
     }
-
-    if (!isDurableCliRuntime(runtimeRecord)) return;
-
-    const pid = runtimeRecord.pid;
-    this.abortHandlers.set(jobId, () => {
-      this.runtimeProcess?.kill(pid, 'SIGTERM');
-    });
+    this.abortHandlers.delete(jobId);
   }
 
   has(jobId: string): boolean {
@@ -57,7 +53,11 @@ export class RecoveryRegistry {
         notFound.push(jobId);
         continue;
       }
-      abortHandler?.();
+      const disposition = abortHandler?.() ?? { kind: 'accepted' as const };
+      if (disposition.kind === 'refused') {
+        notFound.push(jobId);
+        continue;
+      }
       this.cancelledJobIds.add(jobId);
       this.remove(jobId);
       aborted.push(jobId);

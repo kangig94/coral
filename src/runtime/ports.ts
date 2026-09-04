@@ -66,6 +66,7 @@ export type DurableLaunchOptions = {
   envAdditions?: Record<string, string>;
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;
+  onWrapperSpawned?(launch: Readonly<{ pid: number; leaderIncarnation: ProcessIncarnation | null }>): void;
   /** Runs after the wrapper identifies its child and before launch readiness is returned. */
   onSpawned?(launch: DurableProvisionalLaunch): void;
 };
@@ -87,6 +88,7 @@ export type DurableLaunchResult = {
   stdoutPath: string;
   stderrPath: string;
   runtimeRecord: DurableCliRuntimeRecord;
+  processSubject?: DurableCliProcessSubject | null;
 };
 
 export interface DurableExecutionTransport {

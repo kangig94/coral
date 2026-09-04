@@ -1,5 +1,6 @@
 import type { Database } from '../../store/db.js';
 import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
+import { observeRecordedContainment } from '../../infra/process-containment.js';
 import {
   classifyCarrier,
   type CarrierEvidence,
@@ -9,7 +10,7 @@ import {
   type LocalOperationRegistryState,
 } from '../../jobs/carrier-observation.js';
 import type { JobProjectionDetail } from '../../jobs/read-queries.js';
-import { readDurableCliProcessRuntimeMeta } from '../../jobs/runtime-meta-store.js';
+import { readMatchingDurableCliProcessRuntimeMeta } from '../../jobs/runtime-meta-store.js';
 import { LAUNCH_POOLS, type LaunchPool } from '../../jobs/contracts/admission.js';
 import type { CarrierWaitObservation } from '../../jobs/shell/wait.js';
 import { hasProviderOperationForJob, readProviderOperationForJob } from '../../store/provider-operation-journal.js';
@@ -63,33 +64,22 @@ function durableCliEvidence(
   journalPid: number,
   platform: NodeJS.Platform,
 ): CarrierEvidence {
-  const meta = readDurableCliProcessRuntimeMeta(db, jobId);
-  if (meta === null || meta.pid !== journalPid) {
+  const meta = readMatchingDurableCliProcessRuntimeMeta(db, jobId, journalPid);
+  if (meta === null) {
     return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
   }
 
-  const observedIncarnation = probeProcessIncarnation(meta.pid, platform);
-  if (observedIncarnation === null) {
-    // Alive OR unanswerable both mean 'not observed gone', which is what this branch needs.
-    if (observeProcessLiveness(meta.pid) !== 'absent') {
-      // Alive but its incarnation is unreadable: cannot tell a recycled pid from the same process, so this
-      // stays "nothing to check against" rather than a guess in either direction.
-      return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
-    }
-    return {
-      carrierClass: 'durable-cli',
-      process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false },
-    };
+  const observation = observeRecordedContainment(meta, {
+    process: { observeLiveness: observeProcessLiveness },
+    platform,
+    readProcessIncarnation: probeProcessIncarnation,
+  });
+  if (observation.kind === 'unobservable') {
+    return { carrierClass: 'durable-cli', process: { kind: 'uncaptured' } };
   }
-
-  return {
-    carrierClass: 'durable-cli',
-    process: {
-      kind: 'recorded',
-      alive: true,
-      matchesRecordedIncarnation: observedIncarnation === meta.incarnation,
-    },
-  };
+  return observation.kind === 'alive'
+    ? { carrierClass: 'durable-cli', process: { kind: 'recorded', alive: true, matchesRecordedIncarnation: true } }
+    : { carrierClass: 'durable-cli', process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false } };
 }
 
 /**

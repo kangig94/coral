@@ -251,7 +251,7 @@ describe('provider transport concurrency hardening', () => {
         {
           kind: 'signal-refused',
           pid: 30_001,
-          reason: 'recorded-incarnation-unavailable',
+          reason: 'signal-authorizing-incarnation-unavailable',
         },
       ],
     });

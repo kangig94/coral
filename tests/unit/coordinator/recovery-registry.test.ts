@@ -109,19 +109,33 @@ describe('RecoveryRegistry', () => {
     expect(result.aborted).toEqual([]);
   });
 
-  it('abort succeeds for registered jobs with runtimeRecord', () => {
-    const kill = vi.fn();
-    const reg = new RecoveryRegistry({ kill });
-    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeRuntimeRecord());
+  it('abort succeeds for a running job only after its containment handler accepts', () => {
+    const abortHandler = vi.fn(() => ({ kind: 'accepted' as const }));
+    const reg = new RecoveryRegistry();
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeRuntimeRecord(), abortHandler);
     const result = reg.abort(['j1']);
     expect(result.aborted).toEqual(['j1']);
     expect(result.notFound).toEqual([]);
-    expect(kill).toHaveBeenCalledWith(12345, 'SIGTERM');
+    expect(abortHandler).toHaveBeenCalledOnce();
+    expect(reg.has('j1')).toBe(false);
+  });
+
+  it('retains running-job ownership when its containment abort is refused', () => {
+    const cancelledJobIds = new Set<string>();
+    const reg = new RecoveryRegistry(cancelledJobIds);
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeRuntimeRecord(), () => ({
+      kind: 'refused',
+      reason: 'leader pid recycled',
+    }));
+
+    expect(reg.abort(['j1'])).toEqual({ aborted: [], notFound: ['j1'] });
+    expect(reg.has('j1')).toBe(true);
+    expect(cancelledJobIds.has('j1')).toBe(false);
   });
 
   it('abort cancels queued jobs without reporting a no-op success', () => {
     const cancelledJobIds = new Set<string>();
-    const reg = new RecoveryRegistry(undefined, cancelledJobIds);
+    const reg = new RecoveryRegistry(cancelledJobIds);
     reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
     const result = reg.abort(['j1']);
     expect(result.aborted).toEqual(['j1']);
@@ -133,7 +147,7 @@ describe('RecoveryRegistry', () => {
   it('abort handles mixed found and notFound jobs', () => {
     const reg = new RecoveryRegistry();
     reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
-    reg.register('j2', makeLaunchRecord({ jobId: 'j2' }), makeRuntimeRecord());
+    reg.register('j2', makeLaunchRecord({ jobId: 'j2' }), makeRuntimeRecord(), () => ({ kind: 'accepted' }));
     const result = reg.abort(['j1', 'missing', 'j2']);
     expect(result.aborted).toEqual(['j1', 'j2']);
     expect(result.notFound).toEqual(['missing']);
@@ -143,7 +157,10 @@ describe('RecoveryRegistry', () => {
     const reg = new RecoveryRegistry();
     const abortDelegate = vi.fn();
 
-    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeAppServerRuntimeRecord(), abortDelegate);
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeAppServerRuntimeRecord(), () => {
+      abortDelegate();
+      return { kind: 'accepted' };
+    });
 
     expect(reg.abort(['j1'])).toEqual({
       aborted: ['j1'],
