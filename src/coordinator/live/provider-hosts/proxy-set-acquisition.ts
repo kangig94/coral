@@ -49,15 +49,8 @@ export type ProviderProxySetAcquisitionConfig = Readonly<{
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
   /**
-   * Builds the durable-effect handler for `provider.event.v1` fresh, once per acquisition, rather than
-   * accepting an already-built handler: this config is composed once, before the store exists
-   * (`composition/world.ts` runs ahead of store open), while the handler itself needs the store. A factory
-   * lets construction stay eager while evaluation stays lazy — it is only ever called once control is
-   * actually established on the proxy role, by which point real provider work is already running and the
-   * store is certainly open. Absent in every composition that does not wire proxy event application (every
-   * test, and any coordinator build with W2.3 disabled) — the proxy connection is then opened with no
-   * `onProviderEvent` handler installed at all, so a peer sending `provider.event.v1` over it gets the
-   * protocol's own `protocol_violation` refusal instead of silence.
+   * Must remain a factory because the handler may depend on resources unavailable when acquisition is
+   * configured. Invocation is permitted only after provider-proxy control is established.
    */
   onProviderEvent?: () => ProviderEventHandler;
 }>;

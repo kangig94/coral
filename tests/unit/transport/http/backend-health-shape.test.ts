@@ -492,14 +492,30 @@ describe('/health typed shape (AC10a)', () => {
     },
   );
 
-  it('defaults a pre-action-contract row to wait', () => {
+  it('reads a pre-action-contract row through the action its own build would have shown', () => {
     const { operatorAction: _operatorAction, ...olderRow } = PROVIDER_PROXY_SET;
     const parsed = parseBackendHealth({
       ...HEALTHY_BASE,
       diagnostics: { providerProxySets: [olderRow] },
     });
 
-    expect(parsed?.health.diagnostics?.providerProxySets).toEqual([{ ...olderRow, operatorAction: 'wait' }]);
+    expect(parsed?.health.diagnostics?.providerProxySets).toEqual([{ ...olderRow, operatorAction: 'contain' }]);
+  });
+
+  it('skips a pre-action-contract row whose waiting condition postdates the contract', () => {
+    const { operatorAction: _operatorAction, ...olderRow } = PROVIDER_PROXY_SET;
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: {
+        providerProxySets: [{ ...olderRow, waitingFor: 'containment-outcome-unknown' }],
+      },
+    });
+
+    expect(parsed).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
+    });
   });
 
   it('skips a row with an unknown operator action', () => {

@@ -3235,7 +3235,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(kill).not.toHaveBeenCalled();
   });
 
-  it('keeps the operator hold when the recorded leader is gone but its group is unattributable', async () => {
+  it('does not let a stale unattributable-group refusal change a pre-reap abandonment receipt', async () => {
     const record = providerOperationRecord('executing');
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
       kind: 'recorded-group-unattributable',
@@ -3265,8 +3265,12 @@ describe('ProviderProxySetLifecycle', () => {
 
     await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, true)).resolves.toEqual(
       expect.objectContaining({
-        kind: 'unattributable-group-abandoned',
+        kind: 'abandoned',
         setIdentity,
+        enforcerObservations: [
+          { role: 'guardian', observation: 'absent' },
+          { role: 'reaper', observation: 'absent' },
+        ],
         claimDischarge: { kind: 'completed' },
         effect: {
           signalsSent: [],
@@ -3275,6 +3279,7 @@ describe('ProviderProxySetLifecycle', () => {
         },
       }),
     );
+    expect(reapRecordedContainment).toHaveBeenCalledTimes(1);
     expect(harness.stopAndReap).not.toHaveBeenCalled();
   });
 

@@ -218,6 +218,29 @@ type ProviderProxySetsParseResult = Readonly<{
   skippedSetTokens: string[];
 }>;
 
+/** A row without `operatorAction` was produced before the action contract existed, so only the
+ *  waiting conditions that predate the contract are decidable here. A waiting condition this build
+ *  added after the contract cannot reach an action-less row, and guessing one would invent an
+ *  operator instruction from evidence the producer never sent: leave it undecidable and let the
+ *  caller skip the row. */
+function preActionContractOperatorAction(
+  waitingFor: string,
+): ProviderProxySetOperatorDisposition['operatorAction'] | null {
+  switch (waitingFor) {
+    case 'control-reattachment':
+    case 'independent-containment-absence':
+    case 'set-adoption-deadline':
+    case 'operator-abandonment':
+    case 'store-repair':
+      return 'contain';
+    case 'heartbeat-evidence-window':
+    case 'ordinary-drain':
+      return 'wait';
+    default:
+      return null;
+  }
+}
+
 function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | null {
   if (!Array.isArray(value)) {
     return null;
@@ -279,6 +302,15 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       skippedSetTokens.push(entry.setToken);
       continue;
     }
+    const operatorAction =
+      entry.operatorAction === undefined
+        ? preActionContractOperatorAction(entry.waitingFor)
+        : (entry.operatorAction as ProviderProxySetOperatorDisposition['operatorAction']);
+    if (operatorAction === null) {
+      skippedRows += 1;
+      skippedSetTokens.push(entry.setToken);
+      continue;
+    }
 
     if (
       (entry.role !== undefined && typeof entry.role !== 'string') ||
@@ -310,7 +342,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
 
     understoodRows.push({
       ...entry,
-      operatorAction: entry.operatorAction ?? 'wait',
+      operatorAction,
       ...(enforcerObservations === undefined ? {} : { enforcerObservations: enforcerObservations.data }),
     } as ProviderProxySet);
   }

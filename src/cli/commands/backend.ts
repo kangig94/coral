@@ -252,7 +252,6 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
 > = {
   contained: 0,
   abandoned: 0,
-  'unattributable-group-abandoned': 0,
   'set-not-found': 1,
   'not-held': 1,
   'deadline-pending': 75,
@@ -275,10 +274,7 @@ export const UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES: Readonly<
 };
 
 function providerProxySetContainExitCode(result: ProviderProxySetContainResponse): 0 | 1 | 75 {
-  if (
-    (result.kind === 'contained' || result.kind === 'abandoned' || result.kind === 'unattributable-group-abandoned') &&
-    result.claimDischarge.kind !== 'completed'
-  ) {
+  if ((result.kind === 'contained' || result.kind === 'abandoned') && result.claimDischarge.kind !== 'completed') {
     return 75;
   }
   return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];
@@ -1630,7 +1626,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       [
         '',
         'Default mode requires guardian and reaper absence, then reaps the recorded proxy process group and every recorded provider root.',
-        '--abandon-without-absence signals no process and releases Coral representation despite observed life, unknown observation, or an unattributable recorded group.',
+        '--abandon-without-absence performs no recorded-containment reap, signals no process, and releases Coral representation despite observed life, unknown observation, or an unattributable recorded group.',
         'Neither mode signals the guardian or reaper.',
         'A reattachment hold is gated by its control-adoption deadline; containing and containment-wait are gated by their current containment-attempt deadline.',
       ].join('\n'),

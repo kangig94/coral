@@ -35,10 +35,7 @@ export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
 function formatProviderProxySetClaimDischarge(
-  discharge: Extract<
-    ProviderProxySetContainResponse,
-    { kind: 'contained' | 'abandoned' | 'unattributable-group-abandoned' }
-  >['claimDischarge'],
+  discharge: Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>['claimDischarge'],
 ): string {
   switch (discharge.kind) {
     case 'completed':
@@ -88,15 +85,6 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
         'Next step: run coral-cli backend status and verify the proxy, guardian, reaper, and provider processes externally.',
-      ].join('\n');
-    case 'unattributable-group-abandoned':
-      return [
-        `Provider proxy set ${token} was abandoned after its recorded process group became unattributable.`,
-        'Observed: the recorded leader identity is gone.',
-        'Not observed: absence of the process group or proof that its numeric group id still belongs to this set.',
-        `Effect: ${effect}.`,
-        formatProviderProxySetClaimDischarge(result.claimDischarge),
-        'Next step: run coral-cli backend status and verify the proxy and provider processes externally.',
       ].join('\n');
     case 'set-not-found':
       return [

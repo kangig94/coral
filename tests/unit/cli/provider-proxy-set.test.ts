@@ -62,7 +62,7 @@ const containCommandCases: readonly ContainCommandCase[] = [
       setIdentity: address,
       enforcerObservations: [
         { role: 'guardian', observation: 'absent' },
-        { role: 'reaper', observation: 'unknown' },
+        { role: 'reaper', observation: 'absent' },
       ],
       claimDischarge: { kind: 'completed' },
       effect: abandonedEffect,
@@ -70,18 +70,6 @@ const containCommandCases: readonly ContainCommandCase[] = [
     exitCode: 0,
     stream: 'stdout',
     message: 'was abandoned without absence proof',
-  },
-  {
-    name: 'unattributable group abandoned',
-    result: {
-      kind: 'unattributable-group-abandoned',
-      setIdentity: address,
-      claimDischarge: { kind: 'completed' },
-      effect: abandonedEffect,
-    },
-    exitCode: 0,
-    stream: 'stdout',
-    message: 'was abandoned after its recorded process group became unattributable',
   },
   {
     name: 'set-not-found',
@@ -483,6 +471,21 @@ describe('backend provider-proxy-set contain', () => {
         claimDischarge: { kind: 'completed' },
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts a pre-reap abandonment receipt with absent enforcer observations', () => {
+    const result = {
+      kind: 'abandoned',
+      setIdentity: address,
+      enforcerObservations: [
+        { role: 'guardian', observation: 'absent' },
+        { role: 'reaper', observation: 'absent' },
+      ],
+      claimDischarge: { kind: 'completed' },
+      effect: abandonedEffect,
+    } as const;
+
+    expect(providerProxySetContainResponseSchema.parse(result)).toEqual(result);
   });
 
   it('turns a structurally identified unsupported result into a named no-verdict', async () => {

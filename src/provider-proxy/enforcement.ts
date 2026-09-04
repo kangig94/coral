@@ -75,9 +75,8 @@ export class EnforcementError extends Error {
 
 declare const localSignalTeardownBrand: unique symbol;
 /**
- * Constructible only inside a role's own OS-signal handler. Not substitutable for
- * `ObservedHolderAbsenceAuthorization` or `ExplicitTeardownAuthorization` (holder-lifecycle.ts) despite
- * carrying no public fields either; a local signal authorizes attempting teardown, never inferring absence.
+ * Constructible only inside a role's own OS-signal handler. It authorizes attempting teardown, never
+ * inferring absence, and is not substitutable for absence or explicit teardown authority.
  */
 export type LocalSignalTeardownAuthorization = Readonly<{ readonly [localSignalTeardownBrand]: true }>;
 
@@ -94,8 +93,7 @@ export type ArmedEnforcerOptions<Scope extends symbol> = Readonly<{
   containment: RecordedContainmentIdentity;
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;
-  /** The one home for this process's holder identity (§7) — the same instance already shared with
-   *  `createControlEndpoint` and the deadline machine. This module only reads it: it never installs. */
+  /** The canonical holder identity authority. This module may read it but must never install an identity. */
   holderAuthority: ControlHolderAuthority;
   /** The non-blocking, identity-bound observer a published holder's checks are scheduled through. */
   observeHolder: AsyncRecordedProcessObserver;

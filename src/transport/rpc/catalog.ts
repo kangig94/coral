@@ -68,6 +68,7 @@ import type {
 } from '../../recovery/unreadable-provider-operation.js';
 import {
   providerProxySetAliveEnforcerObservationsSchema,
+  providerProxySetEnforcerObservationsSchema,
   providerProxySetUnobservableEnforcerObservationsSchema,
 } from '../../provider-proxy/containment-proof-contract.js';
 import { PROVIDER_PROXY_SET_LIFECYCLE_STATES } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
@@ -223,17 +224,7 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
     .object({
       kind: z.literal('abandoned'),
       ...providerProxySetContainResultBase,
-      enforcerObservations: z.union([
-        providerProxySetAliveEnforcerObservationsSchema,
-        providerProxySetUnobservableEnforcerObservationsSchema,
-      ]),
-      claimDischarge: providerProxySetClaimDischargeSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('unattributable-group-abandoned'),
-      ...providerProxySetContainResultBase,
+      enforcerObservations: providerProxySetEnforcerObservationsSchema,
       claimDischarge: providerProxySetClaimDischargeSchema,
     })
     .strict(),
