@@ -1,5 +1,9 @@
 import { type DurableCliRuntimeRecord, isDurableCliRuntime } from '../runtime/durable-runtime.js';
-import type { DurableCliProcessSubject, DurableContainmentStatus } from '../runtime/ports.js';
+import type {
+  DurableCliProcessSubject,
+  DurableContainmentStatus,
+  DurableProvisionalProcessSubject,
+} from '../runtime/ports.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { ProviderCliRunner } from './protocol.js';
 
@@ -9,7 +13,7 @@ export type DurableContainmentOperatorControl = Readonly<{
 }>;
 
 export type DurableProcessIdentityCallback = (
-  identity: DurableCliProcessSubject,
+  identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
   status?: DurableContainmentStatus,
   control?: DurableContainmentOperatorControl,
 ) => void;

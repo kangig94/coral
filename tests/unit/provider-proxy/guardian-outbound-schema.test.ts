@@ -445,6 +445,46 @@ describe('guardian outbound schemas', () => {
     expect(harness.reaperExchange).toHaveBeenCalledOnce();
   });
 
+  it('does not latch activation after active control changes during reaper confirmation', async () => {
+    const harness = createGuardianHarness();
+    await armGuardian(harness);
+    const operation = harness.operation();
+    const reservation = randomUUID();
+    const staged = (await harness.call('guardian.register-provider-root.v1', {
+      proxy: harness.proxyIdentity,
+      operation,
+      reservation,
+      providerPid: ROOT.pid,
+      providerIncarnation: ROOT.incarnation,
+    })) as { jointContainmentReceipt: string };
+    const activation = {
+      operation,
+      reservation,
+      providerRoot: ROOT,
+      jointContainmentReceipt: staged.jointContainmentReceipt,
+    };
+    harness.mintReceipt.mockClear();
+    harness.reaperExchange.mockImplementationOnce(async () => {
+      endpointHarness.activeAuthorizationCurrent = false;
+      return controlExchangeForTest({
+        kind: 'response',
+        response: { kind: 'result', value: { state: 'root-recorded' } },
+      });
+    });
+
+    await expect(harness.call('guardian.operation-activate.v1', activation)).rejects.toMatchObject({
+      code: 'unauthorized_control',
+    });
+    expect(harness.mintReceipt).not.toHaveBeenCalled();
+
+    endpointHarness.activeAuthorizationCurrent = true;
+    await expect(harness.call('guardian.operation-activate.v1', activation)).resolves.toMatchObject({
+      state: 'activation-authorized',
+      jointActivationReceipt: expect.any(String),
+    });
+    expect(harness.mintReceipt).toHaveBeenCalledOnce();
+  });
+
   it('replays the enforcer hold when teardown latches but absence is not confirmed', async () => {
     const latchTeardown = vi.fn();
     const holderAuthority = createControlHolderAuthority();

@@ -595,7 +595,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       'guardian.operation-activate.v1',
       {
         authority: 'active',
-        handle: async (params) => {
+        handle: async (params, authorization) => {
           const request = operationActivateParamsSchema.parse(params);
           const key = membershipKey(request.operation);
           const membership = staged.get(key);
@@ -644,6 +644,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               ),
             );
             reaperConfirmProviderRootResultSchema.parse(reaperResult);
+            if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+              throw new ProxyControlProtocolError(
+                'unauthorized_control',
+                'Active control changed before this activation could latch.',
+              );
+            }
             const result = guardianOperationActivateResultSchema.parse({
               state: 'activation-authorized',
               jointActivationReceipt: mintReceipt(),

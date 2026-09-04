@@ -2,6 +2,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
 import { formatError } from '../infra/error-format.js';
+import { processIncarnationProbeRegistrySize, terminateProcessIncarnationProbes } from '../infra/node-process.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -1347,9 +1348,26 @@ export function createLifecycle(
         throw error;
       })
       .finally(() => {
-        runtimeState.setLifecycle('stopped');
-        removeBackendInfoIfOwnerFn(instanceId);
-        onStopped?.();
+        const finalizeStoppedLifecycle = (): void => {
+          runtimeState.setLifecycle('stopped');
+          removeBackendInfoIfOwnerFn(instanceId);
+          onStopped?.();
+        };
+        if (processIncarnationProbeRegistrySize() > 0) {
+          void terminateProcessIncarnationProbes().then((disposition) => {
+            if (disposition.disposition === 'settled') {
+              finalizeStoppedLifecycle();
+              return;
+            }
+            backendLog.error(
+              'Coordinator lifecycle finalization remains held by process-incarnation probe children',
+              disposition.unsettled.map(({ pid, reason, exit }) => ({ pid, reason, exit })),
+            );
+            void disposition.untilSettled.then(finalizeStoppedLifecycle);
+          });
+          return;
+        }
+        finalizeStoppedLifecycle();
       });
 
     return state.shutdownPromise;

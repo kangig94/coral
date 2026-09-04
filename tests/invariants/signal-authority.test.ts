@@ -10,10 +10,8 @@
 // incarnation is wall-clock at one-second resolution and cannot carry this weight at all.
 // A rule enforced by reading is a rule enforced at whatever rate people read.
 //
-// The scan is intentionally coarse — file-level, not call-level. Every file that signals a bare pid must
-// refuse when `incarnationMayAuthorizeSignal` says its identity is insufficient, or carry an entry below
-// saying what makes its number safe. Coarse is the right grain: an exemption is a claim about a subsystem's
-// evidence, and it should be written down where a reader of that subsystem will meet it.
+// Recorded-pid calls are checked after exact self-pid and port-forwarding calls are removed. A safe call in
+// one module must never exempt a recorded-pid sibling in the same module.
 //
 // Signal 0 is not a signal. `kill(pid, 0)` and `kill(-pid, 0)` are liveness probes; the worst a recycled pid
 // does there is answer a question wrongly, which every caller already treats as inconclusive.
@@ -23,7 +21,7 @@
 // `infra/process-supervision.ts`, so its callers (`live/durable-transport.ts`,
 // `services/recovery/actions.ts`) are invisible here. Guarding one call inside an allowlisted file and
 // deleting its entry would therefore pass while its siblings stay unguarded. Until every pid signal goes
-// through one identity-bearing helper, the ALLOWLIST names modules, and
+// through one identity-bearing helper, the remaining ALLOWLIST names modules, and
 // `docs/todo/durable-cli-signal-authority.md` names the behavioural paths.
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -61,7 +59,6 @@ const ALLOWLIST = new Map<string, string>([
     // real cause of death. A process cannot be a stranger to itself.
     'signals its own pid to re-raise a handoff signal',
   ],
-  ['src/cli/commands/backend.ts', 'signals its own pid to re-raise a continuation signal'],
   [
     'src/runtime/exec-builder.ts',
     // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.
@@ -70,6 +67,14 @@ const ALLOWLIST = new Map<string, string>([
     // a record written before a restart. Recorded rather than waved through, and it is the site that proved
     // the scan's own blind spot.
     'signals a child it currently holds and awaits; one-turn exit/close race, tracked with the others',
+  ],
+]);
+
+const EXACT_CALL_ALLOWLIST = new Map<string, string>([
+  ['src/cli/commands/backend.ts:process.kill(process.pid)', 'signals its own pid to re-raise a continuation signal'],
+  [
+    'src/runtime/durable-cli-wrapper.ts:process.kill(-process.pid)',
+    'signals the process group led by its own live process',
   ],
 ]);
 
@@ -107,29 +112,43 @@ function canonicalSrcPath(filePath: string): string {
  * `runtime/exec-builder.ts` does. The scan reported a complete enumeration while missing a real signal path,
  * which is worse than not scanning, because the empty result was read as proof.
  */
-function signalsABarePid(source: string, fileName: string): boolean {
+function barePidSignalCalls(source: string, fileName: string): readonly ts.CallExpression[] {
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
-  let found = false;
+  const found: ts.CallExpression[] = [];
 
   const namesKill = (callee: ts.Expression): boolean =>
     (ts.isPropertyAccessExpression(callee) && callee.name.text === 'kill') ||
     (ts.isIdentifier(callee) && callee.text === 'kill');
 
   const visit = (node: ts.Node): void => {
-    if (found) return;
     if (ts.isCallExpression(node) && namesKill(node.expression) && node.arguments.length >= 2) {
       const signal = node.arguments[1];
       const isProbe = signal !== undefined && ts.isNumericLiteral(signal) && signal.text === '0';
-      if (!isProbe) {
-        found = true;
-        return;
-      }
+      if (!isProbe) found.push(node);
     }
     ts.forEachChild(node, visit);
   };
 
   visit(parsed);
   return found;
+}
+
+function exactCallKey(call: ts.CallExpression, source: ts.SourceFile): string | null {
+  const firstArgument = call.arguments[0];
+  if (
+    ts.isPropertyAccessExpression(call.expression) &&
+    call.expression.expression.getText(source) === 'process' &&
+    call.expression.name.text === 'kill' &&
+    firstArgument !== undefined &&
+    (firstArgument.getText(source) === 'process.pid' || firstArgument.getText(source) === '-process.pid')
+  ) {
+    return `${canonicalSrcPath(source.fileName)}:process.kill(${firstArgument.getText(source)})`;
+  }
+  return null;
+}
+
+function signalsABarePid(source: string, fileName: string): boolean {
+  return barePidSignalCalls(source, fileName).length > 0;
 }
 
 function refusesWithoutSignalAuthority(source: string): boolean {
@@ -145,7 +164,11 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       const canonical = canonicalSrcPath(filePath);
       if (canonical === AUTHORITY_OWNER_FILE || ALLOWLIST.has(canonical)) continue;
       const source = readFileSync(filePath, 'utf-8');
-      if (signalsABarePid(source, canonical) && !refusesWithoutSignalAuthority(source)) violations.push(canonical);
+      const parsed = ts.createSourceFile(canonical, source, ts.ScriptTarget.Latest, true);
+      const recordedPidCalls = barePidSignalCalls(source, canonical).filter(
+        (call) => !EXACT_CALL_ALLOWLIST.has(exactCallKey(call, parsed) ?? ''),
+      );
+      if (recordedPidCalls.length > 0 && !refusesWithoutSignalAuthority(source)) violations.push(canonical);
     }
     // To resolve: refuse when `incarnationMayAuthorizeSignal(platform)` is false and compare the recorded
     // incarnation against a fresh probe — or add an ALLOWLIST entry stating what else proves the pid.
@@ -159,6 +182,41 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       if (!signalsABarePid(source, canonical)) stale.push(canonical);
     }
     expect(stale.sort()).toEqual([]);
+
+    const staleCalls: string[] = [];
+    for (const key of EXACT_CALL_ALLOWLIST.keys()) {
+      const separator = key.indexOf(':');
+      const canonical = key.slice(0, separator);
+      const source = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
+      const parsed = ts.createSourceFile(canonical, source, ts.ScriptTarget.Latest, true);
+      const keys = barePidSignalCalls(source, canonical).map((call) => exactCallKey(call, parsed));
+      if (!keys.includes(key)) staleCalls.push(key);
+    }
+    expect(staleCalls.sort()).toEqual([]);
+  });
+
+  it('the backend recorded-role signal has platform authority and a fresh matching incarnation', () => {
+    const canonical = 'src/cli/commands/backend.ts';
+    const raw = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
+    const parsed = ts.createSourceFile(canonical, raw, ts.ScriptTarget.Latest, true);
+    const recordedPidCalls = barePidSignalCalls(raw, canonical).filter(
+      (call) => !EXACT_CALL_ALLOWLIST.has(exactCallKey(call, parsed) ?? ''),
+    );
+
+    expect(recordedPidCalls).toHaveLength(1);
+    const call = recordedPidCalls[0];
+    if (call === undefined) throw new Error('Expected the provider-role signal call');
+    let scope: ts.Node = call;
+    while (scope.parent !== undefined && !ts.isFunctionLike(scope)) scope = scope.parent;
+    const guardedSource = codeTextOnly(scope.getText(parsed));
+
+    expect(guardedSource).toMatch(
+      /if\s*\(\s*!\s*incarnationMayAuthorizeSignal\s*\(\s*platform\s*\)\s*\)\s*(?:\{\s*)?return\b/u,
+    );
+    expect(guardedSource).toMatch(
+      /observedIncarnation\s*=\s*runtime\.process\.readProcessIncarnation\s*\(\s*roleIdentity\.pid\s*,\s*platform\s*\)/u,
+    );
+    expect(guardedSource).toMatch(/observedIncarnation\s*!==\s*roleIdentity\.incarnation/u);
   });
 
   // A refusal guard against `incarnationMayAuthorizeSignal('linux')` is still a constant no-op, so the

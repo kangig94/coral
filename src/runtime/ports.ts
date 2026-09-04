@@ -83,6 +83,13 @@ export type DurableCliProcessSubject = RecordedProcessIdentity &
     childRoot: RecordedProcessIdentity;
   }>;
 
+export type DurableProvisionalProcessSubject = Readonly<{
+  kind: 'provisional-wrapper';
+  pid: number;
+  provider: string;
+  jobDir: string;
+}>;
+
 export type DurableProvisionalLaunch = Readonly<{
   runtimeRecord: DurableCliRuntimeRecord;
   leaderIncarnation: ProcessIncarnation | null;
@@ -93,6 +100,7 @@ export type DurableProvisionalLaunch = Readonly<{
 export type DurableLaunchSignalAuthority = Readonly<{
   pid: number;
   hasExited(): boolean;
+  requestTermination?(): void;
 }>;
 
 export type DurableContainmentStatus =

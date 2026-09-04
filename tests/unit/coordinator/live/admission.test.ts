@@ -13,6 +13,7 @@ import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type {
   DurableCliProcessSubject,
   DurableContainmentStatus,
+  DurableProvisionalProcessSubject,
   ProcessPort,
   Runtime,
   RuntimeSpawnOptions,
@@ -692,6 +693,71 @@ describe('launch admission', () => {
     expect(kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
   });
 
+  it('publishes and abandons a provisional wrapper hold after readiness rejects without an incarnation', async () => {
+    const base = createRealRuntime('prod');
+    let elapsedMs = 0n;
+    const requestTermination = vi.fn();
+    const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
+      options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        leaderIncarnation: null,
+        signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => false, requestTermination },
+      });
+      throw new Error('synthetic provisional readiness rejection');
+    });
+    const runtime: Runtime = {
+      ...base,
+      env: { ...base.env, platform: () => 'darwin' },
+      time: {
+        ...base.time,
+        monotonicNow: () => elapsedMs,
+        sleep: async (milliseconds) => {
+          elapsedMs += BigInt(milliseconds);
+        },
+      },
+      process: {
+        ...base.process,
+        observeLiveness: () => 'alive',
+        readProcessIncarnation: () => null,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const observations = vi.fn(
+      (
+        identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
+        status?: DurableContainmentStatus,
+        control?: DurableContainmentOperatorControl,
+      ) => {
+        if (status?.kind !== 'held') return;
+        expect(identity).toEqual({
+          kind: 'provisional-wrapper',
+          pid: TEST_PROVIDER_PID,
+          provider: 'codex',
+          jobDir: '/tmp/provisional-readiness-rejection',
+        });
+        expect(control?.abandon()).toBe(true);
+      },
+    );
+
+    await expect(
+      localCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/provisional-readiness-rejection',
+        permitGranted: true,
+        onDurableProcessIdentity: observations,
+      }),
+    ).rejects.toThrow('synthetic provisional readiness rejection');
+
+    expect(requestTermination).toHaveBeenCalledOnce();
+    expect(
+      observations.mock.calls.some(([identity, status]) => 'kind' in identity && status?.kind === 'operator-abandoned'),
+    ).toBe(true);
+    await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+  });
+
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
     const base = createRealRuntime('prod');
     let rejectLaunch!: (error: Error) => void;
@@ -832,7 +898,7 @@ describe('launch admission', () => {
     const holdControls: DurableContainmentOperatorControl[] = [];
     const observations = vi.fn(
       (
-        _identity: DurableCliProcessSubject,
+        _identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
         _status?: DurableContainmentStatus,
         control?: DurableContainmentOperatorControl,
       ) => {

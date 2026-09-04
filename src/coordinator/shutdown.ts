@@ -12,6 +12,11 @@ import type { RuntimeComponentRegistry } from './runtime-components/registry.js'
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
 import type { TerminateAllDisposition } from './live/admission.js';
+import {
+  processIncarnationProbeRegistrySize,
+  terminateProcessIncarnationProbes,
+  type ProcessIncarnationProbeCleanupDisposition,
+} from '../infra/node-process.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -204,7 +209,7 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
     .map((process) =>
       process.kind === 'recorded-wrapper-group'
         ? `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`
-        : `${process.provider}:${process.jobDir} unverified pid ${process.pid}`,
+        : `${process.provider}:${process.jobDir} provisional wrapper pid ${process.pid}`,
     )
     .join('; ');
   const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
@@ -216,6 +221,33 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
       `${observations.length === 0 && retained.length === 0 ? '' : ` (${[observations, retained].filter(Boolean).join('; ')})`}. ` +
       'Run coral-cli backend status, then coral-cli abort <job-id> for each retained job.',
   };
+}
+
+async function processIncarnationProbeConfirmation(
+  signal: AbortSignal,
+  log: (message: string) => void,
+): Promise<ShutdownStepConfirmation> {
+  const disposition: ProcessIncarnationProbeCleanupDisposition = await terminateProcessIncarnationProbes();
+  if (disposition.disposition === 'settled') return { confirmed: true };
+
+  const detail = disposition.unsettled
+    .map(({ pid, reason, exit }) => `pid ${pid ?? 'unknown'}: ${reason}; exit=${exit}`)
+    .join('; ');
+  log(`process incarnation probe shutdown held (${detail})\n`);
+  if (signal.aborted) return { confirmed: false, detail };
+
+  let removeAbortListener = (): void => {};
+  const aborted = new Promise<'aborted'>((resolve) => {
+    const onAbort = (): void => resolve('aborted');
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+  });
+  try {
+    const outcome = await Promise.race([disposition.untilSettled.then(() => 'settled' as const), aborted]);
+    return outcome === 'settled' ? { confirmed: true } : { confirmed: false, detail };
+  } finally {
+    removeAbortListener();
+  }
 }
 
 function recordShutdownFailure(
@@ -483,6 +515,11 @@ export async function runShutdownSequence({
     await runStep(`discuss store '${source}' dispose`, () => store.dispose());
   }
   await runBudgetedStep('lifecycle reactor dispose', async () => disposeLifecycleReactor());
+  if (processIncarnationProbeRegistrySize() > 0) {
+    await runRequiredBudgetedStep('process incarnation probe shutdown', (signal) =>
+      processIncarnationProbeConfirmation(signal, log),
+    );
+  }
 
   // Socket release is the last step before lifecycle stop / process exit.
   // No async work may run between this resolution and `onStopped()`; that

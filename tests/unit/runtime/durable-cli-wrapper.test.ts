@@ -35,6 +35,7 @@ describe('durable-cli-wrapper', () => {
     const jobDir = join(rootDir, 'job');
     const wrapperPath = join(rootDir, 'durable-cli-wrapper.mjs');
     const childExitedPath = join(rootDir, 'child-exited');
+    const launchPayloadPath = join(jobDir, 'launch.v1.json');
     mkdirSync(jobDir);
     writeFileSync(join(jobDir, 'env.json'), '{}');
 
@@ -47,11 +48,18 @@ describe('durable-cli-wrapper', () => {
     });
 
     const childScript = `require('node:fs').writeFileSync(${JSON.stringify(childExitedPath)}, 'done')`;
-    const wrapper = spawn(
-      process.execPath,
-      [wrapperPath, jobDir, process.execPath, JSON.stringify(['-e', childScript]), '', '', '\u0001'.repeat(120_000)],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
+    writeFileSync(
+      launchPayloadPath,
+      JSON.stringify({
+        version: 1,
+        command: process.execPath,
+        args: ['-e', childScript],
+        cwd: null,
+        prompt: '',
+        startTime: '\u0001'.repeat(120_000),
+      }),
     );
+    const wrapper = spawn(process.execPath, [wrapperPath, launchPayloadPath], { stdio: ['ignore', 'pipe', 'pipe'] });
     const stdout = wrapper.stdout;
     const stderr = wrapper.stderr;
     if (stdout === null || stderr === null) throw new Error('Expected wrapper control pipes');
@@ -64,6 +72,7 @@ describe('durable-cli-wrapper', () => {
 
     try {
       await waitForFile(childExitedPath);
+      expect(existsSync(launchPayloadPath)).toBe(false);
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
       expect(exited).toBe(false);
 

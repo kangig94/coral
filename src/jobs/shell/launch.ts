@@ -42,7 +42,12 @@ import type {
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../contracts/job-store.js';
-import type { DurableCliProcessSubject, DurableContainmentStatus, Runtime } from '../../runtime/ports.js';
+import type {
+  DurableCliProcessSubject,
+  DurableContainmentStatus,
+  DurableProvisionalProcessSubject,
+  Runtime,
+} from '../../runtime/ports.js';
 import type { SessionInitialLaunchPort, SessionJobClaimPort } from '../../sessions/contracts.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { CommitEventsFn } from '../../store/append.js';
@@ -1422,18 +1427,23 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       // Losing optional observation metadata may only degrade a later carrier verdict to `unknown`; it must
       // not fault the launch.
       (
-        identity: DurableCliProcessSubject,
+        identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
         containmentStatus?: DurableContainmentStatus,
         control?: DurableContainmentOperatorControl,
       ) => {
-        const evidence = { kind: 'current' as const, record: { jobId, ...identity } };
-        try {
-          writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
-            jobId,
-            ...identity,
-          });
-        } catch (error: unknown) {
-          backendLog.warn(`Failed to record durable process identity for ${jobId}: ${errorMessage(error)}`);
+        const provisional = 'kind' in identity;
+        const evidence = provisional
+          ? { kind: 'unavailable' as const, reason: 'missing' as const }
+          : ({ kind: 'current' as const, record: { jobId, ...identity } } as const);
+        if (!provisional) {
+          try {
+            writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
+              jobId,
+              ...identity,
+            });
+          } catch (error: unknown) {
+            backendLog.warn(`Failed to record durable process identity for ${jobId}: ${errorMessage(error)}`);
+          }
         }
         if (containmentStatus === undefined) return;
         switch (containmentStatus.kind) {

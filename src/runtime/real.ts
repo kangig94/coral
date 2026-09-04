@@ -87,6 +87,7 @@ const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
 const ENV_RECORD_FILE = 'env.json';
+const LAUNCH_PAYLOAD_FILE = 'launch.v1.json';
 const DURABLE_WRAPPER_BUNDLE_FILE = 'coral-durable-wrapper.cjs';
 
 type ProcessIdentityObservationEnvironment = Readonly<{
@@ -421,28 +422,29 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
+      const launchPayloadPath = `${options.jobDir}/${LAUNCH_PAYLOAD_FILE}`;
       const startTime = new Date(time.now()).toISOString();
       storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
         mode: 0o600,
       });
-
-      const wrapper = spawnChild(
-        process.execPath,
-        [
-          durableWrapperEntrypoint(),
-          options.jobDir,
-          options.command,
-          JSON.stringify(options.args),
-          options.cwd ?? '',
-          options.prompt ?? '',
+      storage.writeAtomicSync(
+        launchPayloadPath,
+        JSON.stringify({
+          version: 1,
+          command: options.command,
+          args: options.args,
+          cwd: options.cwd ?? null,
+          prompt: options.prompt ?? '',
           startTime,
-        ],
-        {
-          detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: buildSpawnEnv(),
-        },
+        }),
+        { mode: 0o600 },
       );
+
+      const wrapper = spawnChild(process.execPath, [durableWrapperEntrypoint(), launchPayloadPath], {
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: buildSpawnEnv(),
+      });
       wrapper.unref();
 
       const signalAuthority: DurableLaunchSignalAuthority | undefined =
@@ -451,6 +453,8 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           : Object.freeze({
               pid: wrapper.pid,
               hasExited: () => wrapper.exitCode !== null || wrapper.signalCode !== null,
+              requestTermination: () =>
+                gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
             });
 
       let initiallyObservedLeaderIncarnation: ProcessIncarnation | null = null;

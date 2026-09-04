@@ -12,6 +12,7 @@ import type {
   DurableContainmentStatus,
   DurableLaunchResult,
   DurableLaunchSignalAuthority,
+  DurableProvisionalProcessSubject,
   Runtime,
 } from '../../runtime/ports.js';
 import { type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
@@ -64,7 +65,7 @@ export type DurableProcessRetention =
       }>;
     }>
   | Readonly<{
-      kind: 'unverified-wrapper-pid';
+      kind: 'provisional-wrapper-hold';
       provider: string;
       jobDir: string;
       pid: number;
@@ -86,10 +87,32 @@ async function requestDurableProcessTermination(
   retained: DurableProcessRetention,
   signalAuthority?: DurableLaunchSignalAuthority,
 ): Promise<GracefulKillByPidOutcome> {
-  if (retained.kind === 'unverified-wrapper-pid') {
-    return { kind: 'signal-refused', pid: retained.pid, reason: 'recorded-incarnation-unavailable' };
+  if (retained.kind === 'provisional-wrapper-hold') {
+    const pid = retained.pid;
+    if (signalAuthority?.pid !== pid) {
+      return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
+    }
+    if (signalAuthority.hasExited()) return { kind: 'observed-absent', pid };
+    if (signalAuthority.requestTermination === undefined) {
+      return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
+    }
+    try {
+      signalAuthority.requestTermination();
+    } catch {
+      return { kind: 'target-unobservable', pid, stage: 'after-sigterm' };
+    }
+    const deadline = runtime.time.monotonicNow() + BigInt(DURABLE_PROCESS_CLEANUP_DEADLINE_MS);
+    while (runtime.time.monotonicNow() < deadline) {
+      if (signalAuthority.hasExited()) return { kind: 'observed-absent', pid };
+      await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
+    }
+    const liveness = runtime.process.observeLiveness(pid);
+    if (liveness === 'absent') return { kind: 'observed-absent', pid };
+    return liveness === 'alive'
+      ? { kind: 'target-alive', pid, stage: 'after-sigkill' }
+      : { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
   }
-  const { containment } = retained;
+  const containment = retained.containment;
   const pid = containment.pid;
   const liveSignalAuthority =
     signalAuthority?.pid === pid && signalAuthority.hasExited() === false ? signalAuthority : undefined;
@@ -192,6 +215,7 @@ export async function spawnDurableJobTransport(params: {
   const { runtime, options, pool, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
   const { internalPermitJobId } = params;
   let abortHandler: (() => void) | null = null;
+  let abortedBySignal = false;
   let cleanupKey: symbol | null = null;
   let cleanupInFlight: Promise<GracefulKillByPidOutcome> | null = null;
   let cleanupRetryInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
@@ -206,6 +230,7 @@ export async function spawnDurableJobTransport(params: {
   let lastPublishedStatus: string | null = null;
   let publishedPid: number | null = null;
   let publishedSubject: DurableCliProcessSubject | null = null;
+  let provisionalSubject: DurableProvisionalProcessSubject | null = null;
   let signalAuthority: DurableLaunchSignalAuthority | undefined;
   let retainedProcess: DurableProcessRetention | null = null;
   let resolvePendingLaunch!: () => void;
@@ -253,9 +278,9 @@ export async function spawnDurableJobTransport(params: {
   };
 
   const publishContainmentStatus = (status: DurableContainmentStatus): boolean => {
-    const subject = publishedSubject;
+    const subject = publishedSubject ?? provisionalSubject;
     if (subject === null) return false;
-    const statusKey = JSON.stringify(status);
+    const statusKey = JSON.stringify({ subject, status });
     if (statusKey === lastPublishedStatus) return true;
     try {
       options.onDurableProcessIdentity?.(subject, status, status.kind === 'held' ? operatorControl : undefined);
@@ -290,6 +315,7 @@ export async function spawnDurableJobTransport(params: {
       retryIntervalMs: DURABLE_RUNTIME_POLL_INTERVAL_MS,
       abandonment: 'abort-job',
     });
+    if (containmentAbandoned || containmentAbsenceConfirmed || cleanupKey === null) return;
     if (cleanupRetryInterval !== null) return;
     cleanupRetryInterval = runtime.time.setInterval(() => {
       void cleanup().catch((error: unknown) => {
@@ -304,6 +330,22 @@ export async function spawnDurableJobTransport(params: {
     if (publishedPid === null || retainedProcess === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
+    if (retainedProcess.kind === 'provisional-wrapper-hold' && signalAuthority?.hasExited() !== true) {
+      try {
+        const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+        if (incarnation !== null) {
+          retainedProcess = {
+            kind: 'recorded-wrapper-group',
+            provider: retainedProcess.provider,
+            jobDir: retainedProcess.jobDir,
+            containment: { pid, incarnation, processGroupId: pid, childRoot: null },
+          };
+          cleanupRetentions.set(cleanup, retainedProcess);
+        }
+      } catch {
+        // The retained handle may still settle this launch; an unreadable pid cannot replace that evidence.
+      }
+    }
     cleanupInFlight = requestDurableProcessTermination(runtime, retainedProcess, signalAuthority).then((outcome) => {
       if (outcome.kind === 'observed-absent') {
         releaseCleanupOwnership();
@@ -378,10 +420,21 @@ export async function spawnDurableJobTransport(params: {
       return;
     }
     publishedPid = launch.pid;
+    provisionalSubject = {
+      kind: 'provisional-wrapper',
+      pid: launch.pid,
+      provider: options.provider,
+      jobDir: options.jobDir,
+    };
     signalAuthority = launch.signalAuthority;
     retainedProcess =
       launch.leaderIncarnation === null
-        ? { kind: 'unverified-wrapper-pid', provider: options.provider, jobDir: options.jobDir, pid: launch.pid }
+        ? {
+            kind: 'provisional-wrapper-hold',
+            provider: options.provider,
+            jobDir: options.jobDir,
+            pid: launch.pid,
+          }
         : {
             kind: 'recorded-wrapper-group',
             provider: options.provider,
@@ -397,6 +450,13 @@ export async function spawnDurableJobTransport(params: {
     cleanupHandles.set(cleanupKey, cleanup);
     cleanupRetentions.set(cleanup, retainedProcess);
     releasePendingLaunch();
+    if (abortedBySignal) {
+      enterContainmentHold('termination requested; process absence is not yet proven');
+      void cleanup().catch((error: unknown) => {
+        backendLog.warn(`[durable-process:${launch.pid}] Termination failed: ${errorMessage(error)}`);
+        enterContainmentHold(errorMessage(error));
+      });
+    }
   };
 
   const publishSpawned = (launch: {
@@ -424,6 +484,7 @@ export async function spawnDurableJobTransport(params: {
         containment: { ...publishedSubject, childRoot: publishedSubject.childRoot },
       };
       cleanupRetentions.set(cleanup, retainedProcess);
+      provisionalSubject = null;
     }
     if (publishedSubject !== null) options.onDurableProcessIdentity?.(publishedSubject);
     options.onRuntimeRecord?.(launch.runtimeRecord);
@@ -446,6 +507,26 @@ export async function spawnDurableJobTransport(params: {
       onWrapperSpawned: publishWrapperSpawned,
       onSpawned: publishSpawned,
     };
+    if (options.signal) {
+      abortHandler = () => {
+        if (abortedBySignal) return;
+        abortedBySignal = true;
+        if (cleanupKey === null) return;
+        enterContainmentHold('termination requested; process absence is not yet proven');
+        void cleanup().then(
+          () => undefined,
+          (error: unknown) => {
+            backendLog.warn(
+              `[durable-process:${publishedPid ?? 'unknown'}] Termination failed: ${errorMessage(error)}`,
+            );
+            enterContainmentHold(errorMessage(error));
+          },
+        );
+      };
+
+      if (options.signal.aborted) abortHandler();
+      else options.signal.addEventListener('abort', abortHandler, { once: true });
+    }
     let durable: DurableLaunchResult;
     try {
       durable = await runtime.process.durable.launch(launchOptions);
@@ -476,7 +557,6 @@ export async function spawnDurableJobTransport(params: {
       signalAuthority = durable.signalAuthority;
     }
 
-    let abortedBySignal = false;
     let runtimeRecord = durable.runtimeRecord;
     let tailOffset = runtimeRecord.tailWatermark ?? 0;
     const durableState: { exitRecord: DurableProcessExit | null; exitError: unknown } = {
@@ -510,24 +590,6 @@ export async function spawnDurableJobTransport(params: {
         options.onEvent?.(line);
       }
     };
-
-    if (options.signal) {
-      abortHandler = () => {
-        if (abortedBySignal) return;
-        abortedBySignal = true;
-        enterContainmentHold('termination requested; process absence is not yet proven');
-        void cleanup().then(
-          () => undefined,
-          (error: unknown) => {
-            backendLog.warn(`[durable-process:${durable.pid}] Termination failed: ${errorMessage(error)}`);
-            enterContainmentHold(errorMessage(error));
-          },
-        );
-      };
-
-      if (options.signal.aborted) abortHandler();
-      else options.signal.addEventListener('abort', abortHandler, { once: true });
-    }
 
     while (true) {
       drainStdout();
