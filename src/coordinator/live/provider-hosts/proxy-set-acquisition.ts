@@ -2,7 +2,11 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
-import { acquireProviderProxySet, type ProviderProxyAcquisitionHeld } from '../provider-proxy/index.js';
+import {
+  acquireProviderProxySet,
+  type ProviderProxyAcquisitionHeld,
+  type ProviderProxyAcquisitionRecoveryCapability,
+} from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
@@ -76,6 +80,16 @@ export type ProviderProxySetAcquisitionOutcome =
   | ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
 
 export type ProviderProxySetAcquisitionStopDisposition = 'contain' | 'handoff';
+
+export type ProviderProxySetAcquisitionCleanupHold =
+  | ProviderProxyAcquisitionHeld<'provider-host-manager'>
+  | Readonly<{
+      kind: 'provider_proxy_acquisition_pending_cleanup';
+      owner: 'provider-host-manager';
+      target: string;
+      reason: string;
+      recoveryCapability: ProviderProxyAcquisitionRecoveryCapability;
+    }>;
 
 export async function disposeStoppedProviderProxySetAcquisition(
   outcome: ProviderProxySetAcquisitionOutcome,

@@ -485,7 +485,7 @@ describe('launch admission', () => {
     expect(coordinator.getActiveJobIds('default')).toContain('queued-1');
   });
 
-  it('keeps cleanup ownership when termination is refused', async () => {
+  it('confirms termination when a refused attempt is followed by observed absence', async () => {
     const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
       .cleanupHandles;
     const cleanupKey = Symbol('refused-child');
@@ -504,17 +504,36 @@ describe('launch admission', () => {
     const termination = coordinator.terminateAll();
     await new Promise((resolve) => setTimeout(resolve, 75));
 
-    await expect(termination).resolves.toEqual({
-      kind: 'all-observed-absent-after-retry',
-      processes: [
-        {
-          kind: 'signal-refused',
-          pid: TEST_PROVIDER_PID,
-          reason: 'recorded-incarnation-unavailable',
-        },
-      ],
-    });
+    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
     expect(cleanupHandles.has(cleanupKey)).toBe(false);
+  });
+
+  it('retains and identifies a child that is still alive at the deadline', async () => {
+    const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
+      .cleanupHandles;
+    const cleanupKey = Symbol('alive-child');
+    cleanupHandles.set(cleanupKey, async () => ({
+      kind: 'target-alive',
+      pid: TEST_PROVIDER_PID,
+      stage: 'after-sigkill',
+    }));
+    const controller = new AbortController();
+    const termination = coordinator.terminateAll(controller.signal);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+
+    await expect(termination).resolves.toEqual({
+      kind: 'unresolved-at-deadline',
+      processes: [{ kind: 'target-alive', pid: TEST_PROVIDER_PID, stage: 'after-sigkill' }],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
+    });
+    expect(cleanupHandles.has(cleanupKey)).toBe(true);
   });
 
   it('returns unresolved ownership when its abort signal bounds an unobservable child', async () => {
@@ -665,7 +684,7 @@ describe('launch admission', () => {
           startTime: new Date(0).toISOString(),
         },
         leaderIncarnation: incarnation,
-        childPid,
+        childRoot: { pid: childPid, incarnation },
       });
       return new Promise<never>((_resolve, reject) => {
         rejectLaunch = reject;

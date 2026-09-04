@@ -105,6 +105,19 @@ const mixedAbortResult = {
   notFound: ['job-9'],
 } satisfies AbortResult;
 
+const refusedAbortResult = {
+  aborted: [],
+  notFound: [],
+  refused: [
+    {
+      jobId: 'job-4',
+      reason: 'the recorded durable process containment is unavailable',
+      nextStep:
+        'Run coral-cli jobs detail job-4; Coral retains ownership until the recorded containment is observed absent.',
+    },
+  ],
+} satisfies AbortResult;
+
 const personaSeedResult = {
   seed_used: 7,
   sigma_used: 1.2,
@@ -284,6 +297,14 @@ describe('cli format', () => {
 
     it('formats a result with both aborted and missing jobs', () => {
       expect(formatAbortResult(mixedAbortResult)).toBe('Aborted jobs: job-1\nNot found: job-9');
+    });
+
+    it('formats a held abort with its reason and next step', () => {
+      expect(formatAbortResult(refusedAbortResult)).toBe(
+        'No jobs aborted\n' +
+          'Abort held for job-4: the recorded durable process containment is unavailable\n' +
+          'Next step: Run coral-cli jobs detail job-4; Coral retains ownership until the recorded containment is observed absent.',
+      );
     });
   });
 

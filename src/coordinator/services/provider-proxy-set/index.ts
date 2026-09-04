@@ -21,6 +21,7 @@ import {
 } from '../../live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
 import type { ProviderProxyAcquisitionHeld } from '../../live/provider-proxy/index.js';
+import type { ProviderProxySetAcquisitionCleanupHold } from '../../live/provider-hosts/proxy-set-acquisition.js';
 import {
   closeProviderProxyAcquisitionSession,
   establishProviderProxyAcquisitionSession,
@@ -251,7 +252,7 @@ type ProviderProxySetSlot =
       routeKey: string;
       address: ProviderProxySetAddress | null;
       binding: Readonly<{ buildSetId: string; hostFingerprint: string }> | null;
-      cleanupHold: ProviderProxyAcquisitionHeld<'provider-host-manager'> | null;
+      cleanupHold: ProviderProxySetAcquisitionCleanupHold | null;
       cleanupRetryTimer: TimerHandle | null;
       cleanupAttemptToken: number;
     }
@@ -839,6 +840,36 @@ export class ProviderProxySetLifecycle {
     return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
   }
 
+  acquisitionCleanupPending(
+    slotId: string,
+    hold: Extract<ProviderProxySetAcquisitionCleanupHold, { kind: 'provider_proxy_acquisition_pending_cleanup' }>,
+  ): Readonly<{ kind: 'accepted'; owner: 'provider-proxy-set-lifecycle' }> | Readonly<{ kind: 'already-represented' }> {
+    const slot = this.#slots.get(slotId);
+    if (slot?.kind !== 'acquiring') return { kind: 'already-represented' };
+    if (slot.cleanupHold !== null) throw new Error('provider_proxy_set_acquisition_cleanup_already_owned');
+    slot.cleanupHold = hold;
+    this.#report('warn', `Provider proxy set acquisition cleanup is pending target=${hold.target}`);
+    this.#runAcquisitionCleanupRetry(slot);
+    return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
+  }
+
+  acquisitionCleanupConfirmed(
+    slotId: string,
+    hold: ProviderProxySetAcquisitionCleanupHold,
+    strandedArtifacts: readonly string[],
+  ): void {
+    const slot = this.#slots.get(slotId);
+    if (slot?.kind !== 'acquiring' || slot.cleanupHold !== hold) return;
+    this.#slots.delete(slotId);
+    if (strandedArtifacts.length > 0) {
+      this.#report(
+        'warn',
+        `Provider proxy set acquisition containment is absent with stranded artifacts: ${strandedArtifacts.join(', ')}`,
+      );
+    }
+    this.#deps.onSlotReleased?.(slot.routeKey);
+  }
+
   #runAcquisitionCleanupRetry(slot: Extract<ProviderProxySetSlot, { kind: 'acquiring' }>): void {
     const hold = slot.cleanupHold;
     if (hold === null) return;
@@ -857,9 +888,13 @@ export class ProviderProxySetLifecycle {
         this.#deps.onSlotReleased?.(slot.routeKey);
         return;
       }
+      const target =
+        hold.kind === 'provider_proxy_acquisition_held'
+          ? `guardianPid=${hold.guardianIdentity.pid}`
+          : `target=${hold.target}`;
       this.#report(
         'warn',
-        `Provider proxy set acquisition cleanup remains held guardianPid=${hold.guardianIdentity.pid} error=${singleLineErrorSummary(outcome.reason)}`,
+        `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(outcome.reason)}`,
       );
       slot.cleanupRetryTimer = this.#deps.time.setTimeout(() => {
         slot.cleanupRetryTimer = null;
@@ -1032,7 +1067,7 @@ export class ProviderProxySetLifecycle {
     );
   }
 
-  acquisitionCleanupHolds(): readonly ProviderProxyAcquisitionHeld<'provider-host-manager'>[] {
+  acquisitionCleanupHolds(): readonly ProviderProxySetAcquisitionCleanupHold[] {
     return [...this.#slots.values()].flatMap((slot) =>
       slot.kind === 'acquiring' && slot.cleanupHold !== null ? [slot.cleanupHold] : [],
     );

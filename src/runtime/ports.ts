@@ -80,7 +80,7 @@ export type DurableCliProcessSubject = RecordedProcessIdentity &
 export type DurableProvisionalLaunch = Readonly<{
   runtimeRecord: DurableCliRuntimeRecord;
   leaderIncarnation: ProcessIncarnation | null;
-  childPid: number | null;
+  childRoot: RecordedProcessIdentity | null;
 }>;
 
 export type DurableLaunchResult = {

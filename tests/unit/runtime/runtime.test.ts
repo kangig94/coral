@@ -202,11 +202,15 @@ describe('createRealRuntime', () => {
         stderrPath: join(jobDir, 'stderr'),
       },
       leaderIncarnation: expect.any(String),
-      childPid: expect.any(Number),
+      childRoot: {
+        pid: expect.any(Number),
+        incarnation: expect.any(String),
+      },
     });
-    expect(provisional?.childPid).not.toBe(provisional?.runtimeRecord.pid);
+    expect(provisional?.childRoot?.pid).not.toBe(provisional?.runtimeRecord.pid);
 
     expect(durable.runtimeRecord).toEqual(provisional?.runtimeRecord);
+    expect(durable.processSubject?.childRoot).toEqual(provisional?.childRoot);
     await runtime.process.durable.waitForExit(durable);
   });
 

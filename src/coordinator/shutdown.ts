@@ -180,12 +180,9 @@ type ShutdownFailure = {
   readonly error: unknown;
 };
 
-type RetriedChildProcess = Extract<
-  TerminateAllDisposition,
-  { kind: 'all-observed-absent-after-retry' }
->['processes'][number];
+type UnresolvedChildProcess = Extract<TerminateAllDisposition, { kind: 'unresolved-at-deadline' }>['processes'][number];
 
-function retriedChildProcessDetail(process: RetriedChildProcess): string {
+function unresolvedChildProcessDetail(process: UnresolvedChildProcess): string {
   switch (process.kind) {
     case 'signal-refused':
       return `pid ${process.pid}: ${process.reason}`;
@@ -199,31 +196,25 @@ function retriedChildProcessDetail(process: RetriedChildProcess): string {
 
 function childTerminationConfirmation(disposition: TerminateAllDisposition): ShutdownStepConfirmation {
   if (disposition.kind === 'all-observed-absent') return { confirmed: true };
-  if (disposition.kind === 'unresolved-at-deadline') {
-    const observations = disposition.processes.map(retriedChildProcessDetail).join('; ');
-    const retainedLaunches = disposition.retainedLaunches
-      .map((launch) => `${launch.provider}:${launch.jobDir} awaiting wrapper identity`)
-      .join('; ');
-    const retainedProcesses = disposition.retainedProcesses
-      .map((process) =>
-        process.kind === 'recorded-wrapper-group'
-          ? `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`
-          : `${process.provider}:${process.jobDir} unverified pid ${process.pid}`,
-      )
-      .join('; ');
-    const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
-    return {
-      confirmed: false,
-      detail:
-        `${disposition.cleanupHandles} cleanup handle(s) and ${disposition.pendingLaunches} pending launch(es) ` +
-        `remain owned by ${disposition.owner}` +
-        `${observations.length === 0 && retained.length === 0 ? '' : ` (${[observations, retained].filter(Boolean).join('; ')})`}. ` +
-        'Run coral-cli backend status, then coral-cli abort <job-id> for each retained job.',
-    };
-  }
+  const observations = disposition.processes.map(unresolvedChildProcessDetail).join('; ');
+  const retainedLaunches = disposition.retainedLaunches
+    .map((launch) => `${launch.provider}:${launch.jobDir} awaiting wrapper identity`)
+    .join('; ');
+  const retainedProcesses = disposition.retainedProcesses
+    .map((process) =>
+      process.kind === 'recorded-wrapper-group'
+        ? `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`
+        : `${process.provider}:${process.jobDir} unverified pid ${process.pid}`,
+    )
+    .join('; ');
+  const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
   return {
     confirmed: false,
-    detail: `absence required retry after ${disposition.processes.map(retriedChildProcessDetail).join('; ')}`,
+    detail:
+      `${disposition.cleanupHandles} cleanup handle(s) and ${disposition.pendingLaunches} pending launch(es) ` +
+      `remain owned by ${disposition.owner}` +
+      `${observations.length === 0 && retained.length === 0 ? '' : ` (${[observations, retained].filter(Boolean).join('; ')})`}. ` +
+      'Run coral-cli backend status, then coral-cli abort <job-id> for each retained job.',
   };
 }
 
@@ -282,7 +273,10 @@ async function reapProviderProxySets(
   });
   const unconfirmedHolds = holdOutcomes.flatMap((outcome, index) => {
     const hold = acquisitionHolds[index];
-    const label = 'acquisition guardian ' + hold.guardianIdentity.pid;
+    const label =
+      hold.kind === 'provider_proxy_acquisition_held'
+        ? 'acquisition guardian ' + hold.guardianIdentity.pid
+        : 'pending acquisition ' + hold.target;
     if (outcome.status === 'rejected') return [label + ': ' + formatError(outcome.reason)];
     return outcome.value.kind === 'held' ? [label + ': ' + outcome.value.reason] : [];
   });

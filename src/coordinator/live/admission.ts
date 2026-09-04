@@ -61,10 +61,6 @@ export class DuplicateLaunchReservationError extends Error {
 export type TerminateAllDisposition =
   | Readonly<{ kind: 'all-observed-absent' }>
   | Readonly<{
-      kind: 'all-observed-absent-after-retry';
-      processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
-    }>
-  | Readonly<{
       kind: 'unresolved-at-deadline';
       processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
       pendingLaunches: number;
@@ -291,6 +287,8 @@ export class LaunchCoordinator {
             unsettled.set(attempt.cleanup, outcome.value);
             continue;
           }
+          failures.delete(attempt.cleanup);
+          unsettled.delete(attempt.cleanup);
           for (const [key, registeredCleanup] of this.cleanupHandles) {
             if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
           }
@@ -304,15 +302,7 @@ export class LaunchCoordinator {
         }
       }
 
-      if (failures.size > 0) {
-        throw new AggregateError(
-          [...failures.values()],
-          `Child process cleanup required retries after ${failures.size} cleanup failure(s).`,
-        );
-      }
-      return unsettled.size === 0
-        ? { kind: 'all-observed-absent' }
-        : { kind: 'all-observed-absent-after-retry', processes: [...unsettled.values()] };
+      return { kind: 'all-observed-absent' };
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }

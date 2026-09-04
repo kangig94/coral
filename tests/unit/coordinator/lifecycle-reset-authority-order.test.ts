@@ -792,7 +792,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
   });
 
-  it('continues child cleanup until a previously failed handle observes absence', async () => {
+  it('confirms shutdown after a previously failed child cleanup observes absence', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const runtime: Runtime = {
       ...baseDeps.runtime,
@@ -827,7 +827,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+    await expect(lifecycle.shutdown('unit-hard-stop')).resolves.toBeUndefined();
 
     expect(laterChildCleanup).toHaveBeenCalledOnce();
     expect(throwingChildAttempts).toBe(2);

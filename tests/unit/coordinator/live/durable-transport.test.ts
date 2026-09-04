@@ -48,12 +48,14 @@ async function waitForValue<T>(read: () => T | null, timeoutMs = 2_000): Promise
 
 describe('durable transport', () => {
   let coordinator: LaunchCoordinator;
+  let runtime: ReturnType<typeof createRealRuntime>;
   let tmpRoot: string;
 
   beforeEach(() => {
     process.env.CORAL_MAX_WORKERS = '1';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
-    coordinator = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+    runtime = createRealRuntime('prod');
+    coordinator = new LaunchCoordinator({ runtime });
     tmpRoot = mkdtempSync(join(tmpdir(), 'coral-live-durable-'));
   });
 
@@ -104,6 +106,31 @@ describe('durable transport', () => {
     const lastRuntime = runtimeRecords.at(-1);
     const tailWatermark = lastRuntime && 'tailWatermark' in lastRuntime ? lastRuntime.tailWatermark : undefined;
     expect(tailWatermark).toBeGreaterThan(0);
+  });
+
+  it('reaps surviving process-group descendants before returning a provider result', async () => {
+    const jobDir = join(tmpRoot, 'job-with-descendant');
+    mkdirSync(jobDir, { recursive: true });
+
+    const result = await coordinator.spawnDurableJob({
+      provider: 'codex',
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          "const { spawn } = require('node:child_process');",
+          "const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+          "process.stdout.write(String(descendant.pid) + '\\n');",
+          'descendant.unref();',
+        ].join(''),
+      ],
+      jobDir,
+    });
+
+    const descendantPid = Number(result.stdout.trim());
+    expect(result.code).toBe(0);
+    expect(Number.isSafeInteger(descendantPid)).toBe(true);
+    expect(runtime.process.observeLiveness(descendantPid)).toBe('absent');
   });
 
   it('spawns a provider server with JSON-RPC transport and stable generation ids', async () => {

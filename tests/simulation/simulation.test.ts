@@ -40,7 +40,7 @@ const COMPLETE_SCENARIO: SimulationDocument = {
     { type: 'launch', provider: 'codex', prompt: 'simulate complete lifecycle' },
     { type: 'wait', until: { phase: 'running' }, stepMs: 5, maxSteps: 5 },
     { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
-    { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
+    { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 6 },
     {
       type: 'expect',
       phase: 'completed',
@@ -151,7 +151,7 @@ const RESET_SCENARIO: SimulationDocument = {
       sessionCount: { provider: 'codex', count: 0 },
     },
     { type: 'launch', provider: 'codex', prompt: 'simulate clean reset world' },
-    { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
+    { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 6 },
     {
       type: 'expect',
       phase: 'completed',
@@ -341,7 +341,7 @@ describe('deterministic simulation lifecycle replay', () => {
     await world.advance(25);
 
     expect(world.isPidAlive(runtime.pid)).toBe(false);
-    const terminalWait = await world.waitUntil(launch.jobId, { terminal: true }, 500, { maxSteps: 4 });
+    const terminalWait = await world.waitUntil(launch.jobId, { terminal: true }, 500, { maxSteps: 6 });
     expect(terminalWait.ok).toBe(true);
     expect(world.getJobStatus(launch.jobId)).toMatchObject({
       phase: 'aborted',

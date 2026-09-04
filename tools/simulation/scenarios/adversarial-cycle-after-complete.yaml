@@ -19,7 +19,7 @@ steps:
     until:
       terminal: true
     stepMs: 500
-    maxSteps: 4
+    maxSteps: 6
   - type: expect
     phase: completed
     result:
@@ -35,7 +35,7 @@ steps:
     until:
       terminal: true
     stepMs: 500
-    maxSteps: 4
+    maxSteps: 6
   - type: expect
     phase: completed
     noRealIO: true

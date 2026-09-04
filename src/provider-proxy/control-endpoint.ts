@@ -371,11 +371,7 @@ function success(id: string | number, result: unknown): ProxyControlJsonRpcMessa
   return { jsonrpc: '2.0', id, result };
 }
 
-/**
- * The record behind an opaque `ActiveControlAuthorization`, held in a `WeakMap` rather than on the branded
- * object itself — the same pattern `infra/monotonic-clock.ts` uses for its own opaque instants — so the
- * capability's public shape carries nothing a caller could read or forge from.
- */
+/** Authorization state must remain private and unforgeable. */
 type ActiveControlAuthorizationRecord = Readonly<{
   socket: Socket;
   controlEpoch: ControlEpoch;

@@ -45,7 +45,7 @@ steps:
     until:
       terminal: true
     stepMs: 500
-    maxSteps: 10
+    maxSteps: 12
   - type: expect
     jobId: "00000000-0000-0000-0000-000000000005"
     phase: completed

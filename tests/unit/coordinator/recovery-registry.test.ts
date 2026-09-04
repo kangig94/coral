@@ -128,7 +128,18 @@ describe('RecoveryRegistry', () => {
       reason: 'leader pid recycled',
     }));
 
-    expect(reg.abort(['j1'])).toEqual({ aborted: [], notFound: ['j1'] });
+    expect(reg.abort(['j1'])).toEqual({
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'j1',
+          reason: 'leader pid recycled',
+          nextStep:
+            'Run coral-cli jobs detail j1; Coral retains ownership until the recorded containment is observed absent.',
+        },
+      ],
+    });
     expect(reg.has('j1')).toBe(true);
     expect(cancelledJobIds.has('j1')).toBe(false);
   });

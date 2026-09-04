@@ -258,7 +258,10 @@ describe('runShutdownSequence drain budget', () => {
         liveProxySets: [{ proxyInstanceId: 'retained-proxy', stopAndReap }] as never,
         acquisitionCleanupHolds: [
           {
-            guardianIdentity: { pid: 4_245, incarnation: testIncarnation(4_245), processGroupId: 4_245 },
+            kind: 'provider_proxy_acquisition_pending_cleanup',
+            owner: 'provider-host-manager',
+            target: 'retained-pending-acquisition',
+            reason: 'provider host manager stopped before acquisition settled',
             recoveryCapability: { retry },
           },
         ] as never,
@@ -307,11 +310,17 @@ describe('runShutdownSequence drain budget', () => {
     );
   });
 
-  it('fails hard shutdown and names a durable child that required retry after escalation', async () => {
+  it('fails hard shutdown and names a durable child that remains alive at the deadline', async () => {
     const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
     harness.ctx.terminateAllFn = async () => ({
-      kind: 'all-observed-absent-after-retry',
+      kind: 'unresolved-at-deadline',
       processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
     });
 
     const detail = await shutdownFailureDetail(harness.ctx);
@@ -320,10 +329,10 @@ describe('runShutdownSequence drain budget', () => {
     expect(detail).toContain('pid 4242: target-alive after-sigkill');
   });
 
-  it('fails hard shutdown and names unavailable signal authority that required retry', async () => {
+  it('fails hard shutdown and names unavailable signal authority at the deadline', async () => {
     const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
     harness.ctx.terminateAllFn = async () => ({
-      kind: 'all-observed-absent-after-retry',
+      kind: 'unresolved-at-deadline',
       processes: [
         {
           kind: 'signal-refused',
@@ -331,6 +340,12 @@ describe('runShutdownSequence drain budget', () => {
           reason: 'recorded-incarnation-unavailable',
         },
       ],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
     });
 
     const detail = await shutdownFailureDetail(harness.ctx);

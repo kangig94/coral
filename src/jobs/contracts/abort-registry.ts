@@ -6,7 +6,15 @@ export interface JobAbortRegistryPort {
   abort(jobIds: string[]): AbortResult;
   remove(jobId: string): void;
 }
+
+export type AbortRefusal = Readonly<{
+  jobId: string;
+  reason: string;
+  nextStep: string;
+}>;
+
 export type AbortResult = {
   aborted: string[];
   notFound: string[];
+  refused?: AbortRefusal[];
 };

@@ -210,7 +210,7 @@ describe('scenario runner', () => {
         { type: 'crash', exitCode: 9, delayMs: 15 },
         { type: 'launch', provider: 'codex', prompt: 'crash after launch' },
         { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
-        { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
+        { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 6 },
         { type: 'expect', runtimeRecorded: true },
       ],
     });

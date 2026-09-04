@@ -42,6 +42,7 @@ export class RecoveryRegistry {
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];
     const notFound: string[] = [];
+    const refused: NonNullable<AbortResult['refused']> = [];
     for (const jobId of jobIds) {
       const entry = this.entries.get(jobId);
       if (!entry) {
@@ -55,14 +56,18 @@ export class RecoveryRegistry {
       }
       const disposition = abortHandler?.() ?? { kind: 'accepted' as const };
       if (disposition.kind === 'refused') {
-        notFound.push(jobId);
+        refused.push({
+          jobId,
+          reason: disposition.reason,
+          nextStep: `Run coral-cli jobs detail ${jobId}; Coral retains ownership until the recorded containment is observed absent.`,
+        });
         continue;
       }
       this.cancelledJobIds.add(jobId);
       this.remove(jobId);
       aborted.push(jobId);
     }
-    return { aborted, notFound };
+    return { aborted, notFound, ...(refused.length === 0 ? {} : { refused }) };
   }
 
   markCancelled(jobId: string): void {

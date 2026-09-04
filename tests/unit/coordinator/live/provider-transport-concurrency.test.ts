@@ -210,7 +210,7 @@ describe('provider transport concurrency hardening', () => {
     await expect(handle.closePromise).resolves.toBeInstanceOf(Error);
   });
 
-  it('joins a launch in flight and reports the retry required before absence', async () => {
+  it('joins a launch in flight and confirms its eventual observed absence', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
     runtime.spawner.enqueueDurable({
@@ -245,16 +245,7 @@ describe('provider transport concurrency hardening', () => {
 
     expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
     expect(termination.settled).toBe(true);
-    expect(termination.value).toEqual({
-      kind: 'all-observed-absent-after-retry',
-      processes: [
-        {
-          kind: 'signal-refused',
-          pid: 30_001,
-          reason: 'signal-authorizing-incarnation-unavailable',
-        },
-      ],
-    });
+    expect(termination.value).toEqual({ kind: 'all-observed-absent' });
     expect(observed).toMatchObject({
       settled: true,
       value: { stdout: '', stderr: '', code: 0, aborted: false },

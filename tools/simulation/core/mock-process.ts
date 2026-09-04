@@ -471,7 +471,7 @@ export class MockProcessSpawner {
     options.onSpawned?.({
       runtimeRecord,
       leaderIncarnation: leader.incarnation,
-      childPid,
+      childRoot: { pid: childPid, incarnation: child.incarnation },
     });
     if (script.exit !== null) {
       const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
@@ -488,6 +488,12 @@ export class MockProcessSpawner {
       stdoutPath,
       stderrPath,
       runtimeRecord,
+      processSubject: {
+        pid,
+        incarnation: leader.incarnation,
+        processGroupId: pid,
+        childRoot: { pid: childPid, incarnation: child.incarnation },
+      },
     };
   }
 

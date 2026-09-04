@@ -72,6 +72,7 @@ import {
   parseLinuxProcessIncarnation,
   probeProcessIncarnation,
   probeProcessIncarnationAsync,
+  isProcessIncarnation,
   type ProcessIncarnation,
   type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
@@ -252,6 +253,24 @@ child = spawn(command, args, {
 
 if (requestedSignal !== null) terminateChild(requestedSignal);
 
+function readSpawnedChildRoot(pid) {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+    const closeParen = stat.lastIndexOf(')');
+    if (bootId.length === 0 || closeParen === -1) return null;
+    const fields = stat.slice(closeParen + 2).trim().split(/\\s+/);
+    const parentPid = Number(fields[1]);
+    const processGroupId = Number(fields[2]);
+    const startTicks = fields[19];
+    if (parentPid !== process.pid || processGroupId !== process.pid || !/^\\d+$/.test(startTicks || '')) return null;
+    return { pid, incarnation: 'linux:' + bootId + ':' + startTicks };
+  } catch {
+    return null;
+  }
+}
+
 const runtimeRecord = {
   transport: 'durable-cli',
   pid: process.pid,
@@ -259,7 +278,8 @@ const runtimeRecord = {
   stderrPath,
   startTime,
 };
-process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord, childPid: child.pid }) + '\\n');
+const childRoot = readSpawnedChildRoot(child.pid);
+process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord, childRoot }) + '\\n');
 
 if (prompt) child.stdin.write(prompt);
 child.stdin.end();
@@ -290,7 +310,7 @@ type DurableControlMessage =
   | {
       type: 'runtime';
       runtimeRecord: DurableCliRuntimeRecord;
-      childPid: number;
+      childRoot: RecordedProcessIdentity | null;
     }
   | {
       type: 'exit';
@@ -498,26 +518,18 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         time,
         wrapper,
       });
-      const { runtimeRecord, childPid, exitPromise } = await readiness;
-      let childIncarnation: ProcessIncarnation | null = null;
-      if (childPid !== null) {
-        try {
-          childIncarnation = probeProcessIncarnation(childPid, capturedEnv.platform);
-        } catch {
-          childIncarnation = null;
-        }
-      }
+      const { runtimeRecord, childRoot, exitPromise } = await readiness;
       const processSubject: DurableCliProcessSubject | null =
-        leaderIncarnation !== null && childPid !== null && childIncarnation !== null
+        leaderIncarnation !== null && childRoot !== null
           ? {
               pid: runtimeRecord.pid,
               incarnation: leaderIncarnation,
               processGroupId: runtimeRecord.pid,
-              childRoot: { pid: childPid, incarnation: childIncarnation },
+              childRoot,
             }
           : null;
       try {
-        options.onSpawned?.({ runtimeRecord, leaderIncarnation, childPid });
+        options.onSpawned?.({ runtimeRecord, leaderIncarnation, childRoot });
       } catch (error: unknown) {
         gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
         void exitPromise.catch(() => {});
@@ -829,10 +841,21 @@ function isExitRecord(value: unknown): value is DurableProcessExit {
   );
 }
 
-function waitForDurableRuntime(options: {
-  time: TimePort;
-  wrapper: ReturnType<typeof spawnChild>;
-}): Promise<{ runtimeRecord: DurableCliRuntimeRecord; childPid: number; exitPromise: Promise<DurableProcessExit> }> {
+function isRecordedProcessIdentity(value: unknown): value is RecordedProcessIdentity {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Number.isSafeInteger((value as { pid?: unknown }).pid) &&
+    Number((value as { pid?: unknown }).pid) > 0 &&
+    isProcessIncarnation((value as { incarnation?: unknown }).incarnation)
+  );
+}
+
+function waitForDurableRuntime(options: { time: TimePort; wrapper: ReturnType<typeof spawnChild> }): Promise<{
+  runtimeRecord: DurableCliRuntimeRecord;
+  childRoot: RecordedProcessIdentity | null;
+  exitPromise: Promise<DurableProcessExit>;
+}> {
   const stdout = options.wrapper.stdout;
   const stderr = options.wrapper.stderr;
   if (!stdout || !stderr) {
@@ -845,7 +868,7 @@ function waitForDurableRuntime(options: {
   const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
   const exitDeferred = createDeferred<DurableProcessExit>();
   let runtimeRecord: DurableCliRuntimeRecord | null = null;
-  let childPid: number | null = null;
+  let childRoot: RecordedProcessIdentity | null = null;
   let exitRecord: DurableProcessExit | null = null;
   let stderrBuffer = '';
   let lineBuffer = '';
@@ -870,8 +893,8 @@ function waitForDurableRuntime(options: {
     if (message.type === 'runtime') {
       if (
         !isDurableCliRuntime(message.runtimeRecord) ||
-        !Number.isSafeInteger(message.childPid) ||
-        message.childPid <= 0
+        message.runtimeRecord.pid !== options.wrapper.pid ||
+        (message.childRoot !== null && !isRecordedProcessIdentity(message.childRoot))
       ) {
         const wrapped = buildError('Durable wrapper emitted an invalid runtime record');
         runtimeDeferred.reject(wrapped);
@@ -879,7 +902,7 @@ function waitForDurableRuntime(options: {
         return;
       }
       runtimeRecord = message.runtimeRecord;
-      childPid = message.childPid;
+      childRoot = message.childRoot;
       runtimeDeferred.resolve(message.runtimeRecord);
       return;
     }
@@ -949,10 +972,9 @@ function waitForDurableRuntime(options: {
   return runtimeDeferred.promise
     .finally(() => options.time.clearTimeout(timeout))
     .then((record) => {
-      if (childPid === null) throw buildError('Durable wrapper omitted its child pid');
       return {
         runtimeRecord: record,
-        childPid,
+        childRoot,
         exitPromise: exitDeferred.promise,
       };
     });

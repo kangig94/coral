@@ -36,7 +36,9 @@ import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
 import {
   disposeStoppedProviderProxySetAcquisition,
   ensureProviderProxySet,
+  type ProviderProxySetAcquisitionCleanupHold,
   type ProviderProxySetAcquisitionConfig,
+  type ProviderProxySetAcquisitionOutcome,
   type ProviderProxySetAcquisitionStopDisposition,
 } from './proxy-set-acquisition.js';
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
@@ -48,7 +50,6 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set/lifecycle-ref.js';
-import type { ProviderProxyAcquisitionHeld } from '../provider-proxy/index.js';
 import type { ProviderProxySetProtection } from '../../services/provider-proxy-set/identity.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 export type { ProviderHostEntry } from './state.js';
@@ -77,7 +78,7 @@ export interface ProviderHostManager {
 export type ProviderHostQuiescenceReceipt = Readonly<{
   kind: 'provider-hosts-quiesced';
   liveProxySets: readonly ProviderProxySetAuthority[];
-  acquisitionCleanupHolds: readonly ProviderProxyAcquisitionHeld<'provider-host-manager'>[];
+  acquisitionCleanupHolds: readonly ProviderProxySetAcquisitionCleanupHold[];
 }>;
 
 export type ProviderHostCleanupObligations = Pick<
@@ -226,6 +227,32 @@ function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined)
   });
 }
 
+function waitForAcquisitionOutcome(
+  operation: Promise<ProviderProxySetAcquisitionOutcome>,
+  signal: AbortSignal,
+): Promise<ProviderProxySetAcquisitionOutcome> {
+  if (signal.aborted) {
+    return Promise.reject(
+      new AbortError({ stage: 'provider_proxy_set_acquisition_cleanup_wait', reason: signal.reason }),
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () =>
+      reject(new AbortError({ stage: 'provider_proxy_set_acquisition_cleanup_wait', reason: signal.reason }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (outcome) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(outcome);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error('Provider proxy set acquisition failed.', { cause: error }));
+      },
+    );
+  });
+}
+
 // With Claude's built-in 3s shutdown RPC, each attempt can spend 3s on the RPC, 5s waiting for close, and
 // 12s reaping containment. Three attempts plus two 1s delays therefore have a standalone 62s envelope.
 // Lifecycle teardown intersects that envelope with its one shared deadline instead of adding budgets: hard
@@ -245,9 +272,22 @@ type ProviderHostClosingRecord = Readonly<{
 }>;
 
 type PendingProviderProxySetAcquisition = {
-  readonly releaseAdmission: () => void;
+  readonly slotId: string;
+  readonly outcome: Promise<ProviderProxySetAcquisitionOutcome>;
+  readonly resolveOutcome: (outcome: ProviderProxySetAcquisitionOutcome) => void;
+  readonly cleanupCompletion: Promise<
+    Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>
+  >;
+  readonly resolveCleanupCompletion: (
+    outcome: Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>,
+  ) => void;
+  cleanupHold: Extract<
+    ProviderProxySetAcquisitionCleanupHold,
+    { kind: 'provider_proxy_acquisition_pending_cleanup' }
+  > | null;
+  cleanupOwnerAccepted: boolean;
   settlement: Promise<void> | null;
-  stop: Readonly<{ disposition: ProviderProxySetAcquisitionStopDisposition; signal?: AbortSignal }> | null;
+  stop: Readonly<{ disposition: ProviderProxySetAcquisitionStopDisposition }> | null;
 };
 
 function reclamationFailure(error: unknown): Error {
@@ -381,27 +421,88 @@ export class DefaultProviderHostManager
       }
       return;
     }
+    let resolveOutcome!: (outcome: ProviderProxySetAcquisitionOutcome) => void;
+    const outcome = new Promise<ProviderProxySetAcquisitionOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+    type CleanupCompletion = Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>;
+    let resolveCleanupCompletion!: (outcome: CleanupCompletion) => void;
+    const cleanupCompletion = new Promise<CleanupCompletion>((resolve) => {
+      resolveCleanupCompletion = resolve;
+    });
     const pending: PendingProviderProxySetAcquisition = {
-      releaseAdmission: () => lifecycle.acquisitionFailed(admission.slotId),
+      slotId: admission.slotId,
+      outcome,
+      resolveOutcome,
+      cleanupCompletion,
+      resolveCleanupCompletion,
+      cleanupHold: null,
+      cleanupOwnerAccepted: false,
       settlement: null,
       stop: null,
     };
+    let retrying: Promise<
+      | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
+      | Readonly<{ kind: 'held'; reason: string }>
+    > | null = null;
+    const cleanupHold: Extract<
+      ProviderProxySetAcquisitionCleanupHold,
+      { kind: 'provider_proxy_acquisition_pending_cleanup' }
+    > = {
+      kind: 'provider_proxy_acquisition_pending_cleanup',
+      owner: 'provider-host-manager',
+      target: identityKey,
+      reason: 'provider host manager stopped before acquisition settled',
+      recoveryCapability: {
+        retry: (signal) => {
+          if (retrying !== null) return retrying;
+          retrying = (async () => {
+            let acquired: ProviderProxySetAcquisitionOutcome;
+            try {
+              acquired = await waitForAcquisitionOutcome(pending.outcome, signal);
+              const stop = pending.stop;
+              if (stop === null) {
+                throw new Error('provider_proxy_set_acquisition_cleanup_disposition_missing');
+              }
+              if (acquired.kind === 'handed-over' && stop.disposition === 'contain') {
+                lifecycle.acquisitionPublicationUnknown(admission.slotId, acquired, (set) =>
+                  this.observeGenerationCapacity(identityKey, entry, set),
+                );
+                const held = { kind: 'held' as const, reason: 'containment ownership transferred for recovery' };
+                pending.resolveCleanupCompletion(held);
+                return held;
+              }
+              await disposeStoppedProviderProxySetAcquisition(acquired, stop.disposition, signal);
+            } catch (error: unknown) {
+              const held = {
+                kind: 'held' as const,
+                reason: error instanceof Error ? error.message : String(error),
+              };
+              pending.resolveCleanupCompletion(held);
+              return held;
+            }
+            const strandedArtifacts = acquired.kind === 'failed' ? acquired.strandedArtifacts : [];
+            lifecycle.acquisitionCleanupConfirmed(admission.slotId, cleanupHold, strandedArtifacts);
+            pending.resolveCleanupCompletion({ kind: 'absence-confirmed' });
+            return { kind: 'absence-confirmed' as const, strandedArtifacts };
+          })().finally(() => {
+            retrying = null;
+          });
+          return retrying;
+        },
+      },
+    };
+    pending.cleanupHold = cleanupHold;
     this.pendingProxySetAcquisitions.add(pending);
     const settlement = Promise.resolve(
       ensureProviderProxySet(
         entry,
         { runtime: this.runtime, signal: this.proxySetAcquisitionStop.signal, ...config },
         async (outcome) => {
+          pending.resolveOutcome(outcome);
           if (pending.stop !== null) {
-            if (outcome.kind === 'provider_proxy_acquisition_held') {
-              const acceptance = lifecycle.acquisitionCleanupHeld(admission.slotId, outcome);
-              if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
-                throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
-              }
-              return;
-            }
-            await disposeStoppedProviderProxySetAcquisition(outcome, pending.stop.disposition, pending.stop.signal);
-            pending.releaseAdmission();
+            const cleanup = await pending.cleanupCompletion;
+            if (cleanup.kind === 'held') throw new Error(cleanup.reason);
             return;
           }
           if (outcome.kind === 'acquired') {
@@ -437,7 +538,7 @@ export class DefaultProviderHostManager
     void settlement.then(
       () => this.pendingProxySetAcquisitions.delete(pending),
       (error: unknown) => {
-        this.pendingProxySetAcquisitions.delete(pending);
+        if (pending.cleanupOwnerAccepted) this.pendingProxySetAcquisitions.delete(pending);
         backendLog.warn(
           `Provider proxy set acquisition settlement failed for ${entry.spec.provider} (${identityKey}): ${
             error instanceof Error ? error.message : String(error)
@@ -791,7 +892,18 @@ export class DefaultProviderHostManager
     this.acceptingAcquisitions = false;
     const acquisitionsToSettle = [...this.pendingProxySetAcquisitions];
     for (const pending of acquisitionsToSettle) {
-      pending.stop ??= { disposition, ...(signal === undefined ? {} : { signal }) };
+      if (pending.stop !== null || pending.cleanupHold === null) continue;
+      const lifecycle = this.providerProxyLifecycleRef?.get();
+      if (lifecycle === null || lifecycle === undefined) {
+        throw new Error('provider_proxy_set_lifecycle_not_connected');
+      }
+      const acceptance = lifecycle.acquisitionCleanupPending(pending.slotId, pending.cleanupHold);
+      if (acceptance.kind !== 'accepted') continue;
+      if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+        throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+      }
+      pending.stop = { disposition };
+      pending.cleanupOwnerAccepted = true;
     }
     this.proxySetAcquisitionStop.abort();
     const stopReclamation = (): void => this.reclamationStop.abort(signal?.reason);

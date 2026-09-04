@@ -128,6 +128,10 @@ export function formatAbortResult(result: AbortResult): string {
   return joinLines([
     result.aborted.length > 0 ? `Aborted jobs: ${result.aborted.join(', ')}` : 'No jobs aborted',
     result.notFound.length > 0 ? `Not found: ${result.notFound.join(', ')}` : undefined,
+    ...(result.refused ?? []).flatMap((refusal) => [
+      `Abort held for ${refusal.jobId}: ${refusal.reason}`,
+      `Next step: ${refusal.nextStep}`,
+    ]),
   ]);
 }
 

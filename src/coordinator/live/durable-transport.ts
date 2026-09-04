@@ -10,7 +10,11 @@ import type { StoragePort } from '../../infra/port-types.js';
 import type { DurableCliProcessSubject, Runtime } from '../../runtime/ports.js';
 import { type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
 import { createMonotonicClock } from '../../infra/monotonic-clock.js';
-import { ProcessContainmentError, reapRecordedContainment } from '../../infra/process-containment.js';
+import {
+  observeRecordedContainment,
+  ProcessContainmentError,
+  reapRecordedContainment,
+} from '../../infra/process-containment.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
@@ -109,6 +113,10 @@ async function requestDurableProcessTermination(
 
 export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
 
+type DurableProviderResultDisposition =
+  | Readonly<{ kind: 'absence-confirmed' }>
+  | Readonly<{ kind: 'held'; reason: string }>;
+
 export type CliExecResult = {
   stdout: string;
   stderr: string;
@@ -152,7 +160,11 @@ export async function spawnDurableJobTransport(params: {
   let abortHandler: (() => void) | null = null;
   let cleanupKey: symbol | null = null;
   let cleanupInFlight: Promise<GracefulKillByPidOutcome> | null = null;
-  let durableExitObserved = false;
+  let containmentAbsenceConfirmed = false;
+  let resolveContainmentAbsence!: () => void;
+  const containmentAbsence = new Promise<void>((resolve) => {
+    resolveContainmentAbsence = resolve;
+  });
   let lastUnsettledDetail: string | null = null;
   let publishedPid: number | null = null;
   let publishedSubject: DurableCliProcessSubject | null = null;
@@ -178,18 +190,25 @@ export async function spawnDurableJobTransport(params: {
   };
   pendingLaunches.add(pendingLaunch);
 
+  const releaseCleanupOwnership = (): void => {
+    if (cleanupKey === null) return;
+    cleanupHandles.delete(cleanupKey);
+    cleanupRetentions.delete(cleanup);
+    cleanupKey = null;
+    containmentAbsenceConfirmed = true;
+    resolveContainmentAbsence();
+    lastUnsettledDetail = null;
+  };
+
   const cleanup = (): Promise<GracefulKillByPidOutcome> => {
     if (cleanupInFlight !== null) return cleanupInFlight;
     if (publishedPid === null || retainedProcess === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
     cleanupInFlight = requestDurableProcessTermination(runtime, retainedProcess).then((outcome) => {
-      if (outcome.kind === 'observed-absent' && cleanupKey !== null) {
-        cleanupHandles.delete(cleanupKey);
-        cleanupRetentions.delete(cleanup);
-        cleanupKey = null;
-        lastUnsettledDetail = null;
-      } else if (outcome.kind !== 'observed-absent') {
+      if (outcome.kind === 'observed-absent') {
+        releaseCleanupOwnership();
+      } else {
         const detail = terminationOutcomeDetail(outcome);
         if (detail !== lastUnsettledDetail) {
           backendLog.warn(`[durable-process:${pid}] Termination remains unsettled (${detail}).`);
@@ -207,6 +226,42 @@ export async function spawnDurableJobTransport(params: {
       },
     );
     return cleanupInFlight;
+  };
+
+  const settleProviderResultContainment = async (): Promise<DurableProviderResultDisposition> => {
+    if (containmentAbsenceConfirmed) return { kind: 'absence-confirmed' };
+    if (retainedProcess?.kind === 'recorded-wrapper-group') {
+      const childRoot = retainedProcess.containment.childRoot;
+      if (childRoot !== null) {
+        const subject = { ...retainedProcess.containment, childRoot };
+        const environment = {
+          process: runtime.process,
+          platform: runtime.env.platform() as NodeJS.Platform,
+          readProcessIncarnation: (pid: number, platform: NodeJS.Platform) =>
+            runtime.process.readProcessIncarnation(pid, platform),
+        } as const;
+        const observation = observeRecordedContainment(subject, environment);
+        if (observation.kind === 'absent') {
+          await Promise.race([runtime.time.sleep(CONTAINMENT_DISAPPEARANCE_CONFIRM_MS), containmentAbsence]);
+          if (containmentAbsenceConfirmed) return { kind: 'absence-confirmed' };
+          const confirmation = observeRecordedContainment(subject, environment);
+          if (confirmation.kind === 'absent') {
+            releaseCleanupOwnership();
+            return { kind: 'absence-confirmed' };
+          }
+          return {
+            kind: 'held',
+            reason: confirmation.kind === 'unobservable' ? confirmation.reason : 'containment is still alive',
+          };
+        }
+        if (observation.kind === 'unobservable') return { kind: 'held', reason: observation.reason };
+      }
+    }
+
+    const outcome = await cleanup();
+    return outcome.kind === 'observed-absent'
+      ? { kind: 'absence-confirmed' }
+      : { kind: 'held', reason: terminationOutcomeDetail(outcome) };
   };
 
   const publishWrapperSpawned = (launch: { pid: number; leaderIncarnation: ProcessIncarnation | null }): void => {
@@ -240,26 +295,15 @@ export async function spawnDurableJobTransport(params: {
   const publishSpawned = (launch: {
     runtimeRecord: Extract<JobRuntime, { transport: 'durable-cli' }>;
     leaderIncarnation: ProcessIncarnation | null;
-    childPid: number | null;
+    childRoot: DurableCliProcessSubject['childRoot'] | null;
   }): void => {
     publishWrapperSpawned({ pid: launch.runtimeRecord.pid, leaderIncarnation: launch.leaderIncarnation });
-    let childIncarnation: ProcessIncarnation | null = null;
-    if (launch.childPid !== null) {
-      try {
-        childIncarnation = runtime.process.readProcessIncarnation(
-          launch.childPid,
-          runtime.env.platform() as NodeJS.Platform,
-        );
-      } catch {
-        childIncarnation = null;
-      }
-    }
-    if (launch.leaderIncarnation !== null && launch.childPid !== null && childIncarnation !== null) {
+    if (launch.leaderIncarnation !== null && launch.childRoot !== null) {
       publishedSubject = {
         pid: launch.runtimeRecord.pid,
         incarnation: launch.leaderIncarnation,
         processGroupId: launch.runtimeRecord.pid,
-        childRoot: { pid: launch.childPid, incarnation: childIncarnation },
+        childRoot: launch.childRoot,
       };
       retainedProcess = {
         kind: 'recorded-wrapper-group',
@@ -301,7 +345,7 @@ export async function spawnDurableJobTransport(params: {
       } catch {
         leaderIncarnation = null;
       }
-      publishSpawned({ runtimeRecord: durable.runtimeRecord, leaderIncarnation, childPid: null });
+      publishSpawned({ runtimeRecord: durable.runtimeRecord, leaderIncarnation, childRoot: null });
     } else if (publishedPid !== durable.pid) {
       throw new Error('Durable runtime readiness reported a different process from provisional publication.');
     }
@@ -359,7 +403,11 @@ export async function spawnDurableJobTransport(params: {
 
       const completedExit = durableState.exitRecord;
       if (completedExit !== null) {
-        durableExitObserved = true;
+        const disposition = await settleProviderResultContainment();
+        if (disposition.kind === 'held') {
+          await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
+          continue;
+        }
         drainStdout();
         return {
           stdout: readOutputFile(runtime.storage, durable.stdoutPath),
@@ -394,10 +442,6 @@ export async function spawnDurableJobTransport(params: {
     }
   } finally {
     releasePendingLaunch();
-    if (durableExitObserved && cleanupKey !== null) {
-      cleanupHandles.delete(cleanupKey);
-      cleanupRetentions.delete(cleanup);
-    }
     if (abortHandler && options.signal) {
       options.signal.removeEventListener('abort', abortHandler);
     }

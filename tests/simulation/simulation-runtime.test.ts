@@ -801,10 +801,13 @@ describe('simulation runtime', () => {
     expect(provisionalLaunch!.leaderIncarnation).toBe(
       runtime.process.readProcessIncarnation(durable.pid, runtime.env.platform() as NodeJS.Platform),
     );
-    expect(provisionalLaunch!.childPid).not.toBe(durable.pid);
+    expect(provisionalLaunch!.childRoot?.pid).not.toBe(durable.pid);
     expect(
-      runtime.process.readProcessIncarnation(provisionalLaunch!.childPid!, runtime.env.platform() as NodeJS.Platform),
-    ).not.toBeNull();
+      runtime.process.readProcessIncarnation(
+        provisionalLaunch!.childRoot!.pid,
+        runtime.env.platform() as NodeJS.Platform,
+      ),
+    ).toBe(provisionalLaunch!.childRoot?.incarnation);
 
     runtime.process.kill(-durable.pid, 'SIGTERM');
     expect(runtime.spawner.killCalls).toContainEqual({ pid: -30_001, signal: 'SIGTERM' });

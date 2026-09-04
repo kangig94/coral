@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorControl } from '#src/coordinator/composition/job-control.js';
 import type { CoordinatorWorld } from '#src/coordinator/composition/world.js';
@@ -44,6 +44,39 @@ describe('createCoordinatorControl.abortJobs', () => {
 
     expect(result.aborted).toEqual([]);
     expect(result.notFound).toEqual(['absent-job']);
+  });
+
+  it('preserves a recovery abort refusal without trying another owner', () => {
+    const runtime = new SimulationRuntime();
+    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const internalAbort = vi.spyOn(internalJobAbortRegistry, 'abort');
+    const executionAbort = vi.fn();
+    const refusal = {
+      jobId: 'recovered-job',
+      reason: 'the recorded durable process containment is unavailable',
+      nextStep:
+        'Run coral-cli jobs detail recovered-job; Coral retains ownership until the recorded containment is observed absent.',
+    };
+    const recoveryRegistry = {
+      size: 1,
+      has: (jobId: string) => jobId === refusal.jobId,
+      abort: () => ({ aborted: [], notFound: [], refused: [refusal] }),
+    };
+    const control = createCoordinatorControl({
+      world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
+      listExecutionServices: () => [{ abort: executionAbort }] as never,
+      getLifecycleController: () => ({ getRecoveryRegistry: () => recoveryRegistry }) as never,
+      getProgressStore: () => ({}) as never,
+      internalJobAbortRegistry,
+    });
+
+    expect(control.abortJobs([refusal.jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      refused: [refusal],
+    });
+    expect(executionAbort).not.toHaveBeenCalled();
+    expect(internalAbort).not.toHaveBeenCalled();
   });
 });
 
