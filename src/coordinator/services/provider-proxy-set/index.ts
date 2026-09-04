@@ -37,10 +37,11 @@ import type {
   ContainmentCommitOutcome,
   ProviderProxyContainmentAuthority,
 } from '../../live/provider-proxy/authority.js';
-import type {
-  ProviderProxyControlRedemptionOutcome,
-  ProviderProxyControlRedemptionRefusal,
-  RedeemedProviderProxyControl,
+import {
+  closeRedeemedProviderProxyControl,
+  type ProviderProxyControlRedemptionOutcome,
+  type ProviderProxyControlRedemptionRefusal,
+  type RedeemedProviderProxyControl,
 } from '../../live/provider-proxy/control-redemption.js';
 import type { ProviderProxyRoleControlRemoteError } from '../../live/provider-proxy/role-control.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
@@ -2470,10 +2471,7 @@ export class ProviderProxySetLifecycle {
       {
         evidence: (value, sourceId) => {
           if (!this.#isCurrentControlReattachment(slot, window, token)) {
-            if (sourceId === 'redemption') {
-              const outcome = value as ProviderProxyControlRedemptionOutcome;
-              if (outcome.kind === 'refused') this.#releasePartialRedemption(outcome.refusal);
-            }
+            this.#releaseLateReattachmentEvidence(value, sourceId);
             return;
           }
           window.attemptAbort = null;
@@ -2527,6 +2525,7 @@ export class ProviderProxySetLifecycle {
         fatal: () => {
           if (this.#isCurrentControlReattachment(slot, window, token)) window.attemptAbort = null;
         },
+        disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
     turn.start({
@@ -2794,10 +2793,7 @@ export class ProviderProxySetLifecycle {
       {
         evidence: (value, sourceId) => {
           if (!this.#isCurrentControlReattachment(slot, window, token)) {
-            if (sourceId === 'redemption') {
-              const outcome = value as ProviderProxyControlRedemptionOutcome;
-              if (outcome.kind === 'refused') this.#releasePartialRedemption(outcome.refusal);
-            }
+            this.#releaseLateReattachmentEvidence(value, sourceId);
             return;
           }
           window.attemptAbort = null;
@@ -2854,6 +2850,7 @@ export class ProviderProxySetLifecycle {
         fatal: () => {
           if (this.#isCurrentControlReattachment(slot, window, token)) window.attemptAbort = null;
         },
+        disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
     turn.start({
@@ -2891,6 +2888,16 @@ export class ProviderProxySetLifecycle {
     void refusal.guardianAuthority.initiateControlClose().catch((error: unknown) => {
       this.#deps.onError?.(`Partial provider proxy control close failed: ${singleLineErrorSummary(error)}`);
     });
+  }
+
+  #releaseLateReattachmentEvidence(value: unknown, sourceId: string): void {
+    if (sourceId !== 'redemption' || typeof value !== 'object' || value === null || !('kind' in value)) return;
+    const outcome = value as ProviderProxyControlRedemptionOutcome;
+    if (outcome.kind === 'redeemed') {
+      closeRedeemedProviderProxyControl(outcome);
+      return;
+    }
+    if (outcome.kind === 'refused') this.#releasePartialRedemption(outcome.refusal);
   }
 
   #beginFaultContainment(slot: EstablishedSlot, decision: ProviderProxySetAuthorityStopDecision): void {

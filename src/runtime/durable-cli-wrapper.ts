@@ -26,6 +26,8 @@ type PendingExit = Readonly<{
   wrapperExitCode: number;
 }>;
 
+type RuntimeStartPublicationDisposition = Readonly<{ kind: 'published' }> | Readonly<{ kind: 'terminated' }>;
+
 function parseLaunchPayload(payloadPath: string): LaunchPayload {
   let raw: string;
   try {
@@ -118,23 +120,38 @@ function runGroupFinalizer(processGroupIdArgument: string | undefined, exitArgum
   process.send?.('ready');
 }
 
-function waitForRuntimeStartPublication(): Promise<void> {
+function waitForRuntimeStartPublication(terminationSignal: AbortSignal): Promise<RuntimeStartPublicationDisposition> {
   if (typeof process.send !== 'function') {
     return Promise.reject(new Error('Durable wrapper requires an IPC launch-publication gate.'));
   }
+  if (terminationSignal.aborted) {
+    process.disconnect();
+    return Promise.resolve({ kind: 'terminated' });
+  }
   return new Promise((resolve, reject) => {
-    const onDisconnect = (): void => {
+    const cleanup = (): void => {
+      process.off('disconnect', onDisconnect);
       process.off('message', onMessage);
+      terminationSignal.removeEventListener('abort', onTermination);
+    };
+    const onDisconnect = (): void => {
+      cleanup();
       reject(new Error('Durable wrapper lost its coordinator before launch publication completed.'));
     };
     const onMessage = (message: unknown): void => {
       if (message !== 'runtime-start-published') return;
-      process.off('disconnect', onDisconnect);
+      cleanup();
       process.disconnect();
-      resolve();
+      resolve({ kind: 'published' });
+    };
+    const onTermination = (): void => {
+      cleanup();
+      process.disconnect();
+      resolve({ kind: 'terminated' });
     };
     process.once('disconnect', onDisconnect);
     process.on('message', onMessage);
+    terminationSignal.addEventListener('abort', onTermination, { once: true });
   });
 }
 
@@ -156,6 +173,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
 
   let child: ReturnType<typeof spawn> | null = null;
   let terminationRequested = false;
+  const publicationGateTermination = new AbortController();
   let terminationStarted = false;
   let exitWritten = false;
   let pendingExit: PendingExit | null = null;
@@ -254,6 +272,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
 
   const terminateChild = (): void => {
     terminationRequested = true;
+    publicationGateTermination.abort();
     if (pendingExit !== null) {
       if (!groupTerminationStarted) handExitToGroupFinalizer(pendingExit);
       return;
@@ -267,7 +286,11 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     process.on(signal, terminateChild);
   }
 
-  await waitForRuntimeStartPublication();
+  const publicationDisposition = await waitForRuntimeStartPublication(publicationGateTermination.signal);
+  if (publicationDisposition.kind === 'terminated') {
+    closeOutputFiles();
+    return;
+  }
   child = spawn(launch.command, launch.args, {
     stdio: ['pipe', stdoutFd, stderrFd],
     cwd: launch.cwd ?? undefined,

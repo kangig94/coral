@@ -433,4 +433,47 @@ describe('provider proxy control redemption', () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(guardian.client.close).toHaveBeenCalledOnce();
   });
+
+  it('abandons guardian ownership and propagates cancellation before returning a late downstream refusal', async () => {
+    const [guardian] = sessions();
+    const remote = new ProviderProxyRoleControlRemoteError(
+      'reaper',
+      'open',
+      'reaper.handoff-rotate.v1',
+      new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32_600,
+        protocolCode: 'invalid_state',
+        admissionReason: 'teardown-latched',
+        heartbeatRefusal: null,
+      }),
+    );
+    let rejectReaper!: (error: unknown) => void;
+    mockedEstablishRoleControl.mockImplementationOnce(async (opened) => {
+      opened.push(guardian.client);
+      return guardian as never;
+    });
+    mockedEstablishRoleControl.mockImplementationOnce(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectReaper = reject;
+        }),
+    );
+    const controller = new AbortController();
+    const cancellation = new Error('containment proof retired redemption');
+    const redemption = redeemProviderProxyControl(
+      capsule,
+      setIdentity,
+      { runtime: runtimeWithNow(), coordinatorIdentity },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(mockedEstablishRoleControl).toHaveBeenCalledTimes(2));
+
+    controller.abort(cancellation);
+    rejectReaper(remote);
+
+    await expect(redemption).rejects.toBe(cancellation);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(guardian.client.close).toHaveBeenCalledOnce();
+  });
 });

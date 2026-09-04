@@ -10,7 +10,6 @@ import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
-import type { ProviderProxySetEnforcerObservations } from '../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetOperatorDisposition } from '../provider-proxy/operator-disposition-vocabulary.js';
 
 interface AdminControlPort {
@@ -175,21 +174,7 @@ export type HealthSnapshot = {
       contentSeq?: number;
       metadataSeq?: number;
     }>;
-    providerProxySets?: Array<{
-      setIdentity: { buildSetId: string; hostFingerprint: string; proxyInstanceId: string };
-      setToken: string;
-      disposition: ProviderProxySetOperatorDisposition['disposition'];
-      role?: string;
-      method?: string;
-      cause?: ProviderProxySetOperatorDisposition['cause'];
-      attempts?: number;
-      elapsedMs?: number;
-      boundMs?: number;
-      liveClaims?: number;
-      enforcerObservations?: ProviderProxySetEnforcerObservations;
-      incidentReason: string;
-      waitingFor: ProviderProxySetOperatorDisposition['waitingFor'];
-    }>;
+    providerProxySets?: ProviderProxySetOperatorDisposition[];
   };
 };
 

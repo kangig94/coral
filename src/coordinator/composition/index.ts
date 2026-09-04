@@ -1184,9 +1184,11 @@ export function createCoordinatorCore(
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
-        const providerProxySets = world.providerProxyLifecycleRef.get()?.snapshot().operatorDispositions ?? [];
+        const providerProxySets = [
+          ...(world.providerProxyLifecycleRef.get()?.snapshot().operatorDispositions ?? []),
+        ] satisfies NonNullable<NonNullable<HealthSnapshot['diagnostics']>['providerProxySets']>;
         if (providerProxySets.length > 0) {
-          diagnostics.providerProxySets = [...providerProxySets];
+          diagnostics.providerProxySets = providerProxySets;
         }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||

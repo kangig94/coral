@@ -303,17 +303,23 @@ export async function redeemProviderProxyControl(
   let guardianSession: EstablishedGuardianSession | null = null;
 
   try {
-    guardianSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
-      role: 'guardian',
-      endpoint: capsule.guardianControlEndpoint,
-      openMethod: 'guardian.handoff-redeem.v1',
-      openParams: { grantId: capsule.grantId, secret: capsule.secret, successor: coordinatorIdentity },
-      openParamsSchema: guardianHandoffRedeemParamsSchema,
-      openResultSchema: guardianHandoffRedeemResultSchema,
-      identity: (result) => result.guardian,
-      heartbeatMethod: 'guardian.heartbeat.v1',
-      expectedIdentity: {},
-    });
+    guardianSession = await establishRoleControl(
+      opened,
+      timer,
+      roleConnectRetry(runtime),
+      {
+        role: 'guardian',
+        endpoint: capsule.guardianControlEndpoint,
+        openMethod: 'guardian.handoff-redeem.v1',
+        openParams: { grantId: capsule.grantId, secret: capsule.secret, successor: coordinatorIdentity },
+        openParamsSchema: guardianHandoffRedeemParamsSchema,
+        openResultSchema: guardianHandoffRedeemResultSchema,
+        identity: (result) => result.guardian,
+        heartbeatMethod: 'guardian.heartbeat.v1',
+        expectedIdentity: {},
+      },
+      signal,
+    );
     heartbeatAssembly.startRole('guardian', {
       client: guardianSession.client,
       controlEpoch: guardianSession.opened.controlEpoch,
@@ -326,21 +332,27 @@ export async function redeemProviderProxyControl(
     }
     signal.throwIfAborted();
 
-    const reaperSession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
-      role: 'reaper',
-      endpoint: capsule.reaperControlEndpoint,
-      openMethod: 'reaper.handoff-rotate.v1',
-      openParams: {
-        grantId: capsule.grantId,
-        successor: coordinatorIdentity,
-        guardianRedemptionReceipt: guardianSession.opened.redemptionReceipt,
+    const reaperSession = await establishRoleControl(
+      opened,
+      timer,
+      roleConnectRetry(runtime),
+      {
+        role: 'reaper',
+        endpoint: capsule.reaperControlEndpoint,
+        openMethod: 'reaper.handoff-rotate.v1',
+        openParams: {
+          grantId: capsule.grantId,
+          successor: coordinatorIdentity,
+          guardianRedemptionReceipt: guardianSession.opened.redemptionReceipt,
+        },
+        openParamsSchema: reaperHandoffRotateParamsSchema,
+        openResultSchema: reaperHandoffRotateResultSchema,
+        identity: (result) => result.reaper,
+        heartbeatMethod: 'reaper.heartbeat.v1',
+        expectedIdentity: {},
       },
-      openParamsSchema: reaperHandoffRotateParamsSchema,
-      openResultSchema: reaperHandoffRotateResultSchema,
-      identity: (result) => result.reaper,
-      heartbeatMethod: 'reaper.heartbeat.v1',
-      expectedIdentity: {},
-    });
+      signal,
+    );
     heartbeatAssembly.startRole('reaper', {
       client: reaperSession.client,
       controlEpoch: reaperSession.opened.controlEpoch,
@@ -349,26 +361,32 @@ export async function redeemProviderProxyControl(
     });
     signal.throwIfAborted();
 
-    const proxySession = await establishRoleControl(opened, timer, roleConnectRetry(runtime), {
-      role: 'proxy',
-      endpoint: capsule.proxyEndpoint,
-      openMethod: 'handoff.redeem.v1',
-      openParams: {
-        grantId: capsule.grantId,
-        secret: capsule.secret,
-        successor: coordinatorIdentity,
-        generation: coordinatorIdentity.generation,
-        hostFingerprint: capsule.hostFingerprint,
-        buildSetId: capsule.buildSetId,
-        proxyInstanceId: capsule.proxyInstanceId,
+    const proxySession = await establishRoleControl(
+      opened,
+      timer,
+      roleConnectRetry(runtime),
+      {
+        role: 'proxy',
+        endpoint: capsule.proxyEndpoint,
+        openMethod: 'handoff.redeem.v1',
+        openParams: {
+          grantId: capsule.grantId,
+          secret: capsule.secret,
+          successor: coordinatorIdentity,
+          generation: coordinatorIdentity.generation,
+          hostFingerprint: capsule.hostFingerprint,
+          buildSetId: capsule.buildSetId,
+          proxyInstanceId: capsule.proxyInstanceId,
+        },
+        openParamsSchema: proxyHandoffRedeemParamsSchema,
+        openResultSchema: proxyHandoffRedeemResultSchema,
+        identity: (result) => result.proxy,
+        heartbeatMethod: 'control.heartbeat.v1',
+        expectedIdentity: {},
+        ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent() }),
       },
-      openParamsSchema: proxyHandoffRedeemParamsSchema,
-      openResultSchema: proxyHandoffRedeemResultSchema,
-      identity: (result) => result.proxy,
-      heartbeatMethod: 'control.heartbeat.v1',
-      expectedIdentity: {},
-      ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent() }),
-    });
+      signal,
+    );
     heartbeatAssembly.startRole('proxy', {
       client: proxySession.client,
       controlEpoch: proxySession.opened.controlEpoch,
@@ -436,6 +454,7 @@ export async function redeemProviderProxyControl(
   } catch (error: unknown) {
     if (error instanceof ProviderProxyRoleControlUnavailableError) {
       abandonAttempt(heartbeatAssembly, opened);
+      signal.throwIfAborted();
       if (
         error.incident.kind === 'role-heartbeat-indeterminate' &&
         error.incident.observation.kind === 'reply' &&
@@ -449,6 +468,10 @@ export async function redeemProviderProxyControl(
       return { kind: 'unavailable', incident: error.incident, error };
     }
     if (error instanceof ProviderProxyRoleControlRemoteError) {
+      if (signal.aborted) {
+        abandonAttempt(heartbeatAssembly, opened);
+        signal.throwIfAborted();
+      }
       if (guardianSession !== null && error.role !== 'guardian') {
         return {
           kind: 'refused',

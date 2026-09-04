@@ -2786,6 +2786,83 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
+  it('disposes guardian ownership when containment retires a pending redemption before refusal', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const redemption = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['redeemControl']>>>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
+    let redemptionSignal: AbortSignal | undefined;
+    const redeemControl = vi.fn((signal: AbortSignal) => {
+      redemptionSignal = signal;
+      return redemption.promise;
+    });
+    const authority = fakeAuthority({ record, faults, redeemControl });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: {
+        containmentDisappeared: async (notice) => ({
+          kind: 'accepted',
+          acceptance: {
+            kind: 'accepted',
+            operation: notice.operation,
+            disposition: 'terminalization-committed',
+          },
+        }),
+      },
+      time: new ManualClock(),
+      proveContainmentAbsent: () => absence.promise,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'reaper',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'reaper closed', 'closed'),
+    });
+    await vi.waitFor(() => expect(redeemControl).toHaveBeenCalledOnce());
+
+    absence.resolve(containmentEvidence('guardian:retired-turn;reaper:retired-turn'));
+    await vi.waitFor(() => expect(redemptionSignal?.aborted).toBe(true));
+
+    const guardianFaults = createProviderProxyAuthorityFaultLatch();
+    const guardianAuthority: ProviderProxyGuardianRedemptionAuthority = {
+      faulted: guardianFaults.faulted,
+      onFault: guardianFaults.onFault,
+      onIncident: guardianFaults.onIncident,
+      commitContainment: vi.fn(async () => ({ kind: 'outcome-unknown' as const, error: 'not used' })),
+      stopHeartbeats: vi.fn(),
+      initiateControlClose: vi.fn(async () => undefined),
+    };
+    redemption.resolve({
+      kind: 'refused',
+      refusal: {
+        kind: 'downstream-role-refused',
+        error: new ProviderProxyRoleControlRemoteError(
+          'reaper',
+          'open',
+          'reaper.handoff-rotate.v1',
+          new ControlClientError('control_call_failed', 'teardown latched', 'remote-response', {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32_600,
+            protocolCode: 'invalid_state',
+            admissionReason: 'teardown-latched',
+            heartbeatRefusal: null,
+          }),
+        ),
+        guardianAuthority,
+      },
+    });
+
+    await vi.waitFor(() => expect(guardianAuthority.initiateControlClose).toHaveBeenCalledOnce());
+    expect(guardianAuthority.stopHeartbeats).toHaveBeenCalledOnce();
+  });
+
   it('exits a reattachment hold through ordinary retirement once live claims reach zero', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();

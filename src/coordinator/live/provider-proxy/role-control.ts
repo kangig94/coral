@@ -305,15 +305,23 @@ export async function establishRoleControl<
   timer: ControlTimer,
   retry: RoleConnectRetryOptions,
   plan: RoleControlPlan<TOpened, TOpenParams>,
+  signal?: AbortSignal,
 ): Promise<Readonly<{ client: ControlClient; opened: TOpened; nextHeartbeatChallenge: string }>> {
+  signal?.throwIfAborted();
   let client: ControlClient;
   try {
     client = await connectRoleControlWithRetry(plan.endpoint, timer, retry, plan.onProviderEvent);
   } catch (error: unknown) {
+    signal?.throwIfAborted();
     classifyRoleControlFailure(plan.role, 'connect', null, error);
+  }
+  if (signal?.aborted === true) {
+    client.close();
+    signal.throwIfAborted();
   }
   opened.push(client);
   const params = plan.openParamsSchema.parse(plan.openParams) as z.output<TOpenParams>;
+  signal?.throwIfAborted();
   let raw: unknown;
   try {
     const exchange = await client.exchange(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
@@ -324,6 +332,7 @@ export async function establishRoleControl<
       classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.error);
     }
   } catch (error: unknown) {
+    signal?.throwIfAborted();
     classifyRoleControlFailure(plan.role, 'open', plan.openMethod, error);
   }
   const result = plan.openResultSchema.parse(raw);

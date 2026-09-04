@@ -218,6 +218,7 @@ export interface ProviderProxyRecoveryTurnSinks {
   retry(retry: ProviderProxyRecoveryRetry): void;
   fatal(error: ProviderProxySetLifecycleFatalError): void;
   cancel?(reason: unknown): void;
+  disposeLateEvidence?(value: unknown, sourceId: string): void;
 }
 
 export interface ProviderProxyRecoveryEffects {
@@ -664,7 +665,10 @@ export function createProviderProxyRecoveryDispatcher(
       };
 
       const submit = (sourceId: string, observation: Observation): void => {
-        if (retired) return;
+        if (retired) {
+          if (observation.kind === 'evidence') sinks.disposeLateEvidence?.(observation.value, sourceId);
+          return;
+        }
         if (observation.kind === 'forwarded-fatal') {
           retired = true;
           for (const abort of aborters) abort(observation.error);

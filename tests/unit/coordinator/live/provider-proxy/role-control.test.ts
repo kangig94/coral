@@ -97,23 +97,45 @@ function heartbeatRefusal(
   });
 }
 
-async function establishWith(fake: ControlClient): Promise<unknown> {
+async function establishWith(fake: ControlClient, signal?: AbortSignal): Promise<unknown> {
   mockedConnect.mockResolvedValueOnce(fake);
-  return establishRoleControl([], TIMER, RETRY, {
-    role: 'guardian',
-    endpoint: '/tmp/guardian.sock',
-    openMethod: 'guardian.handoff-redeem.v1',
-    openParams: {},
-    openParamsSchema,
-    openResultSchema,
-    identity: (opened) => ({ roleId: opened.roleId }),
-    heartbeatMethod: 'guardian.heartbeat.v1',
-    expectedIdentity: { roleId: 'guardian-1' },
-  });
+  return establishRoleControl(
+    [],
+    TIMER,
+    RETRY,
+    {
+      role: 'guardian',
+      endpoint: '/tmp/guardian.sock',
+      openMethod: 'guardian.handoff-redeem.v1',
+      openParams: {},
+      openParamsSchema,
+      openResultSchema,
+      identity: (opened) => ({ roleId: opened.roleId }),
+      heartbeatMethod: 'guardian.heartbeat.v1',
+      expectedIdentity: { roleId: 'guardian-1' },
+    },
+    signal,
+  );
 }
 
 describe('role control recovery classification', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('propagates cancellation instead of a late open refusal', async () => {
+    let resolveExchange!: (exchange: ControlExchange) => void;
+    const pendingExchange = new Promise<ControlExchange>((resolve) => {
+      resolveExchange = resolve;
+    });
+    const fake = client(() => pendingExchange);
+    const controller = new AbortController();
+    const cancellation = new Error('reattachment turn retired');
+    const establishing = establishWith(fake, controller.signal);
+    await Promise.resolve();
+    controller.abort(cancellation);
+    resolveExchange(refusal(remoteFailure('invalid_state', 'teardown-latched')));
+
+    await expect(establishing).rejects.toBe(cancellation);
+  });
 
   it.each(['timeout', 'closed'] as const)('classifies %s transport origin as availability', async (origin) => {
     const failure = new ControlClientError('control_call_failed', 'transport failed', origin);
