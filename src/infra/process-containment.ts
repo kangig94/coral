@@ -350,6 +350,9 @@ async function observeProcessIdentityAsync<Scope extends symbol>(
   if (!observationMayStart(deadline, environment, allowAtDeadline)) {
     return { kind: 'unobservable', reason: 'deadline' };
   }
+  if (knownLiveChildMayAuthorizeSignal(identity, environment)) {
+    return { kind: 'observed', observation: 'present' };
+  }
   const observe = environment.process.observeRecordedProcessAsync;
   let liveness: ProcessLiveness;
   if (observe !== undefined) {
@@ -554,15 +557,8 @@ async function signalRecordedSet<Scope extends symbol>(
     });
   }
 
-  const presentIdentities = [
-    ...(observation.containment === 'present' ? [containment] : []),
-    ...recordedRoots.filter((_, index) => observation.recordedRoots[index] === 'present'),
-  ];
-  if (presentIdentities.some((identity) => !identityMayAuthorizeSignal(identity, environment))) {
-    return { kind: 'refused' };
-  }
-
   let delivered = 0;
+  let refused = false;
   try {
     if (observation.containment === 'present') {
       const refreshed = await observeContainmentAsync(containment, exitDeadline, environment);
@@ -570,8 +566,8 @@ async function signalRecordedSet<Scope extends symbol>(
         return { kind: 'refused' };
       }
       if (refreshed.observation === 'present') {
-        if (!identityMayAuthorizeSignal(containment, environment)) return { kind: 'refused' };
-        if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
+        if (!identityMayAuthorizeSignal(containment, environment)) refused = true;
+        else if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
       }
     }
     for (const [index, root] of recordedRoots.entries()) {
@@ -579,14 +575,17 @@ async function signalRecordedSet<Scope extends symbol>(
       const refreshed = await observeProcessIdentityAsync(root, exitDeadline, environment);
       if (refreshed.kind === 'unobservable') return { kind: 'refused' };
       if (refreshed.observation !== 'present') continue;
-      if (!identityMayAuthorizeSignal(root, environment)) return { kind: 'refused' };
+      if (!identityMayAuthorizeSignal(root, environment)) {
+        refused = true;
+        continue;
+      }
       if (deliverSignal(root.pid, signal, exitDeadline, environment)) delivered += 1;
     }
   } catch (error: unknown) {
     if (error instanceof ProcessContainmentError) throw error;
     throw reapFailure(`Recorded containment ${signal} delivery failed.`, { signal });
   }
-  return { kind: 'delivered', count: delivered };
+  return refused ? { kind: 'refused' } : { kind: 'delivered', count: delivered };
 }
 
 function signalRecordedSetSynchronously<Scope extends symbol>(
@@ -597,23 +596,19 @@ function signalRecordedSetSynchronously<Scope extends symbol>(
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): RecordedSetSignalResult {
-  const presentIdentities = [
-    ...(observation.containment === 'present' ? [containment] : []),
-    ...recordedRoots.filter((_, index) => observation.recordedRoots[index] === 'present'),
-  ];
-  if (presentIdentities.some((identity) => !identityMayAuthorizeSignal(identity, environment))) {
-    return { kind: 'refused' };
-  }
-
   let delivered = 0;
+  let refused = false;
   try {
     if (observation.containment === 'present' && observeContainment(containment, environment) === 'present') {
-      if (!identityMayAuthorizeSignal(containment, environment)) return { kind: 'refused' };
-      if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
+      if (!identityMayAuthorizeSignal(containment, environment)) refused = true;
+      else if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
     }
     for (const [index, root] of recordedRoots.entries()) {
       if (observation.recordedRoots[index] === 'present' && observeProcessIdentity(root, environment) === 'present') {
-        if (!identityMayAuthorizeSignal(root, environment)) return { kind: 'refused' };
+        if (!identityMayAuthorizeSignal(root, environment)) {
+          refused = true;
+          continue;
+        }
         if (deliverSignal(root.pid, signal, exitDeadline, environment)) delivered += 1;
       }
     }
@@ -621,7 +616,7 @@ function signalRecordedSetSynchronously<Scope extends symbol>(
     if (error instanceof ProcessContainmentError) throw error;
     throw reapFailure(`Recorded containment ${signal} delivery failed.`, { signal });
   }
-  return { kind: 'delivered', count: delivered };
+  return refused ? { kind: 'refused' } : { kind: 'delivered', count: delivered };
 }
 
 /** A recycled leader forbids every signal, and a signal attempt cannot erase a refusal disposition. */

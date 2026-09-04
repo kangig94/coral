@@ -2,7 +2,7 @@ import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { raceTimeout } from '../../../infra/async.js';
 import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
-import type { TimePort } from '../../../infra/port-types.js';
+import type { ChildProcessLike, TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { createMonotonicClock, type MonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
@@ -32,6 +32,7 @@ const PROVIDER_HOST_REAP_DEADLINE_MS =
 export type ProviderHostContainmentReaper = (
   containment: RecordedContainmentIdentity,
   signal?: AbortSignal,
+  liveChild?: Readonly<{ child: ChildProcessLike; hasExited(): boolean }>,
 ) => Promise<void>;
 
 type ProviderHostContainmentRuntime = Pick<Runtime, 'env' | 'process'>;
@@ -42,7 +43,12 @@ function containmentReaperWithClock<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): ProviderHostContainmentReaper {
-  return async (containment, signal) => {
+  return async (containment, signal, liveChild) => {
+    const childPid = liveChild?.child.pid;
+    const liveChildAuthority =
+      childPid === undefined || childPid !== containment.pid || liveChild === undefined
+        ? undefined
+        : { pid: childPid, hasExited: () => liveChild.hasExited() };
     const outcome = await reapRecordedContainment(
       containment,
       [],
@@ -53,6 +59,11 @@ function containmentReaperWithClock<Scope extends symbol>(
         process: runtime.process,
         platform: runtime.env.platform() as NodeJS.Platform,
         readProcessIncarnation,
+        ...(liveChildAuthority === undefined
+          ? {}
+          : {
+              knownLiveChildFor: (pid: number) => (pid === liveChildAuthority.pid ? liveChildAuthority : undefined),
+            }),
         ...(signal === undefined ? {} : { signal }),
       },
     );
@@ -209,7 +220,7 @@ export async function shutdownHandle(
     handle.markExpectedClose();
   }
 
-  await reapContainment(containment, signal);
+  await reapContainment(containment, signal, { child: handle.child, hasExited: handle.isClosed });
   if (signal !== undefined) throwIfAborted(signal, 'provider_host_finish_close');
   await handle.finishCloseAfterReap();
 }

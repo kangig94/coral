@@ -102,7 +102,10 @@ function createFakeEnvironment(
           elapsedMs += options.signalCostMs ?? 0;
           if (options.refusedPids?.has(pid)) return false;
           if (signal === 'SIGKILL') {
-            if (pid === -containment.processGroupId) state.groupAlive = false;
+            if (pid === -containment.processGroupId) {
+              state.groupAlive = false;
+              state.leaderAlive = false;
+            }
             if (pid === providerRoot.pid) state.providerRootAlive = false;
           }
           return observeLiveness(pid) !== 'absent';
@@ -113,7 +116,13 @@ function createFakeEnvironment(
       readProcessIncarnation,
       knownLiveChildFor: (pid) =>
         options.knownLivePids?.has(pid) === true
-          ? { pid, hasExited: () => options.exitedPids?.has(pid) === true }
+          ? {
+              pid,
+              hasExited: () =>
+                options.exitedPids?.has(pid) === true ||
+                (pid === containment.pid && !state.leaderAlive) ||
+                (pid === providerRoot.pid && !state.providerRootAlive),
+            }
           : undefined,
     },
   };
@@ -230,6 +239,18 @@ describe('recorded process containment', () => {
       reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), fake.environment),
     ).resolves.toEqual({ kind: 'containment-absent' });
     expect(fake.signals.map(({ signal }) => signal)).toEqual(['SIGTERM', 'SIGTERM', 'SIGKILL', 'SIGKILL']);
+  });
+
+  it('uses a live group leader authority without authorizing an unowned root signal', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: true },
+      { platform: 'darwin', knownLivePids: new Set([containment.pid]) },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), fake.environment),
+    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+    expect(fake.signals).toEqual([{ pid: -containment.processGroupId, signal: 'SIGTERM', at: 0 }]);
   });
 
   it('refuses Darwin signals after a retained child handle has observed exit', async () => {

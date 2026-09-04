@@ -207,12 +207,19 @@ describe('createRealRuntime', () => {
         pid: expect.any(Number),
         incarnation: expect.any(String),
       },
+      signalAuthority: {
+        pid: expect.any(Number),
+        hasExited: expect.any(Function),
+      },
     });
     expect(provisional?.childRoot?.pid).not.toBe(provisional?.runtimeRecord.pid);
 
     expect(durable.runtimeRecord).toEqual(provisional?.runtimeRecord);
     expect(durable.processSubject?.childRoot).toEqual(provisional?.childRoot);
+    expect(durable.signalAuthority).toBe(provisional?.signalAuthority);
+    expect(durable.signalAuthority?.hasExited()).toBe(false);
     await runtime.process.durable.waitForExit(durable);
+    await vi.waitFor(() => expect(durable.signalAuthority?.hasExited()).toBe(true));
   });
 
   it('keeps the wrapper alive until a signalled durable child exits', async () => {

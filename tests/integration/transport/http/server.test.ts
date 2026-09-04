@@ -6151,7 +6151,9 @@ describe('execution backend server', () => {
       expect(providerHostManager.shutdown).toHaveBeenCalledTimes(1);
       const hostShutdownOrder = providerHostManager.shutdown.mock.invocationCallOrder.at(0);
       const childKillOrder = terminateAllFn.mock.invocationCallOrder.at(0);
+      const terminalizationOrder = markJobsAsErrorFn.mock.invocationCallOrder.at(0);
       expect(hostShutdownOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(childKillOrder ?? Number.POSITIVE_INFINITY);
+      expect(childKillOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(terminalizationOrder ?? Number.POSITIVE_INFINITY);
     });
 
     it('hard shutdown during blocked startup persists abort markers for persisted-only recovery candidates before restart and skips terminal history', async () => {

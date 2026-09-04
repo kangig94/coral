@@ -171,6 +171,44 @@ describe('provider host drain properties', () => {
     expect(server.closeMock, 'child-only gracefulKill teardown was used').not.toHaveBeenCalled();
   });
 
+  it('uses the retained provider child to authorize Darwin teardown', async () => {
+    let elapsedMs = 0;
+    let groupAlive = true;
+    const signals: Array<readonly [number, NodeJS.Signals | 0]> = [];
+    const clock = createMonotonicClock(Symbol('darwin-provider-host-reaper-test'), {
+      readMilliseconds: () => BigInt(elapsedMs),
+      sleep: async (milliseconds) => {
+        elapsedMs += milliseconds;
+      },
+    });
+    const server = createFakeProviderServerHandle({
+      generation: containment.pid,
+      containmentIdentity: containment,
+    });
+    const reaper = createProviderHostContainmentReaper(
+      {
+        env: { ...runtime.env, platform: () => 'darwin' },
+        process: {
+          ...runtime.process,
+          observeLiveness: (pid) => (pid === -containment.processGroupId && groupAlive ? 'alive' : 'absent'),
+          observeRecordedProcessAsync: async () => (groupAlive ? 'unknown' : 'absent'),
+          kill: (pid, signal) => {
+            signals.push([pid, signal]);
+            groupAlive = false;
+            server.resolveClosed();
+            return true;
+          },
+        },
+      },
+      { clock, readProcessIncarnation: () => null },
+    );
+
+    await shutdownHandle(server.handle, createSharedSpec(), containment, runtime.time, reaper);
+
+    expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
+    expect(server.finishCloseAfterReapMock).toHaveBeenCalledOnce();
+  });
+
   it('refuses to close a recycled coordinator-local process group instead of reporting it gone', async () => {
     const recording = createRecordingReaper(testIncarnation('recycled'));
 
@@ -282,7 +320,15 @@ describe('provider host drain properties', () => {
       }
 
       expect(reapContainment).toHaveBeenCalledOnce();
-      expect(reapContainment).toHaveBeenCalledWith(containment, expect.any(AbortSignal));
+      if (terminalPath === 'initialization failure') {
+        expect(reapContainment).toHaveBeenCalledWith(containment, expect.any(AbortSignal));
+      } else {
+        expect(reapContainment).toHaveBeenCalledWith(
+          containment,
+          expect.any(AbortSignal),
+          expect.objectContaining({ child: server.handle.child }),
+        );
+      }
       if (terminalPath === 'idle retirement') {
         expect(carrierBlocksRetirement).toHaveBeenCalledTimes(2);
         expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(1, openedHostRef);

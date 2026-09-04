@@ -22,16 +22,16 @@ const TEST_PROVIDER_PID = 20_000;
 const TEST_PROVIDER_INCARNATION = testIncarnation(1_700_000_000);
 
 const PLATFORM_CAPABILITIES = {
-  aix: { canProbeStartTime: false, canSignalProcessGroup: true },
-  android: { canProbeStartTime: false, canSignalProcessGroup: true },
-  cygwin: { canProbeStartTime: false, canSignalProcessGroup: true },
-  darwin: { canProbeStartTime: true, canSignalProcessGroup: true },
-  freebsd: { canProbeStartTime: false, canSignalProcessGroup: true },
-  haiku: { canProbeStartTime: false, canSignalProcessGroup: true },
+  aix: { canProbeStartTime: false, canSignalProcessGroup: false },
+  android: { canProbeStartTime: false, canSignalProcessGroup: false },
+  cygwin: { canProbeStartTime: false, canSignalProcessGroup: false },
+  darwin: { canProbeStartTime: true, canSignalProcessGroup: false },
+  freebsd: { canProbeStartTime: false, canSignalProcessGroup: false },
+  haiku: { canProbeStartTime: false, canSignalProcessGroup: false },
   linux: { canProbeStartTime: true, canSignalProcessGroup: true },
-  netbsd: { canProbeStartTime: false, canSignalProcessGroup: true },
-  openbsd: { canProbeStartTime: false, canSignalProcessGroup: true },
-  sunos: { canProbeStartTime: false, canSignalProcessGroup: true },
+  netbsd: { canProbeStartTime: false, canSignalProcessGroup: false },
+  openbsd: { canProbeStartTime: false, canSignalProcessGroup: false },
+  sunos: { canProbeStartTime: false, canSignalProcessGroup: false },
   win32: { canProbeStartTime: true, canSignalProcessGroup: false },
 } satisfies Record<NodeJS.Platform, { readonly canProbeStartTime: boolean; readonly canSignalProcessGroup: boolean }>;
 
@@ -204,12 +204,7 @@ describe('launch admission', () => {
         expect(fake.processKill).not.toHaveBeenCalled();
         expect(fake.childKill).not.toHaveBeenCalled();
       }
-      if (platform === 'darwin' && capabilities.canProbeStartTime && capabilities.canSignalProcessGroup) {
-        await expect(manager.shutdown()).rejects.toMatchObject({ code: 'process_identity_unverified' });
-        expect(fake.processKill).not.toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
-      } else {
-        await manager.shutdown();
-      }
+      await manager.shutdown();
     },
   );
 
@@ -636,24 +631,41 @@ describe('launch admission', () => {
     });
   });
 
-  it('retains the wrapper identity when readiness rejects after provisional publication', async () => {
+  it('reaps a live Darwin wrapper before propagating a readiness rejection', async () => {
     const base = createRealRuntime('prod');
     const incarnation = testIncarnation(7_001);
+    let elapsedMs = 0n;
+    let exited = false;
     const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
-      options.onWrapperSpawned?.({ pid: TEST_PROVIDER_PID, leaderIncarnation: incarnation });
+      options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        leaderIncarnation: incarnation,
+        signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => exited },
+      });
       throw new Error('synthetic readiness rejection');
+    });
+    const kill = vi.fn<ProcessPort['kill']>((pid, signal) => {
+      if (signal === 0) return !exited;
+      expect(pid).toBe(-TEST_PROVIDER_PID);
+      exited = true;
+      return true;
     });
     const runtime: Runtime = {
       ...base,
+      env: { ...base.env, platform: () => 'darwin' },
       time: {
         ...base.time,
-        sleep: () => new Promise<never>(() => undefined),
+        monotonicNow: () => elapsedMs,
+        sleep: async (milliseconds) => {
+          elapsedMs += BigInt(milliseconds);
+        },
       },
       process: {
         ...base.process,
-        kill: vi.fn(() => true),
-        observeLiveness: () => 'alive',
-        readProcessIncarnation: () => incarnation,
+        kill,
+        observeLiveness: () => (exited ? 'absent' : 'alive'),
+        readProcessIncarnation: () => (exited ? null : incarnation),
+        observeRecordedProcessAsync: async () => (exited ? 'absent' : 'alive'),
         durable: { ...base.process.durable, launch },
       },
     };
@@ -669,33 +681,8 @@ describe('launch admission', () => {
       }),
     ).rejects.toThrow('synthetic readiness rejection');
 
-    const controller = new AbortController();
-    const termination = localCoordinator.terminateAll(controller.signal);
-    controller.abort();
-
-    await expect(termination).resolves.toEqual({
-      kind: 'unresolved-at-deadline',
-      processes: [],
-      pendingLaunches: 0,
-      retainedLaunches: [],
-      cleanupHandles: 1,
-      retainedProcesses: [
-        {
-          kind: 'recorded-wrapper-group',
-          provider: 'codex',
-          jobDir: '/tmp/readiness-rejection',
-          containment: {
-            pid: TEST_PROVIDER_PID,
-            incarnation,
-            processGroupId: TEST_PROVIDER_PID,
-            childRoot: null,
-          },
-        },
-      ],
-      cleanupFailures: 0,
-      owner: 'launch-coordinator',
-    });
-    expect(runtime.process.kill).not.toHaveBeenCalled();
+    await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    expect(kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
   });
 
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
@@ -781,7 +768,85 @@ describe('launch admission', () => {
     });
     expect(runtime.process.kill).not.toHaveBeenCalled();
     rejectLaunch(new Error('synthetic launch settlement'));
-    await expect(spawn).rejects.toThrow('synthetic launch settlement');
+    void spawn.catch(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      (localCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }).cleanupHandles
+        .size,
+    ).toBe(1);
+  });
+
+  it('publishes a durable hold and makes abort an explicit abandonment without absence proof', async () => {
+    const base = createRealRuntime('prod');
+    const incarnation = testIncarnation(7_002);
+    const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
+    const runtimeRecord = {
+      transport: 'durable-cli' as const,
+      pid: TEST_PROVIDER_PID,
+      stdoutPath: '/tmp/held-result/stdout',
+      stderrPath: '/tmp/held-result/stderr',
+      startTime: new Date(0).toISOString(),
+    };
+    const runtime: Runtime = {
+      ...base,
+      env: { ...base.env, platform: () => 'darwin' },
+      process: {
+        ...base.process,
+        kill: vi.fn(() => true),
+        observeLiveness: () => 'alive',
+        readProcessIncarnation: () => null,
+        observeRecordedProcessAsync: async () => 'unknown',
+        durable: {
+          launch: async (options) => {
+            options.onSpawned?.({ runtimeRecord, leaderIncarnation: incarnation, childRoot });
+            return {
+              launchHandle: 'held-result' as never,
+              pid: TEST_PROVIDER_PID,
+              stdoutPath: runtimeRecord.stdoutPath,
+              stderrPath: runtimeRecord.stderrPath,
+              runtimeRecord,
+              processSubject: {
+                pid: TEST_PROVIDER_PID,
+                incarnation,
+                processGroupId: TEST_PROVIDER_PID,
+                childRoot,
+              },
+              signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => true },
+            };
+          },
+          waitForExit: async () => ({ exitCode: 0, signal: null, endTime: new Date(1).toISOString() }),
+        },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const abort = new AbortController();
+    const observations = vi.fn();
+    const spawn = localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/held-result',
+      permitGranted: true,
+      signal: abort.signal,
+      onDurableProcessIdentity: observations,
+    });
+
+    await vi.waitFor(() =>
+      expect(observations).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: TEST_PROVIDER_PID }),
+        expect.objectContaining({ kind: 'held', abandonment: 'abort-job' }),
+      ),
+    );
+    abort.abort();
+
+    await expect(spawn).resolves.toMatchObject({ code: 0, aborted: true });
+    expect(observations).toHaveBeenCalledWith(expect.objectContaining({ pid: TEST_PROVIDER_PID }), {
+      kind: 'operator-abandoned',
+      processAbsenceProven: false,
+    });
+    expect(runtime.process.kill).not.toHaveBeenCalled();
+    await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
   });
 
   it('refuses new admission after shutdown begins', async () => {

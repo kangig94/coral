@@ -57,6 +57,7 @@ import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/service
 import type { AtomicFailedWorkflowDescendantReleaser } from '#src/workflow/recover.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { awaitRecoveryCursorBarrier } from '#src/coordinator/index.js';
+import type { TerminateAllDisposition } from '#src/coordinator/live/admission.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -741,6 +742,7 @@ function createLifecycleHarness(
     writeBackendInfoFn?: () => void;
     cleanupStaleJobsFn?: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
     markJobsAsErrorFn?: (message: string, signal: AbortSignal) => void | Promise<void>;
+    terminateAllFn?: (signal: AbortSignal) => TerminateAllDisposition | Promise<TerminateAllDisposition>;
     registerRuntimeComponentFn?: (component: RuntimeComponent) => void;
     interruptedAppServerReason?: 'restart' | 'handoff';
     runtime?: ReturnType<typeof createRealRuntime>;
@@ -831,7 +833,7 @@ function createLifecycleHarness(
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
       markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
-      terminateAllFn: () => ({ kind: 'all-observed-absent' }),
+      terminateAllFn: options.terminateAllFn ?? (() => ({ kind: 'all-observed-absent' })),
       kbDaemonSupervisor,
       handoffQuiescePorts: () => [],
       createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
@@ -1755,6 +1757,74 @@ describe('lifecycle recovery', () => {
                 AND subject_key = ?`,
           )
           .get(siblingJobId),
+      ).toEqual({ count: 0 });
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('keeps a running job nonterminal when shutdown cannot prove its containment absent', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createPluginRoot('plugin-unresolved-shutdown');
+    const projectRoot = createProjectRoot('project-unresolved-shutdown');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'unresolved-shutdown-job';
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: `${jobId}-session`,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    const markJobsAsErrorFn = vi.fn(async (message: string, signal: AbortSignal) => {
+      await modules.lifecycleModule.markJobsAsError(
+        progressStore,
+        message,
+        runtime.time.now(),
+        signal,
+        createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+      );
+    });
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      runStartupRecoveryFn: async () => [],
+      markJobsAsErrorFn,
+      terminateAllFn: () => ({
+        kind: 'unresolved-at-deadline',
+        processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+        pendingLaunches: 0,
+        retainedLaunches: [],
+        cleanupHandles: 1,
+        retainedProcesses: [],
+        cleanupFailures: 0,
+        owner: 'launch-coordinator',
+      }),
+    });
+
+    try {
+      await controller.start();
+      await expect(controller.shutdown('test')).rejects.toBeInstanceOf(AggregateError);
+
+      expect(markJobsAsErrorFn).not.toHaveBeenCalled();
+      expect(progressStore.readStatus(jobId)?.phase).toBe('launching');
+      expect(
+        progressStore
+          .getDb()
+          .prepare(
+            `SELECT COUNT(*) AS count
+               FROM recovery_quarantine
+              WHERE boundary_id = 'crashed-job-terminalization'
+                AND subject_key = ?`,
+          )
+          .get(jobId),
       ).toEqual({ count: 0 });
     } finally {
       await stopLifecycleController(controller);

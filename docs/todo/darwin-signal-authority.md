@@ -1,6 +1,6 @@
 # TODO — on macOS a process incarnation cannot authorize a signal
 
-**Status**: closed for recorded containment and pid-only process supervision.
+**Status**: closed for live durable launches; recovered processes and provider-host admission remain fail-closed.
 
 ## The token, and the one thing it cannot do on Darwin
 
@@ -28,11 +28,10 @@ action.
 
 `gracefulKillByPid` (`src/infra/process-supervision.ts`) refuses before sending SIGTERM when the caller has
 no recorded incarnation, when the platform cannot use an incarnation to authorize a signal, when a fresh
-probe is unavailable, or when the fresh incarnation differs. A pid-only termination request on Darwin
-therefore sends no signal. The cost is visible: abort, idle-timeout, and cleanup requests cannot terminate
-their own durable child through this path on Darwin, so ownership must remain until the process is observed
-absent or an identity-bearing control path becomes available. Callers that retain a real child handle can use
-`gracefulKill` with its required liveness observer instead.
+probe is unavailable, or when the fresh incarnation differs. A recovered pid-only termination request on
+Darwin therefore sends no signal. A live durable launch is different: `DurableLaunchResult`
+(`src/runtime/ports.ts`) retains an exact wrapper-scoped signal authority, and durable cleanup supplies it to
+`reapRecordedContainment` for as long as the wrapper has not exited.
 
 `verifySignalTarget` (`src/coordinator/handoff.ts`) refuses on Darwin before it reaches the anchor check. That
 was the dangerous half: a durable handoff record can be arbitrarily old and can name a pid this build never
@@ -55,11 +54,22 @@ either a retained child handle whose exit has not been observed, or a fresh matc
 platform for which `incarnationMayAuthorizeSignal` returns true. The handle state is checked again at the
 signal boundary. A fresh Darwin token alone never passes that gate.
 
-No production containment caller currently supplies the optional live-child proof. A Darwin caller therefore
-gets `recorded-group-unattributable` when a live target would need a signal. That is the existing retained
-non-success disposition: proxy-set enforcement keeps its unattributable outcome, durable recovery keeps a
-held status, guardian construction returns its retrying hold, and provider-host teardown throws instead of
-reporting the containment absent. No caller silently treats the refusal as completed reaping.
+Live durable cleanup and handle-backed provider-host teardown supply the optional live-child proof. Durable
+cleanup uses the proof only for the wrapper-led group; an additional recorded child root is observed after
+the group is reaped and remains held if its absence cannot be established. A recovered durable process has no
+such proof and retains its non-success disposition.
+
+Provider-host admission is Linux-only. Provider initialization can fail after containment is recorded but
+before the handle is returned, so a later cleanup may have no live-child proof. Admitting that launch on
+Darwin would recreate an obligation no teardown path can discharge. Handle-backed teardown still threads the
+exact child authority to the shared reaper, but admission is gated by the weakest teardown path rather than
+the common one.
+
+A completed durable result whose containment cannot be observed publishes a job progress status naming the
+pid and reason. Cleanup retries while ownership remains held. After that status is visible, `coral-cli abort
+<job-id>` explicitly abandons the hold: the job records that local ownership was released without proving
+process absence or terminating the process. Ordinary abort before a completion hold remains a termination
+request, not an abandonment.
 
 The same gate applies after SIGTERM. If a target exits and its number is reused during the grace period, the
 fresh observation either proves absence/mismatch or refuses escalation; it cannot authorize SIGKILL from

@@ -38,7 +38,7 @@ import type {
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../contracts/job-store.js';
-import type { Runtime } from '../../runtime/ports.js';
+import type { DurableCliProcessSubject, DurableContainmentStatus, Runtime } from '../../runtime/ports.js';
 import type { SessionInitialLaunchPort, SessionJobClaimPort } from '../../sessions/contracts.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { CommitEventsFn } from '../../store/append.js';
@@ -1413,7 +1413,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       },
       // Losing optional observation metadata may only degrade a later carrier verdict to `unknown`; it must
       // not fault the launch.
-      (identity) => {
+      (identity: DurableCliProcessSubject, containmentStatus?: DurableContainmentStatus) => {
         try {
           writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
             jobId,
@@ -1421,6 +1421,31 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           });
         } catch (error: unknown) {
           backendLog.warn(`Failed to record durable process identity for ${jobId}: ${errorMessage(error)}`);
+        }
+        if (containmentStatus === undefined) return;
+        switch (containmentStatus.kind) {
+          case 'held':
+            this.appendProgressEvent(
+              jobId,
+              requestForRoute.sessionId,
+              `Durable containment pid=${identity.pid} is held (${containmentStatus.reason}). ` +
+                `Cleanup retries every ${containmentStatus.retryIntervalMs}ms. Run coral-cli abort ${jobId} to ` +
+                'abandon the hold; abandonment releases job ownership without proving process absence or terminating the process.',
+            );
+            return;
+          case 'absence-confirmed':
+            this.appendProgressEvent(
+              jobId,
+              requestForRoute.sessionId,
+              `Durable containment pid=${identity.pid} is absent.`,
+            );
+            return;
+          case 'operator-abandoned':
+            this.appendProgressEvent(
+              jobId,
+              requestForRoute.sessionId,
+              `Durable containment pid=${identity.pid} was abandoned without proof of process absence or termination.`,
+            );
         }
       },
     );

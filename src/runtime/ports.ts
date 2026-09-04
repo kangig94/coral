@@ -66,7 +66,13 @@ export type DurableLaunchOptions = {
   envAdditions?: Record<string, string>;
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;
-  onWrapperSpawned?(launch: Readonly<{ pid: number; leaderIncarnation: ProcessIncarnation | null }>): void;
+  onWrapperSpawned?(
+    launch: Readonly<{
+      pid: number;
+      leaderIncarnation: ProcessIncarnation | null;
+      signalAuthority?: DurableLaunchSignalAuthority;
+    }>,
+  ): void;
   /** Runs after the wrapper identifies its child and before launch readiness is returned. */
   onSpawned?(launch: DurableProvisionalLaunch): void;
 };
@@ -81,7 +87,23 @@ export type DurableProvisionalLaunch = Readonly<{
   runtimeRecord: DurableCliRuntimeRecord;
   leaderIncarnation: ProcessIncarnation | null;
   childRoot: RecordedProcessIdentity | null;
+  signalAuthority?: DurableLaunchSignalAuthority;
 }>;
+
+export type DurableLaunchSignalAuthority = Readonly<{
+  pid: number;
+  hasExited(): boolean;
+}>;
+
+export type DurableContainmentStatus =
+  | Readonly<{
+      kind: 'held';
+      reason: string;
+      retryIntervalMs: number;
+      abandonment: 'abort-job';
+    }>
+  | Readonly<{ kind: 'absence-confirmed' }>
+  | Readonly<{ kind: 'operator-abandoned'; processAbsenceProven: false }>;
 
 declare const durableLaunchHandleBrand: unique symbol;
 
@@ -95,6 +117,7 @@ export type DurableLaunchResult = {
   stderrPath: string;
   runtimeRecord: DurableCliRuntimeRecord;
   processSubject: DurableCliProcessSubject;
+  signalAuthority?: DurableLaunchSignalAuthority;
 };
 
 export interface DurableExecutionTransport {

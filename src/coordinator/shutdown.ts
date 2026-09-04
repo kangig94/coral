@@ -233,11 +233,13 @@ async function runShutdownStep(
   label: string,
   task: () => unknown | Promise<unknown>,
   log: (message: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await task();
+    return true;
   } catch (error: unknown) {
     recordShutdownFailure(failures, label, error, log);
+    return false;
   }
 }
 
@@ -377,7 +379,7 @@ export async function runShutdownSequence({
   log,
 }: RunShutdownSequenceContext): Promise<void> {
   const failures: ShutdownFailure[] = [];
-  const runStep = (label: string, task: () => unknown | Promise<unknown>): Promise<void> =>
+  const runStep = (label: string, task: () => unknown | Promise<unknown>): Promise<boolean> =>
     runShutdownStep(failures, label, task, log);
   const observeTask = (label: string, task: Promise<void>): Promise<void> =>
     observeShutdownTask(failures, label, task, log);
@@ -392,7 +394,7 @@ export async function runShutdownSequence({
   const remainingDrain = (): number => Math.max(0, drainDeadline - runtime.time.now());
   const waitForObservedShutdownTask = (task: Promise<void>): Promise<void> =>
     Promise.race([task, runtime.time.sleep(remainingDrain())]);
-  const runBudgetedStep = (label: string, task: (signal: AbortSignal) => Promise<void>): Promise<void> =>
+  const runBudgetedStep = (label: string, task: (signal: AbortSignal) => Promise<void>): Promise<boolean> =>
     runStep(label, () => withBudget(label, task, remainingDrain, runtime.time, log));
   // A required step's failure is recorded like any other, so `throwShutdownFailures` still aggregates it —
   // what "required" changes is that skipping, timing out, or finishing unconfirmed all become failures
@@ -400,7 +402,7 @@ export async function runShutdownSequence({
   const runRequiredBudgetedStep = (
     label: string,
     task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
-  ): Promise<void> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
+  ): Promise<boolean> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
   let liveProxySets: readonly ProviderProxySetAuthority[] = [];
   let acquisitionCleanupHolds: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'] = [];
   const providerHostQuiescence: { receipt: ProviderHostQuiescenceReceipt | null } = { receipt: null };
@@ -433,26 +435,27 @@ export async function runShutdownSequence({
     await runStep('store services availability check', () => {
       storeServicesAvailable = storeServicesRef.tryGet() !== null;
     });
-    if (storeServicesAvailable) {
-      await runBudgetedStep('crashed job terminalization', async (signal) => {
-        await markJobsAsErrorFn('Backend shutting down', signal);
-      });
-    }
-    await runRequiredBudgetedStep('provider host shutdown', async (signal) => {
+    const providerHostsQuiesced = await runRequiredBudgetedStep('provider host shutdown', async (signal) => {
       providerHostQuiescence.receipt = await providerHostManager.shutdown(signal);
       return { confirmed: true };
     });
     const cleanupObligations = providerHostManager.cleanupObligations?.() ?? providerHostQuiescence.receipt;
     liveProxySets = cleanupObligations?.liveProxySets ?? [];
     acquisitionCleanupHolds = cleanupObligations?.acquisitionCleanupHolds ?? [];
+    let providerContainmentAbsent = true;
     if (liveProxySets.length > 0 || acquisitionCleanupHolds.length > 0) {
-      await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
+      providerContainmentAbsent = await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
         reapProviderProxySets(liveProxySets, acquisitionCleanupHolds, signal),
       );
     }
-    await runRequiredBudgetedStep('child termination', async (signal) =>
+    const childContainmentAbsent = await runRequiredBudgetedStep('child termination', async (signal) =>
       childTerminationConfirmation(await terminateAllFn(signal)),
     );
+    if (storeServicesAvailable && providerHostsQuiesced && providerContainmentAbsent && childContainmentAbsent) {
+      await runBudgetedStep('crashed job terminalization', async (signal) => {
+        await markJobsAsErrorFn('Backend shutting down', signal);
+      });
+    }
   } else {
     // Phase A2 is a durability fence, not a best-effort drain. Admission is
     // closed synchronously, then every write already admitted by the old daemon

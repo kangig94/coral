@@ -31,6 +31,7 @@ const time = createRealTimePort();
 let child: ReturnType<typeof spawn> | null = null;
 let terminationRequested = false;
 let terminationStarted = false;
+let exitWritten = false;
 
 function terminateChild(): void {
   terminationRequested = true;
@@ -79,8 +80,8 @@ if (prompt) childStdin.write(prompt);
 childStdin.end();
 
 function writeExit(code: number | null, signal: NodeJS.Signals | null, exitCode: number): void {
-  // A descriptor that will not close cannot stop this exit record from being written: the parent reads the
-  // record, not the descriptor, and this process is about to end either way.
+  if (exitWritten) return;
+  exitWritten = true;
   try {
     closeSync(stdoutFd);
   } catch {
@@ -93,7 +94,7 @@ function writeExit(code: number | null, signal: NodeJS.Signals | null, exitCode:
   }
   const exitRecord = { exitCode: code, signal, endTime: new Date().toISOString() };
   process.stdout.write(JSON.stringify({ type: 'exit', exitRecord }) + '\n');
-  process.exit(exitCode);
+  process.exitCode = exitCode;
 }
 
 child.on('close', (code, signal) => writeExit(code, signal, 0));

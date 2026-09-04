@@ -49,6 +49,7 @@ import type {
   DurableExecutionTransport,
   DurableCliProcessSubject,
   DurableLaunchHandle,
+  DurableLaunchSignalAuthority,
   IdPort,
   ProcessPort,
   Runtime,
@@ -444,6 +445,14 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       );
       wrapper.unref();
 
+      const signalAuthority: DurableLaunchSignalAuthority | undefined =
+        wrapper.pid === undefined
+          ? undefined
+          : Object.freeze({
+              pid: wrapper.pid,
+              hasExited: () => wrapper.exitCode !== null || wrapper.signalCode !== null,
+            });
+
       let initiallyObservedLeaderIncarnation: ProcessIncarnation | null = null;
       if (wrapper.pid !== undefined) {
         try {
@@ -452,7 +461,11 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           initiallyObservedLeaderIncarnation = null;
         }
         try {
-          options.onWrapperSpawned?.({ pid: wrapper.pid, leaderIncarnation: initiallyObservedLeaderIncarnation });
+          options.onWrapperSpawned?.({
+            pid: wrapper.pid,
+            leaderIncarnation: initiallyObservedLeaderIncarnation,
+            ...(signalAuthority === undefined ? {} : { signalAuthority }),
+          });
         } catch (error: unknown) {
           gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
           throw error;
@@ -488,7 +501,12 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         childRoot,
       };
       try {
-        options.onSpawned?.({ runtimeRecord, leaderIncarnation, childRoot });
+        options.onSpawned?.({
+          runtimeRecord,
+          leaderIncarnation,
+          childRoot,
+          ...(signalAuthority === undefined ? {} : { signalAuthority }),
+        });
       } catch (error: unknown) {
         gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
         void exitPromise.catch(() => {});
@@ -504,6 +522,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stderrPath: runtimeRecord.stderrPath,
         runtimeRecord,
         processSubject,
+        ...(signalAuthority === undefined ? {} : { signalAuthority }),
       };
     },
     waitForExit: async (handle) => {

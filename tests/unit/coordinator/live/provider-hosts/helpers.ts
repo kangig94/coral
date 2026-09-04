@@ -116,7 +116,7 @@ export function createFakeProviderServerHandle(options?: {
   return {
     handle: {
       pid,
-      child: {} as never,
+      child: { pid } as never,
       generation: options?.generation ?? 1,
       containmentIdentity:
         options?.containmentIdentity ??

@@ -282,6 +282,7 @@ describe('runShutdownSequence drain budget', () => {
     let terminalizationSignal: AbortSignal | undefined;
     harness.ctx.markJobsAsErrorFn = (_message, signal) => {
       terminalizationSignal = signal;
+      harness.callLog.push('markJobsAsErrorFn');
       throw new Error('injected crash terminalization failure');
     };
     harness.ctx.providerHostManager = {
@@ -305,9 +306,29 @@ describe('runShutdownSequence drain budget', () => {
     expect(terminalizationSignal).toBeInstanceOf(AbortSignal);
     expect(harness.callLog).toContain('providerHostManager.shutdown');
     expect(harness.callLog).toContain('terminateAllFn');
+    expect(harness.callLog.indexOf('terminateAllFn')).toBeLessThan(harness.callLog.indexOf('markJobsAsErrorFn'));
     expect(harness.logLines).toContainEqual(
       expect.stringContaining('crashed job terminalization failed during shutdown'),
     );
+  });
+
+  it('does not terminalize jobs when child containment remains unresolved', async () => {
+    const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
+    harness.ctx.markJobsAsErrorFn = vi.fn();
+    harness.ctx.terminateAllFn = async () => ({
+      kind: 'unresolved-at-deadline',
+      processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
+    });
+
+    await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
+
+    expect(harness.ctx.markJobsAsErrorFn).not.toHaveBeenCalled();
   });
 
   it('fails hard shutdown and names a durable child that remains alive at the deadline', async () => {
@@ -633,6 +654,7 @@ describe('required provider-proxy shutdown steps', () => {
       recoveryCapability: { retry },
     };
     const harness = buildHarness({ reason: 'fatal' });
+    harness.ctx.markJobsAsErrorFn = vi.fn();
     harness.ctx.providerHostManager = {
       drainForHandoff: async () => ({
         kind: 'provider-hosts-quiesced',
@@ -650,6 +672,7 @@ describe('required provider-proxy shutdown steps', () => {
       /provider proxy stop and reap: .*acquisition guardian 4242: guardian is still alive/u,
     );
     expect(retry).toHaveBeenCalledOnce();
+    expect(harness.ctx.markJobsAsErrorFn).not.toHaveBeenCalled();
   });
 
   it('reaps every live set on a hard shutdown before terminating owned children', async () => {
