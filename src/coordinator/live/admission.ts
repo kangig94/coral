@@ -3,12 +3,12 @@ import {
   type CliExecResult,
   type DurableProcessRetention,
   type DurableProcessCleanup,
+  type DurableProcessCleanupOutcome,
   type PendingDurableLaunch,
   type PendingDurableLaunchIdentity,
   type SpawnDurableJobOptions,
   spawnDurableJobTransport,
 } from './durable-transport.js';
-import type { GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
 import {
   type ContainedProviderServerHandle,
   type ProviderResponseObservationSink,
@@ -62,7 +62,7 @@ export type TerminateAllDisposition =
   | Readonly<{ kind: 'all-observed-absent' }>
   | Readonly<{
       kind: 'unresolved-at-deadline';
-      processes: readonly Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>[];
+      processes: readonly Exclude<DurableProcessCleanupOutcome, { kind: 'observed-absent' }>[];
       pendingLaunches: number;
       retainedLaunches: readonly PendingDurableLaunchIdentity[];
       cleanupHandles: number;
@@ -227,7 +227,10 @@ export class LaunchCoordinator {
     this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
     const failures = new Map<DurableProcessCleanup, unknown>();
-    const unsettled = new Map<DurableProcessCleanup, Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>>();
+    const unsettled = new Map<
+      DurableProcessCleanup,
+      Exclude<DurableProcessCleanupOutcome, { kind: 'observed-absent' }>
+    >();
     const aborted = Symbol('aborted');
     let resolveAborted: ((value: typeof aborted) => void) | null = null;
     const abort =
@@ -265,7 +268,7 @@ export class LaunchCoordinator {
           continue;
         }
 
-        const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<GracefulKillByPidOutcome> }> = [];
+        const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<DurableProcessCleanupOutcome> }> = [];
         for (const cleanup of this.cleanupHandles.values()) {
           try {
             attempts.push({ cleanup, task: cleanup() });

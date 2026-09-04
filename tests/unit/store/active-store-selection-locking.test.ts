@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as auditLogModule from '#src/infra/audit-log.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StorageBigIntStat, StorageEntryKind } from '#src/infra/port-types.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
@@ -47,6 +48,7 @@ const roots: string[] = [];
 const backendBundle = 'backend fixture';
 const cliBundle = 'cli fixture';
 const claudeAppserverBundle = 'claude appserver fixture';
+const durableWrapperBundle = 'durable wrapper fixture';
 
 function bundleHash(contents: string): string {
   return createHash('sha256').update(contents).digest('hex').slice(0, 16);
@@ -59,6 +61,7 @@ function manifest(version: string, buildSetId: string): StrictBundleManifest {
     bundleHash: bundleHash(backendBundle),
     cliBundleHash: bundleHash(cliBundle),
     claudeAppserverBundleHash: bundleHash(claudeAppserverBundle),
+    durableWrapperBundleHash: bundleHash(durableWrapperBundle),
     flavor: 'prod',
     storeFormatFingerprint: currentCoralStoreFormat().fingerprint,
   };
@@ -70,7 +73,8 @@ function createBundle(root: string, expected: StrictBundleManifest): string {
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle);
   writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle);
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), claudeAppserverBundle);
-  writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(expected));
+  writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle);
+  writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(expected));
   return bundleDir;
 }
 

@@ -35,6 +35,7 @@ const manifest: StrictBundleManifest = {
   bundleHash: '0123456789abcdef',
   cliBundleHash: '123456789abcdef0',
   claudeAppserverBundleHash: '23456789abcdef01',
+  durableWrapperBundleHash: '3456789abcdef012',
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
 };

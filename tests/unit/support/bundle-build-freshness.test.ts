@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import {
   assertLifecycleBundleSetFresh,
   lifecycleBundleSourceSha256,
@@ -23,7 +24,8 @@ const OUTPUTS = {
   cli: 'clients/build/coral-cli.cjs',
   claudeAppserver: 'clients/build/coral-claude-appserver.cjs',
   durableWrapper: 'clients/build/coral-durable-wrapper.cjs',
-  manifest: 'clients/build/manifest.json',
+  legacyManifest: 'clients/build/manifest.json',
+  strictManifest: `clients/build/${CURRENT_STRICT_BUNDLE_MANIFEST_FILE}`,
 } as const;
 
 function sha256(content: string): string {
@@ -61,7 +63,14 @@ function createFreshBuildFixture(): string {
         path: OUTPUTS.durableWrapper,
         sha256: sha256(`output:${OUTPUTS.durableWrapper}`),
       },
-      manifest: { path: OUTPUTS.manifest, sha256: sha256(`output:${OUTPUTS.manifest}`) },
+      legacyManifest: {
+        path: OUTPUTS.legacyManifest,
+        sha256: sha256(`output:${OUTPUTS.legacyManifest}`),
+      },
+      strictManifest: {
+        path: OUTPUTS.strictManifest,
+        sha256: sha256(`output:${OUTPUTS.strictManifest}`),
+      },
     },
   };
   writeFixtureFile(root, 'clients/build/build-receipt.json', JSON.stringify(receipt));
@@ -109,7 +118,7 @@ describe('lifecycle bundle build freshness', () => {
   it('rejects a manifest-only lifecycle build mutation', () => {
     const root = createFreshBuildFixture();
 
-    writeFixtureFile(root, OUTPUTS.manifest, 'changed manifest bytes');
+    writeFixtureFile(root, OUTPUTS.strictManifest, 'changed manifest bytes');
 
     expect(captureFreshnessResult(root)).toBe(STALE_BUILD_DIAGNOSTIC);
   });

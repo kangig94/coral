@@ -181,6 +181,7 @@ describe('provider-operation startup recovery ownership', () => {
           bundleHash: '0123456789abcdef',
           cliBundleHash: '0123456789abcdef',
           claudeAppserverBundleHash: '0123456789abcdef',
+          durableWrapperBundleHash: '0123456789abcdef',
           flavor: 'prod',
           instanceId: 'provider-operation-recovery-integration',
           token: 'test-token',

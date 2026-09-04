@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HANDOFF_ROUTING_BASIS_OBLIGATIONS, routeLiveIncumbent } from '#src/coordinator/handoff-routing/policy.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
@@ -18,6 +19,7 @@ const roots: string[] = [];
 const backendBundle = 'routing backend';
 const cliBundle = 'routing cli';
 const claudeAppserverBundle = 'routing claude appserver';
+const durableWrapperBundle = 'routing durable wrapper';
 
 function manifest(version: string, buildSetId: string): StrictBundleManifest {
   return {
@@ -26,6 +28,7 @@ function manifest(version: string, buildSetId: string): StrictBundleManifest {
     bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
     cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
     claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
+    durableWrapperBundleHash: createHash('sha256').update(durableWrapperBundle).digest('hex').slice(0, 16),
     flavor: 'prod',
     storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
   };
@@ -37,7 +40,8 @@ function candidate(expectedManifest: StrictBundleManifest): TargetCandidateEvide
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
-  writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(expectedManifest), 'utf8');
+  writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
+  writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(expectedManifest), 'utf8');
   return { bundleDir, expectedManifest };
 }
 

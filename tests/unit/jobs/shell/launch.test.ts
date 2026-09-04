@@ -26,6 +26,7 @@ import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/r
 import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { readDurableCliContainmentStatus } from '#src/jobs/runtime-meta-store.js';
+import { durableCliContainmentStatusKey } from '#src/jobs/runtime-meta.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -39,6 +40,7 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -1061,6 +1063,146 @@ describe('ExecutionService launch', () => {
     const signalCount = kill.mock.calls.length;
     await Promise.resolve();
     expect(kill).toHaveBeenCalledTimes(signalCount);
+  });
+
+  it('keeps the abort hold when deleting the durable containment row fails', async () => {
+    const base = createRealRuntime('prod');
+    const retryHandle = {};
+    let retryCleanup!: () => void;
+    let processAbsent = false;
+    const clearInterval = vi.fn();
+    const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
+    let resolveExit!: (record: typeof exitRecord) => void;
+    const exit = new Promise<typeof exitRecord>((resolve) => {
+      resolveExit = resolve;
+    });
+    const runtimeRecord = {
+      transport: 'durable-cli' as const,
+      pid: 91_002,
+      stdoutPath: join(mockState.tmpRoot, 'failed-containment-delete-stdout'),
+      stderrPath: join(mockState.tmpRoot, 'failed-containment-delete-stderr'),
+      startTime: new Date(0).toISOString(),
+    };
+    runtime = {
+      ...base,
+      env: { ...base.env, platform: () => 'darwin' },
+      time: {
+        ...base.time,
+        setInterval: (callback) => {
+          retryCleanup = callback;
+          return retryHandle;
+        },
+        clearInterval,
+      },
+      process: {
+        ...base.process,
+        kill: vi.fn(() => true),
+        readProcessIncarnation: () => null,
+        observeLiveness: () => (processAbsent ? 'absent' : 'unknown'),
+        durable: {
+          launch: async (options) => {
+            const processSubject = {
+              pid: runtimeRecord.pid,
+              incarnation: testIncarnation('failed-containment-delete-wrapper'),
+              processGroupId: runtimeRecord.pid,
+              childRoot: {
+                pid: runtimeRecord.pid + 1,
+                incarnation: testIncarnation('failed-containment-delete-child'),
+              },
+            };
+            options.onSpawned?.({
+              runtimeRecord,
+              leaderIncarnation: processSubject.incarnation,
+              childRoot: processSubject.childRoot,
+            });
+            return {
+              launchHandle: 'failed-containment-delete' as never,
+              pid: runtimeRecord.pid,
+              stdoutPath: runtimeRecord.stdoutPath,
+              stderrPath: runtimeRecord.stderrPath,
+              runtimeRecord,
+              processSubject,
+            };
+          },
+          waitForExit: () => exit,
+        },
+      },
+    };
+    launchCoordinator = new LaunchCoordinator({ runtime });
+    const provider: Provider = {
+      name: 'codex',
+      execute: (_request, providerRuntime) =>
+        streamProviderEvents(async (emit) => {
+          if (providerRuntime.transport !== 'standalone') throw new Error('expected standalone runtime');
+          const result = await providerRuntime.runCli({ command: 'fixture', args: [] });
+          emit(providerTerminalEvent({ content: result.stdout, outcome: { kind: 'completed' }, durationMs: 0 }));
+        }),
+    };
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore } = getInternals(service);
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    await vi.waitFor(() => {
+      expect(progressStore.readRuntimeProjection(decision.jobId)).toMatchObject({ transport: 'durable-cli' });
+    });
+    expect(abortRegistry.abort([decision.jobId]).refused).toHaveLength(1);
+    const abortHolds = (abortRegistry as unknown as { readonly holds: Map<string, unknown> }).holds;
+    await vi.waitFor(() => {
+      expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toMatchObject({
+        kind: 'valid',
+        status: { disposition: { kind: 'held' } },
+      });
+      expect(abortHolds.has(decision.jobId)).toBe(true);
+      expect(abortRegistry.has(decision.jobId)).toBe(true);
+    });
+    const cleanupHandles = (
+      launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }
+    ).cleanupHandles;
+    expect(cleanupHandles.size).toBe(1);
+    const retainedCleanup = [...cleanupHandles.values()][0];
+    if (retainedCleanup === undefined) throw new Error('Expected retained durable cleanup ownership');
+    await retainedCleanup();
+
+    let deletionAttempts = 0;
+    progressStore.getDb().function('fail_containment_delete', () => {
+      deletionAttempts += 1;
+      throw new Error('synthetic containment delete failure');
+    });
+    progressStore.getDb().exec(`
+      CREATE TRIGGER fail_containment_delete
+      BEFORE DELETE ON meta
+      WHEN OLD.key = '${durableCliContainmentStatusKey(decision.jobId)}'
+      BEGIN
+        SELECT fail_containment_delete();
+      END
+    `);
+
+    processAbsent = true;
+    retryCleanup();
+    await retainedCleanup();
+
+    expect(deletionAttempts).toBe(1);
+    expect(abortHolds.has(decision.jobId)).toBe(true);
+    expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toMatchObject({
+      kind: 'valid',
+      status: { disposition: { kind: 'held' } },
+    });
+    expect(clearInterval).not.toHaveBeenCalled();
+    expect(progressStore.readStatus(decision.jobId)?.phase).toBe('running');
+
+    progressStore.getDb().exec('DROP TRIGGER fail_containment_delete');
+    expect(abortRegistry.abort([decision.jobId])).toEqual({
+      aborted: [decision.jobId],
+      notFound: [],
+    });
+    expect(abortHolds.has(decision.jobId)).toBe(false);
+    expect(abortRegistry.has(decision.jobId)).toBe(true);
+    expect(clearInterval).toHaveBeenCalledWith(retryHandle);
+    resolveExit(exitRecord);
+    await waitForTerminalEvent(service, decision.jobId);
   });
 
   it('records provider artifact handle events through the launch session API before continuity checkpoints', async () => {

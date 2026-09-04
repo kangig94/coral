@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness } from '#src/infra/node-process.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
@@ -34,7 +35,9 @@ const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
-const SOURCE_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
+const SOURCE_DURABLE_WRAPPER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-durable-wrapper.cjs');
+const SOURCE_LEGACY_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
+const SOURCE_STRICT_MANIFEST = join(REPO_ROOT, 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 
 const tempRoots: string[] = [];
@@ -214,7 +217,9 @@ function createFixture(): Fixture {
   // The coordinator validates its whole adjacent build set at startup, so the
   // Claude appserver bundle must be present or boot aborts on build identity.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
-  copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
+  copyFileSync(SOURCE_DURABLE_WRAPPER_BUNDLE, join(root, 'bridge', 'coral-durable-wrapper.cjs'));
+  copyFileSync(SOURCE_LEGACY_MANIFEST, join(root, 'bridge', 'manifest.json'));
+  copyFileSync(SOURCE_STRICT_MANIFEST, join(root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE));
   const flavor = readBuildFlavor(root);
   const home = temporaryHomes.create('coral-ipc-mutate-home-', flavor);
   const fakeStateDir = join(home, '.fake-codex-state');
@@ -455,7 +460,9 @@ describe('mutating commands via IPC', () => {
       !existsSync(SOURCE_BACKEND_BUNDLE) ||
       !existsSync(SOURCE_CLI_BUNDLE) ||
       !existsSync(SOURCE_CLAUDE_APPSERVER_BUNDLE) ||
-      !existsSync(SOURCE_MANIFEST)
+      !existsSync(SOURCE_DURABLE_WRAPPER_BUNDLE) ||
+      !existsSync(SOURCE_LEGACY_MANIFEST) ||
+      !existsSync(SOURCE_STRICT_MANIFEST)
     ) {
       throw new Error('Expected a built Coral bundle set under clients/build/ before running lifecycle E2E tests.');
     }

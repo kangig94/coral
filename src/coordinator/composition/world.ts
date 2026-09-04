@@ -348,6 +348,7 @@ export function createCoordinatorWorld(
     : (bootSnapshot.bundleHash ?? readBundleHash(pluginRoot));
   const cliBundleHash = strictBuild.ok ? strictBuild.manifest.cliBundleHash : bundleHash;
   const claudeAppserverBundleHash = strictBuild.ok ? strictBuild.manifest.claudeAppserverBundleHash : bundleHash;
+  const durableWrapperBundleHash = strictBuild.ok ? strictBuild.manifest.durableWrapperBundleHash : bundleHash;
   backendLog.init({ version, bundleHash });
   const flavor = strictBuild.ok ? strictBuild.manifest.flavor : (bootSnapshot.flavor ?? readBuildFlavor(pluginRoot));
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
@@ -475,6 +476,7 @@ export function createCoordinatorWorld(
     bundleHash,
     cliBundleHash,
     claudeAppserverBundleHash,
+    durableWrapperBundleHash,
     flavor,
     instanceId,
     token,

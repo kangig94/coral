@@ -23,6 +23,7 @@ import {
 } from '#src/coordinator/handoff-routing/runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusStoreSchema } from '#src/coordinator/handoff-routing/status.js';
@@ -95,12 +96,14 @@ const roots: string[] = [];
 const backendBundle = 'handoff runner backend fixture';
 const cliBundle = 'handoff runner cli fixture';
 const claudeAppserverBundle = 'handoff runner claude appserver fixture';
+const durableWrapperBundle = 'handoff runner durable wrapper fixture';
 const manifest: StrictBundleManifest = {
   version: '2.1.0',
   buildSetId: '223e4567-e89b-42d3-a456-426614174000',
   bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
   cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
   claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
+  durableWrapperBundleHash: createHash('sha256').update(durableWrapperBundle).digest('hex').slice(0, 16),
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
 };
@@ -175,7 +178,8 @@ function createBundle(): string {
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
   writeFileSync(join(root, 'coral-cli.cjs'), cliBundle, 'utf8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
-  writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
+  writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifest), 'utf8');
   return root;
 }
 

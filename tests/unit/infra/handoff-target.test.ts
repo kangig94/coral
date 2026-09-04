@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import {
   createForeignTargetValidator,
   inspectValidatedHandoffTarget,
@@ -16,12 +17,14 @@ const roots: string[] = [];
 const backendBundle = 'foreign backend fixture';
 const cliBundle = 'foreign cli fixture';
 const claudeAppserverBundle = 'foreign claude appserver fixture';
+const durableWrapperBundle = 'foreign durable wrapper fixture';
 const manifest: StrictBundleManifest = {
   version: '2.1.0',
   buildSetId: '123e4567-e89b-42d3-a456-426614174000',
   bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
   cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
   claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
+  durableWrapperBundleHash: createHash('sha256').update(durableWrapperBundle).digest('hex').slice(0, 16),
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
 };
@@ -32,7 +35,8 @@ function createBundle(adjacentManifest: unknown = manifest): string {
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
   writeFileSync(join(root, 'coral-cli.cjs'), cliBundle, 'utf8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
-  writeFileSync(join(root, 'manifest.json'), JSON.stringify(adjacentManifest), 'utf8');
+  writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
+  writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(adjacentManifest), 'utf8');
   return root;
 }
 
@@ -81,6 +85,7 @@ describe('handoff-target', () => {
     ['bundleHash', { ...manifest, bundleHash: 'f'.repeat(16) }],
     ['cliBundleHash', { ...manifest, cliBundleHash: 'e'.repeat(16) }],
     ['claudeAppserverBundleHash', { ...manifest, claudeAppserverBundleHash: 'd'.repeat(16) }],
+    ['durableWrapperBundleHash', { ...manifest, durableWrapperBundleHash: 'c'.repeat(16) }],
     ['flavor', { ...manifest, flavor: 'dev' as const }],
     ['storeFormatFingerprint', { ...manifest, storeFormatFingerprint: `sha256:${'b'.repeat(64)}` }],
   ])('should reject an adjacent manifest whose %s differs from the authenticated identity', (_field, expected) => {
@@ -96,6 +101,7 @@ describe('handoff-target', () => {
     ['coral-backend.cjs', 'tampered backend'],
     ['coral-cli.cjs', 'tampered cli'],
     ['coral-claude-appserver.cjs', 'tampered claude appserver'],
+    ['coral-durable-wrapper.cjs', 'tampered durable wrapper'],
   ])('should hash and reject a changed %s', (fileName, contents) => {
     const bundleDir = createBundle();
     writeFileSync(join(bundleDir, fileName), contents, 'utf8');
@@ -108,7 +114,7 @@ describe('handoff-target', () => {
 
   it('should reject malformed and non-strict adjacent manifests', () => {
     const malformed = createBundle();
-    writeFileSync(join(malformed, 'manifest.json'), '{not-json', 'utf8');
+    writeFileSync(join(malformed, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), '{not-json', 'utf8');
     expect(createForeignTargetValidator()(malformed, manifest)).toMatchObject({
       kind: 'invalid',
       evidence: { failure: 'adjacent-manifest-invalid' },
@@ -123,7 +129,7 @@ describe('handoff-target', () => {
 
   it('should reject missing adjacent manifests and invalid expected manifests', () => {
     const missing = createBundle();
-    rmSync(join(missing, 'manifest.json'));
+    rmSync(join(missing, CURRENT_STRICT_BUNDLE_MANIFEST_FILE));
     expect(createForeignTargetValidator()(missing, manifest)).toMatchObject({
       kind: 'invalid',
       evidence: { failure: 'adjacent-manifest-unavailable' },
@@ -156,7 +162,7 @@ describe('handoff-target', () => {
   it('should validate corrected bytes after a prior manifest mismatch', () => {
     const bundleDir = createBundle({ ...manifest, version: '2.0.0' });
     expect(createForeignTargetValidator()(bundleDir, manifest).kind).toBe('invalid');
-    writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+    writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifest), 'utf8');
 
     const retried = createForeignTargetValidator()(bundleDir, manifest);
     expect(retried.kind).toBe('validated');

@@ -135,7 +135,15 @@ async function requestDurableProcessTermination(
   }
 }
 
-export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
+export type DurableProcessCleanupOutcome =
+  | GracefulKillByPidOutcome
+  | Readonly<{ kind: 'ownership-retained'; pid: number; reason: string }>;
+
+export type DurableProcessCleanup = () => Promise<DurableProcessCleanupOutcome>;
+
+type CleanupOwnershipReleaseDisposition =
+  | Readonly<{ kind: 'released' }>
+  | Readonly<{ kind: 'retained'; reason: string }>;
 
 type DurableProviderResultDisposition =
   | Readonly<{ kind: 'absence-confirmed' }>
@@ -185,7 +193,7 @@ export async function spawnDurableJobTransport(params: {
   let abortHandler: (() => void) | null = null;
   let abortedBySignal = false;
   let cleanupKey: symbol | null = null;
-  let cleanupInFlight: Promise<GracefulKillByPidOutcome> | null = null;
+  let cleanupInFlight: Promise<DurableProcessCleanupOutcome> | null = null;
   let cleanupRetryInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
   let containmentAbsenceConfirmed = false;
   let containmentAbandoned = false;
@@ -222,9 +230,12 @@ export async function spawnDurableJobTransport(params: {
   };
   pendingLaunches.add(pendingLaunch);
 
-  const releaseCleanupOwnership = (): void => {
-    if (cleanupKey === null) return;
+  const releaseCleanupOwnership = (): CleanupOwnershipReleaseDisposition => {
+    if (cleanupKey === null) return { kind: 'released' };
     const wasHeld = providerResultHeld;
+    if (wasHeld && !publishContainmentStatus({ kind: 'absence-confirmed' })) {
+      return { kind: 'retained', reason: 'durable containment absence publication failed' };
+    }
     cleanupHandles.delete(cleanupKey);
     cleanupRetentions.delete(cleanup);
     cleanupKey = null;
@@ -235,7 +246,7 @@ export async function spawnDurableJobTransport(params: {
     containmentAbsenceConfirmed = true;
     resolveContainmentAbsence();
     lastUnsettledDetail = null;
-    if (wasHeld) publishContainmentStatus({ kind: 'absence-confirmed' });
+    return { kind: 'released' };
   };
 
   const operatorControl: DurableContainmentOperatorControl = {
@@ -293,14 +304,15 @@ export async function spawnDurableJobTransport(params: {
     cleanupRetryInterval.unref?.();
   };
 
-  const cleanup = (): Promise<GracefulKillByPidOutcome> => {
+  const cleanup = (): Promise<DurableProcessCleanupOutcome> => {
     if (cleanupInFlight !== null) return cleanupInFlight;
     if (publishedPid === null || retainedProcess === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
     cleanupInFlight = requestDurableProcessTermination(runtime, retainedProcess, signalAuthority).then((outcome) => {
       if (outcome.kind === 'observed-absent') {
-        releaseCleanupOwnership();
+        const release = releaseCleanupOwnership();
+        if (release.kind === 'retained') return { kind: 'ownership-retained', pid, reason: release.reason };
       } else {
         const detail = terminationOutcomeDetail(outcome);
         enterContainmentHold(detail);
@@ -342,8 +354,10 @@ export async function spawnDurableJobTransport(params: {
           if (containmentAbandoned) return { kind: 'operator-abandoned' };
           const confirmation = observeRecordedContainment(subject, environment);
           if (confirmation.kind === 'absent') {
-            releaseCleanupOwnership();
-            return { kind: 'absence-confirmed' };
+            const release = releaseCleanupOwnership();
+            return release.kind === 'released'
+              ? { kind: 'absence-confirmed' }
+              : { kind: 'held', reason: release.reason };
           }
           return {
             kind: 'held',
@@ -355,9 +369,11 @@ export async function spawnDurableJobTransport(params: {
 
     const outcome = await cleanup();
     if (containmentAbandoned) return { kind: 'operator-abandoned' };
-    return outcome.kind === 'observed-absent'
-      ? { kind: 'absence-confirmed' }
-      : { kind: 'held', reason: terminationOutcomeDetail(outcome) };
+    if (outcome.kind === 'observed-absent') return { kind: 'absence-confirmed' };
+    return {
+      kind: 'held',
+      reason: outcome.kind === 'ownership-retained' ? outcome.reason : terminationOutcomeDetail(outcome),
+    };
   };
 
   const publishWrapperSpawned = (launch: {

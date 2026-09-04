@@ -135,6 +135,7 @@ export interface CoordinatorIdentity {
   readonly bundleHash: string;
   readonly cliBundleHash: string;
   readonly claudeAppserverBundleHash: string;
+  readonly durableWrapperBundleHash: string;
   readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
   readonly token: string;
@@ -887,6 +888,7 @@ async function runLifecycleStartup({
     bundleHash,
     cliBundleHash,
     claudeAppserverBundleHash,
+    durableWrapperBundleHash,
     flavor,
     instanceId,
     now,
@@ -969,6 +971,7 @@ async function runLifecycleStartup({
       bundleHash,
       cliBundleHash,
       claudeAppserverBundleHash,
+      durableWrapperBundleHash,
       flavor,
       storeFormatFingerprint: deps.storeFormat.fingerprint,
     };

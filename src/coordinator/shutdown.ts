@@ -189,6 +189,8 @@ type UnresolvedChildProcess = Extract<TerminateAllDisposition, { kind: 'unresolv
 
 function unresolvedChildProcessDetail(process: UnresolvedChildProcess): string {
   switch (process.kind) {
+    case 'ownership-retained':
+      return `pid ${process.pid}: ${process.reason}`;
     case 'signal-refused':
       return `pid ${process.pid}: ${process.reason}`;
     case 'signal-failed':

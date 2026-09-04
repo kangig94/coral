@@ -53,6 +53,7 @@ type VerifiedBundleHashes = Readonly<{
   bundleHash: string;
   cliBundleHash: string;
   claudeAppserverBundleHash: string;
+  durableWrapperBundleHash: string;
 }>;
 
 type ValidatedTargetState = {
@@ -142,17 +143,25 @@ function validateAdjacentTarget(
   const bundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-backend.cjs');
   const cliBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-cli.cjs');
   const claudeAppserverBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-claude-appserver.cjs');
+  const durableWrapperBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-durable-wrapper.cjs');
   if (
     bundleHash === null ||
     cliBundleHash === null ||
     claudeAppserverBundleHash === null ||
+    durableWrapperBundleHash === null ||
     bundleHash !== evidence.expectedManifest.bundleHash ||
     cliBundleHash !== evidence.expectedManifest.cliBundleHash ||
-    claudeAppserverBundleHash !== evidence.expectedManifest.claudeAppserverBundleHash
+    claudeAppserverBundleHash !== evidence.expectedManifest.claudeAppserverBundleHash ||
+    durableWrapperBundleHash !== evidence.expectedManifest.durableWrapperBundleHash
   ) {
     return { ok: false, failure: 'adjacent-bundle-mismatch' };
   }
-  const verifiedHashes = Object.freeze({ bundleHash, cliBundleHash, claudeAppserverBundleHash });
+  const verifiedHashes = Object.freeze({
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    durableWrapperBundleHash,
+  });
   return { ok: true, verifiedHashes };
 }
 
@@ -160,7 +169,8 @@ function sameVerifiedHashes(left: VerifiedBundleHashes, right: VerifiedBundleHas
   return (
     left.bundleHash === right.bundleHash &&
     left.cliBundleHash === right.cliBundleHash &&
-    left.claudeAppserverBundleHash === right.claudeAppserverBundleHash
+    left.claudeAppserverBundleHash === right.claudeAppserverBundleHash &&
+    left.durableWrapperBundleHash === right.durableWrapperBundleHash
   );
 }
 

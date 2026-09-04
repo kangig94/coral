@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
@@ -23,11 +24,13 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
 const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli.cjs');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
-const sourceManifestPath = join(process.cwd(), 'clients', 'build', 'manifest.json');
+const sourceDurableWrapperBundle = join(process.cwd(), 'clients', 'build', 'coral-durable-wrapper.cjs');
+const sourceManifestPath = join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const requiredBuildArtifacts = [
   sourceBackendBundle,
   sourceCliBundle,
   sourceClaudeAppserverBundle,
+  sourceDurableWrapperBundle,
   sourceManifestPath,
 ] as const;
 
@@ -37,6 +40,7 @@ type SourceManifest = {
   bundleHash: string;
   cliBundleHash: string;
   claudeAppserverBundleHash: string;
+  durableWrapperBundleHash: string;
   flavor: BuildFlavor;
   storeFormatFingerprint: string;
 };
@@ -88,6 +92,7 @@ export function createPluginFixture(
   const backendPath = join(root, 'bridge', 'coral-backend.cjs');
   const cliPath = join(root, 'bridge', 'coral-cli.cjs');
   const claudeAppserverPath = join(root, 'bridge', 'coral-claude-appserver.cjs');
+  const durableWrapperPath = join(root, 'bridge', 'coral-durable-wrapper.cjs');
   const copyBundle = (source: string, destination: string): void => {
     if (options.version === undefined) {
       copyFileSync(source, destination);
@@ -105,21 +110,37 @@ export function createPluginFixture(
   }
   copyBundle(sourceCliBundle, cliPath);
   copyBundle(sourceClaudeAppserverBundle, claudeAppserverPath);
+  copyBundle(sourceDurableWrapperBundle, durableWrapperPath);
   const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
+  const fixtureManifest = {
+    version: options.version ?? sourceManifest.version,
+    buildSetId: sourceManifest.buildSetId,
+    bundleHash,
+    cliBundleHash: createHash('sha256').update(readFileSync(cliPath)).digest('hex').slice(0, 16),
+    claudeAppserverBundleHash: createHash('sha256')
+      .update(readFileSync(claudeAppserverPath))
+      .digest('hex')
+      .slice(0, 16),
+    durableWrapperBundleHash: createHash('sha256').update(readFileSync(durableWrapperPath)).digest('hex').slice(0, 16),
+    flavor: options.flavor,
+    storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+  };
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
-    JSON.stringify({
-      version: options.version ?? sourceManifest.version,
-      buildSetId: sourceManifest.buildSetId,
-      bundleHash,
-      cliBundleHash: createHash('sha256').update(readFileSync(cliPath)).digest('hex').slice(0, 16),
-      claudeAppserverBundleHash: createHash('sha256')
-        .update(readFileSync(claudeAppserverPath))
-        .digest('hex')
-        .slice(0, 16),
-      flavor: options.flavor,
-      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
-    }) + '\n',
+    `${JSON.stringify({
+      version: fixtureManifest.version,
+      buildSetId: fixtureManifest.buildSetId,
+      bundleHash: fixtureManifest.bundleHash,
+      cliBundleHash: fixtureManifest.cliBundleHash,
+      claudeAppserverBundleHash: fixtureManifest.claudeAppserverBundleHash,
+      flavor: fixtureManifest.flavor,
+      storeFormatFingerprint: fixtureManifest.storeFormatFingerprint,
+    })}\n`,
+    'utf-8',
+  );
+  writeFileSync(
+    join(root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE),
+    `${JSON.stringify(fixtureManifest)}\n`,
     'utf-8',
   );
 
@@ -142,18 +163,26 @@ export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash
   const backendPath = join(fixture.root, 'bridge', 'coral-backend.cjs');
   appendFileSync(backendPath, `\n// fixture ${bundleHash}\n`);
   const effectiveBundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
+  const fixtureManifest = {
+    ...sourceManifest,
+    bundleHash: effectiveBundleHash,
+    flavor: fixture.flavor,
+  };
+  writeFileSync(
+    join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE),
+    `${JSON.stringify(fixtureManifest)}\n`,
+  );
   writeFileSync(
     join(fixture.root, 'bridge', 'manifest.json'),
     `${JSON.stringify({
-      version: sourceManifest.version,
-      buildSetId: sourceManifest.buildSetId,
-      bundleHash: effectiveBundleHash,
-      cliBundleHash: sourceManifest.cliBundleHash,
-      claudeAppserverBundleHash: sourceManifest.claudeAppserverBundleHash,
-      flavor: fixture.flavor,
-      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+      version: fixtureManifest.version,
+      buildSetId: fixtureManifest.buildSetId,
+      bundleHash: fixtureManifest.bundleHash,
+      cliBundleHash: fixtureManifest.cliBundleHash,
+      claudeAppserverBundleHash: fixtureManifest.claudeAppserverBundleHash,
+      flavor: fixtureManifest.flavor,
+      storeFormatFingerprint: fixtureManifest.storeFormatFingerprint,
     })}\n`,
-    'utf-8',
   );
   return { ...fixture, bundleHash: effectiveBundleHash };
 }

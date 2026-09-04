@@ -43,6 +43,7 @@ vi.mock('#src/infra/bundle-manifest.js', () => ({
               bundleHash: '0123456789abcdef',
               cliBundleHash: '0123456789abcdef',
               claudeAppserverBundleHash: '0123456789abcdef',
+              durableWrapperBundleHash: '0123456789abcdef',
             },
           }
         : { ok: false, reason: 'embedded_identity_unavailable' },

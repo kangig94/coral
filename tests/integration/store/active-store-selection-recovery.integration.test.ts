@@ -16,6 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator, type ForeignTargetValidator } from '#src/infra/handoff-target.js';
 import { sha256Hex } from '#src/infra/hash.js';
@@ -54,6 +55,7 @@ const priorStoreFingerprint = `sha256:${sha256Hex(canonicalContractJson(priorSto
 const backendBundle = 'selection recovery backend';
 const cliBundle = 'selection recovery cli';
 const claudeAppserverBundle = 'selection recovery claude appserver';
+const durableWrapperBundle = 'selection recovery durable wrapper';
 
 type StoreEvidence = Record<'store.db' | 'store.db-wal' | 'store.db-shm' | 'store.db.format', Buffer>;
 
@@ -112,6 +114,7 @@ function manifest(version: string, buildSetId: string): StrictBundleManifest {
     bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
     cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
     claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
+    durableWrapperBundleHash: createHash('sha256').update(durableWrapperBundle).digest('hex').slice(0, 16),
     flavor: 'prod',
     storeFormatFingerprint: storeFormat.fingerprint,
   };
@@ -132,7 +135,8 @@ function createBundle(parent: string, expected: StrictBundleManifest): string {
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle);
   writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle);
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), claudeAppserverBundle);
-  writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(expected));
+  writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle);
+  writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(expected));
   return bundleDir;
 }
 

@@ -958,6 +958,123 @@ describe('launch admission', () => {
     await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
   });
 
+  it('retains cleanup ownership and settlement when absence publication fails', async () => {
+    const base = createRealRuntime('prod');
+    const incarnation = testIncarnation(7_003);
+    const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
+    const runtimeRecord = {
+      transport: 'durable-cli' as const,
+      pid: TEST_PROVIDER_PID,
+      stdoutPath: '/tmp/failed-absence-publication/stdout',
+      stderrPath: '/tmp/failed-absence-publication/stderr',
+      startTime: new Date(0).toISOString(),
+    };
+    let processAbsent = false;
+    let retryCleanup!: () => void;
+    const retryHandle = {};
+    const clearInterval = vi.fn();
+    const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
+    let resolveExit!: (record: typeof exitRecord) => void;
+    const exit = new Promise<typeof exitRecord>((resolve) => {
+      resolveExit = resolve;
+    });
+    const runtime: Runtime = {
+      ...base,
+      env: { ...base.env, platform: () => 'darwin' },
+      time: {
+        ...base.time,
+        setInterval: (callback) => {
+          retryCleanup = callback;
+          return retryHandle;
+        },
+        clearInterval,
+      },
+      process: {
+        ...base.process,
+        kill: vi.fn(() => true),
+        observeLiveness: () => (processAbsent ? 'absent' : 'unknown'),
+        readProcessIncarnation: () => null,
+        durable: {
+          launch: async (options) => {
+            options.onSpawned?.({ runtimeRecord, leaderIncarnation: incarnation, childRoot });
+            return {
+              launchHandle: 'failed-absence-publication' as never,
+              pid: TEST_PROVIDER_PID,
+              stdoutPath: runtimeRecord.stdoutPath,
+              stderrPath: runtimeRecord.stderrPath,
+              runtimeRecord,
+              processSubject: {
+                pid: TEST_PROVIDER_PID,
+                incarnation,
+                processGroupId: TEST_PROVIDER_PID,
+                childRoot,
+              },
+            };
+          },
+          waitForExit: () => exit,
+        },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const abort = new AbortController();
+    let identityPublished = false;
+    let absencePublicationAttempts = 0;
+    let holdControl: DurableContainmentOperatorControl | undefined;
+    const observations = vi.fn(
+      (
+        _identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
+        status?: DurableContainmentStatus,
+        control?: DurableContainmentOperatorControl,
+      ) => {
+        if (status === undefined) identityPublished = true;
+        if (status?.kind === 'held') holdControl = control;
+        if (status?.kind === 'absence-confirmed') {
+          absencePublicationAttempts += 1;
+          throw new Error('synthetic absence publication failure');
+        }
+      },
+    );
+    let settled = false;
+    const spawn = localCoordinator
+      .spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/failed-absence-publication',
+        permitGranted: true,
+        signal: abort.signal,
+        onDurableProcessIdentity: observations,
+      })
+      .finally(() => {
+        settled = true;
+      });
+
+    await vi.waitFor(() => expect(identityPublished).toBe(true));
+    abort.abort();
+    await vi.waitFor(() => expect(holdControl).toBeDefined());
+    const cleanupOwnership = localCoordinator as unknown as {
+      readonly cleanupHandles: Map<symbol, DurableProcessCleanup>;
+      readonly cleanupRetentions: Map<DurableProcessCleanup, unknown>;
+    };
+    const retainedCleanup = [...cleanupOwnership.cleanupHandles.values()][0];
+    if (retainedCleanup === undefined) throw new Error('Expected retained durable cleanup ownership');
+    await retainedCleanup();
+    processAbsent = true;
+    retryCleanup();
+    await retainedCleanup();
+
+    expect(absencePublicationAttempts).toBe(1);
+    expect(cleanupOwnership.cleanupHandles.size).toBe(1);
+    expect(cleanupOwnership.cleanupRetentions.size).toBe(1);
+    expect(clearInterval).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+
+    expect(holdControl?.abandon()).toBe(true);
+    resolveExit(exitRecord);
+    await expect(spawn).resolves.toMatchObject({ code: 0, aborted: true });
+    expect(clearInterval).toHaveBeenCalledWith(retryHandle);
+  });
+
   it('refuses new admission after shutdown begins', async () => {
     await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
 

@@ -1564,6 +1564,7 @@ describe('workflow recovery branch rules', () => {
         bundleHash: 'test-bundle',
         cliBundleHash: 'test-cli-bundle',
         claudeAppserverBundleHash: 'test-claude-bundle',
+        durableWrapperBundleHash: 'test-durable-wrapper-bundle',
         flavor: 'prod',
         instanceId: 'workflow-recovery',
         token: 'test-token',

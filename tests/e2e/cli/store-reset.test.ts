@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import {
   parseStoreResetIncidentManifest,
@@ -29,7 +30,9 @@ const BUNDLE_DIR = e2eBundleDir();
 const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli.cjs');
 const BACKEND_BUNDLE = join(BUNDLE_DIR, 'coral-backend.cjs');
 const CLAUDE_APPSERVER_BUNDLE = join(BUNDLE_DIR, 'coral-claude-appserver.cjs');
-const MANIFEST_PATH = join(BUNDLE_DIR, 'manifest.json');
+const DURABLE_WRAPPER_BUNDLE = join(BUNDLE_DIR, 'coral-durable-wrapper.cjs');
+const LEGACY_MANIFEST_PATH = join(BUNDLE_DIR, 'manifest.json');
+const MANIFEST_PATH = join(BUNDLE_DIR, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const INCIDENT_ID = '223e4567-e89b-42d3-a456-426614174000';
 const roots: string[] = [];
 const syntheticDiscoveryFiles: string[] = [];
@@ -41,6 +44,7 @@ type BuildManifest = {
   readonly bundleHash: string;
   readonly cliBundleHash: string;
   readonly claudeAppserverBundleHash: string;
+  readonly durableWrapperBundleHash: string;
   readonly flavor: 'dev' | 'prod';
   readonly storeFormatFingerprint: string;
 };
@@ -385,8 +389,10 @@ describe('bundled store-reset CLI', () => {
     copyFileSync(CLI_BUNDLE, join(mixedBundle, 'coral-cli.cjs'));
     copyFileSync(BACKEND_BUNDLE, join(mixedBundle, 'coral-backend.cjs'));
     copyFileSync(CLAUDE_APPSERVER_BUNDLE, join(mixedBundle, 'coral-claude-appserver.cjs'));
+    copyFileSync(DURABLE_WRAPPER_BUNDLE, join(mixedBundle, 'coral-durable-wrapper.cjs'));
+    copyFileSync(LEGACY_MANIFEST_PATH, join(mixedBundle, 'manifest.json'));
     const manifest = readBuildManifest();
-    writeFileSync(join(mixedBundle, 'manifest.json'), `${JSON.stringify(manifest)}\n`);
+    writeFileSync(join(mixedBundle, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), `${JSON.stringify(manifest)}\n`);
     const coherent = runCli(
       home,
       ['backend', 'store-reset', 'list', '--target', 'gen2'],
@@ -395,7 +401,7 @@ describe('bundled store-reset CLI', () => {
     expect(coherent.status, coherent.stderr).toBe(0);
 
     writeFileSync(
-      join(mixedBundle, 'manifest.json'),
+      join(mixedBundle, CURRENT_STRICT_BUNDLE_MANIFEST_FILE),
       `${JSON.stringify({
         ...manifest,
         buildSetId: '423e4567-e89b-42d3-a456-426614174000',

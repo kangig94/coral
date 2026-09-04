@@ -6062,6 +6062,7 @@ describe('execution backend server', () => {
             bundleHash: '0123456789abcdef',
             cliBundleHash: 'testclihash1234',
             claudeAppserverBundleHash: 'testclaudehash12',
+            durableWrapperBundleHash: 'testwrapperhash',
             flavor: 'prod',
             instanceId: 'handoff-instance-1',
             token: 'test-token',

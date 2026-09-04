@@ -56,6 +56,7 @@ function strictIdentity(
       bundleHash: '1'.repeat(16),
       cliBundleHash: '2'.repeat(16),
       claudeAppserverBundleHash: '3'.repeat(16),
+      durableWrapperBundleHash: '4'.repeat(16),
     },
   };
 }

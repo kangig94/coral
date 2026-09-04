@@ -63,6 +63,7 @@ function manifest(version: string, buildSetId: string, fill: string): StrictBund
     bundleHash: fill.repeat(16),
     cliBundleHash: fill.repeat(16),
     claudeAppserverBundleHash: fill.repeat(16),
+    durableWrapperBundleHash: fill.repeat(16),
     flavor: 'prod',
     storeFormatFingerprint: currentCoralStoreFormat().fingerprint,
   };

@@ -1643,8 +1643,7 @@ export function createRecoveryCoordinator(
         launchRecord === null ||
         runtimeRecord === null ||
         !isDurableCliRuntime(runtimeRecord) ||
-        jobStatus === null ||
-        isTerminalPhase(jobStatus.phase)
+        jobStatus === null
       ) {
         continue;
       }
@@ -1728,9 +1727,11 @@ export function createRecoveryCoordinator(
     }
     signal.throwIfAborted();
     resetRecoveryState();
-    const durableHoldRemains = listDurableCliContainmentStatuses(progressStore.getDb()).some(
-      (statusRead) => statusRead.kind === 'corrupt' || statusRead.status.disposition.kind === 'held',
-    );
+    const durableHoldRemains = listDurableCliContainmentStatuses(progressStore.getDb()).some((statusRead) => {
+      if (statusRead.kind === 'valid' && statusRead.status.disposition.kind !== 'held') return false;
+      const jobId = statusRead.kind === 'valid' ? statusRead.status.jobId : statusRead.jobId;
+      return recoveryRegistry.has(jobId);
+    });
     log(
       durableHoldRemains
         ? 'Recovery reconciliation completed with durable containment held for repair or operator abandonment. Launch fence lifted.\n'

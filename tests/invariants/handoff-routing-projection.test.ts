@@ -31,6 +31,7 @@ describe('handoff routing durable projections', () => {
       bundleHash: 'f'.repeat(16),
       cliBundleHash: 'f'.repeat(16),
       claudeAppserverBundleHash: 'f'.repeat(16),
+      durableWrapperBundleHash: 'f'.repeat(16),
       flavor: 'prod',
       storeFormatFingerprint: `sha256:${'f'.repeat(64)}`,
     });

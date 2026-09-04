@@ -255,6 +255,7 @@ async function runCoordinatorStartupRecovery(harness: Harness): Promise<void> {
       bundleHash: 'test-bundle',
       cliBundleHash: 'test-cli-bundle',
       claudeAppserverBundleHash: 'test-claude-bundle',
+      durableWrapperBundleHash: 'test-durable-wrapper-bundle',
       flavor: 'prod',
       instanceId: 'lifecycle-reactor-recovery',
       token: 'test-token',

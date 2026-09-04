@@ -204,6 +204,7 @@ function provenManifest(bundleHash: string): StrictBundleManifest {
     bundleHash,
     cliBundleHash: bundleHash,
     claudeAppserverBundleHash: bundleHash,
+    durableWrapperBundleHash: bundleHash,
   };
 }
 

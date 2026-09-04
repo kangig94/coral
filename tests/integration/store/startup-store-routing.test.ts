@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator, type ForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -28,6 +29,7 @@ const roots: string[] = [];
 const backendBundle = 'startup routing backend';
 const cliBundle = 'startup routing cli';
 const claudeAppserverBundle = 'startup routing claude appserver';
+const durableWrapperBundle = 'startup routing durable wrapper';
 const storeFormat = currentCoralStoreFormat();
 
 function manifest(version: string, buildSetId: string): StrictBundleManifest {
@@ -37,6 +39,7 @@ function manifest(version: string, buildSetId: string): StrictBundleManifest {
     bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
     cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
     claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
+    durableWrapperBundleHash: createHash('sha256').update(durableWrapperBundle).digest('hex').slice(0, 16),
     flavor: 'prod',
     storeFormatFingerprint: storeFormat.fingerprint,
   };
@@ -56,7 +59,8 @@ function createBundle(root: string, manifestValue: StrictBundleManifest): string
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle);
   writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle);
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), claudeAppserverBundle);
-  writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(manifestValue));
+  writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle);
+  writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifestValue));
   return bundleDir;
 }
 

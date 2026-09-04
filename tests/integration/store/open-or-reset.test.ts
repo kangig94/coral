@@ -85,6 +85,7 @@ function buildIdentity(bundleHash = BUNDLE_HASH) {
     bundleHash,
     cliBundleHash: '123456789abcdef0',
     claudeAppserverBundleHash: '23456789abcdef01',
+    durableWrapperBundleHash: '3456789abcdef012',
     flavor: 'prod' as const,
     storeFormatFingerprint: STORE_FORMAT.fingerprint,
   };

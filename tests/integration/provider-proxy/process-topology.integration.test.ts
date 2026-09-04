@@ -126,6 +126,7 @@ vi.mock('#src/infra/bundle-manifest.js', async (importOriginal) => {
         bundleHash: '1'.repeat(16),
         cliBundleHash: '2'.repeat(16),
         claudeAppserverBundleHash: '3'.repeat(16),
+        durableWrapperBundleHash: '4'.repeat(16),
       },
     }),
   };
@@ -239,6 +240,7 @@ function strictIdentity(buildSetId: string): StrictBundleIdentityResult {
       bundleHash: '1'.repeat(16),
       cliBundleHash: '2'.repeat(16),
       claudeAppserverBundleHash: '3'.repeat(16),
+      durableWrapperBundleHash: '4'.repeat(16),
     },
   };
 }

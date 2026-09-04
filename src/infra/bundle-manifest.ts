@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
 import { nodeFsBoundedReadStorage, readBoundedFileAtIdentity } from './bounded-file-read.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from './bundle-manifest-address.js';
 import { isRecord } from './json.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
@@ -33,6 +34,7 @@ export type StrictBundleManifest = EmbeddedBundleIdentity & {
   readonly bundleHash: string;
   readonly cliBundleHash: string;
   readonly claudeAppserverBundleHash: string;
+  readonly durableWrapperBundleHash: string;
 };
 
 const embeddedBundleIdentitySchema = z
@@ -49,6 +51,7 @@ export const strictBundleManifestSchema = embeddedBundleIdentitySchema
     bundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
     cliBundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
     claudeAppserverBundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
+    durableWrapperBundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
   })
   .strict();
 
@@ -130,7 +133,7 @@ function embeddedBundleIdentity(): EmbeddedBundleIdentity | null {
 }
 
 export function readBoundedAdjacentManifest(activeBundleDir: string): BoundedAdjacentManifestResult {
-  const path = join(activeBundleDir, 'manifest.json');
+  const path = join(activeBundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
   let baseline: BigIntStats;
   try {
     baseline = lstatSync(path, { bigint: true });
@@ -251,7 +254,8 @@ export function resolveStrictBundleIdentity(options?: {
     manifest.storeFormatFingerprint !== embedded.storeFormatFingerprint ||
     hashStableAdjacentBundle(activeBundleDir, 'coral-backend.cjs') !== manifest.bundleHash ||
     hashStableAdjacentBundle(activeBundleDir, 'coral-cli.cjs') !== manifest.cliBundleHash ||
-    hashStableAdjacentBundle(activeBundleDir, 'coral-claude-appserver.cjs') !== manifest.claudeAppserverBundleHash
+    hashStableAdjacentBundle(activeBundleDir, 'coral-claude-appserver.cjs') !== manifest.claudeAppserverBundleHash ||
+    hashStableAdjacentBundle(activeBundleDir, 'coral-durable-wrapper.cjs') !== manifest.durableWrapperBundleHash
   ) {
     return { ok: false, reason: 'adjacent_manifest_mismatch' };
   }

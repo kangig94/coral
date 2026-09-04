@@ -8,6 +8,7 @@ import { launchAndFollow } from '#src/cli/follow.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as RealRuntimeMod from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -84,12 +85,14 @@ function createReplayBundle(tracePath: string): {
   ].join('\n');
   const backendBundle = 'cross-version follow backend fixture';
   const appserverBundle = 'cross-version follow appserver fixture';
+  const durableWrapperBundle = 'cross-version follow durable wrapper fixture';
   const manifest: StrictBundleManifest = {
     version: '2.0.0',
     buildSetId: '223e4567-e89b-42d3-a456-426614174000',
     bundleHash: bundleHash(backendBundle),
     cliBundleHash: bundleHash(cliBundle),
     claudeAppserverBundleHash: bundleHash(appserverBundle),
+    durableWrapperBundleHash: bundleHash(durableWrapperBundle),
     flavor: 'prod',
     storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
   };
@@ -97,7 +100,8 @@ function createReplayBundle(tracePath: string): {
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), appserverBundle, 'utf8');
-  writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
+  writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifest), 'utf8');
   return { bundleDir, manifest };
 }
 

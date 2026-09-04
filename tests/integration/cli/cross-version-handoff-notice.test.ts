@@ -8,6 +8,7 @@ import { renderHandoffNotice } from '#src/cli/handoff-notice.js';
 import { runHandoff, type HandoffOutcome } from '#src/coordinator/handoff-routing/runner.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as RealRuntimeMod from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -76,12 +77,14 @@ function createTarget(tracePath: string, exitCode: number): { bundleDir: string;
   ].join('\n');
   const backendBundle = 'handoff notice backend fixture';
   const claudeAppserverBundle = 'handoff notice claude appserver fixture';
+  const durableWrapperBundle = 'handoff notice durable wrapper fixture';
   const manifest: StrictBundleManifest = {
     version: '2.3.4',
     buildSetId: '223e4567-e89b-42d3-a456-426614174000',
     bundleHash: sha256(backendBundle),
     cliBundleHash: sha256(cliBundle),
     claudeAppserverBundleHash: sha256(claudeAppserverBundle),
+    durableWrapperBundleHash: sha256(durableWrapperBundle),
     flavor: 'prod',
     storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
   };
@@ -89,7 +92,8 @@ function createTarget(tracePath: string, exitCode: number): { bundleDir: string;
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
-  writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
+  writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifest), 'utf8');
   return { bundleDir, manifest };
 }
 

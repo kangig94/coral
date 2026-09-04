@@ -28,7 +28,12 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
-import { readDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import {
+  readDurableCliContainmentStatus,
+  readDurableCliProcessRuntimeEvidence,
+  writeDurableCliContainmentStatus,
+  writeDurableCliProcessRuntimeMeta,
+} from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const RUNNING_ADOPTION_JOB_ID = '00000000-0000-4000-8000-000000000777';
@@ -58,6 +63,7 @@ type HarnessOptions = {
   serviceOverrides?: Record<string, unknown>;
   recoverPersistedDiscussImpl?: () => Promise<[]>;
   workflowResumeImpl?: () => Promise<void>;
+  log?: (message: string) => void;
 };
 
 async function loadModules() {
@@ -446,13 +452,14 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         bundleHash: '1111111111111111',
         cliBundleHash: '2222222222222222',
         claudeAppserverBundleHash: '3333333333333333',
+        durableWrapperBundleHash: '4444444444444444',
         flavor: 'prod',
         instanceId: `recovery-shutdown-${Math.random()}`,
         token: 'test-token',
         bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         now: () => 1,
-        log: () => {},
+        log: options.log ?? (() => {}),
       },
       runtime,
       backendPid: 1234,
@@ -827,6 +834,59 @@ describe('recovery coordinator shutdown', () => {
           .get('coordinator-job-recovery', RUNNING_ADOPTION_JOB_ID),
       ).toBeUndefined();
       expect(killSpy).not.toHaveBeenCalled();
+    } finally {
+      await stopLifecycleController(harness.controller);
+    }
+  });
+
+  it('registers an operator exit before reporting a terminal job durable hold', async () => {
+    const modules = await loadModules();
+    const runtime = createRealRuntime('prod');
+    const pluginRoot = createPluginRoot('plugin-terminal-containment-hold');
+    const projectRoot = createProjectRoot('project-terminal-containment-hold');
+    const recoveryLog = vi.fn<(message: string) => void>();
+    const harness = createCoordinatorShutdownHarness({ modules, runtime, pluginRoot, projectRoot, log: recoveryLog });
+
+    stubRuntimeRecord(harness.progressStore, runtime, {
+      jobId: RUNNING_ADOPTION_JOB_ID,
+      pid: process.pid,
+    });
+    writeDurableCliContainmentStatus(harness.progressStore.getDb(), {
+      jobId: RUNNING_ADOPTION_JOB_ID,
+      evidence: readDurableCliProcessRuntimeEvidence(
+        harness.progressStore.getDb(),
+        RUNNING_ADOPTION_JOB_ID,
+        process.pid,
+      ),
+      disposition: {
+        kind: 'held',
+        reason: 'synthetic terminal containment hold',
+        retryIntervalMs: 500,
+        abandonment: 'abort-job',
+      },
+    });
+    commitJobTerminal(harness.progressStore, RUNNING_ADOPTION_JOB_ID, 'running-adoption-session', {
+      content: 'already terminal',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
+
+    try {
+      await harness.controller.start();
+
+      const recoveryRegistry = harness.controller.getRecoveryRegistry();
+      expect(recoveryRegistry?.has(RUNNING_ADOPTION_JOB_ID)).toBe(true);
+      expect(recoveryLog).toHaveBeenCalledWith(
+        'Recovery reconciliation completed with durable containment held for repair or operator abandonment. Launch fence lifted.\n',
+      );
+      expect(recoveryRegistry?.abort([RUNNING_ADOPTION_JOB_ID])).toEqual({
+        aborted: [RUNNING_ADOPTION_JOB_ID],
+        notFound: [],
+      });
+      expect(readDurableCliContainmentStatus(harness.progressStore.getDb(), RUNNING_ADOPTION_JOB_ID)).toMatchObject({
+        kind: 'valid',
+        status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },
+      });
     } finally {
       await stopLifecycleController(harness.controller);
     }

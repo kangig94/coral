@@ -42,6 +42,7 @@ async function openGeneratedStore(runtime: Runtime): Promise<void> {
         bundleHash: '0123456789abcdef',
         cliBundleHash: '123456789abcdef0',
         claudeAppserverBundleHash: '23456789abcdef01',
+        durableWrapperBundleHash: '3456789abcdef012',
         flavor: runtime.flavor,
         storeFormatFingerprint: STORE_FORMAT.fingerprint,
       },

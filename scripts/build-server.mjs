@@ -8,6 +8,7 @@ import {
   createProductionServerEsbuildOptions,
   PLACEHOLDER_STORE_FORMAT_FINGERPRINT,
 } from './server-esbuild-options.mjs';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '../src/infra/bundle-manifest-address.ts';
 
 mkdirSync('clients/build', { recursive: true });
 
@@ -193,22 +194,35 @@ const claudeAppserverHash = createHash('sha256')
   .update(readFileSync('clients/build/coral-claude-appserver.cjs'))
   .digest('hex')
   .slice(0, 16);
-const manifestPath = 'clients/build/manifest.json';
-const manifestTmp = manifestPath + '.tmp';
+const durableWrapperHash = createHash('sha256')
+  .update(readFileSync('clients/build/coral-durable-wrapper.cjs'))
+  .digest('hex')
+  .slice(0, 16);
+const legacyManifestPath = 'clients/build/manifest.json';
+const strictManifestPath = join('clients/build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
+const manifestIdentity = {
+  version,
+  buildSetId,
+  bundleHash: backendHash,
+  cliBundleHash: cliHash,
+  claudeAppserverBundleHash: claudeAppserverHash,
+  flavor,
+  storeFormatFingerprint,
+};
 
 writeFileSync(
-  manifestTmp,
+  `${legacyManifestPath}.tmp`,
+  JSON.stringify(manifestIdentity) + '\n',
+);
+renameSync(`${legacyManifestPath}.tmp`, legacyManifestPath);
+writeFileSync(
+  `${strictManifestPath}.tmp`,
   JSON.stringify({
-    version,
-    buildSetId,
-    bundleHash: backendHash,
-    cliBundleHash: cliHash,
-    claudeAppserverBundleHash: claudeAppserverHash,
-    flavor,
-    storeFormatFingerprint,
+    ...manifestIdentity,
+    durableWrapperBundleHash: durableWrapperHash,
   }) + '\n',
 );
-renameSync(manifestTmp, manifestPath);
+renameSync(`${strictManifestPath}.tmp`, strictManifestPath);
 execFileSync(process.execPath, ['scripts/verify-kiwi-runtime-build-contract.mjs', 'clients/build'], {
   stdio: 'inherit',
 });
@@ -265,7 +279,8 @@ const receiptOutputs = {
   cli: { path: 'clients/build/coral-cli.cjs' },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
   durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
-  manifest: { path: 'clients/build/manifest.json' },
+  legacyManifest: { path: legacyManifestPath },
+  strictManifest: { path: strictManifestPath },
 };
 for (const output of Object.values(receiptOutputs)) {
   output.sha256 = createHash('sha256').update(readFileSync(output.path)).digest('hex');
@@ -298,6 +313,7 @@ if (release) {
     'coral-claude-appserver.cjs',
     'coral-durable-wrapper.cjs',
     'manifest.json',
+    CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   ];
   // Sweep stale leftovers from prior releases so bridge contains only the current bundle surface.
   const expected = new Set(bridgeFiles);

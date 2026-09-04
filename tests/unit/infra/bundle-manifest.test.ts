@@ -10,6 +10,7 @@ import {
   type EmbeddedBundleIdentity,
   type StrictBundleManifest,
 } from '#src/infra/bundle-manifest.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 
 const roots: string[] = [];
 const embedded: EmbeddedBundleIdentity = {
@@ -21,11 +22,13 @@ const embedded: EmbeddedBundleIdentity = {
 const backendBundle = 'strict backend fixture';
 const cliBundle = 'strict cli fixture';
 const claudeAppserverBundle = 'strict claude appserver fixture';
+const durableWrapperBundle = 'strict durable wrapper fixture';
 const manifest: StrictBundleManifest = {
   ...embedded,
   bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
   cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
   claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
+  durableWrapperBundleHash: createHash('sha256').update(durableWrapperBundle).digest('hex').slice(0, 16),
 };
 
 function bundleDir(contents: unknown = manifest): string {
@@ -35,7 +38,8 @@ function bundleDir(contents: unknown = manifest): string {
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf-8');
   writeFileSync(join(root, 'coral-cli.cjs'), cliBundle, 'utf-8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf-8');
-  writeFileSync(join(root, 'manifest.json'), `${JSON.stringify(contents)}\n`, 'utf-8');
+  writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf-8');
+  writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), `${JSON.stringify(contents)}\n`, 'utf-8');
   return root;
 }
 
@@ -74,6 +78,18 @@ describe('bundle-manifest', () => {
     });
   });
 
+  it('rejects a strict manifest missing the durable wrapper hash', () => {
+    expect(
+      resolveStrictBundleIdentity({
+        bundleDir: bundleDir({ ...manifest, durableWrapperBundleHash: undefined }),
+        embedded,
+      }),
+    ).toEqual({
+      ok: false,
+      reason: 'adjacent_manifest_invalid',
+    });
+  });
+
   it('rejects an adjacent backend whose content does not match the manifest', () => {
     const root = bundleDir();
     writeFileSync(join(root, 'coral-backend.cjs'), 'tampered backend', 'utf-8');
@@ -86,6 +102,7 @@ describe('bundle-manifest', () => {
   it.each([
     ['coral-cli.cjs', 'tampered cli'],
     ['coral-claude-appserver.cjs', 'tampered claude appserver'],
+    ['coral-durable-wrapper.cjs', 'tampered durable wrapper'],
   ])('rejects a mismatched adjacent %s artifact', (file, contents) => {
     const root = bundleDir();
     writeFileSync(join(root, file), contents, 'utf-8');
@@ -104,7 +121,7 @@ describe('bundle-manifest', () => {
     ['unknown manifest field', JSON.stringify({ ...manifest, extra: true })],
   ])('rejects %s', (_name, contents) => {
     const root = bundleDir();
-    writeFileSync(join(root, 'manifest.json'), contents, 'utf-8');
+    writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), contents, 'utf-8');
     expect(resolveStrictBundleIdentity({ bundleDir: root, embedded })).toEqual({
       ok: false,
       reason: 'adjacent_manifest_invalid',
@@ -113,7 +130,7 @@ describe('bundle-manifest', () => {
 
   it('bounds the adjacent manifest before parsing', () => {
     const root = bundleDir();
-    writeFileSync(join(root, 'manifest.json'), 'x'.repeat(16 * 1024 + 1), 'utf-8');
+    writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'x'.repeat(16 * 1024 + 1), 'utf-8');
     expect(resolveStrictBundleIdentity({ bundleDir: root, embedded })).toEqual({
       ok: false,
       reason: 'adjacent_manifest_unavailable',
@@ -124,8 +141,8 @@ describe('bundle-manifest', () => {
     const root = bundleDir();
     const target = join(root, 'manifest-target.json');
     writeFileSync(target, `${JSON.stringify(manifest)}\n`, 'utf-8');
-    rmSync(join(root, 'manifest.json'));
-    symlinkSync(target, join(root, 'manifest.json'));
+    rmSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE));
+    symlinkSync(target, join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE));
 
     expect(resolveStrictBundleIdentity({ bundleDir: root, embedded })).toEqual({
       ok: false,

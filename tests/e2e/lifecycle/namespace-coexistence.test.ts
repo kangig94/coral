@@ -9,6 +9,7 @@ import type { BackendHealth } from '#src/transport/http/backend/health.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { JobStatus } from '#src/jobs/records.js';
@@ -28,7 +29,9 @@ const sourceBuildDir = join(process.cwd(), 'clients', 'build');
 const sourceBackendBundle = join(sourceBuildDir, 'coral-backend.cjs');
 const sourceCliBundle = join(sourceBuildDir, 'coral-cli.cjs');
 const sourceClaudeAppserverBundle = join(sourceBuildDir, 'coral-claude-appserver.cjs');
+const sourceDurableWrapperBundle = join(sourceBuildDir, 'coral-durable-wrapper.cjs');
 const sourceManifestPath = join(sourceBuildDir, 'manifest.json');
+const sourceStrictManifestPath = join(sourceBuildDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as {
   bundleHash: string;
   flavor: BuildFlavor;
@@ -61,7 +64,9 @@ function createPluginFixture(): {
   copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli.cjs'));
   copyFileSync(sourceClaudeAppserverBundle, join(root, 'bridge', 'coral-claude-appserver.cjs'));
+  copyFileSync(sourceDurableWrapperBundle, join(root, 'bridge', 'coral-durable-wrapper.cjs'));
   copyFileSync(sourceManifestPath, join(root, 'bridge', 'manifest.json'));
+  copyFileSync(sourceStrictManifestPath, join(root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE));
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(
     join(process.cwd(), 'node_modules', 'better-sqlite3'),
