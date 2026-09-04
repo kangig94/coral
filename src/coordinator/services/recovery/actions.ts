@@ -11,10 +11,10 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
 import {
-  readDurableCliProcessRuntimeMeta,
-  readMatchingDurableCliProcessRuntimeMeta,
+  readDurableCliProcessRuntimeEvidence,
+  writeDurableCliContainmentStatus,
 } from '../../../jobs/runtime-meta-store.js';
-import type { DurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta.js';
+import type { DurableCliProcessRuntimeEvidence, DurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
@@ -89,11 +89,12 @@ async function reapDurableCliProcess(
 
 function abortDurableCliProcess(
   runtime: Runtime,
-  record: DurableCliProcessRuntimeMeta | null,
+  evidence: DurableCliProcessRuntimeEvidence,
 ): RecordedContainmentAbortResult {
-  if (record === null) {
-    return { kind: 'refused', reason: 'the recorded durable process containment is unavailable' };
+  if (evidence.kind !== 'current') {
+    return { kind: 'refused', reason: durableRuntimeEvidenceHoldReason(evidence) };
   }
+  const record = evidence.record;
   const clock = createMonotonicClock(durableRecoveryClockScope, {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
@@ -105,6 +106,29 @@ function abortDurableCliProcess(
     platform: runtime.env.platform() as NodeJS.Platform,
     readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
   });
+}
+
+export function durableRuntimeEvidenceHoldReason(
+  evidence: Exclude<DurableCliProcessRuntimeEvidence, { kind: 'current' }>,
+): string {
+  if (evidence.kind === 'predecessor') {
+    return (
+      `predecessor v1 evidence identifies pid ${evidence.record.pid} and its incarnation, but it does not name ` +
+      'the process group or child root and cannot authorize a signal'
+    );
+  }
+  switch (evidence.reason) {
+    case 'missing':
+      return 'durable process containment evidence is missing';
+    case 'corrupt-current':
+      return 'the current durable process containment evidence is corrupt';
+    case 'corrupt-predecessor':
+      return 'the predecessor durable process containment evidence is corrupt';
+    case 'identity-mismatch':
+      return 'the durable process containment evidence does not match the journal identity';
+  }
+  const exhaustive: never = evidence.reason;
+  return exhaustive;
 }
 
 type RecoveryActionContext = {
@@ -121,6 +145,7 @@ type RecoveryActionContext = {
   settleClaim(jobId: string): readonly RecoverySettlementFact[];
   setProcessLocalCleanup(cleanup: () => void): void;
   clearProcessLocalCleanup(): void;
+  abandonHeldJob?(jobId: string): RecordedContainmentAbortResult;
 };
 
 export async function applyRecoveryAction(
@@ -230,16 +255,19 @@ async function registerRunningRecovery(
     settleFault,
     setProcessLocalCleanup,
     clearProcessLocalCleanup,
+    abandonHeldJob = () => ({ kind: 'refused', reason: 'durable containment abandonment is unavailable' }),
   } = ctx;
   const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
   const recordedContainment = isDurableCliRuntime(action.runtimeRecord)
-    ? readMatchingDurableCliProcessRuntimeMeta(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
+    ? readDurableCliProcessRuntimeEvidence(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
     : null;
   recoveryRegistry.register(
     action.jobId,
     action.launchRecord,
     action.runtimeRecord,
-    isDurableCliRuntime(action.runtimeRecord) ? () => abortDurableCliProcess(runtime, recordedContainment) : undefined,
+    isDurableCliRuntime(action.runtimeRecord)
+      ? () => abortDurableCliProcess(runtime, recordedContainment ?? { kind: 'unavailable', reason: 'missing' })
+      : undefined,
   );
   setProcessLocalCleanup(() => recoveryRegistry.remove(action.jobId));
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
@@ -256,20 +284,31 @@ async function registerRunningRecovery(
       return { kind: 'quarantine', detail };
     }
 
-    const recordedIdentity = readDurableCliProcessRuntimeMeta(progressStore.getDb(), action.jobId);
+    const recordedEvidence = readDurableCliProcessRuntimeEvidence(
+      progressStore.getDb(),
+      action.jobId,
+      durableRecord.pid,
+    );
     let cleanupHold: string | null = null;
-    if (recordedIdentity === null) {
-      cleanupHold = 'the recorded durable process containment is unavailable';
-    } else if (recordedIdentity.jobId !== action.jobId) {
-      cleanupHold = 'the recorded durable process containment names a different job';
-    } else if (recordedIdentity.pid !== durableRecord.pid) {
-      cleanupHold = 'the recorded durable process containment names a different leader';
+    if (recordedEvidence.kind !== 'current') {
+      cleanupHold = durableRuntimeEvidenceHoldReason(recordedEvidence);
     } else {
-      const cleanup = await reapDurableCliProcess(runtime, recordedIdentity, signal);
+      const cleanup = await reapDurableCliProcess(runtime, recordedEvidence.record, signal);
       if (cleanup.kind === 'held') cleanupHold = cleanup.reason;
     }
 
     if (cleanupHold !== null) {
+      writeDurableCliContainmentStatus(progressStore.getDb(), {
+        jobId: action.jobId,
+        evidence: recordedEvidence,
+        disposition: {
+          kind: 'held',
+          reason: cleanupHold,
+          retryIntervalMs: 500,
+          abandonment: 'abort-job',
+        },
+      });
+      recoveryRegistry.setAbortHandler(action.jobId, () => abandonHeldJob(action.jobId));
       clearProcessLocalCleanup();
       const detail =
         `${message} Durable process cleanup remains held because ${cleanupHold}; recovery remains owned by the ` +
@@ -302,7 +341,7 @@ async function registerRunningRecovery(
     });
   } else {
     recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord, () =>
-      abortDurableCliProcess(runtime, recordedContainment),
+      abortDurableCliProcess(runtime, recordedContainment ?? { kind: 'unavailable', reason: 'missing' }),
     );
   }
   runningRecoverable.push({

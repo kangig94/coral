@@ -53,7 +53,7 @@ function recorded(
 function makeOptions(overrides: Partial<FollowOptions> = {}): FollowOptions {
   return {
     launchResult,
-    abortJob: vi.fn().mockResolvedValue(undefined),
+    abortJob: vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] }),
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
     emitError: vi.fn(),
@@ -286,7 +286,7 @@ describe('cli follow handoff', () => {
     const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
     const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
     const secondRunStarted = createDeferred<void>();
-    const abortJob = vi.fn().mockResolvedValue(undefined);
+    const abortJob = vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] });
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       _chunk: string | Uint8Array,
       callback?: (error?: Error | null) => void,

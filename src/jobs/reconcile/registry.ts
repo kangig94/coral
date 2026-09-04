@@ -39,6 +39,12 @@ export class RecoveryRegistry {
     return this.entries.get(jobId);
   }
 
+  setAbortHandler(jobId: string, abortHandler: () => RecordedContainmentAbortResult): boolean {
+    if (!this.entries.has(jobId)) return false;
+    this.abortHandlers.set(jobId, abortHandler);
+    return true;
+  }
+
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];
     const notFound: string[] = [];

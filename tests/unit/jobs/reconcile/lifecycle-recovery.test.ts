@@ -32,7 +32,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import { readDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import type {
   RecoverPersistedDiscussFn,
@@ -2423,6 +2423,96 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it('quarantines predecessor containment evidence and lets jobs abort abandon it without signalling', async () => {
+    const { createCoordinatorControl } = await import('#src/coordinator/composition/job-control.js');
+    const modules = await loadModules();
+    const pluginRoot = createPluginRoot('plugin-v1-containment-hold');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-v1-containment-hold');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const launchCoordinator = createLaunchCoordinator(modules);
+    const providerRegistry = createRecoveryProviderRegistry(modules);
+    const service = createActualRecoveryService(modules, {
+      progressStore,
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      pluginRoot,
+      projectRoot,
+    });
+    const adoptSpy = vi.spyOn(service, 'adoptRunningJob');
+    const killSpy = vi.spyOn(runtime.process, 'kill');
+    const jobId = '00000000-0000-4000-8000-000000000703';
+    const wrapperPid = 999_991;
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'session-v1-containment-hold',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubRuntimeRecord(progressStore, {
+      jobId,
+      pid: wrapperPid,
+      startTime: '2026-04-12T00:00:00.000Z',
+    });
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(
+        `durable_cli_process.v1:${jobId}`,
+        JSON.stringify({ jobId, pid: wrapperPid, incarnation: testIncarnation(wrapperPid) }),
+      );
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      servicesByProjectRoot: new Map([[projectRoot, service]]),
+    });
+
+    try {
+      await controller.start();
+      expect(adoptSpy).not.toHaveBeenCalled();
+      expect(readDurableCliContainmentStatus(progressStore.getDb(), jobId)).toMatchObject({
+        evidence: { kind: 'predecessor', record: { pid: wrapperPid } },
+        disposition: { kind: 'held', abandonment: 'abort-job' },
+      });
+      expect(
+        progressStore
+          .readJobEvents(jobId)
+          .some((event) => event.type === 'progress' && event.message.includes('cannot authorize a signal')),
+      ).toBe(true);
+
+      const control = createCoordinatorControl({
+        world: { idleTimer: { requestDrain() {} } } as never,
+        listExecutionServices: () => [service] as never,
+        getLifecycleController: () => controller,
+        getProgressStore: () => progressStore,
+        internalJobAbortRegistry: { abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }) } as never,
+      });
+      expect(control.abortJobs([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+
+      await vi.waitFor(() => {
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'aborted',
+          result: { outcome: { kind: 'aborted', reason: 'user_abort' } },
+        });
+      });
+      expect(killSpy).not.toHaveBeenCalled();
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('2b. aborting an adopted running durable job during recovery finalizes as aborted when it dies', async () => {
     const { spawn } = await import('node:child_process');
     const { createCoordinatorControl } = await import('#src/coordinator/composition/job-control.js');
@@ -3662,7 +3752,8 @@ describe('lifecycle recovery', () => {
         eventBus,
         providers: permissiveProviderLookupPort,
       });
-      const jobId = `${recoveryKind}-registration-throws-job`;
+      const jobId =
+        recoveryKind === 'running' ? '00000000-0000-4000-8000-000000000704' : `${recoveryKind}-registration-throws-job`;
       const sessionId = `${jobId}-session`;
       const captureError = `${recoveryKind} authority capture rejected`;
       const fakeService = createFakeExecutionAndRecoveryService({
@@ -3682,7 +3773,7 @@ describe('lifecycle recovery', () => {
       if (recoveryKind === 'queued') {
         appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
       } else {
-        stubRuntimeRecord(progressStore, { jobId, pid: process.pid });
+        stubRuntimeRecord(progressStore, { jobId, pid: process.pid, recordContainment: true });
       }
 
       const { controller, runtimeState } = createLifecycleHarness(modules, {
@@ -3742,7 +3833,8 @@ describe('lifecycle recovery', () => {
         pluginRoot,
         projectRoot,
       });
-      const jobId = `${recoveryKind}-adoption-throws-job`;
+      const jobId =
+        recoveryKind === 'running' ? '00000000-0000-4000-8000-000000000705' : `${recoveryKind}-adoption-throws-job`;
       const sessionId = `${jobId}-session`;
       const adoptionError = `${recoveryKind} namespace rebind failed`;
 
@@ -3756,7 +3848,7 @@ describe('lifecycle recovery', () => {
       if (recoveryKind === 'queued') {
         appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
       } else {
-        stubRuntimeRecord(progressStore, { jobId, pid: process.pid });
+        stubRuntimeRecord(progressStore, { jobId, pid: process.pid, recordContainment: true });
       }
       vi.spyOn(progressStore, 'rebindNamespace').mockImplementationOnce(() => {
         throw new Error(adoptionError);
@@ -3819,7 +3911,8 @@ describe('lifecycle recovery', () => {
         pluginRoot,
         projectRoot,
       });
-      const jobId = `${recoveryKind}-unreadable-record-job`;
+      const jobId =
+        recoveryKind === 'running' ? '00000000-0000-4000-8000-000000000706' : `${recoveryKind}-unreadable-record-job`;
       const sessionId = `${jobId}-session`;
 
       stubLaunchRecord(progressStore, {
@@ -3832,7 +3925,7 @@ describe('lifecycle recovery', () => {
       if (recoveryKind === 'queued') {
         appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
       } else {
-        stubRuntimeRecord(progressStore, { jobId, pid: process.pid });
+        stubRuntimeRecord(progressStore, { jobId, pid: process.pid, recordContainment: true });
       }
       // What a build that cannot read a newer durable shape actually throws. The provider's session
       // outlives this coordinator, so adoption must be deferred rather than spent.
@@ -4265,16 +4358,18 @@ describe('lifecycle recovery', () => {
       projectRoot,
     });
 
+    const jobId = '00000000-0000-4000-8000-000000000707';
     stubLaunchRecord(progressStore, {
-      jobId: 'still-running',
+      jobId,
       sessionId: 'still-running-session',
       provider: 'codex',
       projectRoot,
       backendNamespace: namespace,
     });
     stubRuntimeRecord(progressStore, {
-      jobId: 'still-running',
+      jobId,
       pid: process.pid,
+      recordContainment: true,
     });
 
     const { controller } = createLifecycleHarness(modules, {
@@ -4288,7 +4383,7 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(progressStore.readStatus('still-running')).toMatchObject({ phase: 'running' });
+      expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'running' });
     } finally {
       await stopLifecycleController(controller);
     }

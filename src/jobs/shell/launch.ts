@@ -55,7 +55,11 @@ import { ProviderBindingRuntimeError } from '../../providers/contracts/binding.j
 import { ProviderHostUnserviceableError } from '../../providers/host-admission.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
-import { writeDurableCliProcessRuntimeMeta } from '../runtime-meta-store.js';
+import {
+  deleteDurableCliContainmentStatus,
+  writeDurableCliContainmentStatus,
+  writeDurableCliProcessRuntimeMeta,
+} from '../runtime-meta-store.js';
 import type { AppServerProxyRoute } from '../contracts/app-server-proxy-route.js';
 import type {
   ProviderOperationChildAuthorization,
@@ -67,6 +71,7 @@ import type {
 import { readProviderOperationJobLaunchEventSeq } from '../provider-operation-state.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
+type DurableContainmentOperatorControl = Readonly<{ retry(): void; abandon(): boolean }>;
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
 function providerOperationEnvironment(input?: ProviderOperationEnvironmentInput): Readonly<{
   env: Readonly<Record<string, string>>;
@@ -1413,7 +1418,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       },
       // Losing optional observation metadata may only degrade a later carrier verdict to `unknown`; it must
       // not fault the launch.
-      (identity: DurableCliProcessSubject, containmentStatus?: DurableContainmentStatus) => {
+      (
+        identity: DurableCliProcessSubject,
+        containmentStatus?: DurableContainmentStatus,
+        control?: DurableContainmentOperatorControl,
+      ) => {
+        const evidence = { kind: 'current' as const, record: { jobId, ...identity } };
         try {
           writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
             jobId,
@@ -1424,7 +1434,32 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
         if (containmentStatus === undefined) return;
         switch (containmentStatus.kind) {
-          case 'held':
+          case 'held': {
+            try {
+              writeDurableCliContainmentStatus(this.deps.progressStore.getDb(), {
+                jobId,
+                evidence,
+                disposition: containmentStatus,
+              });
+            } catch (error: unknown) {
+              if (control !== undefined) {
+                this.deps.abortRegistry.hold(
+                  jobId,
+                  `durable containment hold persistence failed: ${errorMessage(error)}`,
+                  `Run coral-cli abort ${jobId} again to retry durable abandonment without sending another signal.`,
+                  control.abandon,
+                );
+              }
+              throw error;
+            }
+            if (control !== undefined) {
+              this.deps.abortRegistry.hold(
+                jobId,
+                containmentStatus.reason,
+                `Run coral-cli abort ${jobId} again to abandon job ownership without proving process absence or sending another signal.`,
+                control.abandon,
+              );
+            }
             this.appendProgressEvent(
               jobId,
               requestForRoute.sessionId,
@@ -1433,7 +1468,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                 'abandon the hold; abandonment releases job ownership without proving process absence or terminating the process.',
             );
             return;
+          }
           case 'absence-confirmed':
+            this.deps.abortRegistry.releaseHold(jobId);
+            deleteDurableCliContainmentStatus(this.deps.progressStore.getDb(), jobId);
             this.appendProgressEvent(
               jobId,
               requestForRoute.sessionId,
@@ -1441,6 +1479,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             );
             return;
           case 'operator-abandoned':
+            writeDurableCliContainmentStatus(this.deps.progressStore.getDb(), {
+              jobId,
+              evidence,
+              disposition: containmentStatus,
+            });
+            this.deps.abortRegistry.releaseHold(jobId);
             this.appendProgressEvent(
               jobId,
               requestForRoute.sessionId,

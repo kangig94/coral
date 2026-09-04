@@ -26,6 +26,63 @@ function createControlHarness(): {
 }
 
 describe('createCoordinatorControl.abortJobs', () => {
+  it('reports the first unresolved cleanup as held and uses a later abort as explicit abandonment', () => {
+    const runtime = new SimulationRuntime();
+    const registry = new AbortRegistry(runtime.ids);
+    const abandon = vi.fn(() => true);
+    const jobId = registry.register('held-job');
+    registry.getSignal(jobId)?.addEventListener(
+      'abort',
+      () => {
+        registry.hold(
+          jobId,
+          'process absence is not yet proven',
+          `Run coral-cli abort ${jobId} again to abandon without another signal.`,
+          abandon,
+        );
+      },
+      { once: true },
+    );
+
+    expect(registry.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId,
+          reason: 'process absence is not yet proven',
+          nextStep: `Run coral-cli abort ${jobId} again to abandon without another signal.`,
+        },
+      ],
+    });
+    expect(abandon).not.toHaveBeenCalled();
+
+    expect(registry.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+    expect(abandon).toHaveBeenCalledOnce();
+  });
+
+  it('keeps reporting a hold when durable abandonment is not accepted', () => {
+    const runtime = new SimulationRuntime();
+    const registry = new AbortRegistry(runtime.ids);
+    const abandon = vi.fn(() => false);
+    const jobId = registry.register('held-job');
+    registry.hold(jobId, 'process absence is not yet proven', 'Retry durable abandonment.', abandon);
+    registry.abort([jobId]);
+
+    expect(registry.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId,
+          reason: 'process absence is not yet proven',
+          nextStep: 'Retry durable abandonment.',
+        },
+      ],
+    });
+    expect(abandon).toHaveBeenCalledOnce();
+  });
+
   it('consults the internal-job abort registry before returning notFound', () => {
     const { control, internalJobAbortRegistry } = createControlHarness();
     const jobId = internalJobAbortRegistry.register('kb-reindex-1');

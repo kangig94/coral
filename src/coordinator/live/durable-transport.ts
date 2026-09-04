@@ -145,6 +145,11 @@ async function requestDurableProcessTermination(
 
 export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
 
+export type DurableContainmentOperatorControl = Readonly<{
+  retry(): void;
+  abandon(): boolean;
+}>;
+
 type DurableProviderResultDisposition =
   | Readonly<{ kind: 'absence-confirmed' }>
   | Readonly<{ kind: 'held'; reason: string }>
@@ -175,7 +180,11 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
   onRuntimeRecord?: (record: JobRuntime) => void;
   /** A partial containment identity must not cross the durable publication boundary. */
-  onDurableProcessIdentity?: (identity: DurableCliProcessSubject, status?: DurableContainmentStatus) => void;
+  onDurableProcessIdentity?: (
+    identity: DurableCliProcessSubject,
+    status?: DurableContainmentStatus,
+    control?: DurableContainmentOperatorControl,
+  ) => void;
 };
 
 export async function spawnDurableJobTransport(params: {
@@ -193,6 +202,7 @@ export async function spawnDurableJobTransport(params: {
   let abortHandler: (() => void) | null = null;
   let cleanupKey: symbol | null = null;
   let cleanupInFlight: Promise<GracefulKillByPidOutcome> | null = null;
+  let cleanupRetryInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
   let containmentAbsenceConfirmed = false;
   let containmentAbandoned = false;
   let providerResultHeld = false;
@@ -229,35 +239,72 @@ export async function spawnDurableJobTransport(params: {
 
   const releaseCleanupOwnership = (): void => {
     if (cleanupKey === null) return;
+    const wasHeld = providerResultHeld;
     cleanupHandles.delete(cleanupKey);
     cleanupRetentions.delete(cleanup);
     cleanupKey = null;
+    if (cleanupRetryInterval !== null) {
+      runtime.time.clearInterval(cleanupRetryInterval);
+      cleanupRetryInterval = null;
+    }
     containmentAbsenceConfirmed = true;
     resolveContainmentAbsence();
     lastUnsettledDetail = null;
+    if (wasHeld) publishContainmentStatus({ kind: 'absence-confirmed' });
   };
 
-  const publishContainmentStatus = (status: DurableContainmentStatus): void => {
+  const operatorControl: DurableContainmentOperatorControl = {
+    retry: () => {
+      void cleanup().catch(() => undefined);
+    },
+    abandon: () => abandonCleanupOwnership(),
+  };
+
+  const publishContainmentStatus = (status: DurableContainmentStatus): boolean => {
     const subject = publishedSubject;
-    if (subject === null) return;
+    if (subject === null) return false;
     const statusKey = JSON.stringify(status);
-    if (statusKey === lastPublishedStatus) return;
+    if (statusKey === lastPublishedStatus) return true;
     try {
-      options.onDurableProcessIdentity?.(subject, status);
+      options.onDurableProcessIdentity?.(subject, status, status.kind === 'held' ? operatorControl : undefined);
       lastPublishedStatus = statusKey;
+      return true;
     } catch (error: unknown) {
       backendLog.warn(`[durable-process:${subject.pid}] Failed to publish containment status: ${errorMessage(error)}`);
+      return false;
     }
   };
 
-  const abandonCleanupOwnership = (): void => {
-    if (!providerResultHeld || cleanupKey === null) return;
+  const abandonCleanupOwnership = (): boolean => {
+    if (!providerResultHeld || cleanupKey === null) return false;
+    if (!publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false })) return false;
     cleanupHandles.delete(cleanupKey);
     cleanupRetentions.delete(cleanup);
     cleanupKey = null;
+    if (cleanupRetryInterval !== null) {
+      runtime.time.clearInterval(cleanupRetryInterval);
+      cleanupRetryInterval = null;
+    }
     containmentAbandoned = true;
     resolveContainmentAbsence();
-    publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false });
+    return true;
+  };
+
+  const enterContainmentHold = (reason: string): void => {
+    providerResultHeld = true;
+    publishContainmentStatus({
+      kind: 'held',
+      reason,
+      retryIntervalMs: DURABLE_RUNTIME_POLL_INTERVAL_MS,
+      abandonment: 'abort-job',
+    });
+    if (cleanupRetryInterval !== null) return;
+    cleanupRetryInterval = runtime.time.setInterval(() => {
+      void cleanup().catch((error: unknown) => {
+        backendLog.warn(`[durable-process:${publishedPid ?? 'unknown'}] Termination failed: ${errorMessage(error)}`);
+      });
+    }, DURABLE_RUNTIME_POLL_INTERVAL_MS);
+    cleanupRetryInterval.unref?.();
   };
 
   const cleanup = (): Promise<GracefulKillByPidOutcome> => {
@@ -270,6 +317,7 @@ export async function spawnDurableJobTransport(params: {
         releaseCleanupOwnership();
       } else {
         const detail = terminationOutcomeDetail(outcome);
+        enterContainmentHold(detail);
         if (detail !== lastUnsettledDetail) {
           backendLog.warn(`[durable-process:${pid}] Termination remains unsettled (${detail}).`);
           lastUnsettledDetail = detail;
@@ -415,17 +463,7 @@ export async function spawnDurableJobTransport(params: {
         const disposition = await settleProviderResultContainment();
         if (disposition.kind === 'absence-confirmed') throw launchError;
         if (disposition.kind === 'operator-abandoned') throw launchError;
-        providerResultHeld = true;
-        publishContainmentStatus({
-          kind: 'held',
-          reason: disposition.reason,
-          retryIntervalMs: DURABLE_RUNTIME_POLL_INTERVAL_MS,
-          abandonment: 'abort-job',
-        });
-        if (options.signal?.aborted) {
-          abandonCleanupOwnership();
-          throw launchError;
-        }
+        enterContainmentHold(disposition.reason);
         await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
       }
     }
@@ -485,13 +523,12 @@ export async function spawnDurableJobTransport(params: {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
+        enterContainmentHold('termination requested; process absence is not yet proven');
         void cleanup().then(
-          (outcome) => {
-            if (outcome.kind !== 'observed-absent' && providerResultHeld) abandonCleanupOwnership();
-          },
+          () => undefined,
           (error: unknown) => {
             backendLog.warn(`[durable-process:${durable.pid}] Termination failed: ${errorMessage(error)}`);
-            if (providerResultHeld) abandonCleanupOwnership();
+            enterContainmentHold(errorMessage(error));
           },
         );
       };
@@ -507,22 +544,9 @@ export async function spawnDurableJobTransport(params: {
       if (completedExit !== null) {
         const disposition = await settleProviderResultContainment();
         if (disposition.kind === 'held') {
-          providerResultHeld = true;
-          publishContainmentStatus({
-            kind: 'held',
-            reason: disposition.reason,
-            retryIntervalMs: DURABLE_RUNTIME_POLL_INTERVAL_MS,
-            abandonment: 'abort-job',
-          });
-          if (options.signal?.aborted) {
-            abandonCleanupOwnership();
-            continue;
-          }
+          enterContainmentHold(disposition.reason);
           await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), containmentAbsence]);
           continue;
-        }
-        if (providerResultHeld && disposition.kind === 'absence-confirmed') {
-          publishContainmentStatus({ kind: 'absence-confirmed' });
         }
         drainStdout();
         return {
@@ -530,6 +554,15 @@ export async function spawnDurableJobTransport(params: {
           stderr: readOutputFile(runtime.storage, durable.stderrPath),
           code: completedExit.exitCode,
           aborted: abortedBySignal,
+        };
+      }
+
+      if (containmentAbandoned) {
+        return {
+          stdout: readOutputFile(runtime.storage, durable.stdoutPath),
+          stderr: readOutputFile(runtime.storage, durable.stderrPath),
+          code: null,
+          aborted: true,
         };
       }
 

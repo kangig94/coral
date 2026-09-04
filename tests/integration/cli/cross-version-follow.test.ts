@@ -239,7 +239,7 @@ describe('cross-version follow', () => {
         jobId: 'job-1',
         sessionId: 'session-1',
       } satisfies AcceptedLaunchResponse,
-      abortJob: vi.fn().mockResolvedValue(undefined),
+      abortJob: vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] }),
       pluginRoot: '/plugin/root',
       projectRoot: '/project/root',
       emitError: (error: unknown) => {

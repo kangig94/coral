@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -14,8 +15,9 @@ import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
-import { formatLaunch } from '#src/cli/format/jobs.js';
+import { formatAbortResult, formatLaunch } from '#src/cli/format/jobs.js';
 import { formatWaitProgress, formatWaitQueued, formatWaitTerminal } from '#src/cli/format/wait.js';
+import { BackendUnreachableError } from '#src/infra/http-errors.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -115,7 +117,7 @@ function makeTerminalEvent(
 
 type TestLaunchAndFollowOptions = {
   launchResult: AcceptedLaunchResponse;
-  abortJob: (jobId: string) => Promise<unknown>;
+  abortJob: (jobId: string) => Promise<AbortResult>;
   pluginRoot: string;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -132,7 +134,7 @@ function makeOptions(overrides: Partial<TestLaunchAndFollowOptions> = {}): TestL
       jobId: 'job-1',
       sessionId: 'session-1',
     } satisfies AcceptedLaunchResponse,
-    abortJob: async () => undefined,
+    abortJob: async (jobId) => ({ aborted: [jobId], notFound: [] }),
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
     emitError: (error: unknown) => {
@@ -925,7 +927,7 @@ describe('cli follow', () => {
             connect: async () => {
               throw new BackendUnreachableError('fetch failed');
             },
-            abortJobs: async () => undefined,
+            abortJobs: async () => ({ aborted: [], notFound: [] }),
             projectRoot: '/project/root',
             emitError,
             render: { isTTY: false, columns: 80, embed: false, verbose: false },
@@ -948,7 +950,7 @@ describe('cli follow', () => {
   it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const started = createDeferred<void>();
-    const abortJob = vi.fn().mockResolvedValue(undefined);
+    const abortJob = vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] });
 
     mockState.ensure.mockResolvedValueOnce(makeBackend());
     mockState.subscribe.mockImplementationOnce(
@@ -979,16 +981,60 @@ describe('cli follow', () => {
     expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   });
 
+  it('renders a launched job abort refusal and returns the refusal exit code', async () => {
+    const { launchAndFollow } = await loadFollowModule();
+    const started = createDeferred<void>();
+    const result = {
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'job-1',
+          reason: 'the recorded process containment could not be observed',
+          nextStep: 'Run coral-cli jobs detail job-1 and retry after the containment can be observed.',
+        },
+      ],
+    };
+    const abortJob = vi.fn().mockResolvedValue(result);
+
+    mockState.ensure.mockResolvedValueOnce(makeBackend());
+    mockState.subscribe.mockImplementationOnce(
+      async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
+        makeSubscription(async function* () {
+          started.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+          });
+        }),
+    );
+
+    const followPromise = launchAndFollow(makeOptions({ abortJob }));
+    await started.promise;
+
+    sigintHandler?.();
+    sigintHandler?.();
+
+    await expect(followPromise).resolves.toBe(3);
+
+    expect(abortJob).toHaveBeenCalledOnce();
+    expect(abortJob).toHaveBeenCalledWith('job-1');
+    expect(stdout).toBe(
+      `Provider job job-1 launch accepted (provider session session-1)\n${formatAbortResult(result)}\n`,
+    );
+    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
+  });
+
   it('warns on first SIGINT and aborts every bounded-wait job on the second', async () => {
     const { followJobs } = await loadFollowModule();
     const started = createDeferred<void>();
-    const abortJobs = vi.fn().mockResolvedValue(undefined);
+    const emitError = vi.fn();
+    const abortJobs = vi.fn().mockResolvedValue({ aborted: ['job-1', 'job-2'], notFound: [] });
 
     const followPromise = followJobs({
       start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
       reconnectPolicy: 'bounded',
       projectRoot: '/project/root',
-      emitError: vi.fn(),
+      emitError,
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
       abortJobs,
       connect: async ({ signal }) => ({
@@ -1012,6 +1058,100 @@ describe('cli follow', () => {
 
     expect(abortJobs).toHaveBeenCalledOnce();
     expect(abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+    expect(stdout).toBe('');
+    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
+    expect(emitError).not.toHaveBeenCalled();
+  });
+
+  it('renders every abort refusal and returns a distinct exit code', async () => {
+    const { followJobs } = await loadFollowModule();
+    const started = createDeferred<void>();
+    const emitError = vi.fn();
+    const result = {
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'job-1',
+          reason: 'the recorded process containment could not be observed',
+          nextStep: 'Run coral-cli jobs detail job-1 and retry after the containment can be observed.',
+        },
+        {
+          jobId: 'job-2',
+          reason: 'the current process identity is unavailable',
+          nextStep: 'Run coral-cli jobs detail job-2 and follow its recovery guidance.',
+        },
+      ],
+    };
+    const abortJobs = vi.fn().mockResolvedValue(result);
+
+    const followPromise = followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs,
+      connect: async ({ signal }) => ({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          started.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+          });
+        }),
+      }),
+    });
+    await started.promise;
+
+    sigintHandler?.();
+    sigintHandler?.();
+    await expect(followPromise).resolves.toBe(3);
+
+    expect(abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+    expect(stdout).toBe(`${formatAbortResult(result)}\n`);
+    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
+    expect(emitError).not.toHaveBeenCalled();
+  });
+
+  it('reports an abort request failure and returns its transport exit code', async () => {
+    const { followJobs } = await loadFollowModule();
+    const started = createDeferred<void>();
+    const transportError = new BackendUnreachableError('abort transport unavailable');
+    const emitError = vi.fn((error: unknown) => {
+      const { envelope, exitCode } = buildErrorEnvelope(error);
+      process.stderr.write(`${envelope.code}: ${envelope.message}\n`);
+      process.exitCode = exitCode;
+    });
+    const abortJobs = vi.fn().mockRejectedValue(transportError);
+
+    const followPromise = followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs,
+      connect: async ({ signal }) => ({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          started.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+          });
+        }),
+      }),
+    });
+    await started.promise;
+
+    sigintHandler?.();
+    sigintHandler?.();
+    await expect(followPromise).resolves.toBe(69);
+
+    expect(abortJobs).toHaveBeenCalledWith(['job-1']);
+    expect(emitError).toHaveBeenCalledWith(transportError);
+    expect(stdout).toBe('');
+    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\nbackend_unreachable: abort transport unavailable\n');
   });
 
   it.each([

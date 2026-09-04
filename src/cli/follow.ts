@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
+import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStatus, JobTerminal } from '../jobs/records.js';
@@ -19,7 +20,7 @@ import {
   runHandoff,
   type HandoffOutcome,
 } from '../coordinator/handoff-routing/runner.js';
-import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
+import { formatAbortResult, formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { getSharedReadCoralStore } from './read-store.js';
 import { errorCodeToExit, WaitResumeError } from './errors.js';
@@ -47,6 +48,9 @@ const WAIT_FLUSH_MARGIN_SECONDS = 10;
 const FOLLOW_TIMEOUT_SECONDS = BASH_TOOL_TIMEOUT_CEILING_SECONDS - WAIT_FLUSH_MARGIN_SECONDS;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
+const ABORT_SUCCEEDED_EXIT_CODE = 1;
+const ABORT_REFUSED_EXIT_CODE = 3;
+const ABORT_REQUEST_FAILED_FALLBACK_EXIT_CODE = 70;
 
 type BackoffScheduler = (delayMs: number) => Promise<void>;
 type ReconnectPolicy = 'bounded' | 'until-terminal';
@@ -78,7 +82,7 @@ type FollowJobsOptions = {
   start: FollowStart;
   reconnectPolicy: ReconnectPolicy;
   connect: (request: FollowConnectionRequest) => Promise<FollowConnection>;
-  abortJobs: (jobIds: readonly string[]) => Promise<unknown>;
+  abortJobs: (jobIds: readonly string[]) => Promise<AbortResult>;
   projectRoot: string;
   emitError: (error: unknown) => void;
   render: WaitRenderContext & {
@@ -88,9 +92,14 @@ type FollowJobsOptions = {
   backoffScheduler?: BackoffScheduler;
 };
 
+type AbortAttempt =
+  | Readonly<{ kind: 'succeeded' }>
+  | Readonly<{ kind: 'refused'; result: AbortResult }>
+  | Readonly<{ kind: 'request-failed'; error: unknown }>;
+
 type FollowOptions = {
   launchResult: AcceptedLaunchResponse;
-  abortJob: (jobId: string) => Promise<unknown>;
+  abortJob: (jobId: string) => Promise<AbortResult>;
   pluginRoot: string;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -256,6 +265,30 @@ function fallbackExitCode(): number {
   return typeof process.exitCode === 'number' ? process.exitCode : 1;
 }
 
+function classifyAbortResult(result: AbortResult): AbortAttempt {
+  return result.refused?.length ? { kind: 'refused', result } : { kind: 'succeeded' };
+}
+
+async function finishAbortAttempt(
+  abortPromise: Promise<AbortAttempt>,
+  emitError: (error: unknown) => void,
+): Promise<number> {
+  const attempt = await abortPromise;
+  if (attempt.kind === 'succeeded') {
+    return ABORT_SUCCEEDED_EXIT_CODE;
+  }
+  if (attempt.kind === 'refused') {
+    writeStdout(formatAbortResult(attempt.result) + '\n');
+    return ABORT_REFUSED_EXIT_CODE;
+  }
+
+  emitError(attempt.error);
+  const exitCode = fallbackExitCode();
+  return exitCode === ABORT_SUCCEEDED_EXIT_CODE || exitCode === ABORT_REFUSED_EXIT_CODE
+    ? ABORT_REQUEST_FAILED_FALLBACK_EXIT_CODE
+    : exitCode;
+}
+
 function boundedTimeoutSeconds(deadlineMs: number): number {
   return Math.max(1, Math.ceil((deadlineMs - Date.now()) / 1_000));
 }
@@ -298,9 +331,10 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
   let sendCursor = rawCursor !== undefined;
   let retriesLeft = TRANSIENT_RETRY_LIMIT;
   let hasOpenedSubscription = false;
-  let localAbortRequested = false;
   let sigintCount = 0;
-  let abortPromise: Promise<void> | null = null;
+  // A holder rather than a `let`: the SIGINT handler below assigns it, and TypeScript's control flow
+  // cannot see a closure's write, so a bare binding narrows to `null` at every later read.
+  const abortState: { promise: Promise<AbortAttempt> | null } = { promise: null };
 
   const onSigint = () => {
     sigintCount += 1;
@@ -309,20 +343,16 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
       return;
     }
 
-    if (localAbortRequested) {
+    if (abortState.promise !== null) {
       return;
     }
 
-    localAbortRequested = true;
     controller.abort();
-    abortPromise =
-      abortPromise ??
+    abortState.promise =
+      abortState.promise ??
       Promise.resolve()
         .then(() => options.abortJobs(allJobIds))
-        .then(
-          () => undefined,
-          () => undefined,
-        );
+        .then(classifyAbortResult, (error): AbortAttempt => ({ kind: 'request-failed', error }));
   };
 
   if (options.start.kind === 'launch') {
@@ -332,8 +362,8 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
   try {
     followLoop: while (true) {
-      if (localAbortRequested) {
-        return 1;
+      if (abortState.promise !== null) {
+        return await finishAbortAttempt(abortState.promise, options.emitError);
       }
 
       if (remainingJobIds.length === 0) {
@@ -366,8 +396,8 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
           signal: controller.signal,
         });
       } catch (error) {
-        if (localAbortRequested) {
-          return 1;
+        if (abortState.promise !== null) {
+          return await finishAbortAttempt(abortState.promise, options.emitError);
         }
 
         const handledError = mapWaitSubscriptionError(error);
@@ -392,14 +422,17 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
         retriesLeft -= 1;
         const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-        if (!shouldRetry || localAbortRequested) {
+        if (abortState.promise !== null) {
+          return await finishAbortAttempt(abortState.promise, options.emitError);
+        }
+        if (!shouldRetry) {
           return 1;
         }
         continue;
       }
 
-      if (localAbortRequested) {
-        return 1;
+      if (abortState.promise !== null) {
+        return await finishAbortAttempt(abortState.promise, options.emitError);
       }
 
       if (connection.kind === 'fatal-error') {
@@ -410,8 +443,8 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
       if (connection.kind === 'delegated') {
         const { outcome } = connection;
 
-        if (localAbortRequested) {
-          return 1;
+        if (abortState.promise !== null) {
+          return await finishAbortAttempt(abortState.promise, options.emitError);
         }
         if (outcome.kind === 'handoff-success') {
           renderHandoffNotice(outcome);
@@ -437,6 +470,10 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
       let reconnect = false;
       try {
         for await (const raw of connection.subscription) {
+          if (abortState.promise !== null) {
+            return await finishAbortAttempt(abortState.promise, options.emitError);
+          }
+
           const event = parseWaitStreamEventValue(raw);
           if (event === null) {
             // Unrecognized event type: a newer coordinator emitted something this build predates.
@@ -490,8 +527,8 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
           }
         }
       } catch (error) {
-        if (localAbortRequested) {
-          return 1;
+        if (abortState.promise !== null) {
+          return await finishAbortAttempt(abortState.promise, options.emitError);
         }
 
         const handledError = mapWaitSubscriptionError(error);
@@ -508,7 +545,10 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
         retriesLeft -= 1;
         const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-        if (!shouldRetry || localAbortRequested) {
+        if (abortState.promise !== null) {
+          return await finishAbortAttempt(abortState.promise, options.emitError);
+        }
+        if (!shouldRetry) {
           return 1;
         }
         reconnect = true;
@@ -532,8 +572,8 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
   } finally {
     causeRenderer.close();
     process.off('SIGINT', onSigint);
-    if (abortPromise !== null) {
-      await (abortPromise as Promise<void>);
+    if (abortState.promise !== null) {
+      await abortState.promise;
     }
   }
 }
@@ -553,7 +593,12 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       verbose: false,
     },
     abortJobs: async (jobIds) => {
-      await Promise.all(jobIds.map((jobId) => options.abortJob(jobId)));
+      const results = await Promise.all(jobIds.map((jobId) => options.abortJob(jobId)));
+      return {
+        aborted: results.flatMap((result) => result.aborted),
+        notFound: results.flatMap((result) => result.notFound),
+        refused: results.flatMap((result) => result.refused ?? []),
+      };
     },
     connect: async ({ jobIds, cursor, timeoutSeconds, signal }) => {
       let backend;

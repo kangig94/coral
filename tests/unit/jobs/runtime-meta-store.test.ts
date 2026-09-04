@@ -6,7 +6,10 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
   deleteDurableCliProcessRuntimeMeta,
+  readDurableCliContainmentStatus,
   readDurableCliProcessRuntimeMeta,
+  readDurableCliProcessRuntimeEvidence,
+  writeDurableCliContainmentStatus,
   writeDurableCliProcessRuntimeMeta,
 } from '#src/jobs/runtime-meta-store.js';
 
@@ -51,6 +54,45 @@ describe('durable CLI process runtime meta store', () => {
     );
 
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toBeNull();
+    expect(readDurableCliProcessRuntimeEvidence(db, JOB_ID, 4242)).toEqual({
+      kind: 'predecessor',
+      record: { jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) },
+    });
+  });
+
+  it('distinguishes missing and corrupt generations without treating either as absence', () => {
+    const db = createDb();
+
+    expect(readDurableCliProcessRuntimeEvidence(db, JOB_ID, 4242)).toEqual({
+      kind: 'unavailable',
+      reason: 'missing',
+    });
+
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(`durable_cli_process.v2:${JOB_ID}`, '{not-json');
+    expect(readDurableCliProcessRuntimeEvidence(db, JOB_ID, 4242)).toEqual({
+      kind: 'unavailable',
+      reason: 'corrupt-current',
+    });
+  });
+
+  it('retains operator abandonment until terminal cleanup', () => {
+    const db = createDb();
+    const evidence = { kind: 'current' as const, record: runtimeMeta(4242, 1_000) };
+    writeDurableCliProcessRuntimeMeta(db, evidence.record);
+    writeDurableCliContainmentStatus(db, {
+      jobId: JOB_ID,
+      evidence,
+      disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
+    });
+
+    expect(readDurableCliContainmentStatus(db, JOB_ID)).toEqual({
+      jobId: JOB_ID,
+      evidence,
+      disposition: { kind: 'operator-abandoned', processAbsenceProven: false },
+    });
+
+    deleteDurableCliProcessRuntimeMeta(db, JOB_ID);
+    expect(readDurableCliContainmentStatus(db, JOB_ID)).toBeNull();
   });
 
   it('replaces an earlier record for the same job on a second write', () => {

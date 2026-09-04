@@ -4,12 +4,21 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
+import type {
+  DurableContainmentOperatorControl,
+  DurableProcessCleanup,
+} from '#src/coordinator/live/durable-transport.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
-import type { ProcessPort, Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
+import type {
+  DurableCliProcessSubject,
+  DurableContainmentStatus,
+  ProcessPort,
+  Runtime,
+  RuntimeSpawnOptions,
+} from '#src/runtime/ports.js';
 import {
   canSignalProviderHostProcessGroup,
   ProviderHostUnsupportedPlatformError,
@@ -760,7 +769,7 @@ describe('launch admission', () => {
       owner: 'launch-coordinator',
     });
     expect(onRuntimeRecord).toHaveBeenCalledOnce();
-    expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({
+    expect(onDurableProcessIdentity).toHaveBeenCalledWith({
       pid: TEST_PROVIDER_PID,
       incarnation,
       processGroupId: TEST_PROVIDER_PID,
@@ -771,6 +780,7 @@ describe('launch admission', () => {
     void spawn.catch(() => {});
     await Promise.resolve();
     await Promise.resolve();
+    expect(onDurableProcessIdentity.mock.calls.some(([, status]) => status?.kind === 'held')).toBe(true);
     expect(
       (localCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }).cleanupHandles
         .size,
@@ -821,7 +831,16 @@ describe('launch admission', () => {
     };
     const localCoordinator = new LaunchCoordinator({ runtime });
     const abort = new AbortController();
-    const observations = vi.fn();
+    const holdControls: DurableContainmentOperatorControl[] = [];
+    const observations = vi.fn(
+      (
+        _identity: DurableCliProcessSubject,
+        _status?: DurableContainmentStatus,
+        control?: DurableContainmentOperatorControl,
+      ) => {
+        if (control !== undefined) holdControls.push(control);
+      },
+    );
     const spawn = localCoordinator.spawnDurableJob({
       provider: 'codex',
       command: 'codex',
@@ -832,19 +851,28 @@ describe('launch admission', () => {
       onDurableProcessIdentity: observations,
     });
 
-    await vi.waitFor(() =>
-      expect(observations).toHaveBeenCalledWith(
-        expect.objectContaining({ pid: TEST_PROVIDER_PID }),
-        expect.objectContaining({ kind: 'held', abandonment: 'abort-job' }),
-      ),
-    );
+    await vi.waitFor(() => {
+      expect(
+        observations.mock.calls.some(
+          ([identity, status]) =>
+            identity.pid === TEST_PROVIDER_PID && status?.kind === 'held' && status.abandonment === 'abort-job',
+        ),
+      ).toBe(true);
+    });
     abort.abort();
+    const holdControl = holdControls.at(-1);
+    if (holdControl === undefined) throw new Error('Expected durable containment abandonment control');
+    holdControl.abandon();
 
     await expect(spawn).resolves.toMatchObject({ code: 0, aborted: true });
-    expect(observations).toHaveBeenCalledWith(expect.objectContaining({ pid: TEST_PROVIDER_PID }), {
-      kind: 'operator-abandoned',
-      processAbsenceProven: false,
-    });
+    expect(
+      observations.mock.calls.some(
+        ([identity, status]) =>
+          identity.pid === TEST_PROVIDER_PID &&
+          status?.kind === 'operator-abandoned' &&
+          status.processAbsenceProven === false,
+      ),
+    ).toBe(true);
     expect(runtime.process.kill).not.toHaveBeenCalled();
     await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
   });

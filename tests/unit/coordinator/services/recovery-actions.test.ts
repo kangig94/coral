@@ -127,7 +127,7 @@ describe('registerRunningRecovery provider-binding holds', () => {
       const disposition = await fixture.run();
 
       if (disposition.kind !== 'quarantine') throw new Error(`expected quarantine, received ${disposition.kind}`);
-      expect(disposition.detail).toContain('containment is unavailable');
+      expect(disposition.detail).toContain('containment evidence is missing');
       expect(disposition.detail).toContain('Retry after repairing the provider binding');
       expect(fixture.settleFault).not.toHaveBeenCalled();
       expect(fixture.kill).not.toHaveBeenCalled();

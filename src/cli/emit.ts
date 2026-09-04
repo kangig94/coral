@@ -125,9 +125,7 @@ export async function handleLaunchResult(
   // Follow-level failures route through emitError and return the envelope exit code instead.
   process.exitCode = await launchAndFollow({
     launchResult: result,
-    abortJob: async (jobId) => {
-      await client.abortJobs([jobId]);
-    },
+    abortJob: async (jobId) => client.abortJobs([jobId]),
     pluginRoot: getPluginRoot(),
     projectRoot: process.cwd(),
     emitError,

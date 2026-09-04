@@ -8,6 +8,13 @@ export class AbortRegistry implements JobAbortRegistryPort {
   }
 
   private readonly controllers = new Map<string, AbortController>();
+  private readonly holds = new Map<
+    string,
+    Readonly<{
+      refusal: NonNullable<AbortResult['refused']>[number];
+      abandon: () => boolean;
+    }>
+  >();
 
   register(jobId: string = this.ids.uuid(), onAbort?: () => void): string {
     const controller = new AbortController();
@@ -15,7 +22,20 @@ export class AbortRegistry implements JobAbortRegistryPort {
       controller.signal.addEventListener('abort', onAbort);
     }
     this.controllers.set(jobId, controller);
+    this.holds.delete(jobId);
     return jobId;
+  }
+
+  hold(jobId: string, reason: string, nextStep: string, abandon: () => boolean): void {
+    if (!this.controllers.has(jobId)) return;
+    this.holds.set(jobId, {
+      refusal: { jobId, reason, nextStep },
+      abandon,
+    });
+  }
+
+  releaseHold(jobId: string): void {
+    this.holds.delete(jobId);
   }
 
   getSignal(jobId: string): AbortSignal | null {
@@ -33,20 +53,37 @@ export class AbortRegistry implements JobAbortRegistryPort {
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];
     const notFound: string[] = [];
+    const refused: NonNullable<AbortResult['refused']> = [];
     for (const jobId of jobIds) {
       const controller = this.controllers.get(jobId);
       if (!controller) {
         notFound.push(jobId);
         continue;
       }
+      const heldBeforeRequest = this.holds.get(jobId);
+      if (controller.signal.aborted && heldBeforeRequest !== undefined) {
+        if (heldBeforeRequest.abandon()) {
+          this.holds.delete(jobId);
+          aborted.push(jobId);
+        } else {
+          refused.push((this.holds.get(jobId) ?? heldBeforeRequest).refusal);
+        }
+        continue;
+      }
       controller.abort();
-      aborted.push(jobId);
+      const hold = this.holds.get(jobId);
+      if (hold === undefined) {
+        aborted.push(jobId);
+      } else {
+        refused.push(hold.refusal);
+      }
     }
-    return { aborted, notFound };
+    return { aborted, notFound, ...(refused.length === 0 ? {} : { refused }) };
   }
 
   /** Call after terminal phase is persisted. */
   remove(jobId: string): void {
     this.controllers.delete(jobId);
+    this.holds.delete(jobId);
   }
 }

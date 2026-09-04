@@ -1501,6 +1501,42 @@ describe('cli main routing', () => {
     expect(workflow?.helpInformation()).toContain('binds every provider profile referenced by the workflow');
   });
 
+  it('passes a launch abort refusal through to the launch follower', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const result = {
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'job-1',
+          reason: 'the recorded process containment could not be observed',
+          nextStep: 'Run coral-cli jobs detail job-1 and retry after the containment can be observed.',
+        },
+      ],
+    };
+
+    mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
+      launchState: 'running',
+      jobId: 'job-1',
+      sessionId: 'session-1',
+    });
+    mockState.abortJobs.mockResolvedValueOnce(result);
+    mockState.launchAndFollow.mockImplementationOnce(
+      async (options: Parameters<typeof FollowMod.launchAndFollow>[0]) => {
+        await expect(options.abortJob('job-1')).resolves.toEqual(result);
+        return 3;
+      },
+    );
+
+    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'launch prompt']);
+
+    expect(mockState.abortJobs).toHaveBeenCalledOnce();
+    expect(mockState.abortJobs).toHaveBeenCalledWith(['job-1']);
+    expect(process.exitCode).toBe(3);
+  });
+
   it('passes unified flags through raw provider launches and resolves -i file input', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();

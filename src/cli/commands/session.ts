@@ -192,9 +192,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         embed: opts.embed === true,
         verbose: opts.verbose === true,
       },
-      abortJobs: async (ids) => {
-        await client.abortJobs([...ids]);
-      },
+      abortJobs: async (ids) => client.abortJobs([...ids]),
       connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
         kind: 'subscription',
         subscription: await client.subscribe<unknown>(

@@ -46,6 +46,7 @@ import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
+import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -1411,7 +1412,7 @@ describe('workflow recovery branch rules', () => {
     }
   });
 
-  it('retains an adopted child without containment evidence and continues to a healthy workflow after recovery fails', async () => {
+  it('retains an adopted child and continues to a healthy workflow after recovery fails', async () => {
     const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
     const failedWorkflowId = 'workflow-adopted-child';
     const healthyWorkflowId = 'workflow-after-adopted-child';
@@ -1421,13 +1422,15 @@ describe('workflow recovery branch rules', () => {
     const healthyPlan = buildWorkflowPlan(healthyWorkflowId, parseExpression('architect'), {
       defaultProvider: 'codex',
     });
-    const childJobId = failedPlan.slots[0].slotId;
-    const healthyChildJobId = healthyPlan.slots[0].slotId;
+    const failedSlotId = failedPlan.slots[0].slotId;
+    const healthySlotId = healthyPlan.slots[0].slotId;
+    const childJobId = randomUUID();
+    const healthyChildJobId = randomUUID();
     const sessionId = 'session-adopted-child';
     const healthySessionId = 'session-healthy-child';
     const providerScope = backend.createInvocationContext().providerScope;
     if (providerScope === undefined) throw new Error('expected simulation provider scope');
-    expect(childJobId.startsWith(`${failedWorkflowId}:`)).toBe(true);
+    expect(failedSlotId.startsWith(`${failedWorkflowId}:`)).toBe(true);
 
     const appendWorkflowRoot = (workflowId: string, plan: WorkflowPlan): void => {
       commitWorkflowEvents(
@@ -1511,13 +1514,17 @@ describe('workflow recovery branch rules', () => {
       enqueueSequence: backend.progressStore.nextEnqueueSequence(),
       providerAction: 'exec',
       parentWorkflowJobId: failedWorkflowId,
-      workflowSlotId: childJobId,
+      workflowSlotId: failedSlotId,
       workflowSlotGeneration: 0,
       request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
       createdAt: '2026-04-27T00:00:00.000Z',
     };
     backend.progressStore.appendLaunchRequested(childJobId, childLaunch);
     backend.progressStore.appendRuntimeStarted(childJobId, durable.runtimeRecord);
+    writeDurableCliProcessRuntimeMeta(backend.progressStore.getDb(), {
+      jobId: childJobId,
+      ...durable.processSubject,
+    });
 
     appendWorkflowRoot(healthyWorkflowId, healthyPlan);
     seedTestSessionProjection(backend.progressStore.getDb(), {
@@ -1533,7 +1540,7 @@ describe('workflow recovery branch rules', () => {
       owner: { kind: 'workflow', id: healthyWorkflowId },
       sessionId: healthySessionId,
       parentWorkflowJobId: healthyWorkflowId,
-      workflowSlotId: healthyChildJobId,
+      workflowSlotId: healthySlotId,
       enqueueSequence: backend.progressStore.nextEnqueueSequence(),
     });
     commitJobTerminal(backend.progressStore, healthyChildJobId, healthySessionId, {
