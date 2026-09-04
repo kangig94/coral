@@ -15,10 +15,15 @@ describe('windows shell command helpers', () => {
     expect(windowsCommandName('/opt/bin/codex', 'win32')).toBe('/opt/bin/codex');
   });
 
-  it('uses the Windows shell only for cmd and bat scripts', () => {
-    expect(shouldUseWindowsCommandShell('codex.cmd', 'win32')).toBe(true);
-    expect(shouldUseWindowsCommandShell('C:\\tools\\run.bat', 'win32')).toBe(true);
-    expect(shouldUseWindowsCommandShell('node.exe', 'win32')).toBe(false);
-    expect(shouldUseWindowsCommandShell('codex', 'win32')).toBe(false);
+  it('refuses Windows command-shell launches', () => {
+    expect(() => shouldUseWindowsCommandShell('codex.cmd', 'win32')).toThrow(
+      'Windows command-shell launch is unsupported',
+    );
+    expect(() => shouldUseWindowsCommandShell('C:\\tools\\run.bat', 'win32')).toThrow(
+      'Windows command-shell launch is unsupported',
+    );
+    expect(() => shouldUseWindowsCommandShell('node.exe', 'win32')).toThrow(
+      'Windows command-shell launch is unsupported',
+    );
   });
 });

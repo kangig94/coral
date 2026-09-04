@@ -11,10 +11,16 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
 import {
-  readDurableCliProcessRuntimeEvidence,
+  readDurableCliContainmentStatus,
+  readDurableCliPreReadyOwnershipEvidence,
   writeDurableCliContainmentStatus,
 } from '../../../jobs/runtime-meta-store.js';
-import type { DurableCliProcessRuntimeEvidence, DurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta.js';
+import type {
+  DurableCliProcessRuntimeEvidence,
+  DurableCliProcessRuntimeMeta,
+  DurableCliProvisionalProcessRuntimeMeta,
+} from '../../../jobs/runtime-meta.js';
+import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-meta-store.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
@@ -58,7 +64,7 @@ export type RunningRecoverableJob = {
 
 async function reapDurableCliProcess(
   runtime: Runtime,
-  record: DurableCliProcessRuntimeMeta,
+  record: DurableCliProcessRuntimeMeta | DurableCliProvisionalProcessRuntimeMeta,
   signal: AbortSignal,
 ): Promise<Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>> {
   const clock = createMonotonicClock(durableRecoveryClockScope, {
@@ -68,10 +74,10 @@ async function reapDurableCliProcess(
   try {
     const outcome = await reapRecordedContainment(
       { pid: record.pid, incarnation: record.incarnation, processGroupId: record.processGroupId },
-      [record.childRoot],
+      'childRoot' in record ? [record.childRoot] : [],
       clock.shiftMilliseconds(clock.now(), DURABLE_RECOVERY_REAP_DEADLINE_MS),
       {
-        maxRecordedRoots: 1,
+        maxRecordedRoots: 'childRoot' in record ? 1 : 0,
         clock,
         process: runtime.process,
         platform: runtime.env.platform() as NodeJS.Platform,
@@ -89,17 +95,18 @@ async function reapDurableCliProcess(
 
 function abortDurableCliProcess(
   runtime: Runtime,
-  evidence: DurableCliProcessRuntimeEvidence,
+  evidence: DurableCliPreReadyOwnershipEvidence,
 ): RecordedContainmentAbortResult {
-  if (evidence.kind !== 'current') {
-    return { kind: 'refused', reason: durableRuntimeEvidenceHoldReason(evidence) };
+  if (evidence.kind !== 'current' && evidence.kind !== 'provisional') {
+    return { kind: 'refused', reason: durableOwnershipEvidenceHoldReason(evidence) };
   }
   const record = evidence.record;
+  const subject = 'childRoot' in record ? record : { ...record, childRoot: null };
   const clock = createMonotonicClock(durableRecoveryClockScope, {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
   });
-  return abortRecordedContainment(record, clock.shiftMilliseconds(clock.now(), DURABLE_RECOVERY_ABORT_DEADLINE_MS), {
+  return abortRecordedContainment(subject, clock.shiftMilliseconds(clock.now(), DURABLE_RECOVERY_ABORT_DEADLINE_MS), {
     maxRecordedRoots: 1,
     clock,
     process: runtime.process,
@@ -157,6 +164,8 @@ export async function applyRecoveryAction(
       return discardIncompleteAdmission(action, ctx);
     case 'markError':
       return markRecoveryError(action, ctx);
+    case 'resolvePreReadyLaunch':
+      return resolvePreReadyLaunch(action, ctx);
     case 'registerQueued':
       return registerQueuedRecovery(action, ctx);
     case 'registerRunning':
@@ -164,6 +173,111 @@ export async function applyRecoveryAction(
     case 'releaseSessionClaim':
       return releaseSessionClaim(action, ctx);
   }
+}
+
+export function durableOwnershipEvidenceHoldReason(evidence: DurableCliPreReadyOwnershipEvidence): string {
+  if (evidence.kind === 'current' || evidence.kind === 'provisional') {
+    return 'recorded durable containment absence is not yet proven';
+  }
+  if (evidence.kind === 'predecessor') return durableRuntimeEvidenceHoldReason(evidence);
+  switch (evidence.reason) {
+    case 'missing':
+      return 'durable process containment evidence is missing';
+    case 'corrupt-current':
+      return 'the current durable process containment evidence is corrupt';
+    case 'corrupt-provisional':
+      return 'the provisional durable process containment evidence is corrupt';
+    case 'corrupt-predecessor':
+      return 'the predecessor durable process containment evidence is corrupt';
+    case 'identity-mismatch':
+      return 'the durable process containment evidence names a different job';
+  }
+}
+
+export function durableOwnershipStatusEvidence(
+  evidence: DurableCliPreReadyOwnershipEvidence,
+): DurableCliProcessRuntimeEvidence {
+  if (evidence.kind === 'current' || evidence.kind === 'predecessor') return evidence;
+  if (evidence.kind === 'provisional') return { kind: 'unavailable', reason: 'missing' };
+  return {
+    kind: 'unavailable',
+    reason: evidence.reason === 'corrupt-provisional' ? 'corrupt-current' : evidence.reason,
+  };
+}
+
+async function resolvePreReadyLaunch(
+  action: Extract<RecoveryAction, { type: 'resolvePreReadyLaunch' }>,
+  ctx: RecoveryActionContext,
+): Promise<RecoveryDisposition> {
+  const persistedStatus = readDurableCliContainmentStatus(ctx.progressStore.getDb(), action.jobId);
+  if (persistedStatus.kind === 'valid' && persistedStatus.status.disposition.kind === 'operator-abandoned') {
+    return markRecoveryError(
+      { type: 'markError', jobId: action.jobId, fault: { kind: 'ghost_launch' }, status: action.status },
+      ctx,
+    );
+  }
+
+  const evidence = readDurableCliPreReadyOwnershipEvidence(ctx.progressStore.getDb(), action.jobId);
+  if (evidence.kind === 'unavailable' && evidence.reason === 'missing' && persistedStatus.kind === 'missing') {
+    return markRecoveryError(
+      { type: 'markError', jobId: action.jobId, fault: { kind: 'ghost_launch' }, status: action.status },
+      ctx,
+    );
+  }
+
+  let holdReason: string;
+  if (persistedStatus.kind === 'corrupt') {
+    holdReason = 'the durable containment status is corrupt';
+  } else if (evidence.kind === 'current' || evidence.kind === 'provisional') {
+    const cleanup = await reapDurableCliProcess(ctx.runtime, evidence.record, ctx.signal);
+    if (cleanup.kind === 'absence-confirmed') {
+      return markRecoveryError(
+        { type: 'markError', jobId: action.jobId, fault: { kind: 'ghost_launch' }, status: action.status },
+        ctx,
+      );
+    }
+    holdReason = cleanup.reason;
+  } else {
+    holdReason =
+      evidence.kind === 'unavailable' &&
+      evidence.reason === 'missing' &&
+      persistedStatus.kind === 'valid' &&
+      persistedStatus.status.disposition.kind === 'held'
+        ? persistedStatus.status.disposition.reason
+        : durableOwnershipEvidenceHoldReason(evidence);
+  }
+
+  ctx.recoveryRegistry.register(
+    action.jobId,
+    action.launchRecord,
+    undefined,
+    () =>
+      ctx.abandonHeldJob?.(action.jobId) ?? {
+        kind: 'refused',
+        reason: 'durable containment abandonment is unavailable',
+      },
+  );
+  ctx.setProcessLocalCleanup(() => ctx.recoveryRegistry.remove(action.jobId));
+  writeDurableCliContainmentStatus(ctx.progressStore.getDb(), {
+    jobId: action.jobId,
+    evidence: durableOwnershipStatusEvidence(evidence),
+    disposition: {
+      kind: 'held',
+      reason: holdReason,
+      retryIntervalMs: 500,
+      abandonment: 'abort-job',
+    },
+  });
+  if (!ctx.recoveryRegistry.has(action.jobId)) {
+    throw new Error('Pre-ready durable containment hold was not accepted by the recovery registry.');
+  }
+  ctx.clearProcessLocalCleanup();
+  const detail =
+    `Pre-ready durable containment cleanup remains held because ${holdReason}; recovery remains owned by the ` +
+    `recovery registry. Retry the coordinator-job-recovery quarantine, or run coral-cli abort ${action.jobId} ` +
+    'to abandon job ownership without proving process absence or sending another signal.';
+  ctx.log(`Held pre-ready durable recovery for ${action.jobId}: ${detail}\n`);
+  return { kind: 'quarantine', detail };
 }
 
 function discardIncompleteAdmission(
@@ -259,7 +373,7 @@ async function registerRunningRecovery(
   } = ctx;
   const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
   const recordedContainment = isDurableCliRuntime(action.runtimeRecord)
-    ? readDurableCliProcessRuntimeEvidence(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
+    ? readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
     : null;
   recoveryRegistry.register(
     action.jobId,
@@ -284,14 +398,14 @@ async function registerRunningRecovery(
       return { kind: 'quarantine', detail };
     }
 
-    const recordedEvidence = readDurableCliProcessRuntimeEvidence(
+    const recordedEvidence = readDurableCliPreReadyOwnershipEvidence(
       progressStore.getDb(),
       action.jobId,
       durableRecord.pid,
     );
     let cleanupHold: string | null = null;
-    if (recordedEvidence.kind !== 'current') {
-      cleanupHold = durableRuntimeEvidenceHoldReason(recordedEvidence);
+    if (recordedEvidence.kind !== 'current' && recordedEvidence.kind !== 'provisional') {
+      cleanupHold = durableOwnershipEvidenceHoldReason(recordedEvidence);
     } else {
       const cleanup = await reapDurableCliProcess(runtime, recordedEvidence.record, signal);
       if (cleanup.kind === 'held') cleanupHold = cleanup.reason;
@@ -300,7 +414,7 @@ async function registerRunningRecovery(
     if (cleanupHold !== null) {
       writeDurableCliContainmentStatus(progressStore.getDb(), {
         jobId: action.jobId,
-        evidence: recordedEvidence,
+        evidence: durableOwnershipStatusEvidence(recordedEvidence),
         disposition: {
           kind: 'held',
           reason: cleanupHold,
@@ -389,6 +503,9 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
           log(`Failed to handle recovery error-mark job ${action.jobId}: ${formatError(error)}\n`);
           break;
       }
+      return;
+    case 'resolvePreReadyLaunch':
+      log(`Failed to resolve pre-ready launch ${action.jobId}: ${formatError(error)}\n`);
       return;
     case 'registerQueued':
       log(`Failed to register queued recovery job ${action.jobId}: ${formatError(error)}\n`);

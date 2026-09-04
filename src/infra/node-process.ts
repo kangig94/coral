@@ -14,11 +14,7 @@ import { SIGTERM_GRACE_MS } from './process-constants.js';
 /** Every async platform probe must share one deadline derived from this end-to-end allowance. */
 export const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
 
-/**
- * The one exec shape the incarnation probes share. Named so the three call sites cannot drift apart on it —
- * a site that quietly loses the timeout is the defect the bound exists to prevent, and
- * `tests/invariants/sync-subprocess-timeout.test.ts` fails when one does.
- */
+/** Synchronous incarnation probes share one timeout-bearing exec shape. */
 const PROBE_EXEC_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
   encoding: 'utf-8',
   stdio: ['ignore', 'pipe', 'ignore'],

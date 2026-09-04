@@ -300,6 +300,7 @@ export function createProviderProxyAcquisitionSteps(
       });
       guardianSpawn = spawned;
       guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
+      guardianSpawnUndo.retainPossibleProxy();
       return {
         kind: 'guardian-containment',
         label: 'guardian',
@@ -359,6 +360,7 @@ export function createProviderProxyAcquisitionSteps(
           },
           ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent() }),
         });
+        spawnUndo.bindProxyIdentity(proxySession.opened.proxy);
         heartbeatAssembly.startRole('proxy', {
           client: proxySession.client,
           controlEpoch: proxySession.opened.controlEpoch,

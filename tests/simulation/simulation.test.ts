@@ -343,7 +343,7 @@ describe('deterministic simulation lifecycle replay', () => {
     await world.advance(25);
 
     expect(world.isPidAlive(runtime.pid)).toBe(false);
-    const terminalWait = await world.waitUntil(launch.jobId, { terminal: true }, 500, { maxSteps: 6 });
+    const terminalWait = await world.waitUntil(launch.jobId, { terminal: true }, 500, { maxSteps: 7 });
     expect(terminalWait.ok).toBe(true);
     expect(world.getJobStatus(launch.jobId)).toMatchObject({
       phase: 'aborted',

@@ -13,6 +13,7 @@ const positiveSafeIntegerSchema = z.number().int().positive().safe();
 
 export const DURABLE_CLI_PROCESS_RUNTIME_META_VERSION = 2 as const;
 export const DURABLE_CLI_PROCESS_RUNTIME_META_PREDECESSOR_VERSION = 1 as const;
+export const DURABLE_CLI_PROVISIONAL_PROCESS_RUNTIME_META_VERSION = 1 as const;
 export const DURABLE_CLI_CONTAINMENT_STATUS_VERSION = 1 as const;
 
 export const durableCliProcessRuntimeMetaV1Schema = z
@@ -46,6 +47,18 @@ export const durableCliProcessRuntimeMetaSchema: z.ZodType<DurableCliProcessRunt
   .readonly();
 
 export type DurableCliProcessRuntimeMeta = Readonly<{ jobId: string }> & DurableCliProcessSubject;
+
+export const durableCliProvisionalProcessRuntimeMetaSchema = z
+  .object({
+    jobId: canonicalUuidSchema,
+    pid: positiveSafeIntegerSchema,
+    incarnation: processIncarnationSchema,
+    processGroupId: positiveSafeIntegerSchema,
+  })
+  .strict()
+  .readonly();
+
+export type DurableCliProvisionalProcessRuntimeMeta = z.infer<typeof durableCliProvisionalProcessRuntimeMetaSchema>;
 
 export const durableCliProcessRuntimeEvidenceSchema = z.discriminatedUnion('kind', [
   z
@@ -105,6 +118,10 @@ export function durableCliProcessRuntimeMetaV1Key(jobId: string): string {
   return `durable_cli_process.v${DURABLE_CLI_PROCESS_RUNTIME_META_PREDECESSOR_VERSION}:${jobId}`;
 }
 
+export function durableCliProvisionalProcessRuntimeMetaKey(jobId: string): string {
+  return `durable_cli_provisional_process.v${DURABLE_CLI_PROVISIONAL_PROCESS_RUNTIME_META_VERSION}:${jobId}`;
+}
+
 export function durableCliContainmentStatusKey(jobId: string): string {
   return `durable_cli_containment_status.v${DURABLE_CLI_CONTAINMENT_STATUS_VERSION}:${jobId}`;
 }
@@ -113,6 +130,16 @@ export function encodeDurableCliProcessRuntimeMeta(meta: DurableCliProcessRuntim
   const result = durableCliProcessRuntimeMetaSchema.safeParse(meta);
   if (!result.success) {
     throw new Error(`Durable CLI process runtime meta failed schema validation: ${result.error.message}`, {
+      cause: result.error,
+    });
+  }
+  return JSON.stringify(result.data);
+}
+
+export function encodeDurableCliProvisionalProcessRuntimeMeta(meta: DurableCliProvisionalProcessRuntimeMeta): string {
+  const result = durableCliProvisionalProcessRuntimeMetaSchema.safeParse(meta);
+  if (!result.success) {
+    throw new Error(`Durable CLI provisional process runtime meta failed schema validation: ${result.error.message}`, {
       cause: result.error,
     });
   }
@@ -133,6 +160,22 @@ export function decodeDurableCliProcessRuntimeMeta(
     return null;
   }
   const result = durableCliProcessRuntimeMetaSchema.safeParse(parsed);
+  return result.success ? result.data : null;
+}
+
+export function decodeDurableCliProvisionalProcessRuntimeMeta(
+  raw: string | null | undefined,
+): DurableCliProvisionalProcessRuntimeMeta | null {
+  if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > MAX_RUNTIME_META_BYTES) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const result = durableCliProvisionalProcessRuntimeMetaSchema.safeParse(parsed);
   return result.success ? result.data : null;
 }
 

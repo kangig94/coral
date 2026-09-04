@@ -646,6 +646,13 @@ describe('launch admission', () => {
     let exited = false;
     const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
       options.onWrapperSpawned?.({
+        runtimeRecord: {
+          transport: 'durable-cli',
+          pid: TEST_PROVIDER_PID,
+          stdoutPath: '/tmp/readiness-rejection/stdout',
+          stderrPath: '/tmp/readiness-rejection/stderr',
+          startTime: new Date(0).toISOString(),
+        },
         pid: TEST_PROVIDER_PID,
         leaderIncarnation: incarnation,
         signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => exited },
@@ -693,14 +700,22 @@ describe('launch admission', () => {
     expect(kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
   });
 
-  it('publishes and abandons a provisional wrapper hold after readiness rejects without an incarnation', async () => {
+  it('publishes and abandons an incarnation-bound wrapper hold after readiness rejects', async () => {
     const base = createRealRuntime('prod');
+    const incarnation = testIncarnation(7_002);
     let elapsedMs = 0n;
     const requestTermination = vi.fn();
     const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
       options.onWrapperSpawned?.({
+        runtimeRecord: {
+          transport: 'durable-cli',
+          pid: TEST_PROVIDER_PID,
+          stdoutPath: '/tmp/provisional-readiness-rejection/stdout',
+          stderrPath: '/tmp/provisional-readiness-rejection/stderr',
+          startTime: new Date(0).toISOString(),
+        },
         pid: TEST_PROVIDER_PID,
-        leaderIncarnation: null,
+        leaderIncarnation: incarnation,
         signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => false, requestTermination },
       });
       throw new Error('synthetic provisional readiness rejection');
@@ -733,6 +748,8 @@ describe('launch admission', () => {
         expect(identity).toEqual({
           kind: 'provisional-wrapper',
           pid: TEST_PROVIDER_PID,
+          incarnation,
+          processGroupId: TEST_PROVIDER_PID,
           provider: 'codex',
           jobDir: '/tmp/provisional-readiness-rejection',
         });
@@ -751,7 +768,7 @@ describe('launch admission', () => {
       }),
     ).rejects.toThrow('synthetic provisional readiness rejection');
 
-    expect(requestTermination).toHaveBeenCalledOnce();
+    expect(requestTermination).not.toHaveBeenCalled();
     expect(
       observations.mock.calls.some(([identity, status]) => 'kind' in identity && status?.kind === 'operator-abandoned'),
     ).toBe(true);

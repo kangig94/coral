@@ -832,7 +832,7 @@ describe('provider execution plan', () => {
     });
   });
 
-  it('compiles Claude preflight through the Windows command shell with its bound credential environment', async () => {
+  it('refuses Claude preflight on unsupported Windows process containment', () => {
     const runtime = new SimulationRuntime();
     const exec = vi.spyOn(runtime.process, 'exec').mockResolvedValue({ stdout: '', stderr: '', status: 0 });
     const preflight = buildClaudePreflightRuntime({
@@ -851,21 +851,13 @@ describe('provider execution plan', () => {
       platform: 'win32',
     });
 
-    await preflight.runExact('claude', ['--version'], { timeout: 10_000, encoding: 'utf-8' });
-
-    expect(exec).toHaveBeenCalledWith('claude.cmd', ['--version'], {
-      timeout: 10_000,
-      encoding: 'utf-8',
-      cwd: fixtureCanonicalWorkDir('C:\\workspace'),
-      env: {
-        PATH: 'C:\\Windows\\System32',
-        CLAUDE_CONFIG_DIR: 'C:\\Users\\operator\\.claude-work',
-      },
-      shell: true,
-    });
+    expect(() => preflight.runExact('claude', ['--version'], { timeout: 10_000, encoding: 'utf-8' })).toThrow(
+      'Windows command-shell launch is unsupported',
+    );
+    expect(exec).not.toHaveBeenCalled();
   });
 
-  it('compiles Codex preflight through the Windows command shell with its bound credential environment', async () => {
+  it('refuses Codex preflight on unsupported Windows process containment', () => {
     const runtime = new SimulationRuntime();
     const exec = vi.spyOn(runtime.process, 'exec').mockResolvedValue({ stdout: '', stderr: '', status: 0 });
     const preflight = buildCodexPreflightRuntime({
@@ -880,17 +872,9 @@ describe('provider execution plan', () => {
       platform: 'win32',
     });
 
-    await preflight.runExact('codex', ['app-server', '--help'], { timeout: 10_000, encoding: 'utf-8' });
-
-    expect(exec).toHaveBeenCalledWith('codex.cmd', ['app-server', '--help'], {
-      timeout: 10_000,
-      encoding: 'utf-8',
-      cwd: fixtureCanonicalWorkDir('C:\\workspace'),
-      env: {
-        PATH: 'C:\\Windows\\System32',
-        CODEX_HOME: 'C:\\Users\\operator\\.codex-work',
-      },
-      shell: true,
-    });
+    expect(() => preflight.runExact('codex', ['app-server', '--help'], { timeout: 10_000, encoding: 'utf-8' })).toThrow(
+      'Windows command-shell launch is unsupported',
+    );
+    expect(exec).not.toHaveBeenCalled();
   });
 });

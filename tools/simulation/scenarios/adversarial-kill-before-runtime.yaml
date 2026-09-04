@@ -1,6 +1,4 @@
-# Adversarial: kill a job immediately after launch, before runtime record is written.
-# Kill requires a PID from runtime record — this is an expected failure path.
-# Callers should use abort (not kill) for pre-runtime jobs.
+# Adversarial: kill a job after the wrapper identity is published but before provider readiness.
 world:
   durable:
     - pid: 99007
@@ -21,7 +19,3 @@ steps:
     jobId: "00000000-0000-0000-0000-000000000003"
   - type: advance
     ms: 1000
-continueOnFailure: true
-expectedFailure:
-  stepIndex: 2
-  failureKind: missing_runtime_pid

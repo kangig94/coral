@@ -59,7 +59,9 @@ describe('durable-cli-wrapper', () => {
         startTime: '\u0001'.repeat(120_000),
       }),
     );
-    const wrapper = spawn(process.execPath, [wrapperPath, launchPayloadPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const wrapper = spawn(process.execPath, [wrapperPath, launchPayloadPath], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
     const stdout = wrapper.stdout;
     const stderr = wrapper.stderr;
     if (stdout === null || stderr === null) throw new Error('Expected wrapper control pipes');
@@ -69,6 +71,7 @@ describe('durable-cli-wrapper', () => {
       exited = true;
     });
     stdout.pause();
+    wrapper.send('runtime-start-published');
 
     try {
       await waitForFile(childExitedPath);

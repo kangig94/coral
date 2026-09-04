@@ -1,14 +1,18 @@
 import { withImmediate, type Database } from '../store/db.js';
 import {
   decodeDurableCliContainmentStatus,
+  decodeDurableCliProvisionalProcessRuntimeMeta,
   decodeDurableCliProcessRuntimeMeta,
   decodeDurableCliProcessRuntimeMetaV1,
   durableCliContainmentStatusKey,
+  durableCliProvisionalProcessRuntimeMetaKey,
   durableCliProcessRuntimeMetaKey,
   durableCliProcessRuntimeMetaV1Key,
   encodeDurableCliContainmentStatus,
+  encodeDurableCliProvisionalProcessRuntimeMeta,
   encodeDurableCliProcessRuntimeMeta,
   type DurableCliContainmentStatus,
+  type DurableCliProvisionalProcessRuntimeMeta,
   type DurableCliProcessRuntimeEvidence,
   type DurableCliProcessRuntimeMeta,
 } from './runtime-meta.js';
@@ -22,6 +26,15 @@ export type DurableCliContainmentStatusRead =
 
 export type ListedDurableCliContainmentStatus = Exclude<DurableCliContainmentStatusRead, { kind: 'missing' }>;
 
+export type DurableCliPreReadyOwnershipEvidence =
+  | Readonly<{ kind: 'current'; record: DurableCliProcessRuntimeMeta }>
+  | Readonly<{ kind: 'provisional'; record: DurableCliProvisionalProcessRuntimeMeta }>
+  | Extract<DurableCliProcessRuntimeEvidence, { kind: 'predecessor' }>
+  | Readonly<{
+      kind: 'unavailable';
+      reason: 'missing' | 'corrupt-current' | 'corrupt-provisional' | 'corrupt-predecessor' | 'identity-mismatch';
+    }>;
+
 function readMetaValue(db: Database, key: string): string | null {
   const row = db.prepare<[string], Pick<MetaRow, 'value'>>('SELECT value FROM meta WHERE key = ?').get(key);
   return row?.value ?? null;
@@ -29,6 +42,38 @@ function readMetaValue(db: Database, key: string): string | null {
 
 export function readDurableCliProcessRuntimeMeta(db: Database, jobId: string): DurableCliProcessRuntimeMeta | null {
   return decodeDurableCliProcessRuntimeMeta(readMetaValue(db, durableCliProcessRuntimeMetaKey(jobId)));
+}
+
+export function readDurableCliPreReadyOwnershipEvidence(
+  db: Database,
+  jobId: string,
+  journalPid?: number,
+): DurableCliPreReadyOwnershipEvidence {
+  const currentRaw = readMetaValue(db, durableCliProcessRuntimeMetaKey(jobId));
+  if (currentRaw !== null) {
+    const current = decodeDurableCliProcessRuntimeMeta(currentRaw);
+    if (current === null) return { kind: 'unavailable', reason: 'corrupt-current' };
+    return current.jobId === jobId && (journalPid === undefined || current.pid === journalPid)
+      ? { kind: 'current', record: current }
+      : { kind: 'unavailable', reason: 'identity-mismatch' };
+  }
+
+  const provisionalRaw = readMetaValue(db, durableCliProvisionalProcessRuntimeMetaKey(jobId));
+  if (provisionalRaw !== null) {
+    const provisional = decodeDurableCliProvisionalProcessRuntimeMeta(provisionalRaw);
+    if (provisional === null) return { kind: 'unavailable', reason: 'corrupt-provisional' };
+    return provisional.jobId === jobId && (journalPid === undefined || provisional.pid === journalPid)
+      ? { kind: 'provisional', record: provisional }
+      : { kind: 'unavailable', reason: 'identity-mismatch' };
+  }
+
+  const predecessorRaw = readMetaValue(db, durableCliProcessRuntimeMetaV1Key(jobId));
+  if (predecessorRaw === null) return { kind: 'unavailable', reason: 'missing' };
+  const predecessor = decodeDurableCliProcessRuntimeMetaV1(predecessorRaw);
+  if (predecessor === null) return { kind: 'unavailable', reason: 'corrupt-predecessor' };
+  return predecessor.jobId === jobId && (journalPid === undefined || predecessor.pid === journalPid)
+    ? { kind: 'predecessor', record: predecessor }
+    : { kind: 'unavailable', reason: 'identity-mismatch' };
 }
 
 export function readDurableCliProcessRuntimeEvidence(
@@ -64,9 +109,22 @@ export function readMatchingDurableCliProcessRuntimeMeta(
 }
 
 export function writeDurableCliProcessRuntimeMeta(db: Database, meta: DurableCliProcessRuntimeMeta): void {
+  withImmediate(db, () => {
+    db.prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
+      durableCliProcessRuntimeMetaKey(meta.jobId),
+      encodeDurableCliProcessRuntimeMeta(meta),
+    );
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProvisionalProcessRuntimeMetaKey(meta.jobId));
+  });
+}
+
+export function writeDurableCliProvisionalProcessRuntimeMeta(
+  db: Database,
+  meta: DurableCliProvisionalProcessRuntimeMeta,
+): void {
   db.prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
-    durableCliProcessRuntimeMetaKey(meta.jobId),
-    encodeDurableCliProcessRuntimeMeta(meta),
+    durableCliProvisionalProcessRuntimeMetaKey(meta.jobId),
+    encodeDurableCliProvisionalProcessRuntimeMeta(meta),
   );
 }
 
@@ -105,6 +163,7 @@ export function deleteDurableCliProcessRuntimeMeta(db: Database, jobId: string):
   withImmediate(db, () => {
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProcessRuntimeMetaKey(jobId));
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProcessRuntimeMetaV1Key(jobId));
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProvisionalProcessRuntimeMetaKey(jobId));
     deleteDurableCliContainmentStatus(db, jobId);
   });
 }

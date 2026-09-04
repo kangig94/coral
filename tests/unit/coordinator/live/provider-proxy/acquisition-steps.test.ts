@@ -13,7 +13,11 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   const original = await importOriginal<object>();
   return {
     ...original,
-    spawnRoleProcess: vi.fn(() => ({ pid: 101, incarnation: testIncarnation(11) })),
+    spawnRoleProcess: vi.fn(() => ({
+      child: { on: vi.fn() },
+      pid: 101,
+      incarnation: testIncarnation(11),
+    })),
   };
 });
 

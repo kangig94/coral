@@ -44,6 +44,7 @@ export interface RecoveryProjectionSnapshot {
 export type RecoveryAction =
   | { type: 'discardIncompleteAdmission'; jobId: string }
   | { type: 'markError'; jobId: string; fault: JobLifecycleFault | JobProgressFault; status: JobStatus }
+  | { type: 'resolvePreReadyLaunch'; jobId: string; launchRecord: JobLaunch; status: JobStatus }
   | { type: 'registerQueued'; jobId: string; launchRecord: JobLaunch }
   | {
       type: 'registerRunning';
@@ -177,12 +178,13 @@ function planJobRecovery(facts: RecoveryJobFacts, isPidAlive: (pid: number) => b
     !facts.hasRuntimeStart &&
     (status.phase === 'launching' || status.phase === 'running')
   ) {
+    if (facts.launchRecord === null) return null;
     return {
       bucket: 'staleRunning',
       action: {
-        type: 'markError',
+        type: 'resolvePreReadyLaunch',
         jobId: facts.jobId,
-        fault: { kind: 'ghost_launch' },
+        launchRecord: facts.launchRecord,
         status,
       },
     };

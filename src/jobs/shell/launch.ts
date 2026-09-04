@@ -1421,11 +1421,19 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       signal,
       pool,
       this.deps.progressStore.jobDir(jobId),
-      (record) => {
-        this.deps.progressStore.appendRuntimeStarted(jobId, record);
+      (record, provisionalIdentity) => {
+        this.deps.progressStore.appendRuntimeStarted(
+          jobId,
+          record,
+          provisionalIdentity === undefined
+            ? undefined
+            : {
+                pid: provisionalIdentity.pid,
+                incarnation: provisionalIdentity.incarnation,
+                processGroupId: provisionalIdentity.processGroupId,
+              },
+        );
       },
-      // Losing optional observation metadata may only degrade a later carrier verdict to `unknown`; it must
-      // not fault the launch.
       (
         identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
         containmentStatus?: DurableContainmentStatus,
@@ -1436,14 +1444,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           ? { kind: 'unavailable' as const, reason: 'missing' as const }
           : ({ kind: 'current' as const, record: { jobId, ...identity } } as const);
         if (!provisional) {
-          try {
-            writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
-              jobId,
-              ...identity,
-            });
-          } catch (error: unknown) {
-            backendLog.warn(`Failed to record durable process identity for ${jobId}: ${errorMessage(error)}`);
-          }
+          writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
+            jobId,
+            ...identity,
+          });
         }
         if (containmentStatus === undefined) return;
         switch (containmentStatus.kind) {

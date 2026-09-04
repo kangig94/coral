@@ -32,7 +32,8 @@ import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interru
 import type { CommitEventsFn } from '../../../store/append.js';
 import {
   applyRecoveryAction,
-  durableRuntimeEvidenceHoldReason,
+  durableOwnershipEvidenceHoldReason,
+  durableOwnershipStatusEvidence,
   finalizeDeadAdoptedJob,
   logRecoveryActionFailure,
   COORDINATOR_CLAIM_RELEASE_OBLIGATION,
@@ -81,10 +82,12 @@ import type { ProviderOperationStartupOwnership } from '../../../jobs/startup.js
 import {
   listDurableCliContainmentStatuses,
   readDurableCliContainmentStatus,
+  readDurableCliPreReadyOwnershipEvidence,
   readDurableCliProcessRuntimeEvidence,
   writeDurableCliContainmentStatus,
 } from '../../../jobs/runtime-meta-store.js';
-import type { DurableCliContainmentStatus, DurableCliProcessRuntimeEvidence } from '../../../jobs/runtime-meta.js';
+import type { DurableCliContainmentStatus } from '../../../jobs/runtime-meta.js';
+import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-meta-store.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -597,18 +600,24 @@ export function createRecoveryCoordinator(
     jobId: string,
     runtimeRecord: Extract<RunningRecoverableJob['runtimeRecord'], { transport: 'durable-cli' }>,
   ): Readonly<{
-    evidence: DurableCliProcessRuntimeEvidence;
+    evidence: DurableCliPreReadyOwnershipEvidence;
     observation: RecordedContainmentObservation;
   }> => {
-    const evidence = readDurableCliProcessRuntimeEvidence(progressStore.getDb(), jobId, runtimeRecord.pid);
+    const evidence = readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), jobId, runtimeRecord.pid);
     const observation =
-      evidence.kind === 'current'
-        ? observeRecordedContainment(evidence.record, {
-            process: runtime.process,
-            platform: runtime.env.platform() as NodeJS.Platform,
-            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-          })
-        : { kind: 'unobservable' as const, reason: durableRuntimeEvidenceHoldReason(evidence) };
+      evidence.kind === 'current' || evidence.kind === 'provisional'
+        ? observeRecordedContainment(
+            {
+              ...evidence.record,
+              childRoot: evidence.kind === 'current' ? evidence.record.childRoot : null,
+            },
+            {
+              process: runtime.process,
+              platform: runtime.env.platform() as NodeJS.Platform,
+              readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+            },
+          )
+        : { kind: 'unobservable' as const, reason: durableOwnershipEvidenceHoldReason(evidence) };
     return { evidence, observation };
   };
 
@@ -1083,7 +1092,7 @@ export function createRecoveryCoordinator(
           const reason = containment.observation.reason;
           writeDurableCliContainmentStatus(progressStore.getDb(), {
             jobId,
-            evidence: containment.evidence,
+            evidence: durableOwnershipStatusEvidence(containment.evidence),
             disposition: {
               kind: 'held',
               reason,

@@ -4,6 +4,7 @@ import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../st
 import type { JobProjectionDetail } from '../read-queries.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus, JobTerminal } from '../records.js';
+import type { DurableCliProvisionalProcessRuntimeMeta } from '../runtime-meta.js';
 
 type InitJobBase = {
   jobId: string;
@@ -38,7 +39,11 @@ export interface JobProgressStore {
   nextEnqueueSequence(): number;
   appendLaunchRequested(jobId: string, launch: JobLaunch): void;
   readLaunchProjection(jobId: string): JobLaunch | null;
-  appendRuntimeStarted(jobId: string, runtime: JobRuntime): void;
+  appendRuntimeStarted(
+    jobId: string,
+    runtime: JobRuntime,
+    provisionalProcess?: Omit<DurableCliProvisionalProcessRuntimeMeta, 'jobId'>,
+  ): void;
   readRuntimeProjection(jobId: string): JobRuntime | null;
   readTerminalProjection(jobId: string): JobTerminal | null;
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;

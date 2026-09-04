@@ -52,24 +52,17 @@ function terminationOutcomeDetail(outcome: Exclude<GracefulKillByPidOutcome, { k
   }
 }
 
-export type DurableProcessRetention =
-  | Readonly<{
-      kind: 'recorded-wrapper-group';
-      provider: string;
-      jobDir: string;
-      containment: Readonly<{
-        pid: number;
-        incarnation: ProcessIncarnation;
-        processGroupId: number;
-        childRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
-      }>;
-    }>
-  | Readonly<{
-      kind: 'provisional-wrapper-hold';
-      provider: string;
-      jobDir: string;
-      pid: number;
-    }>;
+export type DurableProcessRetention = Readonly<{
+  kind: 'recorded-wrapper-group';
+  provider: string;
+  jobDir: string;
+  containment: Readonly<{
+    pid: number;
+    incarnation: ProcessIncarnation;
+    processGroupId: number;
+    childRoot: Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
+  }>;
+}>;
 
 export type PendingDurableLaunchIdentity = Readonly<{
   kind: 'awaiting-wrapper-identity';
@@ -87,31 +80,6 @@ async function requestDurableProcessTermination(
   retained: DurableProcessRetention,
   signalAuthority?: DurableLaunchSignalAuthority,
 ): Promise<GracefulKillByPidOutcome> {
-  if (retained.kind === 'provisional-wrapper-hold') {
-    const pid = retained.pid;
-    if (signalAuthority?.pid !== pid) {
-      return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
-    }
-    if (signalAuthority.hasExited()) return { kind: 'observed-absent', pid };
-    if (signalAuthority.requestTermination === undefined) {
-      return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
-    }
-    try {
-      signalAuthority.requestTermination();
-    } catch {
-      return { kind: 'target-unobservable', pid, stage: 'after-sigterm' };
-    }
-    const deadline = runtime.time.monotonicNow() + BigInt(DURABLE_PROCESS_CLEANUP_DEADLINE_MS);
-    while (runtime.time.monotonicNow() < deadline) {
-      if (signalAuthority.hasExited()) return { kind: 'observed-absent', pid };
-      await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
-    }
-    const liveness = runtime.process.observeLiveness(pid);
-    if (liveness === 'absent') return { kind: 'observed-absent', pid };
-    return liveness === 'alive'
-      ? { kind: 'target-alive', pid, stage: 'after-sigkill' }
-      : { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
-  }
   const containment = retained.containment;
   const pid = containment.pid;
   const liveSignalAuthority =
@@ -197,7 +165,7 @@ type SpawnCliOptions = {
 
 export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
-  onRuntimeRecord?: (record: JobRuntime) => void;
+  onRuntimeRecord?: (record: JobRuntime, provisionalIdentity?: DurableProvisionalProcessSubject) => void;
   /** A partial containment identity must not cross the durable publication boundary. */
   onDurableProcessIdentity?: DurableProcessIdentityCallback;
 };
@@ -330,22 +298,6 @@ export async function spawnDurableJobTransport(params: {
     if (publishedPid === null || retainedProcess === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
-    if (retainedProcess.kind === 'provisional-wrapper-hold' && signalAuthority?.hasExited() !== true) {
-      try {
-        const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
-        if (incarnation !== null) {
-          retainedProcess = {
-            kind: 'recorded-wrapper-group',
-            provider: retainedProcess.provider,
-            jobDir: retainedProcess.jobDir,
-            containment: { pid, incarnation, processGroupId: pid, childRoot: null },
-          };
-          cleanupRetentions.set(cleanup, retainedProcess);
-        }
-      } catch {
-        // The retained handle may still settle this launch; an unreadable pid cannot replace that evidence.
-      }
-    }
     cleanupInFlight = requestDurableProcessTermination(runtime, retainedProcess, signalAuthority).then((outcome) => {
       if (outcome.kind === 'observed-absent') {
         releaseCleanupOwnership();
@@ -409,8 +361,9 @@ export async function spawnDurableJobTransport(params: {
   };
 
   const publishWrapperSpawned = (launch: {
+    runtimeRecord: Extract<JobRuntime, { transport: 'durable-cli' }>;
     pid: number;
-    leaderIncarnation: ProcessIncarnation | null;
+    leaderIncarnation: ProcessIncarnation;
     signalAuthority?: DurableLaunchSignalAuthority;
   }): void => {
     if (publishedPid !== null) {
@@ -423,32 +376,28 @@ export async function spawnDurableJobTransport(params: {
     provisionalSubject = {
       kind: 'provisional-wrapper',
       pid: launch.pid,
+      incarnation: launch.leaderIncarnation,
+      processGroupId: launch.pid,
       provider: options.provider,
       jobDir: options.jobDir,
     };
     signalAuthority = launch.signalAuthority;
-    retainedProcess =
-      launch.leaderIncarnation === null
-        ? {
-            kind: 'provisional-wrapper-hold',
-            provider: options.provider,
-            jobDir: options.jobDir,
-            pid: launch.pid,
-          }
-        : {
-            kind: 'recorded-wrapper-group',
-            provider: options.provider,
-            jobDir: options.jobDir,
-            containment: {
-              pid: launch.pid,
-              incarnation: launch.leaderIncarnation,
-              processGroupId: launch.pid,
-              childRoot: null,
-            },
-          };
+    retainedProcess = {
+      kind: 'recorded-wrapper-group',
+      provider: options.provider,
+      jobDir: options.jobDir,
+      containment: {
+        pid: launch.pid,
+        incarnation: launch.leaderIncarnation,
+        processGroupId: launch.pid,
+        childRoot: null,
+      },
+    };
     cleanupKey = Symbol();
     cleanupHandles.set(cleanupKey, cleanup);
     cleanupRetentions.set(cleanup, retainedProcess);
+    options.onRuntimeRecord?.(launch.runtimeRecord, provisionalSubject);
+    options.onDurableProcessIdentity?.(provisionalSubject);
     releasePendingLaunch();
     if (abortedBySignal) {
       enterContainmentHold('termination requested; process absence is not yet proven');
@@ -465,7 +414,11 @@ export async function spawnDurableJobTransport(params: {
     childRoot: DurableCliProcessSubject['childRoot'] | null;
     signalAuthority?: DurableLaunchSignalAuthority;
   }): void => {
+    if (launch.leaderIncarnation === null) {
+      throw new Error('Durable launch reached readiness without an incarnation-bound wrapper identity.');
+    }
     publishWrapperSpawned({
+      runtimeRecord: launch.runtimeRecord,
       pid: launch.runtimeRecord.pid,
       leaderIncarnation: launch.leaderIncarnation,
       ...(launch.signalAuthority === undefined ? {} : { signalAuthority: launch.signalAuthority }),
@@ -487,7 +440,6 @@ export async function spawnDurableJobTransport(params: {
       provisionalSubject = null;
     }
     if (publishedSubject !== null) options.onDurableProcessIdentity?.(publishedSubject);
-    options.onRuntimeRecord?.(launch.runtimeRecord);
   };
 
   try {

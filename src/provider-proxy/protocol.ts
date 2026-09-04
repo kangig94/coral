@@ -27,6 +27,8 @@ import {
   operationPrepareAttemptNumberSchema,
 } from './ledger.js';
 
+export const GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE = 74;
+
 /**
  * Every control method carries a `.vN` suffix, and every one of them is `.v1`.
  *

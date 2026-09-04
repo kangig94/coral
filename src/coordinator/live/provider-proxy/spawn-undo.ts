@@ -11,6 +11,7 @@ import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadli
 import {
   guardianContainmentCommitParamsSchema,
   guardianContainmentCommitResultSchema,
+  GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE,
   type GuardianIdentity,
   type ProxyIdentity,
   type ReaperIdentity,
@@ -30,6 +31,8 @@ const guardianSpawnUndoClockScope: unique symbol = Symbol('coral.provider-proxy.
 export type GuardianSpawnUndo = (() => Promise<void>) &
   Readonly<{
     guardianIdentity: RecordedContainmentIdentity;
+    retainPossibleProxy(): void;
+    bindProxyIdentity(identity: RecordedContainmentIdentity): void;
     bindControl(control: GuardianControlTeardown): void;
   }>;
 
@@ -57,6 +60,9 @@ export function buildGuardianSpawnUndo(
   readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): GuardianSpawnUndo {
   let control: GuardianControlTeardown | null = null;
+  let proxyIdentity: RecordedContainmentIdentity | null = null;
+  let proxyMayExist = false;
+  let constructionContainmentSettled = false;
   let absenceConfirmed = false;
   let pending: Promise<void> | null = null;
   const guardianIdentity: RecordedContainmentIdentity = {
@@ -84,6 +90,17 @@ export function buildGuardianSpawnUndo(
       return;
     }
 
+    if (proxyMayExist && proxyIdentity === null) {
+      if (constructionContainmentSettled) {
+        absenceConfirmed = true;
+        return;
+      }
+      throw new Error(
+        'guardian process-group cleanup is holding until the guardian reports construction containment settled or the proxy identity transfers to the coordinator',
+      );
+    }
+    const retainedProxyIdentity = proxyIdentity;
+
     if (!incarnationMayAuthorizeSignal(platform))
       return Promise.reject(
         new Error(
@@ -95,6 +112,23 @@ export function buildGuardianSpawnUndo(
       sleep: (milliseconds) => runtime.time.sleep(milliseconds),
     });
     try {
+      if (retainedProxyIdentity !== null) {
+        const proxyResult = await reapRecordedContainment(
+          retainedProxyIdentity,
+          [],
+          clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
+          {
+            maxRecordedRoots: 0,
+            clock,
+            process: runtime.process,
+            platform,
+            readProcessIncarnation,
+          },
+        );
+        if (proxyResult.kind === 'recorded-group-unattributable') {
+          throw new Error('proxy process-group cleanup is holding because the recorded group became unattributable');
+        }
+      }
       const result = await reapRecordedContainment(
         guardianIdentity,
         [],
@@ -130,6 +164,19 @@ export function buildGuardianSpawnUndo(
   };
   return Object.assign(run, {
     guardianIdentity,
+    retainPossibleProxy: (): void => {
+      if (proxyMayExist) return;
+      proxyMayExist = true;
+      spawned.child.on('close', (code, signal) => {
+        if (code === GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE && signal === null) {
+          constructionContainmentSettled = true;
+        }
+      });
+    },
+    bindProxyIdentity: (identity: RecordedContainmentIdentity): void => {
+      proxyMayExist = true;
+      proxyIdentity = identity;
+    },
     bindControl: (established: GuardianControlTeardown): void => {
       control = established;
     },

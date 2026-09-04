@@ -430,8 +430,16 @@ export class MockProcessSpawner {
     leader.onSignal = (signal) => {
       this.applyKill(child, signal);
     };
+    const runtimeRecord: DurableCliRuntimeRecord = {
+      ...script.runtimeRecord,
+      transport: 'durable-cli',
+      startTime: script.runtimeRecord?.startTime ?? nowIsoString(this.time),
+      pid,
+      stdoutPath,
+      stderrPath,
+    };
     try {
-      options.onWrapperSpawned?.({ pid, leaderIncarnation: leader.incarnation });
+      options.onWrapperSpawned?.({ runtimeRecord, pid, leaderIncarnation: leader.incarnation });
     } catch (error: unknown) {
       child.complete({ exitCode: null, signal: 'SIGTERM' });
       throw error;
@@ -461,14 +469,6 @@ export class MockProcessSpawner {
       throw new Error(`Durable process ${pid} exited before runtime was reported`);
     }
 
-    const runtimeRecord: DurableCliRuntimeRecord = {
-      ...script.runtimeRecord,
-      transport: 'durable-cli',
-      startTime: script.runtimeRecord?.startTime ?? nowIsoString(this.time),
-      pid,
-      stdoutPath,
-      stderrPath,
-    };
     options.onSpawned?.({
       runtimeRecord,
       leaderIncarnation: leader.incarnation,

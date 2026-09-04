@@ -46,6 +46,7 @@ import type { OperationStageHandle } from './operation-supervisor.js';
 import type { ControlClient, ControlExchange } from './control-client.js';
 import {
   guardianRegisterProviderRootParamsSchema,
+  GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE,
   guardianProxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   jointContainmentReceiptSchema,
@@ -351,6 +352,24 @@ export class GuardianConstructionCleanupHeldError extends Error {
     this.hold = hold;
     Object.setPrototypeOf(this, GuardianConstructionCleanupHeldError.prototype);
   }
+}
+
+const settledGuardianConstructionFailures = new WeakSet<object>();
+
+function markGuardianConstructionContainmentSettled(error: unknown): unknown {
+  const failure =
+    (typeof error === 'object' && error !== null) || typeof error === 'function'
+      ? error
+      : new Error('Guardian construction failed after containment cleanup settled.', { cause: error });
+  settledGuardianConstructionFailures.add(failure);
+  return failure;
+}
+
+function isGuardianConstructionContainmentSettled(error: unknown): boolean {
+  return (
+    ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
+    settledGuardianConstructionFailures.has(error)
+  );
 }
 
 export type RoleEnforcementOutcomeHandlers = Readonly<{
@@ -696,7 +715,7 @@ export async function startProviderGuardianRole(
   } catch (error: unknown) {
     const cleanup = await unwindGuardianConstruction(ports, { close, reaperChannel, reaperSpawn, proxySpawn });
     if (cleanup.kind === 'holding') throw new GuardianConstructionCleanupHeldError(error, cleanup);
-    throw error;
+    throw markGuardianConstructionContainmentSettled(error);
   }
 }
 
@@ -1117,19 +1136,22 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     try {
       handle = await startProviderGuardianRole(mode.capsulePath, ports);
     } catch (error: unknown) {
-      if (!(error instanceof GuardianConstructionCleanupHeldError)) throw error;
-      backendLog.error('guardian: construction failed and proxy containment cleanup remains held', error);
-      void (async () => {
+      if (error instanceof GuardianConstructionCleanupHeldError) {
+        backendLog.error('guardian: construction failed and proxy containment cleanup remains held', error);
         let disposition: GuardianConstructionCleanupDisposition = error.hold;
         while (disposition.kind === 'holding') {
           await runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS);
-          disposition = await disposition.retry();
+          try {
+            disposition = await disposition.retry();
+          } catch (retryError: unknown) {
+            backendLog.error('guardian: construction cleanup retry failed; shutdown remains held', retryError);
+          }
         }
-        probeGate.requestExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
-      })().catch((retryError: unknown) => {
-        backendLog.error('guardian: construction cleanup retry failed; shutdown remains held', retryError);
-      });
-      return 0;
+      } else {
+        if (!isGuardianConstructionContainmentSettled(error)) throw error;
+        backendLog.error('guardian: construction failed after containment cleanup settled', error);
+      }
+      return GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
     }
   } else if (mode.role === 'reaper') {
     handle = await startProviderReaperRole(mode.capsulePath, ports);

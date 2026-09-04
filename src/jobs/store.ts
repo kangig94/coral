@@ -50,6 +50,8 @@ import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobDiagnosticsSchema, jobTerminalRecordedBodySchema, normalizeJobTerminal } from './terminal/result.js';
 import type { JobProjectionDetail } from './read-queries.js';
+import { writeDurableCliProvisionalProcessRuntimeMeta } from './runtime-meta-store.js';
+import type { DurableCliProvisionalProcessRuntimeMeta } from './runtime-meta.js';
 
 export type JobStoreOptions = {
   eventBus?: JobEventBus;
@@ -724,7 +726,11 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId).launch;
   }
 
-  appendRuntimeStarted(jobId: string, runtime: JobRuntime): void {
+  appendRuntimeStarted(
+    jobId: string,
+    runtime: JobRuntime,
+    provisionalProcess?: Omit<DurableCliProvisionalProcessRuntimeMeta, 'jobId'>,
+  ): void {
     const detail = this.detail(jobId);
     const status = detail.status;
     this.commit((c) => {
@@ -736,6 +742,9 @@ export class JobStore implements JobProgressStore {
         refs: buildJobEventRefs({ jobId, sessionId: status?.sessionId ?? null }),
         body: jobRuntimeStartedBody(runtime),
       });
+      if (provisionalProcess !== undefined) {
+        writeDurableCliProvisionalProcessRuntimeMeta(this.db, { jobId, ...provisionalProcess });
+      }
       return undefined;
     });
   }

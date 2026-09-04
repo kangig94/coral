@@ -68,8 +68,9 @@ export type DurableLaunchOptions = {
   env?: Record<string, string>;
   onWrapperSpawned?(
     launch: Readonly<{
+      runtimeRecord: DurableCliRuntimeRecord;
       pid: number;
-      leaderIncarnation: ProcessIncarnation | null;
+      leaderIncarnation: ProcessIncarnation;
       signalAuthority?: DurableLaunchSignalAuthority;
     }>,
   ): void;
@@ -86,6 +87,8 @@ export type DurableCliProcessSubject = RecordedProcessIdentity &
 export type DurableProvisionalProcessSubject = Readonly<{
   kind: 'provisional-wrapper';
   pid: number;
+  incarnation: ProcessIncarnation;
+  processGroupId: number;
   provider: string;
   jobDir: string;
 }>;

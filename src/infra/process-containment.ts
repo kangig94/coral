@@ -43,10 +43,9 @@ export type RecordedContainmentIdentity = RecordedProcessIdentity &
     processGroupId: number;
   }>;
 
-/** Absence of this subject requires absence of both the detached group and its additional process root. */
-export type RecordedContainmentSubject = RecordedContainmentIdentity &
+export type RecordedContainmentObservationSubject = RecordedContainmentIdentity &
   Readonly<{
-    childRoot: RecordedProcessIdentity;
+    childRoot: RecordedProcessIdentity | null;
   }>;
 
 /** Observation authority must not expose process-control capability. */
@@ -463,16 +462,15 @@ function recordedSetAbsenceVerdict(observation: RecordedSetObservation): Recorde
   return allRecordedTargetsAbsent(observation) ? 'absent' : 'not-confirmed';
 }
 
-/** Absence requires both group and child-root absence; unanswerable evidence must remain unobservable. */
+/** Absence requires the group and every recorded root to be absent; unanswerable evidence remains unobservable. */
 export function observeRecordedContainment(
-  subject: RecordedContainmentSubject,
+  subject: RecordedContainmentObservationSubject,
   environment: ProcessContainmentObservationEnvironment,
 ): RecordedContainmentObservation {
   try {
-    assertRecordedSet(subject, [subject.childRoot], 1);
-    const verdict = recordedSetAbsenceVerdict(
-      observeRecordedSetSynchronously(subject, [subject.childRoot], environment),
-    );
+    const recordedRoots = subject.childRoot === null ? [] : [subject.childRoot];
+    assertRecordedSet(subject, recordedRoots, 1);
+    const verdict = recordedSetAbsenceVerdict(observeRecordedSetSynchronously(subject, recordedRoots, environment));
     if (verdict === 'absent') return { kind: 'absent' };
     if (verdict === 'not-confirmed') return { kind: 'alive' };
     return { kind: 'unobservable', reason: 'the recorded process group is no longer attributable' };
@@ -621,18 +619,19 @@ function signalRecordedSetSynchronously<Scope extends symbol>(
 
 /** A recycled leader forbids every signal, and a signal attempt cannot erase a refusal disposition. */
 export function abortRecordedContainment<Scope extends symbol>(
-  subject: RecordedContainmentSubject,
+  subject: RecordedContainmentObservationSubject,
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): RecordedContainmentAbortResult {
   try {
-    assertRecordedSet(subject, [subject.childRoot], 1);
+    const recordedRoots = subject.childRoot === null ? [] : [subject.childRoot];
+    assertRecordedSet(subject, recordedRoots, 1);
     const leaderIncarnation = readIncarnation(subject, environment);
     if (leaderIncarnation !== null && leaderIncarnation !== subject.incarnation) {
       return { kind: 'refused', reason: 'the recorded containment leader pid has been recycled' };
     }
 
-    const observation = observeRecordedSetSynchronously(subject, [subject.childRoot], environment);
+    const observation = observeRecordedSetSynchronously(subject, recordedRoots, environment);
     const verdict = recordedSetAbsenceVerdict(observation);
     if (verdict === 'recorded-group-unattributable') {
       return { kind: 'refused', reason: 'the recorded process group is no longer attributable' };
@@ -641,7 +640,7 @@ export function abortRecordedContainment<Scope extends symbol>(
 
     const delivery = signalRecordedSetSynchronously(
       subject,
-      [subject.childRoot],
+      recordedRoots,
       observation,
       'SIGTERM',
       exitDeadline,

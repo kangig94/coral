@@ -50,17 +50,17 @@ const proxy: ProxyIdentity = {
 };
 
 describe('guardian spawn undo', () => {
-  it('escalates a still-alive pre-control group and confirms its absence', async () => {
-    let deliveredSignal: NodeJS.Signals | null = null;
-    const kill = vi.fn((_pid: number, signal: NodeJS.Signals | 0) => {
-      if (signal !== 0) deliveredSignal = signal;
+  it('reaps the transferred proxy group before the guardian group', async () => {
+    const killedGroups = new Set<number>();
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      if (signal === 'SIGKILL') killedGroups.add(pid);
       return true;
     });
     let monotonicNow = 0n;
     const runtime = {
       process: {
         kill,
-        observeLiveness: (pid: number) => (pid === -guardian.pid && deliveredSignal === 'SIGKILL' ? 'absent' : 'alive'),
+        observeLiveness: (pid: number) => (killedGroups.has(pid) ? 'absent' : 'alive'),
         observeRecordedProcessAsync: async () => 'alive' as const,
       },
       time: {
@@ -72,29 +72,36 @@ describe('guardian spawn undo', () => {
     } as unknown as Runtime;
     const undo = buildGuardianSpawnUndo(
       runtime,
-      { pid: guardian.pid, incarnation: guardian.incarnation } as SpawnedRoleProcess,
+      {
+        child: { on: vi.fn().mockReturnThis() },
+        pid: guardian.pid,
+        incarnation: guardian.incarnation,
+      } as unknown as SpawnedRoleProcess,
       'linux',
-      () => guardian.incarnation,
+      (pid) => (pid === proxy.pid ? proxy.incarnation : guardian.incarnation),
     );
+    undo.bindProxyIdentity(proxy);
 
     await expect(undo()).resolves.toBeUndefined();
 
     expect(kill.mock.calls).toEqual([
+      [-proxy.pid, 'SIGTERM'],
+      [-proxy.pid, 'SIGKILL'],
       [-guardian.pid, 'SIGTERM'],
       [-guardian.pid, 'SIGKILL'],
     ]);
   });
 
-  it('holds without escalating when the group cannot be re-observed after SIGTERM', async () => {
+  it('holds the transferred proxy group without signaling the guardian when attribution is lost', async () => {
     const kill = vi.fn(() => true);
     let groupObservations = 0;
     const runtime = {
       process: {
         kill,
         observeLiveness: (pid: number) => {
-          if (pid !== -guardian.pid) return 'alive';
+          if (pid !== -proxy.pid) return 'alive';
           groupObservations += 1;
-          return groupObservations <= 2 ? 'alive' : 'unknown';
+          return groupObservations <= 1 ? 'alive' : 'unknown';
         },
         observeRecordedProcessAsync: async () => 'alive' as const,
       },
@@ -105,17 +112,19 @@ describe('guardian spawn undo', () => {
     } as unknown as Runtime;
     const undo = buildGuardianSpawnUndo(
       runtime,
-      { pid: guardian.pid, incarnation: guardian.incarnation } as SpawnedRoleProcess,
+      {
+        child: { on: vi.fn().mockReturnThis() },
+        pid: guardian.pid,
+        incarnation: guardian.incarnation,
+      } as unknown as SpawnedRoleProcess,
       'linux',
-      () => guardian.incarnation,
+      (pid) => (pid === proxy.pid ? proxy.incarnation : guardian.incarnation),
     );
+    undo.bindProxyIdentity(proxy);
 
-    await expect(undo()).rejects.toThrow(
-      'guardian process-group cleanup is holding because absence could not be confirmed',
-    );
+    await expect(undo()).rejects.toThrow('proxy process-group cleanup is holding');
 
-    expect(kill).toHaveBeenCalledOnce();
-    expect(kill).toHaveBeenCalledWith(-guardian.pid, 'SIGTERM');
+    expect(kill).not.toHaveBeenCalled();
   });
 
   it('keeps the control recovery channel open after a teardown refusal without sending a signal', async () => {
@@ -150,7 +159,11 @@ describe('guardian spawn undo', () => {
     } satisfies ControlClient;
     const undo = buildGuardianSpawnUndo(
       runtime,
-      { pid: guardian.pid, incarnation: guardian.incarnation } as SpawnedRoleProcess,
+      {
+        child: { on: vi.fn().mockReturnThis() },
+        pid: guardian.pid,
+        incarnation: guardian.incarnation,
+      } as unknown as SpawnedRoleProcess,
       'linux',
       () => guardian.incarnation,
     );

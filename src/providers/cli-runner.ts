@@ -32,7 +32,7 @@ export interface ProviderDurableSpawner {
     extraEnv?: Record<string, string>;
     exactEnv?: Record<string, string>;
     jobDir: string;
-    onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void;
+    onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void;
     onDurableProcessIdentity?: DurableProcessIdentityCallback;
   }): Promise<{
     stdout: string;
@@ -48,7 +48,7 @@ export function bindProviderRunner(
   signal: AbortSignal,
   pool: LaunchPool,
   jobDir: string,
-  onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void,
+  onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void,
   onDurableProcessIdentity?: DurableProcessIdentityCallback,
 ): ProviderCliRunner {
   return (request) =>
@@ -65,11 +65,11 @@ export function bindProviderRunner(
       extraEnv: request.extraEnv,
       exactEnv: request.exactEnv,
       onEvent: request.onEvent,
-      onRuntimeRecord: (record) => {
+      onRuntimeRecord: (record, provisionalIdentity) => {
         if (isDurableCliRuntime(record)) {
           request.onRuntimeRecord?.(record);
         }
-        onRuntimeRecord?.(record);
+        onRuntimeRecord?.(record, provisionalIdentity);
       },
       onDurableProcessIdentity,
     });

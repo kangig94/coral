@@ -206,11 +206,7 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
     .map((launch) => `${launch.provider}:${launch.jobDir} awaiting wrapper identity`)
     .join('; ');
   const retainedProcesses = disposition.retainedProcesses
-    .map((process) =>
-      process.kind === 'recorded-wrapper-group'
-        ? `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`
-        : `${process.provider}:${process.jobDir} provisional wrapper pid ${process.pid}`,
-    )
+    .map((process) => `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`)
     .join('; ');
   const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
   return {

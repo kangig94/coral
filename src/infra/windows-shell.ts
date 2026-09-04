@@ -12,10 +12,10 @@ export function windowsCommandName(command: string, platform: string = process.p
 }
 
 export function shouldUseWindowsCommandShell(command: string, platform: string = process.platform): boolean {
-  if (platform !== 'win32') {
-    return false;
+  if (platform === 'win32') {
+    throw new Error(
+      `Windows command-shell launch is unsupported because Coral cannot contain the resulting process tree: ${command}`,
+    );
   }
-
-  const normalized = command.trim().toLowerCase();
-  return normalized.endsWith('.cmd') || normalized.endsWith('.bat');
+  return false;
 }

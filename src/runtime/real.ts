@@ -421,6 +421,11 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   >();
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
+      if (capturedEnv.platform === 'win32') {
+        throw new Error(
+          'Durable CLI launch is unsupported on Windows because Coral cannot observe or terminate a POSIX process group there.',
+        );
+      }
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
       const launchPayloadPath = `${options.jobDir}/${LAUNCH_PAYLOAD_FILE}`;
       const startTime = new Date(time.now()).toISOString();
@@ -442,10 +447,11 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
 
       const wrapper = spawnChild(process.execPath, [durableWrapperEntrypoint(), launchPayloadPath], {
         detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: buildSpawnEnv(),
       });
       wrapper.unref();
+      wrapper.channel?.unref();
 
       const signalAuthority: DurableLaunchSignalAuthority | undefined =
         wrapper.pid === undefined
@@ -464,22 +470,43 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         } catch {
           initiallyObservedLeaderIncarnation = null;
         }
-        try {
-          options.onWrapperSpawned?.({
-            pid: wrapper.pid,
-            leaderIncarnation: initiallyObservedLeaderIncarnation,
-            ...(signalAuthority === undefined ? {} : { signalAuthority }),
-          });
-        } catch (error: unknown) {
-          gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-          throw error;
-        }
       }
-
+      if (wrapper.pid === undefined || initiallyObservedLeaderIncarnation === null) {
+        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        throw new Error(
+          'Durable launch could not establish the wrapper process identity before provider spawn. Retry the job; if this persists, verify process inspection permissions.',
+        );
+      }
+      const provisionalRuntimeRecord: DurableCliRuntimeRecord = {
+        transport: 'durable-cli',
+        pid: wrapper.pid,
+        stdoutPath: `${options.jobDir}/stdout`,
+        stderrPath: `${options.jobDir}/stderr`,
+        startTime,
+      };
       const readiness = waitForDurableRuntime({
         time,
         wrapper,
       });
+      try {
+        options.onWrapperSpawned?.({
+          runtimeRecord: provisionalRuntimeRecord,
+          pid: wrapper.pid,
+          leaderIncarnation: initiallyObservedLeaderIncarnation,
+          ...(signalAuthority === undefined ? {} : { signalAuthority }),
+        });
+        await new Promise<void>((resolve, reject) => {
+          wrapper.send('runtime-start-published', (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      } catch (error: unknown) {
+        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        void readiness.catch(() => {});
+        throw error;
+      }
+
       const { runtimeRecord, reportedLeaderIncarnation, childRoot, exitPromise } = await readiness;
       if (
         initiallyObservedLeaderIncarnation !== null &&

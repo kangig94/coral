@@ -6,7 +6,6 @@ import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-p
 import type { ChildProcessLike } from '../infra/port-types.js';
 import { gracefulKill } from '../infra/process-supervision.js';
 import { createRealTimePort } from '../infra/time.js';
-import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 
 const GROUP_FINALIZER_MODE = '--finalize-group';
 const GROUP_OBSERVATION_INTERVAL_MS = 50;
@@ -119,7 +118,32 @@ function runGroupFinalizer(processGroupIdArgument: string | undefined, exitArgum
   process.send?.('ready');
 }
 
-function runWrapper(payloadPath: string | undefined): void {
+function waitForRuntimeStartPublication(): Promise<void> {
+  if (typeof process.send !== 'function') {
+    return Promise.reject(new Error('Durable wrapper requires an IPC launch-publication gate.'));
+  }
+  return new Promise((resolve, reject) => {
+    const onDisconnect = (): void => {
+      process.off('message', onMessage);
+      reject(new Error('Durable wrapper lost its coordinator before launch publication completed.'));
+    };
+    const onMessage = (message: unknown): void => {
+      if (message !== 'runtime-start-published') return;
+      process.off('disconnect', onDisconnect);
+      process.disconnect();
+      resolve();
+    };
+    process.once('disconnect', onDisconnect);
+    process.on('message', onMessage);
+  });
+}
+
+async function runWrapper(payloadPath: string | undefined): Promise<void> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      'Durable CLI launch is unsupported on Windows because Coral cannot observe or terminate a POSIX process group there.',
+    );
+  }
   if (payloadPath === undefined) throw new Error('Durable wrapper requires a launch payload path.');
   const launch = parseLaunchPayload(payloadPath);
   const jobDir = dirname(payloadPath);
@@ -243,11 +267,11 @@ function runWrapper(payloadPath: string | undefined): void {
     process.on(signal, terminateChild);
   }
 
+  await waitForRuntimeStartPublication();
   child = spawn(launch.command, launch.args, {
     stdio: ['pipe', stdoutFd, stderrFd],
     cwd: launch.cwd ?? undefined,
     env,
-    shell: shouldUseWindowsCommandShell(launch.command, process.platform),
   });
   const childPid = child.pid;
   const childStdin = child.stdin;
@@ -290,5 +314,5 @@ const [modeOrPayloadPath, processGroupIdArgument, exitArgument] = process.argv.s
 if (modeOrPayloadPath === GROUP_FINALIZER_MODE) {
   runGroupFinalizer(processGroupIdArgument, exitArgument);
 } else {
-  runWrapper(modeOrPayloadPath);
+  void runWrapper(modeOrPayloadPath);
 }
