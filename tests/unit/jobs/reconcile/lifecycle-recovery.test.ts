@@ -3921,6 +3921,12 @@ describe('lifecycle recovery', () => {
       const jobId = '00000000-0000-4000-8000-000000000014';
       const sessionId = `${jobId}-session`;
       const pid = 73_700;
+      let monotonicMs = 0n;
+      vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => {
+        monotonicMs += 25n;
+        return monotonicMs;
+      });
+      vi.spyOn(runtime.time, 'sleep').mockResolvedValue();
       const observeLiveness = vi
         .spyOn(runtime.process, 'observeLiveness')
         .mockReturnValue(
@@ -3949,11 +3955,17 @@ describe('lifecycle recovery', () => {
         stubAppServerRuntime(progressStore, jobId, 'codex');
       } else {
         stubRuntimeRecord(progressStore, { jobId, pid });
-        if (fixture.carrier === 'durable-alive') {
-          const incarnation = testIncarnation(`repairable-binding-${suffix}`);
-          writeDurableCliProcessRuntimeMeta(progressStore.getDb(), { version: 1, jobId, pid, incarnation });
-          vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(incarnation);
-        }
+        const incarnation = testIncarnation(`repairable-binding-${suffix}`);
+        writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
+          jobId,
+          pid,
+          incarnation,
+          processGroupId: pid,
+          childRoot: { pid: pid + 1, incarnation },
+        });
+        vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(
+          fixture.carrier === 'durable-absent' ? null : incarnation,
+        );
       }
       const runtimeProjection = progressStore.readRuntimeProjection(jobId);
       const interruptAppServerJob = fakeService.interruptAppServerJob;
@@ -4024,12 +4036,13 @@ describe('lifecycle recovery', () => {
             .get(sessionId),
         ).toEqual({ count: settled ? 1 : 0 });
         if (fixture.carrier === 'app-server-not-addressable') {
-          expect(observeLiveness).not.toHaveBeenCalledWith(pid);
+          expect(observeLiveness).not.toHaveBeenCalledWith(-pid);
         } else {
-          expect(observeLiveness).toHaveBeenCalledWith(pid);
+          expect(observeLiveness).toHaveBeenCalledWith(-pid);
         }
         if (fixture.carrier === 'durable-alive') {
-          expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
+          expect(kill).toHaveBeenCalledWith(-pid, 'SIGTERM');
+          expect(kill).toHaveBeenCalledWith(pid + 1, 'SIGTERM');
         } else {
           expect(kill).not.toHaveBeenCalled();
         }
@@ -4048,7 +4061,7 @@ describe('lifecycle recovery', () => {
           expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
           expect(quarantineRows[0]?.disposition_detail).toContain(
             fixture.carrier === 'durable-alive'
-              ? 'was observed alive'
+              ? 'remained present at the exit deadline'
               : fixture.carrier === 'durable-unknown'
                 ? 'could not be observed'
                 : 'has no locally observable durable process identity',

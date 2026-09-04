@@ -1,5 +1,5 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
 import { type DurableCliRuntimeRecord, isDurableCliRuntime } from '../runtime/durable-runtime.js';
+import type { DurableCliProcessSubject } from '../runtime/ports.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { ProviderCliRunner } from './protocol.js';
 
@@ -18,12 +18,7 @@ export interface ProviderDurableSpawner {
     exactEnv?: Record<string, string>;
     jobDir: string;
     onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void;
-    /**
-     * Mirrors `SpawnDurableJobOptions.onDurableProcessIdentity` (`coordinator/live/durable-transport.ts`)
-     * field-for-field rather than importing it: this interface is the providers-domain seam, and reaching
-     * into `coordinator/live/` for one callback shape would put a provider adapter on coordinator internals.
-     */
-    onDurableProcessIdentity?: (identity: { pid: number; incarnation: ProcessIncarnation }) => void;
+    onDurableProcessIdentity?: (identity: DurableCliProcessSubject) => void;
   }): Promise<{
     stdout: string;
     stderr: string;
@@ -39,7 +34,7 @@ export function bindProviderRunner(
   pool: LaunchPool,
   jobDir: string,
   onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void,
-  onDurableProcessIdentity?: (identity: { pid: number; incarnation: ProcessIncarnation }) => void,
+  onDurableProcessIdentity?: (identity: DurableCliProcessSubject) => void,
 ): ProviderCliRunner {
   return (request) =>
     launchCoordinator.spawnDurableJob({

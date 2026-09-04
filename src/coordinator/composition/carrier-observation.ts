@@ -57,14 +57,6 @@ export function admittedByThisCoordinator(
   );
 }
 
-/**
- * A durable CLI is the one class local evidence alone can resolve to `absent`: the recorded pid plus the
- * OS-probed incarnation either name the process this coordinator launched, or they don't.
- *
- * A pid mismatch between the journal's `job.runtime.started` record and the separately captured
- * `durable_cli_process.v1` meta is treated the same as no meta at all — both mean there is nothing trustworthy
- * to check the OS against, never a reason to guess.
- */
 function durableCliEvidence(
   db: Database,
   jobId: string,

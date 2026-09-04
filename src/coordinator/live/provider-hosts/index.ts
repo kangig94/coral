@@ -48,6 +48,7 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set/lifecycle-ref.js';
+import type { ProviderProxyAcquisitionHeld } from '../provider-proxy/index.js';
 import type { ProviderProxySetProtection } from '../../services/provider-proxy-set/identity.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 export type { ProviderHostEntry } from './state.js';
@@ -61,8 +62,8 @@ export interface ProviderHostManager {
     hostRef: HostRef,
     expectation: Readonly<{ spec: ProviderServerSpec; jobId: string }>,
   ): Promise<ManagedAppServerSession | null>;
-  drainForHandoff(signal?: AbortSignal): Promise<void>;
-  shutdown(signal?: AbortSignal): Promise<void>;
+  drainForHandoff(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt>;
+  shutdown(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt>;
   /**
    * The live proxy set's operation-routing capability for `spec`'s executable identity, or `null` when no
    * set is live for it yet. Never triggers or waits on an acquisition — that stays fire-and-forget, started
@@ -71,6 +72,12 @@ export interface ProviderHostManager {
   routeAppServerOperation(spec: ProviderServerSpec): ProviderProxyOperationAuthority | null;
   providerProxySlotReleased?(routeKey: string): void;
 }
+
+export type ProviderHostQuiescenceReceipt = Readonly<{
+  kind: 'provider-hosts-quiesced';
+  liveProxySets: readonly ProviderProxySetAuthority[];
+  acquisitionCleanupHolds: readonly ProviderProxyAcquisitionHeld<'provider-host-manager'>[];
+}>;
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
 
@@ -753,19 +760,19 @@ export class DefaultProviderHostManager
     return this.admission.confirmEvicted(hostRef);
   }
 
-  async drainForHandoff(signal?: AbortSignal): Promise<void> {
-    await this.stopAndClose('drained', 'handoff', signal);
+  async drainForHandoff(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt> {
+    return this.stopAndClose('drained', 'handoff', signal);
   }
 
-  async shutdown(signal?: AbortSignal): Promise<void> {
-    await this.stopAndClose('shut down', 'contain', signal);
+  async shutdown(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt> {
+    return this.stopAndClose('shut down', 'contain', signal);
   }
 
   private async stopAndClose(
     detail: string,
     disposition: ProviderProxySetAcquisitionStopDisposition,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<ProviderHostQuiescenceReceipt> {
     this.acceptingAcquisitions = false;
     const acquisitionsToSettle = [...this.pendingProxySetAcquisitions];
     for (const pending of acquisitionsToSettle) {
@@ -788,6 +795,12 @@ export class DefaultProviderHostManager
       ]);
       const failed = outcomes.find((outcome) => outcome.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
+      const lifecycle = this.providerProxyLifecycleRef?.get();
+      return {
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: lifecycle?.liveSets() ?? [],
+        acquisitionCleanupHolds: lifecycle?.acquisitionCleanupHolds() ?? [],
+      };
     } finally {
       signal?.removeEventListener('abort', stopReclamation);
     }

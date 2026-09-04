@@ -55,6 +55,9 @@ export const PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR = [
 export type ProviderProxySetOperatorDispositionWaitingFor =
   (typeof PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR)[number];
 
+export const PROVIDER_PROXY_SET_OPERATOR_ACTIONS = ['contain', 'wait'] as const;
+export type ProviderProxySetOperatorAction = (typeof PROVIDER_PROXY_SET_OPERATOR_ACTIONS)[number];
+
 export type ProviderProxySetOperatorDisposition = Readonly<{
   setIdentity: ProviderProxySetAddress;
   setToken: string;
@@ -69,4 +72,5 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
   enforcerObservations?: ProviderProxySetEnforcerObservations;
   incidentReason: string;
   waitingFor: ProviderProxySetOperatorDispositionWaitingFor;
+  operatorAction: ProviderProxySetOperatorAction;
 }>;

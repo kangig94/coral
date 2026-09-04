@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { JobStore } from '#src/jobs/store.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { createSimulationBackend } from '#tools/simulation/core/backend.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { AbortError } from '#src/runtime/abort.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobLaunch, JobTerminal } from '#src/jobs/records.js';
@@ -73,6 +74,24 @@ type ResumeAllOptions = Parameters<typeof resumeAllWorkflowRecovery>[0];
 
 function resumeAll(options: Omit<ResumeAllOptions, 'ids'> & Partial<Pick<ResumeAllOptions, 'ids'>>) {
   return resumeAllWorkflowRecovery({ ids: recoveryIds, ...options });
+}
+
+async function settleWithVirtualTime<T>(operation: Promise<T>, advance: (ms: number) => Promise<void>): Promise<T> {
+  let settled = false;
+  void operation.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await flushMicrotasks(200);
+  for (let step = 0; !settled && step < 1_000; step += 1) {
+    await advance(25);
+  }
+  if (!settled) throw new Error('Workflow recovery did not settle within the simulation virtual-time budget.');
+  return operation;
 }
 
 function running(jobId: string, sessionId: string) {
@@ -2199,22 +2218,25 @@ describe('workflow recovery branch rules', () => {
     }) as typeof backend.service;
 
     try {
-      const settled = await resumeAll({
-        db: backend.progressStore.getDb(),
-        progressStore: backend.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => executionSvc as never,
-        createInvocationContext: backend.createInvocationContext,
-        finalizeWorkflow: createWorkflowRecoveryFinalizer({
-          runtime: backend.runtime,
+      const settled = await settleWithVirtualTime(
+        resumeAll({
+          db: backend.progressStore.getDb(),
           progressStore: backend.progressStore,
-          coordinatorCommit,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => executionSvc as never,
+          createInvocationContext: backend.createInvocationContext,
+          finalizeWorkflow: createWorkflowRecoveryFinalizer({
+            runtime: backend.runtime,
+            progressStore: backend.progressStore,
+            coordinatorCommit,
+            log,
+          }),
+          releaseFailedWorkflowDescendants,
           log,
+          time: backend.runtime.time,
         }),
-        releaseFailedWorkflowDescendants,
-        log,
-        time: backend.runtime.time,
-      });
+        backend.advance,
+      );
 
       // The workflow does settle, and its close is not rejected. Pinned because the issue predicted the
       // opposite — that stale descendant authority would fail `composeAtomic` and defer recovery
@@ -2243,7 +2265,7 @@ describe('workflow recovery branch rules', () => {
         replacementJobId,
       ]);
     } finally {
-      await backend.backend.shutdown('test cleanup');
+      await settleWithVirtualTime(backend.backend.shutdown('test cleanup'), backend.advance);
     }
   });
 
@@ -2551,22 +2573,25 @@ describe('workflow recovery branch rules', () => {
     }) as typeof backend.service;
 
     try {
-      const settled = await resumeAll({
-        db: backend.progressStore.getDb(),
-        progressStore: backend.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => executionSvc as never,
-        createInvocationContext: backend.createInvocationContext,
-        finalizeWorkflow: createWorkflowRecoveryFinalizer({
-          runtime: backend.runtime,
+      const settled = await settleWithVirtualTime(
+        resumeAll({
+          db: backend.progressStore.getDb(),
           progressStore: backend.progressStore,
-          coordinatorCommit,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => executionSvc as never,
+          createInvocationContext: backend.createInvocationContext,
+          finalizeWorkflow: createWorkflowRecoveryFinalizer({
+            runtime: backend.runtime,
+            progressStore: backend.progressStore,
+            coordinatorCommit,
+            log,
+          }),
+          releaseFailedWorkflowDescendants,
           log,
+          time: backend.runtime.time,
         }),
-        releaseFailedWorkflowDescendants,
-        log,
-        time: backend.runtime.time,
-      });
+        backend.advance,
+      );
 
       expect(replacementJobId, 'recovery must have launched a replacement').toBeDefined();
       expect(settled).toEqual([workflowId]);
@@ -2575,7 +2600,7 @@ describe('workflow recovery branch rules', () => {
         'a replacement that finished before it could be checkpointed still belongs in the cleanup envelope',
       ).toHaveBeenCalledWith([replacementJobId]);
     } finally {
-      await backend.backend.shutdown('test cleanup');
+      await settleWithVirtualTime(backend.backend.shutdown('test cleanup'), backend.advance);
     }
   });
 

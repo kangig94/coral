@@ -4,7 +4,7 @@ import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { IdleTimer } from './live/idle.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { ProviderHostLifecycle } from './live/provider-hosts/index.js';
+import type { ProviderHostLifecycle, ProviderHostQuiescenceReceipt } from './live/provider-hosts/index.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
@@ -57,10 +57,6 @@ type RunShutdownSequenceContext = {
   runtime: Runtime;
   markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   providerHostManager: ProviderHostLifecycle;
-  /**
-   * The live guardian/reaper/proxy sets. Absent until the lazy acquisition path has created one, which is
-   * every shutdown that ran no provider work.
-   */
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
@@ -260,17 +256,27 @@ function observeShutdownTask(
  */
 async function reapProviderProxySets(
   sets: readonly ProviderProxySetAuthority[],
+  acquisitionHolds: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'],
   signal: AbortSignal,
 ): Promise<ShutdownStepConfirmation> {
   // Every set is triggered before any is awaited: one slow reap must not consume another's share of a
   // budget they are all spending at once.
-  const outcomes = await Promise.allSettled(sets.map((set) => set.stopAndReap(signal)));
+  const setOutcomes = Promise.allSettled(sets.map((set) => set.stopAndReap(signal)));
+  const acquisitionOutcomes = Promise.allSettled(acquisitionHolds.map((hold) => hold.recoveryCapability.retry(signal)));
+  const [outcomes, holdOutcomes] = await Promise.all([setOutcomes, acquisitionOutcomes]);
   const unconfirmed = outcomes.flatMap((outcome, index) => {
     const proxy = sets[index].proxyInstanceId;
     if (outcome.status === 'rejected') return [`${proxy}: ${formatError(outcome.reason)}`];
     return 'unconfirmed' in outcome.value ? [`${proxy}: ${outcome.value.unconfirmed}`] : [];
   });
-  return unconfirmed.length === 0 ? { confirmed: true } : { confirmed: false, detail: unconfirmed.join('; ') };
+  const unconfirmedHolds = holdOutcomes.flatMap((outcome, index) => {
+    const hold = acquisitionHolds[index];
+    const label = 'acquisition guardian ' + hold.guardianIdentity.pid;
+    if (outcome.status === 'rejected') return [label + ': ' + formatError(outcome.reason)];
+    return outcome.value.kind === 'held' ? [label + ': ' + outcome.value.reason] : [];
+  });
+  const failures = [...unconfirmed, ...unconfirmedHolds];
+  return failures.length === 0 ? { confirmed: true } : { confirmed: false, detail: failures.join('; ') };
 }
 
 /**
@@ -356,7 +362,6 @@ export async function runShutdownSequence({
   runtime,
   markJobsAsErrorFn,
   providerHostManager,
-  providerProxyAuthority,
   kbDaemonSupervisor,
   storeServicesRef,
   terminateAllFn,
@@ -391,16 +396,9 @@ export async function runShutdownSequence({
     label: string,
     task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
   ): Promise<void> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
-  // `liveSets()` is a call-time snapshot, not a live cursor (see its doc): reading it again after this
-  // shutdown has itself reaped some of what it returned is not guaranteed to exclude those sets, which would
-  // let an already-torn-down set re-enter a later required step and fail it a second time for the same
-  // underlying reap. So this is still read exactly once per branch below — but not here, at the top of the
-  // sequence: acquisition is fire-and-forget (`ensureProxySetFor`), so a set can still be settling when this
-  // function starts, and a snapshot taken this early would read before `providerHostManager.shutdown()` /
-  // `drainForHandoff()` has even run. Its own `stopAndClose` aborts every acquisition still in flight before
-  // it awaits anything (see that abort's own doc), which is what makes a snapshot taken right after that call
-  // returns — not here — safe to treat as final: nothing still pending can add to it afterward.
   let liveProxySets: readonly ProviderProxySetAuthority[] = [];
+  let acquisitionCleanupHolds: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'] = [];
+  const providerHostQuiescence: { receipt: ProviderHostQuiescenceReceipt | null } = { receipt: null };
 
   // Stop accepting HTTP/user-facing work first; the IPC socket stays bound
   // until all handoff finalizers complete or consume the budget, so the
@@ -436,19 +434,14 @@ export async function runShutdownSequence({
       });
     }
     await runRequiredBudgetedStep('provider host shutdown', async (signal) => {
-      await providerHostManager.shutdown(signal);
+      providerHostQuiescence.receipt = await providerHostManager.shutdown(signal);
       return { confirmed: true };
     });
-    // Read only now, after `shutdown()` (and the `stopAndClose` abort inside it) has returned: see the
-    // declaration above for why reading this any earlier would miss a set that finishes acquiring during
-    // host shutdown.
-    liveProxySets = providerProxyAuthority?.liveSets() ?? [];
-    // Before the caught per-handle child termination, because that path terminates handles this coordinator
-    // still owns; the detached sets outlive it and have to be reaped by identity, not by handle. Skipped
-    // outright when there is nothing to reap: a required step with no work must not fail for want of budget.
-    if (liveProxySets.length > 0) {
+    liveProxySets = providerHostQuiescence.receipt?.liveProxySets ?? [];
+    acquisitionCleanupHolds = providerHostQuiescence.receipt?.acquisitionCleanupHolds ?? [];
+    if (liveProxySets.length > 0 || acquisitionCleanupHolds.length > 0) {
       await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
-        reapProviderProxySets(liveProxySets, signal),
+        reapProviderProxySets(liveProxySets, acquisitionCleanupHolds, signal),
       );
     }
     await runRequiredBudgetedStep('child termination', async (signal) =>
@@ -469,12 +462,10 @@ export async function runShutdownSequence({
       });
     }
     await runRequiredBudgetedStep('provider host drain for handoff', async (signal) => {
-      await providerHostManager.drainForHandoff(signal);
+      providerHostQuiescence.receipt = await providerHostManager.drainForHandoff(signal);
       return { confirmed: true };
     });
-    // Same reasoning as the hard-mode read above: taken only after `drainForHandoff()` has aborted every
-    // acquisition still in flight, so nothing settling afterward can be missing from it.
-    liveProxySets = providerProxyAuthority?.liveSets() ?? [];
+    liveProxySets = providerHostQuiescence.receipt?.liveProxySets ?? [];
   }
 
   await runBudgetedStep('components disposeAll', async (signal) => runtimeState.components.disposeAll(signal));

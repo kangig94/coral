@@ -1152,39 +1152,24 @@ function formatRunningStatus(health: RunningHealth): string {
           `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}`,
         );
       }
-      if (
-        incidents.some(
-          ({ waitingFor }) =>
-            waitingFor === 'control-reattachment' ||
-            waitingFor === 'independent-containment-absence' ||
-            waitingFor === 'set-adoption-deadline' ||
-            waitingFor === 'operator-abandonment' ||
-            waitingFor === 'store-repair' ||
-            waitingFor === 'containment-authorization' ||
-            waitingFor === 'containment-outcome-unknown' ||
-            waitingFor === 'heartbeat-bound-live-claims' ||
-            waitingFor === 'control-reattachment-bound-live-claims' ||
-            waitingFor === 'heartbeat-protocol-live-claims' ||
-            waitingFor === 'operation-control-outcome-unknown' ||
-            waitingFor === 'publication-confirmation-or-control-release',
-        )
-      ) {
+      if (incidents.some(({ operatorAction }) => operatorAction === 'contain')) {
         lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);
+      } else if (incidents.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
+        lines.push(
+          '    action=wait; Coral retries publication automatically until publication is confirmed or control is released.',
+        );
+      } else {
+        const waitingFor = [...new Set(incidents.map((incident) => incident.waitingFor))].join(',');
+        lines.push(`    action=wait for ${waitingFor}`);
       }
     }
     if (skippedProviderProxySetRows > 0) {
       lines.push(
         `  Provider proxy set rows this build could not read: ${skippedProviderProxySetRows}; backend status is not showing ${skippedProviderProxySetRows === 1 ? 'its disposition, cause, or waiting condition' : 'their dispositions, causes, or waiting conditions'}.`,
       );
-      for (const setToken of health.skippedProviderProxySetTokens) {
-        lines.push(`    action=coral-cli backend provider-proxy-set contain ${setToken}`);
-      }
-      const unaddressableRows = skippedProviderProxySetRows - health.skippedProviderProxySetTokens.length;
-      if (unaddressableRows > 0) {
-        lines.push(
-          `    ${unaddressableRows} skipped ${unaddressableRows === 1 ? 'row has' : 'rows have'} no validated exact-set token; no containment command is available. Run coral-cli backend status from a build that understands the row.`,
-        );
-      }
+      lines.push(
+        '    No containment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
+      );
     }
   }
   return lines.join('\n');

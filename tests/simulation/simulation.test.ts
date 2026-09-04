@@ -335,7 +335,8 @@ describe('deterministic simulation lifecycle replay', () => {
     });
 
     expect(world.isPidAlive(runtime.pid)).toBe(true);
-    expect(world.getKillLog()).toContainEqual({ pid: runtime.pid, signal: 'SIGTERM' });
+    expect(world.getKillLog()).toContainEqual({ pid: -runtime.pid, signal: 'SIGTERM' });
+    expect(world.getKillLog()).not.toContainEqual({ pid: runtime.pid, signal: 'SIGTERM' });
 
     await world.advance(25);
 

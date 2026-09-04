@@ -494,6 +494,7 @@ describe('cli main routing', () => {
                     liveClaims: 1,
                     incidentReason: 'control_channel_reattaching',
                     waitingFor: 'control-reattachment',
+                    operatorAction: 'contain',
                   },
                 ],
               },
@@ -510,7 +511,46 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('reports an incomplete pre-shutdown set read and retains structurally valid opaque tokens', async () => {
+  it('does not print a containment command for a set whose operator action is wait', async () => {
+    const token = 'pps1.waiting-set';
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      backendStatus: {
+        getStatus: async () =>
+          ({
+            status: 'ok',
+            health: {
+              diagnostics: {
+                providerProxySets: [
+                  {
+                    setIdentity: {
+                      buildSetId: '11111111-1111-4111-8111-111111111111',
+                      hostFingerprint: 'a'.repeat(64),
+                      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+                    },
+                    setToken: token,
+                    disposition: 'held',
+                    incidentReason: 'publication_result_unknown',
+                    waitingFor: 'publication-confirmation-or-control-release',
+                    operatorAction: 'wait',
+                  },
+                ],
+              },
+            },
+          }) as never,
+      } as unknown as BackendStatusCommandOperations,
+    });
+    mockState.shutdownBackend.mockResolvedValueOnce({ ok: true });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout).toContain('had no currently authorized containment action');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports an incomplete pre-shutdown set read without printing an unverified command', async () => {
     const token = 'pps1.opaque-set';
     const program = new Command();
     program.exitOverride();
@@ -531,8 +571,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
-    expect(stdout.split(token)).toHaveLength(2);
+    expect(stdout).not.toContain(token);
     expect(stdout).toContain('could not interpret 1 provider proxy set row(s)');
     expect(stdout).toContain('could not confirm that every preserved set was named');
     expect(stdout).not.toContain('No held provider proxy sets were reported');

@@ -1493,17 +1493,22 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
-      let preservedSetRead: Readonly<{ tokens: readonly string[]; skippedRows: number }> | null = null;
+      let preservedSetRead: Readonly<{
+        actionableTokens: readonly string[];
+        waitingRows: number;
+        skippedRows: number;
+      }> | null = null;
       try {
         const statusBeforeShutdown = await backendStatus.getStatus();
         if (statusBeforeShutdown.status === 'ok') {
+          const providerProxySets = statusBeforeShutdown.health.diagnostics?.providerProxySets ?? [];
           preservedSetRead = {
-            tokens: [
+            actionableTokens: [
               ...new Set([
-                ...(statusBeforeShutdown.health.diagnostics?.providerProxySets ?? []).map((set) => set.setToken),
-                ...(statusBeforeShutdown.health.skippedProviderProxySetTokens ?? []),
+                ...providerProxySets.filter((set) => set.operatorAction === 'contain').map((set) => set.setToken),
               ]),
             ],
+            waitingRows: providerProxySets.filter((set) => set.operatorAction === 'wait').length,
             skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
           };
         }
@@ -1518,15 +1523,26 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           if (preservedSetRead === null) {
             return 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.';
           }
-          if (preservedSetRead.tokens.length === 0 && preservedSetRead.skippedRows === 0) {
+          if (
+            preservedSetRead.actionableTokens.length === 0 &&
+            preservedSetRead.waitingRows === 0 &&
+            preservedSetRead.skippedRows === 0
+          ) {
             return 'No held provider proxy sets were reported before shutdown.';
           }
-          const lines = preservedSetRead.tokens.length
+          const lines = preservedSetRead.actionableTokens.length
             ? [
                 'Provider proxy set tokens reported before shutdown:',
-                ...preservedSetRead.tokens.map((token) => `  coral-cli backend provider-proxy-set contain ${token}`),
+                ...preservedSetRead.actionableTokens.map(
+                  (token) => `  coral-cli backend provider-proxy-set contain ${token}`,
+                ),
               ]
             : [];
+          if (preservedSetRead.waitingRows > 0) {
+            lines.push(
+              `${preservedSetRead.waitingRows} provider proxy set row(s) had no currently authorized containment action; inspect backend status after the successor starts.`,
+            );
+          }
           if (preservedSetRead.skippedRows > 0) {
             lines.push(
               `The pre-shutdown status read could not interpret ${preservedSetRead.skippedRows} provider proxy set row(s), so it could not confirm that every preserved set was named.`,

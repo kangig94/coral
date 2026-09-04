@@ -45,7 +45,7 @@ const PLATFORM = process.platform;
 // Guaranteed to name no process this OS ever assigns, so both the OS start-time probe and the alive check
 // answer "nothing there" without depending on what else happens to be running.
 const DEAD_PID = 2_147_483_647;
-// `durable_cli_process.v1` keys on a canonical UUID.
+// Durable CLI process keys require a canonical UUID.
 const DURABLE_JOB_ID = '00000000-0000-4000-8000-000000000099';
 const ACQUIRED_JOB_ID = '00000000-0000-4000-8000-000000000098';
 
@@ -306,10 +306,11 @@ describe('createObserveCarriers', () => {
     const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
-      version: 1,
       jobId: DURABLE_JOB_ID,
       pid: 222,
       incarnation: testIncarnation(1),
+      processGroupId: 222,
+      childRoot: { pid: 223, incarnation: testIncarnation(2) },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -329,10 +330,11 @@ describe('createObserveCarriers', () => {
     const details = new Map([[DURABLE_JOB_ID, detail(runtime, { phase: 'running' })]]);
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
-      version: 1,
       jobId: DURABLE_JOB_ID,
       pid: DEAD_PID,
       incarnation: testIncarnation(1),
+      processGroupId: DEAD_PID,
+      childRoot: { pid: DEAD_PID + 1, incarnation: testIncarnation(2) },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 9);
 
@@ -355,10 +357,11 @@ describe('createObserveCarriers', () => {
     const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
-      version: 1,
       jobId: DURABLE_JOB_ID,
       pid: process.pid,
       incarnation: ownIncarnation,
+      processGroupId: process.pid,
+      childRoot: { pid: process.pid, incarnation: ownIncarnation },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -380,10 +383,11 @@ describe('createObserveCarriers', () => {
     const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
-      version: 1,
       jobId: DURABLE_JOB_ID,
       pid: process.pid,
       incarnation: testIncarnation('a-different-incarnation'),
+      processGroupId: process.pid,
+      childRoot: { pid: process.pid, incarnation: testIncarnation('a-different-child-incarnation') },
     });
     const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7);
 
@@ -406,10 +410,11 @@ describe('createObserveCarriers', () => {
     const details = new Map([[DURABLE_JOB_ID, detail(runtime)]]);
     const db = createDb();
     writeDurableCliProcessRuntimeMeta(db, {
-      version: 1,
       jobId: DURABLE_JOB_ID,
       pid: 4242,
       incarnation: testIncarnation(1),
+      processGroupId: 4242,
+      childRoot: { pid: 4243, incarnation: testIncarnation(2) },
     });
     mockedProbe.mockReturnValueOnce(null);
     mockedIsAlive.mockReturnValueOnce('alive');

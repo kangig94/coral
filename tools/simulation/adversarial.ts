@@ -7,7 +7,7 @@ import {
   type SimulationHookLog,
   type SimulationWorldCarryOver,
 } from './core/backend.js';
-import { DEFAULT_EPOCH_MS } from './core/virtual-time.js';
+import { DEFAULT_EPOCH_MS, flushMicrotasks } from './core/virtual-time.js';
 import {
   acquireNoRealIoMonitor,
   cloneNoRealIoReport,
@@ -25,6 +25,8 @@ import type { ProviderSession } from '../../src/sessions/entry.js';
 import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
 
 const RESULT_FILE = 'result.md';
+const LIFECYCLE_SETTLEMENT_STEP_MS = 25;
+const LIFECYCLE_SETTLEMENT_MAX_STEPS = 1_000;
 
 export type LaunchJobOptions = {
   provider?: string;
@@ -160,7 +162,9 @@ export class SimulationWorld {
     this.elapsedOffsetMs = this.getVirtualElapsedMs();
     const carryOver = options?.preserveWorld === true ? this.current.backend.carryOver : undefined;
     // A restart that keeps its world is a replacement, not a crash.
-    await this.current.backend.backend.shutdown(carryOver === undefined ? 'cycle' : 'replaced');
+    await this.settleLifecycleOperation(
+      this.current.backend.backend.shutdown(carryOver === undefined ? 'cycle' : 'replaced'),
+    );
     await this.current.backend.backend.waitForShutdown();
     this.generationIndex += 1;
     this.current = this.createGenerationState(carryOver);
@@ -188,7 +192,7 @@ export class SimulationWorld {
 
   async shutdown(reason = 'simulation-shutdown'): Promise<void> {
     this.assertUsable();
-    await this.current.backend.backend.shutdown(reason);
+    await this.settleLifecycleOperation(this.current.backend.backend.shutdown(reason));
   }
 
   async waitForShutdown(): Promise<void> {
@@ -521,7 +525,7 @@ export class SimulationWorld {
     try {
       const lifecycle = this.current.backend.backend.getLifecycle();
       if (lifecycle === 'starting' || lifecycle === 'running') {
-        await this.current.backend.backend.shutdown('teardown');
+        await this.settleLifecycleOperation(this.current.backend.backend.shutdown('teardown'));
       }
       if (lifecycle !== 'stopped') {
         await this.current.backend.backend.waitForShutdown();
@@ -543,6 +547,26 @@ export class SimulationWorld {
     if (this.disposed) {
       throw new Error('SimulationWorld has been disposed');
     }
+  }
+
+  private async settleLifecycleOperation(operation: Promise<void>): Promise<void> {
+    let settled = false;
+    void operation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushMicrotasks(200);
+    for (let step = 0; !settled && step < LIFECYCLE_SETTLEMENT_MAX_STEPS; step += 1) {
+      await this.current.backend.advance(LIFECYCLE_SETTLEMENT_STEP_MS);
+    }
+    if (!settled) {
+      throw new Error('Simulation lifecycle operation did not settle within its virtual-time budget.');
+    }
+    await operation;
   }
 
   private assertBooted(action: 'launch' | 'wait' | 'abort' | 'kill'): void {

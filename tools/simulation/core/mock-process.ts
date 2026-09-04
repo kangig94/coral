@@ -48,6 +48,7 @@ type RegisteredProcess = {
   timers: Set<TimerHandle>;
   child: MockChildProcess | null;
   killActions: MockKillAction[];
+  onSignal?: (signal: NodeJS.Signals) => void;
   complete: (outcome: ProcessExitOutcome) => void;
   waitForExit: Deferred<DurableProcessExit> | null;
 };
@@ -409,7 +410,7 @@ export class MockProcessSpawner {
 
     const exitDeferred = createDeferred<DurableProcessExit>();
     const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;
-    const record = this.registerProcess(pid, null, null, script.kills ?? [], exitDeferred, (outcome) => {
+    const leader = this.registerProcess(pid, pid, null, [], exitDeferred, (outcome) => {
       const exitRecord: DurableProcessExit = {
         exitCode: outcome.exitCode ?? null,
         signal: outcome.signal ?? null,
@@ -421,18 +422,25 @@ export class MockProcessSpawner {
         exitDeferred.resolve(exitRecord);
       }
     });
+    const childPid = this.allocatePid();
+    const child = this.registerProcess(childPid, pid, null, script.kills ?? [], null, (outcome) => {
+      leader.complete(outcome);
+    });
+    leader.onSignal = (signal) => {
+      this.applyKill(child, signal);
+    };
 
     for (const chunk of asChunks(script.stdout)) {
-      this.schedule(record, chunk.delayMs ?? 0, () => {
-        if (record.closed) {
+      this.schedule(child, chunk.delayMs ?? 0, () => {
+        if (child.closed) {
           return;
         }
         this.storage.appendFileSync(stdoutPath, chunk.data);
       });
     }
     for (const chunk of asChunks(script.stderr)) {
-      this.schedule(record, chunk.delayMs ?? 0, () => {
-        if (record.closed) {
+      this.schedule(child, chunk.delayMs ?? 0, () => {
+        if (child.closed) {
           return;
         }
         this.storage.appendFileSync(stderrPath, chunk.data);
@@ -442,7 +450,7 @@ export class MockProcessSpawner {
     if ((script.runtimeDelayMs ?? 0) > 0) {
       await this.time.sleep(script.runtimeDelayMs ?? 0);
     }
-    if (!record.alive) {
+    if (!leader.alive || !child.alive) {
       throw new Error(`Durable process ${pid} exited before runtime was reported`);
     }
 
@@ -454,10 +462,15 @@ export class MockProcessSpawner {
       stdoutPath,
       stderrPath,
     };
+    options.onSpawned?.({
+      runtimeRecord,
+      leaderIncarnation: leader.incarnation,
+      childPid,
+    });
     if (script.exit !== null) {
       const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
-      this.schedule(record, exit.delayMs ?? 0, () => {
-        record.complete({
+      this.schedule(child, exit.delayMs ?? 0, () => {
+        child.complete({
           exitCode: exit.exitCode ?? 0,
           signal: exit.signal ?? null,
         });
@@ -481,6 +494,9 @@ export class MockProcessSpawner {
   }
 
   private allocatePid(): number {
+    while (this.processes.has(this.nextPid)) {
+      this.nextPid += 1;
+    }
     const pid = this.nextPid;
     this.nextPid += 1;
     return pid;
@@ -552,6 +568,10 @@ export class MockProcessSpawner {
   }
 
   private applyKill(record: RegisteredProcess, signal: NodeJS.Signals): void {
+    if (record.onSignal) {
+      record.onSignal(signal);
+      return;
+    }
     const action = this.resolveKillAction(record.killActions, signal);
     if (!action) {
       record.complete({

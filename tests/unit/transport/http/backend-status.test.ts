@@ -605,6 +605,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       disposition: 'held',
       incidentReason: 'control_channel_reattaching',
       waitingFor: 'control-reattachment',
+      operatorAction: 'contain',
     };
     const forwardShapedDetailed = {
       ...JSON.parse(detailed('ok')),

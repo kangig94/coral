@@ -1,47 +1,60 @@
-# TODO — project live provider-proxy heartbeat holds into operator status
+# TODO — persist provider-proxy hold status across coordinator death
 
-**Status**: open only across coordinator restart. The lifecycle retains one exclusive `clear | silence |
-answered-unusable` window per role and method. An unusable answer replaces silence with answered-unusable
-evidence, while an accepted echo or current-tenancy challenge resynchronization clears the window. Silence may end in the
-coordinator's bounded `heartbeat_hold_exhausted` stop-and-reap decision. Answered-but-unusable and protocol
-incompatibility either await independent containment absence while claims or deadline acceptance remain, or
-release a no-claim set to roles whose deadline acknowledgement was verified. The current process projects those
-dispositions through `coral-cli backend status`; this entry now concerns only a durable read after that process
-dies.
+**Status**: deliberately deferred from the starvation-survival branch.
 
-**Corrected 2026-09-03.** The `stop-and-reap` this Status paragraph names for silence no longer exists.
-`heartbeat_hold_exhausted` now joins `heartbeat_answer_unusable_hold_exhausted` and
-`heartbeat_protocol_incompatible` on the same non-destructive `await-containment-absence` action
-(`#silenceHoldExhaustedDecision`, `#applyHeartbeatDisposition` in
-`src/coordinator/services/provider-proxy-set/index.ts`): with live claims present none of the three heartbeat
-sources authorizes destruction on its own, and only a zero-claim set proceeds into the independent-absence
-release this paragraph already describes for the other two. That is a different subject from this one, with a
-different writer — the coordinator's own destructive authority over elapsed silence, not the durable projection
-of the evidence window this entry is about — and its three open questions below (durable owner, stale-record
-rule, retention) are untouched by it. Adjacent, not joint.
+The in-memory projection has three set-scoped gaps after coordinator death:
 
-## What exists
+- heartbeat evidence and its preservation disposition;
+- operator dispositions retained only by the lifecycle;
+- acquisition cleanup holds whose recovery capability has no durable successor.
 
-`ProviderProxySetLifecycle` keys each live set by its exact `ProviderProxySetIdentity` and keeps active
-preservation episodes and the exclusive evidence window in the established slot. Its in-memory status projection retains the set address, role,
-method, incident reason, disposition, and current wait. `coral-cli backend status` renders that projection while
-the coordinator lives, including a no-claim release after the represented slot has been dropped.
+Starvation does not kill the coordinator, so none weakens this branch's guarantee. A coordinator crash can
+lose visibility and leave artifacts behind, but it must not lose live-work authority: a successor cannot act
+from its predecessor's record, and a leaked set must retain the orphan deadline armed when it spawned.
 
-## What is missing
+## Decided design
 
-The projection disappears with the coordinator. A replacement coordinator therefore cannot distinguish a stale
-hold left by its predecessor from a currently represented set until its own discovery and claim reconciliation
-reconstruct the relevant state, and a status request cannot read the predecessor after it is gone. The remaining
-work needs a persisted owner and a stale-record rule; it must not make a predecessor's hold appear current merely
-because no cleanup write followed a crash.
+### Owner
 
-## What a fix must decide
+Persist a keyed record beside src/store/provider-operation-record.ts. The store boundary accepts only plain,
+validated process and set identities. The coordinator writes through a port injected into the lifecycle so
+the lifecycle imports no store module.
 
-- Which durable store owns status across coordinator death and restart.
-- How a new coordinator distinguishes a stale predecessor record from a currently represented set.
-- Whether recovered and released episodes remain bounded history or disappear from the durable projection.
+This is not a Journal stream. Provider-proxy is deliberately outside the Journal-stream domains, and the
+provider-operation saga already uses a keyed store record for the same ownership boundary.
 
-## Start condition
+### Staleness
 
-Choose the durable owner and stale-record rule together. The running-process projection is not evidence that a
-record survives starvation, crash, or restart.
+Every record carries the writer's process identity as {pid, incarnation}. Bound-socket authority already
+serializes coordinators, so a writer other than the reader is a predecessor by definition; no lease or epoch
+counter is needed.
+
+The record is evidence, never authority. A successor re-observes the recorded subject and reaches its own
+disposition:
+
+- confirmed absence retires the record;
+- a live target produces a new hold under the successor's writer identity;
+- an unattributable group enters the existing quarantine and operator-abandonment path.
+
+### Retention and readers
+
+Retire a row on the successor's own absence confirmation, on operator abandonment, or on terminal job cleanup
+for a job-scoped row. Existing backend status diagnostics and startup recovery enumeration read the records;
+the persistence work adds a source to those products rather than creating another product.
+
+### Conditions on this deferral
+
+The deferral remains honest only while all of these stay checkable:
+
+1. Every in-memory hold's subject either self-terminates on a deadline armed at spawn or is durably
+   identifiable.
+2. Shutdown never reports confirmed past a live hold.
+3. A crash can create a status gap, never an obligation gap.
+
+### Rejected alternative
+
+Do not create one unified hold store spanning jobs and provider-proxy sets. It would cross the enforced
+layering boundary: provider-proxy may not import store, and jobs may not import proxy-domain brands. It would
+also become a content-blank magnet for unrelated ownership vocabularies.
+
+Use two instantiations of the same evidence-record pattern, each expressed in its owner's vocabulary.

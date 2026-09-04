@@ -7,6 +7,7 @@ import type {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import {
+  PROVIDER_PROXY_SET_OPERATOR_ACTIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
@@ -53,6 +54,7 @@ const PROVIDER_PROXY_SET = {
   liveClaims: 0,
   incidentReason: 'control_channel_closed',
   waitingFor: 'control-reattachment',
+  operatorAction: 'contain',
 } as const;
 
 function isBackendHealth(value: unknown): boolean {
@@ -476,6 +478,42 @@ describe('/health typed shape (AC10a)', () => {
       expect(parsed?.health.diagnostics?.providerProxySets).toHaveLength(1);
     },
   );
+
+  it.each(PROVIDER_PROXY_SET_OPERATOR_ACTIONS.map((operatorAction) => [operatorAction] as const))(
+    'accepts every operator action the vocabulary currently defines: %s',
+    (operatorAction) => {
+      const parsed = parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, operatorAction }] },
+      });
+
+      expect(parsed?.skippedProviderProxySetRows).toBe(0);
+      expect(parsed?.health.diagnostics?.providerProxySets).toHaveLength(1);
+    },
+  );
+
+  it('defaults a pre-action-contract row to wait', () => {
+    const { operatorAction: _operatorAction, ...olderRow } = PROVIDER_PROXY_SET;
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: { providerProxySets: [olderRow] },
+    });
+
+    expect(parsed?.health.diagnostics?.providerProxySets).toEqual([{ ...olderRow, operatorAction: 'wait' }]);
+  });
+
+  it('skips a row with an unknown operator action', () => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, operatorAction: 'terminate' }] },
+    });
+
+    expect(parsed).toEqual({
+      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
+    });
+  });
 
   it("skips an unknown cause that does not carry this build's companion fields", () => {
     const future = {

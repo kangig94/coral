@@ -549,10 +549,11 @@ describe('launch admission', () => {
     expect(cleanupHandles.has(cleanupKey)).toBe(true);
   });
 
-  it('publishes cleanup ownership before an unresolved durable launch can meet shutdown', async () => {
+  it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
     const base = createRealRuntime('prod');
     let rejectLaunch!: (error: Error) => void;
     const incarnation = testIncarnation(7_001);
+    const childPid = TEST_PROVIDER_PID + 1;
     const launch = vi.fn((options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
       options.onSpawned?.({
         runtimeRecord: {
@@ -562,7 +563,8 @@ describe('launch admission', () => {
           stderrPath: '/tmp/unpublished-launch/stderr',
           startTime: new Date(0).toISOString(),
         },
-        incarnation,
+        leaderIncarnation: incarnation,
+        childPid,
       });
       return new Promise<never>((_resolve, reject) => {
         rejectLaunch = reject;
@@ -570,10 +572,15 @@ describe('launch admission', () => {
     });
     const runtime: Runtime = {
       ...base,
+      time: {
+        ...base.time,
+        sleep: () => new Promise<never>(() => undefined),
+      },
       process: {
         ...base.process,
-        observeLiveness: () => 'absent',
-        readProcessIncarnation: () => incarnation,
+        kill: vi.fn(() => true),
+        observeLiveness: (pid) => (pid === TEST_PROVIDER_PID ? 'absent' : 'alive'),
+        readProcessIncarnation: (pid) => (pid === TEST_PROVIDER_PID ? null : incarnation),
         durable: { ...base.process.durable, launch },
       },
     };
@@ -594,12 +601,23 @@ describe('launch admission', () => {
 
     controller.abort();
 
-    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(termination).resolves.toEqual({
+      kind: 'unresolved-at-deadline',
+      processes: [],
+      pendingLaunches: 0,
+      cleanupHandles: 1,
+      cleanupFailures: 0,
+      successorOwner: 'durable-job-recovery',
+    });
     expect(onRuntimeRecord).toHaveBeenCalledOnce();
     expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({
       pid: TEST_PROVIDER_PID,
       incarnation,
+      processGroupId: TEST_PROVIDER_PID,
+      childRoot: { pid: childPid, incarnation },
     });
+    expect(runtime.process.kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(runtime.process.kill).toHaveBeenCalledWith(childPid, 'SIGTERM');
     rejectLaunch(new Error('synthetic launch settlement'));
     await expect(spawn).rejects.toThrow('synthetic launch settlement');
   });

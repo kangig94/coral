@@ -50,9 +50,11 @@ const CONTAINMENT_HELPER_FILE = 'src/infra/process-containment.ts';
 // deleting teardown entirely would also make that scan pass. Keep every owner
 // explicit so an ownership change cannot silently narrow the escalation guarantee.
 const RECORDED_CONTAINMENT_OWNER_FILES = [
+  'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/provider-proxy/spawn-undo.ts',
   'src/provider-proxy/enforcement.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
+  'src/coordinator/services/recovery/actions.ts',
   'src/coordinator/services/recovery/interrupted-performer.ts',
   'src/coordinator/services/provider-proxy-set/index.ts',
   'src/coordinator/services/provider-proxy-set/inheritance.ts',

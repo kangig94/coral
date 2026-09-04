@@ -56,7 +56,6 @@ import { ProviderHostUnserviceableError } from '../../providers/host-admission.j
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
 import { writeDurableCliProcessRuntimeMeta } from '../runtime-meta-store.js';
-import { DURABLE_CLI_PROCESS_RUNTIME_META_VERSION } from '../runtime-meta.js';
 import type { AppServerProxyRoute } from '../contracts/app-server-proxy-route.js';
 import type {
   ProviderOperationChildAuthorization,
@@ -1422,7 +1421,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       (identity) => {
         try {
           writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
-            version: DURABLE_CLI_PROCESS_RUNTIME_META_VERSION,
             jobId,
             ...identity,
           });

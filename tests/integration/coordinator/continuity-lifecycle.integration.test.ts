@@ -603,7 +603,7 @@ describe('coordinator continuity lifecycle integration', () => {
     // (`coordinator/composition/execution-services.ts`), not a test double.
     const { service, progressStore } = createService([], { withObserveCarriers: true });
     const { sessionManager } = getInternals(service);
-    // `durable_cli_process.v1` keys on a canonical UUID; the job id must be one to write it below.
+    // Durable CLI process keys require a canonical UUID.
     const jobId = randomUUID();
     // A pid this OS will never assign: `probeProcessIncarnation` and `observeProcessLiveness` both answer
     // "nothing there" for it locally, with no network call involved.
@@ -638,10 +638,11 @@ describe('coordinator continuity lifecycle integration', () => {
     // The separately captured identity `spawnDurableJobTransport` would have written at launch — see
     // `onDurableProcessIdentity` in `providers/cli-runner.ts`.
     writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
-      version: 1,
       jobId,
       pid: deadPid,
       incarnation: testIncarnation(1),
+      processGroupId: deadPid,
+      childRoot: { pid: deadPid + 1, incarnation: testIncarnation(2) },
     });
     const expectedStoredPhase = progressStore.readStatus(jobId)?.phase;
 

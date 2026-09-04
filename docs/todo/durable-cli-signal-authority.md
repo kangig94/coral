@@ -1,89 +1,46 @@
-# TODO — finish durable-CLI signal authority
+# TODO — finish durable-CLI signal authority and refusal status
 
-**Status**: open. Durable launch and recovery-action termination now carry recorded process identities, but
-the recovered-job abort registries still signal bare pids, and a refused durable-transport termination still
-has no durable operator status.
+**Status**: identity-safe containment is implemented; durable refusal status remains deliberately deferred
+from the starvation-survival branch.
 
-## What is already closed
+Starvation does not kill the coordinator. A crash can therefore lose the current refusal's visibility or
+strand artifacts, but it must not lose authority over live work. Recovery remains unable to act without its
+own observation, while the recorded process containment remains evidence rather than signal authority by
+itself.
 
-`gracefulKillByPid` in `src/infra/process-supervision.ts` requires the incarnation recorded with the pid. It
-returns `signal-refused` before SIGTERM when that identity is missing, the running platform cannot use its
-incarnation as signal authority, the fresh identity cannot be read, or the fresh identity does not match.
-Before SIGKILL it reads the identity again and also requires a fresh `alive` observation.
+## Subject after durable CLI v2
 
-`spawnDurableJobTransport` in `src/coordinator/live/durable-transport.ts` reads the incarnation through the
-runtime process port immediately after durable launch, while the returned pid still names that launch. The
-same identity is reported for persistence and supplied to every abort, idle-timeout, and coordinator-cleanup
-termination request. A missing launch identity is not replaced with a pid-only record and does not authorize
-a later signal.
+The durable subject is no longer the wrapper pid alone. It contains:
 
-`registerRunningRecovery` in `src/coordinator/services/recovery/actions.ts` supplies the incarnation from
-`durable_cli_process.v1` to `gracefulKillByPid`. When termination cannot be authorized, recovery retains its
-ownership and durable retryable disposition until adoption succeeds or absence is established.
+- the detached wrapper leader's {pid, incarnation};
+- the process-group id established by that leader;
+- the provider command's root {pid, incarnation}.
 
-## Remaining paths
+Absence requires the process group and the recorded child root to be absent. A wrapper death alone decides
+nothing about the provider command. The version-addressed durable_cli_process.v2 key makes this payload
+invisible to an older v1 selector; readers decode missing, corrupt, or foreign bytes to no usable identity and
+refuse conservatively.
 
-Signals aimed at a pid that came out of a durable record, with no check that the pid still names the process
-the record was written for. Note the two columns are different things and the difference matters:
+## Decided status design
 
-| Module (what the invariant names)              | Signal paths inside it                                             |
-| ----------------------------------------------- | -------------------------------------------------------------------- |
-| `src/coordinator/services/recovery/service.ts` | one direct `kill`, in the abort handler for an **adopted** job       |
-| `src/jobs/reconcile/registry.ts`               | one direct `kill`, in the abort handler for a live job               |
+The durable row for a refused signal is job-scoped and belongs on the jobs domain's existing stream. It is not
+a provider-proxy record and not an entry in a cross-domain hold store.
 
-`tests/invariants/signal-authority.test.ts` is a **module**-level scan, and a helper-delivered signal is
-attributed to the helper's file rather than the caller's. That is why closing `recovery/actions.ts` removed no
-ALLOWLIST entry: the behavior needed its own review and test. Treat the ALLOWLIST as a checklist of modules
-and this table as the checklist of behaviours; neither is a substitute for the other.
+Key the current status by the job and exact v2 subject. Record the refusal disposition and writer
+{pid, incarnation}; the row is evidence, never authority. A reader from a different writer treats it as a
+predecessor record, re-observes the full containment, and reaches its own disposition. No lease or epoch is
+needed because bound-socket authority already serializes coordinators.
 
-The `recovery/service.ts` row is the sharpest. Adoption exists precisely because the record outlived the
-process that wrote it, so its pid has already survived one process boundary before anyone signals it.
+Retire the status when the reader itself confirms containment absence, when a supported operator action
+abandons the obligation, or during terminal job cleanup. Existing backend status diagnostics and startup
+recovery enumeration are the readers.
 
-## Why this is a defect and not a nit
+## Remaining implementation
 
-The identity **is recorded**. `durable_cli_process.v1` (`src/jobs/runtime-meta.ts`) carries an
-`incarnation` beside the pid, and `observeProcessIdentity` already exists to compare one. The remaining sites
-simply do not ask. That is a different situation from
-[`darwin-signal-authority.md`](./darwin-signal-authority.md), where the evidence is too weak to use — here it
-is sitting in the same record as the number being signalled.
+- Persist each durable-transport signal refusal and its transition out of refusal on the jobs stream.
+- Make the recovered-job abort registries carry the v2 subject to their signal boundary and preserve
+  ownership when signaling is refused.
+- Expose the refusal through existing backend status and startup recovery views.
 
-The window is not narrow, either. An abort that can arrive at any time, and — for `service.ts` specifically —
-a pid that already outlived one process boundary before adoption, are exactly the shapes where a child exits,
-its pid is recycled, and the signal lands on a stranger.
-
-## What is already true, and must not be re-derived
-
-`durable_cli_process.v1` did **not** need a generation move when the incarnation replaced
-`processStartedAtSeconds`, and this was checked rather than assumed:
-`decodeDurableCliProcessRuntimeMeta` in v0.10.8 returns `null` on any decode failure, so a rolled-back build
-reads the new shape as "no recorded identity" and answers `unknown`. That is Principle 10's second mechanism
-working as intended. Do not "fix" it by renaming the key — the saga record needed that
-(see the commit that moved `provider_operation_saga`) because _its_ shipped reader was strict.
-
-## The shape of the fix
-
-Each remaining abort path must supply the recorded incarnation to the signal boundary and preserve ownership
-when the returned disposition refuses. Refusal cannot flow through an abort result whose success means the
-process obligation was discharged.
-
-The durable transport also needs durable refusal status keyed by the target identity. Its current warning is
-useful diagnosis but is not operator-readable current state and does not name a supported retry or transfer
-ownership.
-
-## Cost on platforms without signal-authorizing incarnations
-
-`incarnationMayAuthorizeSignal` currently authorizes only Linux. On every other platform,
-`gracefulKillByPid` returns `platform-incarnation-cannot-authorize-signal` without sending SIGTERM or
-scheduling SIGKILL. This is an intentional safety loss: abort, idle timeout, and coordinator cleanup cannot
-kill a durable CLI process by pid because doing so could target a recycled pid.
-
-The process therefore remains owned and may remain alive until it exits through another mechanism. An abort
-can remain unsettled waiting for that exit, and repeated idle checks continue to refuse rather than converting
-unknown identity into permission. Until the refusal is persisted as keyed status with an implemented exit,
-the warning is the only visible report of that hold; this visibility gap remains open.
-
-## Completion condition
-
-This TODO is complete when the recovered-job abort paths no longer signal an unverified pid and every
-`signal-refused` outcome that retains a durable process obligation is represented as durable status with a
-reachable retry, decisive absence observation, operator action, or verified successor owner.
+Do not solve this with a unified jobs-and-proxy hold store. It would erase owner vocabulary, violate the
+store/proxy layering boundary, and invite unrelated obligations into one content-blank abstraction.

@@ -319,8 +319,13 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       providerHostManager: {
         shutdown: vi.fn(async () => {
           mockState.events.push('providerHostManager:shutdown');
+          return { kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] };
         }),
-        drainForHandoff: vi.fn(),
+        drainForHandoff: vi.fn(async () => ({
+          kind: 'provider-hosts-quiesced',
+          liveProxySets: [],
+          acquisitionCleanupHolds: [],
+        })),
       } as never,
       handoffQuiescePorts: () => [],
       createKbHealthComponentFn: vi.fn(() => ({
@@ -703,7 +708,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(servicesRef.tryGet()).toBeNull();
   });
 
-  it('passes the composed provider proxy authority into the shutdown sequence and reaps its live sets', async () => {
+  it('reaps the live sets named by the provider-host quiescence receipt', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'r' }));
     const fakeSet: ProviderProxySetAuthority = {
@@ -715,15 +720,20 @@ describe('lifecycle reset authority and finalizer order', () => {
     };
     const deps: LifecycleDeps = {
       ...baseDeps,
-      providerProxyAuthority: { liveSets: () => [fakeSet] },
+      providerHostManager: {
+        ...baseDeps.providerHostManager,
+        shutdown: async () => ({
+          kind: 'provider-hosts-quiesced',
+          liveProxySets: [fakeSet],
+          acquisitionCleanupHolds: [],
+        }),
+      },
     };
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
     await lifecycle.shutdown('unit-hard-stop');
 
-    // Proves the whole seam: `LifecycleDeps.providerProxyAuthority` reached `runShutdownSequence`, which read
-    // `liveSets()` and actually reaped what it returned — not merely that the field was accepted.
     expect(stopAndReap).toHaveBeenCalledOnce();
   });
 

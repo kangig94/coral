@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { Server, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
 import type {
@@ -11,6 +11,7 @@ import type {
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 // AC5: `runShutdownSequence` completes within `HANDOFF_DRAIN_TIMEOUT_MS` even
 // when an async-cooperative finalizer hangs. The IPC socket must remain bound
@@ -102,8 +103,17 @@ function buildHarness(opts: {
       // Mode is 'handoff', so .shutdown() is not called — only drainForHandoff().
       drainForHandoff: async () => {
         callLog.push('drainForHandoff');
+        return {
+          kind: 'provider-hosts-quiesced',
+          liveProxySets: opts.providerProxyAuthority?.liveSets() ?? [],
+          acquisitionCleanupHolds: [],
+        };
       },
-      shutdown: async () => {},
+      shutdown: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: opts.providerProxyAuthority?.liveSets() ?? [],
+        acquisitionCleanupHolds: [],
+      }),
     } as never,
     providerProxyAuthority: opts.providerProxyAuthority,
     storeServicesRef: {
@@ -194,7 +204,11 @@ describe('runShutdownSequence drain budget', () => {
     harness.ctx.reason = 'test-cleanup';
     let providerSignal: AbortSignal | undefined;
     harness.ctx.providerHostManager = {
-      drainForHandoff: async () => {},
+      drainForHandoff: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
       shutdown: (signal?: AbortSignal) => {
         providerSignal = signal;
         return new Promise<void>(() => {});
@@ -238,9 +252,14 @@ describe('runShutdownSequence drain budget', () => {
       throw new Error('injected crash terminalization failure');
     };
     harness.ctx.providerHostManager = {
-      drainForHandoff: async () => {},
+      drainForHandoff: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
       shutdown: async () => {
         harness.callLog.push('providerHostManager.shutdown');
+        return { kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] };
       },
     } as never;
     harness.ctx.terminateAllFn = () => {
@@ -336,7 +355,7 @@ describe('runShutdownSequence drain budget', () => {
     const harness = buildHarness({});
     harness.ctx.providerHostManager = {
       drainForHandoff: () => new Promise<void>(() => {}),
-      shutdown: async () => {},
+      shutdown: async () => ({ kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] }),
     } as never;
 
     const sequence = runShutdownSequence(harness.ctx);
@@ -384,10 +403,11 @@ describe('runShutdownSequence drain budget', () => {
     harness.ctx.providerHostManager = {
       drainForHandoff: async () => {
         order.push('drainForHandoff:start');
-        await origDrain();
+        const receipt = await origDrain();
         order.push('drainForHandoff:resolved');
+        return receipt;
       },
-      shutdown: async () => {},
+      shutdown: async () => ({ kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] }),
     } as never;
     harness.ctx.closeIpcServerFn = async (_l: IpcListener) => {
       order.push('closeIpc');
@@ -547,6 +567,44 @@ async function shutdownFailureDetail(ctx: Parameters<typeof runShutdownSequence>
 }
 
 describe('required provider-proxy shutdown steps', () => {
+  it('retries every acquisition cleanup hold once and reports a surviving hold as unconfirmed', async () => {
+    const retry = vi.fn(async (signal: AbortSignal) => {
+      expect(signal.aborted).toBe(false);
+      return { kind: 'held' as const, reason: 'guardian is still alive' };
+    });
+    const hold = {
+      kind: 'provider_proxy_acquisition_held' as const,
+      owner: 'provider-host-manager' as const,
+      cut: 'guardian-spawned',
+      reason: 'cleanup deadline elapsed',
+      strandedArtifacts: [],
+      guardianIdentity: {
+        pid: 4242,
+        incarnation: testIncarnation('shutdown-hold'),
+        processGroupId: 4242,
+      },
+      recoveryCapability: { retry },
+    };
+    const harness = buildHarness({ reason: 'fatal' });
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
+      shutdown: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [hold],
+      }),
+    };
+
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(
+      /provider proxy stop and reap: .*acquisition guardian 4242: guardian is still alive/u,
+    );
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it('reaps every live set on a hard shutdown before terminating owned children', async () => {
     const callLog: CallLog = [];
     const harness = buildHarness({
@@ -580,11 +638,16 @@ describe('required provider-proxy shutdown steps', () => {
       providerProxyAuthority: { liveSets: () => live },
     });
     harness.ctx.providerHostManager = {
-      drainForHandoff: async () => {},
+      drainForHandoff: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
       shutdown: async () => {
         // The acquisition settles here — during `providerHostManager.shutdown()` itself, after whatever
         // reading of `liveSets()` happened before this call started.
         live = [fakeSet('late', callLog)];
+        return { kind: 'provider-hosts-quiesced', liveProxySets: live, acquisitionCleanupHolds: [] };
       },
     } as never;
     harness.ctx.terminateAllFn = () => {

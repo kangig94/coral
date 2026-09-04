@@ -42,10 +42,25 @@ function runtimeRecord(): DurableCliRuntimeRecord {
 function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: NodeJS.Platform = 'linux') {
   const runtime = new SimulationRuntime();
   vi.spyOn(runtime.env, 'platform').mockReturnValue(platform);
+  let monotonicMs = 0n;
+  vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => {
+    monotonicMs += 25n;
+    return monotonicMs;
+  });
+  vi.spyOn(runtime.time, 'sleep').mockResolvedValue();
   const db = openTestStoreDb(runtime, ':memory:');
-  const kill = vi.fn(() => true);
-  const readProcessIncarnation = vi.fn(() => testIncarnation('observed'));
-  runtime.process.observeLiveness = vi.fn(() => liveness);
+  const absentPids = new Set<number>();
+  let observedIncarnation = testIncarnation('observed');
+  const observeLiveness = (pid: number) => (absentPids.has(pid) ? 'absent' : liveness);
+  const kill = vi.fn((pid: number) => {
+    absentPids.add(pid);
+    if (pid < 0) absentPids.add(-pid);
+    return true;
+  });
+  const readProcessIncarnation = vi.fn((pid: number) =>
+    observeLiveness(pid) === 'absent' ? null : observedIncarnation,
+  );
+  runtime.process.observeLiveness = vi.fn(observeLiveness);
   runtime.process.readProcessIncarnation = readProcessIncarnation;
   runtime.process.kill = kill;
   const recoveryRegistry = new RecoveryRegistry(runtime.process);
@@ -86,6 +101,9 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
     db,
     kill,
     readProcessIncarnation,
+    setObservedIncarnation: (incarnation: ReturnType<typeof testIncarnation>) => {
+      observedIncarnation = incarnation;
+    },
     recoveryRegistry,
     settleFault,
     run,
@@ -100,7 +118,7 @@ describe('registerRunningRecovery provider-binding holds', () => {
       const disposition = await fixture.run();
 
       if (disposition.kind !== 'quarantine') throw new Error(`expected quarantine, received ${disposition.kind}`);
-      expect(disposition.detail).toContain('could not be observed');
+      expect(disposition.detail).toContain('containment is unavailable');
       expect(disposition.detail).toContain('Retry after repairing the provider binding');
       expect(fixture.settleFault).not.toHaveBeenCalled();
       expect(fixture.kill).not.toHaveBeenCalled();
@@ -122,13 +140,14 @@ describe('registerRunningRecovery provider-binding holds', () => {
       try {
         if (recordedPid !== null) {
           writeDurableCliProcessRuntimeMeta(fixture.db, {
-            version: 1,
             jobId: JOB_ID,
             pid: recordedPid,
             incarnation: testIncarnation('recorded'),
+            processGroupId: recordedPid,
+            childRoot: { pid: recordedPid + 1, incarnation: testIncarnation('recorded-child') },
           });
         }
-        fixture.readProcessIncarnation.mockReturnValue(observedIncarnation);
+        fixture.setObservedIncarnation(observedIncarnation);
 
         const disposition = await fixture.run();
 
@@ -142,36 +161,48 @@ describe('registerRunningRecovery provider-binding holds', () => {
     },
   );
 
-  it('passes the recorded incarnation when requesting cleanup for the matching live process', async () => {
+  it('settles only after the matching group and child root are reaped', async () => {
     const fixture = recoveryFixture('alive');
     try {
       const incarnation = testIncarnation('matching');
-      writeDurableCliProcessRuntimeMeta(fixture.db, { version: 1, jobId: JOB_ID, pid: PID, incarnation });
-      fixture.readProcessIncarnation.mockReturnValue(incarnation);
+      writeDurableCliProcessRuntimeMeta(fixture.db, {
+        jobId: JOB_ID,
+        pid: PID,
+        incarnation,
+        processGroupId: PID,
+        childRoot: { pid: PID + 1, incarnation },
+      });
+      fixture.setObservedIncarnation(incarnation);
 
       const disposition = await fixture.run();
 
-      expect(disposition.kind).toBe('quarantine');
-      expect(fixture.kill).toHaveBeenCalledWith(PID, 'SIGTERM');
-      expect(fixture.settleFault).not.toHaveBeenCalled();
+      expect(disposition.kind).toBe('advanced');
+      expect(fixture.kill).toHaveBeenCalledWith(-PID, 'SIGTERM');
+      expect(fixture.kill).toHaveBeenCalledWith(PID + 1, 'SIGTERM');
+      expect(fixture.settleFault).toHaveBeenCalledOnce();
       expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
     } finally {
       fixture.db.close();
     }
   });
 
-  it('returns a no-signal quarantine when the platform cannot authorize the recorded identity', async () => {
-    const fixture = recoveryFixture('alive', 'darwin');
+  it('returns a no-signal quarantine when the recorded identities cannot be observed', async () => {
+    const fixture = recoveryFixture('unknown');
     try {
       const incarnation = testIncarnation('matching');
-      writeDurableCliProcessRuntimeMeta(fixture.db, { version: 1, jobId: JOB_ID, pid: PID, incarnation });
-      fixture.readProcessIncarnation.mockReturnValue(incarnation);
+      writeDurableCliProcessRuntimeMeta(fixture.db, {
+        jobId: JOB_ID,
+        pid: PID,
+        incarnation,
+        processGroupId: PID,
+        childRoot: { pid: PID + 1, incarnation },
+      });
+      fixture.setObservedIncarnation(incarnation);
 
       const disposition = await fixture.run();
 
       if (disposition.kind !== 'quarantine') throw new Error(`expected quarantine, received ${disposition.kind}`);
-      expect(disposition.detail).toContain('No signal was sent');
-      expect(disposition.detail).toContain('platform-incarnation-cannot-authorize-signal');
+      expect(disposition.detail).toContain('liveness could not be observed');
       expect(fixture.kill).not.toHaveBeenCalled();
       expect(fixture.settleFault).not.toHaveBeenCalled();
       expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
@@ -180,9 +211,16 @@ describe('registerRunningRecovery provider-binding holds', () => {
     }
   });
 
-  it('settles only after exact process absence and releases the registry through boundary cleanup', async () => {
+  it('settles only after exact containment absence and releases the registry through boundary cleanup', async () => {
     const fixture = recoveryFixture('absent');
     try {
+      writeDurableCliProcessRuntimeMeta(fixture.db, {
+        jobId: JOB_ID,
+        pid: PID,
+        incarnation: testIncarnation('leader'),
+        processGroupId: PID,
+        childRoot: { pid: PID + 1, incarnation: testIncarnation('child') },
+      });
       const disposition = await fixture.run();
 
       expect(disposition.kind).toBe('advanced');

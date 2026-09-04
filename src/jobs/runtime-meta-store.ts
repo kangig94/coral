@@ -6,15 +6,6 @@ import {
   type DurableCliProcessRuntimeMeta,
 } from './runtime-meta.js';
 
-/**
- * The generic `key`/`value` `meta` table (`src/store/schema.sql`) holding the durable CLI runtime record.
- * Kept a sibling of its pure codec rather than folded into it: the codec has no
- * store dependency and stays testable without a database, while this module owns the one thing that
- * actually touches SQL for these keys. The store owns the table's schema; this module — not the store, and
- * not the coordinator — owns the queries because `durable_cli_process.v1` is jobs vocabulary, not domain
- * event history and not coordinator equipment.
- */
-
 type MetaRow = { value: string };
 
 function readMetaValue(db: Database, key: string): string | null {
@@ -22,8 +13,6 @@ function readMetaValue(db: Database, key: string): string | null {
   return row?.value ?? null;
 }
 
-/** `null` for every unusable reply — absent row, corrupt bytes, or a foreign shape — matching what the only
- *  caller that asks (observation) already treats as "nothing to check the process against". */
 export function readDurableCliProcessRuntimeMeta(db: Database, jobId: string): DurableCliProcessRuntimeMeta | null {
   return decodeDurableCliProcessRuntimeMeta(readMetaValue(db, durableCliProcessRuntimeMetaKey(jobId)));
 }

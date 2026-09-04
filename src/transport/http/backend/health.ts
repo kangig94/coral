@@ -7,6 +7,7 @@ import {
 } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import {
+  PROVIDER_PROXY_SET_OPERATOR_ACTIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
@@ -149,6 +150,7 @@ export interface BackendHealth {
       enforcerObservations?: ProviderProxySetEnforcerObservations;
       incidentReason: string;
       waitingFor: ProviderProxySetOperatorDisposition['waitingFor'];
+      operatorAction: ProviderProxySetOperatorDisposition['operatorAction'];
     }>;
   };
 }
@@ -257,7 +259,8 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       typeof entry.disposition !== 'string' ||
       (entry.cause !== undefined && typeof entry.cause !== 'string') ||
       typeof entry.incidentReason !== 'string' ||
-      typeof entry.waitingFor !== 'string'
+      typeof entry.waitingFor !== 'string' ||
+      (entry.operatorAction !== undefined && typeof entry.operatorAction !== 'string')
     ) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);
@@ -268,7 +271,9 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       (PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS as readonly string[]).includes(entry.disposition) &&
       (entry.cause === undefined ||
         (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES as readonly string[]).includes(entry.cause)) &&
-      (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR as readonly string[]).includes(entry.waitingFor);
+      (PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR as readonly string[]).includes(entry.waitingFor) &&
+      (entry.operatorAction === undefined ||
+        (PROVIDER_PROXY_SET_OPERATOR_ACTIONS as readonly string[]).includes(entry.operatorAction));
     if (!understandsEnums) {
       skippedRows += 1;
       skippedSetTokens.push(entry.setToken);
@@ -305,6 +310,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
 
     understoodRows.push({
       ...entry,
+      operatorAction: entry.operatorAction ?? 'wait',
       ...(enforcerObservations === undefined ? {} : { enforcerObservations: enforcerObservations.data }),
     } as ProviderProxySet);
   }

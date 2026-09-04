@@ -2348,6 +2348,42 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
+  it('exposes acquisition cleanup holds without treating them as live sets', () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('cleanup-hold-route');
+    if (admission.kind !== 'accepted') throw new Error('expected fresh admission');
+    const hold = {
+      kind: 'provider_proxy_acquisition_held' as const,
+      owner: 'provider-host-manager' as const,
+      cut: 'guardian-spawned',
+      reason: 'guardian absence unconfirmed',
+      strandedArtifacts: ['/tmp/capsule'],
+      guardianIdentity: {
+        pid: 4242,
+        incarnation: testIncarnation('held-guardian'),
+        processGroupId: 4242,
+      },
+      recoveryCapability: {
+        retry: vi.fn(() => new Promise<never>(() => undefined)),
+      },
+    };
+
+    lifecycle.acquisitionCleanupHeld(admission.slotId, hold);
+
+    expect(lifecycle.liveSets()).toEqual([]);
+    expect(lifecycle.acquisitionCleanupHolds()).toEqual([hold]);
+  });
+
   it.each(liveClaimHoldCases)('retires the $label hold when its final claim leaves', ({ waitingFor, trigger }) => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -3676,6 +3712,12 @@ describe('ProviderProxySetLifecycle', () => {
     await drainMicrotasks();
 
     const address = providerProxySetAddress(authority.setIdentity);
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({
+        waitingFor: 'publication-confirmation-or-control-release',
+        operatorAction: 'wait',
+      }),
+    ]);
     expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'not-held', state: 'recovering' });
 
     await settleScheduledWork(clock);
@@ -3696,6 +3738,14 @@ describe('ProviderProxySetLifecycle', () => {
     expect(retained.closed).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
     expect(retained.stopped).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
     expect(redeemCapsule).toHaveBeenCalledOnce();
+
+    const actionableDispositions = lifecycle
+      .snapshot()
+      .operatorDispositions.filter((disposition) => disposition.operatorAction === 'contain');
+    expect(actionableDispositions).not.toHaveLength(0);
+    for (const disposition of actionableDispositions) {
+      expect(lifecycle.authorizeOperatorExit(disposition.setIdentity).kind).toBe('authorized');
+    }
 
     const authorization = lifecycle.authorizeOperatorExit(address);
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);

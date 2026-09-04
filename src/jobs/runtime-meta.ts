@@ -1,4 +1,5 @@
 import { processIncarnationSchema } from '../infra/node-process.js';
+import type { DurableCliProcessSubject } from '../runtime/ports.js';
 import { z } from 'zod';
 
 const MAX_RUNTIME_META_BYTES = 4096;
@@ -7,33 +8,31 @@ const canonicalUuidSchema = z
   .string()
   .length(36)
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
+const positiveSafeIntegerSchema = z.number().int().positive().safe();
 
-export const DURABLE_CLI_PROCESS_RUNTIME_META_VERSION = 1 as const;
+export const DURABLE_CLI_PROCESS_RUNTIME_META_VERSION = 2 as const;
 
-/**
- * `durable_cli_process.v1:<jobId>` — the recorded identity of one durable CLI child.
- *
- * Small on purpose. A durable CLI has no operation tuple and no control channel, so the only thing that can
- * later be checked against it is which process was launched — and a pid alone cannot answer that, because
- * the OS recycles it. Pairing the pid with the process's incarnation token is what makes "the process we
- * launched is still running" distinguishable from "some unrelated process now holds that number".
- *
- * This is ordinary key/value `meta`, not domain history or a substitute for `job.runtime.started`, because
- * its only consumer is conservative process observation after restart.
- */
-export const durableCliProcessRuntimeMetaSchema = z
+/** A new payload generation must move to a new key generation. */
+export const durableCliProcessRuntimeMetaSchema: z.ZodType<DurableCliProcessRuntimeMeta> = z
   .object({
-    version: z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_VERSION),
     jobId: canonicalUuidSchema,
-    pid: nonNegativeSafeIntegerSchema,
+    pid: positiveSafeIntegerSchema,
     incarnation: processIncarnationSchema,
+    processGroupId: positiveSafeIntegerSchema,
+    childRoot: z
+      .object({
+        pid: positiveSafeIntegerSchema,
+        incarnation: processIncarnationSchema,
+      })
+      .strict()
+      .readonly(),
   })
-  .strict();
+  .strict()
+  .readonly();
 
-export type DurableCliProcessRuntimeMeta = z.infer<typeof durableCliProcessRuntimeMetaSchema>;
+export type DurableCliProcessRuntimeMeta = Readonly<{ jobId: string }> & DurableCliProcessSubject;
 
-/** The meta table key for one durable CLI child's recorded identity. Only the coordinator writes this key. */
+/** Only the coordinator may write this key. */
 export function durableCliProcessRuntimeMetaKey(jobId: string): string {
   return `durable_cli_process.v${DURABLE_CLI_PROCESS_RUNTIME_META_VERSION}:${jobId}`;
 }

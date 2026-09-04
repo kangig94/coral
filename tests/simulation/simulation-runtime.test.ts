@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import type { StoragePort } from '#src/infra/port-types.js';
+import type { DurableProvisionalLaunch } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { createSimulationBackend } from '#tools/simulation/core/backend.js';
@@ -771,11 +772,15 @@ describe('simulation runtime', () => {
     });
 
     const closePromise = waitForChildClose(child);
+    let provisionalLaunch: DurableProvisionalLaunch | null = null;
     const durableLaunchPromise = runtime.process.durable.launch({
       provider: 'codex',
       command: 'codex',
       args: ['--exec'],
       jobDir: '/tmp/sim/jobs/job-1',
+      onSpawned: (launch) => {
+        provisionalLaunch = launch;
+      },
     });
 
     await Promise.resolve();
@@ -791,9 +796,18 @@ describe('simulation runtime', () => {
     expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toBe('progress-one\n');
     expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toBe('warn-one\n');
     expect(runtime.process.observeLiveness(durable.pid)).toBe('alive');
+    expect(provisionalLaunch).not.toBeNull();
+    expect(provisionalLaunch!.runtimeRecord).toBe(durable.runtimeRecord);
+    expect(provisionalLaunch!.leaderIncarnation).toBe(
+      runtime.process.readProcessIncarnation(durable.pid, runtime.env.platform() as NodeJS.Platform),
+    );
+    expect(provisionalLaunch!.childPid).not.toBe(durable.pid);
+    expect(
+      runtime.process.readProcessIncarnation(provisionalLaunch!.childPid!, runtime.env.platform() as NodeJS.Platform),
+    ).not.toBeNull();
 
-    runtime.process.kill(durable.pid, 'SIGTERM');
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
+    runtime.process.kill(-durable.pid, 'SIGTERM');
+    expect(runtime.spawner.killCalls).toContainEqual({ pid: -30_001, signal: 'SIGTERM' });
     expect(runtime.process.observeLiveness(durable.pid)).toBe('alive');
 
     runtime.time.tick(1);

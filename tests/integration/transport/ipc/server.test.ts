@@ -123,8 +123,12 @@ function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) 
       throw new Error('provider-host session creation was not expected');
     },
     attachSession: async () => null,
-    drainForHandoff: async () => undefined,
-    shutdown: async () => undefined,
+    drainForHandoff: async () => ({
+      kind: 'provider-hosts-quiesced',
+      liveProxySets: [],
+      acquisitionCleanupHolds: [],
+    }),
+    shutdown: async () => ({ kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] }),
     routeAppServerOperation: () => null,
     ...administration,
   } satisfies ProviderHostManager & ProviderHostAdministrationAuthority;

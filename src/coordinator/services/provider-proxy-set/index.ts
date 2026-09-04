@@ -389,6 +389,8 @@ export type ProviderProxySetLifecycleSnapshot = Readonly<{
   operatorDispositions: readonly ProviderProxySetOperatorDisposition[];
 }>;
 
+type RecordedProviderProxySetOperatorDisposition = Omit<ProviderProxySetOperatorDisposition, 'operatorAction'>;
+
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
   stage: 'acquisition-publication-retry' | 'containment-attempt-deadline' | 'containment-retry';
   requestedWakeMs: number;
@@ -693,7 +695,10 @@ export class ProviderProxySetLifecycle {
   readonly #capsuleAddresses = new Map<string, string>();
   readonly #capsuleGrants = new Map<string, string>();
   readonly #foreignRetirementOwners = new Map<string, ForeignCapsuleRetirementOwner>();
-  readonly #operatorDispositions = new Map<ProviderProxySetKey, Map<string, ProviderProxySetOperatorDisposition>>();
+  readonly #operatorDispositions = new Map<
+    ProviderProxySetKey,
+    Map<string, RecordedProviderProxySetOperatorDisposition>
+  >();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
 
@@ -1027,6 +1032,12 @@ export class ProviderProxySetLifecycle {
     );
   }
 
+  acquisitionCleanupHolds(): readonly ProviderProxyAcquisitionHeld<'provider-host-manager'>[] {
+    return [...this.#slots.values()].flatMap((slot) =>
+      slot.kind === 'acquiring' && slot.cleanupHold !== null ? [slot.cleanupHold] : [],
+    );
+  }
+
   beginGracefulDrain(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (slot?.kind !== 'available') return;
@@ -1171,11 +1182,14 @@ export class ProviderProxySetLifecycle {
     return false;
   }
 
-  authorizeOperatorExit(address: ProviderProxySetAddress): ProviderProxySetOperatorExitAuthorization {
-    const key = this.#identityIndex.keyForAddress(address);
-    if (key === null) return { kind: 'set-not-found' };
-    const slot = this.#slots.get(key);
-    if (slot === undefined) return { kind: 'set-not-found' };
+  #operatorExitAvailability(slot: ProviderProxySetSlot):
+    | Readonly<{ kind: 'authorized'; slot: EstablishedSlot | CapsuleRecoveringSlot }>
+    | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
+    | Readonly<{
+        kind: 'deadline-pending';
+        remainingMs: number;
+        slot: EstablishedSlot | CapsuleRecoveringSlot;
+      }> {
     const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
     if (
       slot.kind !== 'reattaching' &&
@@ -1185,26 +1199,41 @@ export class ProviderProxySetLifecycle {
       slot.kind !== 'capsule-recovering' &&
       !heldWhileRoutable
     ) {
-      if (slot.kind === 'available' || slot.kind === 'draining') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
-      }
       return { kind: 'not-held', state: slot.kind };
     }
     const notBeforeMonotonicMs = slot.operatorExitNotBeforeMonotonicMs;
     if (notBeforeMonotonicMs === null) return { kind: 'not-held', state: slot.kind };
     const remainingMs = Number(notBeforeMonotonicMs - this.#deps.time.monotonicNow());
-    if (remainingMs > 0) {
-      this.#recordOperatorExitRefusal(slot, 'operator_exit_deadline_pending', 'set-adoption-deadline');
-      return { kind: 'deadline-pending', remainingMs };
+    return remainingMs > 0 ? { kind: 'deadline-pending', remainingMs, slot } : { kind: 'authorized', slot };
+  }
+
+  authorizeOperatorExit(address: ProviderProxySetAddress): ProviderProxySetOperatorExitAuthorization {
+    const key = this.#identityIndex.keyForAddress(address);
+    if (key === null) return { kind: 'set-not-found' };
+    const slot = this.#slots.get(key);
+    if (slot === undefined) return { kind: 'set-not-found' };
+    const availability = this.#operatorExitAvailability(slot);
+    if (availability.kind === 'not-held') {
+      if (slot.kind === 'available' || slot.kind === 'draining') {
+        this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
+      }
+      return availability;
     }
+    if (availability.kind === 'deadline-pending') {
+      this.#recordOperatorExitRefusal(availability.slot, 'operator_exit_deadline_pending', 'set-adoption-deadline');
+      return { kind: 'deadline-pending', remainingMs: availability.remainingMs };
+    }
+    const authorizedSlot = availability.slot;
+    const notBeforeMonotonicMs = authorizedSlot.operatorExitNotBeforeMonotonicMs;
+    if (notBeforeMonotonicMs === null) return { kind: 'not-held', state: authorizedSlot.kind };
     return {
       kind: 'authorized',
       capability: Object.freeze({
-        setIdentity: slot.identity,
-        containmentProofAuthorization: authorizeProviderProxySetContainmentProof(slot.identity),
+        setIdentity: authorizedSlot.identity,
+        containmentProofAuthorization: authorizeProviderProxySetContainmentProof(authorizedSlot.identity),
         notBeforeMonotonicMs,
-        operatorExitGeneration: slot.operatorExitGeneration,
-        attemptToken: slot.attemptToken,
+        operatorExitGeneration: authorizedSlot.operatorExitGeneration,
+        attemptToken: authorizedSlot.attemptToken,
         [operatorExitCapabilityBrand]: this,
       }) as ProviderProxySetOperatorExitCapability,
     };
@@ -1659,9 +1688,12 @@ export class ProviderProxySetLifecycle {
           ? [slot.pendingOperations.size]
           : [],
       ),
-      operatorDispositions: [...this.#operatorDispositions.values()].flatMap((dispositions) => [
-        ...dispositions.values(),
-      ]),
+      operatorDispositions: [...this.#operatorDispositions].flatMap(([key, dispositions]) => {
+        const slot = this.#slots.get(key);
+        const operatorAction =
+          slot !== undefined && this.#operatorExitAvailability(slot).kind === 'authorized' ? 'contain' : 'wait';
+        return [...dispositions.values()].map((disposition) => ({ ...disposition, operatorAction }));
+      }),
     };
   }
 

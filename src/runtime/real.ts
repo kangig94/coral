@@ -258,7 +258,7 @@ const runtimeRecord = {
   stderrPath,
   startTime,
 };
-process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord }) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord, childPid: child.pid }) + '\\n');
 
 if (prompt) child.stdin.write(prompt);
 child.stdin.end();
@@ -289,6 +289,7 @@ type DurableControlMessage =
   | {
       type: 'runtime';
       runtimeRecord: DurableCliRuntimeRecord;
+      childPid: number;
     }
   | {
       type: 'exit';
@@ -452,8 +453,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
-      const stdoutPath = join(options.jobDir, 'stdout');
-      const stderrPath = join(options.jobDir, 'stderr');
       const startTime = new Date(time.now()).toISOString();
       storage.writeAtomicSync(envPath, JSON.stringify(options.env ?? buildSpawnEnv(options.envAdditions)), {
         mode: 0o600,
@@ -483,30 +482,23 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         time,
         wrapper,
       });
+      let leaderIncarnation: ProcessIncarnation | null = null;
       if (wrapper.pid !== undefined) {
-        const runtimeRecord: DurableCliRuntimeRecord = {
-          transport: 'durable-cli',
-          pid: wrapper.pid,
-          stdoutPath,
-          stderrPath,
-          startTime,
-        };
-        let incarnation: ProcessIncarnation | null;
         try {
-          incarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
+          leaderIncarnation = probeProcessIncarnation(wrapper.pid, capturedEnv.platform);
         } catch {
-          incarnation = null;
-        }
-        try {
-          options.onSpawned?.({ runtimeRecord, incarnation });
-        } catch (error: unknown) {
-          gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-          void readiness.catch(() => {});
-          throw error;
+          leaderIncarnation = null;
         }
       }
 
-      const { runtimeRecord, exitPromise } = await readiness;
+      const { runtimeRecord, childPid, exitPromise } = await readiness;
+      try {
+        options.onSpawned?.({ runtimeRecord, leaderIncarnation, childPid });
+      } catch (error: unknown) {
+        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        void exitPromise.catch(() => {});
+        throw error;
+      }
       durableExitPromises.set(runtimeRecord.pid, exitPromise);
 
       return {
@@ -805,7 +797,7 @@ function isExitRecord(value: unknown): value is DurableProcessExit {
 function waitForDurableRuntime(options: {
   time: TimePort;
   wrapper: ReturnType<typeof spawnChild>;
-}): Promise<{ runtimeRecord: DurableCliRuntimeRecord; exitPromise: Promise<DurableProcessExit> }> {
+}): Promise<{ runtimeRecord: DurableCliRuntimeRecord; childPid: number; exitPromise: Promise<DurableProcessExit> }> {
   const stdout = options.wrapper.stdout;
   const stderr = options.wrapper.stderr;
   if (!stdout || !stderr) {
@@ -818,6 +810,7 @@ function waitForDurableRuntime(options: {
   const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
   const exitDeferred = createDeferred<DurableProcessExit>();
   let runtimeRecord: DurableCliRuntimeRecord | null = null;
+  let childPid: number | null = null;
   let exitRecord: DurableProcessExit | null = null;
   let stderrBuffer = '';
   let lineBuffer = '';
@@ -840,13 +833,18 @@ function waitForDurableRuntime(options: {
     }
 
     if (message.type === 'runtime') {
-      if (!isDurableCliRuntime(message.runtimeRecord)) {
+      if (
+        !isDurableCliRuntime(message.runtimeRecord) ||
+        !Number.isSafeInteger(message.childPid) ||
+        message.childPid <= 0
+      ) {
         const wrapped = buildError('Durable wrapper emitted an invalid runtime record');
         runtimeDeferred.reject(wrapped);
         exitDeferred.reject(wrapped);
         return;
       }
       runtimeRecord = message.runtimeRecord;
+      childPid = message.childPid;
       runtimeDeferred.resolve(message.runtimeRecord);
       return;
     }
@@ -915,10 +913,14 @@ function waitForDurableRuntime(options: {
 
   return runtimeDeferred.promise
     .finally(() => options.time.clearTimeout(timeout))
-    .then((record) => ({
-      runtimeRecord: record,
-      exitPromise: exitDeferred.promise,
-    }));
+    .then((record) => {
+      if (childPid === null) throw buildError('Durable wrapper omitted its child pid');
+      return {
+        runtimeRecord: record,
+        childPid,
+        exitPromise: exitDeferred.promise,
+      };
+    });
 }
 
 function normalizeSpawnSyncOutput(output: string | Buffer | null | undefined, encoding: BufferEncoding): string {

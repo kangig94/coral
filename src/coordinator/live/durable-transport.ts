@@ -7,12 +7,26 @@ import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
-import type { Runtime } from '../../runtime/ports.js';
-import { gracefulKillByPid, type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
+import type { DurableCliProcessSubject, Runtime } from '../../runtime/ports.js';
+import { type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
+import { createMonotonicClock } from '../../infra/monotonic-clock.js';
+import { ProcessContainmentError, reapRecordedContainment } from '../../infra/process-containment.js';
+import {
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
+  SIGKILL_GRACE_MS,
+  SIGTERM_GRACE_MS,
+} from '../../infra/process-constants.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
+const durableProcessCleanupClockScope = Symbol('durable-process-cleanup');
+const DURABLE_PROCESS_CLEANUP_DEADLINE_MS =
+  SIGTERM_GRACE_MS +
+  SIGKILL_GRACE_MS +
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS +
+  2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS;
 
 function terminationOutcomeDetail(outcome: Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>): string {
   switch (outcome.kind) {
@@ -29,15 +43,35 @@ function terminationOutcomeDetail(outcome: Exclude<GracefulKillByPidOutcome, { k
 async function requestDurableProcessTermination(
   runtime: Runtime,
   pid: number,
-  incarnation: ProcessIncarnation | null,
+  subject: DurableCliProcessSubject | null,
 ): Promise<GracefulKillByPidOutcome> {
+  if (subject === null) return { kind: 'signal-refused', pid, reason: 'recorded-incarnation-unavailable' };
+  const clock = createMonotonicClock(durableProcessCleanupClockScope, {
+    readMilliseconds: () => runtime.time.monotonicNow(),
+    sleep: (milliseconds) => runtime.time.sleep(milliseconds),
+  });
   try {
-    if (runtime.process.observeLiveness(pid) === 'absent') return { kind: 'observed-absent', pid };
-  } catch {
-    // An unavailable liveness probe does not weaken the identity required to signal.
+    const outcome = await reapRecordedContainment(
+      { pid: subject.pid, incarnation: subject.incarnation, processGroupId: subject.processGroupId },
+      [subject.childRoot],
+      clock.shiftMilliseconds(clock.now(), DURABLE_PROCESS_CLEANUP_DEADLINE_MS),
+      {
+        maxRecordedRoots: 1,
+        clock,
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation: (targetPid, platform) => runtime.process.readProcessIncarnation(targetPid, platform),
+      },
+    );
+    return outcome.kind === 'containment-absent'
+      ? { kind: 'observed-absent', pid }
+      : { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
+  } catch (error: unknown) {
+    if (error instanceof ProcessContainmentError && error.code === 'process_identity_unverified') {
+      return { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
+    }
+    return { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
   }
-  const disposition = gracefulKillByPid(runtime, pid, incarnation);
-  return disposition.kind === 'escalation-scheduled' ? disposition.settlement : disposition;
 }
 
 export type DurableProcessCleanup = () => Promise<GracefulKillByPidOutcome>;
@@ -66,13 +100,8 @@ type SpawnCliOptions = {
 export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
   onRuntimeRecord?: (record: JobRuntime) => void;
-  /**
-   * Reports the durable wrapper's recorded identity, once, at the only moment it can be captured honestly:
-   * the pid is known and the process is known to be the one just launched. An incarnation probed later could
-   * belong to a recycled pid, which is precisely the confusion the pair exists to prevent — so a probe that
-   * comes back empty reports nothing rather than a pid on its own.
-   */
-  onDurableProcessIdentity?: (identity: { pid: number; incarnation: ProcessIncarnation }) => void;
+  /** A partial containment identity must not cross the durable publication boundary. */
+  onDurableProcessIdentity?: (identity: DurableCliProcessSubject) => void;
 };
 
 export async function spawnDurableJobTransport(params: {
@@ -92,7 +121,7 @@ export async function spawnDurableJobTransport(params: {
   let durableExitObserved = false;
   let lastUnsettledDetail: string | null = null;
   let publishedPid: number | null = null;
-  let publishedIncarnation: ProcessIncarnation | null = null;
+  let publishedSubject: DurableCliProcessSubject | null = null;
   let resolvePendingLaunch!: () => void;
   let pendingLaunchOwned = true;
   const pendingLaunch = new Promise<void>((resolve) => {
@@ -111,7 +140,7 @@ export async function spawnDurableJobTransport(params: {
     if (publishedPid === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
-    cleanupInFlight = requestDurableProcessTermination(runtime, pid, publishedIncarnation).then((outcome) => {
+    cleanupInFlight = requestDurableProcessTermination(runtime, pid, publishedSubject).then((outcome) => {
       if (outcome.kind === 'observed-absent' && cleanupKey !== null) {
         cleanupHandles.delete(cleanupKey);
         cleanupKey = null;
@@ -138,7 +167,8 @@ export async function spawnDurableJobTransport(params: {
 
   const publishSpawned = (launch: {
     runtimeRecord: Extract<JobRuntime, { transport: 'durable-cli' }>;
-    incarnation: ProcessIncarnation | null;
+    leaderIncarnation: ProcessIncarnation | null;
+    childPid: number | null;
   }): void => {
     if (publishedPid !== null) {
       if (publishedPid !== launch.runtimeRecord.pid) {
@@ -147,12 +177,28 @@ export async function spawnDurableJobTransport(params: {
       return;
     }
     publishedPid = launch.runtimeRecord.pid;
-    publishedIncarnation = launch.incarnation;
+    let childIncarnation: ProcessIncarnation | null = null;
+    if (launch.childPid !== null) {
+      try {
+        childIncarnation = runtime.process.readProcessIncarnation(
+          launch.childPid,
+          runtime.env.platform() as NodeJS.Platform,
+        );
+      } catch {
+        childIncarnation = null;
+      }
+    }
+    if (launch.leaderIncarnation !== null && launch.childPid !== null && childIncarnation !== null) {
+      publishedSubject = {
+        pid: launch.runtimeRecord.pid,
+        incarnation: launch.leaderIncarnation,
+        processGroupId: launch.runtimeRecord.pid,
+        childRoot: { pid: launch.childPid, incarnation: childIncarnation },
+      };
+    }
     cleanupKey = Symbol();
     cleanupHandles.set(cleanupKey, cleanup);
-    if (launch.incarnation !== null) {
-      options.onDurableProcessIdentity?.({ pid: launch.runtimeRecord.pid, incarnation: launch.incarnation });
-    }
+    if (publishedSubject !== null) options.onDurableProcessIdentity?.(publishedSubject);
     options.onRuntimeRecord?.(launch.runtimeRecord);
     releasePendingLaunch();
   };
@@ -174,13 +220,16 @@ export async function spawnDurableJobTransport(params: {
       onSpawned: publishSpawned,
     });
     if (publishedPid === null) {
-      let incarnation: ProcessIncarnation | null;
+      let leaderIncarnation: ProcessIncarnation | null;
       try {
-        incarnation = runtime.process.readProcessIncarnation(durable.pid, runtime.env.platform() as NodeJS.Platform);
+        leaderIncarnation = runtime.process.readProcessIncarnation(
+          durable.pid,
+          runtime.env.platform() as NodeJS.Platform,
+        );
       } catch {
-        incarnation = null;
+        leaderIncarnation = null;
       }
-      publishSpawned({ runtimeRecord: durable.runtimeRecord, incarnation });
+      publishSpawned({ runtimeRecord: durable.runtimeRecord, leaderIncarnation, childPid: null });
     } else if (publishedPid !== durable.pid) {
       throw new Error('Durable runtime readiness reported a different process from provisional publication.');
     }

@@ -1,4 +1,4 @@
-import { formatError } from '../../../infra/error-format.js';
+import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -10,9 +10,17 @@ import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
-import { gracefulKillByPid } from '../../../infra/process-supervision.js';
 import { readDurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta-store.js';
+import type { DurableCliProcessRuntimeMeta } from '../../../jobs/runtime-meta.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
+import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
+import { reapRecordedContainment } from '../../../infra/process-containment.js';
+import {
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
+  SIGKILL_GRACE_MS,
+  SIGTERM_GRACE_MS,
+} from '../../../infra/process-constants.js';
 import type {
   RecoveryDisposition,
   RecoveryObligationId,
@@ -21,6 +29,12 @@ import type {
 
 export const COORDINATOR_TERMINAL_OBLIGATION = 'coordinator-job-terminal' as RecoveryObligationId;
 export const COORDINATOR_CLAIM_RELEASE_OBLIGATION = 'coordinator-session-claim-release' as RecoveryObligationId;
+const durableRecoveryClockScope = Symbol('durable-recovery');
+const DURABLE_RECOVERY_REAP_DEADLINE_MS =
+  SIGTERM_GRACE_MS +
+  SIGKILL_GRACE_MS +
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS +
+  2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS;
 
 export const COORDINATOR_NOT_APPLICABLE_FACTS: readonly RecoverySettlementFact[] = Object.freeze([
   Object.freeze({ obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'not-applicable' as const }),
@@ -33,6 +47,38 @@ export type RunningRecoverableJob = {
   authority: ProviderRecoveryAuthority;
   runtimeRecord: JobRuntime;
 };
+
+async function reapDurableCliProcess(
+  runtime: Runtime,
+  record: DurableCliProcessRuntimeMeta,
+  signal: AbortSignal,
+): Promise<Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>> {
+  const clock = createMonotonicClock(durableRecoveryClockScope, {
+    readMilliseconds: () => runtime.time.monotonicNow(),
+    sleep: (milliseconds) => runtime.time.sleep(milliseconds),
+  });
+  try {
+    const outcome = await reapRecordedContainment(
+      { pid: record.pid, incarnation: record.incarnation, processGroupId: record.processGroupId },
+      [record.childRoot],
+      clock.shiftMilliseconds(clock.now(), DURABLE_RECOVERY_REAP_DEADLINE_MS),
+      {
+        maxRecordedRoots: 1,
+        clock,
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+        signal,
+      },
+    );
+    return outcome.kind === 'containment-absent'
+      ? { kind: 'absence-confirmed' }
+      : { kind: 'held', reason: 'the recorded leader is gone but its process group remains unattributable' };
+  } catch (error: unknown) {
+    return { kind: 'held', reason: errorMessage(error) };
+  }
+}
+
 type RecoveryActionContext = {
   progressStore: JobStore;
   recoveryRegistry: RecoveryRegistry;
@@ -174,34 +220,25 @@ async function registerRunningRecovery(
       return { kind: 'quarantine', detail };
     }
 
-    const durableLiveness = runtime.process.observeLiveness(durableRecord.pid);
-    if (durableLiveness === 'alive' || durableLiveness === 'unknown') {
-      let signalDisposition = 'No signal was sent because process liveness was unobservable.';
-      if (durableLiveness === 'alive') {
-        const recordedIdentity = readDurableCliProcessRuntimeMeta(progressStore.getDb(), action.jobId);
-        if (recordedIdentity === null) {
-          signalDisposition = 'No signal was sent because the recorded process identity is unavailable.';
-        } else if (recordedIdentity.jobId !== action.jobId) {
-          signalDisposition = 'No signal was sent because the recorded process identity names a different job.';
-        } else if (recordedIdentity.pid !== durableRecord.pid) {
-          signalDisposition = 'No signal was sent because the recorded process identity names a different pid.';
-        } else {
-          const disposition = gracefulKillByPid(runtime, durableRecord.pid, recordedIdentity.incarnation);
-          signalDisposition =
-            disposition.kind === 'escalation-scheduled'
-              ? 'Cleanup was requested for the recorded process identity.'
-              : `No signal was sent; cleanup was refused (${disposition.reason}).`;
-        }
-      }
+    const recordedIdentity = readDurableCliProcessRuntimeMeta(progressStore.getDb(), action.jobId);
+    let cleanupHold: string | null = null;
+    if (recordedIdentity === null) {
+      cleanupHold = 'the recorded durable process containment is unavailable';
+    } else if (recordedIdentity.jobId !== action.jobId) {
+      cleanupHold = 'the recorded durable process containment names a different job';
+    } else if (recordedIdentity.pid !== durableRecord.pid) {
+      cleanupHold = 'the recorded durable process containment names a different leader';
+    } else {
+      const cleanup = await reapDurableCliProcess(runtime, recordedIdentity, signal);
+      if (cleanup.kind === 'held') cleanupHold = cleanup.reason;
+    }
+
+    if (cleanupHold !== null) {
       clearProcessLocalCleanup();
-      const observation =
-        durableLiveness === 'alive'
-          ? `Durable process ${durableRecord.pid} was observed alive;`
-          : `Durable process ${durableRecord.pid} could not be observed;`;
       const detail =
-        `${message} ${observation} recovery remains ` +
-        `owned by the recovery registry. ${signalDisposition} Retry after repairing the provider binding ` +
-        'so adoption can succeed, or after the recorded process is observed absent so fault settlement can complete.';
+        `${message} Durable process cleanup remains held because ${cleanupHold}; recovery remains owned by the ` +
+        'recovery registry. Retry after repairing the provider binding so adoption can succeed, or after the ' +
+        'recorded containment and child root are observed absent so fault settlement can complete.';
       log(`Held running recovery for ${action.jobId}: ${detail}\n`);
       return { kind: 'quarantine', detail };
     }

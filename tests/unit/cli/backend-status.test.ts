@@ -1335,6 +1335,7 @@ describe('backend status provider proxy dispositions', () => {
             method: 'guardian.heartbeat.v1',
             incidentReason: 'method-not-found',
             waitingFor: 'independent-containment-absence',
+            operatorAction: 'contain',
             enforcerObservations: [
               { role: 'guardian', observation: 'alive' },
               { role: 'reaper', observation: 'unknown' },
@@ -1356,6 +1357,7 @@ describe('backend status provider proxy dispositions', () => {
             liveClaims: 2,
             incidentReason: 'control_channel_reattaching',
             waitingFor: 'control-reattachment',
+            operatorAction: 'wait',
           },
           {
             setIdentity: {
@@ -1368,6 +1370,7 @@ describe('backend status provider proxy dispositions', () => {
             liveClaims: 2,
             incidentReason: 'operator_exit_deadline_pending',
             waitingFor: 'set-adoption-deadline',
+            operatorAction: 'wait',
           },
           {
             setIdentity: {
@@ -1413,7 +1416,7 @@ describe('backend status provider proxy dispositions', () => {
           'b'.repeat(64),
         '    - disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
         '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
-        `    action=coral-cli backend provider-proxy-set contain ${tokens.second}`,
+        '    action=wait for control-reattachment,set-adoption-deadline',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -1421,16 +1424,12 @@ describe('backend status provider proxy dispositions', () => {
     );
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
     expect(rendered.split(`  set=${tokens.second}`).length - 1).toBe(1);
-    expect(rendered.split(`    action=coral-cli backend provider-proxy-set contain ${tokens.second}`).length - 1).toBe(
-      1,
-    );
+    expect(rendered).not.toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.second}`);
     expect(rendered).toContain(
       '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
     );
-    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.third}`);
-    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${tokens.fourth}`);
-    expect(rendered.split(tokens.third).length - 1).toBe(1);
-    expect(rendered.split(tokens.fourth).length - 1).toBe(1);
+    expect(rendered).not.toContain(tokens.third);
+    expect(rendered).not.toContain(tokens.fourth);
     expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
     expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
 
@@ -1447,10 +1446,10 @@ describe('backend status provider proxy dispositions', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(process.exitCode).toBe(75);
-    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${tokens.third}`);
+    expect(stdout).toContain('No containment command is available because this build cannot verify');
   });
 
-  it('prints the exact-set containment command for an acquisition publication hold', async () => {
+  it('prints the automatic recovery exit for an acquisition publication hold', async () => {
     const setIdentity = {
       buildSetId: '99999999-9999-4999-8999-999999999999',
       hostFingerprint: 'e'.repeat(64),
@@ -1480,6 +1479,7 @@ describe('backend status provider proxy dispositions', () => {
             disposition: 'held',
             incidentReason: 'publication_result_unknown',
             waitingFor: 'publication-confirmation-or-control-release',
+            operatorAction: 'wait',
           },
         ],
       },
@@ -1498,7 +1498,10 @@ describe('backend status provider proxy dispositions', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
-    expect(stdout).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
+    expect(stdout).toContain(
+      'action=wait; Coral retries publication automatically until publication is confirmed or control is released.',
+    );
+    expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${setToken}`);
     expect(process.exitCode).toBe(75);
   });
 });

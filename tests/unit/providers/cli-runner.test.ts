@@ -11,7 +11,12 @@ describe('bindProviderRunner', () => {
     const spawner: ProviderDurableSpawner = {
       spawnDurableJob: (options) => {
         capturedOptionsHadCallback = typeof options.onDurableProcessIdentity === 'function';
-        options.onDurableProcessIdentity?.({ pid: 4242, incarnation: testIncarnation(1_000) });
+        options.onDurableProcessIdentity?.({
+          pid: 4242,
+          incarnation: testIncarnation(1_000),
+          processGroupId: 4242,
+          childRoot: { pid: 4243, incarnation: testIncarnation(1_001) },
+        });
         return Promise.resolve(NO_CLI_RESULT);
       },
     };
@@ -32,6 +37,8 @@ describe('bindProviderRunner', () => {
     expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith({
       pid: 4242,
       incarnation: testIncarnation(1_000),
+      processGroupId: 4242,
+      childRoot: { pid: 4243, incarnation: testIncarnation(1_001) },
     });
   });
 

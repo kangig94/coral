@@ -38,16 +38,16 @@ describe('provider operation durable generations', () => {
 });
 
 describe('other durable and wire generations', () => {
-  it('derives durable CLI meta and active-store addresses from their payload generations', () => {
+  it('isolates durable CLI generations by address and derives active-store addresses from their payload generations', () => {
     const runtimeMeta = source('src/jobs/runtime-meta.ts');
     const launch = source('src/jobs/shell/launch.ts');
     const activeStore = source('src/store/active-store-selection.ts');
     const activeStoreCoordination = source('src/store/active-store-selection-coordination.ts');
     const backendReset = source('src/store/backend-store-reset.ts');
 
-    expect(runtimeMeta).toContain('z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_VERSION)');
     expect(runtimeMeta).toContain('durable_cli_process.v${DURABLE_CLI_PROCESS_RUNTIME_META_VERSION}');
-    expect(launch).toContain('version: DURABLE_CLI_PROCESS_RUNTIME_META_VERSION');
+    expect(runtimeMeta).not.toContain('z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_VERSION)');
+    expect(launch).not.toContain('version: DURABLE_CLI_PROCESS_RUNTIME_META_VERSION');
     expect(activeStore).toContain('active-store-selection.v${ACTIVE_STORE_SELECTION_VERSION}');
     expect(activeStore).toContain('active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}');
     expect(activeStore).toContain('z.literal(ACTIVE_STORE_SELECTION_VERSION)');

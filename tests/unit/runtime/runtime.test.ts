@@ -177,14 +177,14 @@ describe('createRealRuntime', () => {
     }
   });
 
-  it('publishes the wrapper cleanup identity before durable runtime readiness settles', async () => {
+  it('publishes the wrapper leader and provider child before durable launch returns', async () => {
     const runtime = createRealRuntime('prod');
     const rootDir = createTempDir('coral-runtime-provisional-');
     const jobDir = join(rootDir, 'job-1');
     runtime.storage.mkdirSync(jobDir, { recursive: true });
     const onSpawned = vi.fn();
 
-    const launch = runtime.process.durable.launch({
+    const durable = await runtime.process.durable.launch({
       provider: 'codex',
       command: process.execPath,
       args: ['-e', 'setTimeout(() => process.exit(0), 25);'],
@@ -201,10 +201,11 @@ describe('createRealRuntime', () => {
         stdoutPath: join(jobDir, 'stdout'),
         stderrPath: join(jobDir, 'stderr'),
       },
-      incarnation: expect.any(String),
+      leaderIncarnation: expect.any(String),
+      childPid: expect.any(Number),
     });
+    expect(provisional?.childPid).not.toBe(provisional?.runtimeRecord.pid);
 
-    const durable = await launch;
     expect(durable.runtimeRecord).toEqual(provisional?.runtimeRecord);
     await runtime.process.durable.waitForExit(durable);
   });

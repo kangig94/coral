@@ -238,7 +238,7 @@ describe('provider transport concurrency hardening', () => {
     await flushMicrotasks();
 
     expect(termination.settled).toBe(false);
-    for (let attempt = 0; attempt < 4 && !termination.settled; attempt += 1) {
+    for (let attempt = 0; attempt < 30 && !termination.settled; attempt += 1) {
       runtime.time.tick(50);
       await flushMicrotasks(200);
     }
@@ -255,10 +255,13 @@ describe('provider transport concurrency hardening', () => {
         },
       ],
     });
-    expect(observed.settled).toBe(false);
+    expect(observed).toMatchObject({
+      settled: true,
+      value: { stdout: '', stderr: '', code: 0, aborted: false },
+    });
   });
 
-  it('keeps a durable cleanup registered when SIGTERM delivery fails', async () => {
+  it('cleans up through the child root when process-group SIGTERM delivery fails', async () => {
     const runtime = new SimulationRuntime();
     runtime.spawner.enqueueDurable({ pid: 30_002, runtimeDelayMs: 0, exit: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
@@ -277,26 +280,23 @@ describe('provider transport concurrency hardening', () => {
     vi.spyOn(runtime.process, 'kill').mockReturnValueOnce(false).mockImplementation(kill);
 
     const termination = launchCoordinator.terminateAll();
+    const observedTermination = observePromise(termination);
     await flushMicrotasks();
-    runtime.time.tick(50);
-    await flushMicrotasks(200);
+    for (let attempt = 0; attempt < 50 && !observedTermination.settled; attempt += 1) {
+      runtime.time.tick(25);
+      await flushMicrotasks(200);
+    }
 
-    await expect(termination).resolves.toEqual({
-      kind: 'all-observed-absent-after-retry',
-      processes: [
-        {
-          kind: 'signal-failed',
-          pid: 30_002,
-          signal: 'SIGTERM',
-          reason: 'kill-port-returned-false',
-        },
-      ],
-    });
+    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    expect(runtime.spawner.killCalls).toEqual([{ pid: 20_000, signal: 'SIGTERM' }]);
 
     const cleanupHandles = (
       launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> }
     ).cleanupHandles;
     expect(cleanupHandles.size).toBe(0);
-    expect(observed.settled).toBe(false);
+    expect(observed).toMatchObject({
+      settled: true,
+      value: { stdout: '', stderr: '', code: null, aborted: false },
+    });
   });
 });

@@ -18,6 +18,16 @@ function createDb(): Database {
   return db;
 }
 
+function runtimeMeta(pid: number, timestamp: number) {
+  return {
+    jobId: JOB_ID,
+    pid,
+    incarnation: testIncarnation(timestamp),
+    processGroupId: pid,
+    childRoot: { pid: pid + 1, incarnation: testIncarnation(timestamp + 1) },
+  };
+}
+
 describe('durable CLI process runtime meta store', () => {
   it('reports no recorded identity for a job that never wrote one', () => {
     const db = createDb();
@@ -26,35 +36,35 @@ describe('durable CLI process runtime meta store', () => {
 
   it('round-trips a written record through the real meta table', () => {
     const db = createDb();
-    const meta = { version: 1 as const, jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) };
+    const meta = runtimeMeta(4242, 1_000);
 
     writeDurableCliProcessRuntimeMeta(db, meta);
 
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toEqual(meta);
   });
 
+  it('does not select a predecessor generation stored under the v1 key', () => {
+    const db = createDb();
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      `durable_cli_process.v1:${JOB_ID}`,
+      JSON.stringify({ jobId: JOB_ID, pid: 4242, incarnation: testIncarnation(1_000) }),
+    );
+
+    expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toBeNull();
+  });
+
   it('replaces an earlier record for the same job on a second write', () => {
     const db = createDb();
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 111, incarnation: testIncarnation(1) });
+    writeDurableCliProcessRuntimeMeta(db, runtimeMeta(111, 1));
 
-    writeDurableCliProcessRuntimeMeta(db, { version: 1, jobId: JOB_ID, pid: 222, incarnation: testIncarnation(2) });
+    writeDurableCliProcessRuntimeMeta(db, runtimeMeta(222, 2));
 
-    expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toEqual({
-      version: 1,
-      jobId: JOB_ID,
-      pid: 222,
-      incarnation: testIncarnation(2),
-    });
+    expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toEqual(runtimeMeta(222, 2));
   });
 
   it('deletes the recorded row, and deleting an already-absent row is a no-op rather than an error', () => {
     const db = createDb();
-    writeDurableCliProcessRuntimeMeta(db, {
-      version: 1,
-      jobId: JOB_ID,
-      pid: 4242,
-      incarnation: testIncarnation(1_000),
-    });
+    writeDurableCliProcessRuntimeMeta(db, runtimeMeta(4242, 1_000));
 
     deleteDurableCliProcessRuntimeMeta(db, JOB_ID);
     expect(readDurableCliProcessRuntimeMeta(db, JOB_ID)).toBeNull();
