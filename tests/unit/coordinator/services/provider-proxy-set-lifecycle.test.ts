@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle } from '#src/infra/port-types.js';
 import {
@@ -54,6 +54,7 @@ import {
   createProviderProxySetContainmentProver,
   inspectProviderProxySetContainmentProof,
   providerProxySetContainmentEvidenceFor,
+  verifyProviderProxySetContainmentProofCurrent,
   type ProviderProxySetContainmentProof,
   type ProviderProxySetContainmentProofAuthorization,
 } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
@@ -87,7 +88,11 @@ import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/service
 import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
-import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  insertProviderOperation,
+  providerOperationMutationAdmission,
+  ProviderOperationMutationAdmission,
+} from '#src/store/provider-operation-journal.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -96,6 +101,7 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 import { ProviderOperationTerminalMetadataError } from '#src/jobs/provider-operation-terminalization.js';
 import {
   PROVIDER_OPERATION_RECORD_VERSION,
+  encodeProviderOperationRecord,
   type ProviderOperationTerminalDirective,
 } from '#src/store/provider-operation-record.js';
 
@@ -106,6 +112,11 @@ const TEST_PUBLICATION_RECEIPT = {
 } as PublicationReceipt;
 /** Mirrors the unexported `PRESERVE_REPORT_INTERVAL_MS` in `provider-proxy-set/index.ts`. */
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
+const sealedProofDatabases: Database[] = [];
+
+afterEach(() => {
+  for (const db of sealedProofDatabases.splice(0)) db.close();
+});
 
 const enforcersUnobservable: ProviderProxySetContainmentEvidence = {
   kind: 'enforcers-observed',
@@ -329,12 +340,17 @@ function heartbeatAuthorityObservation(
 
 type ProviderProxySetLifecycleFixtureDeps = Omit<
   ProviderProxySetLifecycleDeps,
-  'recoveryDispatcher' | 'reapRecordedContainment' | 'reportLifecycle' | 'buildSetId'
+  | 'recoveryDispatcher'
+  | 'reapRecordedContainment'
+  | 'reportLifecycle'
+  | 'buildSetId'
+  | 'fenceProviderOperationMutations'
 > &
   Readonly<{
     recoveryDispatcher?: ProviderProxyRecoveryDispatcher;
     reportLifecycle?: ProviderProxySetLifecycleDeps['reportLifecycle'];
     reapRecordedContainment?: ProviderProxySetRecordedContainmentReaper;
+    fenceProviderOperationMutations?: ProviderProxySetLifecycleDeps['fenceProviderOperationMutations'];
     disappearanceConsumer: ProviderContainmentDisappearanceConsumer;
     abandonmentConsumer?: ProviderRepresentationAbandonmentConsumer;
     proveContainmentAbsent(
@@ -351,6 +367,7 @@ type ProviderProxySetLifecycleFixtureDeps = Omit<
   }>;
 
 function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxySetLifecycle {
+  const mutationAdmission = new ProviderOperationMutationAdmission();
   const retireCapsule = deps.retireCapsule ?? (() => ({ kind: 'retired' as const }));
   const onFatal = deps.onFatal ?? (() => undefined);
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
@@ -386,6 +403,7 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
     disappearanceConsumer: _disappearanceConsumer,
     abandonmentConsumer: _abandonmentConsumer,
     recoveryDispatcher: suppliedDispatcher,
+    fenceProviderOperationMutations,
     ...lifecycleDeps
   } = deps;
   return new ProviderProxySetLifecycle({
@@ -393,6 +411,8 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
     ...lifecycleDeps,
     recoveryDispatcher: suppliedDispatcher ?? recoveryDispatcher,
     reapRecordedContainment: deps.reapRecordedContainment ?? reapContainmentEvidence,
+    fenceProviderOperationMutations:
+      fenceProviderOperationMutations ?? ((identity) => mutationAdmission.closeSet(identity)),
     reportLifecycle: lifecycleDeps.reportLifecycle ?? (() => undefined),
   });
 }
@@ -591,6 +611,20 @@ function containmentProofDatabase(record: ReturnType<typeof providerOperationRec
   return db;
 }
 
+function insertProviderOperationOutsideAdmission(
+  db: Database,
+  record: ReturnType<typeof providerOperationRecord>,
+): void {
+  const { operation } = record;
+  const key =
+    `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+    `${operation.jobId}:${operation.operationId}:${operation.proxyInstanceId}:${operation.buildSetId}`;
+  db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+    key,
+    encodeProviderOperationRecord(record),
+  );
+}
+
 function containmentProofRuntime(
   identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
   observations: Readonly<Record<'guardian' | 'reaper', ProcessLiveness>>,
@@ -647,13 +681,10 @@ async function sealedContainmentProof(
       containmentEvidenceReceipts.get(evidence.containment.incarnation) ?? 'fixture-containment-absence',
     );
   }
-  try {
-    return await createProviderProxySetContainmentProver(
-      containmentProofRuntime(identity, observations).runtime,
-    ).collectContainmentProof(authorization, db, new AbortController().signal);
-  } finally {
-    db.close();
-  }
+  sealedProofDatabases.push(db);
+  return createProviderProxySetContainmentProver(
+    containmentProofRuntime(identity, observations).runtime,
+  ).collectContainmentProof(authorization, db, new AbortController().signal);
 }
 
 function operatorContainmentProof(
@@ -1163,7 +1194,7 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
-  it('arms each recovered heartbeat hold with a fresh operator-exit gate and capability generation', async () => {
+  it('keeps an authorized operator fence after a late heartbeat and rejects the superseded capability', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -1198,16 +1229,8 @@ describe('ProviderProxySetLifecycle', () => {
     }
 
     faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
-    expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'not-held', state: 'available' });
-
-    unanswered();
-    clock.elapse(2);
-    unanswered();
-
-    expect(lifecycle.authorizeOperatorExit(address)).toEqual({
-      kind: 'deadline-pending',
-      remainingMs: 30_000,
-    });
+    expect(lifecycle.snapshot().states).toEqual(['containment-wait']);
+    expect(lifecycle.authorizeOperatorExit(address).kind).toBe('authorized');
     await expect(
       lifecycle.completeOperatorExit(
         firstAuthorization.capability,
@@ -2990,10 +3013,14 @@ describe('ProviderProxySetLifecycle', () => {
       }),
     );
 
+    const unobservableAuthorization = lifecycle.authorizeOperatorExit(address);
+    if (unobservableAuthorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${unobservableAuthorization.kind}`);
+    }
     await expect(
       lifecycle.completeOperatorExit(
-        authorization.capability,
-        await operatorContainmentProof(authorization.capability, {
+        unobservableAuthorization.capability,
+        await operatorContainmentProof(unobservableAuthorization.capability, {
           kind: 'enforcers-observed',
           observations: [
             { role: 'guardian', observation: 'absent' },
@@ -3011,10 +3038,14 @@ describe('ProviderProxySetLifecycle', () => {
       ],
       effect: noOperatorExitEffect,
     });
+    const unreadableAuthorization = lifecycle.authorizeOperatorExit(address);
+    if (unreadableAuthorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${unreadableAuthorization.kind}`);
+    }
     await expect(
       lifecycle.completeOperatorExit(
-        authorization.capability,
-        await operatorContainmentProof(authorization.capability, { kind: 'store-unreadable' }),
+        unreadableAuthorization.capability,
+        await operatorContainmentProof(unreadableAuthorization.capability, { kind: 'store-unreadable' }),
         true,
       ),
     ).resolves.toEqual({ kind: 'store-unreadable', setIdentity: address, effect: noOperatorExitEffect });
@@ -3031,6 +3062,94 @@ describe('ProviderProxySetLifecycle', () => {
         operatorExit: { kind: 'refused', ground: 'store-unreadable' },
       }),
     );
+  });
+
+  it('fences the exact route and waits for an admitted prepare journal publication before proof collection', async () => {
+    const record = providerOperationRecord('executing');
+    const staged = providerOperationRecord('executing', {
+      operation: { ...record.operation, jobId: randomUUID(), operationId: randomUUID() },
+      locator: record.locator,
+    });
+    if (!('providerRoot' in staged)) throw new Error('executing fixture did not retain its provider root');
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const mutationAdmission = providerOperationMutationAdmission(db);
+    const mutationStarted = deferred<void>();
+    const mutationMayFinish = deferred<void>();
+    const mutation = mutationAdmission.run(
+      `provider-operation:${staged.operation.operationId}`,
+      async () => {
+        mutationStarted.resolve();
+        await mutationMayFinish.promise;
+        insertProviderOperation(db, staged);
+      },
+      staged.operation,
+    );
+    await mutationStarted.promise;
+
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const initiateControlClose = vi.fn(async () => undefined);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const base = fakeAuthority({ record, initiateControlClose });
+    const cachedAuthority = createProviderProxyOperationAuthority({
+      base: base as never,
+      setIdentity: base.setIdentity,
+      clients: {} as never,
+      faults,
+      mutationRpcTimeoutMs: 1_000,
+    });
+    const authority: DurableProviderProxyOperationAuthority = { ...cachedAuthority };
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      fenceProviderOperationMutations: (identity) => mutationAdmission.closeSet(identity),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const acquisition = lifecycle.beginFreshAcquisition('operator-fence-route');
+    if (acquisition.kind !== 'accepted') throw new Error(`expected admission, received ${acquisition.kind}`);
+    lifecycle.acquisitionSucceeded(acquisition.slotId, authority, TEST_PUBLICATION_RECEIPT);
+    expect(lifecycle.routeFor('operator-fence-route')).toBe(authority);
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+
+    faults.latch(terminalAuthorityFault());
+    clock.elapse(30_000);
+    const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${authorization.kind}`);
+    }
+    expect(lifecycle.routeFor('operator-fence-route')).toBeNull();
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+    await expect(cachedAuthority.prepareOperation({} as never)).rejects.toMatchObject({
+      code: 'operator-exit-fenced',
+    });
+
+    let proofSettled = false;
+    const process = containmentProofRuntime(authority.setIdentity, { guardian: 'absent', reaper: 'absent' });
+    const proofPending = createProviderProxySetContainmentProver(process.runtime)
+      .collectContainmentProof(authorization.capability.containmentProofAuthorization, db, new AbortController().signal)
+      .then((proof) => {
+        proofSettled = true;
+        return proof;
+      });
+    await drainMicrotasks();
+    expect(proofSettled).toBe(false);
+    expect(initiateControlClose).not.toHaveBeenCalled();
+    expect(process.readProcessIncarnation).not.toHaveBeenCalled();
+
+    mutationMayFinish.resolve();
+    await mutation;
+    const proof = await proofPending;
+    expect(initiateControlClose).toHaveBeenCalledOnce();
+    expect(inspectProviderProxySetContainmentProof(proof)?.evidence).toEqual(
+      expect.objectContaining({ kind: 'reap-required', recordedRoots: [staged.providerRoot] }),
+    );
+    db.close();
   });
 
   it.each([
@@ -3133,6 +3252,129 @@ describe('ProviderProxySetLifecycle', () => {
       expect(reapedTargets).toEqual([-identity.proxyProcessGroupId, record.providerRoot.pid]);
       expect(reapRecordedContainment).toHaveBeenCalledOnce();
       expect(harness.stopAndReap).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a root published after reaping instead of minting a disappearance receipt', async () => {
+    const record = providerOperationRecord('executing');
+    const lateRecord = providerOperationRecord('executing', {
+      operation: { ...record.operation, jobId: randomUUID(), operationId: randomUUID() },
+      locator: record.locator,
+    });
+    if (!('providerRoot' in lateRecord)) throw new Error('executing fixture did not retain its provider root');
+    const lateRootRecord = {
+      ...lateRecord,
+      providerRoot: { pid: lateRecord.providerRoot.pid + 1, incarnation: testIncarnation(1_004) },
+    };
+    const db = containmentProofDatabase(record);
+    const mutationAdmission = providerOperationMutationAdmission(db);
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const disappearanceConsumer = vi.fn(async () => ({}) as never);
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async (identity, proof) => {
+      insertProviderOperationOutsideAdmission(db, lateRootRecord);
+      const currentness = verifyProviderProxySetContainmentProofCurrent(proof, identity);
+      return currentness.kind === 'current'
+        ? { kind: 'containment-absent', disappearanceReceipt: 'must-not-be-minted' }
+        : currentness;
+    });
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: disappearanceConsumer },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reapRecordedContainment,
+      fenceProviderOperationMutations: (identity) => mutationAdmission.closeSet(identity),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    clock.elapse(30_000);
+    const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${authorization.kind}`);
+    }
+
+    try {
+      const proof = await createProviderProxySetContainmentProver(
+        containmentProofRuntime(authority.setIdentity, { guardian: 'absent', reaper: 'absent' }).runtime,
+      ).collectContainmentProof(
+        authorization.capability.containmentProofAuthorization,
+        db,
+        new AbortController().signal,
+      );
+      await expect(lifecycle.completeOperatorExit(authorization.capability, proof, false)).resolves.toEqual({
+        kind: 'authorization-stale',
+        setIdentity: providerProxySetAddress(authority.setIdentity),
+        effect: noOperatorExitEffect,
+      });
+      expect(reapRecordedContainment).toHaveBeenCalledOnce();
+      expect(disappearanceConsumer).not.toHaveBeenCalled();
+      expect(lifecycle.snapshot().represented).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rescans before abandonment and reopens the mutation gate for store repair', async () => {
+    const record = providerOperationRecord('executing');
+    const repairRecord = providerOperationRecord('prepare-pending', {
+      operation: { ...record.operation, jobId: randomUUID(), operationId: randomUUID() },
+      locator: record.locator,
+    });
+    const db = containmentProofDatabase(record);
+    const mutationAdmission = providerOperationMutationAdmission(db);
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const representationAbandoned = vi.fn(async () => ({}) as never);
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      abandonmentConsumer: { representationAbandoned },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      fenceProviderOperationMutations: (identity) => mutationAdmission.closeSet(identity),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    clock.elapse(30_000);
+    const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${authorization.kind}`);
+    }
+
+    try {
+      const proof = await createProviderProxySetContainmentProver(
+        containmentProofRuntime(authority.setIdentity, { guardian: 'unknown', reaper: 'unknown' }).runtime,
+      ).collectContainmentProof(
+        authorization.capability.containmentProofAuthorization,
+        db,
+        new AbortController().signal,
+      );
+      const unreadableKey =
+        `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:${randomUUID()}:${randomUUID()}:` +
+        `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`;
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
+
+      await expect(lifecycle.completeOperatorExit(authorization.capability, proof, true)).resolves.toEqual({
+        kind: 'store-unreadable',
+        setIdentity: providerProxySetAddress(authority.setIdentity),
+        effect: noOperatorExitEffect,
+      });
+      expect(representationAbandoned).not.toHaveBeenCalled();
+      expect(lifecycle.snapshot().represented).toBe(1);
+      expect(() => insertProviderOperation(db, repairRecord)).not.toThrow();
     } finally {
       db.close();
     }
@@ -3273,7 +3515,17 @@ describe('ProviderProxySetLifecycle', () => {
     );
     expect(harness.stopAndReap).not.toHaveBeenCalled();
 
-    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, true)).resolves.toEqual(
+    const abandonmentAuthorization = harness.lifecycle.authorizeOperatorExit(setIdentity);
+    if (abandonmentAuthorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${abandonmentAuthorization.kind}`);
+    }
+    const abandonmentProof = await operatorContainmentProof(
+      abandonmentAuthorization.capability,
+      containmentEvidence('must-not-be-minted'),
+    );
+    await expect(
+      harness.lifecycle.completeOperatorExit(abandonmentAuthorization.capability, abandonmentProof, true),
+    ).resolves.toEqual(
       expect.objectContaining({
         kind: 'abandoned',
         setIdentity,
@@ -3394,7 +3646,12 @@ describe('ProviderProxySetLifecycle', () => {
       async (_identity, _proof, _signal, onSignal, assertSignalAuthorized) => {
         assertSignalAuthorized?.();
         onSignal('SIGTERM');
-        clock.runDue();
+        const supersedingAuthorization = lifecycle.authorizeOperatorExit(
+          providerProxySetAddress(authority.setIdentity),
+        );
+        if (supersedingAuthorization.kind !== 'authorized') {
+          throw new Error(`expected superseding authorization, received ${supersedingAuthorization.kind}`);
+        }
         assertSignalAuthorized?.();
         return { kind: 'containment-absent', disappearanceReceipt: 'must-not-complete' };
       },

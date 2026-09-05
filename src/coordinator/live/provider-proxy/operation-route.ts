@@ -82,9 +82,14 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
   buildOperationControl(operation: OperationIdentity): OperationStopControl;
 }
 
-const operationControlHolds = new WeakSet<DurableProviderProxyOperationAuthority>();
+type ProviderProxyOperationControlHoldReason = 'operation-control-outcome-unknown' | 'operator-exit-fenced';
+
+const operationControlHolds = new WeakMap<
+  DurableProviderProxyOperationAuthority,
+  ProviderProxyOperationControlHoldReason
+>();
 const operationControlStateKey: unique symbol = Symbol('provider-proxy-operation-control-state');
-type ProviderProxyOperationControlState = { held: boolean };
+type ProviderProxyOperationControlState = { holdReason: ProviderProxyOperationControlHoldReason | null };
 type FencedProviderProxyOperationAuthority = DurableProviderProxyOperationAuthority & {
   [operationControlStateKey]: ProviderProxyOperationControlState;
 };
@@ -102,24 +107,32 @@ function operationControlState(
 }
 
 class ProviderProxyOperationControlHeldError extends Error {
-  readonly code = 'operation-control-outcome-unknown';
+  readonly code: ProviderProxyOperationControlHoldReason;
 
-  constructor() {
-    super('Provider proxy operation control is held because a prior mutation outcome is unknown.');
+  constructor(reason: ProviderProxyOperationControlHoldReason) {
+    super(
+      reason === 'operator-exit-fenced'
+        ? 'Provider proxy operation control is fenced for operator containment.'
+        : 'Provider proxy operation control is held because a prior mutation outcome is unknown.',
+    );
     this.name = 'ProviderProxyOperationControlHeldError';
+    this.code = reason;
     Object.setPrototypeOf(this, ProviderProxyOperationControlHeldError.prototype);
   }
 }
 
 /** A held authority may perform observation and recovery, but may not dispatch another operation mutation. */
-export function holdProviderProxyOperationControl(authority: DurableProviderProxyOperationAuthority): void {
-  operationControlHolds.add(authority);
+export function holdProviderProxyOperationControl(
+  authority: DurableProviderProxyOperationAuthority,
+  reason: ProviderProxyOperationControlHoldReason = 'operation-control-outcome-unknown',
+): void {
+  operationControlHolds.set(authority, reason);
   const state = operationControlState(authority);
-  if (state !== null) state.held = true;
+  if (state !== null) state.holdReason = reason;
 }
 
 export function providerProxyOperationControlIsHeld(authority: DurableProviderProxyOperationAuthority): boolean {
-  return operationControlHolds.has(authority) || operationControlState(authority)?.held === true;
+  return operationControlHolds.has(authority) || (operationControlState(authority)?.holdReason ?? null) !== null;
 }
 
 type ProviderProxyControlEstablishedListener = (authority: DurableProviderProxyOperationAuthority) => void;
@@ -175,7 +188,7 @@ export function createProviderProxyOperationAuthority(deps: {
   faults: ProviderProxyAuthorityFaultLatch;
   mutationRpcTimeoutMs: number;
 }): DurableProviderProxyOperationAuthority {
-  const controlState: ProviderProxyOperationControlState = { held: false };
+  const controlState: ProviderProxyOperationControlState = { holdReason: null };
   const activationDeps: ProviderProxyOperationActivationDeps = {
     proxyClient: deps.clients.proxy,
     guardianClient: deps.clients.guardian,
@@ -185,9 +198,8 @@ export function createProviderProxyOperationAuthority(deps: {
     reportIncident: deps.faults.reportIncident,
   };
   function dispatchMutation<Result>(send: () => Promise<Result>): Promise<Result> {
-    return providerProxyOperationControlIsHeld(authority)
-      ? Promise.reject(new ProviderProxyOperationControlHeldError())
-      : send();
+    const holdReason = operationControlHolds.get(authority) ?? controlState.holdReason;
+    return holdReason === null ? send() : Promise.reject(new ProviderProxyOperationControlHeldError(holdReason));
   }
   const authority: FencedProviderProxyOperationAuthority = {
     ...deps.base,

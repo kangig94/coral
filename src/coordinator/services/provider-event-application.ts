@@ -487,5 +487,6 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
         }
         return result;
       },
+      request.operation,
     );
 }

@@ -878,53 +878,57 @@ export class ProviderOperationReconciler
     signal?: AbortSignal,
   ): Promise<void> {
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
-    return this.#admission().run(`provider-operation:${operationKey(record.operation)}`, () => {
-      const key = operationKey(record.operation);
-      const serializer = this.#serializerFor(key);
-      if (serializer.disappearance !== null) {
-        switch (serializer.disappearance.delivery.kind) {
-          case 'ready':
-            return Promise.resolve();
-          case 'delivering':
-            return serializer.disappearance.delivery.promise.then(() => undefined);
-          case 'consumed':
-            break;
+    return this.#admission().run(
+      `provider-operation:${operationKey(record.operation)}`,
+      () => {
+        const key = operationKey(record.operation);
+        const serializer = this.#serializerFor(key);
+        if (serializer.disappearance !== null) {
+          switch (serializer.disappearance.delivery.kind) {
+            case 'ready':
+              return Promise.resolve();
+            case 'delivering':
+              return serializer.disappearance.delivery.promise.then(() => undefined);
+            case 'consumed':
+              break;
+          }
         }
-      }
-      if (serializer.abandonment !== null) {
-        switch (serializer.abandonment.delivery.kind) {
-          case 'ready':
-            return Promise.resolve();
-          case 'delivering':
-            return serializer.abandonment.delivery.promise.then(() => undefined);
-          case 'consumed':
-            break;
+        if (serializer.abandonment !== null) {
+          switch (serializer.abandonment.delivery.kind) {
+            case 'ready':
+              return Promise.resolve();
+            case 'delivering':
+              return serializer.abandonment.delivery.promise.then(() => undefined);
+            case 'consumed':
+              break;
+          }
         }
-      }
-      if (serializer.inFlight !== null) return serializer.inFlight;
-      serializer.epoch += 1;
-      const abort = new AbortController();
-      serializer.activeAbort = abort;
-      const context: AuthorityDriveContext = {
-        key,
-        epoch: serializer.epoch,
-        abort,
-        signal: signal === undefined ? abort.signal : AbortSignal.any([abort.signal, signal]),
-      };
-      const running = this.#driveContext
-        .run(context, () => this.#drive(record, preferredAuthority, context.signal))
-        .catch((error: unknown) => {
-          if (error instanceof RepresentationDriveFencedError) return;
-          throw error;
-        })
-        .finally(() => {
-          if (serializer.inFlight === running) serializer.inFlight = null;
-          if (serializer.activeAbort === abort) serializer.activeAbort = null;
-          if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
-        });
-      serializer.inFlight = running;
-      return running;
-    });
+        if (serializer.inFlight !== null) return serializer.inFlight;
+        serializer.epoch += 1;
+        const abort = new AbortController();
+        serializer.activeAbort = abort;
+        const context: AuthorityDriveContext = {
+          key,
+          epoch: serializer.epoch,
+          abort,
+          signal: signal === undefined ? abort.signal : AbortSignal.any([abort.signal, signal]),
+        };
+        const running = this.#driveContext
+          .run(context, () => this.#drive(record, preferredAuthority, context.signal))
+          .catch((error: unknown) => {
+            if (error instanceof RepresentationDriveFencedError) return;
+            throw error;
+          })
+          .finally(() => {
+            if (serializer.inFlight === running) serializer.inFlight = null;
+            if (serializer.activeAbort === abort) serializer.activeAbort = null;
+            if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
+          });
+        serializer.inFlight = running;
+        return running;
+      },
+      record.operation,
+    );
   }
 
   #serializerFor(key: string): OperationSerializer {

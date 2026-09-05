@@ -53,6 +53,14 @@ function containmentResult(kind: 'contained' | 'abandoned'): ProviderProxySetCon
   };
 }
 
+function concurrentlyResolvedContainmentResult(
+  kind: 'set-not-found' | 'not-held' | 'authorization-stale',
+): ProviderProxySetContainResponse {
+  const effect = { signalsSent: [], containmentAbsent: false, representationAction: 'none' as const };
+  if (kind === 'not-held') return { kind, setIdentity, state: 'containment-wait', effect };
+  return { kind, setIdentity, effect };
+}
+
 function createDrainingPorts(containmentKind: 'contained' | 'abandoned' = 'abandoned'): HttpHandlerPorts {
   return {
     identity: {
@@ -218,6 +226,34 @@ describe('draining IPC recovery ingress', () => {
       await closeIpcServer(listener);
     }
   });
+
+  it.each(['set-not-found', 'not-held', 'authorization-stale'] as const)(
+    'wakes retained shutdown when concurrent lifecycle recovery makes containment return %s',
+    async (kind) => {
+      const ports = createDrainingPorts();
+      const result = concurrentlyResolvedContainmentResult(kind);
+      ports.providerProxySets!.contain = vi.fn(async () => result);
+      const listener = createIpcServer(ports);
+      const wakeRetainedShutdown = vi.fn();
+      listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+      const path = socketPath();
+      await listenIpcServer(listener, path);
+
+      try {
+        await expect(
+          requestIpcMethod(
+            path,
+            'coordinator.provider_proxy_set.contain',
+            { setIdentity, mode: 'contain' },
+            { auth: { kind: 'boot', token: 'boot-token' } },
+          ),
+        ).resolves.toEqual(result);
+        await vi.waitFor(() => expect(wakeRetainedShutdown).toHaveBeenCalledOnce());
+      } finally {
+        await closeIpcServer(listener);
+      }
+    },
+  );
 
   it('keeps unrelated catalog methods closed while draining', async () => {
     const ports = createDrainingPorts();

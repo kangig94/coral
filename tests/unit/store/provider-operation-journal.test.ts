@@ -17,6 +17,7 @@ import {
   retireSupersededProviderOperation,
   readProviderOperationsDue,
   observeProviderOperationRecord,
+  ProviderOperationMutationAdmission,
   providerOperationMutationAdmission,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
@@ -84,6 +85,119 @@ describe('provider operation journal', () => {
     discardUnreadableProviderOperationWithRecoveryAuthority(db, key, revision, {
       claim: () => ({ kind: 'claimed' as const, settle: () => true }),
     });
+
+  it('closes only one set and joins mutations admitted before its fence', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const target = providerOperationRecord('prepare-pending');
+    const unrelated = providerOperationRecord('prepare-pending', {
+      operation: {
+        ...target.operation,
+        proxyInstanceId: '00000000-0000-4000-8000-000000000030',
+        buildSetId: '00000000-0000-4000-8000-000000000040',
+      },
+      locator: {
+        ...target.locator,
+        proxy: {
+          ...target.locator.proxy,
+          instanceId: '00000000-0000-4000-8000-000000000030',
+        },
+      },
+    });
+    let settleTarget!: () => void;
+    const targetMaySettle = new Promise<void>((resolve) => {
+      settleTarget = resolve;
+    });
+    const mutation = admission.run('provider-operation:prepare', () => targetMaySettle, target.operation);
+    await Promise.resolve();
+
+    const fence = admission.closeSet(target.operation);
+    expect(fence).toMatchObject({
+      kind: 'holding',
+      pendingMutations: ['provider-operation:prepare'],
+      exit: 'admitted-provider-operation-mutation-settlement',
+    });
+    expect(() => admission.runSync('late-target', () => undefined, target.operation)).toThrow(
+      'Provider operation mutation admission is closed for this proxy set.',
+    );
+    expect(admission.runSync('unrelated-set', () => 'admitted', unrelated.operation)).toBe('admitted');
+    if (fence.kind !== 'holding') throw new Error('active exact-set mutation was not retained by the fence');
+
+    let drained = false;
+    void fence.retryAfter.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    settleTarget();
+    await mutation;
+    await fence.retryAfter;
+    expect(fence.isHeld()).toBe(true);
+    expect(() => admission.runSync('still-fenced', () => undefined, target.operation)).toThrow(
+      'Provider operation mutation admission is closed for this proxy set.',
+    );
+
+    const successorFence = admission.closeSet(target.operation);
+    fence.release();
+    expect(fence.isHeld()).toBe(false);
+    expect(successorFence.isHeld()).toBe(true);
+    expect(() => admission.runSync('successor-fenced', () => undefined, target.operation)).toThrow(
+      'Provider operation mutation admission is closed for this proxy set.',
+    );
+    successorFence.release();
+    expect(admission.runSync('released-target', () => 'admitted', target.operation)).toBe('admitted');
+  });
+
+  it('inherits an admitted parent set across an unscoped nested mutation after the fence closes', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const target = providerOperationRecord('prepare-pending');
+    let startNested!: () => void;
+    let finishNested!: () => void;
+    let markNestedStarted!: () => void;
+    const nestedMayStart = new Promise<void>((resolve) => {
+      startNested = resolve;
+    });
+    const nestedMayFinish = new Promise<void>((resolve) => {
+      finishNested = resolve;
+    });
+    const nestedStarted = new Promise<void>((resolve) => {
+      markNestedStarted = resolve;
+    });
+    let journalMutationRan = false;
+    const outer = admission.run(
+      'provider-event:outer',
+      async () => {
+        await nestedMayStart;
+        await admission.run('provider-event-transaction', async () => {
+          admission.runSync('provider-operation-update', () => {
+            journalMutationRan = true;
+          });
+          markNestedStarted();
+          await nestedMayFinish;
+        });
+      },
+      target.operation,
+    );
+    await Promise.resolve();
+
+    const fence = admission.closeSet(target.operation);
+    if (fence.kind !== 'holding') throw new Error('scoped parent was not retained by the fence');
+    startNested();
+    await nestedStarted;
+    expect(journalMutationRan).toBe(true);
+
+    let drained = false;
+    void fence.retryAfter.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    finishNested();
+    await outer;
+    await fence.retryAfter;
+    fence.release();
+  });
 
   it('retains a detached nested poll admitted while its parent is draining', async () => {
     const db = createDb();

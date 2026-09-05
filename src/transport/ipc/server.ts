@@ -25,7 +25,7 @@ import {
 import { isRelocatedSocket } from '../../infra/path/index.js';
 import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
-import { rpcCatalog, type ProviderProxySetContainResponse, type RpcMethodSpec } from '../rpc/catalog.js';
+import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
@@ -80,19 +80,6 @@ const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
 const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
 const IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES = 32 * 1024 * 1024;
 const IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS = 5_000;
-
-const PROVIDER_PROXY_SET_CONTAIN_RECOVERY_RESULTS = {
-  contained: true,
-  abandoned: true,
-  'set-not-found': false,
-  'not-held': false,
-  'deadline-pending': false,
-  'authorization-stale': false,
-  'enforcer-alive': false,
-  'enforcer-unobservable': false,
-  'recorded-group-unattributable': false,
-  'store-unreadable': false,
-} satisfies Readonly<Record<ProviderProxySetContainResponse['kind'], boolean>>;
 
 export type IpcServerOptions = {
   readonly maxOpenSockets?: number;
@@ -266,18 +253,10 @@ function readIpcOperationalSpec(method: string): IpcOperationalSpec | null {
 }
 
 function acceptedDrainingRecovery(method: string, body: unknown): boolean {
-  if (body === null || typeof body !== 'object') return false;
-  if (method === 'jobs.abort') {
-    const aborted = (body as { aborted?: unknown }).aborted;
-    return Array.isArray(aborted) && aborted.length > 0;
-  }
-  if (method !== 'coordinator.provider_proxy_set.contain') return false;
-  const kind = (body as { kind?: unknown }).kind;
-  return (
-    typeof kind === 'string' &&
-    Object.hasOwn(PROVIDER_PROXY_SET_CONTAIN_RECOVERY_RESULTS, kind) &&
-    PROVIDER_PROXY_SET_CONTAIN_RECOVERY_RESULTS[kind as ProviderProxySetContainResponse['kind']]
-  );
+  if (method === 'coordinator.provider_proxy_set.contain') return true;
+  if (method !== 'jobs.abort' || body === null || typeof body !== 'object') return false;
+  const aborted = (body as { aborted?: unknown }).aborted;
+  return Array.isArray(aborted) && aborted.length > 0;
 }
 
 function armShutdownRecoveryContinuation(socket: Socket, continuation: () => void): () => void {

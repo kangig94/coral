@@ -41,6 +41,11 @@ export type ProviderOperationMutation =
 
 export type ProviderOperationMutationObserver = (mutation: ProviderOperationMutation) => void;
 
+export type ProviderOperationMutationSet = Readonly<{
+  proxyInstanceId: string;
+  buildSetId: string;
+}>;
+
 export type ProviderOperationDueSelection = Readonly<{
   rawKey: string;
   rawValue: string;
@@ -78,14 +83,43 @@ export type ProviderOperationMutationAdmissionAcquisition =
       retryAfter: Promise<void>;
     }>;
 
-type ActiveProviderOperationMutation = Readonly<{
+export type ProviderOperationMutationSetFence =
+  | Readonly<{
+      kind: 'drained';
+      currentGeneration(): number;
+      isHeld(): boolean;
+      release(): void;
+    }>
+  | Readonly<{
+      kind: 'holding';
+      pendingMutations: readonly string[];
+      exit: 'admitted-provider-operation-mutation-settlement';
+      retryAfter: Promise<void>;
+      currentGeneration(): number;
+      isHeld(): boolean;
+      release(): void;
+    }>;
+
+type ActiveProviderOperationMutation = {
   label: string;
+  setKey: string | null;
   settlement: Promise<void>;
-}>;
+};
+
+type ClosedProviderOperationMutationSet = {
+  readonly admittedTokens: Set<symbol>;
+  readonly leases: Set<symbol>;
+};
+
+function providerOperationMutationSetKey(set: ProviderOperationMutationSet): string {
+  return JSON.stringify([set.proxyInstanceId, set.buildSetId]);
+}
 
 export class ProviderOperationMutationAdmission {
   readonly #context = new AsyncLocalStorage<symbol>();
   readonly #active = new Map<symbol, ActiveProviderOperationMutation>();
+  readonly #closedSets = new Map<string, ClosedProviderOperationMutationSet>();
+  readonly #setGenerations = new Map<string, number>();
   readonly #owner: string | null;
   readonly #released: Promise<void>;
   #resolveReleased!: () => void;
@@ -112,11 +146,21 @@ export class ProviderOperationMutationAdmission {
     return token !== undefined && this.#active.has(token);
   }
 
-  async run<Result>(label: string, mutation: () => Result | Promise<Result>): Promise<Result> {
+  async run<Result>(
+    label: string,
+    mutation: () => Result | Promise<Result>,
+    set?: ProviderOperationMutationSet,
+  ): Promise<Result> {
     const inherited = this.#context.getStore();
-    const inheritedAdmission = inherited !== undefined && this.#active.has(inherited);
+    const inheritedMutation = inherited === undefined ? undefined : this.#active.get(inherited);
+    const inheritedAdmission = inheritedMutation !== undefined;
     if (!this.#accepting && !inheritedAdmission) {
       throw new Error('Provider operation mutation admission is closed.');
+    }
+    const setKey = set === undefined ? (inheritedMutation?.setKey ?? null) : providerOperationMutationSetKey(set);
+    const setFence = setKey === null ? undefined : this.#closedSets.get(setKey);
+    if (setFence !== undefined && (inherited === undefined || !setFence.admittedTokens.has(inherited))) {
+      throw new Error('Provider operation mutation admission is closed for this proxy set.');
     }
 
     const token = Symbol(label);
@@ -124,20 +168,35 @@ export class ProviderOperationMutationAdmission {
     const settlement = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#active.set(token, { label, settlement });
+    this.#active.set(token, { label, setKey, settlement });
+    setFence?.admittedTokens.add(token);
 
     try {
       return await this.#context.run(token, mutation);
     } finally {
+      if (setKey !== null) this.#advanceSetGeneration(setKey);
       this.#active.delete(token);
       release();
       this.#settleRelease();
     }
   }
 
-  runSync<Result>(label: string, mutation: () => Result): Result {
+  runSync<Result>(label: string, mutation: () => Result, set?: ProviderOperationMutationSet): Result {
     const inherited = this.#context.getStore();
-    if (inherited !== undefined && this.#active.has(inherited)) return mutation();
+    const inheritedMutation = inherited === undefined ? undefined : this.#active.get(inherited);
+    const inheritedAdmission = inheritedMutation !== undefined;
+    const setKey = set === undefined ? (inheritedMutation?.setKey ?? null) : providerOperationMutationSetKey(set);
+    const setFence = setKey === null ? undefined : this.#closedSets.get(setKey);
+    if (setFence !== undefined && (inherited === undefined || !setFence.admittedTokens.has(inherited))) {
+      throw new Error('Provider operation mutation admission is closed for this proxy set.');
+    }
+    if (inheritedAdmission) {
+      try {
+        return mutation();
+      } finally {
+        if (setKey !== null) this.#advanceSetGeneration(setKey);
+      }
+    }
     if (!this.#accepting) throw new Error('Provider operation mutation admission is closed.');
 
     const token = Symbol(label);
@@ -145,10 +204,11 @@ export class ProviderOperationMutationAdmission {
     const settlement = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#active.set(token, { label, settlement });
+    this.#active.set(token, { label, setKey, settlement });
     try {
       return this.#context.run(token, mutation);
     } finally {
+      if (setKey !== null) this.#advanceSetGeneration(setKey);
       this.#active.delete(token);
       release();
       this.#settleRelease();
@@ -170,6 +230,45 @@ export class ProviderOperationMutationAdmission {
     };
   }
 
+  closeSet(set: ProviderOperationMutationSet): ProviderOperationMutationSetFence {
+    const setKey = providerOperationMutationSetKey(set);
+    let fence = this.#closedSets.get(setKey);
+    if (fence === undefined) {
+      fence = {
+        admittedTokens: new Set(
+          [...this.#active.entries()]
+            .filter(([, mutation]) => mutation.setKey === null || mutation.setKey === setKey)
+            .map(([token]) => token),
+        ),
+        leases: new Set(),
+      };
+      this.#closedSets.set(setKey, fence);
+    }
+    const lease = Symbol('provider-operation-mutation-set-fence');
+    fence.leases.add(lease);
+    const currentGeneration = (): number => this.#setGenerations.get(setKey) ?? 0;
+    const isHeld = (): boolean => this.#closedSets.get(setKey) === fence && fence.leases.has(lease);
+    const release = (): void => {
+      fence.leases.delete(lease);
+      if (this.#closedSets.get(setKey) === fence && fence.leases.size === 0) this.#closedSets.delete(setKey);
+    };
+    const pending = [...fence.admittedTokens]
+      .map((token) => this.#active.get(token))
+      .filter((mutation): mutation is ActiveProviderOperationMutation => mutation !== undefined);
+    if (pending.length === 0) {
+      return { kind: 'drained', currentGeneration, isHeld, release };
+    }
+    return {
+      kind: 'holding',
+      pendingMutations: pending.map(({ label }) => label),
+      exit: 'admitted-provider-operation-mutation-settlement',
+      retryAfter: this.#drainSet(fence),
+      currentGeneration,
+      isHeld,
+      release,
+    };
+  }
+
   released(): Promise<void> {
     return this.#released;
   }
@@ -188,6 +287,20 @@ export class ProviderOperationMutationAdmission {
     while (this.#active.size > 0) {
       await Promise.all([...this.#active.values()].map(({ settlement }) => settlement));
     }
+  }
+
+  async #drainSet(fence: ClosedProviderOperationMutationSet): Promise<void> {
+    while (true) {
+      const active = [...fence.admittedTokens]
+        .map((token) => this.#active.get(token))
+        .filter((mutation): mutation is ActiveProviderOperationMutation => mutation !== undefined);
+      if (active.length === 0) return;
+      await Promise.all(active.map(({ settlement }) => settlement));
+    }
+  }
+
+  #advanceSetGeneration(setKey: string): void {
+    this.#setGenerations.set(setKey, (this.#setGenerations.get(setKey) ?? 0) + 1);
   }
 }
 
@@ -621,6 +734,7 @@ export function insertProviderOperation(db: Database, record: ProviderOperationR
   providerOperationMutationAdmission(db).runSync(
     `provider-operation-insert:${record.operation.jobId}:${record.operation.operationId}`,
     () => insertProviderOperationAdmitted(db, record),
+    record.operation,
   );
 }
 
@@ -819,8 +933,10 @@ export function discardUnreadableProviderOperationWithRecoveryAuthority<Refusal>
   expectedRevision: string,
   authority: UnreadableProviderOperationDiscardAuthority<Refusal>,
 ): RawUnreadableProviderOperationDiscardResult | Refusal {
-  return providerOperationMutationAdmission(db).runSync(`provider-operation-unreadable-discard:${key}`, () =>
-    discardUnreadableProviderOperationWithRecoveryAuthorityAdmitted(db, key, expectedRevision, authority),
+  return providerOperationMutationAdmission(db).runSync(
+    `provider-operation-unreadable-discard:${key}`,
+    () => discardUnreadableProviderOperationWithRecoveryAuthorityAdmitted(db, key, expectedRevision, authority),
+    providerOperationSetAddressFromRecordKey(key) ?? undefined,
   );
 }
 
@@ -1026,8 +1142,10 @@ function retireSupersededProviderOperationAdmitted(db: Database, key: string): v
 }
 
 export function retireSupersededProviderOperation(db: Database, key: string): void {
-  providerOperationMutationAdmission(db).runSync(`provider-operation-superseded-retirement:${key}`, () =>
-    retireSupersededProviderOperationAdmitted(db, key),
+  providerOperationMutationAdmission(db).runSync(
+    `provider-operation-superseded-retirement:${key}`,
+    () => retireSupersededProviderOperationAdmitted(db, key),
+    providerOperationSetAddressFromRecordKey(key) ?? undefined,
   );
 }
 
@@ -1200,6 +1318,7 @@ export function finishProviderOperationDueSelection(
   return providerOperationMutationAdmission(db).runSync(
     `provider-operation-due-selection:${selection.record.operation.jobId}:${selection.record.operation.operationId}`,
     () => finishProviderOperationDueSelectionAdmitted(db, selection, scanCutoffMs, nextDueAtMs),
+    selection.record.operation,
   );
 }
 
@@ -1240,6 +1359,7 @@ export function compareAndSwapProviderOperation(
   return providerOperationMutationAdmission(db).runSync(
     `provider-operation-update:${expected.operation.jobId}:${expected.operation.operationId}`,
     () => compareAndSwapProviderOperationAdmitted(db, expected, next),
+    expected.operation,
   );
 }
 
@@ -1295,6 +1415,7 @@ export function completeExecutingProviderOperationAttachment(
   return providerOperationMutationAdmission(db).runSync(
     `provider-operation-attachment:${operation.jobId}:${operation.operationId}`,
     () => completeExecutingProviderOperationAttachmentAdmitted(db, operation, expectedRetryOwnership, completedAtMs),
+    operation,
   );
 }
 
@@ -1325,5 +1446,6 @@ export function deleteProviderOperation(
   return providerOperationMutationAdmission(db).runSync(
     `provider-operation-delete:${expected.operation.jobId}:${expected.operation.operationId}`,
     () => deleteProviderOperationAdmitted(db, expected),
+    expected.operation,
   );
 }

@@ -36,6 +36,7 @@ import {
 } from '../services/recovery/index.js';
 import {
   attributeUnreadableProviderOperations,
+  providerOperationMutationAdmission,
   readProviderOperation,
   readProviderOperations,
   subscribeProviderOperationMutations,
@@ -269,6 +270,8 @@ export function createExecutionServices({
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
     reapRecordedContainment: world.reapRecordedContainment,
+    fenceProviderOperationMutations: (identity) =>
+      providerOperationMutationAdmission(getProgressStore().getDb()).closeSet(identity),
     onProgressPremiseViolation: (violation) =>
       backendLog.warn(
         `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,

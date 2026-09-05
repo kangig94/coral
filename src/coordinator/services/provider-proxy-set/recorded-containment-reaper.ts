@@ -6,7 +6,11 @@ import {
 } from '../../../provider-proxy/enforcement.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { providerProxySetContainmentEvidenceFor, type ProviderProxySetContainmentProof } from './containment-proof.js';
+import {
+  providerProxySetContainmentEvidenceFor,
+  verifyProviderProxySetContainmentProofCurrent,
+  type ProviderProxySetContainmentProof,
+} from './containment-proof.js';
 import type { ProviderProxySetIdentity } from './identity.js';
 
 const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
@@ -17,7 +21,9 @@ export type ProviderProxySetContainmentSignal = 'SIGTERM' | 'SIGKILL';
 /** The only terminal observations produced by exact recorded-containment reaping. */
 export type ProviderProxySetRecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
-  | Readonly<{ kind: 'recorded-group-unattributable' }>;
+  | Readonly<{ kind: 'recorded-group-unattributable' }>
+  | Readonly<{ kind: 'authorization-stale' }>
+  | Readonly<{ kind: 'store-unreadable' }>;
 
 /** Destructive owner port that accepts only an identity-bound opaque containment proof. */
 export type ProviderProxySetRecordedContainmentReaper = (
@@ -56,11 +62,12 @@ export function createProviderProxySetRecordedContainmentReaper(
       },
     );
     signal.throwIfAborted();
-    return outcome.kind === 'containment-absent'
-      ? {
-          kind: 'containment-absent',
-          disappearanceReceipt: providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots),
-        }
-      : outcome;
+    if (outcome.kind !== 'containment-absent') return outcome;
+    const currentness = verifyProviderProxySetContainmentProofCurrent(proof, identity);
+    if (currentness.kind !== 'current') return currentness;
+    return {
+      kind: 'containment-absent',
+      disappearanceReceipt: providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots),
+    };
   };
 }
