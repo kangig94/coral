@@ -6,8 +6,9 @@ import { bindProviderRunner, type ProviderDurableSpawner } from '#src/providers/
 const NO_CLI_RESULT = { stdout: '', stderr: '', code: 0, aborted: false };
 
 describe('bindProviderRunner', () => {
-  it('forwards onDurableProcessIdentity to the spawner, and the spawner call reaches the caller', async () => {
+  it('forwards the durable identity callback and exact job identity to the spawner', async () => {
     let capturedOptionsHadCallback = false;
+    let capturedJobId: string | undefined;
     const identity = {
       pid: 4242,
       incarnation: testIncarnation(1_000),
@@ -24,6 +25,7 @@ describe('bindProviderRunner', () => {
     const spawner: ProviderDurableSpawner = {
       spawnDurableJob: (options) => {
         capturedOptionsHadCallback = typeof options.onDurableProcessIdentity === 'function';
+        capturedJobId = options.jobId;
         options.onDurableProcessIdentity?.(identity, status, control);
         return Promise.resolve(NO_CLI_RESULT);
       },
@@ -38,10 +40,12 @@ describe('bindProviderRunner', () => {
       '/tmp/job-dir',
       undefined,
       onDurableProcessIdentity,
+      'job-visible-hold',
     );
     await runCli({ command: 'codex', args: [] });
 
     expect(capturedOptionsHadCallback).toBe(true);
+    expect(capturedJobId).toBe('job-visible-hold');
     expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith(identity, status, control);
   });
 

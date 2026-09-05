@@ -38,17 +38,59 @@ export type LifecycleWiringState = {
   ownershipCheckerTeardown: (() => void) | null;
 };
 
-type ShutdownSequenceDisposition =
+type ShutdownHoldReason =
+  | 'process-incarnation-probes-unsettled'
+  | 'lifecycle-reactor-disposal-unsettled'
+  | 'required-shutdown-step-unsettled';
+
+type ShutdownHoldExit =
+  | 'process-incarnation-probe-child-close'
+  | 'lifecycle-reactor-disposal-settlement'
+  | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
+  | 'authority-release-settlement';
+
+export type ShutdownOperatorAction =
+  | Readonly<{
+      kind: 'retained-job-containment';
+      jobId: string;
+      provider: string;
+      jobDir: string;
+      actionCommand: string;
+    }>
+  | Readonly<{
+      kind: 'provider-proxy-set-containment';
+      proxyInstanceId: string;
+      inspectCommand: 'coral-cli backend status';
+      actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>';
+    }>;
+
+type ShutdownRetainedAuthority = Readonly<{
+  ipcSocket: boolean;
+  providerControlProxyInstanceIds: readonly string[];
+  cleanupObligations: readonly string[];
+  operatorActions: readonly ShutdownOperatorAction[];
+}>;
+
+type FinalizationDisposition =
   | Readonly<{ disposition: 'settled' }>
   | Readonly<{
       disposition: 'held';
-      reason: 'process-incarnation-probes-unsettled' | 'lifecycle-reactor-disposal-unsettled';
-      exit:
-        | 'process-incarnation-probe-child-close'
-        | 'lifecycle-reactor-disposal-settlement'
-        | 'lifecycle-finalization-retry-deadline';
+      reason: Exclude<ShutdownHoldReason, 'required-shutdown-step-unsettled'>;
+      exit: ShutdownHoldExit;
       retryAfter: Promise<void>;
-      deferredFailures: readonly ShutdownFailure[];
+      continue?: () => Promise<FinalizationDisposition>;
+    }>;
+
+export type ShutdownSequenceDisposition =
+  | Readonly<{ disposition: 'settled' }>
+  | Readonly<{
+      disposition: 'held';
+      reason: ShutdownHoldReason;
+      exit: ShutdownHoldExit;
+      retryAfter: Promise<void>;
+      deferredFailures: readonly ShutdownDeferredFailure[];
+      retainedAuthority: ShutdownRetainedAuthority;
+      retry(): Promise<ShutdownSequenceDisposition>;
     }>;
 
 interface ShutdownRuntimeState {
@@ -84,8 +126,6 @@ type RunShutdownSequenceContext = {
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;
-  finalizationOnly?: boolean;
-  deferredFailures?: readonly ShutdownFailure[];
 };
 
 /**
@@ -202,6 +242,11 @@ export type ShutdownDeferredFailure = {
 
 type ShutdownFailure = ShutdownDeferredFailure;
 
+type PendingRequiredShutdownStep = Readonly<{
+  label: string;
+  task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>;
+}>;
+
 type UnresolvedChildProcess = Extract<TerminateAllDisposition, { kind: 'unresolved-at-deadline' }>['processes'][number];
 
 function unresolvedChildProcessDetail(process: UnresolvedChildProcess): string {
@@ -228,34 +273,33 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
     .map((process) => `${process.provider}:${process.jobDir} pgid ${process.containment.processGroupId}`)
     .join('; ');
   const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
+  const actionCommands = [...disposition.retainedLaunches, ...disposition.retainedProcesses].flatMap((process) =>
+    process.jobId === undefined ? [] : [`coral-cli abort ${process.jobId}`],
+  );
   return {
     confirmed: false,
     detail:
       `${disposition.cleanupHandles} cleanup handle(s) and ${disposition.pendingLaunches} pending launch(es) ` +
       `remain owned by ${disposition.owner}` +
       `${observations.length === 0 && retained.length === 0 ? '' : ` (${[observations, retained].filter(Boolean).join('; ')})`}. ` +
-      'Run coral-cli backend status, then coral-cli abort <job-id> for each retained job.',
+      (actionCommands.length === 0
+        ? 'No durable job identity was returned for an operator action.'
+        : `Run ${actionCommands.join(', ')}; the durable containment row remains visible until discharge.`),
   };
 }
 
 async function processIncarnationProbeConfirmation(
   signal: AbortSignal,
   log: (message: string) => void,
-  retryDelay: () => Promise<void>,
-): Promise<ShutdownSequenceDisposition> {
+): Promise<FinalizationDisposition> {
   const cleanup = await terminateProcessIncarnationProbes(signal).then(
     (disposition) => ({ outcome: 'observed' as const, disposition }),
     (error: unknown) => ({ outcome: 'failed' as const, error }),
   );
   if (cleanup.outcome === 'failed') {
-    log(`process incarnation probe shutdown held (cleanup failed: ${formatError(cleanup.error)})\n`);
-    return {
-      disposition: 'held',
-      reason: 'process-incarnation-probes-unsettled',
-      exit: 'lifecycle-finalization-retry-deadline',
-      retryAfter: retryDelay(),
-      deferredFailures: [],
-    };
+    throw new Error(`process incarnation probe cleanup rejected: ${formatError(cleanup.error)}`, {
+      cause: cleanup.error,
+    });
   }
 
   const disposition: ProcessIncarnationProbeCleanupDisposition = cleanup.disposition;
@@ -270,64 +314,59 @@ async function processIncarnationProbeConfirmation(
     reason: 'process-incarnation-probes-unsettled',
     exit: 'process-incarnation-probe-child-close',
     retryAfter: disposition.untilSettled,
-    deferredFailures: [],
   };
 }
 
 async function lifecycleReactorDisposalConfirmation(
-  signal: AbortSignal,
   disposeLifecycleReactor: () => void | Promise<void>,
-  log: (message: string) => void,
-  retryDelay: () => Promise<void>,
-): Promise<ShutdownSequenceDisposition> {
-  if (signal.aborted) {
-    return {
-      disposition: 'held',
-      reason: 'lifecycle-reactor-disposal-unsettled',
-      exit: 'lifecycle-finalization-retry-deadline',
-      retryAfter: retryDelay(),
-      deferredFailures: [],
-    };
+  remainingDrain: () => number,
+  time: Pick<TimePort, 'sleep'>,
+): Promise<FinalizationDisposition> {
+  const budget = remainingDrain();
+  if (budget <= 0) {
+    throw new Error('lifecycle reactor disposal did not start before the shutdown deadline');
   }
-  let removeAbortListener = (): void => {};
-  const aborted = new Promise<'aborted'>((resolve) => {
-    const onAbort = (): void => resolve('aborted');
-    signal.addEventListener('abort', onAbort, { once: true });
-    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
-  });
+  const deadline = { outcome: 'deadline' as const };
+  const timeoutAbort = new AbortController();
+  const disposal = Promise.resolve()
+    .then(() => disposeLifecycleReactor())
+    .then(
+      () => ({ outcome: 'settled' as const }),
+      (error: unknown) => ({ outcome: 'failed' as const, error }),
+    );
   try {
-    const disposal = Promise.resolve()
-      .then(() => disposeLifecycleReactor())
-      .then(
-        () => ({ outcome: 'settled' as const }),
-        (error: unknown) => ({ outcome: 'failed' as const, error }),
-      );
-    const outcome = await Promise.race([disposal, aborted]);
-    if (outcome === 'aborted') {
+    const outcome = await Promise.race([
+      disposal,
+      time.sleep(budget, { signal: timeoutAbort.signal }).then(() => deadline),
+    ]);
+    if (outcome.outcome === 'deadline') {
+      const continuation = disposal.then<FinalizationDisposition>((settled) => {
+        if (settled.outcome === 'failed') {
+          throw new Error(`lifecycle reactor disposal rejected: ${formatError(settled.error)}`, {
+            cause: settled.error,
+          });
+        }
+        return { disposition: 'settled' };
+      });
       return {
         disposition: 'held',
         reason: 'lifecycle-reactor-disposal-unsettled',
         exit: 'lifecycle-reactor-disposal-settlement',
-        retryAfter: disposal.then(
+        retryAfter: continuation.then(
           () => undefined,
           () => undefined,
         ),
-        deferredFailures: [],
+        continue: () => continuation,
       };
     }
     if (outcome.outcome === 'failed') {
-      log(`lifecycle reactor disposal held (${formatError(outcome.error)})\n`);
-      return {
-        disposition: 'held',
-        reason: 'lifecycle-reactor-disposal-unsettled',
-        exit: 'lifecycle-finalization-retry-deadline',
-        retryAfter: retryDelay(),
-        deferredFailures: [],
-      };
+      throw new Error(`lifecycle reactor disposal rejected: ${formatError(outcome.error)}`, {
+        cause: outcome.error,
+      });
     }
     return { disposition: 'settled' };
   } finally {
-    removeAbortListener();
+    timeoutAbort.abort();
   }
 }
 
@@ -412,50 +451,49 @@ async function releaseIpcSocket(
   await closeIpcServerFn(ipcServer);
 }
 
-/**
- * The ordered release boundary at the end of a handoff.
- *
- * Its whole purpose is that no single failure — synchronous or asynchronous — can suppress a later trigger.
- * Every heartbeat stop, then every control close, then the IPC socket release, is invoked synchronously and
- * in that order before any of them is awaited; a synchronous throw from one is caught and folded into the
- * same outcome as an asynchronous rejection, so it cannot skip the triggers queued after it. A control whose
- * close rejects — or a heartbeat stop that throws — must not keep the socket bound, because the successor
- * cannot establish its own coordinator authority while the old socket remains bound.
- */
-async function releaseHandoffAuthority(
-  sets: readonly ProviderProxySetAuthority[],
-  releaseIpcSocket: () => Promise<void>,
-  signal: AbortSignal,
-): Promise<ShutdownStepConfirmation> {
-  // A synchronous throw becomes a rejected promise here instead of escaping: escaping would abort this
-  // function before the triggers queued after it ever ran, which is exactly the failure this boundary rules
-  // out. Calling `fn()` inside the try — not deferring it to a microtask — is also what makes every trigger
-  // below run synchronously, in the order written, before any of them is awaited.
-  const trigger = (fn: () => void | Promise<void>): Promise<void> => {
-    try {
-      return Promise.resolve(fn());
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-    }
-  };
+type AuthorityReleaseCapability = {
+  readonly label: string;
+  readonly proxyInstanceId?: string;
+  readonly release: () => void | Promise<void>;
+  state:
+    | Readonly<{ kind: 'pending' }>
+    | Readonly<{ kind: 'in-flight'; settlement: Promise<Readonly<{ ok: true } | { ok: false; error: unknown }>> }>
+    | Readonly<{ kind: 'settled' }>;
+};
 
-  const releases = [
-    ...sets.map((set) => ({
-      label: `heartbeats ${set.proxyInstanceId}`,
-      settled: trigger(() => set.stopHeartbeats()),
-    })),
-    ...sets.map((set) => ({
-      label: `control ${set.proxyInstanceId}`,
-      settled: trigger(() => set.initiateControlClose()),
-    })),
-    { label: 'IPC socket release', settled: trigger(releaseIpcSocket) },
-  ];
+type AuthorityReleaseOutcome = Readonly<{ ok: true } | { ok: false; error: unknown }>;
 
-  const outcomes = await Promise.allSettled(releases.map((entry) => entry.settled));
-  const failures = outcomes.flatMap((outcome, index) =>
-    outcome.status === 'rejected' ? [`${releases[index].label}: ${formatError(outcome.reason)}`] : [],
+function startAuthorityRelease(capability: AuthorityReleaseCapability): Promise<AuthorityReleaseOutcome> {
+  if (capability.state.kind === 'settled') return Promise.resolve<AuthorityReleaseOutcome>({ ok: true });
+  if (capability.state.kind === 'in-flight') return capability.state.settlement;
+  let release: Promise<void>;
+  try {
+    release = Promise.resolve(capability.release());
+  } catch (error: unknown) {
+    release = Promise.reject(error instanceof Error ? error : new Error(formatError(error), { cause: error }));
+  }
+  const settlement = release.then<AuthorityReleaseOutcome, AuthorityReleaseOutcome>(
+    () => {
+      capability.state = { kind: 'settled' };
+      return { ok: true };
+    },
+    (error: unknown) => {
+      capability.state = { kind: 'pending' };
+      return { ok: false, error };
+    },
   );
-  if (signal.aborted) failures.push('release boundary was aborted before every confirmation arrived');
+  capability.state = { kind: 'in-flight', settlement };
+  return settlement;
+}
+
+/** Every capability starts in array order; an in-flight or settled capability is never invoked again. */
+async function settleAuthorityReleases(
+  capabilities: readonly AuthorityReleaseCapability[],
+): Promise<ShutdownStepConfirmation> {
+  const outcomes = await Promise.all(capabilities.map(startAuthorityRelease));
+  const failures = outcomes.flatMap((outcome, index) =>
+    outcome.ok ? [] : [`${capabilities[index].label}: ${formatError(outcome.error)}`],
+  );
   return failures.length === 0 ? { confirmed: true } : { confirmed: false, detail: failures.join('; ') };
 }
 
@@ -463,7 +501,7 @@ function throwShutdownFailures(failures: readonly ShutdownFailure[]): void {
   if (failures.length === 0) return;
   throw new AggregateError(
     failures.map(({ label, error }) => new Error(`${label}: ${formatError(error)}`, { cause: error })),
-    `Coral backend shutdown completed with ${failures.length} finalizer failure${failures.length === 1 ? '' : 's'}.`,
+    `Coral backend shutdown retained ownership after ${failures.length} finalizer failure${failures.length === 1 ? '' : 's'}.`,
   );
 }
 
@@ -490,10 +528,10 @@ export async function runShutdownSequence({
   hooks,
   discussStores,
   log,
-  finalizationOnly = false,
-  deferredFailures = [],
 }: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
-  const failures: ShutdownFailure[] = [...deferredFailures];
+  const failures: ShutdownFailure[] = [];
+  const pendingRequiredSteps: PendingRequiredShutdownStep[] = [];
+  const requiredFailures: ShutdownFailure[] = [];
   const runStep = (label: string, task: () => unknown | Promise<unknown>): Promise<boolean> =>
     runShutdownStep(failures, label, task, log);
   const observeTask = (label: string, task: Promise<void>): Promise<void> =>
@@ -511,58 +549,51 @@ export async function runShutdownSequence({
     Promise.race([task, runtime.time.sleep(remainingDrain())]);
   const runBudgetedStep = (label: string, task: (signal: AbortSignal) => Promise<void>): Promise<boolean> =>
     runStep(label, () => withBudget(label, task, remainingDrain, runtime.time, log));
-  // A required step's failure is recorded like any other, so `throwShutdownFailures` still aggregates it —
-  // what "required" changes is that skipping, timing out, or finishing unconfirmed all become failures
-  // instead of a log line.
   const runRequiredBudgetedStep = (
     label: string,
     task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
-  ): Promise<boolean> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
-  let finalizationDisposition: ShutdownSequenceDisposition = { disposition: 'settled' };
-  const currentFinalizationDisposition = (): ShutdownSequenceDisposition => finalizationDisposition;
-
-  if (finalizationOnly) {
-    if (processIncarnationProbeRegistrySize() > 0) {
-      finalizationDisposition = {
-        disposition: 'held',
-        reason: 'process-incarnation-probes-unsettled',
-        exit: 'process-incarnation-probe-child-close',
-        retryAfter: Promise.resolve(),
-        deferredFailures: failures,
-      };
-      await runBudgetedStep('process incarnation probe shutdown', async (signal) => {
-        finalizationDisposition = await processIncarnationProbeConfirmation(signal, log, () =>
-          runtime.time.sleep(SHUTDOWN_POLL_MS),
-        );
-      });
-    }
-    if (currentFinalizationDisposition().disposition === 'settled') {
-      finalizationDisposition = {
-        disposition: 'held',
-        reason: 'lifecycle-reactor-disposal-unsettled',
-        exit: 'lifecycle-reactor-disposal-settlement',
-        retryAfter: Promise.resolve(),
-        deferredFailures: failures,
-      };
-      await runBudgetedStep('lifecycle reactor dispose', async (signal) => {
-        finalizationDisposition = await lifecycleReactorDisposalConfirmation(signal, disposeLifecycleReactor, log, () =>
-          runtime.time.sleep(SHUTDOWN_POLL_MS),
-        );
-      });
-    }
-    const disposition = currentFinalizationDisposition();
-    if (disposition.disposition === 'held') return { ...disposition, deferredFailures: failures };
-    throwShutdownFailures(failures);
-    return disposition;
-  }
+    retainForRetry = true,
+  ): Promise<boolean> =>
+    withRequiredBudget(label, task, remainingDrain, runtime.time).then(
+      () => true,
+      (error: unknown) => {
+        if (retainForRetry) {
+          recordShutdownFailure(requiredFailures, label, error, log);
+          pendingRequiredSteps.push({ label, task });
+        } else {
+          recordShutdownFailure(failures, label, error, log);
+        }
+        return false;
+      },
+    );
+  const retainRequiredFailureAsFatal = (label: string): void => {
+    const pendingIndex = pendingRequiredSteps.length - 1;
+    if (pendingRequiredSteps[pendingIndex]?.label === label) pendingRequiredSteps.splice(pendingIndex, 1);
+    const failureIndex = requiredFailures.length - 1;
+    if (requiredFailures[failureIndex]?.label !== label) return;
+    const [failure] = requiredFailures.splice(failureIndex, 1);
+    if (failure !== undefined) failures.push(failure);
+  };
 
   let liveProxySets: readonly ProviderProxySetAuthority[] = [];
   let acquisitionCleanupHolds: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'] = [];
+  let retainedJobOperatorActions: readonly ShutdownOperatorAction[] = [];
   const providerHostQuiescence: { receipt: ProviderHostQuiescenceReceipt | null } = { receipt: null };
+  const refreshProviderCleanupObligations = (): void => {
+    const cleanupObligations = providerHostManager.cleanupObligations?.() ?? providerHostQuiescence.receipt;
+    liveProxySets = cleanupObligations?.liveProxySets ?? [];
+    acquisitionCleanupHolds = cleanupObligations?.acquisitionCleanupHolds ?? [];
+  };
+  const settleProviderCleanup = (
+    sets: readonly ProviderProxySetAuthority[],
+    signal: AbortSignal,
+  ): Promise<ShutdownStepConfirmation> =>
+    reapProviderProxySets(sets, acquisitionCleanupHolds, signal).then((confirmation) => {
+      if (confirmation.confirmed) acquisitionCleanupHolds = [];
+      return confirmation;
+    });
 
-  // Stop accepting HTTP/user-facing work first; the IPC socket stays bound
-  // until all handoff finalizers complete or consume the budget, so the
-  // replacement daemon cannot run startup recovery against partial state.
+  // IPC authority must remain bound until every finalization obligation is decisively settled.
   const serverClosed = observeTask(
     'server close',
     Promise.resolve().then(() => closeServerFn(server)),
@@ -592,18 +623,55 @@ export async function runShutdownSequence({
       providerHostQuiescence.receipt = await providerHostManager.shutdown(signal);
       return { confirmed: true };
     });
-    const cleanupObligations = providerHostManager.cleanupObligations?.() ?? providerHostQuiescence.receipt;
-    liveProxySets = cleanupObligations?.liveProxySets ?? [];
-    acquisitionCleanupHolds = cleanupObligations?.acquisitionCleanupHolds ?? [];
+    refreshProviderCleanupObligations();
     let providerContainmentAbsent = true;
-    if (liveProxySets.length > 0 || acquisitionCleanupHolds.length > 0) {
+    if (!providerHostsQuiesced) {
+      if (liveProxySets.length === 0 && acquisitionCleanupHolds.length === 0) {
+        retainRequiredFailureAsFatal('provider host shutdown');
+      } else {
+        pendingRequiredSteps[pendingRequiredSteps.length - 1] = {
+          label: 'provider host shutdown',
+          task: (signal) =>
+            providerHostManager.shutdown(signal).then((receipt) => {
+              providerHostQuiescence.receipt = receipt;
+              refreshProviderCleanupObligations();
+              return liveProxySets.length > 0 || acquisitionCleanupHolds.length > 0
+                ? settleProviderCleanup(liveProxySets, signal)
+                : { confirmed: true };
+            }),
+        };
+      }
+      providerContainmentAbsent = false;
+    } else if (liveProxySets.length > 0 || acquisitionCleanupHolds.length > 0) {
       providerContainmentAbsent = await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
-        reapProviderProxySets(liveProxySets, acquisitionCleanupHolds, signal),
+        settleProviderCleanup(liveProxySets, signal),
       );
     }
-    const childContainmentAbsent = await runRequiredBudgetedStep('child termination', async (signal) =>
-      childTerminationConfirmation(await terminateAllFn(signal)),
-    );
+    let childTerminationDisposition: TerminateAllDisposition | null = null;
+    const childContainmentAbsent = await runRequiredBudgetedStep('child termination', async (signal) => {
+      const disposition = await terminateAllFn(signal);
+      childTerminationDisposition = disposition;
+      retainedJobOperatorActions =
+        disposition.kind === 'all-observed-absent'
+          ? []
+          : [...disposition.retainedLaunches, ...disposition.retainedProcesses].flatMap((retained) =>
+              retained.jobId === undefined
+                ? []
+                : [
+                    {
+                      kind: 'retained-job-containment' as const,
+                      jobId: retained.jobId,
+                      provider: retained.provider,
+                      jobDir: retained.jobDir,
+                      actionCommand: `coral-cli abort ${retained.jobId}`,
+                    },
+                  ],
+            );
+      return childTerminationConfirmation(disposition);
+    });
+    if (!childContainmentAbsent && (childTerminationDisposition === null || retainedJobOperatorActions.length === 0)) {
+      retainRequiredFailureAsFatal('child termination');
+    }
     if (storeServicesAvailable && providerHostsQuiesced && providerContainmentAbsent && childContainmentAbsent) {
       await runBudgetedStep('crashed job terminalization', async (signal) => {
         await markJobsAsErrorFn('Backend shutting down', signal);
@@ -618,16 +686,39 @@ export async function runShutdownSequence({
       quiescePorts = handoffQuiescePorts();
     });
     for (const port of quiescePorts) {
-      await runRequiredBudgetedStep('app-server handoff quiesce', async () => {
-        await port.quiesceAppServerJobsForHandoff();
-        return { confirmed: true };
-      });
+      await runRequiredBudgetedStep(
+        'app-server handoff quiesce',
+        async () => {
+          await port.quiesceAppServerJobsForHandoff();
+          return { confirmed: true };
+        },
+        false,
+      );
     }
-    await runRequiredBudgetedStep('provider host drain for handoff', async (signal) => {
+    const providerHostsDrained = await runRequiredBudgetedStep('provider host drain for handoff', async (signal) => {
       providerHostQuiescence.receipt = await providerHostManager.drainForHandoff(signal);
       return { confirmed: true };
     });
-    liveProxySets = providerHostQuiescence.receipt?.liveProxySets ?? [];
+    refreshProviderCleanupObligations();
+    if (!providerHostsDrained) {
+      if (liveProxySets.length === 0 && acquisitionCleanupHolds.length === 0) {
+        retainRequiredFailureAsFatal('provider host drain for handoff');
+      } else {
+        pendingRequiredSteps[pendingRequiredSteps.length - 1] = {
+          label: 'provider host drain for handoff',
+          task: (signal) =>
+            providerHostManager.drainForHandoff(signal).then((receipt) => {
+              providerHostQuiescence.receipt = receipt;
+              refreshProviderCleanupObligations();
+              return acquisitionCleanupHolds.length === 0 ? { confirmed: true } : settleProviderCleanup([], signal);
+            }),
+        };
+      }
+    } else if (acquisitionCleanupHolds.length > 0) {
+      await runRequiredBudgetedStep('provider proxy acquisition cleanup', async (signal) =>
+        settleProviderCleanup([], signal),
+      );
+    }
   }
 
   await runBudgetedStep('components disposeAll', async (signal) => runtimeState.components.disposeAll(signal));
@@ -635,56 +726,253 @@ export async function runShutdownSequence({
   for (const [source, store] of discussStores) {
     await runStep(`discuss store '${source}' dispose`, () => store.dispose());
   }
-  if (processIncarnationProbeRegistrySize() > 0) {
-    finalizationDisposition = {
-      disposition: 'held',
-      reason: 'process-incarnation-probes-unsettled',
-      exit: 'process-incarnation-probe-child-close',
-      retryAfter: Promise.resolve(),
-      deferredFailures: failures,
+
+  const providerReleaseCapabilities = new Map<
+    string,
+    Readonly<{ heartbeat: AuthorityReleaseCapability; control: AuthorityReleaseCapability }>
+  >();
+  const synchronizeProviderReleaseCapabilities = (): void => {
+    for (const set of liveProxySets) {
+      if (providerReleaseCapabilities.has(set.proxyInstanceId)) continue;
+      providerReleaseCapabilities.set(set.proxyInstanceId, {
+        heartbeat: {
+          label: `heartbeats ${set.proxyInstanceId}`,
+          proxyInstanceId: set.proxyInstanceId,
+          release: () => set.stopHeartbeats(),
+          state: { kind: 'pending' },
+        },
+        control: {
+          label: `control ${set.proxyInstanceId}`,
+          proxyInstanceId: set.proxyInstanceId,
+          release: () => set.initiateControlClose(),
+          state: { kind: 'pending' },
+        },
+      });
+    }
+  };
+  const ipcReleaseCapability: AuthorityReleaseCapability | null =
+    ipcServer === undefined || closeIpcServerFn === undefined
+      ? null
+      : {
+          label: 'IPC socket',
+          release: () => releaseIpcSocket(ipcServer, closeIpcServerFn),
+          state: { kind: 'pending' },
+        };
+  let authorityReleaseAttempt: Promise<ShutdownStepConfirmation> | null = null;
+  let authorityReleaseAttemptOutcome: ShutdownStepConfirmation | null = null;
+  const authorityRelease: PendingRequiredShutdownStep = {
+    label: 'provider control and IPC authority release',
+    task: () => {
+      if (authorityReleaseAttempt !== null) return authorityReleaseAttempt;
+      authorityReleaseAttemptOutcome = null;
+      synchronizeProviderReleaseCapabilities();
+      const releases = [...providerReleaseCapabilities.values()];
+      authorityReleaseAttempt = settleAuthorityReleases([
+        ...releases.map(({ heartbeat }) => heartbeat),
+        ...releases.map(({ control }) => control),
+      ])
+        .then((providerControlConfirmation) => {
+          if (!providerControlConfirmation.confirmed) return providerControlConfirmation;
+          return ipcReleaseCapability === null
+            ? ({ confirmed: true } as const)
+            : settleAuthorityReleases([ipcReleaseCapability]);
+        })
+        .then((outcome) => {
+          authorityReleaseAttemptOutcome = outcome;
+          return outcome;
+        });
+      return authorityReleaseAttempt;
+    },
+  };
+  const failFinalization = (label: string, error: unknown): never => {
+    recordShutdownFailure(failures, label, error, log);
+    throwShutdownFailures(failures);
+    throw new Error(`${label} failed without a recorded cause`, { cause: error });
+  };
+  const attemptReactorFinalization = (remaining: () => number): Promise<FinalizationDisposition> =>
+    lifecycleReactorDisposalConfirmation(disposeLifecycleReactor, remaining, runtime.time).then(
+      (disposition) => disposition,
+      (error: unknown) => failFinalization('lifecycle reactor dispose', error),
+    );
+  const attemptFinalization = (remaining: () => number): Promise<FinalizationDisposition> => {
+    if (processIncarnationProbeRegistrySize() === 0) return attemptReactorFinalization(remaining);
+    return withBudget(
+      'process incarnation probe shutdown',
+      (signal) => processIncarnationProbeConfirmation(signal, log),
+      remaining,
+      runtime.time,
+      log,
+    ).then(
+      (probeDisposition) => {
+        if (probeDisposition === undefined) {
+          return failFinalization(
+            'process incarnation probe shutdown',
+            new RequiredShutdownStepError(
+              'process incarnation probe shutdown',
+              'budget-exhausted',
+              'no cleanup settlement was retained',
+            ),
+          );
+        }
+        return probeDisposition.disposition === 'held' ? probeDisposition : attemptReactorFinalization(remaining);
+      },
+      (error: unknown) => failFinalization('process incarnation probe shutdown', error),
+    );
+  };
+
+  const retainedAuthority = (pending: readonly PendingRequiredShutdownStep[]): ShutdownRetainedAuthority => {
+    synchronizeProviderReleaseCapabilities();
+    const retainedProviderIds = [...providerReleaseCapabilities.entries()].flatMap(([proxyInstanceId, release]) =>
+      release.heartbeat.state.kind === 'settled' && release.control.state.kind === 'settled' ? [] : [proxyInstanceId],
+    );
+    const providerActions: ShutdownOperatorAction[] = retainedProviderIds.map((proxyInstanceId) => ({
+      kind: 'provider-proxy-set-containment',
+      proxyInstanceId,
+      inspectCommand: 'coral-cli backend status',
+      actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
+    }));
+    const providerCleanupObligations = acquisitionCleanupHolds.map((hold) =>
+      hold.kind === 'provider_proxy_acquisition_held'
+        ? `provider acquisition guardian pid ${hold.guardianIdentity.pid}`
+        : `provider acquisition ${hold.target}`,
+    );
+    return {
+      ipcSocket: ipcReleaseCapability !== null && ipcReleaseCapability.state.kind !== 'settled',
+      providerControlProxyInstanceIds: retainedProviderIds,
+      cleanupObligations: [...pending.map(({ label }) => label), ...providerCleanupObligations],
+      operatorActions: [...retainedJobOperatorActions, ...providerActions],
     };
-    await runBudgetedStep('process incarnation probe shutdown', async (signal) => {
-      finalizationDisposition = await processIncarnationProbeConfirmation(signal, log, () =>
-        runtime.time.sleep(SHUTDOWN_POLL_MS),
-      );
-    });
-  }
-  if (currentFinalizationDisposition().disposition === 'settled') {
-    finalizationDisposition = {
+  };
+
+  const clearAuthorityReleaseAttempt = (): void => {
+    authorityReleaseAttempt = null;
+    authorityReleaseAttemptOutcome = null;
+  };
+
+  const retryAuthorityRelease = (): Promise<ShutdownSequenceDisposition> => {
+    const retryDeadline = runtime.time.now() + drainTimeout;
+    const remainingRetry = (): number => Math.max(0, retryDeadline - runtime.time.now());
+    return attemptAuthorityRelease(remainingRetry);
+  };
+
+  const continueAuthorityRelease = (attempt: Promise<ShutdownStepConfirmation>): Promise<ShutdownSequenceDisposition> =>
+    attempt.then(
+      (outcome) => {
+        if (outcome.confirmed) return { disposition: 'settled' } as const;
+        if (authorityReleaseAttempt === attempt) clearAuthorityReleaseAttempt();
+        return retryAuthorityRelease();
+      },
+      (error: unknown) => {
+        if (authorityReleaseAttempt === attempt) clearAuthorityReleaseAttempt();
+        return authorityReleaseFailureDisposition(error);
+      },
+    );
+
+  const authorityReleaseFailureDisposition = (error: unknown): ShutdownSequenceDisposition => {
+    if (authorityReleaseAttemptOutcome?.confirmed === true) return { disposition: 'settled' };
+    const releaseFailures: ShutdownFailure[] = [];
+    recordShutdownFailure(releaseFailures, authorityRelease.label, error, log);
+    const retained = retainedAuthority([authorityRelease]);
+    const deadlineInterrupted =
+      error instanceof RequiredShutdownStepError &&
+      (error.reason === 'timed-out' || error.reason === 'budget-exhausted');
+    const retainedAttempt =
+      deadlineInterrupted && authorityReleaseAttemptOutcome === null ? authorityReleaseAttempt : null;
+    if (retainedAttempt === null) clearAuthorityReleaseAttempt();
+    if (retainedAttempt === null && retained.operatorActions.length === 0) {
+      failures.push(...releaseFailures);
+      throwShutdownFailures(failures);
+    }
+    return {
       disposition: 'held',
-      reason: 'lifecycle-reactor-disposal-unsettled',
-      exit: 'lifecycle-reactor-disposal-settlement',
-      retryAfter: Promise.resolve(),
-      deferredFailures: failures,
+      reason: 'required-shutdown-step-unsettled',
+      exit:
+        retainedAttempt === null
+          ? 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
+          : 'authority-release-settlement',
+      retryAfter:
+        retainedAttempt === null
+          ? runtime.time.sleep(SHUTDOWN_POLL_MS)
+          : retainedAttempt.then(
+              () => undefined,
+              () => undefined,
+            ),
+      deferredFailures: releaseFailures,
+      retainedAuthority: retained,
+      retry: () => (retainedAttempt === null ? retryAuthorityRelease() : continueAuthorityRelease(retainedAttempt)),
     };
-    await runBudgetedStep('lifecycle reactor dispose', async (signal) => {
-      finalizationDisposition = await lifecycleReactorDisposalConfirmation(signal, disposeLifecycleReactor, log, () =>
-        runtime.time.sleep(SHUTDOWN_POLL_MS),
-      );
-    });
+  };
+
+  function attemptAuthorityRelease(remaining: () => number): Promise<ShutdownSequenceDisposition> {
+    return withRequiredBudget(authorityRelease.label, authorityRelease.task, remaining, runtime.time).then(
+      () => ({ disposition: 'settled' as const }),
+      (error: unknown) => authorityReleaseFailureDisposition(error),
+    );
   }
 
-  if (mode === 'handoff' && liveProxySets.length > 0) {
-    // One ordered boundary rather than a socket close beside a separate control close. Control loss makes
-    // each standing credential redeemable without moving either enforcer's challenge-derived deadline, and
-    // the socket release that immediately follows lets the successor bind without spending that deadline.
-    //
-    // Only when carriers exist. The required semantics protect the handoff of a *carrier*; applying them to
-    // a shutdown that ran no provider work would turn a slow-but-harmless drain into a non-zero exit for a
-    // property nothing was relying on.
-    await runRequiredBudgetedStep('provider proxy handoff authority release', async (signal) =>
-      releaseHandoffAuthority(liveProxySets, () => releaseIpcSocket(ipcServer, closeIpcServerFn), signal),
-    );
-  } else if (ipcServer && closeIpcServerFn) {
-    const ipcServerClosed = observeTask(
-      'IPC socket release',
-      Promise.resolve().then(() => closeIpcServerFn(ipcServer)),
-    );
-    await waitForObservedShutdownTask(ipcServerClosed);
+  function continueFinalization(
+    pending: readonly PendingRequiredShutdownStep[],
+    finalizationContinuation?: () => Promise<FinalizationDisposition>,
+  ): Promise<ShutdownSequenceDisposition> {
+    const retryDeadline = runtime.time.now() + drainTimeout;
+    const remainingRetry = (): number => Math.max(0, retryDeadline - runtime.time.now());
+    const stillPending: PendingRequiredShutdownStep[] = [];
+    const retryFailures: ShutdownFailure[] = [];
+
+    let retries = Promise.resolve();
+    for (const step of pending) {
+      retries = retries.then(() =>
+        withRequiredBudget(step.label, step.task, remainingRetry, runtime.time).catch((error: unknown) => {
+          recordShutdownFailure(retryFailures, step.label, error, log);
+          stillPending.push(step);
+        }),
+      );
+    }
+    return retries
+      .then(() =>
+        finalizationContinuation === undefined
+          ? attemptFinalization(remainingRetry)
+          : finalizationContinuation().catch((error: unknown) => failFinalization('lifecycle reactor dispose', error)),
+      )
+      .then((finalization) => completeFinalization(finalization, stillPending, retryFailures, remainingRetry));
   }
 
-  const disposition = currentFinalizationDisposition();
-  if (disposition.disposition === 'held') return { ...disposition, deferredFailures: failures };
-  throwShutdownFailures(failures);
-  return disposition;
+  function completeFinalization(
+    finalization: FinalizationDisposition,
+    pending: readonly PendingRequiredShutdownStep[],
+    pendingFailures: readonly ShutdownFailure[],
+    remaining: () => number,
+  ): Promise<ShutdownSequenceDisposition> {
+    throwShutdownFailures(failures);
+    if (pending.length > 0) {
+      return Promise.resolve<ShutdownSequenceDisposition>({
+        disposition: 'held',
+        reason: 'required-shutdown-step-unsettled',
+        exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+        retryAfter: runtime.time.sleep(SHUTDOWN_POLL_MS),
+        deferredFailures: [...failures, ...pendingFailures],
+        retainedAuthority: retainedAuthority(pending),
+        retry: () =>
+          continueFinalization(pending, finalization.disposition === 'held' ? finalization.continue : undefined),
+      });
+    }
+    if (finalization.disposition === 'held') {
+      return Promise.resolve<ShutdownSequenceDisposition>({
+        disposition: 'held',
+        reason: finalization.reason,
+        exit: finalization.exit,
+        retryAfter: finalization.retryAfter,
+        deferredFailures: [...failures, ...pendingFailures],
+        retainedAuthority: retainedAuthority(pending),
+        retry: () => continueFinalization(pending, finalization.continue),
+      });
+    }
+
+    throwShutdownFailures(failures);
+    return attemptAuthorityRelease(remaining);
+  }
+
+  return attemptFinalization(remainingDrain).then((finalization) =>
+    completeFinalization(finalization, pendingRequiredSteps, requiredFailures, remainingDrain),
+  );
 }

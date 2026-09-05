@@ -32,6 +32,7 @@ export interface ProviderDurableSpawner {
     extraEnv?: Record<string, string>;
     exactEnv?: Record<string, string>;
     jobDir: string;
+    jobId?: string;
     onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void;
     onDurableProcessIdentity?: DurableProcessIdentityCallback;
   }): Promise<{
@@ -50,6 +51,7 @@ export function bindProviderRunner(
   jobDir: string,
   onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void,
   onDurableProcessIdentity?: DurableProcessIdentityCallback,
+  jobId?: string,
 ): ProviderCliRunner {
   return (request) =>
     launchCoordinator.spawnDurableJob({
@@ -58,6 +60,7 @@ export function bindProviderRunner(
       permitGranted: true,
       pool,
       jobDir,
+      ...(jobId === undefined ? {} : { jobId }),
       command: request.command,
       args: request.args,
       prompt: request.prompt,

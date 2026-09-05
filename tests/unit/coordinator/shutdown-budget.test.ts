@@ -13,11 +13,6 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
-// AC5: `runShutdownSequence` completes within `HANDOFF_DRAIN_TIMEOUT_MS` even
-// when an async-cooperative finalizer hangs. The IPC socket must remain bound
-// (i.e. `closeIpcServerFn` must NOT be called) until all bounded finalizers
-// have completed or had their budget elapsed; socket release is the last step.
-
 type CallLog = string[];
 
 interface Harness {
@@ -156,15 +151,8 @@ async function flush(rounds = 16): Promise<void> {
 
 type ShutdownSequenceHold = Extract<Awaited<ReturnType<typeof runShutdownSequence>>, { disposition: 'held' }>;
 
-function retryHeldFinalization(
-  ctx: Parameters<typeof runShutdownSequence>[0],
-  held: ShutdownSequenceHold,
-): ReturnType<typeof runShutdownSequence> {
-  return runShutdownSequence({
-    ...ctx,
-    finalizationOnly: true,
-    deferredFailures: held.deferredFailures,
-  });
+function retryHeldFinalization(held: ShutdownSequenceHold): ReturnType<typeof runShutdownSequence> {
+  return held.retry();
 }
 
 describe('runShutdownSequence drain budget', () => {
@@ -180,9 +168,9 @@ describe('runShutdownSequence drain budget', () => {
     });
     const startedAt = harness.time.now();
 
-    let resolved = false;
-    const sequence = runShutdownSequence(harness.ctx).then(() => {
-      resolved = true;
+    let completed = false;
+    const sequence = runShutdownSequence(harness.ctx).finally(() => {
+      completed = true;
     });
 
     // Drive virtual time forward enough to fire all budget timers.
@@ -192,11 +180,11 @@ describe('runShutdownSequence drain budget', () => {
     for (let advanced = 0; advanced <= HANDOFF_DRAIN_TIMEOUT_MS + 100; advanced += 100) {
       harness.time.tick(100);
       await flush();
-      if (resolved) break;
+      if (completed) break;
     }
-    await sequence;
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
 
-    expect(resolved).toBe(true);
+    expect(completed).toBe(true);
     const elapsed = harness.time.now() - startedAt;
     expect(elapsed).toBeLessThanOrEqual(HANDOFF_DRAIN_TIMEOUT_MS + 100);
 
@@ -206,8 +194,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(hookSignal).not.toBeNull();
     expect((hookSignal as unknown as AbortSignal).aborted).toBe(true);
 
-    // Socket release happens regardless.
-    expect(harness.closeIpcCalled()).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(false);
   });
 
   it('reports hard shutdown failure when provider-host containment exceeds the lifecycle deadline', async () => {
@@ -237,18 +224,10 @@ describe('runShutdownSequence drain budget', () => {
       harness.time.tick(100);
       await flush();
     }
-    const held = await sequence;
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
 
     const sawExceeded = harness.logLines.some((l) => l.includes('provider host shutdown: exceeded drain budget'));
     expect(sawExceeded).toBe(false);
-    expect(held).toMatchObject({
-      disposition: 'held',
-      reason: 'lifecycle-reactor-disposal-unsettled',
-    });
-    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
-    const failure = await retryHeldFinalization(harness.ctx, held).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as Error).message).toContain('shutdown completed with 2 finalizer failures');
     expect(harness.logLines).toContainEqual(
       expect.stringContaining("Required shutdown step 'provider host shutdown' timed-out"),
     );
@@ -257,13 +236,15 @@ describe('runShutdownSequence drain budget', () => {
     );
     expect(providerSignal?.aborted).toBe(true);
     expect(harness.callLog).toContain('terminateAllFn');
-    expect(harness.closeIpcCalled()).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(false);
   });
 
   it('reaps cleanup obligations from an independent snapshot after provider-host shutdown rejects', async () => {
     const harness = buildHarness({ reason: 'test-cleanup', hooksOnShutdown: async () => {} });
-    const stopAndReap = vi.fn(async () => ({ kind: 'containment-absent' as const }));
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'gone:retained-proxy' }));
     const retry = vi.fn(async () => ({ kind: 'absence-confirmed' as const, strandedArtifacts: [] }));
+    const retainedSet = fakeSet('retained-proxy', harness.callLog, { stopAndReap });
+    let shutdownAttempts = 0;
     harness.ctx.providerHostManager = {
       drainForHandoff: async () => ({
         kind: 'provider-hosts-quiesced',
@@ -271,10 +252,12 @@ describe('runShutdownSequence drain budget', () => {
         acquisitionCleanupHolds: [],
       }),
       shutdown: async () => {
-        throw new Error('injected provider close failure');
+        shutdownAttempts += 1;
+        if (shutdownAttempts === 1) throw new Error('injected provider close failure');
+        return { kind: 'provider-hosts-quiesced', liveProxySets: [retainedSet], acquisitionCleanupHolds: [] };
       },
       cleanupObligations: () => ({
-        liveProxySets: [{ proxyInstanceId: 'retained-proxy', stopAndReap }] as never,
+        liveProxySets: [retainedSet],
         acquisitionCleanupHolds: [
           {
             kind: 'provider_proxy_acquisition_pending_cleanup',
@@ -287,8 +270,16 @@ describe('runShutdownSequence drain budget', () => {
       }),
     };
 
-    await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
+    const held = await runShutdownSequence(harness.ctx);
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+    });
 
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
     expect(stopAndReap).toHaveBeenCalledOnce();
     expect(retry).toHaveBeenCalledOnce();
   });
@@ -429,15 +420,9 @@ describe('runShutdownSequence drain budget', () => {
     harness.time.tick(SHUTDOWN_DRAIN_TIMEOUT_MS);
     await flush(64);
 
-    const held = await sequence;
-    expect(held).toMatchObject({
-      disposition: 'held',
-      reason: 'lifecycle-reactor-disposal-unsettled',
-    });
-    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
-    await expect(retryHeldFinalization(harness.ctx, held)).rejects.toBeInstanceOf(AggregateError);
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
     expect(harness.callLog).toContain('discuss.dispose');
-    expect(harness.closeIpcCalled()).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(false);
   });
 
   it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {
@@ -456,13 +441,7 @@ describe('runShutdownSequence drain budget', () => {
       harness.time.tick(200);
       await flush();
     }
-    const held = await sequence;
-    expect(held).toMatchObject({
-      disposition: 'held',
-      reason: 'lifecycle-reactor-disposal-unsettled',
-    });
-    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
-    await expect(retryHeldFinalization(harness.ctx, held)).rejects.toBeInstanceOf(AggregateError);
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
 
     // The drain-for-handoff step exceeded budget; later steps must surface
     // "skipped (drain budget exhausted)" because remainingDrain() == 0.
@@ -476,10 +455,10 @@ describe('runShutdownSequence drain budget', () => {
     expect(sawExceeded).toBe(false);
     expect(sawRequiredFailure).toBe(true);
     expect(sawSkipped).toBe(true);
-    expect(harness.closeIpcCalled()).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(false);
   });
 
-  it('releases the IPC socket only after every wrapped finalizer settles or expires', async () => {
+  it('retains the IPC socket when a wrapped finalizer expires without settling', async () => {
     const harness = buildHarness({
       hooksOnShutdown: () => new Promise<void>(() => {}),
     });
@@ -517,14 +496,10 @@ describe('runShutdownSequence drain budget', () => {
       harness.time.tick(100);
       await flush();
     }
-    await sequence;
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
 
-    // closeIpc MUST appear after the hanging hooks finalizer started; it
-    // is the LAST entry — any later finalizer would violate the
-    // socket-release-is-last invariant.
-    expect(order).toContain('closeIpc');
-    expect(order.indexOf('closeIpc')).toBe(order.length - 1);
-    expect(order.indexOf('closeIpc')).toBeGreaterThan(order.indexOf('hooks:start'));
+    expect(order).toContain('hooks:start');
+    expect(order).not.toContain('closeIpc');
   });
 
   it('sync-blocking finalizer surfaces budget warn after the sync call returns (AC5 soft bound)', async () => {
@@ -549,20 +524,20 @@ describe('runShutdownSequence drain budget', () => {
       await flush();
       harness.time.tick(100);
     }
-    await sequence;
+    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
 
     // hooks.onShutdown completed before the budget timer could pre-empt;
     // since the task resolved first the race returns the task value (not
     // `timedOut`), so no warn is expected for hooks.onShutdown. The soft
     // bound is documented: the function still returns regardless of the
     // sync-blocking phase. Assert termination.
-    expect(harness.closeIpcCalled()).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(false);
   });
 
   it('lifecycle finalizes synchronously after a settled shutdown sequence', () => {
     const lifecyclePath = fileURLToPath(new URL('../../../src/coordinator/lifecycle.ts', import.meta.url));
     const source = readFileSync(lifecyclePath, 'utf-8');
-    const sequenceResolution = source.indexOf('state.shutdownSequenceComplete = true;');
+    const sequenceResolution = source.indexOf('state.shutdownRetry = null;');
     const finalization = source.indexOf('return finalizeStoppedLifecycle();', sequenceResolution);
 
     expect(sequenceResolution).toBeGreaterThan(-1);
@@ -610,6 +585,286 @@ describe('runShutdownSequence drain budget', () => {
       harness.callLog.indexOf('closeIpcServerFn:start'),
     );
   });
+
+  it('retains hard-mode IPC and provider control until child cleanup retry confirms absence', async () => {
+    const authorityCalls: string[] = [];
+    const set = fakeSet('hard-held', authorityCalls);
+    const harness = buildHarness({ reason: 'fatal', hooksOnShutdown: async () => {} });
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
+      shutdown: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [set],
+        acquisitionCleanupHolds: [],
+      }),
+    };
+    harness.ctx.closeIpcServerFn = async () => {
+      authorityCalls.push('closeIpc');
+    };
+    let childCleanupAttempts = 0;
+    harness.ctx.terminateAllFn = async () => {
+      childCleanupAttempts += 1;
+      return childCleanupAttempts === 1
+        ? {
+            kind: 'unresolved-at-deadline',
+            processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+            pendingLaunches: 0,
+            retainedLaunches: [],
+            cleanupHandles: 1,
+            retainedProcesses: [
+              {
+                kind: 'recorded-wrapper-group',
+                provider: 'claude',
+                jobId: 'hard-held-job',
+                jobDir: '/tmp/coral/jobs/hard-held-job',
+                containment: {
+                  pid: 4_242,
+                  incarnation: testIncarnation('hard-held-child'),
+                  processGroupId: 4_242,
+                  childRoot: null,
+                },
+              },
+            ],
+            cleanupFailures: 0,
+            owner: 'launch-coordinator',
+          }
+        : { kind: 'all-observed-absent' };
+    };
+
+    const held = await runShutdownSequence(harness.ctx);
+
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+      retainedAuthority: {
+        ipcSocket: true,
+        providerControlProxyInstanceIds: ['hard-held'],
+        cleanupObligations: ['child termination'],
+        operatorActions: [
+          {
+            kind: 'retained-job-containment',
+            jobId: 'hard-held-job',
+            provider: 'claude',
+            jobDir: '/tmp/coral/jobs/hard-held-job',
+            actionCommand: 'coral-cli abort hard-held-job',
+          },
+          {
+            kind: 'provider-proxy-set-containment',
+            proxyInstanceId: 'hard-held',
+            inspectCommand: 'coral-cli backend status',
+            actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
+          },
+        ],
+      },
+    });
+    expect(authorityCalls).toEqual(['reap:hard-held']);
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+
+    await expect(retryHeldFinalization(held)).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls).toEqual(['reap:hard-held', 'heartbeats:hard-held', 'control:hard-held', 'closeIpc']);
+  });
+
+  it('retains handoff IPC and provider control until an identified host cleanup retry settles', async () => {
+    const authorityCalls: string[] = [];
+    const set = fakeSet('handoff-held', authorityCalls);
+    const harness = buildHarness({ reason: 'replaced', hooksOnShutdown: async () => {} });
+    let drainAttempts = 0;
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => {
+        drainAttempts += 1;
+        if (drainAttempts === 1) throw new Error('drain unavailable');
+        return {
+          kind: 'provider-hosts-quiesced',
+          liveProxySets: [set],
+          acquisitionCleanupHolds: [],
+        };
+      },
+      shutdown: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
+      cleanupObligations: () => ({ liveProxySets: [set], acquisitionCleanupHolds: [] }),
+    };
+    harness.ctx.closeIpcServerFn = async () => {
+      authorityCalls.push('closeIpc');
+    };
+
+    const held = await runShutdownSequence(harness.ctx);
+
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+      retainedAuthority: {
+        ipcSocket: true,
+        providerControlProxyInstanceIds: ['handoff-held'],
+        cleanupObligations: ['provider host drain for handoff'],
+        operatorActions: [
+          {
+            kind: 'provider-proxy-set-containment',
+            proxyInstanceId: 'handoff-held',
+            inspectCommand: 'coral-cli backend status',
+            actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
+          },
+        ],
+      },
+    });
+    expect(authorityCalls).toEqual([]);
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+
+    await expect(retryHeldFinalization(held)).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls).toEqual(['heartbeats:handoff-held', 'control:handoff-held', 'closeIpc']);
+  });
+
+  it('retains authority through a fatal app-server quiesce failure with no durable recovery action', async () => {
+    const authorityCalls: string[] = [];
+    const harness = buildHarness({ reason: 'replaced', hooksOnShutdown: async () => {} });
+    harness.ctx.handoffQuiescePorts = () => [
+      { quiesceAppServerJobsForHandoff: async () => Promise.reject(new Error('quiescence unavailable')) },
+    ];
+    harness.ctx.closeIpcServerFn = async () => {
+      authorityCalls.push('closeIpc');
+    };
+
+    await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
+    expect(authorityCalls).toEqual([]);
+  });
+
+  it('retries only unresolved provider-control capabilities', async () => {
+    const authorityCalls: string[] = [];
+    let firstControlAttempts = 0;
+    const first = fakeSet('first', authorityCalls, {
+      initiateControlClose: async () => {
+        firstControlAttempts += 1;
+        authorityCalls.push('control:first');
+        if (firstControlAttempts === 1) throw new Error('injected first control failure');
+      },
+    });
+    const second = fakeSet('second', authorityCalls);
+    const harness = buildHarness({
+      reason: 'replaced',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([first, second]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      authorityCalls.push('closeIpc');
+    };
+
+    const held = await runShutdownSequence(harness.ctx);
+
+    expect(held).toMatchObject({
+      disposition: 'held',
+      retainedAuthority: { providerControlProxyInstanceIds: ['first'], ipcSocket: true },
+    });
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls.filter((call) => call === 'heartbeats:first')).toHaveLength(1);
+    expect(authorityCalls.filter((call) => call === 'heartbeats:second')).toHaveLength(1);
+    expect(authorityCalls.filter((call) => call === 'control:first')).toHaveLength(2);
+    expect(authorityCalls.filter((call) => call === 'control:second')).toHaveLength(1);
+    expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
+  });
+
+  it('joins an in-flight authority release instead of invoking it again after timeout', async () => {
+    let settleControl!: () => void;
+    const controlSettlement = new Promise<void>((resolve) => {
+      settleControl = resolve;
+    });
+    const authorityCalls: string[] = [];
+    const set = fakeSet('slow-control', authorityCalls, {
+      initiateControlClose: () => {
+        authorityCalls.push('control:slow-control');
+        return controlSettlement;
+      },
+    });
+    const harness = buildHarness({
+      reason: 'replaced',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([set]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      authorityCalls.push('closeIpc');
+    };
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let attempt = 0; attempt < 10 && !authorityCalls.includes('control:slow-control'); attempt += 1) {
+      await flush();
+    }
+    expect(authorityCalls).toContain('control:slow-control');
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS);
+    await flush();
+    const held = await sequence;
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+
+    const retry = held.retry();
+    await flush();
+    expect(authorityCalls.filter((call) => call === 'control:slow-control')).toHaveLength(1);
+    settleControl();
+    await expect(retry).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls.filter((call) => call === 'control:slow-control')).toHaveLength(1);
+    expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
+    expect(harness.callLog.filter((call) => call === 'lifecycleReactor.dispose')).toHaveLength(1);
+  });
+
+  it('snapshots and retries handoff cleanup obligations after drain failure', async () => {
+    const authorityCalls: string[] = [];
+    const retainedSet = fakeSet('handoff-drain-held', authorityCalls);
+    const retryAcquisition = vi.fn(async () => ({ kind: 'absence-confirmed' as const, strandedArtifacts: [] }));
+    const acquisitionHold = {
+      kind: 'provider_proxy_acquisition_pending_cleanup' as const,
+      owner: 'provider-host-manager' as const,
+      target: 'pending-handoff-acquisition',
+      reason: 'drain failed before acquisition settled',
+      recoveryCapability: { retry: retryAcquisition },
+    };
+    const harness = buildHarness({ reason: 'replaced', hooksOnShutdown: async () => {} });
+    let drainAttempts = 0;
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => {
+        drainAttempts += 1;
+        if (drainAttempts === 1) throw new Error('injected drain failure');
+        return {
+          kind: 'provider-hosts-quiesced',
+          liveProxySets: [retainedSet],
+          acquisitionCleanupHolds: [acquisitionHold],
+        };
+      },
+      shutdown: async () => ({
+        kind: 'provider-hosts-quiesced',
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+      }),
+      cleanupObligations: () => ({
+        liveProxySets: [retainedSet],
+        acquisitionCleanupHolds: [acquisitionHold],
+      }),
+    };
+    harness.ctx.closeIpcServerFn = async () => {
+      authorityCalls.push('closeIpc');
+    };
+
+    const held = await runShutdownSequence(harness.ctx);
+
+    expect(held).toMatchObject({
+      disposition: 'held',
+      retainedAuthority: {
+        ipcSocket: true,
+        providerControlProxyInstanceIds: ['handoff-drain-held'],
+        cleanupObligations: ['provider host drain for handoff', 'provider acquisition pending-handoff-acquisition'],
+      },
+    });
+    expect(retryAcquisition).not.toHaveBeenCalled();
+    expect(authorityCalls).toEqual([]);
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(retryAcquisition).toHaveBeenCalledOnce();
+    expect(authorityCalls).toEqual(['heartbeats:handoff-drain-held', 'control:handoff-drain-held', 'closeIpc']);
+  });
 });
 
 /** One live set whose every step the test drives. Defaults are the healthy path. */
@@ -645,7 +900,12 @@ function registryOf(sets: readonly ProviderProxySetAuthority[]): ProviderProxyAu
 /** Shutdown aggregates its failures, so the detail a test cares about lives in `errors`, not the summary. */
 async function shutdownFailureDetail(ctx: Parameters<typeof runShutdownSequence>[0]): Promise<string> {
   try {
-    await runShutdownSequence(ctx);
+    const disposition = await runShutdownSequence(ctx);
+    if (disposition.disposition === 'held') {
+      return disposition.deferredFailures
+        .map(({ label, error }) => `${label}: ${error instanceof Error ? error.message : String(error)}`)
+        .join(' | ');
+    }
   } catch (error: unknown) {
     if (error instanceof AggregateError) {
       return error.errors.map((entry: unknown) => (entry instanceof Error ? entry.message : String(entry))).join(' | ');
@@ -712,7 +972,15 @@ describe('required provider-proxy shutdown steps', () => {
 
     // The detached sets outlive this coordinator, so they must be reaped by identity before the handle-based
     // termination that only reaches children this process still owns.
-    expect(callLog).toEqual(['reap:p1', 'reap:p2', 'terminateAll']);
+    expect(callLog).toEqual([
+      'reap:p1',
+      'reap:p2',
+      'terminateAll',
+      'heartbeats:p1',
+      'heartbeats:p2',
+      'control:p1',
+      'control:p2',
+    ]);
   });
 
   it('reaps a set whose acquisition is still in flight when shutdown starts and only settles during host shutdown', async () => {
@@ -750,7 +1018,7 @@ describe('required provider-proxy shutdown steps', () => {
 
     // The late-settling set must still go through the required reap step, not be silently skipped because an
     // earlier, now-stale reading of `liveSets()` reported nothing live.
-    expect(callLog).toEqual(['reap:late', 'terminateAll']);
+    expect(callLog).toEqual(['reap:late', 'terminateAll', 'heartbeats:late', 'control:late']);
   });
 
   it('fails the shutdown when a reap completes without confirming disappearance', async () => {
@@ -786,7 +1054,7 @@ describe('required provider-proxy shutdown steps', () => {
     expect(callLog).toContain('reap:p2');
   });
 
-  it('triggers the IPC socket release even when every control close rejects', async () => {
+  it('retains the IPC socket when provider control cannot be released', async () => {
     const callLog: CallLog = [];
     const harness = buildHarness({
       hooksOnShutdown: async () => {},
@@ -798,10 +1066,8 @@ describe('required provider-proxy shutdown steps', () => {
       callLog.push('closeIpcServerFn:start');
     };
 
-    // The socket is what the successor is waiting on. A control close that rejects must not suppress its
-    // release, or a successor cannot establish exclusive control.
     expect(await shutdownFailureDetail(harness.ctx)).toMatch(/control p1: .*control gone/u);
-    expect(callLog).toContain('closeIpcServerFn:start');
+    expect(callLog).not.toContain('closeIpcServerFn:start');
   });
 
   it('stops every heartbeat before initiating any close', async () => {
@@ -838,16 +1104,13 @@ describe('required provider-proxy shutdown steps', () => {
       callLog.push('closeIpcServerFn:start');
     };
 
-    // A synchronous throw from the first trigger must not suppress any trigger queued after it: the healthy
-    // set's heartbeats still stop, both control closes are still initiated, and the socket release still
-    // fires — only the throwing set's own failure is reported.
     expect(await shutdownFailureDetail(harness.ctx)).toMatch(
       /heartbeats p-throws: .*heartbeat scheduler already disposed/u,
     );
     expect(callLog).toContain('heartbeats:p2');
     expect(callLog).toContain('control:p-throws');
     expect(callLog).toContain('control:p2');
-    expect(callLog).toContain('closeIpcServerFn:start');
+    expect(callLog).not.toContain('closeIpcServerFn:start');
   });
 
   it('skips the required provider-proxy steps entirely when there are no live sets', async () => {
@@ -880,7 +1143,9 @@ describe('required provider-proxy shutdown steps', () => {
 
     // The already-armed reaper still enforces its own fixed deadline, but this shutdown must not claim it
     // released authority cleanly.
-    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/IPC socket release: .*socket stuck/u);
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(
+      /provider control and IPC authority release: .*IPC socket: .*socket stuck/u,
+    );
     expect(callLog).toContain('control:p1');
   });
 });

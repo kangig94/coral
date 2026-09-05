@@ -56,6 +56,7 @@ export type DurableProcessRetention = Readonly<{
   kind: 'recorded-wrapper-group';
   provider: string;
   jobDir: string;
+  jobId?: string;
   containment: Readonly<{
     pid: number;
     incarnation: ProcessIncarnation;
@@ -68,6 +69,7 @@ export type PendingDurableLaunchIdentity = Readonly<{
   kind: 'awaiting-wrapper-identity';
   provider: string;
   jobDir: string;
+  jobId?: string;
 }>;
 
 export type PendingDurableLaunch = Readonly<{
@@ -173,6 +175,7 @@ type SpawnCliOptions = {
 
 export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
+  jobId?: string;
   onRuntimeRecord?: (record: JobRuntime, provisionalIdentity?: DurableProvisionalProcessSubject) => void;
   /** A partial containment identity must not cross the durable publication boundary. */
   onDurableProcessIdentity?: DurableProcessIdentityCallback;
@@ -220,6 +223,7 @@ export async function spawnDurableJobTransport(params: {
       kind: 'awaiting-wrapper-identity',
       provider: options.provider,
       jobDir: options.jobDir,
+      ...(options.jobId === undefined ? {} : { jobId: options.jobId }),
     }),
   };
   const releasePendingLaunch = (): void => {
@@ -402,6 +406,7 @@ export async function spawnDurableJobTransport(params: {
       kind: 'recorded-wrapper-group',
       provider: options.provider,
       jobDir: options.jobDir,
+      ...(options.jobId === undefined ? {} : { jobId: options.jobId }),
       containment: {
         pid: launch.pid,
         incarnation: launch.leaderIncarnation,
@@ -450,6 +455,7 @@ export async function spawnDurableJobTransport(params: {
         kind: 'recorded-wrapper-group',
         provider: options.provider,
         jobDir: options.jobDir,
+        ...(options.jobId === undefined ? {} : { jobId: options.jobId }),
         containment: { ...publishedSubject, childRoot: publishedSubject.childRoot },
       };
       cleanupRetentions.set(cleanup, retainedProcess);

@@ -951,8 +951,16 @@ async function stopLifecycleController(controller: {
   } catch {
     /* best effort */
   }
-  if (shutdownDisposition?.disposition === 'held') {
-    throw new Error(`Test lifecycle cleanup held: ${shutdownDisposition.reason}`);
+  while (shutdownDisposition?.disposition === 'held') {
+    switch (shutdownDisposition.recovery.exit) {
+      case 'process-incarnation-probe-child-close':
+      case 'lifecycle-reactor-disposal-settlement':
+      case 'authority-release-settlement':
+        break;
+      case 'required-cleanup-capability-confirmation-or-durable-operator-abandonment':
+        throw new Error(`Test lifecycle cleanup requires a durable operator action: ${shutdownDisposition.reason}`);
+    }
+    shutdownDisposition = await shutdownDisposition.recovery.retry();
   }
   let waitedDisposition: LifecycleShutdownDisposition;
   try {
