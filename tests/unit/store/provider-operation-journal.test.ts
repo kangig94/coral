@@ -1,6 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
+  acquireProviderOperationMutationAdmission,
   attributeUnreadableProviderOperations,
   completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
@@ -16,6 +17,7 @@ import {
   retireSupersededProviderOperation,
   readProviderOperationsDue,
   observeProviderOperationRecord,
+  providerOperationMutationAdmission,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
 import {
@@ -82,6 +84,117 @@ describe('provider operation journal', () => {
     discardUnreadableProviderOperationWithRecoveryAuthority(db, key, revision, {
       claim: () => ({ kind: 'claimed' as const, settle: () => true }),
     });
+
+  it('retains a detached nested poll admitted while its parent is draining', async () => {
+    const db = createDb();
+    const admission = providerOperationMutationAdmission(db);
+    let releaseParent!: () => void;
+    let releaseSuccessor!: () => void;
+    let markSuccessorStarted!: () => void;
+    const parentMayFinish = new Promise<void>((resolve) => {
+      releaseParent = resolve;
+    });
+    const successorMayFinish = new Promise<void>((resolve) => {
+      releaseSuccessor = resolve;
+    });
+    const successorStarted = new Promise<void>((resolve) => {
+      markSuccessorStarted = resolve;
+    });
+    let successor!: Promise<void>;
+
+    try {
+      const parent = admission.run('provider-operation-due-poll', async () => {
+        try {
+          await parentMayFinish;
+        } finally {
+          successor = admission.run('provider-operation-due-poll', async () => {
+            markSuccessorStarted();
+            await successorMayFinish;
+          });
+        }
+      });
+      await Promise.resolve();
+
+      const stopping = admission.close();
+      expect(stopping).toMatchObject({ kind: 'holding' });
+      if (stopping.kind !== 'holding') throw new Error('active poll was not retained by admission closure');
+
+      releaseParent();
+      await parent;
+      await successorStarted;
+      let drainSettled = false;
+      void stopping.retryAfter.then(() => {
+        drainSettled = true;
+      });
+      await Promise.resolve();
+      expect(drainSettled).toBe(false);
+
+      releaseSuccessor();
+      await successor;
+      await stopping.retryAfter;
+      expect(admission.close()).toEqual({ kind: 'drained' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('transfers drained database admission to a successor without reopening the predecessor', async () => {
+    const db = createDb();
+    const predecessorAcquisition = acquireProviderOperationMutationAdmission(db, 'coordinator-one');
+    expect(predecessorAcquisition.kind).toBe('acquired');
+    if (predecessorAcquisition.kind !== 'acquired') throw new Error('predecessor admission was not acquired');
+    const predecessor = predecessorAcquisition.admission;
+    const sameOwnerAcquisition = acquireProviderOperationMutationAdmission(db, 'coordinator-one');
+    expect(sameOwnerAcquisition).toMatchObject({ kind: 'acquired', owner: 'coordinator-one' });
+    if (sameOwnerAcquisition.kind !== 'acquired') throw new Error('same owner did not retain admission');
+    expect(sameOwnerAcquisition.admission).toBe(predecessor);
+    expect(acquireProviderOperationMutationAdmission(db, 'coordinator-two')).toMatchObject({
+      kind: 'holding',
+      predecessorOwner: 'coordinator-one',
+      successorOwner: 'coordinator-two',
+      exit: 'predecessor-provider-operation-mutation-admission-release',
+    });
+    let releaseMutation!: () => void;
+    const mutationMayFinish = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    const mutation = predecessor.run('predecessor-mutation', () => mutationMayFinish);
+
+    try {
+      await Promise.resolve();
+      const stopping = predecessor.close();
+      expect(stopping).toMatchObject({ kind: 'holding' });
+
+      const prematureSuccessor = acquireProviderOperationMutationAdmission(db, 'coordinator-two');
+      expect(prematureSuccessor).toMatchObject({
+        kind: 'holding',
+        predecessorOwner: 'coordinator-one',
+        successorOwner: 'coordinator-two',
+        exit: 'admitted-provider-operation-mutation-settlement',
+      });
+
+      releaseMutation();
+      await mutation;
+      if (stopping.kind === 'holding') await stopping.retryAfter;
+
+      const successorAcquisition = acquireProviderOperationMutationAdmission(db, 'coordinator-two');
+      expect(successorAcquisition.kind).toBe('acquired');
+      if (successorAcquisition.kind !== 'acquired') throw new Error('successor admission was not acquired');
+      expect(providerOperationMutationAdmission(db)).toBe(successorAcquisition.admission);
+      expect(() => predecessor.runSync('stale-predecessor', () => undefined)).toThrow(
+        'Provider operation mutation admission is closed.',
+      );
+
+      const record = providerOperationRecord('prepare-pending');
+      insertProviderOperation(db, record);
+      expect(readProviderOperation(db, record.operation)).toEqual(record);
+    } finally {
+      releaseMutation();
+      await mutation;
+      db.close();
+    }
+  });
+
   it('assigns the durable local handoff only to generic job recovery', () => {
     for (const phase of PHASES) {
       expect(providerOperationJobRecoveryOwner(providerOperationRecord(phase))).toBe(

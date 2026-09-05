@@ -12,6 +12,7 @@ import { createAppServerProxyRoute } from '../services/provider-proxy-launch-rou
 import {
   ProviderOperationReconciler,
   type ProviderOperationReconcilerFatalError,
+  type ProviderOperationReconcilerStopDisposition,
   StartupSetRecoveryProducer,
   type StartupReconciliationReport,
 } from '../services/provider-operation-reconciler.js';
@@ -92,7 +93,7 @@ export function createExecutionServices({
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
-  stopProviderOperationReconciler: () => void;
+  stopProviderOperationReconciler: () => ProviderOperationReconcilerStopDisposition;
 } {
   const services = new Map<string, ProjectRequestPort>();
   let providerOperationRecovery: RecoveryCoordinator | null = null;
@@ -433,10 +434,13 @@ export function createExecutionServices({
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
     stopProviderOperationReconciler: () => {
+      const disposition = providerOperationReconciler.stop();
       unsubscribeProviderProxyControlEstablished();
-      unsubscribeProviderOperationMutations?.();
-      unsubscribeProviderOperationMutations = null;
-      providerOperationReconciler.stop();
+      if (disposition.kind === 'drained') {
+        unsubscribeProviderOperationMutations?.();
+        unsubscribeProviderOperationMutations = null;
+      }
+      return disposition;
     },
   };
 }

@@ -26,7 +26,10 @@ import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { StartupReconciliationReport } from './services/provider-operation-reconciler.js';
+import type {
+  ProviderOperationReconcilerStopDisposition,
+  StartupReconciliationReport,
+} from './services/provider-operation-reconciler.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import { createRecoveryComponent } from './runtime-components/recovery-component.js';
@@ -74,6 +77,10 @@ import { createBackendStoreResetAuthority } from '../store/backend-store-reset.j
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
+import {
+  acquireProviderOperationMutationAdmission,
+  type ProviderOperationMutationAdmission,
+} from '../store/provider-operation-journal.js';
 import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from '../store/active-store-selection.js';
 import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
@@ -782,7 +789,7 @@ export type LifecycleDeps = {
   readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
   readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   readonly startProviderOperationReconciler?: () => void;
-  readonly stopProviderOperationReconciler?: () => void;
+  readonly stopProviderOperationReconciler?: () => ProviderOperationReconcilerStopDisposition;
   /**
    * Optional only for narrow lifecycle harnesses; production composition supplies the sole publishing facet
    * so carrier readers cannot advance the startup boundary themselves.
@@ -838,6 +845,7 @@ const SHUTDOWN_AUTOMATIC_RETRY_LIMIT = 3;
 type LifecycleShutdownHoldReason =
   | 'process-incarnation-probes-unsettled'
   | 'lifecycle-reactor-disposal-unsettled'
+  | 'provider-operation-mutations-unsettled'
   | 'required-shutdown-step-unsettled';
 
 type LifecycleShutdownRecovery = Readonly<{
@@ -845,6 +853,8 @@ type LifecycleShutdownRecovery = Readonly<{
   exit:
     | 'process-incarnation-probe-settlement'
     | 'lifecycle-reactor-disposal-settlement'
+    | 'admitted-provider-operation-mutation-settlement'
+    | 'provider-operation-mutation-admission-availability'
     | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
     | 'authority-release-settlement';
   owner: Readonly<
@@ -892,6 +902,7 @@ type LifecycleControlState = LifecycleWiringState & {
   lastShutdownDisposition: LifecycleShutdownDisposition | null;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
+  providerOperationMutationAdmission: ProviderOperationMutationAdmission | null;
   startupAbort: AbortController | null;
 };
 
@@ -1103,6 +1114,15 @@ async function runLifecycleStartup({
     // bugs while permitting the legitimate explicit reset pattern.
     storeServicesRef.clear();
     storeServicesRef.set(storeServices);
+    const mutationAdmission = acquireProviderOperationMutationAdmission(storeDb, instanceId);
+    if (mutationAdmission.kind === 'holding') {
+      throw new Error(
+        `Provider operation mutation admission remains owned by '${mutationAdmission.predecessorOwner}'; ` +
+          `successor '${mutationAdmission.successorOwner}' refused; exit=${mutationAdmission.exit}`,
+        { cause: mutationAdmission },
+      );
+    }
+    state.providerOperationMutationAdmission = mutationAdmission.admission;
     const progressStore = storeServices.progressStore;
     const recoveryCoordinator = createRecoveryCoordinator(
       {
@@ -1262,6 +1282,7 @@ async function runLifecycleStartup({
 
     return serverInfo;
   } catch (error: unknown) {
+    state.providerOperationMutationAdmission?.close();
     if (error instanceof IncumbentMatchesError) {
       // Translate to the existing bootstrap-recognized "redundant contender"
       // signal (info log + exit 0). The socket has not been bound by us, so
@@ -1354,6 +1375,7 @@ export function createLifecycle(
     started: false,
     ownershipCheckerTeardown: null,
     recoveryCoordinator: null,
+    providerOperationMutationAdmission: null,
     startupAbort: null,
   };
   const ownershipChecker = createReplacementBackendOwnershipChecker({
@@ -1385,7 +1407,6 @@ export function createLifecycle(
     // reason would propagate as a bare string and lose the `name`
     // discriminator.
     state.startupAbort?.abort();
-    stopProviderOperationReconciler?.();
 
     const finalizeStoppedLifecycle = (
       onFinalized: (() => void) | undefined = onStopped,
@@ -1456,6 +1477,13 @@ export function createLifecycle(
     const attempt = (async (): Promise<LifecycleShutdownDisposition> => {
       if (runtimeState.getLifecycle() === 'stopped') return { disposition: 'finalized' };
       if (state.shutdownRetry !== null) return state.shutdownRetry().then(acceptShutdownDisposition);
+      const stopProviderOperationMutations = (): ProviderOperationReconcilerStopDisposition => {
+        const lifecycleDisposition = state.providerOperationMutationAdmission?.close() ?? {
+          kind: 'drained' as const,
+        };
+        const reconcilerDisposition = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
+        return lifecycleDisposition.kind === 'holding' ? lifecycleDisposition : reconcilerDisposition;
+      };
       return acceptShutdownDisposition(
         await runShutdownSequence({
           reason,
@@ -1475,6 +1503,7 @@ export function createLifecycle(
           markJobsAsErrorFn,
           providerHostManager,
           providerProxyAuthority,
+          stopProviderOperationReconciler: stopProviderOperationMutations,
           kbDaemonSupervisor,
           storeServicesRef,
           terminateAllFn,

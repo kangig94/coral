@@ -29,7 +29,11 @@ import {
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from '../../infra/process-constants.js';
-import type { DurableContainmentOperatorControl, DurableProcessIdentityCallback } from '../../providers/cli-runner.js';
+import type {
+  DurableContainmentOperatorControl,
+  DurableProcessIdentityCallback,
+  DurableProcessPublicationDisposition,
+} from '../../providers/cli-runner.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
@@ -310,8 +314,9 @@ export async function spawnDurableJobTransport(params: {
       return { kind: 'retained', reason: 'durable containment identity changed after absence observation' };
     }
     const wasHeld = providerResultHeld;
-    if (wasHeld && !publishContainmentStatus({ kind: 'absence-confirmed' })) {
-      return { kind: 'retained', reason: 'durable containment absence publication failed' };
+    if (wasHeld) {
+      const publication = publishContainmentStatus({ kind: 'absence-confirmed' });
+      if (publication.kind === 'retained') return publication;
     }
     cleanupAbortController?.abort();
     cleanupAbortController = null;
@@ -336,24 +341,35 @@ export async function spawnDurableJobTransport(params: {
     abandon: () => abandonCleanupOwnership(),
   };
 
-  const publishContainmentStatus = (status: DurableContainmentStatus): boolean => {
+  const publishContainmentStatus = (status: DurableContainmentStatus): DurableProcessPublicationDisposition => {
     const subject = publishedSubject ?? provisionalSubject;
-    if (subject === null) return false;
+    if (subject === null) return { kind: 'retained', reason: 'durable containment identity is unavailable' };
     const statusKey = JSON.stringify({ subject, status });
-    if (statusKey === lastPublishedStatus) return true;
+    if (statusKey === lastPublishedStatus) return { kind: 'published' };
     try {
-      options.onDurableProcessIdentity?.(subject, status, status.kind === 'held' ? operatorControl : undefined);
+      const publication = options.onDurableProcessIdentity?.(
+        subject,
+        status,
+        status.kind === 'held' ? operatorControl : undefined,
+      ) ?? { kind: 'published' as const };
+      if (publication.kind === 'retained') {
+        backendLog.warn(`[durable-process:${subject.pid}] Containment publication retained: ${publication.reason}`);
+        return publication;
+      }
       lastPublishedStatus = statusKey;
-      return true;
+      return publication;
     } catch (error: unknown) {
-      backendLog.warn(`[durable-process:${subject.pid}] Failed to publish containment status: ${errorMessage(error)}`);
-      return false;
+      const reason = `durable containment publication failed: ${errorMessage(error)}`;
+      backendLog.warn(`[durable-process:${subject.pid}] ${reason}`);
+      return { kind: 'retained', reason };
     }
   };
 
   const abandonCleanupOwnership = (): boolean => {
     if (!providerResultHeld || cleanupKey === null) return false;
-    if (!publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false })) return false;
+    if (publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false }).kind === 'retained') {
+      return false;
+    }
     cleanupAbortController?.abort();
     cleanupAbortController = null;
     cleanupGeneration += 1;

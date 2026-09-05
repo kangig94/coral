@@ -855,7 +855,9 @@ async function completeCapacityLocalHandoff(
     time,
   });
   reconciler.start();
-  cleanups.push(() => reconciler.stop());
+  cleanups.push(() => {
+    reconciler.stop();
+  });
   const route = createAppServerProxyRoute({
     hostManager: { routeAppServerOperation: () => capacityAuthority },
     reconciler,

@@ -26,7 +26,7 @@ import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/r
 import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { readDurableCliContainmentStatus } from '#src/jobs/runtime-meta-store.js';
-import { durableCliContainmentStatusKey } from '#src/jobs/runtime-meta.js';
+import { durableCliContainmentStatusKey, durableCliProcessRuntimeMetaKey } from '#src/jobs/runtime-meta.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -1063,6 +1063,126 @@ describe('ExecutionService launch', () => {
     const signalCount = kill.mock.calls.length;
     await Promise.resolve();
     expect(kill).toHaveBeenCalledTimes(signalCount);
+  });
+
+  it('keeps the abandonment control when durable publication is temporarily unwritable', async () => {
+    const base = createRealRuntime('prod');
+    const retryHandle = {};
+    const clearInterval = vi.fn();
+    const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
+    let resolveExit!: (record: typeof exitRecord) => void;
+    const exit = new Promise<typeof exitRecord>((resolve) => {
+      resolveExit = resolve;
+    });
+    const runtimeRecord = {
+      transport: 'durable-cli' as const,
+      pid: 91_003,
+      stdoutPath: join(mockState.tmpRoot, 'identity-publication-failure-stdout'),
+      stderrPath: join(mockState.tmpRoot, 'identity-publication-failure-stderr'),
+      startTime: new Date(0).toISOString(),
+    };
+    runtime = {
+      ...base,
+      env: { ...base.env, platform: () => 'darwin' },
+      time: {
+        ...base.time,
+        setInterval: () => retryHandle,
+        clearInterval,
+      },
+      process: {
+        ...base.process,
+        kill: vi.fn(() => true),
+        readProcessIncarnation: () => null,
+        observeLiveness: () => 'unknown',
+        durable: {
+          launch: async (options) => {
+            const processSubject = {
+              pid: runtimeRecord.pid,
+              incarnation: testIncarnation('identity-publication-failure-wrapper'),
+              processGroupId: runtimeRecord.pid,
+              childRoot: {
+                pid: runtimeRecord.pid + 1,
+                incarnation: testIncarnation('identity-publication-failure-child'),
+              },
+            };
+            options.onSpawned?.({
+              runtimeRecord,
+              leaderIncarnation: processSubject.incarnation,
+              childRoot: processSubject.childRoot,
+            });
+            return {
+              launchHandle: 'identity-publication-failure' as never,
+              pid: runtimeRecord.pid,
+              stdoutPath: runtimeRecord.stdoutPath,
+              stderrPath: runtimeRecord.stderrPath,
+              runtimeRecord,
+              processSubject,
+            };
+          },
+          waitForExit: () => exit,
+        },
+      },
+    };
+    launchCoordinator = new LaunchCoordinator({ runtime });
+    const provider: Provider = {
+      name: 'codex',
+      execute: (_request, providerRuntime) =>
+        streamProviderEvents(async (emit) => {
+          if (providerRuntime.transport !== 'standalone') throw new Error('expected standalone runtime');
+          const result = await providerRuntime.runCli({ command: 'fixture', args: [] });
+          emit(providerTerminalEvent({ content: result.stdout, outcome: { kind: 'completed' }, durationMs: 0 }));
+        }),
+    };
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore } = getInternals(service);
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    await vi.waitFor(() => {
+      expect(progressStore.readRuntimeProjection(decision.jobId)).toMatchObject({ transport: 'durable-cli' });
+    });
+
+    const runtimeMetaKey = durableCliProcessRuntimeMetaKey(decision.jobId);
+    const containmentKey = durableCliContainmentStatusKey(decision.jobId);
+    const failedPublicationKeys: string[] = [];
+    progressStore.getDb().function('fail_durable_publication', (key) => {
+      failedPublicationKeys.push(String(key));
+      throw new Error('synthetic durable publication failure');
+    });
+    progressStore.getDb().exec(`
+      CREATE TRIGGER fail_durable_publication
+      BEFORE INSERT ON meta
+      WHEN NEW.key IN ('${runtimeMetaKey}', '${containmentKey}')
+      BEGIN
+        SELECT fail_durable_publication(NEW.key);
+      END
+    `);
+
+    expect(abortRegistry.abort([decision.jobId])).toMatchObject({
+      aborted: [],
+      refused: [
+        {
+          jobId: decision.jobId,
+          reason: expect.stringContaining('durable containment hold persistence failed'),
+        },
+      ],
+    });
+    expect(failedPublicationKeys).toContain(containmentKey);
+    expect(failedPublicationKeys).not.toContain(runtimeMetaKey);
+    expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toEqual({ kind: 'missing' });
+
+    progressStore.getDb().exec('DROP TRIGGER fail_durable_publication');
+    expect(abortRegistry.abort([decision.jobId])).toEqual({ aborted: [decision.jobId], notFound: [] });
+    expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toMatchObject({
+      kind: 'valid',
+      status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },
+    });
+    expect(clearInterval).toHaveBeenCalledWith(retryHandle);
+
+    resolveExit(exitRecord);
+    await waitForTerminalEvent(service, decision.jobId);
   });
 
   it('keeps the abort hold when deleting the durable containment row fails', async () => {

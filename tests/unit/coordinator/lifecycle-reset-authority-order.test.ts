@@ -25,6 +25,7 @@ import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as StartupStoreRoutingMod from '#src/store/startup-store-routing.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
+import { acquireProviderOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -720,6 +721,13 @@ describe('lifecycle reset authority and finalizer order', () => {
 
     await lifecycle.start();
     await lifecycle.shutdown('unit-hard-stop');
+    const successorAdmission = acquireProviderOperationMutationAdmission(
+      mockState.fakeDb as never,
+      'successor-instance',
+    );
+    expect(successorAdmission.kind).toBe('acquired');
+    if (successorAdmission.kind !== 'acquired') throw new Error('successor admission was not acquired');
+    successorAdmission.admission.close();
     mockState.events.push('runShutdownSequence:return');
     await finalizeStoreServices(servicesRef);
 

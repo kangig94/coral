@@ -268,14 +268,47 @@ export type ProxyRoleHandle = Readonly<{
 
 export type ProviderRoleHandle = GuardianRoleHandle | ReaperRoleHandle | ProxyRoleHandle;
 
+type GuardianConstructionCleanupObligation =
+  | Readonly<{
+      kind: 'proxy-process-group';
+      identity: RecordedContainmentIdentity;
+      reason: string;
+    }>
+  | Readonly<{
+      kind: 'reaper-process';
+      identity: RecordedProcessIdentity;
+      reason: string;
+    }>;
+
 export type GuardianConstructionCleanupDisposition =
   | Readonly<{ kind: 'settled' }>
   | Readonly<{
       kind: 'holding';
-      proxyIdentity: RecordedContainmentIdentity;
+      pending: readonly [GuardianConstructionCleanupObligation, ...GuardianConstructionCleanupObligation[]];
       reason: string;
       retry(): Promise<GuardianConstructionCleanupDisposition>;
     }>;
+
+function combineGuardianConstructionCleanup(
+  dispositions: readonly GuardianConstructionCleanupDisposition[],
+): GuardianConstructionCleanupDisposition {
+  const holding = dispositions.filter(
+    (disposition): disposition is Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> =>
+      disposition.kind === 'holding',
+  );
+  const [first, ...rest] = holding;
+  if (first === undefined) return { kind: 'settled' };
+  const pending: [GuardianConstructionCleanupObligation, ...GuardianConstructionCleanupObligation[]] = [
+    ...first.pending,
+    ...rest.flatMap((disposition) => disposition.pending),
+  ];
+  return {
+    kind: 'holding',
+    pending,
+    reason: pending.map((obligation) => `${obligation.kind}: ${obligation.reason}`).join(', '),
+    retry: async () => combineGuardianConstructionCleanup(await Promise.all(holding.map(({ retry }) => retry()))),
+  };
+}
 
 /** A vanished or reused leader cannot prove that its detached process group is absent. */
 async function reapUnheldProcessGroup<Scope extends symbol>(
@@ -290,7 +323,7 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
   }
   const holding = (reason: string): GuardianConstructionCleanupDisposition => ({
     kind: 'holding',
-    proxyIdentity: containment,
+    pending: [{ kind: 'proxy-process-group', identity: containment, reason }],
     reason,
     retry,
   });
@@ -328,17 +361,32 @@ function gracefulKillFailureDetail(outcome: Exclude<GracefulKillByPidOutcome, { 
 async function reapUnheldOrdinaryProcess(
   identity: RecordedProcessIdentity,
   ports: ProviderRoleMainPorts,
-): Promise<void> {
-  const readProcessIncarnation = ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation;
-  const runtime: Runtime = {
-    ...ports.runtime,
-    process: { ...ports.runtime.process, readProcessIncarnation },
-  };
-  const disposition = gracefulKillByPid(runtime, identity.pid, identity.incarnation);
-  const outcome = disposition.kind === 'escalation-scheduled' ? await disposition.settlement : disposition;
-  if (outcome.kind === 'observed-absent') return;
-  if (outcome.kind === 'signal-refused' && outcome.reason === 'expected-incarnation-mismatch') return;
-  throw new Error(`Could not confirm pid=${identity.pid} exited (${gracefulKillFailureDetail(outcome)}).`);
+): Promise<GuardianConstructionCleanupDisposition> {
+  const holding = (reason: string): GuardianConstructionCleanupDisposition => ({
+    kind: 'holding',
+    pending: [{ kind: 'reaper-process', identity, reason }],
+    reason,
+    retry,
+  });
+  async function retry(): Promise<GuardianConstructionCleanupDisposition> {
+    try {
+      const readProcessIncarnation = ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation;
+      const runtime: Runtime = {
+        ...ports.runtime,
+        process: { ...ports.runtime.process, readProcessIncarnation },
+      };
+      const disposition = gracefulKillByPid(runtime, identity.pid, identity.incarnation);
+      const outcome = disposition.kind === 'escalation-scheduled' ? await disposition.settlement : disposition;
+      if (outcome.kind === 'observed-absent') return { kind: 'settled' };
+      if (outcome.kind === 'signal-refused' && outcome.reason === 'expected-incarnation-mismatch') {
+        return { kind: 'settled' };
+      }
+      return holding(`Could not confirm pid=${identity.pid} exited (${gracefulKillFailureDetail(outcome)}).`);
+    } catch (error: unknown) {
+      return holding(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return retry();
 }
 
 /** A non-zero exit must not be read as confirmed containment absence. */
@@ -353,7 +401,7 @@ export class GuardianConstructionCleanupHeldError extends Error {
   readonly hold: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>;
 
   constructor(originalFailure: unknown, hold: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>) {
-    super('Guardian construction failed while proxy containment cleanup remains held.', { cause: originalFailure });
+    super('Guardian construction failed while spawned process cleanup remains held.', { cause: originalFailure });
     this.name = 'GuardianConstructionCleanupHeldError';
     this.hold = hold;
     Object.setPrototypeOf(this, GuardianConstructionCleanupHeldError.prototype);
@@ -362,16 +410,16 @@ export class GuardianConstructionCleanupHeldError extends Error {
 
 const settledGuardianConstructionFailures = new WeakSet<object>();
 
-function markGuardianConstructionContainmentSettled(error: unknown): unknown {
+function markGuardianConstructionCleanupSettled(error: unknown): unknown {
   const failure =
     (typeof error === 'object' && error !== null) || typeof error === 'function'
       ? error
-      : new Error('Guardian construction failed after containment cleanup settled.', { cause: error });
+      : new Error('Guardian construction failed after spawned process cleanup settled.', { cause: error });
   settledGuardianConstructionFailures.add(failure);
   return failure;
 }
 
-function isGuardianConstructionContainmentSettled(error: unknown): boolean {
+function isGuardianConstructionCleanupSettled(error: unknown): boolean {
   return (
     ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
     settledGuardianConstructionFailures.has(error)
@@ -534,6 +582,7 @@ async function unwindGuardianConstruction(
 
   const clock = createMonotonicClock(guardianConstructionUnwindClockScope);
   const environment = buildContainmentEnvironment(clock, ports);
+  let reaperCleanup: GuardianConstructionCleanupDisposition = { kind: 'settled' };
   if (partial.proxySpawn !== null) {
     const proxySpawn = partial.proxySpawn;
     proxyCleanup = await reapUnheldProcessGroup(
@@ -552,13 +601,20 @@ async function unwindGuardianConstruction(
   }
   if (partial.reaperSpawn !== null) {
     const reaperSpawn = partial.reaperSpawn;
-    await attempt('reap the reaper process', () => reapUnheldOrdinaryProcess(reaperSpawn, ports));
+    reaperCleanup = await reapUnheldOrdinaryProcess(
+      { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
+      ports,
+    );
+    if (reaperCleanup.kind === 'holding') {
+      stranded.push('reap the reaper process');
+      backendLog.error(`guardian construction cleanup could not reap the reaper process: ${reaperCleanup.reason}`);
+    }
   }
 
   if (stranded.length > 0) {
     backendLog.error(`guardian construction failed and could not clean up: ${stranded.join(', ')}`);
   }
-  return proxyCleanup;
+  return combineGuardianConstructionCleanup([proxyCleanup, reaperCleanup]);
 }
 
 /**
@@ -725,7 +781,7 @@ export async function startProviderGuardianRole(
   } catch (error: unknown) {
     const cleanup = await unwindGuardianConstruction(ports, { close, reaperChannel, reaperSpawn, proxySpawn });
     if (cleanup.kind === 'holding') throw new GuardianConstructionCleanupHeldError(error, cleanup);
-    throw markGuardianConstructionContainmentSettled(error);
+    throw markGuardianConstructionCleanupSettled(error);
   }
 }
 
@@ -1184,7 +1240,7 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
       handle = await startProviderGuardianRole(mode.capsulePath, ports);
     } catch (error: unknown) {
       if (error instanceof GuardianConstructionCleanupHeldError) {
-        backendLog.error('guardian: construction failed and proxy containment cleanup remains held', error);
+        backendLog.error('guardian: construction failed and spawned process cleanup remains held', error);
         let disposition: GuardianConstructionCleanupDisposition = error.hold;
         while (disposition.kind === 'holding') {
           await runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS);
@@ -1195,8 +1251,8 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
           }
         }
       } else {
-        if (!isGuardianConstructionContainmentSettled(error)) throw error;
-        backendLog.error('guardian: construction failed after containment cleanup settled', error);
+        if (!isGuardianConstructionCleanupSettled(error)) throw error;
+        backendLog.error('guardian: construction failed after spawned process cleanup settled', error);
       }
       return GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
     }

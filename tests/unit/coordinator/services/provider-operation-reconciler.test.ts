@@ -28,6 +28,7 @@ import type { ProviderOperationReconcilerFatalError } from '#src/coordinator/ser
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import {
+  acquireProviderOperationMutationAdmission,
   compareAndSwapProviderOperation,
   insertProviderOperation,
   readProviderOperation,
@@ -1916,6 +1917,51 @@ describe('ProviderOperationReconciler publication', () => {
 
     expect(activatePreparedOperation).toHaveBeenCalledOnce();
     expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
+  });
+
+  it('holds shutdown admission until an accepted activation publishes its executing claim', async () => {
+    const activation = deferredValue<typeof activationAck>();
+    const harness = createHarness({ activatePreparedOperation: () => activation.promise });
+    const lifecycleAcquisition = acquireProviderOperationMutationAdmission(harness.db, 'test-coordinator');
+    expect(lifecycleAcquisition.kind).toBe('acquired');
+    if (lifecycleAcquisition.kind !== 'acquired') throw new Error('lifecycle admission was not acquired');
+    const observedPhases: string[] = [];
+    const unsubscribe = subscribeProviderOperationMutations(harness.db, (mutation) => {
+      if (mutation.kind === 'upserted') observedPhases.push(mutation.record.phase);
+    });
+
+    try {
+      const publication = harness.begin();
+      await vi.waitFor(() =>
+        expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('proxy-activation-pending'),
+      );
+
+      const stopping = harness.reconciler.stop();
+      expect(stopping).toMatchObject({
+        kind: 'holding',
+        exit: 'admitted-provider-operation-mutation-settlement',
+      });
+      if (stopping.kind !== 'holding') throw new Error('accepted activation was not retained by stop');
+
+      expect(() => insertProviderOperation(harness.db, providerOperationRecord('prepare-pending', { job: 2 }))).toThrow(
+        'Provider operation mutation admission is closed.',
+      );
+
+      activation.resolve(activationAck);
+      await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+      await stopping.retryAfter;
+
+      expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
+      expect(observedPhases).toContain('executing');
+      expect(harness.reconciler.stop()).toEqual({ kind: 'drained' });
+      expect(lifecycleAcquisition.admission.accepting).toBe(false);
+      expect(acquireProviderOperationMutationAdmission(harness.db, 'successor-coordinator').kind).toBe('acquired');
+      await expect(harness.reconciler.reconcile(harness.record)).rejects.toThrow(
+        'Provider operation mutation admission is closed.',
+      );
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('recreates a coordinator after the succession-register/prepare cut using only SQLite, capsule, and proxy state', async () => {

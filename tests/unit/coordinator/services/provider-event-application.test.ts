@@ -20,7 +20,11 @@ import type { ProviderBindingCatalog } from '#src/providers/catalog.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderOperationEventIdentity } from '#src/jobs/provider-event.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
-import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  insertProviderOperation,
+  providerOperationMutationAdmission,
+  readProviderOperation,
+} from '#src/store/provider-operation-journal.js';
 import {
   createProviderEventHandler,
   createStoreProviderEventEffectPort,
@@ -171,6 +175,35 @@ afterEach(() => {
 });
 
 describe('createStoreProviderEventEffectPort', () => {
+  it('drains transactions admitted before closure and refuses later transactions', async () => {
+    const db = progressStore.getDb();
+    const port = createStoreProviderEventEffectPort(testDeps());
+    let release!: () => void;
+    const mayFinish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const admitted = port.runInTransaction(async () => {
+      await mayFinish;
+      return 'committed';
+    });
+    await Promise.resolve();
+
+    const stopping = providerOperationMutationAdmission(db).close();
+    expect(stopping).toMatchObject({
+      kind: 'holding',
+      exit: 'admitted-provider-operation-mutation-settlement',
+    });
+    await expect(port.runInTransaction(async () => 'late')).rejects.toThrow(
+      'Provider operation mutation admission is closed.',
+    );
+
+    release();
+    await expect(admitted).resolves.toBe('committed');
+    if (stopping.kind !== 'holding') throw new Error('accepted provider event transaction was not retained');
+    await stopping.retryAfter;
+    expect(providerOperationMutationAdmission(db).close()).toEqual({ kind: 'drained' });
+  });
+
   it('serializes across separate ports sharing one connection, not just within one port', async () => {
     // `buildProviderEventHandler` is called once per proxy set, and each call builds its own port — while
     // every one of them closes over the same store connection. Two sets is the ordinary case, since Claude

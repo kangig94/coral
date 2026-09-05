@@ -1017,10 +1017,7 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
   });
 
-  it.each([
-    ['a reused pid', testIncarnation('replacement')],
-    ['an unobservable pid', null],
-  ] as const)('does not escalate guardian-construction cleanup against %s', async (_label, afterSigterm) => {
+  it('treats a reused reaper pid as confirmation that the spawned reaper is absent', async () => {
     const baseDir = scopedTempDir('coral-topology-pairing-reuse-');
     const shared = mintSharedSetIdentity();
     const environment = createFakeRoleEnvironment({
@@ -1028,7 +1025,7 @@ describe('provider-proxy process topology: guardian role main', () => {
       pluginRoot: baseDir,
       baseDir,
       resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
-      incarnationAfterSigterm: (role) => (role === 'reaper' ? afterSigterm : undefined),
+      incarnationAfterSigterm: (role) => (role === 'reaper' ? testIncarnation('replacement') : undefined),
     });
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared, {
@@ -1042,6 +1039,43 @@ describe('provider-proxy process topology: guardian role main', () => {
     const reaperPid = environment.spawnLog[0]?.pid;
     expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
     expect(environment.killLog).not.toContainEqual({ pid: reaperPid, signal: 'SIGKILL' });
+  });
+
+  it('holds the recorded reaper identity when construction cleanup cannot observe its absence', async () => {
+    const baseDir = scopedTempDir('coral-topology-pairing-unobservable-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+      incarnationAfterSigterm: (role) => (role === 'reaper' ? null : undefined),
+    });
+    cleanups.push(() => closeHandles(environment));
+    const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared, {
+      reaperGuardianReaperAuthSecret: randomBytes(32).toString('hex'),
+    });
+
+    const failure = await startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts()).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
+    const hold = (failure as GuardianConstructionCleanupHeldError).hold;
+    const reaper = environment.spawnLog[0];
+    if (reaper === undefined) throw new Error('guardian construction did not spawn a reaper');
+    expect(hold.pending).toMatchObject([
+      {
+        kind: 'reaper-process',
+        identity: { pid: reaper.pid, incarnation: testIncarnation(`base-${reaper.pid}`) },
+      },
+    ]);
+    expect(environment.killLog).toContainEqual({ pid: reaper.pid, signal: 'SIGTERM' });
+    expect(environment.killLog).not.toContainEqual({ pid: reaper.pid, signal: 'SIGKILL' });
+    await expect(hold.retry()).resolves.toMatchObject({
+      kind: 'holding',
+      pending: [{ kind: 'reaper-process', identity: { pid: reaper.pid } }],
+    });
   });
 
   it('leaves no live child when the guardian endpoint itself fails to bind', async () => {
@@ -1133,13 +1167,61 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
     const hold = (failure as GuardianConstructionCleanupHeldError).hold;
     const proxyPid = environment.spawnLog.find((entry) => entry.role === 'proxy')?.pid;
-    expect(hold.proxyIdentity).toMatchObject({ pid: proxyPid, processGroupId: proxyPid });
+    expect(hold.pending).toMatchObject([
+      { kind: 'proxy-process-group', identity: { pid: proxyPid, processGroupId: proxyPid } },
+    ]);
     expect(hold.reason).toContain('unattributable');
     expect(environment.killLog).toContainEqual({ pid: -proxyPid!, signal: 'SIGTERM' });
     expect(environment.killLog).not.toContainEqual({ pid: -proxyPid!, signal: 'SIGKILL' });
     await expect(hold.retry()).resolves.toMatchObject({
       kind: 'holding',
-      proxyIdentity: { pid: proxyPid, processGroupId: proxyPid },
+      pending: [{ kind: 'proxy-process-group', identity: { pid: proxyPid, processGroupId: proxyPid } }],
+    });
+  });
+
+  it('retains both spawned identities when neither cleanup can confirm absence', async () => {
+    const baseDir = scopedTempDir('coral-topology-forward-holds-both-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+      onProxySpawning: () => {
+        void environment.handles.reaper?.close();
+      },
+      observeSpawnedProcessBeforeRoleReady: true,
+      incarnationAfterSigterm: (role) =>
+        role === 'proxy' ? testIncarnation('reused-proxy-pid') : role === 'reaper' ? null : undefined,
+    });
+    cleanups.push(() => closeHandles(environment));
+    const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
+
+    const failure = await startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts()).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
+    const hold = (failure as GuardianConstructionCleanupHeldError).hold;
+    const reaper = environment.spawnLog.find((entry) => entry.role === 'reaper');
+    const proxy = environment.spawnLog.find((entry) => entry.role === 'proxy');
+    if (reaper === undefined || proxy === undefined) throw new Error('guardian construction did not spawn both peers');
+    expect(hold.pending).toMatchObject([
+      {
+        kind: 'proxy-process-group',
+        identity: { pid: proxy.pid, processGroupId: proxy.pid },
+      },
+      {
+        kind: 'reaper-process',
+        identity: { pid: reaper.pid, incarnation: testIncarnation(`base-${reaper.pid}`) },
+      },
+    ]);
+    await expect(hold.retry()).resolves.toMatchObject({
+      kind: 'holding',
+      pending: [
+        { kind: 'proxy-process-group', identity: { pid: proxy.pid, processGroupId: proxy.pid } },
+        { kind: 'reaper-process', identity: { pid: reaper.pid } },
+      ],
     });
   });
 });

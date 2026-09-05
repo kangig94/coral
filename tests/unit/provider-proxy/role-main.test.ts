@@ -22,6 +22,7 @@ import type * as NodeProcessMod from '#src/infra/node-process.js';
 import { CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV } from '#src/provider-proxy/orphan-deadline.js';
 import {
   buildEnforcementOutcomeHandlers,
+  GuardianConstructionCleanupHeldError,
   runProviderRoleMain,
   startProviderGuardianRole,
   startProviderProxyRole,
@@ -332,9 +333,21 @@ describe('role pairing sender schemas', () => {
     });
     enableRoleSender(pairingCapsule('guardian', directory, { unexpected: true }), { exchange, close: vi.fn() });
 
-    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
+    const failure = await startProviderGuardianRole('/unused', roleSenderPorts(directory)).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
+    expect((failure as GuardianConstructionCleanupHeldError).cause).toMatchObject({
       issues: [expect.objectContaining({ code: 'invalid_type', path: ['pairingSecret'] })],
     });
+    expect((failure as GuardianConstructionCleanupHeldError).hold.pending).toMatchObject([
+      {
+        kind: 'reaper-process',
+        identity: { pid: 2_000_000_000, incarnation: testIncarnation(1) },
+        reason: expect.stringContaining('Could not confirm'),
+      },
+    ]);
     expect(exchange).not.toHaveBeenCalled();
   });
 
@@ -371,10 +384,27 @@ describe('role pairing sender schemas', () => {
       { exchange, close: vi.fn() },
       spawnRoleProcess,
     );
+    let reaperObservation: NodeProcessMod.ProcessIncarnation | null = null;
+    const ports = {
+      ...roleSenderPorts(directory, '74000'),
+      readProcessIncarnation: (pid: number) => (pid === process.pid ? testIncarnation(1) : reaperObservation),
+    };
 
-    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory, '74000'))).rejects.toMatchObject({
+    const failure = await startProviderGuardianRole('/unused', ports).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
+    expect((failure as GuardianConstructionCleanupHeldError).cause).toMatchObject({
       issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],
     });
+    const hold = (failure as GuardianConstructionCleanupHeldError).hold;
+    expect(hold.pending).toMatchObject([
+      {
+        kind: 'reaper-process',
+        identity: { pid: 2_000_000_000, incarnation: testIncarnation(1) },
+      },
+    ]);
+    reaperObservation = testIncarnation(2);
+    await expect(hold.retry()).resolves.toEqual({ kind: 'settled' });
     expect(exchange).toHaveBeenCalledOnce();
     expect(spawnRoleProcess).toHaveBeenCalledOnce();
     expect(spawnRoleProcess.mock.calls[0]?.[3].envAdditions).toMatchObject({

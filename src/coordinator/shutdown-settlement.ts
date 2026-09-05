@@ -19,11 +19,14 @@ export type UndischargedRemainder =
 export type ShutdownHoldReason =
   | 'process-incarnation-probes-unsettled'
   | 'lifecycle-reactor-disposal-unsettled'
+  | 'provider-operation-mutations-unsettled'
   | 'required-shutdown-step-unsettled';
 
 export type ShutdownHoldExit =
   | 'process-incarnation-probe-settlement'
   | 'lifecycle-reactor-disposal-settlement'
+  | 'admitted-provider-operation-mutation-settlement'
+  | 'provider-operation-mutation-admission-availability'
   | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
   | 'authority-release-settlement';
 

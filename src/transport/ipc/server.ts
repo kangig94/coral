@@ -25,7 +25,7 @@ import {
 import { isRelocatedSocket } from '../../infra/path/index.js';
 import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
-import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
+import { rpcCatalog, type ProviderProxySetContainResponse, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
@@ -80,6 +80,19 @@ const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
 const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
 const IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES = 32 * 1024 * 1024;
 const IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS = 5_000;
+
+const PROVIDER_PROXY_SET_CONTAIN_RECOVERY_RESULTS = {
+  contained: true,
+  abandoned: true,
+  'set-not-found': false,
+  'not-held': false,
+  'deadline-pending': false,
+  'authorization-stale': false,
+  'enforcer-alive': false,
+  'enforcer-unobservable': false,
+  'recorded-group-unattributable': false,
+  'store-unreadable': false,
+} satisfies Readonly<Record<ProviderProxySetContainResponse['kind'], boolean>>;
 
 export type IpcServerOptions = {
   readonly maxOpenSockets?: number;
@@ -258,7 +271,29 @@ function acceptedDrainingRecovery(method: string, body: unknown): boolean {
     const aborted = (body as { aborted?: unknown }).aborted;
     return Array.isArray(aborted) && aborted.length > 0;
   }
-  return method === 'coordinator.provider_proxy_set.contain' && (body as { kind?: unknown }).kind === 'abandoned';
+  if (method !== 'coordinator.provider_proxy_set.contain') return false;
+  const kind = (body as { kind?: unknown }).kind;
+  return (
+    typeof kind === 'string' &&
+    Object.hasOwn(PROVIDER_PROXY_SET_CONTAIN_RECOVERY_RESULTS, kind) &&
+    PROVIDER_PROXY_SET_CONTAIN_RECOVERY_RESULTS[kind as ProviderProxySetContainResponse['kind']]
+  );
+}
+
+function armShutdownRecoveryContinuation(socket: Socket, continuation: () => void): () => void {
+  let completed = false;
+  const complete = () => {
+    if (completed) return;
+    completed = true;
+    socket.off('finish', complete);
+    socket.off('close', complete);
+    continuation();
+  };
+
+  socket.once('finish', complete);
+  socket.once('close', complete);
+  if (socket.destroyed || socket.writableEnded) complete();
+  return complete;
 }
 
 function authenticateIpcRequest(auth: IpcAuthMetadata | undefined, rpcPorts: HttpHandlerPorts): Principal | null {
@@ -898,18 +933,18 @@ async function dispatchFrame(
         socket.end();
         return;
       }
-      await writeEnvelope(
+      const completeShutdownRecovery =
+        drainingRecoveryIngress &&
+        acceptedDrainingRecovery(request.method, invocation.body) &&
+        onShutdownRecoveryAccepted !== null
+          ? armShutdownRecoveryContinuation(socket, onShutdownRecoveryAccepted)
+          : null;
+      const wroteResponse = await writeEnvelope(
         socket,
         { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope,
         { drainTimeoutMs: options.writeDrainTimeoutMs },
       );
-      if (
-        drainingRecoveryIngress &&
-        acceptedDrainingRecovery(request.method, invocation.body) &&
-        onShutdownRecoveryAccepted !== null
-      ) {
-        socket.once('finish', onShutdownRecoveryAccepted);
-      }
+      if (!wroteResponse) completeShutdownRecovery?.();
       socket.end();
       return;
     }

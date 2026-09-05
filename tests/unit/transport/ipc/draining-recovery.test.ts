@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type { ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import type { ProviderProxySetContainResponse } from '#src/transport/rpc/catalog.js';
 
 const tempRoots: string[] = [];
 const PROJECT_ROOT = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
@@ -23,7 +25,35 @@ function socketPath(): string {
   return join(root, 'coordinator.sock');
 }
 
-function createDrainingPorts(): HttpHandlerPorts {
+function containmentResult(kind: 'contained' | 'abandoned'): ProviderProxySetContainResponse {
+  const effect = {
+    signalsSent: [],
+    containmentAbsent: kind === 'contained',
+    representationAction:
+      kind === 'contained' ? ('absence-release-started' as const) : ('abandonment-release-started' as const),
+  };
+  if (kind === 'contained') {
+    return {
+      kind,
+      setIdentity,
+      disappearanceReceipt: 'disappearance-receipt',
+      claimDischarge: { kind: 'completed' },
+      effect,
+    };
+  }
+  return {
+    kind,
+    setIdentity,
+    enforcerObservations: [
+      { role: 'guardian', observation: 'unknown' },
+      { role: 'reaper', observation: 'unknown' },
+    ],
+    claimDischarge: { kind: 'completed' },
+    effect,
+  };
+}
+
+function createDrainingPorts(containmentKind: 'contained' | 'abandoned' = 'abandoned'): HttpHandlerPorts {
   return {
     identity: {
       pluginRoot: '/plugin-root',
@@ -53,22 +83,31 @@ function createDrainingPorts(): HttpHandlerPorts {
       abort: vi.fn((jobs: string[]) => ({ aborted: jobs, notFound: [] })),
     },
     providerProxySets: {
-      contain: vi.fn(async () => ({
-        kind: 'abandoned' as const,
-        setIdentity,
-        enforcerObservations: [
-          { role: 'guardian' as const, observation: 'unknown' as const },
-          { role: 'reaper' as const, observation: 'unknown' as const },
-        ],
-        claimDischarge: { kind: 'completed' as const },
-        effect: {
-          signalsSent: [],
-          containmentAbsent: false,
-          representationAction: 'abandonment-release-started' as const,
-        },
-      })),
+      contain: vi.fn(async () => containmentResult(containmentKind)),
     },
   } as unknown as HttpHandlerPorts;
+}
+
+async function connectRawIpcSocket(path: string): Promise<Socket> {
+  const socket = createConnection(path);
+  socket.on('error', () => undefined);
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  return socket;
+}
+
+function writeContainmentRequest(socket: Socket): void {
+  socket.write(
+    `${JSON.stringify({
+      kind: 'request',
+      id: 1,
+      method: 'coordinator.provider_proxy_set.contain',
+      params: { setIdentity, mode: 'contain' },
+      auth: { kind: 'boot', token: 'boot-token' },
+    })}\n`,
+  );
 }
 
 afterEach(() => {
@@ -81,16 +120,24 @@ describe('draining IPC recovery ingress', () => {
       method: 'jobs.abort',
       params: { jobs: ['held-job'], projectRoot: PROJECT_ROOT },
       invoked: (ports: HttpHandlerPorts) => ports.jobs.abort,
+      containmentKind: undefined,
     },
     {
       method: 'coordinator.provider_proxy_set.contain',
       params: { setIdentity, mode: 'abandon' },
       invoked: (ports: HttpHandlerPorts) => ports.providerProxySets?.contain,
+      containmentKind: 'abandoned' as const,
+    },
+    {
+      method: 'coordinator.provider_proxy_set.contain',
+      params: { setIdentity, mode: 'contain' },
+      invoked: (ports: HttpHandlerPorts) => ports.providerProxySets?.contain,
+      containmentKind: 'contained' as const,
     },
   ])(
     'keeps $method authenticated and wakes retained shutdown after an accepted response',
-    async ({ method, params, invoked }) => {
-      const ports = createDrainingPorts();
+    async ({ method, params, invoked, containmentKind }) => {
+      const ports = createDrainingPorts(containmentKind);
       const listener = createIpcServer(ports);
       const wakeRetainedShutdown = vi.fn();
       listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
@@ -114,6 +161,63 @@ describe('draining IPC recovery ingress', () => {
       }
     },
   );
+
+  it('wakes retained shutdown when the client disconnects before a successful containment returns', async () => {
+    const ports = createDrainingPorts('contained');
+    let finishContainment!: () => void;
+    const containmentFinished = new Promise<void>((resolve) => {
+      finishContainment = resolve;
+    });
+    ports.providerProxySets!.contain = vi.fn(async () => {
+      await containmentFinished;
+      return containmentResult('contained');
+    });
+    const listener = createIpcServer(ports);
+    const wakeRetainedShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+    const socket = await connectRawIpcSocket(path);
+
+    try {
+      writeContainmentRequest(socket);
+      await vi.waitFor(() => expect(ports.providerProxySets?.contain).toHaveBeenCalledOnce());
+      socket.destroy();
+      await vi.waitFor(() => expect(listener.sockets.size).toBe(0));
+      finishContainment();
+
+      await vi.waitFor(() => expect(wakeRetainedShutdown).toHaveBeenCalledOnce());
+    } finally {
+      finishContainment();
+      socket.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('wakes retained shutdown exactly once when the containment response drain times out', async () => {
+    const ports = createDrainingPorts('contained');
+    const listener = createIpcServer(ports, { writeDrainTimeoutMs: 1 });
+    const wakeRetainedShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+    const socket = await connectRawIpcSocket(path);
+
+    try {
+      await vi.waitFor(() => expect(listener.sockets.size).toBe(1));
+      const serverSocket = [...listener.sockets].at(0);
+      if (serverSocket === undefined) throw new Error('server socket was not retained');
+      serverSocket.write = vi.fn(() => false);
+      writeContainmentRequest(socket);
+
+      await vi.waitFor(() => expect(serverSocket.destroyed).toBe(true));
+      await vi.waitFor(() => expect(wakeRetainedShutdown).toHaveBeenCalledOnce());
+      expect(ports.providerProxySets?.contain).toHaveBeenCalledOnce();
+    } finally {
+      socket.destroy();
+      await closeIpcServer(listener);
+    }
+  });
 
   it('keeps unrelated catalog methods closed while draining', async () => {
     const ports = createDrainingPorts();

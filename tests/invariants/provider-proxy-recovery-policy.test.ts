@@ -690,6 +690,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: active.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: requestStop :: catch#1 :: calls=[this.#deps.onError, providerOperationErrorReason] assignments=[]',
+  'src/coordinator/services/provider-operation-reconciler.ts :: stop :: catch#1 :: calls=[this.#deps.time.setTimeout, timer.unref] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: errorCode :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: runProviderProxyRecoveryDeadline :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: start :: Promise.then(rejected) :: Promise.resolve(produced).then',
@@ -726,6 +727,9 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: #poll :: ') || fingerprint.includes(' :: #reconcileDueSelection :: ')) {
     return 'Due-page wrapper captures drive/repair failure and preserves fatal observation before warning.';
+  }
+  if (fingerprint.includes(' :: stop :: ')) {
+    return 'Store admission unavailability remains a typed shutdown hold with a scheduled retry.';
   }
   if (fingerprint.startsWith('src/coordinator/services/provider-operation-reconciler.ts')) {
     return 'Existing phase-specific serialization or publication boundary preserves the r17 disposition contract.';

@@ -1440,35 +1440,20 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         control?: DurableContainmentOperatorControl,
       ) => {
         const provisional = 'kind' in identity;
+        if (containmentStatus === undefined) {
+          if (!provisional) {
+            writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
+              jobId,
+              ...identity,
+            });
+          }
+          return { kind: 'published' };
+        }
         const evidence = provisional
           ? { kind: 'unavailable' as const, reason: 'missing' as const }
           : ({ kind: 'current' as const, record: { jobId, ...identity } } as const);
-        if (!provisional) {
-          writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
-            jobId,
-            ...identity,
-          });
-        }
-        if (containmentStatus === undefined) return;
         switch (containmentStatus.kind) {
           case 'held': {
-            try {
-              writeDurableCliContainmentStatus(this.deps.progressStore.getDb(), {
-                jobId,
-                evidence,
-                disposition: containmentStatus,
-              });
-            } catch (error: unknown) {
-              if (control !== undefined) {
-                this.deps.abortRegistry.hold(
-                  jobId,
-                  `durable containment hold persistence failed: ${errorMessage(error)}`,
-                  `Run coral-cli abort jobs ${jobId} again to retry durable abandonment without sending another signal.`,
-                  control.abandon,
-                );
-              }
-              throw error;
-            }
             if (control !== undefined) {
               this.deps.abortRegistry.hold(
                 jobId,
@@ -1477,17 +1462,51 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                 control.abandon,
               );
             }
-            this.appendProgressEvent(
-              jobId,
-              requestForRoute.sessionId,
-              `Durable containment pid=${identity.pid} is held (${containmentStatus.reason}). ` +
-                `Cleanup retries every ${containmentStatus.retryIntervalMs}ms. Run coral-cli abort jobs ${jobId} to ` +
-                'abandon the hold; abandonment releases job ownership without proving process absence or terminating the process.',
-            );
-            return;
+            try {
+              writeDurableCliContainmentStatus(this.deps.progressStore.getDb(), {
+                jobId,
+                evidence,
+                disposition: containmentStatus,
+              });
+            } catch (error: unknown) {
+              const reason = `durable containment hold persistence failed: ${errorMessage(error)}`;
+              if (control !== undefined) {
+                this.deps.abortRegistry.hold(
+                  jobId,
+                  reason,
+                  `Run coral-cli abort jobs ${jobId} again to retry durable abandonment without sending another signal.`,
+                  control.abandon,
+                );
+              }
+              return {
+                kind: 'retained',
+                reason,
+              };
+            }
+            try {
+              this.appendProgressEvent(
+                jobId,
+                requestForRoute.sessionId,
+                `Durable containment pid=${identity.pid} is held (${containmentStatus.reason}). ` +
+                  `Cleanup retries every ${containmentStatus.retryIntervalMs}ms. Run coral-cli abort jobs ${jobId} to ` +
+                  'abandon the hold; abandonment releases job ownership without proving process absence or terminating the process.',
+              );
+            } catch (error: unknown) {
+              backendLog.warn(
+                `Failed to append durable containment hold progress for ${jobId}: ${errorMessage(error)}`,
+              );
+            }
+            return { kind: 'published' };
           }
-          case 'absence-confirmed':
-            deleteDurableCliContainmentStatus(this.deps.progressStore.getDb(), jobId);
+          case 'absence-confirmed': {
+            try {
+              deleteDurableCliContainmentStatus(this.deps.progressStore.getDb(), jobId);
+            } catch (error: unknown) {
+              return {
+                kind: 'retained',
+                reason: `durable containment absence publication failed: ${errorMessage(error)}`,
+              };
+            }
             this.deps.abortRegistry.releaseHold(jobId);
             try {
               this.appendProgressEvent(
@@ -1500,13 +1519,21 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                 `Failed to append durable containment absence progress for ${jobId}: ${errorMessage(error)}`,
               );
             }
-            return;
-          case 'operator-abandoned':
-            writeDurableCliContainmentStatus(this.deps.progressStore.getDb(), {
-              jobId,
-              evidence,
-              disposition: containmentStatus,
-            });
+            return { kind: 'published' };
+          }
+          case 'operator-abandoned': {
+            try {
+              writeDurableCliContainmentStatus(this.deps.progressStore.getDb(), {
+                jobId,
+                evidence,
+                disposition: containmentStatus,
+              });
+            } catch (error: unknown) {
+              return {
+                kind: 'retained',
+                reason: `durable containment abandonment publication failed: ${errorMessage(error)}`,
+              };
+            }
             this.deps.abortRegistry.releaseHold(jobId);
             try {
               this.appendProgressEvent(
@@ -1519,6 +1546,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                 `Failed to append durable containment abandonment progress for ${jobId}: ${errorMessage(error)}`,
               );
             }
+            return { kind: 'published' };
+          }
         }
       },
       jobId,

@@ -20,6 +20,7 @@ import type {
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
+import type { ProviderOperationReconcilerStopDisposition } from './services/provider-operation-reconciler.js';
 import {
   createShutdownSettlementLedger,
   type ProcessExitRemainder,
@@ -71,6 +72,7 @@ type RunShutdownSequenceContext = {
   markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   providerHostManager: ProviderHostLifecycle;
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
+  stopProviderOperationReconciler?: () => ProviderOperationReconcilerStopDisposition;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: (signal: AbortSignal) => TerminateAllDisposition | Promise<TerminateAllDisposition>;
@@ -260,6 +262,7 @@ export async function runShutdownSequence({
   markJobsAsErrorFn,
   providerHostManager,
   providerProxyAuthority,
+  stopProviderOperationReconciler,
   kbDaemonSupervisor,
   storeServicesRef,
   terminateAllFn,
@@ -283,6 +286,48 @@ export async function runShutdownSequence({
   log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
+
+  let providerOperationMutationDrain = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
+  let providerOperationMutationHold =
+    providerOperationMutationDrain.kind === 'holding' ? providerOperationMutationDrain : null;
+  const providerOperationMutationDrainObligation: ShutdownObligation = {
+    label: 'provider operation mutation drain',
+    task: async () => {
+      if (providerOperationMutationDrain.kind === 'holding') {
+        await providerOperationMutationDrain.retryAfter;
+        providerOperationMutationDrain = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
+        if (providerOperationMutationDrain.kind === 'holding') {
+          providerOperationMutationHold = providerOperationMutationDrain;
+        }
+      }
+      return providerOperationMutationDrain.kind === 'drained'
+        ? { confirmed: true }
+        : {
+            confirmed: false,
+            detail: `provider operation mutations remain admitted; exit=${providerOperationMutationDrain.exit}`,
+          };
+    },
+    retainedAuthority: () =>
+      cleanupContribution('provider operation mutation drain', {
+        ipcSocket: true,
+        providerControlProxyInstanceIds:
+          providerProxyAuthority?.liveSets().map(({ proxyInstanceId }) => proxyInstanceId) ?? [],
+        cleanupObligations: providerOperationMutationHold?.pendingMutations ?? [],
+      }),
+    remainder: { owner: 'none' },
+    hold: () =>
+      providerOperationMutationHold === null
+        ? {
+            reason: 'required-shutdown-step-unsettled',
+            exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+          }
+        : {
+            reason: 'provider-operation-mutations-unsettled',
+            exit: providerOperationMutationHold.exit,
+            retryAfter: providerOperationMutationHold.retryAfter,
+          },
+  };
+  await ledger.run(providerOperationMutationDrainObligation);
 
   const serverClose = createJoinableSettlementTask(() => closeServerFn(server));
   serverClose.start();
@@ -402,6 +447,9 @@ export async function runShutdownSequence({
     const providerHostShutdown: ShutdownObligation = {
       label: 'provider host shutdown',
       task: async (signal) => {
+        if (!ledger.isDischarged(providerOperationMutationDrainObligation)) {
+          return { confirmed: false, detail: 'provider host shutdown awaits provider operation mutation drain' };
+        }
         let receipt: ProviderHostQuiescenceReceipt | undefined;
         try {
           receipt = await providerHostManager.shutdown(signal);
@@ -475,6 +523,9 @@ export async function runShutdownSequence({
     const providerHostDrain: ShutdownObligation = {
       label: 'provider host drain for handoff',
       task: async (signal) => {
+        if (!ledger.isDischarged(providerOperationMutationDrainObligation)) {
+          return { confirmed: false, detail: 'provider host drain awaits provider operation mutation drain' };
+        }
         let receipt: ProviderHostQuiescenceReceipt | undefined;
         try {
           receipt = await providerHostManager.drainForHandoff(signal);

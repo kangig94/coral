@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 
 import { withImmediate, type Database } from './db.js';
@@ -50,6 +51,209 @@ export type FinishProviderOperationDueSelectionResult =
   | Readonly<{ kind: 'removed' }>
   | Readonly<{ kind: 'already-advanced' }>
   | Readonly<{ kind: 'yielded'; record: ProviderOperationRecord }>;
+
+export type ProviderOperationMutationAdmissionDisposition =
+  | Readonly<{ kind: 'drained' }>
+  | Readonly<{
+      kind: 'holding';
+      pendingMutations: readonly string[];
+      exit: 'admitted-provider-operation-mutation-settlement';
+      retryAfter: Promise<void>;
+    }>;
+
+export type ProviderOperationMutationAdmissionAcquisition =
+  | Readonly<{
+      kind: 'acquired';
+      owner: string;
+      admission: ProviderOperationMutationAdmission;
+    }>
+  | Readonly<{
+      kind: 'holding';
+      predecessorOwner: string;
+      successorOwner: string;
+      pendingMutations: readonly string[];
+      exit:
+        | 'admitted-provider-operation-mutation-settlement'
+        | 'predecessor-provider-operation-mutation-admission-release';
+      retryAfter: Promise<void>;
+    }>;
+
+type ActiveProviderOperationMutation = Readonly<{
+  label: string;
+  settlement: Promise<void>;
+}>;
+
+export class ProviderOperationMutationAdmission {
+  readonly #context = new AsyncLocalStorage<symbol>();
+  readonly #active = new Map<symbol, ActiveProviderOperationMutation>();
+  readonly #owner: string | null;
+  readonly #released: Promise<void>;
+  #resolveReleased!: () => void;
+  #releaseSettled = false;
+  #accepting = true;
+
+  constructor(owner: string | null = null) {
+    this.#owner = owner;
+    this.#released = new Promise<void>((resolve) => {
+      this.#resolveReleased = resolve;
+    });
+  }
+
+  get owner(): string | null {
+    return this.#owner;
+  }
+
+  get accepting(): boolean {
+    return this.#accepting;
+  }
+
+  get admitted(): boolean {
+    const token = this.#context.getStore();
+    return token !== undefined && this.#active.has(token);
+  }
+
+  async run<Result>(label: string, mutation: () => Result | Promise<Result>): Promise<Result> {
+    const inherited = this.#context.getStore();
+    const inheritedAdmission = inherited !== undefined && this.#active.has(inherited);
+    if (!this.#accepting && !inheritedAdmission) {
+      throw new Error('Provider operation mutation admission is closed.');
+    }
+
+    const token = Symbol(label);
+    let release!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#active.set(token, { label, settlement });
+
+    try {
+      return await this.#context.run(token, mutation);
+    } finally {
+      this.#active.delete(token);
+      release();
+      this.#settleRelease();
+    }
+  }
+
+  runSync<Result>(label: string, mutation: () => Result): Result {
+    const inherited = this.#context.getStore();
+    if (inherited !== undefined && this.#active.has(inherited)) return mutation();
+    if (!this.#accepting) throw new Error('Provider operation mutation admission is closed.');
+
+    const token = Symbol(label);
+    let release!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#active.set(token, { label, settlement });
+    try {
+      return this.#context.run(token, mutation);
+    } finally {
+      this.#active.delete(token);
+      release();
+      this.#settleRelease();
+    }
+  }
+
+  close(): ProviderOperationMutationAdmissionDisposition {
+    this.#accepting = false;
+    const active = [...this.#active.values()];
+    if (active.length === 0) {
+      this.#settleRelease();
+      return { kind: 'drained' };
+    }
+    return {
+      kind: 'holding',
+      pendingMutations: active.map(({ label }) => label),
+      exit: 'admitted-provider-operation-mutation-settlement',
+      retryAfter: this.#drain(),
+    };
+  }
+
+  released(): Promise<void> {
+    return this.#released;
+  }
+
+  pendingMutations(): readonly string[] {
+    return [...this.#active.values()].map(({ label }) => label);
+  }
+
+  #settleRelease(): void {
+    if (this.#releaseSettled || this.#accepting || this.#active.size > 0) return;
+    this.#releaseSettled = true;
+    this.#resolveReleased();
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#active.size > 0) {
+      await Promise.all([...this.#active.values()].map(({ settlement }) => settlement));
+    }
+  }
+}
+
+const mutationAdmissions = new WeakMap<Database, ProviderOperationMutationAdmission>();
+
+export function providerOperationMutationAdmission(db: Database): ProviderOperationMutationAdmission {
+  const existing = mutationAdmissions.get(db);
+  if (existing !== undefined) return existing;
+  const admission = new ProviderOperationMutationAdmission();
+  mutationAdmissions.set(db, admission);
+  return admission;
+}
+
+export function acquireProviderOperationMutationAdmission(
+  db: Database,
+  successorOwner: string,
+): ProviderOperationMutationAdmissionAcquisition {
+  if (successorOwner.trim().length === 0) throw new Error('Provider operation mutation admission owner is required.');
+  const predecessor = mutationAdmissions.get(db);
+  if (predecessor !== undefined) {
+    if (predecessor.owner === successorOwner && predecessor.accepting) {
+      return { kind: 'acquired', owner: successorOwner, admission: predecessor };
+    }
+    if (predecessor.owner === null) {
+      const disposition = predecessor.close();
+      if (disposition.kind === 'holding') {
+        return {
+          kind: 'holding',
+          predecessorOwner: 'unowned-provider-operation-writers',
+          successorOwner,
+          pendingMutations: disposition.pendingMutations,
+          exit: disposition.exit,
+          retryAfter: disposition.retryAfter,
+        };
+      }
+    } else if (predecessor.accepting) {
+      return {
+        kind: 'holding',
+        predecessorOwner: predecessor.owner,
+        successorOwner,
+        pendingMutations: predecessor.pendingMutations(),
+        exit: 'predecessor-provider-operation-mutation-admission-release',
+        retryAfter: predecessor.released(),
+      };
+    } else {
+      const disposition = predecessor.close();
+      if (disposition.kind === 'holding') {
+        return {
+          kind: 'holding',
+          predecessorOwner: predecessor.owner,
+          successorOwner,
+          pendingMutations: disposition.pendingMutations,
+          exit: disposition.exit,
+          retryAfter: disposition.retryAfter,
+        };
+      }
+    }
+  }
+
+  const admission = new ProviderOperationMutationAdmission(successorOwner);
+  mutationAdmissions.set(db, admission);
+  if (mutationAdmissions.get(db) !== admission || admission.owner !== successorOwner) {
+    throw new Error('Provider operation mutation admission successor acceptance failed.');
+  }
+  return { kind: 'acquired', owner: successorOwner, admission };
+}
 
 const mutationObservers = new WeakMap<Database, Set<ProviderOperationMutationObserver>>();
 
@@ -398,7 +602,7 @@ function inWriteTransaction<T>(db: Database, write: () => T): T {
   }
 }
 
-export function insertProviderOperation(db: Database, record: ProviderOperationRecord): void {
+function insertProviderOperationAdmitted(db: Database, record: ProviderOperationRecord): void {
   const encoded = encodeProviderOperationRecord(record);
   if (record.revision !== 0) {
     throw new ProviderOperationJournalError('A provider operation must enter the journal at revision 0.');
@@ -411,6 +615,13 @@ export function insertProviderOperation(db: Database, record: ProviderOperationR
     insertDueEntry(db, record);
   });
   notifyProviderOperationMutation(db, { kind: 'upserted', record });
+}
+
+export function insertProviderOperation(db: Database, record: ProviderOperationRecord): void {
+  providerOperationMutationAdmission(db).runSync(
+    `provider-operation-insert:${record.operation.jobId}:${record.operation.operationId}`,
+    () => insertProviderOperationAdmitted(db, record),
+  );
 }
 
 export function readProviderOperation(
@@ -587,7 +798,7 @@ function discardUnreadableProviderOperationWithinTransaction(
 }
 
 /** Runs recovery ownership claim, raw deletion, due-pointer deletion, and owner settlement atomically. */
-export function discardUnreadableProviderOperationWithRecoveryAuthority<Refusal>(
+function discardUnreadableProviderOperationWithRecoveryAuthorityAdmitted<Refusal>(
   db: Database,
   key: string,
   expectedRevision: string,
@@ -600,6 +811,17 @@ export function discardUnreadableProviderOperationWithRecoveryAuthority<Refusal>
     if (!claim.settle(result)) throw new Error('provider_operation_discard_recovery_authority_lost');
     return result;
   });
+}
+
+export function discardUnreadableProviderOperationWithRecoveryAuthority<Refusal>(
+  db: Database,
+  key: string,
+  expectedRevision: string,
+  authority: UnreadableProviderOperationDiscardAuthority<Refusal>,
+): RawUnreadableProviderOperationDiscardResult | Refusal {
+  return providerOperationMutationAdmission(db).runSync(`provider-operation-unreadable-discard:${key}`, () =>
+    discardUnreadableProviderOperationWithRecoveryAuthorityAdmitted(db, key, expectedRevision, authority),
+  );
 }
 
 type IdentityClaim<T> =
@@ -784,7 +1006,7 @@ function observableProcessTargets(value: string): readonly number[] | null {
  * noncanonical row can remove a global admission blocker. This build does not settle or reinterpret either
  * row—it retires only after every readable process target was observed absent.
  */
-export function retireSupersededProviderOperation(db: Database, key: string): void {
+function retireSupersededProviderOperationAdmitted(db: Database, key: string): void {
   if (!SUPERSEDED_PROVIDER_OPERATION_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) {
     throw new ProviderOperationJournalError(`Provider operation row '${key}' is not from a superseded generation.`);
   }
@@ -801,6 +1023,12 @@ export function retireSupersededProviderOperation(db: Database, key: string): vo
       );
     }
   });
+}
+
+export function retireSupersededProviderOperation(db: Database, key: string): void {
+  providerOperationMutationAdmission(db).runSync(`provider-operation-superseded-retirement:${key}`, () =>
+    retireSupersededProviderOperationAdmitted(db, key),
+  );
 }
 
 export function readProviderOperations(db: Database): ProviderOperationScan {
@@ -880,7 +1108,7 @@ export function readProviderOperationDueSelections(
   return selections;
 }
 
-export function finishProviderOperationDueSelection(
+function finishProviderOperationDueSelectionAdmitted(
   db: Database,
   selection: ProviderOperationDueSelection,
   scanCutoffMs: number,
@@ -963,7 +1191,19 @@ export function finishProviderOperationDueSelection(
   return result;
 }
 
-export function compareAndSwapProviderOperation(
+export function finishProviderOperationDueSelection(
+  db: Database,
+  selection: ProviderOperationDueSelection,
+  scanCutoffMs: number,
+  nextDueAtMs: number,
+): FinishProviderOperationDueSelectionResult {
+  return providerOperationMutationAdmission(db).runSync(
+    `provider-operation-due-selection:${selection.record.operation.jobId}:${selection.record.operation.operationId}`,
+    () => finishProviderOperationDueSelectionAdmitted(db, selection, scanCutoffMs, nextDueAtMs),
+  );
+}
+
+function compareAndSwapProviderOperationAdmitted(
   db: Database,
   expected: ProviderOperationRecord,
   next: ProviderOperationRecord,
@@ -992,7 +1232,18 @@ export function compareAndSwapProviderOperation(
   return result;
 }
 
-export function completeExecutingProviderOperationAttachment(
+export function compareAndSwapProviderOperation(
+  db: Database,
+  expected: ProviderOperationRecord,
+  next: ProviderOperationRecord,
+): ProviderOperationCompareAndSwapResult {
+  return providerOperationMutationAdmission(db).runSync(
+    `provider-operation-update:${expected.operation.jobId}:${expected.operation.operationId}`,
+    () => compareAndSwapProviderOperationAdmitted(db, expected, next),
+  );
+}
+
+function completeExecutingProviderOperationAttachmentAdmitted(
   db: Database,
   operation: ProviderOperationIdentity,
   expectedRetryOwnership: ProviderOperationRetryOwnership,
@@ -1035,7 +1286,19 @@ export function completeExecutingProviderOperationAttachment(
   return result;
 }
 
-export function deleteProviderOperation(
+export function completeExecutingProviderOperationAttachment(
+  db: Database,
+  operation: ProviderOperationIdentity,
+  expectedRetryOwnership: ProviderOperationRetryOwnership,
+  completedAtMs: number,
+): CompleteExecutingProviderOperationAttachmentResult {
+  return providerOperationMutationAdmission(db).runSync(
+    `provider-operation-attachment:${operation.jobId}:${operation.operationId}`,
+    () => completeExecutingProviderOperationAttachmentAdmitted(db, operation, expectedRetryOwnership, completedAtMs),
+  );
+}
+
+function deleteProviderOperationAdmitted(
   db: Database,
   expected: ProviderOperationRecord,
 ): ProviderOperationDeleteResult {
@@ -1053,4 +1316,14 @@ export function deleteProviderOperation(
   });
   if (result.kind === 'deleted') notifyProviderOperationMutation(db, { kind: 'deleted', record: expected });
   return result;
+}
+
+export function deleteProviderOperation(
+  db: Database,
+  expected: ProviderOperationRecord,
+): ProviderOperationDeleteResult {
+  return providerOperationMutationAdmission(db).runSync(
+    `provider-operation-delete:${expected.operation.jobId}:${expected.operation.operationId}`,
+    () => deleteProviderOperationAdmitted(db, expected),
+  );
 }

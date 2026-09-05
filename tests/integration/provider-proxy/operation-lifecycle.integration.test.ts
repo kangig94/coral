@@ -690,7 +690,9 @@ async function launchThroughRoute(
     time,
   });
   reconciler.start();
-  cleanups.push(() => reconciler.stop());
+  cleanups.push(() => {
+    reconciler.stop();
+  });
   const route = createAppServerProxyRoute({
     hostManager: { routeAppServerOperation: () => authority },
     reconciler,

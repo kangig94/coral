@@ -744,16 +744,18 @@ describe('launch admission', () => {
         status?: DurableContainmentStatus,
         control?: DurableContainmentOperatorControl,
       ) => {
-        if (status?.kind !== 'held') return;
-        expect(identity).toEqual({
-          kind: 'provisional-wrapper',
-          pid: TEST_PROVIDER_PID,
-          incarnation,
-          processGroupId: TEST_PROVIDER_PID,
-          provider: 'codex',
-          jobDir: '/tmp/provisional-readiness-rejection',
-        });
-        expect(control?.abandon()).toBe(true);
+        if (status?.kind === 'held') {
+          expect(identity).toEqual({
+            kind: 'provisional-wrapper',
+            pid: TEST_PROVIDER_PID,
+            incarnation,
+            processGroupId: TEST_PROVIDER_PID,
+            provider: 'codex',
+            jobDir: '/tmp/provisional-readiness-rejection',
+          });
+          expect(control?.abandon()).toBe(true);
+        }
+        return { kind: 'published' as const };
       },
     );
 
@@ -920,6 +922,7 @@ describe('launch admission', () => {
         control?: DurableContainmentOperatorControl,
       ) => {
         if (control !== undefined) holdControls.push(control);
+        return { kind: 'published' as const };
       },
     );
     const spawn = localCoordinator.spawnDurableJob({
@@ -1030,8 +1033,9 @@ describe('launch admission', () => {
         if (status?.kind === 'held') holdControl = control;
         if (status?.kind === 'absence-confirmed') {
           absencePublicationAttempts += 1;
-          throw new Error('synthetic absence publication failure');
+          return { kind: 'retained' as const, reason: 'synthetic absence publication failure' };
         }
+        return { kind: 'published' as const };
       },
     );
     let settled = false;

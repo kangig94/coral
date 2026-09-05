@@ -12,11 +12,15 @@ export type DurableContainmentOperatorControl = Readonly<{
   abandon(): boolean;
 }>;
 
+export type DurableProcessPublicationDisposition =
+  | Readonly<{ kind: 'published' }>
+  | Readonly<{ kind: 'retained'; reason: string }>;
+
 export type DurableProcessIdentityCallback = (
   identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
   status?: DurableContainmentStatus,
   control?: DurableContainmentOperatorControl,
-) => void;
+) => DurableProcessPublicationDisposition;
 
 export interface ProviderDurableSpawner {
   spawnDurableJob(options: {

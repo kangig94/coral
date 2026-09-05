@@ -21,7 +21,11 @@ import type { SessionContinuityState } from '../../sessions/fault.js';
 import { appendProviderTerminalInCommit, appendSessionInterruptedTerminalInCommit } from './terminal-materializer.js';
 import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { ProviderEventRequest, ProviderEventResult } from '../../provider-proxy/protocol.js';
-import { compareAndSwapProviderOperation, readProviderOperation } from '../../store/provider-operation-journal.js';
+import {
+  compareAndSwapProviderOperation,
+  providerOperationMutationAdmission,
+  readProviderOperation,
+} from '../../store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import { notifyProviderOperationSettlementPending } from './provider-operation-reconciler.js';
 
@@ -198,33 +202,35 @@ const transactionChains = new WeakMap<Database, Promise<unknown>>();
 export function createStoreProviderEventEffectPort(
   deps: ProviderEventApplicationDeps,
 ): ProviderEventEffectPort<PortTx> {
+  const mutationAdmission = providerOperationMutationAdmission(deps.db);
   return {
-    runInTransaction: async (execute) => {
-      const run = async (): Promise<unknown> => {
-        deps.db.exec('BEGIN IMMEDIATE');
-        const tx: PortTx = { db: deps.db };
-        try {
-          const result = await execute(tx);
-          deps.db.exec('COMMIT');
-          return result;
-        } catch (error) {
+    runInTransaction: (execute) =>
+      mutationAdmission.run('provider-event-transaction', async () => {
+        const run = async (): Promise<unknown> => {
+          deps.db.exec('BEGIN IMMEDIATE');
+          const tx: PortTx = { db: deps.db };
           try {
-            deps.db.exec('ROLLBACK');
-          } catch {
-            // Preserve the original failure that triggered the rollback.
+            const result = await execute(tx);
+            deps.db.exec('COMMIT');
+            return result;
+          } catch (error) {
+            try {
+              deps.db.exec('ROLLBACK');
+            } catch {
+              // Preserve the original failure that triggered the rollback.
+            }
+            throw error;
           }
-          throw error;
-        }
-      };
-      // The chain must survive a rejection, or one failed event would wedge every later one behind it.
-      const pending = transactionChains.get(deps.db) ?? Promise.resolve();
-      const settled = pending.then(run, run);
-      transactionChains.set(
-        deps.db,
-        settled.catch(() => undefined),
-      );
-      return (await settled) as Awaited<ReturnType<typeof execute>>;
-    },
+        };
+        // The chain must survive a rejection, or one failed event would wedge every later one behind it.
+        const pending = transactionChains.get(deps.db) ?? Promise.resolve();
+        const settled = pending.then(run, run);
+        transactionChains.set(
+          deps.db,
+          settled.catch(() => undefined),
+        );
+        return (await settled) as Awaited<ReturnType<typeof execute>>;
+      }),
 
     verifyIdentity: async (tx, identity) => {
       const record = readJournalRecord(tx.db, identity);
@@ -457,24 +463,29 @@ function toApplyProviderEventBody(
  */
 export function createProviderEventHandler(deps: ProviderEventApplicationDeps): ProviderEventHandler {
   const port = createStoreProviderEventEffectPort(deps);
-  return async (request: ProviderEventRequest): Promise<ProviderEventResult> => {
-    const identity: ProviderOperationEventIdentity = request.operation;
-    const event = toApplyProviderEventBody(deps, identity, request.event);
-    const result = await applyProviderEventAtSeq(port, { identity, seq: request.providerSeq, event });
-    // A proxied operation never returns through `executeJob`'s local finalization, so this is the only moment
-    // anything learns it is over. Without it the launcher holds that job's admission slot forever and the
-    // daemon stops accepting work once the pool fills — durable state perfectly correct, coordinator dead.
-    //
-    // The condition is on what durably happened, not on what arrived. `replay` returns before `applyEffect`
-    // runs, so a terminal that lands on a sequence gap has ended nothing and must not release a slot the
-    // operation is still using. And `suspended` ends a job exactly as `terminal` does — it appends the job
-    // terminal and releases the session claim — so keying on `terminal` alone leaks every aborted and every
-    // interrupted proxied operation.
-    const endedTheJob = event.kind === 'terminal' || event.kind === 'suspended';
-    if (result.kind === 'ack' && endedTheJob) {
-      notifyProviderOperationSettlementPending(identity);
-      deps.operations.settled(identity);
-    }
-    return result;
-  };
+  const mutationAdmission = providerOperationMutationAdmission(deps.db);
+  return (request: ProviderEventRequest): Promise<ProviderEventResult> =>
+    mutationAdmission.run(
+      `provider-event:${request.operation.jobId}:${request.operation.operationId}:${request.providerSeq}`,
+      async () => {
+        const identity: ProviderOperationEventIdentity = request.operation;
+        const event = toApplyProviderEventBody(deps, identity, request.event);
+        const result = await applyProviderEventAtSeq(port, { identity, seq: request.providerSeq, event });
+        // A proxied operation never returns through `executeJob`'s local finalization, so this is the only moment
+        // anything learns it is over. Without it the launcher holds that job's admission slot forever and the
+        // daemon stops accepting work once the pool fills — durable state perfectly correct, coordinator dead.
+        //
+        // The condition is on what durably happened, not on what arrived. `replay` returns before `applyEffect`
+        // runs, so a terminal that lands on a sequence gap has ended nothing and must not release a slot the
+        // operation is still using. And `suspended` ends a job exactly as `terminal` does — it appends the job
+        // terminal and releases the session claim — so keying on `terminal` alone leaks every aborted and every
+        // interrupted proxied operation.
+        const endedTheJob = event.kind === 'terminal' || event.kind === 'suspended';
+        if (result.kind === 'ack' && endedTheJob) {
+          notifyProviderOperationSettlementPending(identity);
+          deps.operations.settled(identity);
+        }
+        return result;
+      },
+    );
 }

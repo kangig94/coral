@@ -36,6 +36,9 @@ function buildHarness(opts: {
   closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
   reason?: string;
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
+  stopProviderOperationReconciler?: NonNullable<
+    Parameters<typeof runShutdownSequence>[0]['stopProviderOperationReconciler']
+  >;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
 }): Harness {
   const time = new VirtualTime();
@@ -121,6 +124,9 @@ function buildHarness(opts: {
       }),
     } as never,
     providerProxyAuthority: opts.providerProxyAuthority,
+    ...(opts.stopProviderOperationReconciler === undefined
+      ? {}
+      : { stopProviderOperationReconciler: opts.stopProviderOperationReconciler }),
     storeServicesRef: {
       tryGet: () => storeServices,
       get: () => storeServices,
@@ -181,6 +187,38 @@ function heldFailureDetail(held: ShutdownSequenceHold): string {
 }
 
 describe('runShutdownSequence drain budget', () => {
+  it('holds provider-host teardown behind an admitted provider-operation mutation', async () => {
+    const mutationSettlement = new Promise<void>(() => {});
+    const stopProviderOperationReconciler = vi.fn(() => ({
+      kind: 'holding' as const,
+      pendingMutations: ['provider-operation:job-1:operation-1'],
+      exit: 'admitted-provider-operation-mutation-settlement' as const,
+      retryAfter: mutationSettlement,
+    }));
+    const harness = buildHarness({ stopProviderOperationReconciler });
+    const sequence = runShutdownSequence(harness.ctx);
+
+    for (let advanced = 0; advanced <= HANDOFF_DRAIN_TIMEOUT_MS + 100; advanced += 100) {
+      harness.time.tick(100);
+      await flush();
+    }
+
+    const held = requireHeld(await sequence);
+    expect(held).toMatchObject({
+      reason: 'provider-operation-mutations-unsettled',
+      exit: 'admitted-provider-operation-mutation-settlement',
+      retainedAuthority: {
+        ipcSocket: true,
+        cleanupObligations: expect.arrayContaining([
+          'provider operation mutation drain',
+          'provider-operation:job-1:operation-1',
+        ]),
+      },
+    });
+    expect(stopProviderOperationReconciler).toHaveBeenCalledOnce();
+    expect(harness.callLog).not.toContain('drainForHandoff');
+  });
+
   it('returns a hold within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
     // Hooks.onShutdown never resolves and ignores the abort signal — the
     // budget timer must end the race for `runShutdownSequence` to return.
