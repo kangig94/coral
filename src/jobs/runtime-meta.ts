@@ -3,6 +3,7 @@ import type { DurableCliProcessSubject } from '../runtime/ports.js';
 import { z } from 'zod';
 
 const MAX_RUNTIME_META_BYTES = 4096;
+const TRUNCATED_CONTAINMENT_REASON_SUFFIX = ' [truncated]';
 
 const canonicalUuidSchema = z
   .string()
@@ -202,7 +203,44 @@ export function encodeDurableCliContainmentStatus(status: DurableCliContainmentS
       cause: result.error,
     });
   }
-  return JSON.stringify(result.data);
+  const encoded = JSON.stringify(result.data);
+  if (Buffer.byteLength(encoded, 'utf8') <= MAX_RUNTIME_META_BYTES) return encoded;
+  if (result.data.disposition.kind !== 'held') {
+    throw new Error('Durable CLI containment status exceeds the maximum serialized size.');
+  }
+
+  const truncatedStatus = truncateContainmentReason(result.data);
+  const truncatedEncoded = JSON.stringify(truncatedStatus);
+  if (Buffer.byteLength(truncatedEncoded, 'utf8') > MAX_RUNTIME_META_BYTES) {
+    throw new Error('Durable CLI containment status fixed fields exceed the maximum serialized size.');
+  }
+  return truncatedEncoded;
+}
+
+function truncateContainmentReason(status: DurableCliContainmentStatus): DurableCliContainmentStatus {
+  if (status.disposition.kind !== 'held') return status;
+
+  const statusWithSuffix = {
+    ...status,
+    disposition: { ...status.disposition, reason: TRUNCATED_CONTAINMENT_REASON_SUFFIX },
+  };
+  const reasonByteBudget = MAX_RUNTIME_META_BYTES - Buffer.byteLength(JSON.stringify(statusWithSuffix), 'utf8');
+  let retainedReason = '';
+  let retainedBytes = 0;
+  for (const character of status.disposition.reason) {
+    const characterBytes = Buffer.byteLength(JSON.stringify(character), 'utf8') - 2;
+    if (retainedBytes + characterBytes > reasonByteBudget) break;
+    retainedReason += character;
+    retainedBytes += characterBytes;
+  }
+
+  return {
+    ...status,
+    disposition: {
+      ...status.disposition,
+      reason: `${retainedReason}${TRUNCATED_CONTAINMENT_REASON_SUFFIX}`,
+    },
+  };
 }
 
 export function decodeDurableCliContainmentStatus(raw: string | null | undefined): DurableCliContainmentStatus | null {

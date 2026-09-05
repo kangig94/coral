@@ -10,6 +10,8 @@ import { createRealTimePort } from '../infra/time.js';
 const GROUP_FINALIZER_MODE = '--finalize-group';
 const GROUP_OBSERVATION_INTERVAL_MS = 50;
 const GROUP_OBSERVATION_TIMEOUT_MS = 1_000;
+const GROUP_FINALIZER_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+const RETAINED_GROUP_TERMINATION_INTERVAL_MS = 1_000;
 
 type LaunchPayload = Readonly<{
   version: 1;
@@ -179,8 +181,12 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   let pendingExit: PendingExit | null = null;
   let groupPoll: NodeJS.Timeout | null = null;
   let groupObservationInFlight = false;
-  let groupTerminationStarted = false;
   let groupFinalizer: ReturnType<typeof spawn> | null = null;
+  let groupFinalizerReady = false;
+  let groupFinalizerSettled = true;
+  let groupFinalizerFailures = 0;
+  let groupFinalizerRetry: NodeJS.Timeout | null = null;
+  let retainedGroupTermination: NodeJS.Timeout | null = null;
   const groupCloseListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
   const groupHandle: ChildProcessLike = {
     pid: process.pid,
@@ -216,6 +222,8 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     if (exitWritten) return;
     exitWritten = true;
     if (groupPoll !== null) clearInterval(groupPoll);
+    if (groupFinalizerRetry !== null) clearTimeout(groupFinalizerRetry);
+    if (retainedGroupTermination !== null) clearInterval(retainedGroupTermination);
     for (const listener of groupCloseListeners) listener(null, null);
     if (groupFinalizer?.connected) groupFinalizer.send('cancel');
     closeOutputFiles();
@@ -227,24 +235,85 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     return members !== null && members.every((pid) => pid === process.pid);
   };
 
-  const handExitToGroupFinalizer = (exit: PendingExit): void => {
-    groupTerminationStarted = true;
-    groupFinalizer = spawn(
-      process.execPath,
-      [process.argv[1] ?? '', GROUP_FINALIZER_MODE, String(process.pid), JSON.stringify(exit)],
-      { detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] },
-    );
-    groupFinalizer.once('message', (message: unknown) => {
-      if (message !== 'ready') return;
+  function exerciseRetainedGroupTermination(exit: PendingExit): void {
+    if (exitWritten || groupFinalizerReady) return;
+    try {
+      groupHandle.kill('SIGTERM');
+    } catch {
+      // The absence poll must decide whether a rejected signal raced with group disappearance.
+    }
+    if (groupFinalizerSettled && groupFinalizerRetry === null) handExitToGroupFinalizer(exit, true);
+  }
+
+  function retainGroupTerminationAuthority(exit: PendingExit): void {
+    if (retainedGroupTermination !== null) return;
+    retainedGroupTermination = setInterval(() => {
+      exerciseRetainedGroupTermination(exit);
+    }, RETAINED_GROUP_TERMINATION_INTERVAL_MS);
+    gracefulKill(groupHandle, { time }, observeProcessLiveness);
+    handExitToGroupFinalizer(exit, true);
+  }
+
+  function handExitToGroupFinalizer(exit: PendingExit, retainedAuthority = false): void {
+    if (exitWritten || groupFinalizerReady || !groupFinalizerSettled || groupFinalizerRetry !== null) return;
+    groupFinalizerSettled = false;
+
+    function scheduleRetry(): void {
+      if (exitWritten || groupFinalizerReady) return;
+      if (retainedAuthority) return;
+      const delay = GROUP_FINALIZER_RETRY_DELAYS_MS[groupFinalizerFailures];
+      groupFinalizerFailures += 1;
+      if (delay === undefined) {
+        retainGroupTerminationAuthority(exit);
+        return;
+      }
+      groupFinalizerRetry = setTimeout(() => {
+        groupFinalizerRetry = null;
+        handExitToGroupFinalizer(exit);
+      }, delay);
+      groupFinalizerRetry.unref?.();
+    }
+
+    let finalizer: ReturnType<typeof spawn>;
+    try {
+      finalizer = spawn(
+        process.execPath,
+        [process.argv[1] ?? '', GROUP_FINALIZER_MODE, String(process.pid), JSON.stringify(exit)],
+        { detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] },
+      );
+    } catch {
+      groupFinalizerSettled = true;
+      scheduleRetry();
+      return;
+    }
+    groupFinalizer = finalizer;
+    let attemptSettled = false;
+
+    const failAttempt = (): void => {
+      if (attemptSettled) return;
+      attemptSettled = true;
+      groupFinalizerSettled = true;
+      if (groupFinalizer === finalizer) groupFinalizer = null;
+      scheduleRetry();
+    };
+
+    finalizer.once('message', (message: unknown) => {
+      if (message !== 'ready' || attemptSettled) return;
+      attemptSettled = true;
+      groupFinalizerReady = true;
+      groupFinalizerSettled = true;
+      if (retainedGroupTermination !== null) {
+        clearInterval(retainedGroupTermination);
+        retainedGroupTermination = null;
+      }
       gracefulKill(groupHandle, { time }, observeProcessLiveness);
     });
-    groupFinalizer.once('error', () => {
-      groupFinalizer = null;
-      groupTerminationStarted = false;
-    });
-    groupFinalizer.unref();
-    groupFinalizer.channel?.unref();
-  };
+    finalizer.once('error', failAttempt);
+    finalizer.once('exit', failAttempt);
+    finalizer.once('close', failAttempt);
+    finalizer.unref();
+    finalizer.channel?.unref();
+  }
 
   const observeContainedGroup = async (exit: PendingExit): Promise<void> => {
     if (groupObservationInFlight || exitWritten) return;
@@ -274,7 +343,12 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     terminationRequested = true;
     publicationGateTermination.abort();
     if (pendingExit !== null) {
-      if (!groupTerminationStarted) handExitToGroupFinalizer(pendingExit);
+      if (groupFinalizerRetry !== null) {
+        clearTimeout(groupFinalizerRetry);
+        groupFinalizerRetry = null;
+      }
+      if (retainedGroupTermination === null) handExitToGroupFinalizer(pendingExit);
+      else handExitToGroupFinalizer(pendingExit, true);
       return;
     }
     if (child === null || terminationStarted) return;

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,271 @@ async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
   }
 }
 
+async function waitForLineCount(path: string, count: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path) || readFileSync(path, 'utf8').trimEnd().split('\n').length < count) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${count} lines in ${path}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+type FinalizerOutcome = 'error' | 'close' | 'ready';
+
+type WrapperHarness = Readonly<{
+  attemptLogPath: string;
+  closePromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  descendantSignalPath: string;
+  stderr: () => string;
+  wrapper: ReturnType<typeof spawn>;
+  cleanup: () => Promise<void>;
+}>;
+
+type ContainedDescendantOptions = Readonly<{
+  ignoreSigterm?: boolean;
+  terminationGraceMs?: number;
+}>;
+
+async function buildWrapperWithFinalizerOutcomes(
+  wrapperPath: string,
+  attemptLogPath: string,
+  outcomes: readonly FinalizerOutcome[],
+  terminationGraceMs: number,
+): Promise<void> {
+  await build({
+    entryPoints: [fileURLToPath(new URL('../../../src/runtime/durable-cli-wrapper.ts', import.meta.url))],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    outfile: wrapperPath,
+    plugins: [
+      {
+        name: 'group-finalizer-scenario',
+        setup(pluginBuild) {
+          pluginBuild.onResolve({ filter: /^node:child_process$/, namespace: 'file' }, () => ({
+            path: 'group-finalizer-scenario',
+            namespace: 'group-finalizer-scenario',
+          }));
+          pluginBuild.onResolve({ filter: /process-supervision\.js$/, namespace: 'file' }, () => ({
+            path: 'process-supervision-scenario',
+            namespace: 'process-supervision-scenario',
+          }));
+          pluginBuild.onLoad({ filter: /.*/, namespace: 'group-finalizer-scenario' }, () => ({
+            loader: 'js',
+            contents: `
+              import { execFile, execFileSync, spawn as realSpawn } from 'node:child_process';
+              import { EventEmitter } from 'node:events';
+              import { appendFileSync } from 'node:fs';
+              export { execFile, execFileSync };
+              const outcomes = ${JSON.stringify(outcomes)};
+              let finalizerAttempt = 0;
+              export const spawn = (command, args, options) => {
+                if (args?.[1] !== '--finalize-group') return realSpawn(command, args, options);
+                const outcome = outcomes[finalizerAttempt] ?? outcomes.at(-1) ?? 'ready';
+                finalizerAttempt += 1;
+                appendFileSync(${JSON.stringify(attemptLogPath)}, outcome + '\\n');
+                const child = new EventEmitter();
+                child.connected = false;
+                child.channel = { unref() {} };
+                child.send = () => false;
+                child.unref = () => child;
+                queueMicrotask(() => {
+                  if (outcome === 'error') {
+                    const error = Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' });
+                    child.emit('error', error);
+                    child.emit('close', -2, null);
+                    return;
+                  }
+                  if (outcome === 'close') {
+                    child.emit('exit', 1, null);
+                    child.emit('close', 1, null);
+                    return;
+                  }
+                  child.emit('message', 'ready');
+                });
+                return child;
+              };
+            `,
+          }));
+          pluginBuild.onLoad({ filter: /.*/, namespace: 'process-supervision-scenario' }, () => ({
+            loader: 'js',
+            contents: `
+              export const gracefulKill = (child, runtime, observeLiveness) => {
+                child.kill('SIGTERM');
+                const timer = runtime.time.setTimeout(() => {
+                  if (child.pid === undefined || observeLiveness(child.pid) !== 'alive') return;
+                  child.kill('SIGKILL');
+                }, ${JSON.stringify(terminationGraceMs)});
+                timer.unref?.();
+                child.on('close', () => runtime.time.clearTimeout(timer));
+              };
+            `,
+          }));
+        },
+      },
+    ],
+  });
+}
+
+async function startWrapperWithContainedDescendant(
+  outcomes: readonly FinalizerOutcome[],
+  options: ContainedDescendantOptions = {},
+): Promise<WrapperHarness> {
+  const rootDir = createTempDir();
+  const jobDir = join(rootDir, 'job');
+  const wrapperPath = join(rootDir, 'durable-cli-wrapper.mjs');
+  const attemptLogPath = join(rootDir, 'finalizer-attempts');
+  const descendantStartedPath = join(rootDir, 'descendant-started');
+  const descendantSignalPath = join(rootDir, 'descendant-signal');
+  const launchPayloadPath = join(jobDir, 'launch.v1.json');
+  mkdirSync(jobDir);
+  writeFileSync(join(jobDir, 'env.json'), '{}');
+  await buildWrapperWithFinalizerOutcomes(wrapperPath, attemptLogPath, outcomes, options.terminationGraceMs ?? 5_000);
+
+  const descendantScript = [
+    `const fs = require('node:fs')`,
+    `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(descendantSignalPath)}, 'observed'); ${options.ignoreSigterm === true ? '' : 'process.exit(0);'} })`,
+    `fs.writeFileSync(${JSON.stringify(descendantStartedPath)}, 'started')`,
+    `setInterval(() => {}, 1000)`,
+  ].join(';');
+  const providerScript = [
+    `const { spawn } = require('node:child_process')`,
+    `const fs = require('node:fs')`,
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { stdio: 'ignore' })`,
+    `child.unref()`,
+    `const poll = setInterval(() => { if (!fs.existsSync(${JSON.stringify(descendantStartedPath)})) return; clearInterval(poll); process.exit(0); }, 5)`,
+  ].join(';');
+  writeFileSync(
+    launchPayloadPath,
+    JSON.stringify({
+      version: 1,
+      command: process.execPath,
+      args: ['-e', providerScript],
+      cwd: null,
+      prompt: '',
+      startTime: new Date().toISOString(),
+    }),
+  );
+
+  const wrapper = spawn(process.execPath, [wrapperPath, launchPayloadPath], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  let closed = false;
+  let stderr = '';
+  wrapper.stdout?.resume();
+  wrapper.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const closePromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    wrapper.once('error', reject);
+    wrapper.once('close', (code, signal) => {
+      closed = true;
+      resolve({ code, signal });
+    });
+  });
+  wrapper.send('runtime-start-published');
+  await waitForFile(descendantStartedPath);
+
+  return {
+    attemptLogPath,
+    closePromise,
+    descendantSignalPath,
+    stderr: () => stderr,
+    wrapper,
+    cleanup: async () => {
+      if (closed || wrapper.pid === undefined) return;
+      try {
+        process.kill(-wrapper.pid, 'SIGKILL');
+      } catch {
+        return;
+      }
+      await closePromise;
+    },
+  };
+}
+
+function finalizerAttempts(path: string): string[] {
+  return readFileSync(path, 'utf8').trimEnd().split('\n');
+}
+
 describe('durable-cli-wrapper', () => {
+  it('retries a finalizer spawn error and terminates the contained group', async () => {
+    const harness = await startWrapperWithContainedDescendant(['error', 'ready']);
+    try {
+      expect(harness.wrapper.kill('SIGTERM')).toBe(true);
+      await waitForFile(harness.descendantSignalPath, 5_000);
+      expect(await harness.closePromise).toEqual({ code: 0, signal: null });
+      expect(finalizerAttempts(harness.attemptLogPath)).toEqual(['error', 'ready']);
+      expect(harness.stderr()).toBe('');
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('retries a finalizer that closes before accepting the handoff', async () => {
+    const harness = await startWrapperWithContainedDescendant(['close', 'ready']);
+    try {
+      expect(harness.wrapper.kill('SIGTERM')).toBe(true);
+      await waitForFile(harness.descendantSignalPath, 5_000);
+      expect(await harness.closePromise).toEqual({ code: 0, signal: null });
+      expect(finalizerAttempts(harness.attemptLogPath)).toEqual(['close', 'ready']);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('lets a later signal re-drive a failed finalizer handoff', async () => {
+    const harness = await startWrapperWithContainedDescendant(['error', 'ready']);
+    try {
+      expect(harness.wrapper.kill('SIGTERM')).toBe(true);
+      await waitForLineCount(harness.attemptLogPath, 1);
+      expect(harness.wrapper.kill('SIGINT')).toBe(true);
+      await waitForLineCount(harness.attemptLogPath, 2, 150);
+      await waitForFile(harness.descendantSignalPath, 5_000);
+      expect(await harness.closePromise).toEqual({ code: 0, signal: null });
+      expect(finalizerAttempts(harness.attemptLogPath)).toEqual(['error', 'ready']);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('does not retry a finalizer after it accepts the handoff', async () => {
+    const harness = await startWrapperWithContainedDescendant(['ready', 'error']);
+    try {
+      expect(harness.wrapper.kill('SIGTERM')).toBe(true);
+      await waitForFile(harness.descendantSignalPath, 5_000);
+      expect(await harness.closePromise).toEqual({ code: 0, signal: null });
+      expect(finalizerAttempts(harness.attemptLogPath)).toEqual(['ready']);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('escalates a SIGTERM-resistant group after finalizer retries are exhausted', async () => {
+    const harness = await startWrapperWithContainedDescendant(['error'], {
+      ignoreSigterm: true,
+      terminationGraceMs: 100,
+    });
+    try {
+      expect(harness.wrapper.kill('SIGTERM')).toBe(true);
+      await waitForLineCount(harness.attemptLogPath, 1);
+      for (const [attempt, signal] of [
+        [2, 'SIGINT'],
+        [3, 'SIGHUP'],
+        [4, 'SIGINT'],
+      ] as const) {
+        expect(harness.wrapper.kill(signal)).toBe(true);
+        await waitForLineCount(harness.attemptLogPath, attempt);
+      }
+
+      await waitForFile(harness.descendantSignalPath);
+      expect(await harness.closePromise).toEqual({ code: null, signal: 'SIGKILL' });
+      expect(finalizerAttempts(harness.attemptLogPath).length).toBeGreaterThanOrEqual(5);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it('does not spawn a provider after termination wins the publication gate', async () => {
     const rootDir = createTempDir();
     const jobDir = join(rootDir, 'job');
