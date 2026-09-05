@@ -78,8 +78,14 @@ function providerHostManager(): ProviderHostManager {
       kind: 'provider-hosts-quiesced',
       liveProxySets: [],
       acquisitionCleanupHolds: [],
+      closingHosts: [],
     }),
-    shutdown: async () => ({ kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] }),
+    shutdown: async () => ({
+      kind: 'provider-hosts-quiesced',
+      liveProxySets: [],
+      acquisitionCleanupHolds: [],
+      closingHosts: [],
+    }),
     routeAppServerOperation: () => null,
   };
 }

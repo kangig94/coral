@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -6,21 +6,10 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
-const LIFECYCLE_PATH = 'src/coordinator/lifecycle.ts';
+const SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
 const ADMISSION_PATH = 'src/coordinator/live/admission.ts';
 const FIXTURE_ROOT = 'tests/invariants/fixtures/shutdown-teardown-containment';
-
-const SHUTDOWN_BUDGETED_HELPERS = new Set(['runBudgetedStep', 'runRequiredBudgetedStep']);
-const SHUTDOWN_NON_BLOCKING_STEP_TASKS = new Set([
-  'server.closeAllConnections',
-  'state.ownershipCheckerTeardown',
-  'store.dispose',
-  'stream.end',
-]);
-const SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST = new Set([
-  'waitForObservedShutdownTask(serverClosed)',
-  'waitForObservedShutdownTask(ipcServerClosed)',
-]);
+const SETTLEMENT_CONSTRUCTORS = new Set(['ShutdownSettlementLedger', 'createJoinableShutdownTask']);
 
 type NamedFunction = ts.FunctionDeclaration | ts.MethodDeclaration;
 
@@ -36,6 +25,14 @@ function readFixture(name: string): ts.SourceFile {
   const fixturePath = `${FIXTURE_ROOT}/${name}.ts`;
   const source = readFileSync(resolve(REPO_ROOT, `${fixturePath}.txt`), 'utf8');
   return parseSource(fixturePath, source);
+}
+
+function readSourceTree(canonicalDirectory: string): ts.SourceFile[] {
+  return readdirSync(resolve(REPO_ROOT, canonicalDirectory), { withFileTypes: true }).flatMap((entry) => {
+    const canonicalPath = `${canonicalDirectory}/${entry.name}`;
+    if (entry.isDirectory()) return readSourceTree(canonicalPath);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [readSource(canonicalPath)] : [];
+  });
 }
 
 function functionName(node: NamedFunction): string | null {
@@ -58,9 +55,7 @@ function findFunction(sourceFile: ts.SourceFile, name: string): NamedFunction {
   }
 
   visit(sourceFile);
-  if (!match) {
-    throw new Error(`${sourceFile.fileName}: expected function ${name}`);
-  }
+  if (!match) throw new Error(`${sourceFile.fileName}: expected function ${name}`);
   return match;
 }
 
@@ -88,162 +83,304 @@ function expressionName(expression: ts.Expression): string | null {
   return owner === null ? null : `${owner}.${current.name.text}`;
 }
 
-function awaitedExpressionLabel(node: ts.AwaitExpression): string {
-  const expression = unwrapExpression(node.expression);
-  if (ts.isCallExpression(expression)) {
-    const callee = expressionName(expression.expression) ?? expression.expression.getText(node.getSourceFile());
-    return `${callee}()`;
-  }
-  return expressionName(expression) ?? expression.getText(node.getSourceFile());
-}
-
-function exactSingleIdentifierCall(expression: ts.Expression): string | null {
-  const current = unwrapExpression(expression);
-  if (!ts.isCallExpression(current) || current.arguments.length !== 1) return null;
-
-  const target = expressionName(current.expression);
-  const argument = unwrapExpression(current.arguments[0]);
-  if (target === null || !ts.isIdentifier(argument)) return null;
-  return `${target}(${argument.text})`;
-}
-
-function containsAwaitOrValueReturn(node: ts.Block): boolean {
-  let match = false;
-
-  function visit(current: ts.Node): void {
-    if (match) return;
-    if (current !== node && ts.isFunctionLike(current)) return;
-    if (ts.isAwaitExpression(current) || (ts.isReturnStatement(current) && current.expression !== undefined)) {
-      match = true;
-      return;
-    }
-    ts.forEachChild(current, visit);
-  }
-
-  visit(node);
-  return match;
-}
-
-function isDeadlineAwareInflightDrain(call: ts.CallExpression): boolean {
-  if (expressionName(call.expression) !== 'waitForInflightDrain' || call.arguments.length !== 3) return false;
-
-  const remainingBudget = unwrapExpression(call.arguments[1]);
-  return ts.isCallExpression(remainingBudget) && expressionName(remainingBudget.expression) === 'remainingDrain';
-}
-
-function isNonBlockingRunStep(call: ts.CallExpression): boolean {
-  const task = call.arguments[1] && unwrapExpression(call.arguments[1]);
-  if (task === undefined) return false;
-  if (ts.isIdentifier(task)) return SHUTDOWN_NON_BLOCKING_STEP_TASKS.has(task.text);
-  if (!ts.isArrowFunction(task) && !ts.isFunctionExpression(task)) return false;
-  if (ts.isBlock(task.body)) return !containsAwaitOrValueReturn(task.body);
-
-  const result = unwrapExpression(task.body);
-  if (!ts.isCallExpression(result)) return false;
-  const target = expressionName(result.expression);
-  return isDeadlineAwareInflightDrain(result) || (target !== null && SHUTDOWN_NON_BLOCKING_STEP_TASKS.has(target));
-}
-
-function enclosingShutdownHelper(node: ts.AwaitExpression, shutdownPath: NamedFunction): ts.CallExpression | null {
-  const expression = unwrapExpression(node.expression);
-  if (ts.isCallExpression(expression)) {
-    const directTarget = expressionName(expression.expression);
-    if (directTarget === 'runStep' || (directTarget !== null && SHUTDOWN_BUDGETED_HELPERS.has(directTarget))) {
-      return expression;
-    }
-  }
-
-  for (let current = node.parent; current && current !== shutdownPath; current = current.parent) {
-    if (
-      !ts.isArrowFunction(current) &&
-      !ts.isFunctionExpression(current) &&
-      !ts.isFunctionDeclaration(current) &&
-      !ts.isMethodDeclaration(current)
-    ) {
-      continue;
-    }
-
-    const parent = current.parent;
-    if (
-      (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
-      ts.isCallExpression(parent) &&
-      parent.arguments[1] !== undefined &&
-      unwrapExpression(parent.arguments[1]) === current
-    ) {
-      const helper = expressionName(parent.expression);
-      if (helper === 'runStep' || (helper !== null && SHUTDOWN_BUDGETED_HELPERS.has(helper))) return parent;
-    }
-    return null;
-  }
-
-  return null;
-}
-
-function shutdownAwaitViolation(node: ts.AwaitExpression, shutdownPath: NamedFunction): string | null {
-  const expression = unwrapExpression(node.expression);
-  const exactCall = exactSingleIdentifierCall(expression);
-  if (exactCall !== null && SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST.has(exactCall)) return null;
-
-  const helperCall = enclosingShutdownHelper(node, shutdownPath);
-  const helper = helperCall === null ? null : expressionName(helperCall.expression);
-  if (helper !== null && SHUTDOWN_BUDGETED_HELPERS.has(helper)) return null;
-  if (helper === 'runStep' && helperCall !== null && isNonBlockingRunStep(helperCall)) return null;
-  if (helper === 'runStep') {
-    return `plain runStep has no shutdown deadline; use ${[...SHUTDOWN_BUDGETED_HELPERS].join(' or ')}`;
-  }
-  return `await ${awaitedExpressionLabel(node)} bypasses shutdown containment`;
-}
-
-function containmentSequenceEntryPoint(
-  shutdownPath: NamedFunction,
-  containmentSequence: NamedFunction | undefined,
-): ts.AwaitExpression | null {
-  const containmentSequenceName = containmentSequence && functionName(containmentSequence);
-  if (containmentSequenceName === null || containmentSequenceName === undefined) return null;
-
-  const matches: ts.AwaitExpression[] = [];
-  function visit(node: ts.Node): void {
-    if (ts.isAwaitExpression(node)) {
-      const expression = unwrapExpression(node.expression);
-      if (ts.isCallExpression(expression) && expressionName(expression.expression) === containmentSequenceName) {
-        matches.push(node);
-        return;
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-
-  if (shutdownPath.body) visit(shutdownPath.body);
-  return matches.length === 1 ? matches[0] : null;
-}
-
 function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: string): string {
   const sourceFile = functionNode.getSourceFile();
   const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
-function shutdownAwaitViolations(
-  sourceFile: ts.SourceFile,
-  pathFunctionName = 'runShutdownSequence',
-  containmentSequence?: NamedFunction,
-): string[] {
-  const shutdownSequence = findFunction(sourceFile, pathFunctionName);
-  const sequenceEntryPoint = containmentSequenceEntryPoint(shutdownSequence, containmentSequence);
+function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string[] {
   const violations: string[] = [];
 
   function visit(node: ts.Node): void {
-    // The delegating path starts containment here. Its callbacks are checked where the sequence invokes them.
-    if (node === sequenceEntryPoint) return;
-    if (ts.isAwaitExpression(node)) {
-      const violation = shutdownAwaitViolation(node, shutdownSequence);
-      if (violation !== null) violations.push(formatViolation(shutdownSequence, node, violation));
+    if (
+      ts.isPropertyAssignment(node) &&
+      node.name.getText(sourceFile) === 'disposition' &&
+      ts.isStringLiteral(unwrapExpression(node.initializer))
+    ) {
+      const value = unwrapExpression(node.initializer) as ts.StringLiteral;
+      if (value.text === 'held' || value.text === 'settled') {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        violations.push(`${sourceFile.fileName}:${line + 1} constructs shutdown disposition '${value.text}'`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return violations;
+}
+
+function objectDisposition(node: ts.ObjectLiteralExpression): 'held' | 'settled' | null {
+  for (const property of node.properties) {
+    if (!ts.isPropertyAssignment(property) || property.name.getText(node.getSourceFile()) !== 'disposition') continue;
+    const value = unwrapExpression(property.initializer);
+    if (ts.isStringLiteral(value) && (value.text === 'held' || value.text === 'settled')) return value.text;
+  }
+  return null;
+}
+
+function typeReferencesShutdownDisposition(type: ts.TypeNode | undefined): boolean {
+  let found = false;
+  function visit(node: ts.Node): void {
+    if (ts.isIdentifier(node) && node.text === 'ShutdownSequenceDisposition') found = true;
+    if (!found) ts.forEachChild(node, visit);
+  }
+  if (type !== undefined) visit(type);
+  return found;
+}
+
+function typeDispositionNames(type: ts.TypeNode | undefined): Set<string> {
+  const names = new Set<string>();
+  function visit(node: ts.Node): void {
+    if (ts.isIdentifier(node) && node.text.endsWith('Disposition')) names.add(node.text);
+    ts.forEachChild(node, visit);
+  }
+  if (type !== undefined) visit(type);
+  return names;
+}
+
+function hasShutdownDispositionContext(node: ts.ObjectLiteralExpression): boolean {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (
+      (ts.isAsExpression(current) || ts.isSatisfiesExpression(current)) &&
+      typeReferencesShutdownDisposition(current.type)
+    ) {
+      return true;
+    }
+    if (ts.isVariableDeclaration(current) && typeReferencesShutdownDisposition(current.type)) return true;
+    if (ts.isFunctionLike(current)) return typeReferencesShutdownDisposition(current.type);
+  }
+  return false;
+}
+
+function hasExplicitUnrelatedDispositionContext(node: ts.ObjectLiteralExpression): boolean {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    let type: ts.TypeNode | undefined;
+    if (ts.isAsExpression(current) || ts.isSatisfiesExpression(current) || ts.isVariableDeclaration(current)) {
+      type = current.type;
+    } else if (ts.isFunctionLike(current)) {
+      type = current.type;
+    } else {
+      continue;
+    }
+    const names = typeDispositionNames(type);
+    if (names.has('ShutdownSequenceDisposition')) return false;
+    if (names.size > 0) return true;
+    if (ts.isFunctionLike(current)) return false;
+  }
+  return false;
+}
+
+function hasShutdownHeldPayload(node: ts.ObjectLiteralExpression): boolean {
+  const properties = new Set(
+    node.properties.flatMap((property) =>
+      ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property) || ts.isMethodSignature(property)
+        ? [property.name.getText(node.getSourceFile())]
+        : [],
+    ),
+  );
+  return ['reason', 'exit', 'retryAfter', 'deferredFailures', 'retainedAuthority', 'retry'].every((property) =>
+    properties.has(property),
+  );
+}
+
+function isSettlementGateConstruction(node: ts.ObjectLiteralExpression): boolean {
+  if (node.getSourceFile().fileName !== SETTLEMENT_PATH) return false;
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (!ts.isMethodDeclaration(current) || current.name.getText(current.getSourceFile()) !== 'gate') continue;
+    const owner = current.parent;
+    return ts.isClassDeclaration(owner) && owner.name?.text === 'ShutdownSettlementLedger';
+  }
+  return false;
+}
+
+function shutdownDispositionConstructorViolations(sourceFile: ts.SourceFile): string[] {
+  const violations: string[] = [];
+
+  function visit(node: ts.Node): void {
+    if (ts.isObjectLiteralExpression(node)) {
+      const disposition = objectDisposition(node);
+      const isSettlementModule = sourceFile.fileName === SETTLEMENT_PATH;
+      if (
+        disposition !== null &&
+        !isSettlementGateConstruction(node) &&
+        (isSettlementModule ||
+          hasShutdownDispositionContext(node) ||
+          hasShutdownHeldPayload(node) ||
+          (disposition === 'settled' && !hasExplicitUnrelatedDispositionContext(node)))
+      ) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        violations.push(
+          `${sourceFile.fileName}:${line + 1} constructs shutdown disposition '${disposition}' outside ShutdownSettlementLedger.gate`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return violations;
+}
+
+function isCaughtWithin(node: ts.Node, boundary: NamedFunction): boolean {
+  for (let current = node.parent; current && current !== boundary; current = current.parent) {
+    if (!ts.isTryStatement(current) || current.catchClause === undefined) continue;
+    for (let descendant = node; descendant !== current; descendant = descendant.parent) {
+      if (descendant.parent === current) return descendant === current.tryBlock;
+    }
+  }
+  return false;
+}
+
+function shutdownThrowViolations(sourceFile: ts.SourceFile): string[] {
+  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+  const violations: string[] = [];
+
+  function visit(node: ts.Node): void {
+    if (node !== shutdownSequence && ts.isFunctionLike(node)) return;
+    if (ts.isThrowStatement(node) && !isCaughtWithin(node, shutdownSequence)) {
+      violations.push(formatViolation(shutdownSequence, node, 'throw reaches the shutdown sequence boundary'));
     }
     ts.forEachChild(node, visit);
   }
 
   if (shutdownSequence.body) visit(shutdownSequence.body);
   return violations;
+}
+
+function shutdownAwaitBoundaryViolations(sourceFile: ts.SourceFile): string[] {
+  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+  const violations: string[] = [];
+  const obligationTasks = new Set<ts.SignatureDeclaration>();
+  const obligationBindings = new Map<string, ts.ObjectLiteralExpression>();
+
+  function taskClosure(obligation: ts.ObjectLiteralExpression): ts.FunctionLikeDeclaration | null {
+    for (const property of obligation.properties) {
+      if (!ts.isPropertyAssignment(property) || property.name.getText(sourceFile) !== 'task') continue;
+      const task = unwrapExpression(property.initializer);
+      return ts.isArrowFunction(task) || ts.isFunctionExpression(task) ? task : null;
+    }
+    return null;
+  }
+
+  function collectObligations(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isObjectLiteralExpression(unwrapExpression(node.initializer))
+    ) {
+      obligationBindings.set(node.name.text, unwrapExpression(node.initializer) as ts.ObjectLiteralExpression);
+    }
+    if (ts.isCallExpression(node)) {
+      const boundary = expressionName(node.expression);
+      if ((boundary === 'ledger.run' || boundary === 'ledger.gate') && node.arguments.length === 1) {
+        const argument = unwrapExpression(node.arguments[0]);
+        const obligation = ts.isObjectLiteralExpression(argument)
+          ? argument
+          : ts.isIdentifier(argument)
+            ? obligationBindings.get(argument.text)
+            : undefined;
+        const task = obligation && taskClosure(obligation);
+        if (task) obligationTasks.add(task);
+      }
+    }
+    ts.forEachChild(node, collectObligations);
+  }
+
+  if (shutdownSequence.body) collectObligations(shutdownSequence.body);
+
+  function visit(node: ts.Node): void {
+    if (ts.isAwaitExpression(node)) {
+      const expression = unwrapExpression(node.expression);
+      let crossesLedger = ts.isCallExpression(expression) && expressionName(expression.expression) === 'ledger.run';
+      for (let current: ts.Node | undefined = node.parent; !crossesLedger && current; current = current.parent) {
+        if (current === shutdownSequence) break;
+        if (ts.isFunctionLike(current)) {
+          crossesLedger = obligationTasks.has(current);
+          break;
+        }
+      }
+      if (!crossesLedger) {
+        violations.push(formatViolation(shutdownSequence, node, 'await bypasses the settlement ledger'));
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  if (shutdownSequence.body) visit(shutdownSequence.body);
+  return violations;
+}
+
+function shutdownReturnViolations(sourceFile: ts.SourceFile): string[] {
+  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+  const returns: ts.ReturnStatement[] = [];
+
+  function visit(node: ts.Node): void {
+    if (node !== shutdownSequence && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node)) returns.push(node);
+    ts.forEachChild(node, visit);
+  }
+
+  if (shutdownSequence.body) visit(shutdownSequence.body);
+  if (returns.length !== 1) {
+    return [`${sourceFile.fileName} runShutdownSequence: expected one exit-gate return, found ${returns.length}`];
+  }
+
+  const expression = returns[0].expression && unwrapExpression(returns[0].expression);
+  if (
+    expression === undefined ||
+    !ts.isCallExpression(expression) ||
+    expressionName(expression.expression) !== 'ledger.gate' ||
+    expression.arguments.length !== 1 ||
+    expression.arguments[0].getText(sourceFile) !== 'authorityRelease'
+  ) {
+    return [formatViolation(shutdownSequence, returns[0], 'return bypasses ledger.gate(authorityRelease)')];
+  }
+  return [];
+}
+
+function settlementConstructorImportViolations(sourceFile: ts.SourceFile): string[] {
+  const imports = new Map<string, string[]>();
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      if (!SETTLEMENT_CONSTRUCTORS.has(element.name.text)) continue;
+      const modules = imports.get(element.name.text) ?? [];
+      modules.push(statement.moduleSpecifier.text);
+      imports.set(element.name.text, modules);
+    }
+  }
+
+  return [...SETTLEMENT_CONSTRUCTORS].flatMap((constructor) => {
+    const modules = imports.get(constructor) ?? [];
+    return modules.length === 1 && modules[0] === './shutdown-settlement.js'
+      ? []
+      : [`${sourceFile.fileName}: ${constructor} must be imported once from ./shutdown-settlement.js`];
+  });
+}
+
+function settlementConstructorDefinitionViolations(sourceFile: ts.SourceFile): string[] {
+  const definitions = sourceFile.statements.flatMap((statement) => {
+    if (
+      (ts.isClassDeclaration(statement) || ts.isFunctionDeclaration(statement)) &&
+      statement.name !== undefined &&
+      SETTLEMENT_CONSTRUCTORS.has(statement.name.text)
+    ) {
+      return [statement.name.text];
+    }
+    return [];
+  });
+
+  return [...SETTLEMENT_CONSTRUCTORS].flatMap((constructor) =>
+    definitions.filter((definition) => definition === constructor).length === 1
+      ? []
+      : [`${sourceFile.fileName}: ${constructor} must have one definition in the settlement module`],
+  );
 }
 
 function cleanupHandleLoop(terminateAll: NamedFunction): ts.ForOfStatement | null {
@@ -317,62 +454,145 @@ function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
 }
 
 describe('shutdown teardown containment invariant', () => {
-  it('contains every awaited shutdown finalizer or names an exact non-finalizer await', () => {
+  it('keeps shutdown disposition construction behind the settlement gate', () => {
     const shutdownSource = readSource(SHUTDOWN_PATH);
-    const shutdownSequence = findFunction(shutdownSource, 'runShutdownSequence');
+    const settlementSource = readSource(SETTLEMENT_PATH);
     expect([
-      ...shutdownAwaitViolations(shutdownSource),
-      ...shutdownAwaitViolations(readSource(LIFECYCLE_PATH), 'shutdown', shutdownSequence),
+      ...shutdownDispositionLiteralViolations(shutdownSource),
+      ...readSourceTree('src').flatMap(shutdownDispositionConstructorViolations),
+      ...shutdownThrowViolations(shutdownSource),
+      ...shutdownAwaitBoundaryViolations(shutdownSource),
+      ...shutdownReturnViolations(shutdownSource),
+      ...settlementConstructorImportViolations(shutdownSource),
+      ...settlementConstructorDefinitionViolations(settlementSource),
     ]).toEqual([]);
   });
 
   it('rejects a bare awaited shutdown finalizer mutation', () => {
-    expect(shutdownAwaitViolations(readFixture('shutdown-bare-await'))).toEqual([
-      `${FIXTURE_ROOT}/shutdown-bare-await.ts:2 runShutdownSequence: await terminateAllFn() bypasses shutdown containment`,
+    expect(shutdownAwaitBoundaryViolations(readFixture('shutdown-bare-await'))).toEqual([
+      `${FIXTURE_ROOT}/shutdown-bare-await.ts:2 runShutdownSequence: await bypasses the settlement ledger`,
     ]);
   });
 
-  it('rejects a potentially blocking finalizer inside plain runStep', () => {
+  it('rejects a fire-and-forget nested await outside the settlement ledger', () => {
     const mutation = parseSource(
       SHUTDOWN_PATH,
       `async function runShutdownSequence() {
-        await runStep('provider operation reconciler drain', stopProviderOperationReconciler);
+        void (async () => {
+          await terminateAllFn();
+        })();
+        return ledger.gate(authorityRelease);
       }`,
     );
-    expect(shutdownAwaitViolations(mutation)).toEqual([
-      `${SHUTDOWN_PATH}:2 runShutdownSequence: ` +
-        'plain runStep has no shutdown deadline; use runBudgetedStep or runRequiredBudgetedStep',
+    expect(shutdownAwaitBoundaryViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}:3 runShutdownSequence: await bypasses the settlement ledger`,
     ]);
   });
 
-  it('rejects a bare awaited finalizer in the lifecycle stopped-state path', () => {
+  it('rejects an awaited obligation factory inside ledger.run', () => {
     const mutation = parseSource(
-      LIFECYCLE_PATH,
-      `function createLifecycle() {
-        async function shutdown() {
-          await stopProviderOperationReconciler('drain');
-        }
+      SHUTDOWN_PATH,
+      `async function runShutdownSequence() {
+        await ledger.run(await createObligationAfterRunningFinalizer());
+        return ledger.gate(authorityRelease);
       }`,
     );
-    expect(shutdownAwaitViolations(mutation, 'shutdown')).toEqual([
-      `${LIFECYCLE_PATH}:3 shutdown: await stopProviderOperationReconciler() bypasses shutdown containment`,
+    expect(shutdownAwaitBoundaryViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}:2 runShutdownSequence: await bypasses the settlement ledger`,
     ]);
   });
 
-  it('does not silently exempt multiple entries into a containment sequence', () => {
-    const containmentSource = parseSource(SHUTDOWN_PATH, 'async function runShutdownSequence() {}');
+  it('rejects a shutdown path without the single settlement-gate return', () => {
+    const mutation = parseSource(SHUTDOWN_PATH, 'async function runShutdownSequence() {}');
+    expect(shutdownReturnViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH} runShutdownSequence: expected one exit-gate return, found 0`,
+    ]);
+  });
+
+  it('rejects disposition construction in the demolition plan', () => {
     const mutation = parseSource(
-      LIFECYCLE_PATH,
-      `async function shutdown() {
-        await runShutdownSequence();
-        await runShutdownSequence();
+      SHUTDOWN_PATH,
+      `async function runShutdownSequence() {
+        return { disposition: 'held' };
       }`,
     );
-    expect(
-      shutdownAwaitViolations(mutation, 'shutdown', findFunction(containmentSource, 'runShutdownSequence')),
-    ).toEqual([
-      `${LIFECYCLE_PATH}:2 shutdown: await runShutdownSequence() bypasses shutdown containment`,
-      `${LIFECYCLE_PATH}:3 shutdown: await runShutdownSequence() bypasses shutdown containment`,
+    expect(shutdownDispositionLiteralViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}:2 constructs shutdown disposition 'held'`,
+    ]);
+  });
+
+  it('rejects an uncaught throw from the shutdown sequence', () => {
+    const mutation = parseSource(
+      SHUTDOWN_PATH,
+      `async function runShutdownSequence() {
+        throw new Error('escaped');
+      }`,
+    );
+    expect(shutdownThrowViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}:2 runShutdownSequence: throw reaches the shutdown sequence boundary`,
+    ]);
+  });
+
+  it('rejects a competing return beside the settlement gate', () => {
+    const mutation = parseSource(
+      SHUTDOWN_PATH,
+      `async function runShutdownSequence(condition: boolean) {
+        if (condition) return Promise.resolve();
+        return ledger.gate(authorityRelease);
+      }`,
+    );
+    expect(shutdownReturnViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH} runShutdownSequence: expected one exit-gate return, found 2`,
+    ]);
+  });
+
+  it('rejects settlement constructors imported from another module', () => {
+    const mutation = parseSource(
+      SHUTDOWN_PATH,
+      `import { ShutdownSettlementLedger } from './shutdown-settlement.js';
+       import { createJoinableShutdownTask } from './shutdown.js';`,
+    );
+    expect(settlementConstructorImportViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}: createJoinableShutdownTask must be imported once from ./shutdown-settlement.js`,
+    ]);
+  });
+
+  it('rejects a competing disposition constructor in the settlement module', () => {
+    const mutation = parseSource(
+      SETTLEMENT_PATH,
+      `function competingConstructor(): ShutdownSequenceDisposition {
+        return { disposition: 'settled' };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${SETTLEMENT_PATH}:2 constructs shutdown disposition 'settled' outside ShutdownSettlementLedger.gate`,
+    ]);
+  });
+
+  it('rejects an explicitly typed disposition constructor outside the settlement module', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `import type { ShutdownSequenceDisposition } from './shutdown-settlement.js';
+       function competingConstructor(): ShutdownSequenceDisposition {
+         return { disposition: 'settled' };
+       }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:3 constructs shutdown disposition 'settled' outside ShutdownSettlementLedger.gate`,
+    ]);
+  });
+
+  it('rejects an unannotated inferred settled disposition outside the gate', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'settled' } as const;
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'settled' outside ShutdownSettlementLedger.gate`,
     ]);
   });
 

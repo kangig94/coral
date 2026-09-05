@@ -401,25 +401,46 @@ async function stopLifecycleController(controller: {
   shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
   waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
 }): Promise<LifecycleShutdownDisposition | null> {
-  let shutdownDisposition: LifecycleShutdownDisposition | null = null;
+  let disposition: LifecycleShutdownDisposition | null = null;
   try {
-    shutdownDisposition = await controller.shutdown('test-cleanup');
+    disposition = await controller.shutdown('test-cleanup');
   } catch {
     /* best effort */
   }
-  if (shutdownDisposition?.disposition === 'held') {
-    throw new Error(`Test lifecycle cleanup held: ${shutdownDisposition.reason}`);
+
+  if (disposition === null) {
+    try {
+      disposition = await controller.waitForShutdown();
+    } catch {
+      return null;
+    }
   }
-  let waitedDisposition: LifecycleShutdownDisposition;
-  try {
-    waitedDisposition = await controller.waitForShutdown();
-  } catch {
-    return null;
+
+  if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+    try {
+      await vi.waitFor(
+        async () => {
+          disposition = await controller.waitForShutdown();
+          if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+            throw new Error('automatic cleanup is still scheduled');
+          }
+        },
+        { timeout: 5_000 },
+      );
+    } catch (error: unknown) {
+      throw new Error('Automatic lifecycle cleanup did not reach finalized or waiting-for-operator within 5s.', {
+        cause: error,
+      });
+    }
   }
-  if (waitedDisposition.disposition === 'held') {
-    throw new Error(`Test lifecycle cleanup held: ${waitedDisposition.reason}`);
+
+  if (disposition.disposition === 'held') {
+    const { automaticRetry, retainedOwnership } = disposition.recovery;
+    throw new Error(
+      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}; operatorActions=${JSON.stringify(retainedOwnership.operatorActions)}`,
+    );
   }
-  return waitedDisposition;
+  return disposition;
 }
 
 function createCoordinatorShutdownHarness(options: HarnessOptions) {

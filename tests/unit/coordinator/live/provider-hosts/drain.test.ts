@@ -321,11 +321,13 @@ describe('provider host drain properties', () => {
 
       expect(reapContainment).toHaveBeenCalledOnce();
       if (terminalPath === 'initialization failure') {
-        expect(reapContainment).toHaveBeenCalledWith(containment, expect.any(AbortSignal));
+        expect(reapContainment).toHaveBeenCalledWith(containment, undefined);
       } else {
+        const signal =
+          terminalPath === 'idle retirement' || terminalPath === 'eviction' ? undefined : expect.any(AbortSignal);
         expect(reapContainment).toHaveBeenCalledWith(
           containment,
-          expect.any(AbortSignal),
+          signal,
           expect.objectContaining({ child: server.handle.child }),
         );
       }

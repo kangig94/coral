@@ -83,7 +83,7 @@ describe('provider host reclamation', () => {
     expect(entry.containment).toBeNull();
   });
 
-  it('stops an already-running reclamation retry when lifecycle cancellation aborts the retry delay', async () => {
+  it('does not let an expired shutdown wait poison an already-running reclamation retry', async () => {
     vi.useFakeTimers();
     const reapFailure = new ProcessContainmentError(
       'process_containment_reap_failed',
@@ -114,13 +114,46 @@ describe('provider host reclamation', () => {
     });
     await vi.advanceTimersByTimeAsync(5_000);
 
-    expect(reapContainment).toHaveBeenCalledOnce();
+    expect(reapContainment).toHaveBeenCalledTimes(3);
     expect(manager.listProviderHosts()).toMatchObject([
       {
         status: 'reclamation-failed',
-        host: { reclamationAttempts: 1, reclamationFailure: reapFailure.message },
+        host: { reclamationAttempts: 3, reclamationFailure: reapFailure.message },
       },
     ]);
+  });
+
+  it('uses a fresh reclamation signal when shutdown retries after its deadline expires', async () => {
+    vi.useFakeTimers();
+    const reapFailure = new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'fixture containment remained present through the first shutdown attempt',
+    );
+    const reapContainment = vi.fn().mockRejectedValueOnce(reapFailure).mockResolvedValue(undefined);
+    vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+    const { entry, hostRef, manager, server } = await openReclamationTestHost(reapContainment);
+    const firstDeadline = new AbortController();
+
+    const firstShutdown = manager.shutdown(firstDeadline.signal);
+    await vi.waitFor(() => expect(reapContainment).toHaveBeenCalledOnce());
+    const [closingHost] = manager.cleanupObligations().closingHosts;
+    expect(closingHost).toMatchObject({
+      label: `provider host claude ${hostRef.instanceId}`,
+      containment: server.handle.containmentIdentity,
+    });
+    expect(closingHost?.settlement).toBe(entry.closePromise);
+
+    firstDeadline.abort('first-shutdown-deadline');
+    await expect(firstShutdown).rejects.toMatchObject({
+      name: 'AbortError',
+      reason: 'first-shutdown-deadline',
+    });
+    await vi.waitFor(() => expect(entry.closePromise).toBeNull());
+
+    const retry = manager.shutdown(new AbortController().signal);
+    await expect(retry).resolves.toMatchObject({ kind: 'provider-hosts-quiesced' });
+    expect(reapContainment).toHaveBeenCalledTimes(2);
+    expect(manager.cleanupObligations().closingHosts).toEqual([]);
   });
 
   it('leaves an unresolved spawn wait visible as reclamation-failed when lifecycle cancellation aborts it', async () => {
@@ -148,8 +181,8 @@ describe('provider host reclamation', () => {
     const shutdown = manager.shutdown(lifecycle.signal).catch((error: unknown) => error);
     lifecycle.abort('lifecycle-deadline');
 
-    await expect(shutdown).resolves.toMatchObject({ name: 'AbortError', reason: 'lifecycle-deadline' });
-    expect(spawnSignal).toMatchObject({ aborted: true, reason: 'lifecycle-deadline' });
+    await expect(shutdown).resolves.toMatchObject({ name: 'AbortError' });
+    expect(spawnSignal).toMatchObject({ aborted: true });
     expect(manager.listProviderHosts()).toMatchObject([
       {
         status: 'reclamation-failed',

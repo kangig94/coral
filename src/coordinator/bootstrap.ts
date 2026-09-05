@@ -63,8 +63,12 @@ function createBootstrapProbeExitGate(): Readonly<{
       (disposition) => {
         if (disposition.disposition === 'hold') {
           backendLog.error(
-            'Coordinator exit remains held by unsettled process-incarnation probe children',
-            disposition.unsettled.map(({ pid, reason, exit }) => ({ pid, reason, exit })),
+            'Coordinator exit remains held by unsettled process-incarnation probes',
+            disposition.unsettled.map((hold) =>
+              'key' in hold
+                ? { key: hold.key, reason: hold.reason, exit: hold.exit }
+                : { pid: hold.pid, reason: hold.reason, exit: hold.exit },
+            ),
           );
           void disposition.untilSettled.then(() => {
             cleanupInFlight = false;
@@ -295,7 +299,7 @@ export async function main(): Promise<number> {
           1,
           diagnosticFile,
         );
-        bootstrapProbeExitGate.recordExitCode(1);
+        bootstrapProbeExitGate.requestExit(1);
       },
     });
 

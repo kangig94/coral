@@ -117,10 +117,14 @@ describe('darwin process incarnation (async)', () => {
   it('reports the exact child whose cleanup attempt failed', async () => {
     const child = new ProbeChild({ pid: 4_242 });
     const failure = new Error('termination failed');
+    let callback!: Callback;
     mockedExecFile.mockReset();
-    mockedExecFile.mockImplementation(() => child as unknown as ChildProcess);
+    mockedExecFile.mockImplementation(((_file: string, _args: string[], _options: unknown, next: Callback) => {
+      callback = next;
+      return child as unknown as ChildProcess;
+    }) as unknown as typeof execFile);
 
-    void probeProcessIncarnationAsync(
+    const probe = probeProcessIncarnationAsync(
       4_242,
       () => {
         throw failure;
@@ -145,7 +149,47 @@ describe('darwin process incarnation (async)', () => {
     expect(processIncarnationProbeRegistrySize()).toBe(1);
 
     child.close();
+    callback(new Error('terminated'), '', '');
     await cleanup.untilSettled;
+    await expect(probe).resolves.toBeNull();
+    expect(processIncarnationProbeRegistrySize()).toBe(0);
+  });
+
+  it('enrolls a lease between sequential children and prevents its next child from escaping cleanup', async () => {
+    const child = new ProbeChild({ pid: 4_242 });
+    let callback!: Callback;
+    mockedExecFile.mockReset();
+    mockedExecFile.mockImplementation(((_file: string, _args: string[], _options: unknown, next: Callback) => {
+      callback = next;
+      return child as unknown as ChildProcess;
+    }) as unknown as typeof execFile);
+
+    const probe = probeProcessIncarnationAsync(4_242, terminateProbeChild, 'darwin');
+    child.close();
+    expect(processIncarnationProbeRegistrySize()).toBe(1);
+
+    const cleanupDeadline = new AbortController();
+    cleanupDeadline.abort();
+    const cleanup = await terminateProcessIncarnationProbes(cleanupDeadline.signal);
+    expect(cleanup).toEqual({
+      disposition: 'hold',
+      unsettled: [
+        {
+          child: null,
+          pid: undefined,
+          key: 'darwin:4242',
+          reason: 'probe-unsettled',
+          exit: 'probe-settlement',
+        },
+      ],
+      untilSettled: expect.any(Promise),
+    });
+    if (cleanup.disposition !== 'hold') throw new Error('active lease cleanup unexpectedly settled');
+
+    callback(null, BOOT_SESSION, '');
+    await expect(probe).resolves.toBeNull();
+    await cleanup.untilSettled;
+    expect(mockedExecFile).toHaveBeenCalledOnce();
     expect(processIncarnationProbeRegistrySize()).toBe(0);
   });
 

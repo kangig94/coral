@@ -47,7 +47,6 @@ const mockState = vi.hoisted(() => {
     currentBundleDir: '/tmp/plugin/bridge' as string | null,
     startupRouting: 'open' as 'open' | 'handoff',
     handoffTarget: Object.freeze(Object.create(null)),
-    probeRegistrySize: 0,
     probeCleanup: async (): Promise<NodeProcessMod.ProcessIncarnationProbeCleanupDisposition> => ({
       disposition: 'settled',
     }),
@@ -58,7 +57,6 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeProcessMod>();
   return {
     ...actual,
-    processIncarnationProbeRegistrySize: vi.fn(() => mockState.probeRegistrySize),
     terminateProcessIncarnationProbes: vi.fn(() => mockState.probeCleanup()),
   };
 });
@@ -335,12 +333,18 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       providerHostManager: {
         shutdown: vi.fn(async () => {
           mockState.events.push('providerHostManager:shutdown');
-          return { kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] };
+          return {
+            kind: 'provider-hosts-quiesced' as const,
+            liveProxySets: [],
+            acquisitionCleanupHolds: [],
+            closingHosts: [],
+          };
         }),
         drainForHandoff: vi.fn(async () => ({
           kind: 'provider-hosts-quiesced',
           liveProxySets: [],
           acquisitionCleanupHolds: [],
+          closingHosts: [],
         })),
       } as never,
       handoffQuiescePorts: () => [],
@@ -380,7 +384,6 @@ afterEach(() => {
   mockState.lastBindResult = null;
   mockState.currentBundleDir = '/tmp/plugin/bridge';
   mockState.startupRouting = 'open';
-  mockState.probeRegistrySize = 0;
   mockState.probeCleanup = async () => ({ disposition: 'settled' });
   mockState.fakeDb.closed = false;
   vi.clearAllMocks();
@@ -744,6 +747,7 @@ describe('lifecycle reset authority and finalizer order', () => {
           kind: 'provider-hosts-quiesced',
           liveProxySets: [fakeSet],
           acquisitionCleanupHolds: [],
+          closingHosts: [],
         }),
       },
     };
@@ -755,12 +759,13 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(stopAndReap).toHaveBeenCalledOnce();
   });
 
-  it('retains socket and discovery after an unidentified provider-host shutdown failure', async () => {
+  it('returns a retryable hold for an unidentified provider-host shutdown decline', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const discussDispose = vi.fn();
     const reactorDispose = vi.fn(async () => {});
     const onStopped = vi.fn();
     const onFatalShutdownError = vi.fn();
+    let shutdownAttempts = 0;
     const deps: LifecycleDeps = {
       ...baseDeps,
       disposeLifecycleReactor: reactorDispose,
@@ -768,15 +773,29 @@ describe('lifecycle reset authority and finalizer order', () => {
       onFatalShutdownError,
       providerHostManager: {
         ...baseDeps.providerHostManager,
-        shutdown: vi.fn(async () => Promise.reject(new Error('injected provider-host shutdown failure'))),
+        shutdown: vi.fn(async () => {
+          shutdownAttempts += 1;
+          if (shutdownAttempts === 1) throw new Error('injected provider-host shutdown failure');
+          return {
+            kind: 'provider-hosts-quiesced' as const,
+            liveProxySets: [],
+            acquisitionCleanupHolds: [],
+            closingHosts: [],
+          };
+        }),
       },
     };
     deps.discussStores.set('fixture', { dispose: discussDispose } as never);
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+    const held = await lifecycle.shutdown('unit-hard-stop');
 
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
+    });
     expect(deps.terminateAllFn).toHaveBeenCalledOnce();
     expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
     expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
@@ -785,30 +804,45 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
     expect(onStopped).not.toHaveBeenCalled();
-    expect(onFatalShutdownError).toHaveBeenCalledOnce();
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
+
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    expect(deps.providerHostManager.shutdown).toHaveBeenCalledTimes(2);
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+    expect(onStopped).toHaveBeenCalledOnce();
   });
 
-  it('retains socket and discovery after child termination fails without a durable identity', async () => {
+  it('returns a retryable hold when child termination declines without a durable identity', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const discussDispose = vi.fn();
     const reactorDispose = vi.fn(async () => {});
     const onStopped = vi.fn();
     const onFatalShutdownError = vi.fn();
+    let terminationAttempts = 0;
     const deps: LifecycleDeps = {
       ...baseDeps,
       disposeLifecycleReactor: reactorDispose,
       onStopped,
       onFatalShutdownError,
       terminateAllFn: vi.fn(() => {
-        throw new Error('injected child termination failure');
+        terminationAttempts += 1;
+        if (terminationAttempts === 1) throw new Error('injected child termination failure');
+        return { kind: 'all-observed-absent' as const };
       }),
     };
     deps.discussStores.set('fixture', { dispose: discussDispose } as never);
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+    const held = await lifecycle.shutdown('unit-hard-stop');
 
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
+    });
     expect(deps.providerHostManager.shutdown).toHaveBeenCalledOnce();
     expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
     expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
@@ -817,7 +851,14 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
     expect(onStopped).not.toHaveBeenCalled();
-    expect(onFatalShutdownError).toHaveBeenCalledOnce();
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
+
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    expect(deps.terminateAllFn).toHaveBeenCalledTimes(2);
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+    expect(onStopped).toHaveBeenCalledOnce();
   });
 
   it('returns a retryable hold for a live child even when the probe registry is empty', async () => {
@@ -865,7 +906,6 @@ describe('lifecycle reset authority and finalizer order', () => {
           : { kind: 'all-observed-absent' };
       }),
     };
-    mockState.probeRegistrySize = 0;
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
@@ -881,7 +921,11 @@ describe('lifecycle reset authority and finalizer order', () => {
           kind: 'coordinator-exclusive-authority',
           backendInfo: { kind: 'backend-info', instanceId: 'test-instance' },
           ipcSocket: true,
-          cleanupObligations: ['child termination'],
+          cleanupObligations: [
+            'child termination',
+            'crashed job terminalization',
+            'provider control and IPC authority release',
+          ],
           operatorActions: [
             {
               kind: 'retained-job-containment',
@@ -895,7 +939,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       },
     });
     expect(backendInfoPresent).toBe(true);
-    expect(onFatalShutdownError).toHaveBeenCalledOnce();
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
     expect(onStopped).not.toHaveBeenCalled();
     expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
     if (held.disposition !== 'held') throw new Error('expected held shutdown');
@@ -907,10 +951,11 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
   });
 
-  it('reports a fatal shutdown failure without releasing lifecycle ownership', async () => {
+  it('returns a retryable hold for a rejected shutdown hook without reporting a fatal error', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const onFatalShutdownError = vi.fn();
     const onStopped = vi.fn();
+    let shutdownHookAttempts = 0;
     const deps: LifecycleDeps = {
       ...baseDeps,
       onFatalShutdownError,
@@ -918,20 +963,207 @@ describe('lifecycle reset authority and finalizer order', () => {
       hooks: {
         ...baseDeps.hooks,
         onShutdown: vi.fn(async () => {
-          throw new Error('injected fatal finalizer failure');
+          shutdownHookAttempts += 1;
+          if (shutdownHookAttempts === 1) throw new Error('injected shutdown hook failure');
         }),
       },
     };
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+    const held = await lifecycle.shutdown('unit-hard-stop');
 
-    expect(onFatalShutdownError).toHaveBeenCalledOnce();
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
+    });
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
     expect(deps.runtimeState.getLifecycle()).toBe('draining');
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
-    expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
     expect(onStopped).not.toHaveBeenCalled();
+
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    expect(deps.hooks.onShutdown).toHaveBeenCalledTimes(2);
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(onStopped).toHaveBeenCalledOnce();
+  });
+
+  it('stops automatic retries after the held disposition reaches its attempt limit', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const runtime: Runtime = {
+      ...baseDeps.runtime,
+      time: {
+        ...baseDeps.runtime.time,
+        sleep: (ms, options) => (ms === 50 ? Promise.resolve() : baseDeps.runtime.time.sleep(ms, options)),
+      },
+    };
+    const providerHostShutdown = vi.fn(async () => {
+      throw new Error('provider hosts remain unobservable');
+    });
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      runtime,
+      providerHostManager: {
+        ...baseDeps.providerHostManager,
+        shutdown: providerHostShutdown,
+      },
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const initial = await lifecycle.shutdown('unit-hard-stop');
+
+    expect(initial).toMatchObject({
+      disposition: 'held',
+      recovery: {
+        automaticRetry: { status: 'scheduled', attemptsStarted: 0 },
+      },
+    });
+    if (initial.disposition !== 'held') throw new Error('expected held shutdown');
+    const { attemptLimit } = initial.recovery.automaticRetry;
+    await vi.waitFor(() => expect(providerHostShutdown).toHaveBeenCalledTimes(attemptLimit + 1));
+
+    const exhausted = await lifecycle.waitForShutdown();
+    expect(exhausted).toMatchObject({
+      disposition: 'held',
+      recovery: {
+        owner: { kind: 'lifecycle-shutdown-hold', instanceId: 'test-instance' },
+        automaticRetry: {
+          status: 'waiting-for-operator',
+          attemptsStarted: attemptLimit,
+          attemptLimit,
+        },
+        retainedOwnership: {
+          kind: 'coordinator-exclusive-authority',
+          backendInfo: { kind: 'backend-info', instanceId: 'test-instance' },
+          ipcSocket: true,
+        },
+      },
+    });
+    expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
+    if (exhausted.disposition !== 'held') throw new Error('expected exhausted held shutdown');
+    await expect(lifecycle.waitForShutdown()).resolves.toBe(exhausted);
+    expect(exhausted.recovery.retry).toBeTypeOf('function');
+
+    await Promise.resolve();
+    expect(providerHostShutdown).toHaveBeenCalledTimes(attemptLimit + 1);
+    await expect(exhausted.recovery.retry()).resolves.toMatchObject({
+      disposition: 'held',
+      recovery: { automaticRetry: { status: 'waiting-for-operator' } },
+    });
+    expect(providerHostShutdown).toHaveBeenCalledTimes(attemptLimit + 2);
+  });
+
+  it('settles an automatic retry without leaving another continuation', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const runtime: Runtime = {
+      ...baseDeps.runtime,
+      time: {
+        ...baseDeps.runtime.time,
+        sleep: (ms, options) => (ms === 50 ? Promise.resolve() : baseDeps.runtime.time.sleep(ms, options)),
+      },
+    };
+    let shutdownAttempts = 0;
+    const providerHostShutdown = vi.fn(async () => {
+      shutdownAttempts += 1;
+      if (shutdownAttempts === 1) throw new Error('provider hosts temporarily unobservable');
+      return {
+        kind: 'provider-hosts-quiesced' as const,
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+        closingHosts: [],
+      };
+    });
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      runtime,
+      providerHostManager: {
+        ...baseDeps.providerHostManager,
+        shutdown: providerHostShutdown,
+      },
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const initial = await lifecycle.shutdown('unit-hard-stop');
+    expect(initial).toMatchObject({
+      disposition: 'held',
+      recovery: { automaticRetry: { status: 'scheduled', attemptsStarted: 0 } },
+    });
+
+    await vi.waitFor(() => expect(deps.runtimeState.getLifecycle()).toBe('stopped'));
+    await expect(lifecycle.waitForShutdown()).resolves.toEqual({ disposition: 'finalized' });
+    expect(providerHostShutdown).toHaveBeenCalledTimes(2);
+
+    await Promise.resolve();
+    expect(providerHostShutdown).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels a pending automatic continuation when an explicit retry settles', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    let releaseAutomaticRetry!: () => void;
+    const automaticRetryExit = new Promise<void>((resolve) => {
+      releaseAutomaticRetry = resolve;
+    });
+    const runtime: Runtime = {
+      ...baseDeps.runtime,
+      time: {
+        ...baseDeps.runtime.time,
+        sleep: (ms, options) => (ms === 50 ? automaticRetryExit : baseDeps.runtime.time.sleep(ms, options)),
+      },
+    };
+    let shutdownAttempts = 0;
+    const providerHostShutdown = vi.fn(async () => {
+      shutdownAttempts += 1;
+      if (shutdownAttempts === 1) throw new Error('provider hosts temporarily unobservable');
+      return {
+        kind: 'provider-hosts-quiesced' as const,
+        liveProxySets: [],
+        acquisitionCleanupHolds: [],
+        closingHosts: [],
+      };
+    });
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      runtime,
+      providerHostManager: {
+        ...baseDeps.providerHostManager,
+        shutdown: providerHostShutdown,
+      },
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+
+    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    releaseAutomaticRetry();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(providerHostShutdown).toHaveBeenCalledTimes(2);
+    await expect(lifecycle.waitForShutdown()).resolves.toEqual({ disposition: 'finalized' });
+  });
+
+  it('reports an exception escaping shutdown settlement as a fatal machinery defect', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const onFatalShutdownError = vi.fn();
+    const defect = new Error('injected shutdown machinery defect');
+    const deps: LifecycleDeps = { ...baseDeps, onFatalShutdownError };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    vi.spyOn(deps.runtimeState, 'getLifecycle').mockImplementationOnce(() => {
+      throw defect;
+    });
+
+    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBe(defect);
+    expect(onFatalShutdownError).toHaveBeenCalledOnce();
+    expect(onFatalShutdownError).toHaveBeenCalledWith(defect);
   });
 
   it('confirms shutdown after a previously failed child cleanup observes absence', async () => {
@@ -986,9 +1218,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const onStopped = vi.fn();
     const deps: LifecycleDeps = { ...baseDeps, onStopped };
-    mockState.probeRegistrySize = 1;
     mockState.probeCleanup = async () => {
-      mockState.probeRegistrySize = 0;
       return { disposition: 'settled' };
     };
     const lifecycle = createLifecycle(deps, async () => []);
@@ -1012,14 +1242,13 @@ describe('lifecycle reset authority and finalizer order', () => {
       settleProbe = resolve;
     });
     let cleanupAttempts = 0;
-    mockState.probeRegistrySize = 1;
     mockState.probeCleanup = async () => {
       cleanupAttempts += 1;
       return {
         disposition: 'hold',
         unsettled: [
           {
-            child: {} as NodeProcessMod.ProcessIncarnationProbeHold['child'],
+            child: {} as Extract<NodeProcessMod.ProcessIncarnationProbeHold, { exit: 'child-close' }>['child'],
             pid: 4_242,
             reason: 'close-unobserved',
             exit: 'child-close',
@@ -1038,7 +1267,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       reason: 'process-incarnation-probes-unsettled',
       recovery: {
         kind: 'retry-shutdown',
-        exit: 'process-incarnation-probe-child-close',
+        exit: 'process-incarnation-probe-settlement',
         retainedOwnership: {
           kind: 'coordinator-exclusive-authority',
           backendInfo: { kind: 'backend-info', instanceId: 'test-instance' },
@@ -1049,14 +1278,18 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.runtimeState.getLifecycle()).toBe('draining');
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
     expect(onStopped).not.toHaveBeenCalled();
-    expect(reactorDispose).not.toHaveBeenCalled();
+    expect(reactorDispose).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
     await expect(lifecycle.waitForShutdown()).resolves.toBe(held);
 
-    mockState.probeRegistrySize = 0;
+    mockState.probeCleanup = async () => {
+      cleanupAttempts += 1;
+      return { disposition: 'settled' };
+    };
     settleProbe();
     await vi.waitFor(() => expect(deps.runtimeState.getLifecycle()).toBe('stopped'));
     await expect(lifecycle.waitForShutdown()).resolves.toEqual({ disposition: 'finalized' });
-    expect(cleanupAttempts).toBe(1);
+    expect(cleanupAttempts).toBe(2);
     expect(deps.providerHostManager.shutdown).toHaveBeenCalledOnce();
     expect(reactorDispose).toHaveBeenCalledOnce();
     expect(deps.runtimeState.getLifecycle()).toBe('stopped');
@@ -1064,51 +1297,80 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(onStopped).toHaveBeenCalledOnce();
   });
 
-  it('reports a retained fatal when probe cleanup rejects without a pending settlement', async () => {
+  it('returns a retryable hold when probe cleanup rejects without reporting a fatal error', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const onFatalShutdownError = vi.fn();
     const deps: LifecycleDeps = { ...baseDeps, onFatalShutdownError };
     let cleanupAttempts = 0;
-    mockState.probeRegistrySize = 1;
     mockState.probeCleanup = async () => {
       cleanupAttempts += 1;
       if (cleanupAttempts === 1) throw new Error('probe cleanup unavailable');
-      mockState.probeRegistrySize = 0;
       return { disposition: 'settled' };
     };
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'required-shutdown-step-unsettled',
+      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
+    });
     expect(deps.runtimeState.getLifecycle()).toBe('draining');
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
     expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
-    expect(onFatalShutdownError).toHaveBeenCalledOnce();
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
     expect(cleanupAttempts).toBe(1);
     expect(deps.providerHostManager.shutdown).toHaveBeenCalledOnce();
+
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    expect(cleanupAttempts).toBe(2);
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
   });
 
-  it('reports a retained fatal when an ordinary shutdown step fails during reactor disposal', async () => {
+  it('keeps a rejected shutdown hook non-fatal while reactor disposal is unsettled', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
+    let settleReactor!: () => void;
+    const reactorSettled = new Promise<void>((resolve) => {
+      settleReactor = resolve;
+    });
+    const disposeLifecycleReactor = vi.fn(() => reactorSettled);
+    const onFatalShutdownError = vi.fn();
     const onStopped = vi.fn();
+    let shutdownHookAttempts = 0;
     const deps: LifecycleDeps = {
       ...baseDeps,
+      onFatalShutdownError,
       onStopped,
       hooks: {
         ...baseDeps.hooks,
         onShutdown: vi.fn(async () => {
-          throw new Error('ordinary shutdown failure');
+          shutdownHookAttempts += 1;
+          if (shutdownHookAttempts === 1) throw new Error('ordinary shutdown failure');
         }),
       },
-      disposeLifecycleReactor: () => new Promise<void>(() => {}),
+      disposeLifecycleReactor,
     };
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'lifecycle-reactor-disposal-unsettled',
+      recovery: { exit: 'lifecycle-reactor-disposal-settlement' },
+    });
     expect(deps.runtimeState.getLifecycle()).toBe('draining');
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
     expect(onStopped).not.toHaveBeenCalled();
+
+    settleReactor();
+    await vi.waitFor(() => expect(deps.runtimeState.getLifecycle()).toBe('stopped'));
+    expect(deps.hooks.onShutdown).toHaveBeenCalledTimes(2);
+    expect(disposeLifecycleReactor).toHaveBeenCalledOnce();
+    expect(onStopped).toHaveBeenCalledOnce();
   });
 
   it('continues the exact held reactor disposal after it settles', async () => {
@@ -1141,13 +1403,16 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(disposeLifecycleReactor).toHaveBeenCalledOnce();
   });
 
-  it('reports a late reactor disposal rejection without starting a fresh disposal', async () => {
+  it('retries a rejected reactor disposal without reporting a fatal error', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     let rejectReactor!: (error: Error) => void;
     const reactorSettled = new Promise<void>((_resolve, reject) => {
       rejectReactor = reject;
     });
-    const disposeLifecycleReactor = vi.fn(() => reactorSettled);
+    const disposeLifecycleReactor = vi
+      .fn()
+      .mockImplementationOnce(() => reactorSettled)
+      .mockResolvedValue(undefined);
     const onFatalShutdownError = vi.fn();
     const deps: LifecycleDeps = { ...baseDeps, disposeLifecycleReactor, onFatalShutdownError };
     const lifecycle = createLifecycle(deps, async () => []);
@@ -1161,10 +1426,10 @@ describe('lifecycle reset authority and finalizer order', () => {
     });
 
     rejectReactor(new Error('late reactor disposal failure'));
-    await vi.waitFor(() => expect(onFatalShutdownError).toHaveBeenCalledOnce());
-    expect(disposeLifecycleReactor).toHaveBeenCalledOnce();
-    expect(deps.runtimeState.getLifecycle()).toBe('draining');
-    expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
-    expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(deps.runtimeState.getLifecycle()).toBe('stopped'));
+    expect(onFatalShutdownError).not.toHaveBeenCalled();
+    expect(disposeLifecycleReactor).toHaveBeenCalledTimes(2);
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
   });
 });

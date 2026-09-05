@@ -98,7 +98,7 @@ describe('provider host idle close/acquire race', () => {
     expect(carrierBlocksRetirement).toHaveBeenNthCalledWith(2, first.hostRef);
     expect(reapContainment).toHaveBeenCalledWith(
       closingContainment,
-      expect.any(AbortSignal),
+      undefined,
       expect.objectContaining({ child: closingServer.handle.child }),
     );
     expect(closingEntry.closePromise).not.toBeNull();

@@ -1077,8 +1077,12 @@ function createRoleShutdownProbeGate(
       (disposition) => {
         if (disposition.disposition === 'hold') {
           backendLog.error(
-            `${role}: shutdown remains held by unsettled process-incarnation probe children`,
-            disposition.unsettled.map(({ pid, reason, exit }) => ({ pid, reason, exit })),
+            `${role}: shutdown remains held by unsettled process-incarnation probes`,
+            disposition.unsettled.map((hold) =>
+              'key' in hold
+                ? { key: hold.key, reason: hold.reason, exit: hold.exit }
+                : { pid: hold.pid, reason: hold.reason, exit: hold.exit },
+            ),
           );
           void disposition.untilSettled.then(() => {
             cleanupInFlight = false;

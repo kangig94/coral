@@ -945,33 +945,46 @@ async function stopLifecycleController(controller: {
   shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
   waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
 }): Promise<LifecycleShutdownDisposition | null> {
-  let shutdownDisposition: LifecycleShutdownDisposition | null = null;
+  let disposition: LifecycleShutdownDisposition | null = null;
   try {
-    shutdownDisposition = await controller.shutdown('test');
+    disposition = await controller.shutdown('test');
   } catch {
     /* best effort */
   }
-  while (shutdownDisposition?.disposition === 'held') {
-    switch (shutdownDisposition.recovery.exit) {
-      case 'process-incarnation-probe-child-close':
-      case 'lifecycle-reactor-disposal-settlement':
-      case 'authority-release-settlement':
-        break;
-      case 'required-cleanup-capability-confirmation-or-durable-operator-abandonment':
-        throw new Error(`Test lifecycle cleanup requires a durable operator action: ${shutdownDisposition.reason}`);
+
+  if (disposition === null) {
+    try {
+      disposition = await controller.waitForShutdown();
+    } catch {
+      return null;
     }
-    shutdownDisposition = await shutdownDisposition.recovery.retry();
   }
-  let waitedDisposition: LifecycleShutdownDisposition;
-  try {
-    waitedDisposition = await controller.waitForShutdown();
-  } catch {
-    return null;
+
+  if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+    try {
+      await vi.waitFor(
+        async () => {
+          disposition = await controller.waitForShutdown();
+          if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+            throw new Error('automatic cleanup is still scheduled');
+          }
+        },
+        { timeout: 5_000 },
+      );
+    } catch (error: unknown) {
+      throw new Error('Automatic lifecycle cleanup did not reach finalized or waiting-for-operator within 5s.', {
+        cause: error,
+      });
+    }
   }
-  if (waitedDisposition.disposition === 'held') {
-    throw new Error(`Test lifecycle cleanup held: ${waitedDisposition.reason}`);
+
+  if (disposition.disposition === 'held') {
+    const { automaticRetry, retainedOwnership } = disposition.recovery;
+    throw new Error(
+      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}; operatorActions=${JSON.stringify(retainedOwnership.operatorActions)}`,
+    );
   }
-  return waitedDisposition;
+  return disposition;
 }
 
 /**
@@ -1254,6 +1267,11 @@ describe('lifecycle recovery', () => {
       expect(resumeLoop).toHaveBeenCalledTimes(1);
       expect(resumeLoop.mock.calls[0]?.[1]).toBe('p3-valid-discussion');
     } finally {
+      progressStore
+        .getDb()
+        .prepare('DELETE FROM projection_discuss WHERE discuss_id = ?')
+        .run('p3-malformed-discussion');
+      registry.contexts.clear();
       await stopLifecycleController(controller);
     }
   });
@@ -1811,27 +1829,42 @@ describe('lifecycle recovery', () => {
         createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
       );
     });
+    let containmentAbsent = false;
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
       progressStore,
       eventBus,
       runStartupRecoveryFn: async () => [],
       markJobsAsErrorFn,
-      terminateAllFn: () => ({
-        kind: 'unresolved-at-deadline',
-        processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
-        pendingLaunches: 0,
-        retainedLaunches: [],
-        cleanupHandles: 1,
-        retainedProcesses: [],
-        cleanupFailures: 0,
-        owner: 'launch-coordinator',
-      }),
+      terminateAllFn: () =>
+        containmentAbsent
+          ? { kind: 'all-observed-absent' }
+          : {
+              kind: 'unresolved-at-deadline',
+              processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+              pendingLaunches: 0,
+              retainedLaunches: [],
+              cleanupHandles: 1,
+              retainedProcesses: [],
+              cleanupFailures: 0,
+              owner: 'launch-coordinator',
+            },
     });
 
     try {
       await controller.start();
-      await expect(controller.shutdown('test')).rejects.toBeInstanceOf(AggregateError);
+      await expect(controller.shutdown('test')).resolves.toMatchObject({
+        disposition: 'held',
+        recovery: {
+          retainedOwnership: {
+            cleanupObligations: expect.arrayContaining([
+              'child termination',
+              'crashed job terminalization',
+              'provider control and IPC authority release',
+            ]),
+          },
+        },
+      });
 
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
       expect(progressStore.readStatus(jobId)?.phase).toBe('launching');
@@ -1847,6 +1880,7 @@ describe('lifecycle recovery', () => {
           .get(jobId),
       ).toEqual({ count: 0 });
     } finally {
+      containmentAbsent = true;
       await stopLifecycleController(controller);
     }
   });
@@ -4151,11 +4185,11 @@ describe('lifecycle recovery', () => {
       const sessionId = `${jobId}-session`;
       const pid = 73_700;
       let monotonicMs = 0n;
-      vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => {
+      const monotonicNow = vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => {
         monotonicMs += 25n;
         return monotonicMs;
       });
-      vi.spyOn(runtime.time, 'sleep').mockResolvedValue();
+      const sleep = vi.spyOn(runtime.time, 'sleep').mockResolvedValue();
       const observeLiveness = vi
         .spyOn(runtime.process, 'observeLiveness')
         .mockReturnValue(
@@ -4360,6 +4394,10 @@ describe('lifecycle recovery', () => {
           expect(quarantine.read('coordinator-job-recovery', jobId)).toBeNull();
         }
       } finally {
+        monotonicNow.mockRestore();
+        sleep.mockRestore();
+        observeLiveness.mockRestore();
+        kill.mockRestore();
         await stopLifecycleController(controller);
       }
     },

@@ -127,8 +127,14 @@ function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) 
       kind: 'provider-hosts-quiesced',
       liveProxySets: [],
       acquisitionCleanupHolds: [],
+      closingHosts: [],
     }),
-    shutdown: async () => ({ kind: 'provider-hosts-quiesced', liveProxySets: [], acquisitionCleanupHolds: [] }),
+    shutdown: async () => ({
+      kind: 'provider-hosts-quiesced',
+      liveProxySets: [],
+      acquisitionCleanupHolds: [],
+      closingHosts: [],
+    }),
     routeAppServerOperation: () => null,
     ...administration,
   } satisfies ProviderHostManager & ProviderHostAdministrationAuthority;

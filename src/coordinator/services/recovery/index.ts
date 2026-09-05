@@ -109,6 +109,10 @@ type RecoveryCoordinatorState = {
   >;
   providerOperationRecoveries: Map<string, Promise<ProviderOperationRecoveryAcceptance>>;
   teardownRequested: boolean;
+  teardownState:
+    | Readonly<{ kind: 'pending' }>
+    | Readonly<{ kind: 'in-flight'; settlement: Promise<void> }>
+    | Readonly<{ kind: 'settled' }>;
 };
 
 export type ProviderOperationRecoveryAcceptance = Readonly<{
@@ -530,6 +534,7 @@ export function createRecoveryCoordinator(
     inflightFinalizations: new Map(),
     providerOperationRecoveries: new Map<string, Promise<ProviderOperationRecoveryAcceptance>>(),
     teardownRequested: false,
+    teardownState: { kind: 'pending' },
   };
 
   const clearRecoveryPoller = (jobId: string): void => {
@@ -630,7 +635,7 @@ export function createRecoveryCoordinator(
     runtimeState.setLaunchFenceActive(false);
   };
 
-  const teardown = async (): Promise<void> => {
+  const performTeardown = async (): Promise<void> => {
     state.teardownRequested = true;
 
     for (const pollInterval of state.recoveryPollIntervals.values()) {
@@ -663,6 +668,23 @@ export function createRecoveryCoordinator(
     state.cancelledRecoveryJobIds.clear();
     state.providerOperationRecoveries.clear();
     resetRecoveryState({ forceRegistryRelease: true });
+  };
+
+  const teardown = (): Promise<void> => {
+    if (state.teardownState.kind === 'settled') return Promise.resolve();
+    if (state.teardownState.kind === 'in-flight') return state.teardownState.settlement;
+
+    const settlement = performTeardown().then(
+      () => {
+        state.teardownState = { kind: 'settled' };
+      },
+      (error: unknown) => {
+        state.teardownState = { kind: 'pending' };
+        throw error;
+      },
+    );
+    state.teardownState = { kind: 'in-flight', settlement };
+    return settlement;
   };
 
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);

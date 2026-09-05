@@ -686,3 +686,35 @@ describe('runStartupRecovery provider-operation ownership', () => {
     },
   );
 });
+
+describe('recovery coordinator teardown', () => {
+  it('returns the in-flight teardown settlement to concurrent callers', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const runtimeState = { setLaunchFenceActive: vi.fn() };
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState,
+        eventBus: { emit: vi.fn() } as never,
+        getRecoveryService: () => createFakeService(),
+        createInvocationContext: (projectRoot: string): InvocationContext => ({
+          projectRoot: fixtureCanonicalWorkDir(projectRoot),
+          pluginRoot: '/tmp/plugin',
+          coralEnv: {},
+          principal: testProjectPrincipal(projectRoot),
+        }),
+        log: vi.fn(),
+      },
+      null,
+    );
+
+    const firstSettlement = recoveryCoordinator.teardown();
+    const joinedSettlement = recoveryCoordinator.teardown();
+
+    expect(joinedSettlement).toBe(firstSettlement);
+    await firstSettlement;
+    expect(runtimeState.setLaunchFenceActive).toHaveBeenCalledOnce();
+  });
+});

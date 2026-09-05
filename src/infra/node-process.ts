@@ -302,8 +302,6 @@ type ProcessIncarnationProbeRegistration = {
   retryTimer: NodeJS.Timeout | null;
   terminate: ProcessIncarnationProbeTerminator;
   settlementWaiters: Set<(hold: ProcessIncarnationProbeHold | null) => void>;
-  closed: Promise<void>;
-  resolveClosed(): void;
   lease: ProcessIncarnationProbeLease;
 };
 
@@ -312,21 +310,32 @@ const processIncarnationProbeChildren = new Map<ChildProcess, ProcessIncarnation
 type ProcessIncarnationProbeLease = {
   key: string;
   children: Set<ChildProcess>;
+  cleanupRequested: boolean;
   probeSettled: boolean;
+  released: boolean;
+  settlement: Promise<void>;
+  resolveSettlement(): void;
 };
 
 const processIncarnationProbeLeases = new Map<string, ProcessIncarnationProbeLease>();
 
-/** A shutdown hold keeps the exact child registered, and only observing its close can settle the hold. */
-export type ProcessIncarnationProbeHold = Readonly<{
-  child: ChildProcess;
-  pid: number | undefined;
-  reason: 'termination-failed' | 'close-unobserved';
-  exit: 'child-close';
-  error?: unknown;
-}>;
+export type ProcessIncarnationProbeHold =
+  | Readonly<{
+      child: ChildProcess;
+      pid: number | undefined;
+      reason: 'termination-failed' | 'close-unobserved';
+      exit: 'child-close';
+      error?: unknown;
+    }>
+  | Readonly<{
+      child: null;
+      pid: undefined;
+      key: string;
+      reason: 'probe-unsettled';
+      exit: 'probe-settlement';
+    }>;
 
-/** Probe cleanup cannot report settlement while any owned child remains registered. */
+/** Probe cleanup cannot report settlement while an enrolled lease could still own a current or future child. */
 export type ProcessIncarnationProbeCleanupDisposition =
   | Readonly<{ disposition: 'settled' }>
   | Readonly<{
@@ -345,7 +354,7 @@ function settleProcessIncarnationProbeTermination(
 
 function processIncarnationProbeHold(
   child: ChildProcess,
-  reason: ProcessIncarnationProbeHold['reason'],
+  reason: 'termination-failed' | 'close-unobserved',
   error?: unknown,
 ): ProcessIncarnationProbeHold {
   return {
@@ -359,9 +368,12 @@ function processIncarnationProbeHold(
 
 function releaseProcessIncarnationProbeLease(lease: ProcessIncarnationProbeLease): void {
   if (!lease.probeSettled || lease.children.size > 0) return;
+  if (lease.released) return;
+  lease.released = true;
   if (processIncarnationProbeLeases.get(lease.key) === lease) {
     processIncarnationProbeLeases.delete(lease.key);
   }
+  lease.resolveSettlement();
 }
 
 function terminateProcessIncarnationProbeChild(child: ChildProcess): void {
@@ -388,15 +400,18 @@ function terminateProcessIncarnationProbeChild(child: ChildProcess): void {
   registration.retryTimer.unref();
 }
 
-/** A probe child may not leave this registry before close, including after its caller's deadline settles. */
+/** An active lease prevents a cleanup boundary from mistaking a gap between helper children for absence. */
 export function processIncarnationProbeRegistrySize(): number {
-  return processIncarnationProbeChildren.size;
+  return processIncarnationProbeLeases.size;
 }
 
-/** An aborted cleanup wait reports a hold; only child-close may remove the retained registry entry. */
+/** Cleanup retains enrolled leases until their probes and every current or future child have settled. */
 export async function terminateProcessIncarnationProbes(
   signal?: AbortSignal,
 ): Promise<ProcessIncarnationProbeCleanupDisposition> {
+  const leases = [...processIncarnationProbeLeases.values()];
+  for (const lease of leases) lease.cleanupRequested = true;
+
   const attempts = [...processIncarnationProbeChildren.entries()].map(([child, registration]) => {
     const settled = new Promise<ProcessIncarnationProbeHold | null>((resolve) => {
       let onAbort: (() => void) | null = null;
@@ -420,15 +435,55 @@ export async function terminateProcessIncarnationProbes(
         // settlement promise below, so a throw here must not skip the wait that reports the child as unsettled.
       }
     }
-    return settled.then((hold) => (hold === null ? null : { hold, untilSettled: registration.closed }));
+    return settled;
   });
 
-  const unsettled = (await Promise.all(attempts)).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-  if (unsettled.length === 0) return { disposition: 'settled' };
+  const unsettled = (await Promise.all(attempts)).filter((hold): hold is ProcessIncarnationProbeHold => hold !== null);
+  const leaseSettlement = Promise.all(leases.map(({ settlement }) => settlement)).then(() => undefined);
+  if (unsettled.length === 0 && signal?.aborted !== true) {
+    if (signal === undefined) {
+      await leaseSettlement;
+      return { disposition: 'settled' };
+    }
+
+    const settledBeforeAbort = await new Promise<boolean>((resolve) => {
+      let finished = false;
+      const finish = (settled: boolean): void => {
+        if (finished) return;
+        finished = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(settled);
+      };
+      const onAbort = (): void => finish(false);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      void leaseSettlement.then(() => finish(true));
+    });
+    if (settledBeforeAbort) return { disposition: 'settled' };
+  }
+
+  const heldChildren = new Set(unsettled.flatMap((hold) => (hold.child === null ? [] : [hold.child])));
+  const lateChildHolds = leases.flatMap((lease) =>
+    [...lease.children]
+      .filter((child) => !heldChildren.has(child))
+      .map((child) => processIncarnationProbeHold(child, 'close-unobserved')),
+  );
+  const leaseHolds: ProcessIncarnationProbeHold[] = leases
+    .filter((lease) => !lease.released && lease.children.size === 0)
+    .map((lease) => ({
+      child: null,
+      pid: undefined,
+      key: lease.key,
+      reason: 'probe-unsettled',
+      exit: 'probe-settlement',
+    }));
+  if (unsettled.length === 0 && lateChildHolds.length === 0 && leaseHolds.length === 0) {
+    return { disposition: 'settled' };
+  }
   return {
     disposition: 'hold',
-    unsettled: unsettled.map(({ hold }) => hold),
-    untilSettled: Promise.all(unsettled.map(({ untilSettled }) => untilSettled)).then(() => undefined),
+    unsettled: [...unsettled, ...lateChildHolds, ...leaseHolds],
+    untilSettled: leaseSettlement,
   };
 }
 
@@ -448,6 +503,9 @@ function execFileAsync(
   lease: ProcessIncarnationProbeLease,
 ): Promise<{ stdout: string; stderr: string }> {
   const { signal, ...execOptions } = options;
+  if (lease.cleanupRequested) {
+    return Promise.reject(new Error('Process incarnation probe cleanup requested'));
+  }
   if (signal.aborted) {
     return Promise.reject(probeDeadlineError(signal));
   }
@@ -478,18 +536,12 @@ function execFileAsync(
       }
     };
 
-    let resolveClosed!: () => void;
-    const closed = new Promise<void>((resolve) => {
-      resolveClosed = resolve;
-    });
     lease.children.add(child);
     processIncarnationProbeChildren.set(child, {
       state: 'running',
       retryTimer: null,
       terminate,
       settlementWaiters: new Set(),
-      closed,
-      resolveClosed,
       lease,
     });
     child.on('close', () => {
@@ -501,12 +553,18 @@ function execFileAsync(
       processIncarnationProbeChildren.delete(child);
       if (registration !== undefined) {
         settleProcessIncarnationProbeTermination(registration, null);
-        registration.resolveClosed();
         registration.lease.children.delete(child);
         releaseProcessIncarnationProbeLease(registration.lease);
       }
     });
     signal.addEventListener('abort', onAbort, { once: true });
+    if (lease.cleanupRequested) {
+      try {
+        terminateProcessIncarnationProbeChild(child);
+      } catch {
+        // Only observing child close can discharge a child whose termination request was rejected.
+      }
+    }
     if (signal.aborted) onAbort();
   });
 }
@@ -641,7 +699,19 @@ export async function probeProcessIncarnationAsync(
   const key = `${platform}:${pid}`;
   if (processIncarnationProbeLeases.has(key)) return null;
 
-  const lease: ProcessIncarnationProbeLease = { key, children: new Set(), probeSettled: false };
+  let resolveSettlement!: () => void;
+  const settlement = new Promise<void>((resolve) => {
+    resolveSettlement = resolve;
+  });
+  const lease: ProcessIncarnationProbeLease = {
+    key,
+    children: new Set(),
+    cleanupRequested: false,
+    probeSettled: false,
+    released: false,
+    settlement,
+    resolveSettlement,
+  };
   processIncarnationProbeLeases.set(key, lease);
   try {
     return await probe(pid, terminate, lease);

@@ -79,11 +79,18 @@ export type ProviderHostQuiescenceReceipt = Readonly<{
   kind: 'provider-hosts-quiesced';
   liveProxySets: readonly ProviderProxySetAuthority[];
   acquisitionCleanupHolds: readonly ProviderProxySetAcquisitionCleanupHold[];
+  closingHosts: readonly ProviderHostClosingObligation[];
+}>;
+
+export type ProviderHostClosingObligation = Readonly<{
+  label: string;
+  containment: RecordedContainmentIdentity | null;
+  settlement: Promise<void>;
 }>;
 
 export type ProviderHostCleanupObligations = Pick<
   ProviderHostQuiescenceReceipt,
-  'liveProxySets' | 'acquisitionCleanupHolds'
+  'liveProxySets' | 'acquisitionCleanupHolds' | 'closingHosts'
 >;
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'> &
@@ -253,10 +260,6 @@ function waitForAcquisitionOutcome(
   });
 }
 
-// With Claude's built-in 3s shutdown RPC, each attempt can spend 3s on the RPC, 5s waiting for close, and
-// 12s reaping containment. Three attempts plus two 1s delays therefore have a standalone 62s envelope.
-// Lifecycle teardown intersects that envelope with its one shared deadline instead of adding budgets: hard
-// shutdown remains bounded by 10s and handoff by 30s, and unresolved containment makes expiry non-clean.
 const MAX_AUTOMATIC_RECLAMATION_ATTEMPTS = 3;
 const AUTOMATIC_RECLAMATION_RETRY_DELAY_MS = 1_000;
 
@@ -324,7 +327,6 @@ export class DefaultProviderHostManager
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
   private readonly proxySetRotationEntries = new Map<string, ProviderHostEntry>();
-  private readonly reclamationStop = new AbortController();
   /** Abort cannot shorten an admitted handshake; `pendingProxySetAcquisitions` owns every later outcome. */
   private readonly proxySetAcquisitionStop = new AbortController();
   constructor(options: {
@@ -361,6 +363,11 @@ export class DefaultProviderHostManager
     return {
       liveProxySets: lifecycle?.liveSets() ?? [],
       acquisitionCleanupHolds: lifecycle?.acquisitionCleanupHolds() ?? [],
+      closingHosts: [...this.closingEntries.entries()].map(([entry, closing]) => ({
+        label: `provider host ${entry.spec.provider} ${closing.ref.instanceId}`,
+        containment: entry.containment ?? closing.containment,
+        settlement: closing.operation,
+      })),
     };
   }
 
@@ -628,8 +635,8 @@ export class DefaultProviderHostManager
           });
           const spawnSignal =
             nextSpec.leaseMode === 'job-exclusive' && options?.signal !== undefined
-              ? AbortSignal.any([options.signal, this.reclamationStop.signal])
-              : this.reclamationStop.signal;
+              ? AbortSignal.any([options.signal, this.proxySetAcquisitionStop.signal])
+              : this.proxySetAcquisitionStop.signal;
           const spawned = this.spawnProviderServer(
             {
               provider: nextSpec.provider,
@@ -906,11 +913,12 @@ export class DefaultProviderHostManager
       pending.cleanupOwnerAccepted = true;
     }
     this.proxySetAcquisitionStop.abort();
-    const stopReclamation = (): void => this.reclamationStop.abort(signal?.reason);
+    const reclamationAttempt = new AbortController();
+    const stopReclamation = (): void => reclamationAttempt.abort(signal?.reason);
     if (signal?.aborted) stopReclamation();
     else signal?.addEventListener('abort', stopReclamation, { once: true });
     try {
-      const closeOptions = signal === undefined ? { confirmAbsence: true } : { signal, confirmAbsence: true };
+      const closeOptions = { signal: reclamationAttempt.signal, confirmAbsence: true };
       const entriesToClose = new Set([...this.entries.values(), ...this.closingEntries.keys()]);
       const pendingBeforeClose = [...this.pendingCloses];
       const outcomes = await Promise.allSettled([
@@ -1037,7 +1045,7 @@ export class DefaultProviderHostManager
       const priorClosing = this.closingEntries.get(entry);
       const ref = entry.instanceId === null ? (priorClosing?.ref ?? null) : hostRefFromEntry(entry);
       const token = Symbol('provider-host-close');
-      const operation = this.closeWithReclamationRetries(entry, detail, token);
+      const operation = this.closeWithReclamationRetries(entry, detail, token, options.signal);
       entry.closePromise = operation;
       this.pendingCloses.add(operation);
       if (ref !== null) {
@@ -1094,10 +1102,14 @@ export class DefaultProviderHostManager
     }
   }
 
-  private async closeWithReclamationRetries(entry: ProviderHostEntry, detail: string, token: symbol): Promise<void> {
-    const signal = this.reclamationStop.signal;
+  private async closeWithReclamationRetries(
+    entry: ProviderHostEntry,
+    detail: string,
+    token: symbol,
+    signal?: AbortSignal,
+  ): Promise<void> {
     for (let attempt = 1; attempt <= MAX_AUTOMATIC_RECLAMATION_ATTEMPTS; attempt += 1) {
-      throwIfAborted(signal, 'provider_host_reclamation');
+      if (signal !== undefined) throwIfAborted(signal, 'provider_host_reclamation');
       try {
         await closeEntry(entry, detail, {
           runtime: this.runtime,
@@ -1105,7 +1117,7 @@ export class DefaultProviderHostManager
           shutdownHandle: (handle, spec, containment, closeSignal) =>
             this.shutdownHandle(handle, spec, containment, closeSignal),
           reapContainment: this.reapContainment,
-          signal,
+          ...(signal === undefined ? {} : { signal }),
         });
         return;
       } catch (error: unknown) {
@@ -1126,8 +1138,8 @@ export class DefaultProviderHostManager
         if (!isRetryableReclamationFailure(failure) || attempt === MAX_AUTOMATIC_RECLAMATION_ATTEMPTS) {
           throw failure;
         }
-        await this.runtime.time.sleep(AUTOMATIC_RECLAMATION_RETRY_DELAY_MS, { signal });
-        throwIfAborted(signal, 'provider_host_reclamation_retry');
+        await this.runtime.time.sleep(AUTOMATIC_RECLAMATION_RETRY_DELAY_MS, signal === undefined ? {} : { signal });
+        if (signal !== undefined) throwIfAborted(signal, 'provider_host_reclamation_retry');
         const retrying = this.closingEntries.get(entry);
         if (retrying?.token === token) {
           this.closingEntries.set(
