@@ -18,7 +18,7 @@ import { createCoordinatorCore } from './composition/index.js';
 import { createCoordinatorProviderHostAdmission } from './live/provider-host-admission.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
+import type { CoordinatorServerInfo, LifecycleShutdownDisposition, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
@@ -76,8 +76,8 @@ export type CoordinatorServerOptions = Omit<
 export type CoordinatorServerController = {
   server: CoordinatorCoreResult['server'];
   start: () => Promise<CoordinatorServerInfo>;
-  shutdown: (reason: string) => Promise<void>;
-  waitForShutdown: () => Promise<void>;
+  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
+  waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => CoordinatorCoreResult['idleTimer'];
 };
@@ -423,7 +423,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let lifecycleReactorDisposal: Promise<void> | null = null;
   const disposeLifecycleReactor = (): Promise<void> => {
     lifecycleReactorLifetime.abort();
-    lifecycleReactorDisposal ??= lifecycleReactor.dispose();
+    lifecycleReactorDisposal ??= lifecycleReactor.dispose().catch((error: unknown) => {
+      lifecycleReactorDisposal = null;
+      throw error;
+    });
     return lifecycleReactorDisposal;
   };
   handleKbDaemonEvent = (message: KbDaemonEventMessage): void => {
@@ -463,9 +466,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       runtime,
       storeFormat,
       discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
-      disposeLifecycleReactor: () => {
-        void disposeLifecycleReactor();
-      },
+      disposeLifecycleReactor,
       createStoreServicesFromDbFn,
       buildProviderEventHandler,
       operationRegistry,
@@ -622,19 +623,17 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     server: coordinatorCore.server,
     start: () => coordinatorCore.lifecycleController.start(),
     shutdown: async (reason) => {
-      try {
-        await coordinatorCore.lifecycleController.shutdown(reason);
-      } finally {
-        await disposeLifecycleReactor();
-      }
+      const disposition = await coordinatorCore.lifecycleController.shutdown(reason);
+      if (disposition.disposition === 'finalized') await disposeLifecycleReactor();
+      return disposition;
     },
     waitForShutdown: async () => {
-      try {
-        await coordinatorCore.lifecycleController.waitForShutdown();
-      } finally {
+      const disposition = await coordinatorCore.lifecycleController.waitForShutdown();
+      if (disposition.disposition === 'finalized') {
         await disposeLifecycleReactor();
         await finalizeStoreServices(coordinatorCore.storeServicesRef);
       }
+      return disposition;
     },
     getLifecycle: () => coordinatorCore.runtimeState.getLifecycle(),
     getIdleTimer: () => coordinatorCore.idleTimer,

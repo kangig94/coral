@@ -154,6 +154,19 @@ async function flush(rounds = 16): Promise<void> {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 }
 
+type ShutdownSequenceHold = Extract<Awaited<ReturnType<typeof runShutdownSequence>>, { disposition: 'held' }>;
+
+function retryHeldFinalization(
+  ctx: Parameters<typeof runShutdownSequence>[0],
+  held: ShutdownSequenceHold,
+): ReturnType<typeof runShutdownSequence> {
+  return runShutdownSequence({
+    ...ctx,
+    finalizationOnly: true,
+    deferredFailures: held.deferredFailures,
+  });
+}
+
 describe('runShutdownSequence drain budget', () => {
   it('returns within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
     // Hooks.onShutdown never resolves and ignores the abort signal — the
@@ -219,15 +232,21 @@ describe('runShutdownSequence drain budget', () => {
       return { kind: 'all-observed-absent' };
     };
 
-    const sequence = runShutdownSequence(harness.ctx).catch((error: unknown) => error);
+    const sequence = runShutdownSequence(harness.ctx);
     for (let i = 0; i <= SHUTDOWN_DRAIN_TIMEOUT_MS + 100; i += 100) {
       harness.time.tick(100);
       await flush();
     }
-    const failure = await sequence;
+    const held = await sequence;
 
     const sawExceeded = harness.logLines.some((l) => l.includes('provider host shutdown: exceeded drain budget'));
     expect(sawExceeded).toBe(false);
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'lifecycle-reactor-disposal-unsettled',
+    });
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+    const failure = await retryHeldFinalization(harness.ctx, held).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as Error).message).toContain('shutdown completed with 2 finalizer failures');
     expect(harness.logLines).toContainEqual(
@@ -405,12 +424,18 @@ describe('runShutdownSequence drain budget', () => {
       },
     } as never);
 
-    const sequence = runShutdownSequence(harness.ctx).catch((error: unknown) => error);
+    const sequence = runShutdownSequence(harness.ctx);
     await flush(64);
     harness.time.tick(SHUTDOWN_DRAIN_TIMEOUT_MS);
     await flush(64);
 
-    await expect(sequence).resolves.toBeInstanceOf(AggregateError);
+    const held = await sequence;
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'lifecycle-reactor-disposal-unsettled',
+    });
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+    await expect(retryHeldFinalization(harness.ctx, held)).rejects.toBeInstanceOf(AggregateError);
     expect(harness.callLog).toContain('discuss.dispose');
     expect(harness.closeIpcCalled()).toBe(true);
   });
@@ -431,7 +456,13 @@ describe('runShutdownSequence drain budget', () => {
       harness.time.tick(200);
       await flush();
     }
-    await expect(sequence).rejects.toBeInstanceOf(AggregateError);
+    const held = await sequence;
+    expect(held).toMatchObject({
+      disposition: 'held',
+      reason: 'lifecycle-reactor-disposal-unsettled',
+    });
+    if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
+    await expect(retryHeldFinalization(harness.ctx, held)).rejects.toBeInstanceOf(AggregateError);
 
     // The drain-for-handoff step exceeded budget; later steps must surface
     // "skipped (drain budget exhausted)" because remainingDrain() == 0.
@@ -528,25 +559,15 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
-  it('lifecycle invokes onStopped synchronously after runShutdownSequence resolves (no async work between socket release and exit)', () => {
-    // Structural invariant: in `lifecycle.ts`'s shutdown path, the `.finally`
-    // block following `runShutdownSequence(...)` MUST contain `onStopped?.()`
-    // without any `await` between the surrounding `.finally(() => {` and the
-    // callback invocation. This pins the "socket release IS process exit"
-    // assumption — async work between `closeIpcServerFn` resolution and
-    // `onStopped()` would let the OS keep the socket FD past the moment the
-    // old daemon claims to have released authority.
+  it('lifecycle finalizes synchronously after a settled shutdown sequence', () => {
     const lifecyclePath = fileURLToPath(new URL('../../../src/coordinator/lifecycle.ts', import.meta.url));
     const source = readFileSync(lifecyclePath, 'utf-8');
+    const sequenceResolution = source.indexOf('state.shutdownSequenceComplete = true;');
+    const finalization = source.indexOf('return finalizeStoppedLifecycle();', sequenceResolution);
 
-    const finallyMatch = source.match(/\.finally\(\(\)\s*=>\s*{([\s\S]*?)}\)/);
-    expect(finallyMatch, 'shutdown .finally block must exist').toBeTruthy();
-    const finallyBody = finallyMatch![1];
-
-    // No `await` may appear in the finally body — it is the synchronous
-    // bridge from runShutdownSequence resolution to onStopped().
-    expect(finallyBody.includes('await')).toBe(false);
-    expect(finallyBody.includes('onStopped')).toBe(true);
+    expect(sequenceResolution).toBeGreaterThan(-1);
+    expect(finalization).toBeGreaterThan(sequenceResolution);
+    expect(source.slice(sequenceResolution, finalization)).not.toContain('await');
   });
 
   it('aborts the timeout sleep when the finalizer wins, leaving no pending timer', async () => {

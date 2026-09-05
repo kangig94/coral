@@ -1334,11 +1334,11 @@ export function createCoordinatorCore(
     providerHostManager: world.providerHostManager,
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
-    disposeLifecycleReactor: () => {
+    disposeLifecycleReactor: async () => {
       disposeChildPrincipalTerminalListeners();
       disposeKbDaemonExitListener();
       disposeDaemonJobTerminalListeners();
-      options.disposeLifecycleReactor?.();
+      await options.disposeLifecycleReactor?.();
     },
     handoffQuiescePorts: () =>
       services
@@ -1370,12 +1370,7 @@ export function createCoordinatorCore(
 
   lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = lifecycleController;
-  // Install the starting-incumbent shutdown callback. `transport.shutdown`
-  // invokes both `requestDrain('replaced')` (idle-timer driven) AND this
-  // callback so a still-`starting` incumbent quits immediately rather than
-  // waiting for `idleTimer.startWatching` to be installed at lifecycle
-  // 'running'. The callback fires once per request — `lifecycleController.shutdown`
-  // is itself idempotent (returns the existing `state.shutdownPromise`).
+  // A starting incumbent must accept explicit shutdown before its idle watcher exists.
   ipcServer.onShutdownRequest = (reason) => {
     void resolvedLifecycleController.shutdown(reason).catch(() => {});
   };

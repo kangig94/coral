@@ -460,7 +460,11 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
 
     enforcementHoldStatus = null;
     options.deadlines.markExited();
-    closeAndExit(0);
+    closeAndExit(
+      options.role === 'guardian' && !options.grantWasInstalled()
+        ? GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE
+        : 0,
+    );
   };
 
   return {

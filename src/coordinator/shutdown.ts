@@ -38,6 +38,19 @@ export type LifecycleWiringState = {
   ownershipCheckerTeardown: (() => void) | null;
 };
 
+type ShutdownSequenceDisposition =
+  | Readonly<{ disposition: 'settled' }>
+  | Readonly<{
+      disposition: 'held';
+      reason: 'process-incarnation-probes-unsettled' | 'lifecycle-reactor-disposal-unsettled';
+      exit:
+        | 'process-incarnation-probe-child-close'
+        | 'lifecycle-reactor-disposal-settlement'
+        | 'lifecycle-finalization-retry-deadline';
+      retryAfter: Promise<void>;
+      deferredFailures: readonly ShutdownFailure[];
+    }>;
+
 interface ShutdownRuntimeState {
   setLifecycle(state: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped'): void;
   readonly components: RuntimeComponentRegistry;
@@ -71,6 +84,8 @@ type RunShutdownSequenceContext = {
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;
+  finalizationOnly?: boolean;
+  deferredFailures?: readonly ShutdownFailure[];
 };
 
 /**
@@ -180,10 +195,12 @@ async function withRequiredBudget(
   }
 }
 
-type ShutdownFailure = {
+export type ShutdownDeferredFailure = {
   readonly label: string;
   readonly error: unknown;
 };
+
+type ShutdownFailure = ShutdownDeferredFailure;
 
 type UnresolvedChildProcess = Extract<TerminateAllDisposition, { kind: 'unresolved-at-deadline' }>['processes'][number];
 
@@ -224,16 +241,54 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
 async function processIncarnationProbeConfirmation(
   signal: AbortSignal,
   log: (message: string) => void,
-): Promise<ShutdownStepConfirmation> {
-  const disposition: ProcessIncarnationProbeCleanupDisposition = await terminateProcessIncarnationProbes();
-  if (disposition.disposition === 'settled') return { confirmed: true };
+  retryDelay: () => Promise<void>,
+): Promise<ShutdownSequenceDisposition> {
+  const cleanup = await terminateProcessIncarnationProbes(signal).then(
+    (disposition) => ({ outcome: 'observed' as const, disposition }),
+    (error: unknown) => ({ outcome: 'failed' as const, error }),
+  );
+  if (cleanup.outcome === 'failed') {
+    log(`process incarnation probe shutdown held (cleanup failed: ${formatError(cleanup.error)})\n`);
+    return {
+      disposition: 'held',
+      reason: 'process-incarnation-probes-unsettled',
+      exit: 'lifecycle-finalization-retry-deadline',
+      retryAfter: retryDelay(),
+      deferredFailures: [],
+    };
+  }
+
+  const disposition: ProcessIncarnationProbeCleanupDisposition = cleanup.disposition;
+  if (disposition.disposition === 'settled') return { disposition: 'settled' };
 
   const detail = disposition.unsettled
     .map(({ pid, reason, exit }) => `pid ${pid ?? 'unknown'}: ${reason}; exit=${exit}`)
     .join('; ');
   log(`process incarnation probe shutdown held (${detail})\n`);
-  if (signal.aborted) return { confirmed: false, detail };
+  return {
+    disposition: 'held',
+    reason: 'process-incarnation-probes-unsettled',
+    exit: 'process-incarnation-probe-child-close',
+    retryAfter: disposition.untilSettled,
+    deferredFailures: [],
+  };
+}
 
+async function lifecycleReactorDisposalConfirmation(
+  signal: AbortSignal,
+  disposeLifecycleReactor: () => void | Promise<void>,
+  log: (message: string) => void,
+  retryDelay: () => Promise<void>,
+): Promise<ShutdownSequenceDisposition> {
+  if (signal.aborted) {
+    return {
+      disposition: 'held',
+      reason: 'lifecycle-reactor-disposal-unsettled',
+      exit: 'lifecycle-finalization-retry-deadline',
+      retryAfter: retryDelay(),
+      deferredFailures: [],
+    };
+  }
   let removeAbortListener = (): void => {};
   const aborted = new Promise<'aborted'>((resolve) => {
     const onAbort = (): void => resolve('aborted');
@@ -241,8 +296,36 @@ async function processIncarnationProbeConfirmation(
     removeAbortListener = () => signal.removeEventListener('abort', onAbort);
   });
   try {
-    const outcome = await Promise.race([disposition.untilSettled.then(() => 'settled' as const), aborted]);
-    return outcome === 'settled' ? { confirmed: true } : { confirmed: false, detail };
+    const disposal = Promise.resolve()
+      .then(() => disposeLifecycleReactor())
+      .then(
+        () => ({ outcome: 'settled' as const }),
+        (error: unknown) => ({ outcome: 'failed' as const, error }),
+      );
+    const outcome = await Promise.race([disposal, aborted]);
+    if (outcome === 'aborted') {
+      return {
+        disposition: 'held',
+        reason: 'lifecycle-reactor-disposal-unsettled',
+        exit: 'lifecycle-reactor-disposal-settlement',
+        retryAfter: disposal.then(
+          () => undefined,
+          () => undefined,
+        ),
+        deferredFailures: [],
+      };
+    }
+    if (outcome.outcome === 'failed') {
+      log(`lifecycle reactor disposal held (${formatError(outcome.error)})\n`);
+      return {
+        disposition: 'held',
+        reason: 'lifecycle-reactor-disposal-unsettled',
+        exit: 'lifecycle-finalization-retry-deadline',
+        retryAfter: retryDelay(),
+        deferredFailures: [],
+      };
+    }
+    return { disposition: 'settled' };
   } finally {
     removeAbortListener();
   }
@@ -407,8 +490,10 @@ export async function runShutdownSequence({
   hooks,
   discussStores,
   log,
-}: RunShutdownSequenceContext): Promise<void> {
-  const failures: ShutdownFailure[] = [];
+  finalizationOnly = false,
+  deferredFailures = [],
+}: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
+  const failures: ShutdownFailure[] = [...deferredFailures];
   const runStep = (label: string, task: () => unknown | Promise<unknown>): Promise<boolean> =>
     runShutdownStep(failures, label, task, log);
   const observeTask = (label: string, task: Promise<void>): Promise<void> =>
@@ -433,6 +518,44 @@ export async function runShutdownSequence({
     label: string,
     task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
   ): Promise<boolean> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
+  let finalizationDisposition: ShutdownSequenceDisposition = { disposition: 'settled' };
+  const currentFinalizationDisposition = (): ShutdownSequenceDisposition => finalizationDisposition;
+
+  if (finalizationOnly) {
+    if (processIncarnationProbeRegistrySize() > 0) {
+      finalizationDisposition = {
+        disposition: 'held',
+        reason: 'process-incarnation-probes-unsettled',
+        exit: 'process-incarnation-probe-child-close',
+        retryAfter: Promise.resolve(),
+        deferredFailures: failures,
+      };
+      await runBudgetedStep('process incarnation probe shutdown', async (signal) => {
+        finalizationDisposition = await processIncarnationProbeConfirmation(signal, log, () =>
+          runtime.time.sleep(SHUTDOWN_POLL_MS),
+        );
+      });
+    }
+    if (currentFinalizationDisposition().disposition === 'settled') {
+      finalizationDisposition = {
+        disposition: 'held',
+        reason: 'lifecycle-reactor-disposal-unsettled',
+        exit: 'lifecycle-reactor-disposal-settlement',
+        retryAfter: Promise.resolve(),
+        deferredFailures: failures,
+      };
+      await runBudgetedStep('lifecycle reactor dispose', async (signal) => {
+        finalizationDisposition = await lifecycleReactorDisposalConfirmation(signal, disposeLifecycleReactor, log, () =>
+          runtime.time.sleep(SHUTDOWN_POLL_MS),
+        );
+      });
+    }
+    const disposition = currentFinalizationDisposition();
+    if (disposition.disposition === 'held') return { ...disposition, deferredFailures: failures };
+    throwShutdownFailures(failures);
+    return disposition;
+  }
+
   let liveProxySets: readonly ProviderProxySetAuthority[] = [];
   let acquisitionCleanupHolds: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'] = [];
   const providerHostQuiescence: { receipt: ProviderHostQuiescenceReceipt | null } = { receipt: null };
@@ -512,17 +635,35 @@ export async function runShutdownSequence({
   for (const [source, store] of discussStores) {
     await runStep(`discuss store '${source}' dispose`, () => store.dispose());
   }
-  await runBudgetedStep('lifecycle reactor dispose', async () => disposeLifecycleReactor());
   if (processIncarnationProbeRegistrySize() > 0) {
-    await runRequiredBudgetedStep('process incarnation probe shutdown', (signal) =>
-      processIncarnationProbeConfirmation(signal, log),
-    );
+    finalizationDisposition = {
+      disposition: 'held',
+      reason: 'process-incarnation-probes-unsettled',
+      exit: 'process-incarnation-probe-child-close',
+      retryAfter: Promise.resolve(),
+      deferredFailures: failures,
+    };
+    await runBudgetedStep('process incarnation probe shutdown', async (signal) => {
+      finalizationDisposition = await processIncarnationProbeConfirmation(signal, log, () =>
+        runtime.time.sleep(SHUTDOWN_POLL_MS),
+      );
+    });
+  }
+  if (currentFinalizationDisposition().disposition === 'settled') {
+    finalizationDisposition = {
+      disposition: 'held',
+      reason: 'lifecycle-reactor-disposal-unsettled',
+      exit: 'lifecycle-reactor-disposal-settlement',
+      retryAfter: Promise.resolve(),
+      deferredFailures: failures,
+    };
+    await runBudgetedStep('lifecycle reactor dispose', async (signal) => {
+      finalizationDisposition = await lifecycleReactorDisposalConfirmation(signal, disposeLifecycleReactor, log, () =>
+        runtime.time.sleep(SHUTDOWN_POLL_MS),
+      );
+    });
   }
 
-  // Socket release is the last step before lifecycle stop / process exit.
-  // No async work may run between this resolution and `onStopped()`; that
-  // structural invariant is what makes "socket bound = old daemon authority"
-  // hold across the handoff window.
   if (mode === 'handoff' && liveProxySets.length > 0) {
     // One ordered boundary rather than a socket close beside a separate control close. Control loss makes
     // each standing credential redeemable without moving either enforcer's challenge-derived deadline, and
@@ -542,5 +683,8 @@ export async function runShutdownSequence({
     await waitForObservedShutdownTask(ipcServerClosed);
   }
 
+  const disposition = currentFinalizationDisposition();
+  if (disposition.disposition === 'held') return { ...disposition, deferredFailures: failures };
   throwShutdownFailures(failures);
+  return disposition;
 }

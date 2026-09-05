@@ -393,17 +393,32 @@ export function processIncarnationProbeRegistrySize(): number {
   return processIncarnationProbeChildren.size;
 }
 
-/** Every returned hold retains its child in the registry and exposes the child-close event that settles it. */
-export async function terminateProcessIncarnationProbes(): Promise<ProcessIncarnationProbeCleanupDisposition> {
+/** An aborted cleanup wait reports a hold; only child-close may remove the retained registry entry. */
+export async function terminateProcessIncarnationProbes(
+  signal?: AbortSignal,
+): Promise<ProcessIncarnationProbeCleanupDisposition> {
   const attempts = [...processIncarnationProbeChildren.entries()].map(([child, registration]) => {
     const settled = new Promise<ProcessIncarnationProbeHold | null>((resolve) => {
-      registration.settlementWaiters.add(resolve);
+      let onAbort: (() => void) | null = null;
+      const finish = (hold: ProcessIncarnationProbeHold | null): void => {
+        registration.settlementWaiters.delete(finish);
+        if (onAbort !== null && signal !== undefined) signal.removeEventListener('abort', onAbort);
+        resolve(hold);
+      };
+      registration.settlementWaiters.add(finish);
+      if (signal !== undefined) {
+        onAbort = () => finish(processIncarnationProbeHold(child, 'close-unobserved'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
     });
-    try {
-      terminateProcessIncarnationProbeChild(child);
-    } catch {
-      // A termination this call could not deliver decides nothing about the child: only `close` resolves the
-      // settlement promise below, so a throw here must not skip the wait that reports the child as unsettled.
+    if (signal?.aborted !== true) {
+      try {
+        terminateProcessIncarnationProbeChild(child);
+      } catch {
+        // A termination this call could not deliver decides nothing about the child: only `close` resolves the
+        // settlement promise below, so a throw here must not skip the wait that reports the child as unsettled.
+      }
     }
     return settled.then((hold) => (hold === null ? null : { hold, untilSettled: registration.closed }));
   });

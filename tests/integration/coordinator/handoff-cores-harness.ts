@@ -15,7 +15,11 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import type { CoordinatorServerInfo, RunStartupRecoveryOrchestratorFn } from '#src/coordinator/lifecycle.js';
+import type {
+  CoordinatorServerInfo,
+  LifecycleShutdownDisposition,
+  RunStartupRecoveryOrchestratorFn,
+} from '#src/coordinator/lifecycle.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -35,7 +39,7 @@ export interface HandoffCoresHarness {
   readonly db: Database;
   readonly homeDir: string;
   bootCore(opts: BootCoreOptions): Promise<BootedCore>;
-  cleanup(): Promise<void>;
+  cleanup(): Promise<LifecycleShutdownDisposition>;
 }
 
 export interface BootCoreOptions {
@@ -57,8 +61,7 @@ export interface BootCoreOptions {
 export interface BootedCore {
   readonly core: CoordinatorCoreResult;
   readonly serverInfo: CoordinatorServerInfo;
-  /** Drives the lifecycle to terminal `stopped`. `'replaced'` or `'sigterm'` ⇒ handoff mode. */
-  shutdown(reason: string): Promise<void>;
+  shutdown(reason: string): Promise<LifecycleShutdownDisposition>;
 }
 
 function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: string): CoordinatorStoreServices {
@@ -189,23 +192,26 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
       core,
       serverInfo,
       shutdown: async (reason: string) => {
-        if (core.runtimeState.getLifecycle() === 'stopped') return;
-        await core.lifecycleController.shutdown(reason);
-        await core.lifecycleController.waitForShutdown();
+        if (core.runtimeState.getLifecycle() === 'stopped') return { disposition: 'finalized' };
+        const disposition = await core.lifecycleController.shutdown(reason);
+        if (disposition.disposition === 'held') return disposition;
+        return core.lifecycleController.waitForShutdown();
       },
     };
     liveCores.push(booted);
     return booted;
   }
 
-  async function cleanup(): Promise<void> {
-    for (const booted of liveCores.splice(0)) {
+  async function cleanup(): Promise<LifecycleShutdownDisposition> {
+    for (const booted of liveCores) {
       try {
-        await booted.shutdown('test-cleanup');
+        const disposition = await booted.shutdown('test-cleanup');
+        if (disposition.disposition === 'held') return disposition;
       } catch {
         // best-effort
       }
     }
+    liveCores.splice(0);
     for (const server of liveServers.splice(0)) {
       try {
         if (server.listening) {
@@ -221,6 +227,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
       // already closed
     }
     rmSync(baseHomeDir, { recursive: true, force: true });
+    return { disposition: 'finalized' };
   }
 
   return { runtime, db, homeDir, bootCore, cleanup };

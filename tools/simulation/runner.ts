@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { extractRuntimePid, SimulationWorld, type WaitDetail } from './adversarial.js';
 import type { ExpectStep, KillStep, SimulationDocument, Step } from './scenario-schema.js';
 import { errorMessage } from '../../src/infra/error-format.js';
+import type { LifecycleShutdownDisposition } from '../../src/coordinator/lifecycle.js';
 
 export type StepResult = {
   stepIndex: number;
@@ -39,6 +40,16 @@ type RunnerCursor = {
 };
 
 type ResolvedJobTarget = { ok: true; jobId: string } | { ok: false; detail: FailureDetail };
+
+function shutdownHoldDetail(
+  disposition: Extract<LifecycleShutdownDisposition, { disposition: 'held' }>,
+): FailureDetail {
+  return {
+    failureKind: 'shutdown_held',
+    message: `Coordinator shutdown remains held by ${disposition.reason}`,
+    actual: disposition,
+  };
+}
 
 function createRunnerCursor(): RunnerCursor {
   return {
@@ -454,6 +465,12 @@ async function executeStep(
       case 'cycle': {
         const preserveWorld = step.preserveWorld === true;
         const info = await world.cycle(preserveWorld ? { preserveWorld: true } : undefined);
+        if ('disposition' in info && info.disposition === 'held') {
+          return buildStepResult(world, step, stepIndex, startedAt, {
+            ok: false,
+            detail: shutdownHoldDetail(info),
+          });
+        }
         advanceCursor(cursor, preserveWorld);
         return buildStepResult(world, step, stepIndex, startedAt, {
           ok: true,
@@ -462,7 +479,13 @@ async function executeStep(
       }
 
       case 'shutdown': {
-        await world.shutdown(step.reason);
+        const disposition = await world.shutdown(step.reason);
+        if (disposition.disposition === 'held') {
+          return buildStepResult(world, step, stepIndex, startedAt, {
+            ok: false,
+            detail: shutdownHoldDetail(disposition),
+          });
+        }
         return buildStepResult(world, step, stepIndex, startedAt, {
           ok: true,
           actual: { reason: step.reason ?? 'simulation-shutdown' },

@@ -118,7 +118,11 @@ export async function runSimulationCli(argv = process.argv.slice(2)): Promise<vo
     if (world) {
       const worldToCleanup = world;
       try {
-        await withMutedStderr(() => worldToCleanup.teardown());
+        const disposition = await withMutedStderr(() => worldToCleanup.teardown());
+        if (disposition.disposition === 'held') {
+          process.stderr.write(`Simulation cleanup held: ${disposition.reason}\n`);
+          process.exitCode = 1;
+        }
       } catch (cleanupError: unknown) {
         process.stderr.write(`Simulation cleanup failed: ${errorMessage(cleanupError)}\n`);
         process.exitCode = 1;

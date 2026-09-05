@@ -2,7 +2,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
 import { formatError } from '../infra/error-format.js';
-import { processIncarnationProbeRegistrySize, terminateProcessIncarnationProbes } from '../infra/node-process.js';
+import { processIncarnationProbeRegistrySize } from '../infra/node-process.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -35,6 +35,7 @@ import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
   type LifecycleWiringState,
+  type ShutdownDeferredFailure,
   type ShutdownMode,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
@@ -819,13 +820,35 @@ export type LifecycleDeps = {
 
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
-  shutdown(reason: string): Promise<void>;
-  waitForShutdown(): Promise<void>;
+  shutdown(reason: string): Promise<LifecycleShutdownDisposition>;
+  waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
 };
 
+/** A held shutdown retains lifecycle ownership until its named continuation or explicit retry finalizes it. */
+export type LifecycleShutdownDisposition =
+  | Readonly<{ disposition: 'finalized' }>
+  | Readonly<{
+      disposition: 'held';
+      reason: 'process-incarnation-probes-unsettled' | 'lifecycle-reactor-disposal-unsettled';
+      recovery: Readonly<{
+        kind: 'retry-shutdown';
+        exit:
+          | 'process-incarnation-probe-child-close'
+          | 'lifecycle-reactor-disposal-settlement'
+          | 'lifecycle-finalization-retry-deadline';
+        owner: Readonly<{ kind: 'lifecycle-finalization-continuation'; instanceId: string }>;
+        retainedOwnership: Readonly<{ kind: 'backend-info'; instanceId: string }>;
+        retry(): Promise<LifecycleShutdownDisposition>;
+      }>;
+    }>;
+
 type LifecycleControlState = LifecycleWiringState & {
-  shutdownPromise: Promise<void> | null;
+  shutdownPromise: Promise<LifecycleShutdownDisposition> | null;
+  shutdownContinuations: Set<Promise<void>>;
+  shutdownDeferredFailures: readonly ShutdownDeferredFailure[];
+  shutdownSequenceComplete: boolean;
+  lastShutdownDisposition: LifecycleShutdownDisposition | null;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
   startupAbort: AbortController | null;
@@ -837,7 +860,7 @@ type LifecycleStartupContext = {
   state: LifecycleControlState;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
-  shutdown: (reason: string) => Promise<void>;
+  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
 };
 
 async function runLifecycleStartup({
@@ -1279,6 +1302,10 @@ export function createLifecycle(
 
   const state: LifecycleControlState = {
     shutdownPromise: null,
+    shutdownContinuations: new Set(),
+    shutdownDeferredFailures: [],
+    shutdownSequenceComplete: false,
+    lastShutdownDisposition: null,
     started: false,
     ownershipCheckerTeardown: null,
     recoveryCoordinator: null,
@@ -1303,7 +1330,7 @@ export function createLifecycle(
     return { projectRoot, pluginRoot, coralEnv: {}, principal };
   }
 
-  async function shutdown(reason: string): Promise<void> {
+  async function shutdown(reason: string): Promise<LifecycleShutdownDisposition> {
     if (state.shutdownPromise) return state.shutdownPromise;
 
     // Calling `abort()` with no reason sets `signal.reason` to the platform
@@ -1315,10 +1342,17 @@ export function createLifecycle(
     state.startupAbort?.abort();
     stopProviderOperationReconciler?.();
 
-    state.shutdownPromise = (async () => {
-      if (runtimeState.getLifecycle() === 'stopped') return;
+    const finalizeStoppedLifecycle = (): LifecycleShutdownDisposition => {
+      runtimeState.setLifecycle('stopped');
+      removeBackendInfoIfOwnerFn(instanceId);
+      onStopped?.();
+      return { disposition: 'finalized' };
+    };
+    let retryAfter: Promise<void> | null = null;
+    const attempt = (async (): Promise<LifecycleShutdownDisposition> => {
+      if (runtimeState.getLifecycle() === 'stopped') return { disposition: 'finalized' };
 
-      await runShutdownSequence({
+      const disposition = await runShutdownSequence({
         reason,
         state,
         teardownRecoveryCoordinator: async () => {
@@ -1344,36 +1378,58 @@ export function createLifecycle(
         hooks,
         discussStores,
         log,
+        finalizationOnly: state.shutdownSequenceComplete,
+        deferredFailures: state.shutdownDeferredFailures,
       });
-    })()
-      .catch((error) => {
-        onFatalShutdownError?.(error);
-        throw error;
-      })
-      .finally(() => {
-        const finalizeStoppedLifecycle = (): void => {
-          runtimeState.setLifecycle('stopped');
-          removeBackendInfoIfOwnerFn(instanceId);
-          onStopped?.();
+      state.shutdownSequenceComplete = true;
+      if (disposition.disposition === 'held') {
+        retryAfter = disposition.retryAfter;
+        state.shutdownDeferredFailures = disposition.deferredFailures;
+        return {
+          disposition: 'held',
+          reason: disposition.reason,
+          recovery: {
+            kind: 'retry-shutdown',
+            exit: disposition.exit,
+            owner: { kind: 'lifecycle-finalization-continuation', instanceId },
+            retainedOwnership: { kind: 'backend-info', instanceId },
+            retry: () => shutdown(reason),
+          },
         };
-        if (processIncarnationProbeRegistrySize() > 0) {
-          void terminateProcessIncarnationProbes().then((disposition) => {
-            if (disposition.disposition === 'settled') {
-              finalizeStoppedLifecycle();
-              return;
-            }
-            backendLog.error(
-              'Coordinator lifecycle finalization remains held by process-incarnation probe children',
-              disposition.unsettled.map(({ pid, reason, exit }) => ({ pid, reason, exit })),
-            );
-            void disposition.untilSettled.then(finalizeStoppedLifecycle);
-          });
-          return;
+      }
+      state.shutdownDeferredFailures = [];
+      return finalizeStoppedLifecycle();
+    })().catch((error) => {
+      onFatalShutdownError?.(error);
+      if (processIncarnationProbeRegistrySize() === 0) finalizeStoppedLifecycle();
+      throw error;
+    });
+    const trackedAttempt = attempt.then(
+      (disposition) => {
+        state.lastShutdownDisposition = disposition;
+        if (disposition.disposition === 'held') {
+          state.shutdownPromise = null;
+          const exit = retryAfter ?? Promise.resolve();
+          const continuation = exit
+            .then(() => shutdown(reason))
+            .then(() => undefined)
+            .catch((error: unknown) => {
+              log(`lifecycle finalization continuation failed (${formatError(error)})\n`);
+            })
+            .finally(() => {
+              state.shutdownContinuations.delete(continuation);
+            });
+          state.shutdownContinuations.add(continuation);
         }
-        finalizeStoppedLifecycle();
-      });
-
-    return state.shutdownPromise;
+        return disposition;
+      },
+      (error: unknown) => {
+        if (runtimeState.getLifecycle() !== 'stopped') state.shutdownPromise = null;
+        throw error;
+      },
+    );
+    state.shutdownPromise = trackedAttempt;
+    return trackedAttempt;
   }
 
   async function start(): Promise<CoordinatorServerInfo> {
@@ -1398,7 +1454,11 @@ export function createLifecycle(
   return {
     start,
     shutdown,
-    waitForShutdown: () => state.shutdownPromise ?? Promise.resolve(),
+    waitForShutdown: () => {
+      if (state.shutdownPromise !== null) return state.shutdownPromise;
+      if (state.lastShutdownDisposition !== null) return Promise.resolve(state.lastShutdownDisposition);
+      return Promise.reject(new Error('Shutdown has not been requested'));
+    },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
   };
 }

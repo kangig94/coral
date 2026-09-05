@@ -873,11 +873,9 @@ export function createSimulationBackend(
   const backend: SimulationController = {
     start: () => core.lifecycleController.start(),
     shutdown: async (reason) => {
-      try {
-        await core.lifecycleController.shutdown(reason);
-      } finally {
-        cleanupRuntimeRoot();
-      }
+      const disposition = await core.lifecycleController.shutdown(reason);
+      if (disposition.disposition === 'finalized') cleanupRuntimeRoot();
+      return disposition;
     },
     waitForShutdown: () => core.lifecycleController.waitForShutdown(),
     getLifecycle: () => core.runtimeState.getLifecycle(),

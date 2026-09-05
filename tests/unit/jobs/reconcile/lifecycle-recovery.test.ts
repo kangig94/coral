@@ -36,6 +36,7 @@ import { readDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } fr
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { encodeHistoricalDurableCliProcessRuntimeMeta } from '#tests/helpers/historical-durable-cli-runtime-meta.js';
 import type {
+  LifecycleShutdownDisposition,
   RecoverPersistedDiscussFn,
   RunStartupRecoveryFn,
   StartupRecoveryInputs,
@@ -941,19 +942,28 @@ function createActualRecoveryService(
 }
 
 async function stopLifecycleController(controller: {
-  shutdown: (reason: string) => Promise<void>;
-  waitForShutdown: () => Promise<void>;
-}): Promise<void> {
+  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
+  waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
+}): Promise<LifecycleShutdownDisposition | null> {
+  let shutdownDisposition: LifecycleShutdownDisposition | null = null;
   try {
-    await controller.shutdown('test');
+    shutdownDisposition = await controller.shutdown('test');
   } catch {
     /* best effort */
   }
-  try {
-    await controller.waitForShutdown();
-  } catch {
-    /* best effort */
+  if (shutdownDisposition?.disposition === 'held') {
+    throw new Error(`Test lifecycle cleanup held: ${shutdownDisposition.reason}`);
   }
+  let waitedDisposition: LifecycleShutdownDisposition;
+  try {
+    waitedDisposition = await controller.waitForShutdown();
+  } catch {
+    return null;
+  }
+  if (waitedDisposition.disposition === 'held') {
+    throw new Error(`Test lifecycle cleanup held: ${waitedDisposition.reason}`);
+  }
+  return waitedDisposition;
 }
 
 /**

@@ -28,6 +28,7 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
+import type { LifecycleShutdownDisposition } from '#src/coordinator/lifecycle.js';
 import {
   readDurableCliContainmentStatus,
   readDurableCliProcessRuntimeEvidence,
@@ -397,19 +398,28 @@ function stubRecoverableWorkflow(
 }
 
 async function stopLifecycleController(controller: {
-  shutdown: (reason: string) => Promise<void>;
-  waitForShutdown: () => Promise<void>;
-}): Promise<void> {
+  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
+  waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
+}): Promise<LifecycleShutdownDisposition | null> {
+  let shutdownDisposition: LifecycleShutdownDisposition | null = null;
   try {
-    await controller.shutdown('test-cleanup');
+    shutdownDisposition = await controller.shutdown('test-cleanup');
   } catch {
     /* best effort */
   }
-  try {
-    await controller.waitForShutdown();
-  } catch {
-    /* best effort */
+  if (shutdownDisposition?.disposition === 'held') {
+    throw new Error(`Test lifecycle cleanup held: ${shutdownDisposition.reason}`);
   }
+  let waitedDisposition: LifecycleShutdownDisposition;
+  try {
+    waitedDisposition = await controller.waitForShutdown();
+  } catch {
+    return null;
+  }
+  if (waitedDisposition.disposition === 'held') {
+    throw new Error(`Test lifecycle cleanup held: ${waitedDisposition.reason}`);
+  }
+  return waitedDisposition;
 }
 
 function createCoordinatorShutdownHarness(options: HarnessOptions) {
