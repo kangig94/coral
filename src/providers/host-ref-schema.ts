@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
-import { persistedProviderNameSchema } from './registry.js';
+import { PERSISTED_PROVIDER_NAME_PATTERN } from './registry.js';
 
 const hostRefIdentitySchema = z
   .object({
-    provider: persistedProviderNameSchema,
+    provider: z.string().regex(PERSISTED_PROVIDER_NAME_PATTERN),
     fingerprint: z
       .string()
       .length(64)

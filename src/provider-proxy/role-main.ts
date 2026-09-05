@@ -8,6 +8,7 @@ import {
   terminateProcessIncarnationProbes,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
+  type ProcessIncarnationProbeHold,
 } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
@@ -17,6 +18,11 @@ import {
   type RecordedProcessIdentity,
 } from '../infra/process-containment.js';
 import { gracefulKillByPid, type GracefulKillByPidOutcome } from '../infra/process-supervision.js';
+import {
+  SettlementGate,
+  type HeldSettlementDisposition,
+  type SettledSettlementDisposition,
+} from '../obligation/settlement.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
@@ -1062,6 +1068,41 @@ export async function startProviderProxyRole(
 
 export type ProviderRoleMainOptions = Readonly<{ pluginRoot: string }>;
 
+type RoleProbeSettlementDisposition = SettledSettlementDisposition | RoleProbeHeldSettlementDisposition;
+
+interface RoleProbeHeldSettlementDisposition extends HeldSettlementDisposition<
+  'process-incarnation-probes-unsettled',
+  'process-incarnation-probe-settlement',
+  never,
+  readonly ProcessIncarnationProbeHold[],
+  RoleProbeSettlementDisposition
+> {
+  retry(): Promise<RoleProbeSettlementDisposition>;
+}
+
+const roleProbeSettlementGate = new SettlementGate<
+  never,
+  'process-incarnation-probes-unsettled',
+  'process-incarnation-probe-settlement',
+  never,
+  readonly ProcessIncarnationProbeHold[],
+  never,
+  RoleProbeSettlementDisposition
+>();
+
+async function settleRoleShutdownProbes(): Promise<RoleProbeSettlementDisposition> {
+  const disposition = await terminateProcessIncarnationProbes();
+  if (disposition.disposition === 'settled') return roleProbeSettlementGate.settled();
+  return roleProbeSettlementGate.held({
+    reason: 'process-incarnation-probes-unsettled',
+    exit: 'process-incarnation-probe-settlement',
+    retryAfter: disposition.untilSettled,
+    deferredFailures: [],
+    retainedAuthority: disposition.unsettled,
+    retry: settleRoleShutdownProbes,
+  });
+}
+
 function createRoleShutdownProbeGate(
   role: 'guardian' | 'reaper' | 'proxy',
   exitProcess: (code: number) => void,
@@ -1070,37 +1111,35 @@ function createRoleShutdownProbeGate(
   let cleanupInFlight = false;
   let exited = false;
 
+  const cleanupFailed = (error: unknown): void => {
+    cleanupInFlight = false;
+    backendLog.error(`${role}: process-incarnation probe cleanup failed; shutdown remains held`, error);
+  };
+
+  const acceptDisposition = (disposition: RoleProbeSettlementDisposition): void => {
+    if (disposition.disposition === 'held') {
+      backendLog.error(
+        `${role}: shutdown remains held by unsettled process-incarnation probes`,
+        disposition.retainedAuthority.map((hold) =>
+          'key' in hold
+            ? { key: hold.key, reason: hold.reason, exit: hold.exit }
+            : { pid: hold.pid, reason: hold.reason, exit: hold.exit },
+        ),
+      );
+      void disposition.retryAfter.then(disposition.retry).then(acceptDisposition, cleanupFailed);
+      return;
+    }
+    cleanupInFlight = false;
+    if (requestedExitCode !== null) {
+      exited = true;
+      exitProcess(requestedExitCode);
+    }
+  };
+
   const requestCleanup = (): void => {
     if (cleanupInFlight || exited) return;
     cleanupInFlight = true;
-    void terminateProcessIncarnationProbes().then(
-      (disposition) => {
-        if (disposition.disposition === 'hold') {
-          backendLog.error(
-            `${role}: shutdown remains held by unsettled process-incarnation probes`,
-            disposition.unsettled.map((hold) =>
-              'key' in hold
-                ? { key: hold.key, reason: hold.reason, exit: hold.exit }
-                : { pid: hold.pid, reason: hold.reason, exit: hold.exit },
-            ),
-          );
-          void disposition.untilSettled.then(() => {
-            cleanupInFlight = false;
-            requestCleanup();
-          });
-          return;
-        }
-        cleanupInFlight = false;
-        if (requestedExitCode !== null) {
-          exited = true;
-          exitProcess(requestedExitCode);
-        }
-      },
-      (error: unknown) => {
-        cleanupInFlight = false;
-        backendLog.error(`${role}: process-incarnation probe cleanup failed; shutdown remains held`, error);
-      },
-    );
+    void settleRoleShutdownProbes().then(acceptDisposition, cleanupFailed);
   };
 
   return {

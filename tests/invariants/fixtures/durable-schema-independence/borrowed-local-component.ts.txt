@@ -1,0 +1,9 @@
+import { z } from 'zod';
+
+const sharedRecordShape = {
+  value: z.string().regex(/^[a-z]+$/u),
+} as const;
+
+export const inMemoryRecordSchema = z.object({ ...sharedRecordShape }).strict();
+
+export const durableRecordSchema = z.object({ ...sharedRecordShape }).strict();

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { BuildFlavor } from './build-flavor.js';
 import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
-import { observeProcessLiveness, processIncarnationSchema, type ProcessIncarnation } from './node-process.js';
+import { MAX_PROCESS_INCARNATION_LENGTH, observeProcessLiveness, type ProcessIncarnation } from './node-process.js';
 import { backendLog } from './backend-log.js';
 import { isNoEntryError } from './fs-errors.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -52,6 +52,10 @@ export const DEFAULT_DISCOVERY_HOST = '127.0.0.1';
 
 const nonEmptyStringSchema = z.string().min(1);
 const positiveIntegerSchema = z.number().int().positive();
+const durableProcessIncarnationSchema = z
+  .string()
+  .min(1)
+  .max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>;
 const coordinatorDiscoveryRecordSchema = z
   .object({
     pid: positiveIntegerSchema,
@@ -67,7 +71,7 @@ const coordinatorDiscoveryRecordSchema = z
     host: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
-    incarnation: processIncarnationSchema.optional(),
+    incarnation: durableProcessIncarnationSchema.optional(),
   })
   // A build older than a future field must still read this record — `.strict()` would make that build's
   // `probeCoordinator` reject it outright the day a newer writer adds one, when every field it already

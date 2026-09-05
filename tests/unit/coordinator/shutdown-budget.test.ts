@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
 import {
-  ShutdownSettlementLedger,
+  createShutdownSettlementLedger,
   type ProcessExitRemainder,
   type ProcessExitRemainderAcceptance,
   type ShutdownAuthorityReleaseBoundary,
@@ -467,9 +467,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.callLog).toContain('providerHostManager.shutdown');
     expect(harness.callLog).toContain('terminateAllFn');
     expect(harness.callLog.indexOf('terminateAllFn')).toBeLessThan(harness.callLog.indexOf('markJobsAsErrorFn'));
-    expect(harness.logLines).toContainEqual(
-      expect.stringContaining('crashed job terminalization failed during shutdown'),
-    );
+    expect(harness.logLines).toContainEqual(expect.stringContaining('crashed job terminalization settlement failed'));
     expect(heldFailureDetail(held)).toContain('crashed job terminalization: injected crash terminalization failure');
     expect(held.retainedAuthority.operatorActions).toEqual([]);
   });
@@ -699,7 +697,7 @@ describe('runShutdownSequence drain budget', () => {
       commit: () => Promise.resolve({ confirmed: true }),
       retainedAuthority: () => ({ cleanupObligations: ['authority release'] }),
     };
-    const ledger = new ShutdownSettlementLedger({
+    const ledger = createShutdownSettlementLedger({
       budgetMs: 1_000,
       time,
       log: (line) => logLines.push(line),
@@ -1033,7 +1031,7 @@ describe('runShutdownSequence drain budget', () => {
   });
 });
 
-describe('ShutdownSettlementLedger exit gate', () => {
+describe('settlement ledger exit gate', () => {
   it("refuses authority release while an owner 'none' obligation is declined", async () => {
     const time = new VirtualTime();
     const authorityReleaseTask = vi.fn(async () => ({ confirmed: true as const }));
@@ -1052,7 +1050,7 @@ describe('ShutdownSettlementLedger exit gate', () => {
       commit: authorityReleaseTask,
       retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
     };
-    const ledger = new ShutdownSettlementLedger({ budgetMs: 1_000, time, log: () => {}, pollMs: 50 });
+    const ledger = createShutdownSettlementLedger({ budgetMs: 1_000, time, log: () => {}, pollMs: 50 });
 
     await expect(ledger.run(blocked)).resolves.toMatchObject({ kind: 'declined', cause: 'rejected' });
     const held = requireHeld(await ledger.gate(authorityRelease));
@@ -1105,7 +1103,7 @@ describe('ShutdownSettlementLedger exit gate', () => {
     };
     const requestExit = vi.fn();
     let offeredRemainder: ProcessExitRemainder | null = null;
-    const ledger = new ShutdownSettlementLedger({
+    const ledger = createShutdownSettlementLedger({
       budgetMs: 900,
       time,
       log: () => {},
@@ -1186,7 +1184,7 @@ describe('ShutdownSettlementLedger exit gate', () => {
         requestExit,
       }),
     );
-    const ledger = new ShutdownSettlementLedger({
+    const ledger = createShutdownSettlementLedger({
       budgetMs: 900,
       time,
       log: () => {},
@@ -1238,7 +1236,7 @@ describe('ShutdownSettlementLedger exit gate', () => {
       commit,
       retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
     };
-    const ledger = new ShutdownSettlementLedger({
+    const ledger = createShutdownSettlementLedger({
       budgetMs: 900,
       time,
       log: () => {},
@@ -1278,7 +1276,7 @@ describe('ShutdownSettlementLedger exit gate', () => {
       commit: authorityReleaseTask,
       retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
     };
-    const ledger = new ShutdownSettlementLedger({ budgetMs: 900, time, log: () => {}, pollMs: 50 });
+    const ledger = createShutdownSettlementLedger({ budgetMs: 900, time, log: () => {}, pollMs: 50 });
 
     await expect(ledger.run(successorRecovery)).resolves.toMatchObject({ kind: 'declined', cause: 'rejected' });
     const held = requireHeld(await ledger.gate(authorityRelease));

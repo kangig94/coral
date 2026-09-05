@@ -1,9 +1,9 @@
-import { processIncarnationSchema } from '../infra/node-process.js';
+import { MAX_PROCESS_INCARNATION_LENGTH, type ProcessIncarnation } from '../infra/node-process.js';
 import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
-import { persistedProviderNameSchema } from '../providers/registry.js';
+import { PERSISTED_PROVIDER_NAME_PATTERN } from '../providers/registry.js';
 
 const canonicalUuidSchema = z
   .string()
@@ -27,6 +27,10 @@ const providerAbortCauseSchema = z.enum(['signal_abort', 'user_abort', 'queue_sh
 const providerStopCauseSchema = z.enum(['restart', 'handoff', 'signal_abort', 'user_abort', 'queue_shutdown']);
 const MAX_PROVIDER_OPERATION_RECORD_BYTES = 64 * 1024;
 const MAX_PRINCIPAL_WIRE_BYTES = 64 * 1024;
+
+function durableProcessIncarnation() {
+  return z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>;
+}
 
 const persistedPrincipalWireSchema = z
   .object({
@@ -67,7 +71,7 @@ const processLocatorSchema = z
   .object({
     instanceId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    incarnation: processIncarnationSchema,
+    incarnation: durableProcessIncarnation(),
     controlEndpoint: canonicalEndpointSchema,
   })
   .strict();
@@ -81,7 +85,7 @@ export const providerOperationSetLocatorSchema = z
     containment: z
       .object({
         pid: nonNegativeSafeIntegerSchema,
-        incarnation: processIncarnationSchema,
+        incarnation: durableProcessIncarnation(),
         processGroupId: nonNegativeSafeIntegerSchema,
         kind: z.string().min(1).max(64),
       })
@@ -105,7 +109,7 @@ export const providerOperationSetLocatorSchema = z
 const providerRootSchema = z
   .object({
     pid: nonNegativeSafeIntegerSchema,
-    incarnation: processIncarnationSchema,
+    incarnation: durableProcessIncarnation(),
   })
   .strict();
 
@@ -117,7 +121,7 @@ export const providerOperationActivationAckSchema = z
     hostRef: z.discriminatedUnion('leaseMode', [
       z
         .object({
-          provider: persistedProviderNameSchema,
+          provider: z.string().regex(PERSISTED_PROVIDER_NAME_PATTERN),
           fingerprint: fingerprintSchema,
           instanceId: z.string().min(1).max(1024),
           leaseMode: z.literal('shared'),
@@ -125,7 +129,7 @@ export const providerOperationActivationAckSchema = z
         .strict(),
       z
         .object({
-          provider: persistedProviderNameSchema,
+          provider: z.string().regex(PERSISTED_PROVIDER_NAME_PATTERN),
           fingerprint: fingerprintSchema,
           instanceId: z.string().min(1).max(1024),
           leaseMode: z.literal('job-exclusive'),

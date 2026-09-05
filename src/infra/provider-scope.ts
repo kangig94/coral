@@ -1,10 +1,20 @@
 import { z } from 'zod';
 
-import { nonEmptyStringSchema } from './identifiers.js';
-import { jsonValueSchema } from './json-value.js';
+import type { JsonValue } from './json-value.js';
+
+const durableJsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(durableJsonValueSchema),
+    z.record(durableJsonValueSchema),
+  ]),
+);
 
 export const providerProfileEnvelopeSchema = z
-  .object({ provider: nonEmptyStringSchema, profile: jsonValueSchema })
+  .object({ provider: z.string().min(1), profile: durableJsonValueSchema })
   .strict();
 export type ProviderProfileEnvelope = z.infer<typeof providerProfileEnvelopeSchema>;
 
@@ -15,7 +25,7 @@ export const callerProviderScopeSchema = z
   .object({ origin: z.literal('caller'), profiles: providerProfileSetSchema })
   .strict();
 export const systemProviderScopeSchema = z
-  .object({ origin: z.literal('system'), name: nonEmptyStringSchema, profiles: providerProfileSetSchema })
+  .object({ origin: z.literal('system'), name: z.string().min(1), profiles: providerProfileSetSchema })
   .strict();
 export const providerScopeSchema = z.discriminatedUnion('origin', [
   callerProviderScopeSchema,

@@ -32,6 +32,7 @@ const DOMAIN_BUCKET_PREFIXES = [
   'runtime',
   'security',
   'causality',
+  'obligation',
   'read-model',
   'coral',
   'hooks',

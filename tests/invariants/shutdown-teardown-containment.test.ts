@@ -6,10 +6,15 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
-const SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
+const SETTLEMENT_PATH = 'src/obligation/settlement.ts';
+const SHUTDOWN_SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
 const ADMISSION_PATH = 'src/coordinator/live/admission.ts';
 const FIXTURE_ROOT = 'tests/invariants/fixtures/shutdown-teardown-containment';
-const SETTLEMENT_CONSTRUCTORS = new Set(['ShutdownSettlementLedger', 'createJoinableShutdownTask']);
+const SETTLEMENT_IMPORTS = new Map([
+  ['createShutdownSettlementLedger', './shutdown-settlement.js'],
+  ['createJoinableSettlementTask', '../obligation/settlement.js'],
+]);
+const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'transferPending']);
 
 type NamedFunction = ts.FunctionDeclaration | ts.MethodDeclaration;
 
@@ -89,6 +94,12 @@ function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: str
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
+type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'transfer-pending';
+
+function isShutdownDispositionName(value: string): value is ShutdownDispositionName {
+  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'transfer-pending';
+}
+
 function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string[] {
   const violations: string[] = [];
 
@@ -99,7 +110,7 @@ function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string
       ts.isStringLiteral(unwrapExpression(node.initializer))
     ) {
       const value = unwrapExpression(node.initializer) as ts.StringLiteral;
-      if (value.text === 'held' || value.text === 'settled') {
+      if (isShutdownDispositionName(value.text)) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
         violations.push(`${sourceFile.fileName}:${line + 1} constructs shutdown disposition '${value.text}'`);
       }
@@ -111,11 +122,11 @@ function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string
   return violations;
 }
 
-function objectDisposition(node: ts.ObjectLiteralExpression): 'held' | 'settled' | null {
+function objectDisposition(node: ts.ObjectLiteralExpression): ShutdownDispositionName | null {
   for (const property of node.properties) {
     if (!ts.isPropertyAssignment(property) || property.name.getText(node.getSourceFile()) !== 'disposition') continue;
     const value = unwrapExpression(property.initializer);
-    if (ts.isStringLiteral(value) && (value.text === 'held' || value.text === 'settled')) return value.text;
+    if (ts.isStringLiteral(value) && isShutdownDispositionName(value.text)) return value.text;
   }
   return null;
 }
@@ -172,7 +183,7 @@ function hasExplicitUnrelatedDispositionContext(node: ts.ObjectLiteralExpression
   return false;
 }
 
-function hasShutdownHeldPayload(node: ts.ObjectLiteralExpression): boolean {
+function hasProperties(node: ts.ObjectLiteralExpression, required: readonly string[]): boolean {
   const properties = new Set(
     node.properties.flatMap((property) =>
       ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property) || ts.isMethodSignature(property)
@@ -180,17 +191,28 @@ function hasShutdownHeldPayload(node: ts.ObjectLiteralExpression): boolean {
         : [],
     ),
   );
-  return ['reason', 'exit', 'retryAfter', 'deferredFailures', 'retainedAuthority', 'retry'].every((property) =>
-    properties.has(property),
-  );
+  return required.every((property) => properties.has(property));
+}
+
+function hasShutdownHeldPayload(node: ts.ObjectLiteralExpression): boolean {
+  return hasProperties(node, ['reason', 'exit', 'retryAfter', 'deferredFailures', 'retainedAuthority', 'retry']);
+}
+
+function hasShutdownDelegatedPayload(node: ts.ObjectLiteralExpression): boolean {
+  return hasProperties(node, ['owner', 'deferredFailures', 'acceptance']);
 }
 
 function isSettlementGateConstruction(node: ts.ObjectLiteralExpression): boolean {
   if (node.getSourceFile().fileName !== SETTLEMENT_PATH) return false;
   for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
-    if (!ts.isMethodDeclaration(current) || current.name.getText(current.getSourceFile()) !== 'gate') continue;
+    if (
+      !ts.isMethodDeclaration(current) ||
+      !SETTLEMENT_GATE_CONSTRUCTORS.has(current.name.getText(current.getSourceFile()))
+    ) {
+      continue;
+    }
     const owner = current.parent;
-    return ts.isClassDeclaration(owner) && owner.name?.text === 'ShutdownSettlementLedger';
+    return ts.isClassDeclaration(owner) && owner.name?.text === 'SettlementGate';
   }
   return false;
 }
@@ -208,11 +230,12 @@ function shutdownDispositionConstructorViolations(sourceFile: ts.SourceFile): st
         (isSettlementModule ||
           hasShutdownDispositionContext(node) ||
           hasShutdownHeldPayload(node) ||
+          (hasShutdownDelegatedPayload(node) && !hasExplicitUnrelatedDispositionContext(node)) ||
           (disposition === 'settled' && !hasExplicitUnrelatedDispositionContext(node)))
       ) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
         violations.push(
-          `${sourceFile.fileName}:${line + 1} constructs shutdown disposition '${disposition}' outside ShutdownSettlementLedger.gate`,
+          `${sourceFile.fileName}:${line + 1} constructs shutdown disposition '${disposition}' outside SettlementGate`,
         );
       }
     }
@@ -349,34 +372,34 @@ function settlementConstructorImportViolations(sourceFile: ts.SourceFile): strin
     const bindings = statement.importClause?.namedBindings;
     if (!bindings || !ts.isNamedImports(bindings)) continue;
     for (const element of bindings.elements) {
-      if (!SETTLEMENT_CONSTRUCTORS.has(element.name.text)) continue;
+      if (!SETTLEMENT_IMPORTS.has(element.name.text)) continue;
       const modules = imports.get(element.name.text) ?? [];
       modules.push(statement.moduleSpecifier.text);
       imports.set(element.name.text, modules);
     }
   }
 
-  return [...SETTLEMENT_CONSTRUCTORS].flatMap((constructor) => {
+  return [...SETTLEMENT_IMPORTS].flatMap(([constructor, expectedModule]) => {
     const modules = imports.get(constructor) ?? [];
-    return modules.length === 1 && modules[0] === './shutdown-settlement.js'
+    return modules.length === 1 && modules[0] === expectedModule
       ? []
-      : [`${sourceFile.fileName}: ${constructor} must be imported once from ./shutdown-settlement.js`];
+      : [`${sourceFile.fileName}: ${constructor} must be imported once from ${expectedModule}`];
   });
 }
 
-function settlementConstructorDefinitionViolations(sourceFile: ts.SourceFile): string[] {
+function settlementConstructorDefinitionViolations(sourceFile: ts.SourceFile, expected: ReadonlySet<string>): string[] {
   const definitions = sourceFile.statements.flatMap((statement) => {
     if (
       (ts.isClassDeclaration(statement) || ts.isFunctionDeclaration(statement)) &&
       statement.name !== undefined &&
-      SETTLEMENT_CONSTRUCTORS.has(statement.name.text)
+      expected.has(statement.name.text)
     ) {
       return [statement.name.text];
     }
     return [];
   });
 
-  return [...SETTLEMENT_CONSTRUCTORS].flatMap((constructor) =>
+  return [...expected].flatMap((constructor) =>
     definitions.filter((definition) => definition === constructor).length === 1
       ? []
       : [`${sourceFile.fileName}: ${constructor} must have one definition in the settlement module`],
@@ -457,6 +480,7 @@ describe('shutdown teardown containment invariant', () => {
   it('keeps shutdown disposition construction behind the settlement gate', () => {
     const shutdownSource = readSource(SHUTDOWN_PATH);
     const settlementSource = readSource(SETTLEMENT_PATH);
+    const shutdownSettlementSource = readSource(SHUTDOWN_SETTLEMENT_PATH);
     expect([
       ...shutdownDispositionLiteralViolations(shutdownSource),
       ...readSourceTree('src').flatMap(shutdownDispositionConstructorViolations),
@@ -464,7 +488,14 @@ describe('shutdown teardown containment invariant', () => {
       ...shutdownAwaitBoundaryViolations(shutdownSource),
       ...shutdownReturnViolations(shutdownSource),
       ...settlementConstructorImportViolations(shutdownSource),
-      ...settlementConstructorDefinitionViolations(settlementSource),
+      ...settlementConstructorDefinitionViolations(
+        settlementSource,
+        new Set(['SettlementGate', 'SettlementLedger', 'createJoinableSettlementTask']),
+      ),
+      ...settlementConstructorDefinitionViolations(
+        shutdownSettlementSource,
+        new Set(['createShutdownSettlementLedger']),
+      ),
     ]).toEqual([]);
   });
 
@@ -549,11 +580,11 @@ describe('shutdown teardown containment invariant', () => {
   it('rejects settlement constructors imported from another module', () => {
     const mutation = parseSource(
       SHUTDOWN_PATH,
-      `import { ShutdownSettlementLedger } from './shutdown-settlement.js';
-       import { createJoinableShutdownTask } from './shutdown.js';`,
+      `import { createShutdownSettlementLedger } from './shutdown-settlement.js';
+       import { createJoinableSettlementTask } from './shutdown.js';`,
     );
     expect(settlementConstructorImportViolations(mutation)).toEqual([
-      `${SHUTDOWN_PATH}: createJoinableShutdownTask must be imported once from ./shutdown-settlement.js`,
+      `${SHUTDOWN_PATH}: createJoinableSettlementTask must be imported once from ../obligation/settlement.js`,
     ]);
   });
 
@@ -565,7 +596,7 @@ describe('shutdown teardown containment invariant', () => {
       }`,
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
-      `${SETTLEMENT_PATH}:2 constructs shutdown disposition 'settled' outside ShutdownSettlementLedger.gate`,
+      `${SETTLEMENT_PATH}:2 constructs shutdown disposition 'settled' outside SettlementGate`,
     ]);
   });
 
@@ -579,7 +610,7 @@ describe('shutdown teardown containment invariant', () => {
        }`,
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
-      `${competingPath}:3 constructs shutdown disposition 'settled' outside ShutdownSettlementLedger.gate`,
+      `${competingPath}:3 constructs shutdown disposition 'settled' outside SettlementGate`,
     ]);
   });
 
@@ -592,7 +623,20 @@ describe('shutdown teardown containment invariant', () => {
       }`,
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
-      `${competingPath}:2 constructs shutdown disposition 'settled' outside ShutdownSettlementLedger.gate`,
+      `${competingPath}:2 constructs shutdown disposition 'settled' outside SettlementGate`,
+    ]);
+  });
+
+  it('rejects an unannotated inferred delegated disposition outside the gate', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'delegated', owner: 'process-exit', deferredFailures: [], acceptance: {} } as const;
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'delegated' outside SettlementGate`,
     ]);
   });
 

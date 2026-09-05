@@ -65,9 +65,9 @@ const PRIOR_STORE_SEED_SQL = `
   INSERT INTO events (seq, ts, type, stream_kind, stream_id, body)
   VALUES (1, '2026-08-21T00:00:00.000Z', 'prior.event', 'job', 'prior-job', '{}');
   INSERT INTO projection_jobs (
-    job_id, execution_owner, phase, diagnostics, project_root, backend_namespace,
+    job_id, execution_owner, phase, diagnostics, project_root, work_dir, backend_namespace,
     job_kind, created_at, last_seq
-  ) VALUES ('prior-job', '{}', 'terminal', '{}', '/prior', 'prior', 'provider', '2026-08-21T00:00:00.000Z', 1);
+  ) VALUES ('prior-job', '{}', 'terminal', '{}', '/prior', '/prior', 'prior', 'provider', '2026-08-21T00:00:00.000Z', 1);
   INSERT INTO projection_sessions (session_id, controller, resumable, scope_key, entry, last_seq)
   VALUES ('prior-session', 'provider', 1, 'prior', '{}', 1);
   INSERT INTO projection_discuss (discuss_id, state, last_seq) VALUES ('prior-discuss', '{}', 1);

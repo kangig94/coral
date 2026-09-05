@@ -88,6 +88,59 @@ export function canonicalContractJson(value: unknown): string {
   return JSON.stringify(canonicalizeContractValue(value, '$'));
 }
 
+export function normalizePersistedContractReferences(root: unknown): CanonicalContractValue {
+  const canonicalRoot = canonicalizeContractValue(root, '$');
+  type ContractRecord = Readonly<Record<string, CanonicalContractValue>>;
+
+  const record = (value: CanonicalContractValue): ContractRecord | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as ContractRecord) : null;
+
+  const normalizeScope = (scopeRoot: ContractRecord): CanonicalContractValue => {
+    const ids = new Map<number, ContractRecord>();
+    const collect = (value: CanonicalContractValue): void => {
+      if (Array.isArray(value)) {
+        for (const child of value) collect(child);
+        return;
+      }
+      const object = record(value);
+      if (object === null || (object !== scopeRoot && object.$id === 0)) return;
+      if (typeof object.$id === 'number') ids.set(object.$id, object);
+      for (const child of Object.values(object)) collect(child);
+    };
+    collect(scopeRoot);
+
+    const visit = (value: CanonicalContractValue, active: ReadonlySet<ContractRecord>): CanonicalContractValue => {
+      if (Array.isArray(value)) return value.map((entry) => visit(entry, active));
+      const object = record(value);
+      if (object === null) return value;
+      if (object !== scopeRoot && object.$id === 0) return normalizeScope(object);
+      if (typeof object.$ref === 'number') {
+        const target = ids.get(object.$ref);
+        if (target === undefined) throw new Error(`Persisted contract references missing id ${object.$ref}.`);
+        return active.has(target) ? { $cycle: true } : visit(target, active);
+      }
+      const nextActive = new Set(active).add(object);
+      return Object.fromEntries(
+        Object.entries(object)
+          .filter(([key]) => key !== '$id')
+          .map(([key, child]) => [key, visit(child, nextActive)]),
+      );
+    };
+
+    return visit(scopeRoot, new Set());
+  };
+
+  const visit = (value: CanonicalContractValue): CanonicalContractValue => {
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(visit);
+    const object = value as ContractRecord;
+    if (object.$id === 0) return normalizeScope(object);
+    return Object.fromEntries(Object.entries(object).map(([key, child]) => [key, visit(child)]));
+  };
+
+  return visit(canonicalRoot);
+}
+
 function definitionOf(schema: z.ZodTypeAny): ZodDefinition {
   return (schema as unknown as { readonly _def: ZodDefinition })._def;
 }

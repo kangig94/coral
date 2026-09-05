@@ -3,8 +3,8 @@ import type { z } from 'zod';
 import { sha256Hex } from '../infra/hash.js';
 import {
   canonicalContractJson,
-  canonicalizeContractValue,
   compareText,
+  normalizePersistedContractReferences,
   zodPersistedContract,
   type CanonicalContractValue,
 } from '../infra/persisted-contract.js';
@@ -100,7 +100,7 @@ export class PersistedCodecRegistry {
     if (this.#entries.has(name)) {
       throw new Error(`Persisted codec '${name}' is registered twice.`);
     }
-    this.#entries.set(name, { persistence, contract: canonicalizeContractValue(contract, `$.codecs.${name}`) });
+    this.#entries.set(name, { persistence, contract: normalizePersistedContractReferences(contract) });
   }
 
   registerZod(name: string, schema: z.ZodTypeAny): void {

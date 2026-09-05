@@ -22,7 +22,7 @@ export type CredentialProfile<Routing extends JsonValue = JsonValue> = {
   readonly routing: Routing;
 };
 
-export const accountSubjectSchema = z.object({ issuer: nonEmptyStringSchema, subject: nonEmptyStringSchema }).strict();
+export const accountSubjectSchema = z.object({ issuer: z.string().min(1), subject: z.string().min(1) }).strict();
 export type AccountSubject = z.infer<typeof accountSubjectSchema>;
 
 export type ProviderBinding<Profile, Subject = AccountSubject> = {

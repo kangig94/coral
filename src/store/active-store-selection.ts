@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
-import { strictBundleManifestSchema, type StrictBundleManifest } from '../infra/bundle-manifest.js';
+import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { manifestsMatch, type InvalidTargetEvidence, type InvalidTargetFailure } from '../infra/handoff-target.js';
 import type { StorageBigIntStat, StorageEntryKind, StoragePort } from '../infra/port-types.js';
@@ -144,18 +144,23 @@ export type ActiveStoreSelectionRelation = 'exact' | 'advance' | 'selected-newer
 
 const activeStoreManifestV1Schema = z
   .object({
-    version: strictBundleManifestSchema.shape.version,
-    buildSetId: strictBundleManifestSchema.shape.buildSetId,
-    bundleHash: strictBundleManifestSchema.shape.bundleHash,
-    cliBundleHash: strictBundleManifestSchema.shape.cliBundleHash,
-    claudeAppserverBundleHash: strictBundleManifestSchema.shape.claudeAppserverBundleHash,
-    flavor: strictBundleManifestSchema.shape.flavor,
-    storeFormatFingerprint: strictBundleManifestSchema.shape.storeFormatFingerprint,
+    version: z
+      .string()
+      .max(128)
+      .regex(
+        /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+      ),
+    buildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    bundleHash: z.string().regex(/^[0-9a-f]{16}$/),
+    cliBundleHash: z.string().regex(/^[0-9a-f]{16}$/),
+    claudeAppserverBundleHash: z.string().regex(/^[0-9a-f]{16}$/),
+    flavor: z.enum(['dev', 'prod']),
+    storeFormatFingerprint: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
   .strict();
 
 const activeStoreManifestV2Schema = activeStoreManifestV1Schema
-  .extend({ durableWrapperBundleHash: strictBundleManifestSchema.shape.durableWrapperBundleHash })
+  .extend({ durableWrapperBundleHash: z.string().regex(/^[0-9a-f]{16}$/) })
   .strict();
 
 type ActiveStoreManifestV1 = z.infer<typeof activeStoreManifestV1Schema>;

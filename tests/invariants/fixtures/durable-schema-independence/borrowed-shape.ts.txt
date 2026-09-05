@@ -1,0 +1,4 @@
+import { z } from 'zod';
+import { inMemorySchema } from './in-memory-schema.js';
+
+const durableRecordSchema = z.object({ value: inMemorySchema.shape.value }).strict();

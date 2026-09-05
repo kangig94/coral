@@ -141,8 +141,8 @@ const RESERVED_TOOL_NAMES = new Set([
   'discuss_participate',
   'discuss_abort',
 ]);
-const PERSISTED_PROVIDER_NAME = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
-export const persistedProviderNameSchema = z.string().regex(PERSISTED_PROVIDER_NAME);
+export const PERSISTED_PROVIDER_NAME_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+export const persistedProviderNameSchema = z.string().regex(PERSISTED_PROVIDER_NAME_PATTERN);
 
 export class ProviderRegistry implements ProviderCatalog {
   private sealed = false;

@@ -2,7 +2,7 @@ import type { Database, Statement } from '../../store/db.js';
 import type { ReadonlyDatabase } from '../../store/read-port.js';
 import { BUNDLED_ENGINES } from '../bundled.js';
 import type { EngineManifest } from '../contract.js';
-import { parseDeclarativeEngineManifest } from './schema.js';
+import { parseDeclarativeEngineManifest, persistedDeclarativeEngineManifestSchema } from './schema.js';
 
 type ManifestCatalogReadDb = Pick<ReadonlyDatabase, 'prepare'>;
 type ManifestCatalogWriteDb = Pick<Database, 'prepare'>;
@@ -44,7 +44,7 @@ function toDeclarativeManifest(manifest: EngineManifest): EngineManifest {
 
 function parsePersistedManifest(row: ManifestCatalogRow): EngineManifest {
   try {
-    const manifest = parseDeclarativeEngineManifest(JSON.parse(row.manifest_json) as unknown);
+    const manifest = persistedDeclarativeEngineManifestSchema.parse(JSON.parse(row.manifest_json) as unknown);
     if (manifest.id !== row.id) {
       throw new Error(`row id '${row.id}' does not match manifest id '${manifest.id}'`);
     }
@@ -171,7 +171,11 @@ export class ExpansionManifestCatalog {
     }
     const declarative = toDeclarativeManifest(manifest);
     this.installed.set(declarative.id, declarative);
-    this.upsertStmt?.run(declarative.id, JSON.stringify(declarative), this.now());
+    this.upsertStmt?.run(
+      declarative.id,
+      JSON.stringify(persistedDeclarativeEngineManifestSchema.parse(declarative)),
+      this.now(),
+    );
     return declarative;
   }
 

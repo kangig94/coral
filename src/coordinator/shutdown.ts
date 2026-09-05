@@ -5,6 +5,7 @@ import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
+import { createJoinableSettlementTask, type SettlementConfirmation } from '../obligation/settlement.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
@@ -20,8 +21,7 @@ import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import {
-  createJoinableShutdownTask,
-  ShutdownSettlementLedger,
+  createShutdownSettlementLedger,
   type ProcessExitRemainder,
   type ProcessExitRemainderAcceptance,
   type ShutdownAuthorityReleaseBoundary,
@@ -29,7 +29,6 @@ import {
   type ShutdownOperatorAction,
   type ShutdownRetainedAuthorityContribution,
   type ShutdownSequenceDisposition,
-  type ShutdownStepConfirmation,
 } from './shutdown-settlement.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
@@ -99,7 +98,7 @@ function unresolvedChildProcessDetail(process: UnresolvedChildProcess): string {
   }
 }
 
-function childTerminationConfirmation(disposition: TerminateAllDisposition): ShutdownStepConfirmation {
+function childTerminationConfirmation(disposition: TerminateAllDisposition): SettlementConfirmation {
   if (disposition.kind === 'all-observed-absent') return { confirmed: true };
   const observations = disposition.processes.map(unresolvedChildProcessDetail).join('; ');
   const retainedLaunches = disposition.retainedLaunches
@@ -128,7 +127,7 @@ async function reapProviderProxySets(
   sets: readonly ProviderProxySetAuthority[],
   acquisitionHolds: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'],
   signal: AbortSignal,
-): Promise<ShutdownStepConfirmation> {
+): Promise<SettlementConfirmation> {
   const setOutcomes = Promise.allSettled(sets.map((set) => set.stopAndReap(signal)));
   const acquisitionOutcomes = Promise.allSettled(acquisitionHolds.map((hold) => hold.recoveryCapability.retry(signal)));
   const [outcomes, holdOutcomes] = await Promise.all([setOutcomes, acquisitionOutcomes]);
@@ -189,7 +188,7 @@ function startAuthorityRelease(capability: AuthorityReleaseCapability): Promise<
 
 async function settleAuthorityReleases(
   capabilities: readonly AuthorityReleaseCapability[],
-): Promise<ShutdownStepConfirmation> {
+): Promise<SettlementConfirmation> {
   const outcomes = await Promise.all(capabilities.map(startAuthorityRelease));
   const failures = outcomes.flatMap((outcome, index) =>
     outcome.ok ? [] : [`${capabilities[index].label}: ${formatError(outcome.error)}`],
@@ -197,7 +196,7 @@ async function settleAuthorityReleases(
   return failures.length === 0 ? { confirmed: true } : { confirmed: false, detail: failures.join('; ') };
 }
 
-function confirmedTask(task: () => unknown | Promise<unknown>): Promise<ShutdownStepConfirmation> {
+function confirmedTask(task: () => unknown | Promise<unknown>): Promise<SettlementConfirmation> {
   return Promise.resolve()
     .then(task)
     .then(() => ({ confirmed: true }));
@@ -235,9 +234,9 @@ function closingHostDetail(closing: ProviderHostCleanupObligations['closingHosts
 }
 
 function providerCleanupConfirmation(
-  cleanup: ShutdownStepConfirmation,
+  cleanup: SettlementConfirmation,
   closingHosts: ProviderHostCleanupObligations['closingHosts'],
-): ShutdownStepConfirmation {
+): SettlementConfirmation {
   if (!cleanup.confirmed) return cleanup;
   return closingHosts.length === 0
     ? cleanup
@@ -273,7 +272,7 @@ export async function runShutdownSequence({
 }: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
   const mode = shutdownModeFromReason(reason);
   const budgetMs = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
-  const ledger = new ShutdownSettlementLedger({
+  const ledger = createShutdownSettlementLedger({
     budgetMs,
     time: runtime.time,
     log,
@@ -285,7 +284,7 @@ export async function runShutdownSequence({
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
 
-  const serverClose = createJoinableShutdownTask(() => closeServerFn(server));
+  const serverClose = createJoinableSettlementTask(() => closeServerFn(server));
   serverClose.start();
 
   await ledger.run({
@@ -552,7 +551,7 @@ export async function runShutdownSequence({
           },
   });
 
-  const reactorDisposal = createJoinableShutdownTask(disposeLifecycleReactor);
+  const reactorDisposal = createJoinableSettlementTask(disposeLifecycleReactor);
   await ledger.run({
     label: 'lifecycle reactor dispose',
     task: () => confirmedTask(reactorDisposal.run),

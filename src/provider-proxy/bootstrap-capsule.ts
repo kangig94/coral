@@ -7,15 +7,7 @@ import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
 import { resolveStrictBundleIdentity, type StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
-import {
-  PERMISSION_BITS_MASK,
-  ProxyControlProtocolError,
-  canonicalEndpointSchema,
-  canonicalUuidSchema,
-  flavorSchema,
-  generationSchema,
-  hostFingerprintSchema,
-} from './protocol.js';
+import { PERMISSION_BITS_MASK, ProxyControlProtocolError } from './protocol.js';
 
 export const MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES = 4_096;
 
@@ -30,23 +22,45 @@ const bootstrapSecretSchema = z
   .regex(/^[0-9a-f]{64}$/);
 
 const commonBootstrapCapsuleShape = {
-  generation: generationSchema,
-  flavor: flavorSchema,
-  buildSetId: canonicalUuidSchema,
-  hostFingerprint: hostFingerprintSchema,
-  guardianInstanceId: canonicalUuidSchema,
-  reaperInstanceId: canonicalUuidSchema,
-  proxyInstanceId: canonicalUuidSchema,
+  generation: z.literal('gen2'),
+  flavor: z.enum(['prod', 'dev']),
+  buildSetId: z
+    .string()
+    .length(36)
+    .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  hostFingerprint: z
+    .string()
+    .length(64)
+    .regex(/^[0-9a-f]{64}$/),
+  guardianInstanceId: z
+    .string()
+    .length(36)
+    .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  reaperInstanceId: z
+    .string()
+    .length(36)
+    .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  proxyInstanceId: z
+    .string()
+    .length(36)
+    .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
   bootstrapNonce: bootstrapSecretSchema,
 } as const;
+
+const durableCanonicalEndpoint = () =>
+  z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((value) => isAbsolute(value) && normalize(value) === value, 'endpoint must be an absolute canonical path');
 
 export const guardianBootstrapCapsuleSchema = z
   .object({
     role: z.literal('guardian'),
     ...commonBootstrapCapsuleShape,
-    canonicalControlEndpoint: canonicalEndpointSchema,
-    reaperControlEndpoint: canonicalEndpointSchema,
-    proxyEndpoint: canonicalEndpointSchema,
+    canonicalControlEndpoint: durableCanonicalEndpoint(),
+    reaperControlEndpoint: durableCanonicalEndpoint(),
+    proxyEndpoint: durableCanonicalEndpoint(),
     guardianReaperAuthSecret: bootstrapSecretSchema,
     proxyGuardianAuthSecret: bootstrapSecretSchema,
   })
@@ -58,9 +72,9 @@ export const reaperBootstrapCapsuleSchema = z
   .object({
     role: z.literal('reaper'),
     ...commonBootstrapCapsuleShape,
-    canonicalControlEndpoint: canonicalEndpointSchema,
-    guardianControlEndpoint: canonicalEndpointSchema,
-    proxyEndpoint: canonicalEndpointSchema,
+    canonicalControlEndpoint: durableCanonicalEndpoint(),
+    guardianControlEndpoint: durableCanonicalEndpoint(),
+    proxyEndpoint: durableCanonicalEndpoint(),
     guardianReaperAuthSecret: bootstrapSecretSchema,
   })
   .strict();
@@ -71,8 +85,8 @@ export const proxyBootstrapCapsuleSchema = z
   .object({
     role: z.literal('proxy'),
     ...commonBootstrapCapsuleShape,
-    canonicalEndpoint: canonicalEndpointSchema,
-    guardianControlEndpoint: canonicalEndpointSchema,
+    canonicalEndpoint: durableCanonicalEndpoint(),
+    guardianControlEndpoint: durableCanonicalEndpoint(),
     proxyGuardianAuthSecret: bootstrapSecretSchema,
   })
   .strict();

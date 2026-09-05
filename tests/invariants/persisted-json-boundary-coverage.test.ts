@@ -110,8 +110,14 @@ const BOUNDARIES = [
     table: 'expansion_manifest_catalog',
     column: 'manifest_json',
     evidence: [
-      ['src/expansion/manifest/catalog.ts', 'parseDeclarativeEngineManifest(JSON.parse(row.manifest_json)'],
-      ['src/expansion/manifest/catalog.ts', 'JSON.stringify(declarative)'],
+      [
+        'src/expansion/manifest/catalog.ts',
+        'persistedDeclarativeEngineManifestSchema.parse(JSON.parse(row.manifest_json)',
+      ],
+      [
+        'src/expansion/manifest/catalog.ts',
+        'JSON.stringify(persistedDeclarativeEngineManifestSchema.parse(declarative))',
+      ],
     ],
   },
 ] as const;

@@ -1,0 +1,4 @@
+import { z } from 'zod';
+import { inMemorySchema as importedValidator } from './in-memory-schema.js';
+
+const durableRecordSchema = z.object({ value: importedValidator.optional().readonly() }).strict();

@@ -1,0 +1,13 @@
+import { z } from 'zod';
+
+const forgottenRowSchema = z.object({ value: z.string() }).strict();
+
+export function rowToEntry(row: unknown): string {
+  const parsed = forgottenRowSchema.parse(row);
+  return parsed.value;
+}
+
+export function saveEntry(db: { prepare(sql: string): { run(value: string): void } }, value: unknown): void {
+  const parsed = forgottenRowSchema.parse(value);
+  db.prepare('INSERT INTO durable_records (value) VALUES (?)').run(parsed.value);
+}

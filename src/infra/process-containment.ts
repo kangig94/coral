@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   incarnationMayAuthorizeSignal,
   isProcessIncarnation,
-  processIncarnationSchema,
+  MAX_PROCESS_INCARNATION_LENGTH,
   probeProcessIncarnation,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
@@ -32,7 +32,7 @@ export type RecordedProcessIdentity = Readonly<{
 export const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
   .object({
     pid: z.number().int().positive().safe(),
-    incarnation: processIncarnationSchema,
+    incarnation: z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>,
   })
   .strict()
   .readonly();

@@ -1,4 +1,4 @@
-import { processIncarnationSchema } from '../infra/node-process.js';
+import { MAX_PROCESS_INCARNATION_LENGTH, type ProcessIncarnation } from '../infra/node-process.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { isAbsolute, normalize } from 'node:path';
 
@@ -15,7 +15,6 @@ import { sameControlTenancyHolder, type ControlTenancyHolder } from './control-e
 import {
   PERMISSION_BITS_MASK,
   ProxyControlProtocolError,
-  canonicalEndpointSchema,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
   flavorSchema,
@@ -231,24 +230,43 @@ export const guardianHandoffRedeemParamsSchema = z
 export const handoffCapsuleV1Schema = z
   .object({
     version: z.literal(1),
-    grantId: canonicalUuidSchema,
+    grantId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
     secret: grantSecretSchema,
-    generation: generationSchema,
-    flavor: flavorSchema,
-    buildSetId: canonicalUuidSchema,
-    hostFingerprint: hostFingerprintSchema,
-    guardianInstanceId: canonicalUuidSchema,
-    reaperInstanceId: canonicalUuidSchema,
-    proxyInstanceId: canonicalUuidSchema,
-    guardianControlEndpoint: canonicalEndpointSchema,
-    reaperControlEndpoint: canonicalEndpointSchema,
-    proxyEndpoint: canonicalEndpointSchema,
+    generation: z.literal('gen2'),
+    flavor: z.enum(['prod', 'dev']),
+    buildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    hostFingerprint: z
+      .string()
+      .length(64)
+      .regex(/^[0-9a-f]{64}$/),
+    guardianInstanceId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    reaperInstanceId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    proxyInstanceId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    guardianControlEndpoint: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => isAbsolute(value) && normalize(value) === value),
+    reaperControlEndpoint: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => isAbsolute(value) && normalize(value) === value),
+    proxyEndpoint: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => isAbsolute(value) && normalize(value) === value),
     orphanTimeoutMs: z.number().int().positive(),
     teardownReserveMs: z.number().int().positive(),
   })
   .strict();
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
+
+function durableProcessIncarnation() {
+  return z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>;
+}
 
 /**
  * Shipped in v0.10.6 through v0.10.8, and read-only from here on: nothing writes a V2 again.
@@ -288,12 +306,12 @@ export const handoffCapsuleV3Schema = handoffCapsuleV1Schema
   .extend({
     version: z.literal(3),
     guardianPid: nonNegativeSafeIntegerSchema,
-    guardianIncarnation: processIncarnationSchema,
+    guardianIncarnation: durableProcessIncarnation(),
     proxyPid: nonNegativeSafeIntegerSchema,
     reaperPid: nonNegativeSafeIntegerSchema,
-    reaperIncarnation: processIncarnationSchema,
+    reaperIncarnation: durableProcessIncarnation(),
     containmentKind: z.string().min(1).max(64),
-    proxyIncarnation: processIncarnationSchema,
+    proxyIncarnation: durableProcessIncarnation(),
     proxyProcessGroupId: nonNegativeSafeIntegerSchema,
   })
   .strict();

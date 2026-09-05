@@ -1,4 +1,4 @@
-import { processIncarnationSchema } from '../infra/node-process.js';
+import { MAX_PROCESS_INCARNATION_LENGTH, type ProcessIncarnation } from '../infra/node-process.js';
 import type { DurableCliProcessSubject } from '../runtime/ports.js';
 import { z } from 'zod';
 
@@ -12,6 +12,10 @@ const canonicalUuidSchema = z
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
 
+function durableProcessIncarnation() {
+  return z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>;
+}
+
 export const DURABLE_CLI_PROCESS_RUNTIME_META_VERSION = 2 as const;
 export const DURABLE_CLI_PROCESS_RUNTIME_META_PREDECESSOR_VERSION = 1 as const;
 export const DURABLE_CLI_PROVISIONAL_PROCESS_RUNTIME_META_VERSION = 1 as const;
@@ -22,7 +26,7 @@ export const durableCliProcessRuntimeMetaV1Schema = z
     version: z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_PREDECESSOR_VERSION),
     jobId: canonicalUuidSchema,
     pid: nonNegativeSafeIntegerSchema,
-    incarnation: processIncarnationSchema,
+    incarnation: durableProcessIncarnation(),
   })
   .strict()
   .readonly();
@@ -34,12 +38,12 @@ export const durableCliProcessRuntimeMetaSchema: z.ZodType<DurableCliProcessRunt
   .object({
     jobId: canonicalUuidSchema,
     pid: positiveSafeIntegerSchema,
-    incarnation: processIncarnationSchema,
+    incarnation: durableProcessIncarnation(),
     processGroupId: positiveSafeIntegerSchema,
     childRoot: z
       .object({
         pid: positiveSafeIntegerSchema,
-        incarnation: processIncarnationSchema,
+        incarnation: durableProcessIncarnation(),
       })
       .strict()
       .readonly(),
@@ -53,7 +57,7 @@ export const durableCliProvisionalProcessRuntimeMetaSchema = z
   .object({
     jobId: canonicalUuidSchema,
     pid: positiveSafeIntegerSchema,
-    incarnation: processIncarnationSchema,
+    incarnation: durableProcessIncarnation(),
     processGroupId: positiveSafeIntegerSchema,
   })
   .strict()

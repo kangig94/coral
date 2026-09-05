@@ -70,15 +70,17 @@ const declarativeEngineManifestBodyShape = {
   provides: manifestProvidesSchema.optional(),
 } as const;
 
-/**
- * Store-format compatibility schema. Runtime/catalog ingress applies the
- * stricter package-id refinements below, while this shape deliberately remains
- * byte-for-byte compatible with stores created before those refinements.
- */
+/** Store-format decoding cannot adopt refinements absent from its recorded format version. */
 export const persistedDeclarativeEngineManifestSchema = z
   .object({
     id: z.string().min(1),
-    ...declarativeEngineManifestBodyShape,
+    version: z.string().min(1),
+    specifier: z.string().min(1),
+    tier: z.enum(['bundled', 'installed']),
+    description: z.string().min(1),
+    onboarding: z.array(onboardingStepSchema).optional(),
+    fills: z.array(kbCapabilityNameSchema).optional(),
+    provides: manifestProvidesSchema.optional(),
   })
   .strict();
 

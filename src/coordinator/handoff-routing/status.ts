@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
-import { strictBundleManifestSchema, type StrictBundleIdentityFailure } from '../../infra/bundle-manifest.js';
+import type { StrictBundleIdentityFailure } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
 import { errorNumber } from '../../infra/error-number.js';
 import { createMonotonicClock } from '../../infra/monotonic-clock.js';
-import { MAX_PROCESS_INCARNATION_LENGTH } from '../../infra/node-process.js';
+import { MAX_PROCESS_INCARNATION_LENGTH, type ProcessIncarnation } from '../../infra/node-process.js';
 import { zodPersistedContract } from '../../infra/persisted-contract.js';
 import type { IdPort, Runtime } from '../../runtime/ports.js';
-import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../../infra/process-containment.js';
+import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
 import {
   HandoffRoutingStoreInvalidRecordError,
   HandoffRoutingStoreUnreadableError,
@@ -37,8 +37,6 @@ import {
 } from '../../store/generation-mutation-coordination.js';
 import {
   HANDOFF_ROUTING_BASIS_OBLIGATIONS,
-  buildSummarySchema,
-  incumbentIdentitySummarySchema,
   type BuildSummary,
   type HandoffRoutingBasis,
   type RoutingBasisObligation,
@@ -111,7 +109,48 @@ const positiveSequenceSchema = z.number().int().positive().safe();
 const identifierSchema = z.string().min(1).max(MAX_IDENTIFIER_LENGTH);
 const observedAtSchema = z.string().datetime({ offset: false, precision: 3 }).length(MAX_OBSERVED_AT_LENGTH);
 
-export const validatedTargetSummarySchema = z.object({ build: buildSummarySchema }).strict().readonly();
+function durableProcessIncarnation() {
+  return z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>;
+}
+
+function durableProductVersion() {
+  return z
+    .string()
+    .max(128)
+    .regex(
+      /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+    );
+}
+
+const durableRecordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
+  .object({
+    pid: z.number().int().positive().safe(),
+    incarnation: durableProcessIncarnation(),
+  })
+  .strict()
+  .readonly();
+
+const durableBuildSummarySchema = z
+  .object({
+    version: durableProductVersion(),
+    buildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    bundleHash: z.string().regex(/^[0-9a-f]{16}$/),
+    flavor: z.enum(['dev', 'prod']),
+  })
+  .strict()
+  .readonly();
+
+const durableIncumbentIdentitySummarySchema = z
+  .object({
+    version: durableProductVersion(),
+    bundleHash: z.string().regex(/^[0-9a-f]{16}$/),
+    flavor: z.enum(['dev', 'prod']),
+    instanceId: z.string().min(1).max(64),
+  })
+  .strict()
+  .readonly();
+
+export const validatedTargetSummarySchema = z.object({ build: durableBuildSummarySchema }).strict().readonly();
 
 const invalidTargetFailureSchema = z.enum([
   'bundle-dir-not-canonical',
@@ -126,7 +165,7 @@ const invalidTargetFailureSchema = z.enum([
 export const invalidTargetSummarySchema = z
   .object({
     failure: invalidTargetFailureSchema,
-    expectedBuild: buildSummarySchema.optional(),
+    expectedBuild: durableBuildSummarySchema.optional(),
   })
   .strict()
   .readonly();
@@ -159,19 +198,22 @@ export const durableHandoffRoutingBasisSchema = z.union([
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('incumbent-identity-unavailable'), incumbent: incumbentIdentitySummarySchema })
+    .object({ kind: z.literal('incumbent-identity-unavailable'), incumbent: durableIncumbentIdentitySummarySchema })
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('same-build-set'), buildSetId: strictBundleManifestSchema.shape.buildSetId })
+    .object({
+      kind: z.literal('same-build-set'),
+      buildSetId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+    })
     .strict()
     .readonly(),
   z
     .object({
       kind: z.literal('invoking-build-not-older'),
       comparison: z.enum(['same-version', 'newer-version']),
-      invoking: buildSummarySchema,
-      incumbent: buildSummarySchema,
+      invoking: durableBuildSummarySchema,
+      incumbent: durableBuildSummarySchema,
     })
     .strict()
     .readonly(),
@@ -342,13 +384,13 @@ const finalizedDispositionSchema = z.union([
     .strict()
     .readonly(),
   z
-    .object({ kind: z.literal('delegated-success'), version: strictBundleManifestSchema.shape.version })
+    .object({ kind: z.literal('delegated-success'), version: durableProductVersion() })
     .strict()
     .readonly(),
   z
     .object({
       kind: z.literal('delegated-exit'),
-      version: strictBundleManifestSchema.shape.version,
+      version: durableProductVersion(),
       exitCode: z.number().int().min(0).max(255),
     })
     .strict()
@@ -356,7 +398,7 @@ const finalizedDispositionSchema = z.union([
   z
     .object({
       kind: z.literal('delegated-signal'),
-      version: strictBundleManifestSchema.shape.version,
+      version: durableProductVersion(),
       signal: signalSchema,
     })
     .strict()
@@ -379,7 +421,7 @@ const retiredSelectionEvidenceSchema = z
   .object({
     selectionSequence: positiveSequenceSchema,
     selectedAt: observedAtSchema,
-    owner: recordedProcessIdentitySchema,
+    owner: durableRecordedProcessIdentitySchema,
     selectedDisposition: selectedDispositionSchema,
   })
   .strict()
@@ -451,7 +493,7 @@ function createHandoffRoutingRecordSchemaRegistry(generation: number) {
     .extend({
       eventKind: z.literal('routing-selected'),
       phase: z.literal('selection'),
-      owner: recordedProcessIdentitySchema,
+      owner: durableRecordedProcessIdentitySchema,
       disposition: selectedDispositionSchema,
     })
     .strict()
@@ -498,7 +540,7 @@ function createHandoffRoutingRecordSchemaRegistry(generation: number) {
       phase: z.literal('retirement'),
       selectionSequence: positiveSequenceSchema,
       selectedAt: observedAtSchema,
-      owner: recordedProcessIdentitySchema,
+      owner: durableRecordedProcessIdentitySchema,
       selectedDisposition: selectedDispositionSchema,
       retirementCause: retirementCauseSchema,
       terminalExisted: z.boolean(),
@@ -699,7 +741,7 @@ const transitionEnvelopeSchema = z
 const routingSelectedTransitionSchema = transitionEnvelopeSchema
   .extend({
     kind: z.literal('routing-selected'),
-    owner: recordedProcessIdentitySchema,
+    owner: durableRecordedProcessIdentitySchema,
     disposition: selectedDispositionSchema,
   })
   .strict()
@@ -2309,8 +2351,7 @@ export function handoffRoutingStatusExitContribution(result: HandoffRoutingStatu
 }
 
 const MAX_TEXT = '\u0800';
-const MAX_VERSION_LENGTH = strictBundleManifestSchema.shape.version.maxLength;
-if (MAX_VERSION_LENGTH === null) throw new Error('The bundle manifest version must remain bounded.');
+const MAX_VERSION_LENGTH = 128;
 const MAX_VERSION = `1.0.0-${'x'.repeat(MAX_VERSION_LENGTH - 6)}`;
 const MAX_ID = MAX_TEXT.repeat(MAX_IDENTIFIER_LENGTH);
 const MAX_INCARNATION = MAX_TEXT.repeat(MAX_PROCESS_INCARNATION_LENGTH);
