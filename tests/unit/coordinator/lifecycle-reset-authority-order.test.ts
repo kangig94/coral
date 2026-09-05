@@ -15,6 +15,7 @@ import {
 } from '#src/coordinator/lifecycle.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
+import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '#src/coordinator/shutdown-settlement.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
@@ -932,7 +933,7 @@ describe('lifecycle reset authority and finalizer order', () => {
               jobId: 'job-live-child',
               provider: 'claude',
               jobDir: '/tmp/coral/jobs/job-live-child',
-              actionCommand: 'coral-cli abort job-live-child',
+              actionCommand: 'coral-cli abort jobs job-live-child',
             },
           ],
         },
@@ -945,50 +946,128 @@ describe('lifecycle reset authority and finalizer order', () => {
     if (held.disposition !== 'held') throw new Error('expected held shutdown');
     expect(held.recovery.retry).toBeTypeOf('function');
 
-    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    lifecycle.requestShutdownRetry();
+    await vi.waitFor(() => expect(deps.runtimeState.getLifecycle()).toBe('stopped'));
+    await expect(lifecycle.waitForShutdown()).resolves.toEqual({ disposition: 'finalized' });
     expect(backendInfoPresent).toBe(false);
     expect(onStopped).toHaveBeenCalledOnce();
     expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
   });
 
-  it('returns a retryable hold for a rejected shutdown hook without reporting a fatal error', async () => {
+  it('finalizes after delegating a rejected shutdown hook to process exit', async () => {
     const { deps: baseDeps } = makeLifecycleDeps();
     const onFatalShutdownError = vi.fn();
     const onStopped = vi.fn();
-    let shutdownHookAttempts = 0;
+    const requestExit = vi.fn(() => {
+      expect(baseDeps.runtimeState.getLifecycle()).toBe('stopped');
+      expect(baseDeps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+    });
     const deps: LifecycleDeps = {
       ...baseDeps,
       onFatalShutdownError,
       onStopped,
+      acceptProcessExitRemainder: (remainder) => ({ kind: 'accepted', remainder, requestExit }),
       hooks: {
         ...baseDeps.hooks,
         onShutdown: vi.fn(async () => {
-          shutdownHookAttempts += 1;
-          if (shutdownHookAttempts === 1) throw new Error('injected shutdown hook failure');
+          throw new Error('injected shutdown hook failure');
         }),
       },
     };
     const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
-    const held = await lifecycle.shutdown('unit-hard-stop');
+    const disposition = await lifecycle.shutdown('unit-hard-stop');
 
-    expect(held).toMatchObject({
-      disposition: 'held',
-      reason: 'required-shutdown-step-unsettled',
-      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
-    });
+    expect(disposition).toEqual({ disposition: 'finalized' });
     expect(onFatalShutdownError).not.toHaveBeenCalled();
+    expect(deps.runtimeState.getLifecycle()).toBe('stopped');
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+    expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(requestExit).toHaveBeenCalledOnce();
+    expect(onStopped).not.toHaveBeenCalled();
+  });
+
+  it('preserves an accepted process-exit transfer while retrying only the authority boundary', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    let closeAttempts = 0;
+    const closeIpcServerFn = vi.fn(async () => {
+      closeAttempts += 1;
+      if (closeAttempts === 1) throw new Error('injected IPC release failure');
+    });
+    const requestExit = vi.fn(() => {
+      expect(baseDeps.runtimeState.getLifecycle()).toBe('stopped');
+      expect(baseDeps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+    });
+    let acceptedRemainder: ProcessExitRemainder | null = null;
+    let acceptedResult: Extract<ProcessExitRemainderAcceptance, { kind: 'accepted' }> | null = null;
+    const acceptProcessExitRemainder = vi.fn((remainder: ProcessExitRemainder): ProcessExitRemainderAcceptance => {
+      acceptedRemainder = remainder;
+      acceptedResult = { kind: 'accepted', remainder, requestExit };
+      return acceptedResult;
+    });
+    const hooksOnShutdown = vi.fn(async () => {
+      throw new Error('injected shutdown hook failure');
+    });
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      closeIpcServerFn,
+      acceptProcessExitRemainder,
+      hooks: { ...baseDeps.hooks, onShutdown: hooksOnShutdown },
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const pending = await lifecycle.shutdown('unit-hard-stop');
+
+    expect(pending).toMatchObject({
+      disposition: 'transfer-pending',
+      owner: 'process-exit',
+      boundaryFailure: { label: 'provider control and IPC authority release' },
+      recovery: {
+        automaticRetry: { status: 'scheduled', attemptsStarted: 0 },
+        retainedOwnership: { ipcSocket: true },
+      },
+    });
+    if (pending.disposition !== 'transfer-pending') throw new Error('expected pending process-exit transfer');
+    expect(pending.acceptance).toBe(acceptedResult);
+    expect(pending.acceptance.remainder).toBe(acceptedRemainder);
+    expect(pending.deferredFailures).toBe(pending.acceptance.remainder.deferredFailures);
+    expect(hooksOnShutdown).toHaveBeenCalledOnce();
+    expect(acceptProcessExitRemainder).toHaveBeenCalledOnce();
+    expect(closeIpcServerFn).toHaveBeenCalledOnce();
+
+    await expect(pending.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+    expect(hooksOnShutdown).toHaveBeenCalledOnce();
+    expect(acceptProcessExitRemainder).toHaveBeenCalledOnce();
+    expect(closeIpcServerFn).toHaveBeenCalledTimes(2);
+    expect(requestExit).toHaveBeenCalledOnce();
+  });
+
+  it('does not finalize a delegated remainder without process-exit acceptance', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const onStopped = vi.fn();
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      onStopped,
+      hooks: {
+        ...baseDeps.hooks,
+        onShutdown: vi.fn(async () => {
+          throw new Error('injected shutdown hook failure');
+        }),
+      },
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const disposition = await lifecycle.shutdown('unit-hard-stop');
+
+    expect(disposition).toMatchObject({ disposition: 'held' });
     expect(deps.runtimeState.getLifecycle()).toBe('draining');
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();
-    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).not.toHaveBeenCalled();
     expect(onStopped).not.toHaveBeenCalled();
-
-    if (held.disposition !== 'held') throw new Error('expected held shutdown');
-    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
-    expect(deps.hooks.onShutdown).toHaveBeenCalledTimes(2);
-    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
-    expect(onStopped).toHaveBeenCalledOnce();
   });
 
   it('stops automatic retries after the held disposition reaches its attempt limit', async () => {

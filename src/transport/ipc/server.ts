@@ -101,6 +101,7 @@ export type IpcListener = {
    * has not yet been installed). Setting/clearing is composition's job.
    */
   onShutdownRequest: ((reason: string) => void) | null;
+  onShutdownRecoveryAccepted?: (() => void) | null;
 };
 
 type IpcResourceTracker = {
@@ -249,6 +250,15 @@ const IPC_OPERATIONAL_SPECS: readonly IpcOperationalSpec[] = operationalRouteSpe
 
 function readIpcOperationalSpec(method: string): IpcOperationalSpec | null {
   return IPC_OPERATIONAL_SPECS.find((spec) => spec.ipc.method === method) ?? null;
+}
+
+function acceptedDrainingRecovery(method: string, body: unknown): boolean {
+  if (body === null || typeof body !== 'object') return false;
+  if (method === 'jobs.abort') {
+    const aborted = (body as { aborted?: unknown }).aborted;
+    return Array.isArray(aborted) && aborted.length > 0;
+  }
+  return method === 'coordinator.provider_proxy_set.contain' && (body as { kind?: unknown }).kind === 'abandoned';
 }
 
 function authenticateIpcRequest(auth: IpcAuthMetadata | undefined, rpcPorts: HttpHandlerPorts): Principal | null {
@@ -542,6 +552,7 @@ export async function listenIpcServer(
         throw new Error('IPC listener does not support compatibility sockets');
       }
       compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
+      compatibility.onShutdownRecoveryAccepted = () => listener.onShutdownRecoveryAccepted?.();
       const compatibilityResult =
         compatibilityAddress.kind === 'published'
           ? await bindPublishedSocket(compatibility.server, compatibilityAddress.address)
@@ -659,6 +670,7 @@ async function dispatchFrame(
   dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
   rpcPorts: HttpHandlerPorts,
   onShutdownRequest: ((reason: string) => void) | null,
+  onShutdownRecoveryAccepted: (() => void) | null,
   startRequest: () => void,
   finishRequest: () => void,
   options: { writeDrainTimeoutMs: number },
@@ -714,8 +726,9 @@ async function dispatchFrame(
 
   const lifecycleState =
     rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
-  const backendUnavailable =
-    lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested();
+  const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
+  const backendUnavailable = draining || lifecycleState === 'stopped';
+  const drainingRecoveryIngress = draining && operationalSpec?.dispatch.kind === 'catalog';
 
   if (operationalSpec) {
     if (operationalSpec.requiresRunningLifecycle && backendUnavailable) {
@@ -820,7 +833,7 @@ async function dispatchFrame(
     }
   }
 
-  if (backendUnavailable) {
+  if (backendUnavailable && !drainingRecoveryIngress) {
     await writeEnvelope(
       socket,
       {
@@ -890,6 +903,13 @@ async function dispatchFrame(
         { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope,
         { drainTimeoutMs: options.writeDrainTimeoutMs },
       );
+      if (
+        drainingRecoveryIngress &&
+        acceptedDrainingRecovery(request.method, invocation.body) &&
+        onShutdownRecoveryAccepted !== null
+      ) {
+        socket.once('finish', onShutdownRecoveryAccepted);
+      }
       socket.end();
       return;
     }
@@ -1047,6 +1067,7 @@ function createTrackedIpcListener(
           dispatchMap,
           rpcPorts,
           listenerRef.current?.onShutdownRequest ?? null,
+          listenerRef.current?.onShutdownRecoveryAccepted ?? null,
           () => {
             rpcPorts.admin.beginRequest();
             inflightRequest = true;
@@ -1068,6 +1089,7 @@ function createTrackedIpcListener(
     createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
     socketPath: null,
     onShutdownRequest: null,
+    onShutdownRecoveryAccepted: null,
   };
   listenerRef.current = listener;
   return listener;

@@ -33,6 +33,7 @@ import type { HealthSnapshot } from '../../transport/server-ports.js';
 import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { ProviderScope } from '../../infra/provider-scope.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
+import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '../shutdown-settlement.js';
 
 type CoordinatorBootSnapshot = {
   version?: string;
@@ -113,6 +114,7 @@ export type CoordinatorCoreOptions = {
   getTextProjectionState?: () => HealthSnapshot['textProjectionState'];
   disposeLifecycleReactor?: () => void | Promise<void>;
   onStopped?: () => void;
+  acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
   /**

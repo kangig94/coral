@@ -608,10 +608,6 @@ export function createCoordinatorCore(
       ? { discardSessionArtifacts: options.discardSessionArtifacts }
       : {}),
   });
-  // Coordinator-owned abort registry for internal KB jobs (source-import,
-  // reindex). Shared with `createCoordinatorControl.abortJobs` so
-  // `coral-cli abort <kb-job-id>` reaches the KB job's AbortController —
-  // distinct from per-ExecutionService provider job registries.
   const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
 
   const control = createCoordinatorControl({
@@ -1365,6 +1361,9 @@ export function createCoordinatorCore(
           publishedCompatibilitySocketAddresses,
         )),
     onStopped: options.onStopped,
+    ...(options.acceptProcessExitRemainder === undefined
+      ? {}
+      : { acceptProcessExitRemainder: options.acceptProcessExitRemainder }),
     onFatalShutdownError: options.onFatalShutdownError,
   };
 
@@ -1373,6 +1372,9 @@ export function createCoordinatorCore(
   // A starting incumbent must accept explicit shutdown before its idle watcher exists.
   ipcServer.onShutdownRequest = (reason) => {
     void resolvedLifecycleController.shutdown(reason).catch(() => {});
+  };
+  ipcServer.onShutdownRecoveryAccepted = () => {
+    resolvedLifecycleController.requestShutdownRetry();
   };
 
   return {

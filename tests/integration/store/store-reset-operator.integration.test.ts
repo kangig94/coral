@@ -24,6 +24,7 @@ import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
+  ACTIVE_STORE_SELECTION_VERSION,
   encodeActiveStoreSelection,
   readActiveStoreSelection,
   readActiveStoreTransition,
@@ -92,7 +93,7 @@ function routedManifest(version: string, buildSetId: string): StrictBundleManife
 
 function selection(manifest: StrictBundleManifest, bundleDir: string): ActiveStoreSelection {
   return {
-    version: 1,
+    version: ACTIVE_STORE_SELECTION_VERSION,
     manifest,
     bundleDir,
     activeStoreFingerprint: manifest.storeFormatFingerprint,

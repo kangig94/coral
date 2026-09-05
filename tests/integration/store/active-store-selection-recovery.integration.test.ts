@@ -24,6 +24,8 @@ import { canonicalContractJson } from '#src/infra/persisted-contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
+  ACTIVE_STORE_SELECTION_VERSION,
+  ACTIVE_STORE_TRANSITION_VERSION,
   encodeActiveStoreSelection,
   encodeActiveStoreTransition,
   readActiveStoreSelection,
@@ -122,7 +124,7 @@ function manifest(version: string, buildSetId: string): StrictBundleManifest {
 
 function selection(expected: StrictBundleManifest, bundleDir: string): ActiveStoreSelection {
   return {
-    version: 1,
+    version: ACTIVE_STORE_SELECTION_VERSION,
     manifest: expected,
     bundleDir,
     activeStoreFingerprint: expected.storeFormatFingerprint,
@@ -293,7 +295,7 @@ describe('active-store selection recovery', () => {
     const olderManifest = manifest('0.0.0-rc.1', '223e4567-e89b-42d3-a456-426614174000');
     const olderSelection = selection(olderManifest, createBundle(root, olderManifest));
     const staleTransition: ActiveStoreTransition = {
-      version: 1,
+      version: ACTIVE_STORE_TRANSITION_VERSION,
       transitionId: '323e4567-e89b-42d3-a456-426614174000',
       kind: 'selection-recovery',
       evidence: { kind: 'selection-absent', storeEvidence: { kind: 'pending-classification' } },
@@ -329,7 +331,7 @@ describe('active-store selection recovery', () => {
     const newerManifest = manifest('99.0.0', '223e4567-e89b-42d3-a456-426614174000');
     const newerSelection = selection(newerManifest, createBundle(root, newerManifest));
     const staleTransition: ActiveStoreTransition = {
-      version: 1,
+      version: ACTIVE_STORE_TRANSITION_VERSION,
       transitionId: '423e4567-e89b-42d3-a456-426614174000',
       kind: 'selection-recovery',
       evidence: { kind: 'selection-absent', storeEvidence: { kind: 'pending-classification' } },
@@ -742,7 +744,7 @@ describe('active-store selection recovery', () => {
     const priorSelection = selection(selectedManifest, createBundle(root, selectedManifest));
     unlinkSync(join(priorSelection.bundleDir, 'coral-cli.cjs'));
     const transition: ActiveStoreTransition = {
-      version: 1,
+      version: ACTIVE_STORE_TRANSITION_VERSION,
       transitionId: '323e4567-e89b-42d3-a456-426614174000',
       kind: 'selection-recovery',
       evidence: {

@@ -1463,7 +1463,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                 this.deps.abortRegistry.hold(
                   jobId,
                   `durable containment hold persistence failed: ${errorMessage(error)}`,
-                  `Run coral-cli abort ${jobId} again to retry durable abandonment without sending another signal.`,
+                  `Run coral-cli abort jobs ${jobId} again to retry durable abandonment without sending another signal.`,
                   control.abandon,
                 );
               }
@@ -1473,7 +1473,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
               this.deps.abortRegistry.hold(
                 jobId,
                 containmentStatus.reason,
-                `Run coral-cli abort ${jobId} again to abandon job ownership without proving process absence or sending another signal.`,
+                `Run coral-cli abort jobs ${jobId} again to abandon job ownership without proving process absence or sending another signal.`,
                 control.abandon,
               );
             }
@@ -1481,7 +1481,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
               jobId,
               requestForRoute.sessionId,
               `Durable containment pid=${identity.pid} is held (${containmentStatus.reason}). ` +
-                `Cleanup retries every ${containmentStatus.retryIntervalMs}ms. Run coral-cli abort ${jobId} to ` +
+                `Cleanup retries every ${containmentStatus.retryIntervalMs}ms. Run coral-cli abort jobs ${jobId} to ` +
                 'abandon the hold; abandonment releases job ownership without proving process absence or terminating the process.',
             );
             return;

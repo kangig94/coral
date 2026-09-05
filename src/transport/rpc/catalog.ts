@@ -336,6 +336,16 @@ export const providerProxySetContainRpcSpec = {
   http: { method: 'POST', path: '/coordinator/provider-proxy-sets/contain' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
+export const jobsAbortRpcSpec = {
+  name: 'jobs.abort',
+  kind: 'unary',
+  requires: 'jobs:control',
+  requestSchema: jobAbortSchema,
+  responseKind: 'json',
+  portKey: 'jobs',
+  http: { method: 'POST', path: '/jobs/abort' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const transportOperationalCarveouts = [
   '/health',
   '/admin/shutdown',
@@ -413,15 +423,7 @@ export const rpcCatalog = [
     portKey: 'expansion',
     http: { method: 'GET', path: '/coordinator/bindings/:binding' },
   },
-  {
-    name: 'jobs.abort',
-    kind: 'unary',
-    requires: 'jobs:control',
-    requestSchema: jobAbortSchema,
-    responseKind: 'json',
-    portKey: 'jobs',
-    http: { method: 'POST', path: '/jobs/abort' },
-  },
+  jobsAbortRpcSpec,
   {
     name: 'jobs.list',
     kind: 'unary',

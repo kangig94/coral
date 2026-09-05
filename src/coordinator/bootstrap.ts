@@ -288,6 +288,11 @@ export async function main(): Promise<number> {
       onStopped: () => {
         bootstrapProbeExitGate.requestExit(0);
       },
+      acceptProcessExitRemainder: (remainder) => ({
+        kind: 'accepted',
+        remainder,
+        requestExit: () => bootstrapProbeExitGate.requestExit(0),
+      }),
       onFatalShutdownError: (error) => {
         backendLog.error('Fatal shutdown error', error);
         const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'fatal_shutdown_error', error, 1);

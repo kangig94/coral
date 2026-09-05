@@ -4,7 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
-import { ShutdownSettlementLedger, type ShutdownObligation } from '#src/coordinator/shutdown-settlement.js';
+import {
+  ShutdownSettlementLedger,
+  type ProcessExitRemainder,
+  type ProcessExitRemainderAcceptance,
+  type ShutdownAuthorityReleaseBoundary,
+  type ShutdownObligation,
+} from '#src/coordinator/shutdown-settlement.js';
 import type {
   ProviderProxyAuthorityRegistry,
   ProviderProxySetAuthority,
@@ -30,6 +36,7 @@ function buildHarness(opts: {
   closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
   reason?: string;
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
+  acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
 }): Harness {
   const time = new VirtualTime();
   const callLog: CallLog = [];
@@ -136,6 +143,9 @@ function buildHarness(opts: {
     log: (msg) => {
       logLines.push(msg);
     },
+    ...(opts.acceptProcessExitRemainder === undefined
+      ? {}
+      : { acceptProcessExitRemainder: opts.acceptProcessExitRemainder }),
   };
 
   return {
@@ -214,26 +224,58 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(false);
   });
 
-  it('returns a retryable hold when a non-required finalizer rejects', async () => {
+  it('delegates a rejected process-exit finalizer after releasing authority', async () => {
     let attempts = 0;
+    const requestExit = vi.fn();
     const harness = buildHarness({
       hooksOnShutdown: async () => {
         attempts += 1;
-        if (attempts === 1) throw new Error('hook unavailable');
+        throw new Error('hook unavailable');
+      },
+      acceptProcessExitRemainder: (remainder) => ({ kind: 'accepted', remainder, requestExit }),
+    });
+
+    const disposition = await runShutdownSequence(harness.ctx);
+
+    expect(disposition).toMatchObject({
+      disposition: 'delegated',
+      owner: 'process-exit',
+      deferredFailures: [{ label: 'hooks.onShutdown', error: expect.any(Error) }],
+    });
+    expect(harness.closeIpcCalled()).toBe(true);
+    expect(attempts).toBe(1);
+    expect(requestExit).not.toHaveBeenCalled();
+  });
+
+  it('retains authority when no process-exit owner accepts a rejected finalizer', async () => {
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {
+        throw new Error('hook unavailable');
       },
     });
 
     const held = requireHeld(await runShutdownSequence(harness.ctx));
 
-    expect(heldFailureDetail(held)).toContain('hooks.onShutdown: hook unavailable');
     expect(held.retainedAuthority).toMatchObject({
-      ipcSocket: false,
-      cleanupObligations: ['hooks.onShutdown'],
-      operatorActions: [],
+      ipcSocket: true,
+      cleanupObligations: ['hooks.onShutdown', 'provider control and IPC authority release'],
     });
-    expect(harness.closeIpcCalled()).toBe(true);
-    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
-    expect(attempts).toBe(2);
+    expect(harness.closeIpcCalled()).toBe(false);
+  });
+
+  it('retains authority when process exit refuses a rejected finalizer', async () => {
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {
+        throw new Error('hook unavailable');
+      },
+      acceptProcessExitRemainder: () => ({ kind: 'refused', detail: 'exit owner unavailable' }),
+    });
+
+    const held = requireHeld(await runShutdownSequence(harness.ctx));
+
+    expect(held.retainedAuthority.ipcSocket).toBe(true);
+    expect(harness.closeIpcCalled()).toBe(false);
+    expect(harness.logLines).toContain('process-exit remainder acceptance refused: exit owner unavailable\n');
   });
 
   it('reports recovery teardown timeout and joins its in-flight settlement on retry', async () => {
@@ -650,11 +692,12 @@ describe('runShutdownSequence drain budget', () => {
       retainedAuthority: () => ({ cleanupObligations: ['later cleanup'] }),
       remainder: { owner: 'none' },
     };
-    const authorityRelease: ShutdownObligation = {
+    const authorityToken = {};
+    const authorityRelease: ShutdownAuthorityReleaseBoundary = {
       label: 'authority release',
-      task: async () => ({ confirmed: true }),
+      prepare: () => Promise.resolve({ confirmed: true, token: authorityToken }),
+      commit: () => Promise.resolve({ confirmed: true }),
       retainedAuthority: () => ({ cleanupObligations: ['authority release'] }),
-      remainder: { owner: 'none' },
     };
     const ledger = new ShutdownSettlementLedger({
       budgetMs: 1_000,
@@ -760,7 +803,7 @@ describe('runShutdownSequence drain budget', () => {
             jobId: 'hard-held-job',
             provider: 'claude',
             jobDir: '/tmp/coral/jobs/hard-held-job',
-            actionCommand: 'coral-cli abort hard-held-job',
+            actionCommand: 'coral-cli abort jobs hard-held-job',
           },
           {
             kind: 'provider-proxy-set-containment',
@@ -1002,11 +1045,12 @@ describe('ShutdownSettlementLedger exit gate', () => {
       retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['commit-started finalization'] }),
       remainder: { owner: 'none' },
     };
-    const authorityRelease: ShutdownObligation = {
+    const authorityToken = {};
+    const authorityRelease: ShutdownAuthorityReleaseBoundary = {
       label: 'authority release',
-      task: authorityReleaseTask,
+      prepare: () => Promise.resolve({ confirmed: true, token: authorityToken }),
+      commit: authorityReleaseTask,
       retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
-      remainder: { owner: 'none' },
     };
     const ledger = new ShutdownSettlementLedger({ budgetMs: 1_000, time, log: () => {}, pollMs: 50 });
 
@@ -1019,6 +1063,234 @@ describe('ShutdownSettlementLedger exit gate', () => {
       cleanupObligations: ['commit-started finalization', 'authority release'],
       operatorActions: [],
     });
+  });
+
+  it('gives every retry its own budget before transferring the exact final process-exit remainder', async () => {
+    const time = new VirtualTime();
+    const retryOrder: string[] = [];
+    const hangingTask = vi.fn(() => {
+      retryOrder.push('process-exit');
+      return new Promise<never>(() => {});
+    });
+    const blockingTask = vi.fn(async () => {
+      retryOrder.push('blocking');
+      return { confirmed: true as const };
+    });
+    const authorityReleaseTask = vi.fn(async () => {
+      retryOrder.push('commit');
+      return { confirmed: true as const };
+    });
+    const hanging: ShutdownObligation = {
+      label: 'process-exit finalizer',
+      task: hangingTask,
+      retainedAuthority: () => ({ cleanupObligations: ['process-exit finalizer'] }),
+      remainder: { owner: 'process-exit' },
+    };
+    const blocking: ShutdownObligation = {
+      label: 'blocking finalizer',
+      task: blockingTask,
+      retainedAuthority: () => ({ cleanupObligations: ['blocking finalizer'] }),
+      remainder: { owner: 'none' },
+    };
+    const authorityToken = {};
+    const authorityPrepareTask = vi.fn(() => {
+      retryOrder.push('prepare');
+      return Promise.resolve({ confirmed: true as const, token: authorityToken });
+    });
+    const authorityRelease: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: authorityPrepareTask,
+      commit: authorityReleaseTask,
+      retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
+    };
+    const requestExit = vi.fn();
+    let offeredRemainder: ProcessExitRemainder | null = null;
+    const ledger = new ShutdownSettlementLedger({
+      budgetMs: 900,
+      time,
+      log: () => {},
+      pollMs: 50,
+      acceptProcessExitRemainder: (remainder) => {
+        retryOrder.push('accept');
+        offeredRemainder = remainder;
+        return { kind: 'accepted', remainder, requestExit };
+      },
+    });
+
+    const firstAttempt = ledger.run(hanging);
+    await flush();
+    time.tick(900);
+    await expect(firstAttempt).resolves.toMatchObject({ kind: 'declined', cause: 'timed-out' });
+    await expect(ledger.run(blocking)).resolves.toMatchObject({ kind: 'declined', cause: 'budget-exhausted' });
+    const held = requireHeld(await ledger.gate(authorityRelease));
+    retryOrder.length = 0;
+
+    const retry = held.retry();
+    await flush();
+    expect(blockingTask).toHaveBeenCalledOnce();
+    expect(authorityPrepareTask).toHaveBeenCalledOnce();
+    expect(hangingTask).toHaveBeenCalledTimes(2);
+    expect(authorityReleaseTask).not.toHaveBeenCalled();
+    expect(retryOrder).toEqual(['blocking', 'prepare', 'process-exit']);
+    time.tick(225);
+    const retried = await retry;
+
+    expect(retried).toMatchObject({
+      disposition: 'delegated',
+      owner: 'process-exit',
+      deferredFailures: [{ label: 'process-exit finalizer' }],
+    });
+    if (retried.disposition !== 'delegated') throw new Error('expected delegated shutdown');
+    expect(authorityReleaseTask).toHaveBeenCalledOnce();
+    expect(retried.acceptance.remainder).toBe(offeredRemainder);
+    expect(retried.deferredFailures).toBe(retried.acceptance.remainder.deferredFailures);
+    expect(retried.deferredFailures[0]?.error).toEqual(
+      expect.objectContaining({ message: 'timed-out: exceeded 225ms' }),
+    );
+    expect(retryOrder).toEqual(['blocking', 'prepare', 'process-exit', 'accept', 'commit']);
+    expect(requestExit).not.toHaveBeenCalled();
+  });
+
+  it('retries only authority preparation and commit after accepting process-exit ownership', async () => {
+    const time = new VirtualTime();
+    const processExitTask = vi.fn(async () => {
+      throw new Error('process finalizer unavailable');
+    });
+    const processExit: ShutdownObligation = {
+      label: 'process-exit finalizer',
+      task: processExitTask,
+      retainedAuthority: () => ({ cleanupObligations: ['process-exit finalizer'] }),
+      remainder: { owner: 'process-exit' },
+    };
+    const tokens = [{}, {}];
+    const commit = vi
+      .fn<ShutdownAuthorityReleaseBoundary['commit']>()
+      .mockResolvedValueOnce({ confirmed: false, detail: 'IPC release pending' })
+      .mockResolvedValueOnce({ confirmed: true });
+    const prepare = vi.fn<ShutdownAuthorityReleaseBoundary['prepare']>(() => {
+      const token = tokens.shift();
+      if (token === undefined) throw new Error('unexpected authority preparation');
+      return Promise.resolve({ confirmed: true, token });
+    });
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare,
+      commit,
+      retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
+    };
+    const requestExit = vi.fn();
+    const accept = vi.fn(
+      (remainder: ProcessExitRemainder): ProcessExitRemainderAcceptance => ({
+        kind: 'accepted',
+        remainder,
+        requestExit,
+      }),
+    );
+    const ledger = new ShutdownSettlementLedger({
+      budgetMs: 900,
+      time,
+      log: () => {},
+      pollMs: 50,
+      acceptProcessExitRemainder: accept,
+    });
+
+    await expect(ledger.run(processExit)).resolves.toMatchObject({ kind: 'declined', cause: 'rejected' });
+    const pending = await ledger.gate(boundary);
+
+    expect(pending).toMatchObject({
+      disposition: 'transfer-pending',
+      owner: 'process-exit',
+      boundaryFailure: { label: 'authority release' },
+      retainedAuthority: { ipcSocket: true, cleanupObligations: ['authority release'] },
+    });
+    if (pending.disposition !== 'transfer-pending') throw new Error('expected pending authority transfer');
+    const accepted = pending.acceptance;
+    expect(pending.deferredFailures).toBe(accepted.remainder.deferredFailures);
+
+    const delegated = await pending.retry();
+
+    expect(delegated).toMatchObject({ disposition: 'delegated', owner: 'process-exit' });
+    if (delegated.disposition !== 'delegated') throw new Error('expected delegated shutdown');
+    expect(delegated.acceptance).toBe(accepted);
+    expect(delegated.deferredFailures).toBe(accepted.remainder.deferredFailures);
+    expect(processExitTask).toHaveBeenCalledOnce();
+    expect(accept).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(requestExit).not.toHaveBeenCalled();
+  });
+
+  it('retains authority without soliciting process-exit ownership when preparation fails', async () => {
+    const time = new VirtualTime();
+    const processExit: ShutdownObligation = {
+      label: 'process-exit finalizer',
+      task: async () => {
+        throw new Error('process finalizer unavailable');
+      },
+      retainedAuthority: () => ({ cleanupObligations: ['process-exit finalizer'] }),
+      remainder: { owner: 'process-exit' },
+    };
+    const accept = vi.fn<(remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance>();
+    const commit = vi.fn<ShutdownAuthorityReleaseBoundary['commit']>();
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: () => Promise.resolve({ confirmed: false, detail: 'authority snapshot unavailable' }),
+      commit,
+      retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
+    };
+    const ledger = new ShutdownSettlementLedger({
+      budgetMs: 900,
+      time,
+      log: () => {},
+      pollMs: 50,
+      acceptProcessExitRemainder: accept,
+    });
+
+    await expect(ledger.run(processExit)).resolves.toMatchObject({ kind: 'declined', cause: 'rejected' });
+    const held = requireHeld(await ledger.gate(boundary));
+
+    expect(held.retainedAuthority).toMatchObject({
+      ipcSocket: true,
+      cleanupObligations: ['process-exit finalizer', 'authority release'],
+    });
+    expect(accept).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('retains authority while a successor-recovery obligation remains declined', async () => {
+    const time = new VirtualTime();
+    const authorityReleaseTask = vi.fn(async () => ({ confirmed: true as const }));
+    let successorAttempts = 0;
+    const successorRecovery: ShutdownObligation = {
+      label: 'startup recovery handoff',
+      task: async () => {
+        successorAttempts += 1;
+        if (successorAttempts === 1) throw new Error('successor not accepted');
+        return { confirmed: true };
+      },
+      retainedAuthority: () => ({ cleanupObligations: ['startup recovery handoff'] }),
+      remainder: { owner: 'successor-recovery', via: 'startup recovery' },
+    };
+    const authorityToken = {};
+    const authorityRelease: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: () => Promise.resolve({ confirmed: true, token: authorityToken }),
+      commit: authorityReleaseTask,
+      retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
+    };
+    const ledger = new ShutdownSettlementLedger({ budgetMs: 900, time, log: () => {}, pollMs: 50 });
+
+    await expect(ledger.run(successorRecovery)).resolves.toMatchObject({ kind: 'declined', cause: 'rejected' });
+    const held = requireHeld(await ledger.gate(authorityRelease));
+
+    expect(authorityReleaseTask).not.toHaveBeenCalled();
+    expect(held.retainedAuthority).toMatchObject({
+      ipcSocket: true,
+      cleanupObligations: ['startup recovery handoff', 'authority release'],
+    });
+
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityReleaseTask).toHaveBeenCalledOnce();
   });
 });
 

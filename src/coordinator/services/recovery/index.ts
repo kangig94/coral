@@ -1051,7 +1051,7 @@ export function createRecoveryCoordinator(
             jobId,
             launchRecord.sessionId,
             `${reason} Repair or remove the status row and retry the coordinator-job-recovery quarantine, or run ` +
-              `coral-cli abort ${jobId} to abandon job ownership without proving process absence or sending a signal.`,
+              `coral-cli abort jobs ${jobId} to abandon job ownership without proving process absence or sending a signal.`,
           );
           state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
           controls.clearProcessLocalCleanup();
@@ -1059,7 +1059,7 @@ export function createRecoveryCoordinator(
           return {
             kind: 'quarantine',
             detail:
-              `${reason} Repair or remove the status row and retry this quarantine, or run coral-cli abort ` +
+              `${reason} Repair or remove the status row and retry this quarantine, or run coral-cli abort jobs ` +
               `${jobId} to abandon job ownership without proving process absence or sending a signal.`,
           };
         }
@@ -1127,7 +1127,7 @@ export function createRecoveryCoordinator(
             launchRecord.sessionId,
             `Durable recovery containment pid=${runtimeRecord.pid} is held (${reason}). ` +
               `Repair the recorded containment and retry the coordinator-job-recovery quarantine, or run ` +
-              `coral-cli abort ${jobId} to abandon job ownership without proving process absence or sending a signal.`,
+              `coral-cli abort jobs ${jobId} to abandon job ownership without proving process absence or sending a signal.`,
           );
           state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
           controls.clearProcessLocalCleanup();
@@ -1135,7 +1135,7 @@ export function createRecoveryCoordinator(
           return {
             kind: 'quarantine',
             detail:
-              `${reason}. Repair the recorded containment and retry this quarantine, or run coral-cli abort ` +
+              `${reason}. Repair the recorded containment and retry this quarantine, or run coral-cli abort jobs ` +
               `${jobId} to abandon job ownership without proving process absence or sending a signal.`,
           };
         }

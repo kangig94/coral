@@ -15,7 +15,11 @@ import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-
 import { handoffRoutingStatusPathForRunDir } from '#src/infra/path/coordinator.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { encodeActiveStoreSelection, resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
+import {
+  ACTIVE_STORE_SELECTION_VERSION,
+  encodeActiveStoreSelection,
+  resolveActiveStoreRecordPaths,
+} from '#src/store/active-store-selection.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import {
   assertBuildArtifactsAvailable,
@@ -84,7 +88,7 @@ function installBundle(version: string, bundleHashMarker: string): InstalledBund
 
 function encodedSelection(bundle: InstalledBundle): Uint8Array {
   return encodeActiveStoreSelection({
-    version: 1,
+    version: ACTIVE_STORE_SELECTION_VERSION,
     manifest: bundle.manifest,
     bundleDir: bundle.bundleDir,
     activeStoreFingerprint: bundle.manifest.storeFormatFingerprint,

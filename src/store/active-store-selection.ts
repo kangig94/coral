@@ -13,11 +13,13 @@ import { resolveGenerationBoundaryPaths } from './generation-mutation-coordinati
 
 export const ACTIVE_STORE_SELECTION_MAX_BYTES = 16 * 1024;
 export const ACTIVE_STORE_TRANSITION_MAX_BYTES = 32 * 1024;
-export const ACTIVE_STORE_SELECTION_VERSION = 1 as const;
-export const ACTIVE_STORE_TRANSITION_VERSION = 1 as const;
+export const ACTIVE_STORE_SELECTION_VERSION = 2 as const;
+export const ACTIVE_STORE_TRANSITION_VERSION = 2 as const;
 
 const ACTIVE_STORE_SELECTION_FILE_NAME = `active-store-selection.v${ACTIVE_STORE_SELECTION_VERSION}.json`;
 const ACTIVE_STORE_TRANSITION_FILE_NAME = `active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}.json`;
+const ACTIVE_STORE_SELECTION_V1_FILE_NAME = 'active-store-selection.v1.json';
+const ACTIVE_STORE_TRANSITION_V1_FILE_NAME = 'active-store-transition.v1.json';
 const PRIVATE_FILE_MODE = 0o600n;
 const PERMISSION_BITS = 0o777n;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -51,6 +53,7 @@ export type ActiveStoreRecordReadFailureCode =
   | 'record_not_regular'
   | 'record_mode'
   | 'record_changed'
+  | 'record_incoherent'
   | 'record_unavailable';
 
 export type ActiveStoreSelection = Readonly<{
@@ -112,6 +115,8 @@ export type ActiveStoreRecordPaths = Readonly<{
   coordinationRoot: string;
   selectionFile: string;
   transitionFile: string;
+  selectionV1File: string;
+  transitionV1File: string;
 }>;
 
 export type ActiveStoreSelectionReadResult =
@@ -120,20 +125,56 @@ export type ActiveStoreSelectionReadResult =
   | { readonly kind: 'malformed'; readonly evidence: ActiveStoreSelectionMalformedEvidence }
   | { readonly kind: 'rejected'; readonly failureCode: ActiveStoreRecordReadFailureCode };
 
+export type ActiveStoreSelectionCoordinationReadResult =
+  | ActiveStoreSelectionReadResult
+  | { readonly kind: 'v1'; readonly selection: ActiveStoreSelectionV1 };
+
 export type ActiveStoreTransitionReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'valid'; readonly transition: ActiveStoreTransition }
   | { readonly kind: 'malformed'; readonly failureCode: ActiveStoreTransitionFailureCode }
   | { readonly kind: 'rejected'; readonly failureCode: ActiveStoreRecordReadFailureCode };
 
+export type ActiveStoreTransitionV1ReadResult =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'legacy' }
+  | { readonly kind: 'rejected'; readonly failureCode: ActiveStoreRecordReadFailureCode };
+
 export type ActiveStoreSelectionRelation = 'exact' | 'advance' | 'selected-newer';
+
+const activeStoreManifestV1Schema = z
+  .object({
+    version: strictBundleManifestSchema.shape.version,
+    buildSetId: strictBundleManifestSchema.shape.buildSetId,
+    bundleHash: strictBundleManifestSchema.shape.bundleHash,
+    cliBundleHash: strictBundleManifestSchema.shape.cliBundleHash,
+    claudeAppserverBundleHash: strictBundleManifestSchema.shape.claudeAppserverBundleHash,
+    flavor: strictBundleManifestSchema.shape.flavor,
+    storeFormatFingerprint: strictBundleManifestSchema.shape.storeFormatFingerprint,
+  })
+  .strict();
+
+const activeStoreManifestV2Schema = activeStoreManifestV1Schema
+  .extend({ durableWrapperBundleHash: strictBundleManifestSchema.shape.durableWrapperBundleHash })
+  .strict();
+
+type ActiveStoreManifestV1 = z.infer<typeof activeStoreManifestV1Schema>;
+
+const activeStoreSelectionV1StructuralSchema = z
+  .object({
+    version: z.literal(1),
+    manifest: activeStoreManifestV1Schema,
+    bundleDir: z.string().min(1),
+    activeStoreFingerprint: activeStoreManifestV1Schema.shape.storeFormatFingerprint,
+  })
+  .strict();
 
 const activeStoreSelectionStructuralSchema = z
   .object({
     version: z.literal(ACTIVE_STORE_SELECTION_VERSION),
-    manifest: strictBundleManifestSchema,
+    manifest: activeStoreManifestV2Schema,
     bundleDir: z.string().min(1),
-    activeStoreFingerprint: strictBundleManifestSchema.shape.storeFormatFingerprint,
+    activeStoreFingerprint: activeStoreManifestV2Schema.shape.storeFormatFingerprint,
   })
   .strict();
 
@@ -141,9 +182,21 @@ function isLexicallyCanonicalAbsolutePath(path: string): boolean {
   return isAbsolute(path) && resolve(path) === path;
 }
 
-function selectionManifestAgrees(selection: ActiveStoreSelection): boolean {
+function selectionManifestAgrees(selection: {
+  readonly manifest: { readonly storeFormatFingerprint: string };
+  readonly activeStoreFingerprint: string;
+}): boolean {
   return selection.activeStoreFingerprint === selection.manifest.storeFormatFingerprint;
 }
+
+const activeStoreSelectionV1Schema = activeStoreSelectionV1StructuralSchema.superRefine((selection, context) => {
+  if (!isLexicallyCanonicalAbsolutePath(selection.bundleDir)) {
+    context.addIssue({ code: 'custom', message: 'bundleDir must be canonical' });
+  }
+  if (!selectionManifestAgrees(selection)) {
+    context.addIssue({ code: 'custom', message: 'activeStoreFingerprint must match the manifest' });
+  }
+});
 
 export const activeStoreSelectionSchema = activeStoreSelectionStructuralSchema.superRefine((selection, context) => {
   if (!isLexicallyCanonicalAbsolutePath(selection.bundleDir)) {
@@ -157,10 +210,10 @@ export const activeStoreSelectionSchema = activeStoreSelectionStructuralSchema.s
 const newerStoreEvidenceSchema = z
   .object({
     kind: z.literal('newer-incompatible'),
-    currentFingerprint: strictBundleManifestSchema.shape.storeFormatFingerprint,
-    currentProductVersion: strictBundleManifestSchema.shape.version,
-    storedFingerprint: strictBundleManifestSchema.shape.storeFormatFingerprint,
-    storedProductVersion: strictBundleManifestSchema.shape.version,
+    currentFingerprint: activeStoreManifestV2Schema.shape.storeFormatFingerprint,
+    currentProductVersion: activeStoreManifestV2Schema.shape.version,
+    storedFingerprint: activeStoreManifestV2Schema.shape.storeFormatFingerprint,
+    storedProductVersion: activeStoreManifestV2Schema.shape.version,
   })
   .strict()
   .superRefine((evidence, context) => {
@@ -194,7 +247,7 @@ const recoverableInvalidTargetFailureSchema = z
 const recoverableInvalidTargetEvidenceSchema = z
   .object({
     bundleDir: z.string().min(1),
-    expectedManifest: strictBundleManifestSchema,
+    expectedManifest: activeStoreManifestV2Schema,
     failure: recoverableInvalidTargetFailureSchema,
   })
   .strict();
@@ -248,6 +301,14 @@ const activeStoreTransitionEvidenceSchema = z.union([
   currentSelectionNewerStoreEvidenceSchema,
 ]);
 
+const activeStoreManifestV1Fields = Object.keys(activeStoreManifestV1Schema.shape) as ReadonlyArray<
+  keyof ActiveStoreManifestV1
+>;
+
+function activeStoreManifestV1Matches(left: ActiveStoreManifestV1, right: ActiveStoreManifestV1): boolean {
+  return activeStoreManifestV1Fields.every((field) => left[field] === right[field]);
+}
+
 export function classifyActiveStoreSelection(
   selected: ActiveStoreSelection,
   current: ActiveStoreSelection,
@@ -268,6 +329,39 @@ export function classifyActiveStoreSelection(
   return precedence > 0 ? 'selected-newer' : 'advance';
 }
 
+export function classifyActiveStoreSelectionV1(
+  selected: ActiveStoreSelectionV1,
+  current: ActiveStoreSelection,
+): ActiveStoreSelectionRelation {
+  const currentV1 = projectActiveStoreSelectionV1(current);
+  if (
+    selected.bundleDir === currentV1.bundleDir &&
+    selected.activeStoreFingerprint === currentV1.activeStoreFingerprint &&
+    activeStoreManifestV1Matches(selected.manifest, currentV1.manifest)
+  ) {
+    return 'exact';
+  }
+
+  return compareProductVersions(selected.manifest.version, current.manifest.version) > 0 ? 'selected-newer' : 'advance';
+}
+
+export function resolveActiveStoreSelectionV1(
+  selected: ActiveStoreSelectionV1,
+  manifest: StrictBundleManifest,
+): ActiveStoreSelection | null {
+  try {
+    const resolved = validateSelectionValue({
+      version: ACTIVE_STORE_SELECTION_VERSION,
+      manifest,
+      bundleDir: selected.bundleDir,
+      activeStoreFingerprint: selected.activeStoreFingerprint,
+    });
+    return classifyActiveStoreSelectionV1(selected, resolved) === 'exact' ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
 function classifiedStoreEvidence(evidence: ActiveStoreTransitionEvidence): NewerStoreEvidence | null {
   if (evidence.kind === 'current-selection-newer-store') return evidence.newerStoreEvidence;
   return evidence.storeEvidence.kind === 'newer-incompatible' ? evidence.storeEvidence : null;
@@ -279,7 +373,7 @@ export const activeStoreTransitionSchema = z
     transitionId: z.string().regex(TRANSITION_ID_PATTERN),
     kind: z.literal('selection-recovery'),
     evidence: activeStoreTransitionEvidenceSchema,
-    currentManifest: strictBundleManifestSchema,
+    currentManifest: activeStoreManifestV2Schema,
     currentBundleDir: z.string().min(1).refine(isLexicallyCanonicalAbsolutePath),
   })
   .strict()
@@ -301,6 +395,8 @@ export const activeStoreTransitionSchema = z
       context.addIssue({ code: 'custom', message: 'current selection evidence must describe the current build' });
     }
   });
+
+export type ActiveStoreSelectionV1 = z.infer<typeof activeStoreSelectionV1Schema>;
 
 export class ActiveStoreSelectionDecodeError extends Error {
   readonly code: ActiveStoreSelectionFailureCode;
@@ -343,6 +439,8 @@ export function resolveActiveStoreRecordPaths(runtime: Pick<Runtime, 'paths'>): 
     coordinationRoot,
     selectionFile: join(coordinationRoot, ACTIVE_STORE_SELECTION_FILE_NAME),
     transitionFile: join(coordinationRoot, ACTIVE_STORE_TRANSITION_FILE_NAME),
+    selectionV1File: join(coordinationRoot, ACTIVE_STORE_SELECTION_V1_FILE_NAME),
+    transitionV1File: join(coordinationRoot, ACTIVE_STORE_TRANSITION_V1_FILE_NAME),
   };
 }
 
@@ -375,6 +473,41 @@ function validateSelectionValue(value: unknown): ActiveStoreSelection {
   return parsed.data;
 }
 
+function projectActiveStoreManifestV1(manifest: StrictBundleManifest): ActiveStoreManifestV1 {
+  return {
+    version: manifest.version,
+    buildSetId: manifest.buildSetId,
+    bundleHash: manifest.bundleHash,
+    cliBundleHash: manifest.cliBundleHash,
+    claudeAppserverBundleHash: manifest.claudeAppserverBundleHash,
+    flavor: manifest.flavor,
+    storeFormatFingerprint: manifest.storeFormatFingerprint,
+  };
+}
+
+function projectActiveStoreSelectionV1(selection: ActiveStoreSelection): ActiveStoreSelectionV1 {
+  return {
+    version: 1,
+    manifest: projectActiveStoreManifestV1(selection.manifest),
+    bundleDir: selection.bundleDir,
+    activeStoreFingerprint: selection.activeStoreFingerprint,
+  };
+}
+
+function encodeActiveStoreSelectionV1(selection: ActiveStoreSelection): Uint8Array {
+  const parsed = activeStoreSelectionV1Schema.safeParse(
+    projectActiveStoreSelectionV1(validateSelectionValue(selection)),
+  );
+  if (!parsed.success) {
+    throw new ActiveStoreSelectionDecodeError('selection_invalid_schema');
+  }
+  const bytes = new TextEncoder().encode(`${JSON.stringify(parsed.data)}\n`);
+  if (bytes.byteLength > ACTIVE_STORE_SELECTION_MAX_BYTES) {
+    throw new ActiveStoreSelectionDecodeError('selection_too_large');
+  }
+  return bytes;
+}
+
 export function decodeActiveStoreSelection(bytes: Uint8Array): ActiveStoreSelection {
   if (bytes.byteLength > ACTIVE_STORE_SELECTION_MAX_BYTES) {
     throw new ActiveStoreSelectionDecodeError('selection_too_large');
@@ -397,29 +530,30 @@ export function encodeActiveStoreSelection(selection: ActiveStoreSelection): Uin
   return bytes;
 }
 
-export function decodeActiveStoreTransition(bytes: Uint8Array): ActiveStoreTransition {
-  if (bytes.byteLength > ACTIVE_STORE_TRANSITION_MAX_BYTES) {
-    throw new ActiveStoreTransitionDecodeError('transition_too_large');
-  }
-  const parsed = activeStoreTransitionSchema.safeParse(
-    parseJson(
-      bytes,
-      () => new ActiveStoreTransitionDecodeError('transition_invalid_utf8'),
-      () => new ActiveStoreTransitionDecodeError('transition_invalid_json'),
-    ),
-  );
+function validateTransitionValue(value: unknown): ActiveStoreTransition {
+  const parsed = activeStoreTransitionSchema.safeParse(value);
   if (!parsed.success) {
     throw new ActiveStoreTransitionDecodeError('transition_invalid_schema');
   }
   return parsed.data;
 }
 
-export function encodeActiveStoreTransition(transition: ActiveStoreTransition): Uint8Array {
-  const parsed = activeStoreTransitionSchema.safeParse(transition);
-  if (!parsed.success) {
-    throw new ActiveStoreTransitionDecodeError('transition_invalid_schema');
+export function decodeActiveStoreTransition(bytes: Uint8Array): ActiveStoreTransition {
+  if (bytes.byteLength > ACTIVE_STORE_TRANSITION_MAX_BYTES) {
+    throw new ActiveStoreTransitionDecodeError('transition_too_large');
   }
-  const bytes = new TextEncoder().encode(`${JSON.stringify(parsed.data)}\n`);
+  return validateTransitionValue(
+    parseJson(
+      bytes,
+      () => new ActiveStoreTransitionDecodeError('transition_invalid_utf8'),
+      () => new ActiveStoreTransitionDecodeError('transition_invalid_json'),
+    ),
+  );
+}
+
+export function encodeActiveStoreTransition(transition: ActiveStoreTransition): Uint8Array {
+  const parsed = validateTransitionValue(transition);
+  const bytes = new TextEncoder().encode(`${JSON.stringify(parsed)}\n`);
   if (bytes.byteLength > ACTIVE_STORE_TRANSITION_MAX_BYTES) {
     throw new ActiveStoreTransitionDecodeError('transition_too_large');
   }
@@ -502,29 +636,26 @@ function publishActiveStoreRecord(runtime: Runtime, path: string, bytes: Uint8Ar
 
 export function publishActiveStoreSelection(runtime: Runtime, selection: ActiveStoreSelection): void {
   const paths = resolveActiveStoreRecordPaths(runtime);
-  publishActiveStoreRecord(
-    runtime,
-    paths.selectionFile,
-    encodeActiveStoreSelection(selection),
-    'Active-store selection',
-  );
+  const v1Bytes = encodeActiveStoreSelectionV1(selection);
+  const currentBytes = encodeActiveStoreSelection(selection);
+  publishActiveStoreRecord(runtime, paths.selectionV1File, v1Bytes, 'Active-store selection v1 projection');
+  publishActiveStoreRecord(runtime, paths.selectionFile, currentBytes, 'Active-store selection');
 }
 
 export function publishActiveStoreTransition(runtime: Runtime, transition: ActiveStoreTransition): void {
   const paths = resolveActiveStoreRecordPaths(runtime);
-  publishActiveStoreRecord(
-    runtime,
-    paths.transitionFile,
-    encodeActiveStoreTransition(transition),
-    'Active-store transition',
-  );
+  const currentBytes = encodeActiveStoreTransition(transition);
+  publishActiveStoreRecord(runtime, paths.transitionFile, currentBytes, 'Active-store transition');
 }
 
-export function clearActiveStoreTransition(runtime: Runtime, expectedIdentity?: StorageBigIntStat): void {
-  const paths = resolveActiveStoreRecordPaths(runtime);
-  if (!runtime.storage.existsSync(paths.transitionFile)) return;
-  const link = runtime.storage.lstatSync(paths.transitionFile);
-  const stat = runtime.storage.statSync(paths.transitionFile, { bigint: true });
+function activeStoreTransitionIdentity(
+  runtime: Runtime,
+  path: string,
+  expectedIdentity?: StorageBigIntStat,
+): StorageBigIntStat | null {
+  if (!runtime.storage.existsSync(path)) return null;
+  const link = runtime.storage.lstatSync(path);
+  const stat = runtime.storage.statSync(path, { bigint: true });
   if (
     !link.isFile() ||
     link.isSymbolicLink() ||
@@ -536,13 +667,29 @@ export function clearActiveStoreTransition(runtime: Runtime, expectedIdentity?: 
       'Active-store transition changed before durable clear.',
     );
   }
-  runtime.storage.unlinkSync(paths.transitionFile);
-  if (!runtime.storage.syncDirectoryDurableSync(paths.coordinationRoot)) {
+  return stat;
+}
+
+function clearActiveStoreTransitionFile(runtime: Runtime, path: string, expectedIdentity?: StorageBigIntStat): void {
+  const identity = activeStoreTransitionIdentity(runtime, path, expectedIdentity);
+  if (identity === null) return;
+  runtime.storage.unlinkSync(path);
+  const coordinationRoot = resolveActiveStoreRecordPaths(runtime).coordinationRoot;
+  if (!runtime.storage.syncDirectoryDurableSync(coordinationRoot)) {
     throw new ActiveStoreCoordinationWriteError(
       'record_unavailable',
       'Active-store transition clear could not be synchronized durably.',
     );
   }
+}
+
+export function clearActiveStoreTransition(runtime: Runtime, expectedIdentity?: StorageBigIntStat): void {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  clearActiveStoreTransitionFile(runtime, paths.transitionFile, expectedIdentity);
+}
+
+export function clearActiveStoreTransitionV1(runtime: Runtime, expectedIdentity: StorageBigIntStat): void {
+  clearActiveStoreTransitionFile(runtime, resolveActiveStoreRecordPaths(runtime).transitionV1File, expectedIdentity);
 }
 
 type BoundedRecordReadResult =
@@ -721,6 +868,61 @@ function malformedSelectionEvidence(
   };
 }
 
+function validateSelectionV1Value(value: unknown): ActiveStoreSelectionV1 {
+  const parsed = activeStoreSelectionV1StructuralSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ActiveStoreSelectionDecodeError('selection_invalid_schema');
+  }
+  if (!selectionManifestAgrees(parsed.data)) {
+    throw new ActiveStoreSelectionDecodeError('selection_manifest_disagreement');
+  }
+  if (!isLexicallyCanonicalAbsolutePath(parsed.data.bundleDir)) {
+    throw new ActiveStoreSelectionDecodeError('selection_bundle_dir_not_canonical');
+  }
+  return parsed.data;
+}
+
+function decodeActiveStoreSelectionV1(bytes: Uint8Array): ActiveStoreSelectionV1 {
+  if (bytes.byteLength > ACTIVE_STORE_SELECTION_MAX_BYTES) {
+    throw new ActiveStoreSelectionDecodeError('selection_too_large');
+  }
+  return validateSelectionV1Value(
+    parseJson(
+      bytes,
+      () => new ActiveStoreSelectionDecodeError('selection_invalid_utf8'),
+      () => new ActiveStoreSelectionDecodeError('selection_invalid_json'),
+    ),
+  );
+}
+
+type ActiveStoreSelectionV1ReadResult =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'valid'; readonly selection: ActiveStoreSelectionV1 }
+  | { readonly kind: 'malformed'; readonly evidence: ActiveStoreSelectionMalformedEvidence }
+  | { readonly kind: 'rejected'; readonly failureCode: ActiveStoreRecordReadFailureCode };
+
+function readActiveStoreSelectionV1(runtime: Pick<Runtime, 'paths' | 'storage'>): ActiveStoreSelectionV1ReadResult {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  const read = readBoundedRecord(
+    runtime.storage,
+    paths.coordinationRoot,
+    paths.selectionV1File,
+    ACTIVE_STORE_SELECTION_MAX_BYTES,
+  );
+  if (read.kind === 'absent') return read;
+  if (read.kind === 'rejected') return read;
+  if (read.overLimit) {
+    return { kind: 'malformed', evidence: malformedSelectionEvidence(read.bytes, 'selection_too_large') };
+  }
+
+  try {
+    return { kind: 'valid', selection: decodeActiveStoreSelectionV1(read.bytes) };
+  } catch (error: unknown) {
+    const failureCode = error instanceof ActiveStoreSelectionDecodeError ? error.code : 'selection_invalid_schema';
+    return { kind: 'malformed', evidence: malformedSelectionEvidence(read.bytes, failureCode) };
+  }
+}
+
 export function readActiveStoreSelection(runtime: Pick<Runtime, 'paths' | 'storage'>): ActiveStoreSelectionReadResult {
   const paths = resolveActiveStoreRecordPaths(runtime);
   const read = readBoundedRecord(
@@ -741,6 +943,26 @@ export function readActiveStoreSelection(runtime: Pick<Runtime, 'paths' | 'stora
     const failureCode = error instanceof ActiveStoreSelectionDecodeError ? error.code : 'selection_invalid_schema';
     return { kind: 'malformed', evidence: malformedSelectionEvidence(read.bytes, failureCode) };
   }
+}
+
+export function readActiveStoreSelectionForCoordination(
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
+): ActiveStoreSelectionCoordinationReadResult {
+  const v1 = readActiveStoreSelectionV1(runtime);
+  const current = readActiveStoreSelection(runtime);
+  if (v1.kind === 'absent') return current;
+  if (v1.kind === 'rejected') return v1;
+  if (v1.kind === 'malformed') return { kind: 'rejected', failureCode: 'record_incoherent' };
+  if (current.kind === 'rejected') return current;
+  if (
+    current.kind === 'valid' &&
+    current.selection.bundleDir === v1.selection.bundleDir &&
+    current.selection.activeStoreFingerprint === v1.selection.activeStoreFingerprint &&
+    activeStoreManifestV1Matches(projectActiveStoreManifestV1(current.selection.manifest), v1.selection.manifest)
+  ) {
+    return current;
+  }
+  return { kind: 'v1', selection: v1.selection };
 }
 
 export function readActiveStoreTransition(
@@ -765,4 +987,18 @@ export function readActiveStoreTransition(
       failureCode: error instanceof ActiveStoreTransitionDecodeError ? error.code : 'transition_invalid_schema',
     };
   }
+}
+
+export function readActiveStoreTransitionV1(
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
+): ActiveStoreTransitionV1ReadResult {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  const read = readBoundedRecord(
+    runtime.storage,
+    paths.coordinationRoot,
+    paths.transitionV1File,
+    ACTIVE_STORE_TRANSITION_MAX_BYTES,
+  );
+  if (read.kind === 'absent' || read.kind === 'rejected') return read;
+  return { kind: 'legacy' };
 }

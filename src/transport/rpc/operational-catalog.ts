@@ -1,9 +1,14 @@
 import type { Capability } from '../../security/capability.js';
-import { transportOperationalCarveouts, type RequestBindingRule } from './catalog.js';
+import {
+  jobsAbortRpcSpec,
+  providerProxySetContainRpcSpec,
+  transportOperationalCarveouts,
+  type RequestBindingRule,
+} from './catalog.js';
 
 const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
 
-type OperationalDispatchKind = 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart';
+type OperationalDispatchKind = 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart' | 'catalog';
 type OperationalAuthentication = 'none' | 'principal';
 
 type OperationalBaseSpec = {
@@ -27,7 +32,13 @@ export type HttpOperationalSpec = OperationalBaseSpec & {
 export type IpcOperationalSpec = OperationalBaseSpec & {
   readonly transport: 'ipc';
   readonly ipc: {
-    readonly method: 'transport.ping' | 'transport.health' | 'transport.shutdown' | 'transport.kb.restart';
+    readonly method:
+      | 'transport.ping'
+      | 'transport.health'
+      | 'transport.shutdown'
+      | 'transport.kb.restart'
+      | typeof jobsAbortRpcSpec.name
+      | typeof providerProxySetContainRpcSpec.name;
   };
 };
 
@@ -114,6 +125,24 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     requires: 'system:shutdown',
     requiresRunningLifecycle: true,
     dispatch: { kind: 'kb-restart' },
+    authentication: 'principal',
+  },
+  {
+    id: 'ipc.jobs.abort.drain-recovery',
+    transport: 'ipc',
+    ipc: { method: jobsAbortRpcSpec.name },
+    requires: jobsAbortRpcSpec.requires,
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'catalog' },
+    authentication: 'principal',
+  },
+  {
+    id: 'ipc.provider-proxy-set.contain.drain-recovery',
+    transport: 'ipc',
+    ipc: { method: providerProxySetContainRpcSpec.name },
+    requires: providerProxySetContainRpcSpec.requires,
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'catalog' },
     authentication: 'principal',
   },
 ] as const;

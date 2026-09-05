@@ -12,6 +12,7 @@ import { createForeignTargetValidator, type ForeignTargetValidator } from '#src/
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
+  ACTIVE_STORE_SELECTION_VERSION,
   publishActiveStoreSelection,
   readActiveStoreSelection,
   type ActiveStoreSelection,
@@ -47,7 +48,7 @@ function manifest(version: string, buildSetId: string): StrictBundleManifest {
 
 function selection(manifestValue: StrictBundleManifest, bundleDir: string): ActiveStoreSelection {
   return {
-    version: 1,
+    version: ACTIVE_STORE_SELECTION_VERSION,
     manifest: manifestValue,
     bundleDir,
     activeStoreFingerprint: manifestValue.storeFormatFingerprint,

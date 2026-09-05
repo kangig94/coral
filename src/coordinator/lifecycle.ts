@@ -37,7 +37,13 @@ import {
   type ShutdownMode,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
-import type { ShutdownOperatorAction, ShutdownSequenceDisposition } from './shutdown-settlement.js';
+import type {
+  ProcessExitRemainder,
+  ProcessExitRemainderAcceptance,
+  ShutdownDeferredFailure,
+  ShutdownOperatorAction,
+  ShutdownSequenceDisposition,
+} from './shutdown-settlement.js';
 import type { TerminateAllDisposition } from './live/admission.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
@@ -814,51 +820,66 @@ export type LifecycleDeps = {
     publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: () => void;
+  readonly acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   readonly onFatalShutdownError?: (error: unknown) => void;
 };
 
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
   shutdown(reason: string): Promise<LifecycleShutdownDisposition>;
+  requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
 };
 
 const SHUTDOWN_AUTOMATIC_RETRY_LIMIT = 3;
 
-/** A held shutdown retains lifecycle ownership until its named continuation or explicit retry finalizes it. */
+/** Lifecycle finalization is forbidden while coordinator authority remains retained. */
+type LifecycleShutdownHoldReason =
+  | 'process-incarnation-probes-unsettled'
+  | 'lifecycle-reactor-disposal-unsettled'
+  | 'required-shutdown-step-unsettled';
+
+type LifecycleShutdownRecovery = Readonly<{
+  kind: 'retry-shutdown';
+  exit:
+    | 'process-incarnation-probe-settlement'
+    | 'lifecycle-reactor-disposal-settlement'
+    | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
+    | 'authority-release-settlement';
+  owner: Readonly<
+    | { kind: 'lifecycle-finalization-continuation'; instanceId: string }
+    | { kind: 'lifecycle-shutdown-hold'; instanceId: string }
+  >;
+  automaticRetry:
+    | Readonly<{ status: 'scheduled'; attemptsStarted: number; attemptLimit: number }>
+    | Readonly<{ status: 'waiting-for-operator'; attemptsStarted: number; attemptLimit: number }>;
+  retainedOwnership: Readonly<{
+    kind: 'coordinator-exclusive-authority';
+    backendInfo: Readonly<{ kind: 'backend-info'; instanceId: string }>;
+    ipcSocket: boolean;
+    providerControlProxyInstanceIds: readonly string[];
+    cleanupObligations: readonly string[];
+    operatorActions: readonly ShutdownOperatorAction[];
+  }>;
+  retry(): Promise<LifecycleShutdownDisposition>;
+}>;
+
 export type LifecycleShutdownDisposition =
   | Readonly<{ disposition: 'finalized' }>
   | Readonly<{
       disposition: 'held';
-      reason:
-        | 'process-incarnation-probes-unsettled'
-        | 'lifecycle-reactor-disposal-unsettled'
-        | 'required-shutdown-step-unsettled';
-      recovery: Readonly<{
-        kind: 'retry-shutdown';
-        exit:
-          | 'process-incarnation-probe-settlement'
-          | 'lifecycle-reactor-disposal-settlement'
-          | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
-          | 'authority-release-settlement';
-        owner: Readonly<
-          | { kind: 'lifecycle-finalization-continuation'; instanceId: string }
-          | { kind: 'lifecycle-shutdown-hold'; instanceId: string }
-        >;
-        automaticRetry:
-          | Readonly<{ status: 'scheduled'; attemptsStarted: number; attemptLimit: number }>
-          | Readonly<{ status: 'waiting-for-operator'; attemptsStarted: number; attemptLimit: number }>;
-        retainedOwnership: Readonly<{
-          kind: 'coordinator-exclusive-authority';
-          backendInfo: Readonly<{ kind: 'backend-info'; instanceId: string }>;
-          ipcSocket: boolean;
-          providerControlProxyInstanceIds: readonly string[];
-          cleanupObligations: readonly string[];
-          operatorActions: readonly ShutdownOperatorAction[];
-        }>;
-        retry(): Promise<LifecycleShutdownDisposition>;
-      }>;
+      reason: LifecycleShutdownHoldReason;
+      recovery: LifecycleShutdownRecovery;
+    }>
+  | Readonly<{
+      disposition: 'transfer-pending';
+      owner: 'process-exit';
+      reason: LifecycleShutdownHoldReason;
+      deferredFailures: readonly ShutdownDeferredFailure[];
+      acceptance: Extract<ProcessExitRemainderAcceptance, { kind: 'accepted' }>;
+      boundaryFailure: ShutdownDeferredFailure;
+      recovery: LifecycleShutdownRecovery;
     }>;
 
 type LifecycleControlState = LifecycleWiringState & {
@@ -1316,6 +1337,7 @@ export function createLifecycle(
     closeIpcServerFn,
     ipcServer,
     onStopped,
+    acceptProcessExitRemainder,
     onFatalShutdownError,
   } = deps;
 
@@ -1365,14 +1387,16 @@ export function createLifecycle(
     state.startupAbort?.abort();
     stopProviderOperationReconciler?.();
 
-    const finalizeStoppedLifecycle = (): LifecycleShutdownDisposition => {
+    const finalizeStoppedLifecycle = (
+      onFinalized: (() => void) | undefined = onStopped,
+    ): LifecycleShutdownDisposition => {
       runtimeState.setLifecycle('stopped');
       removeBackendInfoIfOwnerFn(instanceId);
-      onStopped?.();
+      onFinalized?.();
       return { disposition: 'finalized' };
     };
     const acceptShutdownDisposition = (disposition: ShutdownSequenceDisposition): LifecycleShutdownDisposition => {
-      if (disposition.disposition === 'held') {
+      if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
         state.shutdownRetryAfter = disposition.retryAfter;
         state.shutdownRetry = disposition.retry;
         const automaticRetry =
@@ -1387,37 +1411,47 @@ export function createLifecycle(
                 attemptsStarted: state.shutdownAutomaticRetryAttempts,
                 attemptLimit: SHUTDOWN_AUTOMATIC_RETRY_LIMIT,
               };
-        return {
-          disposition: 'held',
-          reason: disposition.reason,
-          recovery: {
-            kind: 'retry-shutdown',
-            exit: disposition.exit,
-            owner: {
-              kind:
-                automaticRetry.status === 'scheduled'
-                  ? 'lifecycle-finalization-continuation'
-                  : 'lifecycle-shutdown-hold',
-              instanceId,
-            },
-            automaticRetry,
-            retainedOwnership: {
-              kind: 'coordinator-exclusive-authority',
-              backendInfo: { kind: 'backend-info', instanceId },
-              ipcSocket: disposition.retainedAuthority.ipcSocket,
-              providerControlProxyInstanceIds: disposition.retainedAuthority.providerControlProxyInstanceIds,
-              cleanupObligations: disposition.retainedAuthority.cleanupObligations,
-              operatorActions: disposition.retainedAuthority.operatorActions,
-            },
-            retry: () => shutdown(reason),
+        const recovery: LifecycleShutdownRecovery = {
+          kind: 'retry-shutdown',
+          exit: disposition.exit,
+          owner: {
+            kind:
+              automaticRetry.status === 'scheduled' ? 'lifecycle-finalization-continuation' : 'lifecycle-shutdown-hold',
+            instanceId,
           },
+          automaticRetry,
+          retainedOwnership: {
+            kind: 'coordinator-exclusive-authority',
+            backendInfo: { kind: 'backend-info', instanceId },
+            ipcSocket: disposition.retainedAuthority.ipcSocket,
+            providerControlProxyInstanceIds: disposition.retainedAuthority.providerControlProxyInstanceIds,
+            cleanupObligations: disposition.retainedAuthority.cleanupObligations,
+            operatorActions: disposition.retainedAuthority.operatorActions,
+          },
+          retry: () => shutdown(reason),
         };
+        return disposition.disposition === 'held'
+          ? { disposition: 'held', reason: disposition.reason, recovery }
+          : {
+              disposition: 'transfer-pending',
+              owner: disposition.owner,
+              reason: disposition.reason,
+              deferredFailures: disposition.deferredFailures,
+              acceptance: disposition.acceptance,
+              boundaryFailure: disposition.boundaryFailure,
+              recovery,
+            };
       }
       state.shutdownRetryAfter = null;
       state.shutdownRetry = null;
       state.shutdownContinuationAbort?.abort();
       state.shutdownContinuationAbort = null;
-      return finalizeStoppedLifecycle();
+      switch (disposition.disposition) {
+        case 'settled':
+          return finalizeStoppedLifecycle();
+        case 'delegated':
+          return finalizeStoppedLifecycle(disposition.acceptance.requestExit);
+      }
     };
     const attempt = (async (): Promise<LifecycleShutdownDisposition> => {
       if (runtimeState.getLifecycle() === 'stopped') return { disposition: 'finalized' };
@@ -1449,6 +1483,7 @@ export function createLifecycle(
           hooks,
           discussStores,
           log,
+          ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
         }),
       );
     })().catch((error) => {
@@ -1458,7 +1493,7 @@ export function createLifecycle(
     const trackedAttempt = attempt.then(
       (disposition) => {
         state.lastShutdownDisposition = disposition;
-        if (disposition.disposition === 'held') {
+        if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
           state.shutdownPromise = null;
           if (
             state.shutdownContinuations.size === 0 &&
@@ -1518,9 +1553,29 @@ export function createLifecycle(
     }
   }
 
+  function requestShutdownRetry(): void {
+    const currentAttempt = state.shutdownPromise;
+    if (currentAttempt === null) {
+      void shutdown('operator-recovery').catch((error: unknown) => {
+        log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
+      });
+      return;
+    }
+    void currentAttempt
+      .then((disposition) => {
+        if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
+          return shutdown('operator-recovery');
+        }
+      })
+      .catch((error: unknown) => {
+        log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
+      });
+  }
+
   return {
     start,
     shutdown,
+    requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;
       if (state.lastShutdownDisposition !== null) return Promise.resolve(state.lastShutdownDisposition);

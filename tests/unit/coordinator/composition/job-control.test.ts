@@ -37,7 +37,7 @@ describe('createCoordinatorControl.abortJobs', () => {
         registry.hold(
           jobId,
           'process absence is not yet proven',
-          `Run coral-cli abort ${jobId} again to abandon without another signal.`,
+          `Run coral-cli abort jobs ${jobId} again to abandon without another signal.`,
           abandon,
         );
       },
@@ -51,7 +51,7 @@ describe('createCoordinatorControl.abortJobs', () => {
         {
           jobId,
           reason: 'process absence is not yet proven',
-          nextStep: `Run coral-cli abort ${jobId} again to abandon without another signal.`,
+          nextStep: `Run coral-cli abort jobs ${jobId} again to abandon without another signal.`,
         },
       ],
     });

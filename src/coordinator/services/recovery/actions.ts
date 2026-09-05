@@ -274,7 +274,7 @@ async function resolvePreReadyLaunch(
   ctx.clearProcessLocalCleanup();
   const detail =
     `Pre-ready durable containment cleanup remains held because ${holdReason}; recovery remains owned by the ` +
-    `recovery registry. Retry the coordinator-job-recovery quarantine, or run coral-cli abort ${action.jobId} ` +
+    `recovery registry. Retry the coordinator-job-recovery quarantine, or run coral-cli abort jobs ${action.jobId} ` +
     'to abandon job ownership without proving process absence or sending another signal.';
   ctx.log(`Held pre-ready durable recovery for ${action.jobId}: ${detail}\n`);
   return { kind: 'quarantine', detail };

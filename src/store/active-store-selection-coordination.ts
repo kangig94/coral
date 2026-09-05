@@ -1,6 +1,10 @@
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
-import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
+import {
+  readBoundedAdjacentManifest,
+  strictBundleManifestSchema,
+  type StrictBundleManifest,
+} from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
 import type { ForeignTargetValidator, InvalidTargetEvidence, ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { StorageBigIntStat } from '../infra/port-types.js';
@@ -11,12 +15,16 @@ import {
   ACTIVE_STORE_SELECTION_VERSION,
   ACTIVE_STORE_TRANSITION_VERSION,
   classifyActiveStoreSelection,
+  classifyActiveStoreSelectionV1,
   clearActiveStoreTransition,
+  clearActiveStoreTransitionV1,
   encodeActiveStoreSelection,
   publishActiveStoreSelection,
   publishActiveStoreTransition,
-  readActiveStoreSelection,
+  readActiveStoreSelectionForCoordination,
   readActiveStoreTransition,
+  readActiveStoreTransitionV1,
+  resolveActiveStoreSelectionV1,
   resolveActiveStoreRecordPaths,
   type ActiveStoreRecordReadFailureCode,
   type ActiveStoreSelection,
@@ -209,9 +217,9 @@ function retainActiveStoreTransition(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
   adoption: GenerationAdoptionLockLease,
+  transitionFile = resolveActiveStoreRecordPaths(runtime).transitionFile,
 ): ReturnType<typeof retainTransitionFileInStoreResetQuarantine> | null {
   const files = resolveBackendStoreFileSet(runtime, options);
-  const transitionFile = resolveActiveStoreRecordPaths(runtime).transitionFile;
   try {
     return retainTransitionFileInStoreResetQuarantine(runtime, files, transitionFile, adoption);
   } catch (error: unknown) {
@@ -487,11 +495,18 @@ function supersedeActiveStoreTransition(
     | 'transition_current_build_mismatch'
     | 'record_changed'
     | 'record_unavailable',
+  generation: 'current' | 'v1' = 'current',
 ): void {
-  const retained = retainActiveStoreTransition(runtime, options, adoption);
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  const transitionFile = generation === 'current' ? paths.transitionFile : paths.transitionV1File;
+  const retained = retainActiveStoreTransition(runtime, options, adoption, transitionFile);
   if (retained !== null) {
     try {
-      clearActiveStoreTransition(runtime, retained.sourceIdentity);
+      if (generation === 'current') {
+        clearActiveStoreTransition(runtime, retained.sourceIdentity);
+      } else {
+        clearActiveStoreTransitionV1(runtime, retained.sourceIdentity);
+      }
     } catch (error: unknown) {
       refuseActiveStoreCoordination(
         runtime,
@@ -522,7 +537,7 @@ function supersedeActiveStoreTransition(
 function transitionForSelectionEvidence(
   runtime: Runtime,
   currentSelection: ActiveStoreSelection,
-  selection: ReturnType<typeof readActiveStoreSelection>,
+  selection: Exclude<ReturnType<typeof readActiveStoreSelectionForCoordination>, { readonly kind: 'v1' }>,
   invalidTarget?: InvalidTargetEvidence,
 ): ActiveStoreTransition {
   if (selection.kind === 'absent') {
@@ -561,6 +576,16 @@ export async function coordinateActiveStoreSelection(
   const adoption = await acquireGenerationAdoptionLock(runtime);
   try {
     adoption.assertOwned();
+    const transitionV1Read = readActiveStoreTransitionV1(runtime);
+    if (transitionV1Read.kind === 'legacy') {
+      supersedeActiveStoreTransition(runtime, options, adoption, 'transition_current_build_mismatch', 'v1');
+    } else if (transitionV1Read.kind === 'rejected') {
+      if (transitionV1Read.failureCode === 'record_changed' || transitionV1Read.failureCode === 'record_unavailable') {
+        supersedeActiveStoreTransition(runtime, options, adoption, transitionV1Read.failureCode, 'v1');
+      } else {
+        refuseActiveStoreCoordination(runtime, 'transition', transitionV1Read.failureCode);
+      }
+    }
     const transitionRead = readActiveStoreTransition(runtime);
     if (transitionRead.kind === 'valid') {
       if (transitionMatchesCurrent(transitionRead.transition, options.currentSelection)) {
@@ -581,7 +606,7 @@ export async function coordinateActiveStoreSelection(
       }
     }
 
-    const selection = readActiveStoreSelection(runtime);
+    const selection = readActiveStoreSelectionForCoordination(runtime);
     if (selection.kind === 'rejected') {
       refuseActiveStoreCoordination(runtime, 'selection', selection.failureCode);
     }
@@ -592,6 +617,39 @@ export async function coordinateActiveStoreSelection(
       return {
         kind: 'opened',
         db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
+      };
+    }
+
+    if (selection.kind === 'v1') {
+      if (classifyActiveStoreSelectionV1(selection.selection, options.currentSelection) === 'selected-newer') {
+        const adjacent = readBoundedAdjacentManifest(selection.selection.bundleDir);
+        const parsed = adjacent.ok ? strictBundleManifestSchema.safeParse(adjacent.value) : null;
+        const resolved = parsed?.success ? resolveActiveStoreSelectionV1(selection.selection, parsed.data) : null;
+        if (resolved === null) {
+          refuseActiveStoreCoordination(runtime, 'selection', 'record_incoherent');
+        }
+        const validation = options.dependencies.validateSelectedTarget(resolved.bundleDir, resolved.manifest);
+        adoption.assertOwned();
+        if (validation.kind === 'validated') {
+          return { kind: 'handoff', target: validation.target };
+        }
+        const transition = transitionForSelectionEvidence(
+          runtime,
+          options.currentSelection,
+          { kind: 'valid', selection: resolved },
+          validation.evidence,
+        );
+        publishTransitionOrRefuse(runtime, transition);
+        publishSelectionOrRefuse(runtime, options.currentSelection);
+        return {
+          kind: 'opened',
+          db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
+        };
+      }
+      publishSelectionOrRefuse(runtime, options.currentSelection);
+      return {
+        kind: 'opened',
+        db: await recoverActiveStoreSelection(runtime, authority, options, null, adoption),
       };
     }
 

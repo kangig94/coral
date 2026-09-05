@@ -22,6 +22,9 @@ import type { RuntimeComponentRegistry } from './runtime-components/registry.js'
 import {
   createJoinableShutdownTask,
   ShutdownSettlementLedger,
+  type ProcessExitRemainder,
+  type ProcessExitRemainderAcceptance,
+  type ShutdownAuthorityReleaseBoundary,
   type ShutdownObligation,
   type ShutdownOperatorAction,
   type ShutdownRetainedAuthorityContribution,
@@ -77,6 +80,7 @@ type RunShutdownSequenceContext = {
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;
+  acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
 };
 
 type UnresolvedChildProcess = Extract<TerminateAllDisposition, { kind: 'unresolved-at-deadline' }>['processes'][number];
@@ -106,7 +110,7 @@ function childTerminationConfirmation(disposition: TerminateAllDisposition): Shu
     .join('; ');
   const retained = [retainedLaunches, retainedProcesses].filter((detail) => detail.length > 0).join('; ');
   const actionCommands = [...disposition.retainedLaunches, ...disposition.retainedProcesses].flatMap((process) =>
-    process.jobId === undefined ? [] : [`coral-cli abort ${process.jobId}`],
+    process.jobId === undefined ? [] : [`coral-cli abort jobs ${process.jobId}`],
   );
   return {
     confirmed: false,
@@ -217,7 +221,7 @@ function retainedChildActions(disposition: TerminateAllDisposition | null): read
             jobId: retained.jobId,
             provider: retained.provider,
             jobDir: retained.jobDir,
-            actionCommand: `coral-cli abort ${retained.jobId}`,
+            actionCommand: `coral-cli abort jobs ${retained.jobId}`,
           },
         ],
   );
@@ -265,10 +269,17 @@ export async function runShutdownSequence({
   hooks,
   discussStores,
   log,
+  acceptProcessExitRemainder,
 }: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
   const mode = shutdownModeFromReason(reason);
   const budgetMs = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
-  const ledger = new ShutdownSettlementLedger({ budgetMs, time: runtime.time, log, pollMs: SHUTDOWN_POLL_MS });
+  const ledger = new ShutdownSettlementLedger({
+    budgetMs,
+    time: runtime.time,
+    log,
+    pollMs: SHUTDOWN_POLL_MS,
+    ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
+  });
 
   log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
@@ -563,19 +574,16 @@ export async function runShutdownSequence({
   });
 
   const providerReleaseCapabilities = new Map<
-    string,
+    ProviderProxySetAuthority,
     Readonly<{ heartbeat: AuthorityReleaseCapability; control: AuthorityReleaseCapability }>
   >();
+  let authorityReleaseGeneration = 0;
   const synchronizeProviderReleaseCapabilities = (): void => {
-    const sets = new Map(
-      [...(providerProxyAuthority?.liveSets() ?? []), ...providerCleanup.liveProxySets].map((set) => [
-        set.proxyInstanceId,
-        set,
-      ]),
-    );
-    for (const set of sets.values()) {
-      if (providerReleaseCapabilities.has(set.proxyInstanceId)) continue;
-      providerReleaseCapabilities.set(set.proxyInstanceId, {
+    const sets = new Set([...(providerProxyAuthority?.liveSets() ?? []), ...providerCleanup.liveProxySets]);
+    let changed = false;
+    for (const set of sets) {
+      if (providerReleaseCapabilities.has(set)) continue;
+      providerReleaseCapabilities.set(set, {
         heartbeat: {
           label: `heartbeats ${set.proxyInstanceId}`,
           release: () => set.stopHeartbeats(),
@@ -587,7 +595,9 @@ export async function runShutdownSequence({
           state: { kind: 'pending' },
         },
       });
+      changed = true;
     }
+    if (changed) authorityReleaseGeneration += 1;
   };
   const ipcReleaseCapability: AuthorityReleaseCapability | null =
     ipcServer === undefined || closeIpcServerFn === undefined
@@ -607,23 +617,63 @@ export async function runShutdownSequence({
       capability.state.kind === 'in-flight' ? [capability.state.settlement] : [],
     );
   };
-  const authorityRelease: ShutdownObligation = {
+  type AuthorityReleaseSnapshot = Readonly<{
+    generation: number;
+    heartbeats: readonly AuthorityReleaseCapability[];
+    controls: readonly AuthorityReleaseCapability[];
+    ipc: AuthorityReleaseCapability | null;
+  }>;
+  const authorityReleaseSnapshots = new WeakMap<object, AuthorityReleaseSnapshot>();
+  const snapshotAuthorityRelease = (): AuthorityReleaseSnapshot => {
+    const releases = [...providerReleaseCapabilities.values()];
+    return {
+      generation: authorityReleaseGeneration,
+      heartbeats: releases.map(({ heartbeat }) => heartbeat),
+      controls: releases.map(({ control }) => control),
+      ipc: ipcReleaseCapability,
+    };
+  };
+  const sameCapabilities = (
+    left: readonly AuthorityReleaseCapability[],
+    right: readonly AuthorityReleaseCapability[],
+  ): boolean => left.length === right.length && left.every((capability, index) => capability === right[index]);
+  const authorityRelease: ShutdownAuthorityReleaseBoundary = {
     label: 'provider control and IPC authority release',
-    task: async () => {
+    prepare: () => {
       synchronizeProviderReleaseCapabilities();
-      const releases = [...providerReleaseCapabilities.values()];
-      const providerControl = await settleAuthorityReleases([
-        ...releases.map(({ heartbeat }) => heartbeat),
-        ...releases.map(({ control }) => control),
-      ]);
-      if (!providerControl.confirmed) return providerControl;
-      return ipcReleaseCapability === null ? { confirmed: true } : settleAuthorityReleases([ipcReleaseCapability]);
+      const token = Object.freeze({});
+      authorityReleaseSnapshots.set(token, snapshotAuthorityRelease());
+      return Promise.resolve({ confirmed: true, token });
+    },
+    commit: (token) => {
+      synchronizeProviderReleaseCapabilities();
+      const prepared = authorityReleaseSnapshots.get(token);
+      const current = snapshotAuthorityRelease();
+      if (
+        prepared === undefined ||
+        prepared.generation !== current.generation ||
+        !sameCapabilities(prepared.heartbeats, current.heartbeats) ||
+        !sameCapabilities(prepared.controls, current.controls) ||
+        prepared.ipc !== current.ipc
+      ) {
+        return Promise.resolve({ confirmed: false, detail: 'authority capabilities changed after preparation' });
+      }
+      return settleAuthorityReleases([...prepared.heartbeats, ...prepared.controls]).then((providerControl) => {
+        if (!providerControl.confirmed) return providerControl;
+        return prepared.ipc === null ? { confirmed: true as const } : settleAuthorityReleases([prepared.ipc]);
+      });
     },
     retainedAuthority: () => {
       synchronizeProviderReleaseCapabilities();
-      const retainedProviderIds = [...providerReleaseCapabilities.entries()].flatMap(([proxyInstanceId, release]) =>
-        release.heartbeat.state.kind === 'settled' && release.control.state.kind === 'settled' ? [] : [proxyInstanceId],
-      );
+      const retainedProviderIds = [
+        ...new Set(
+          [...providerReleaseCapabilities.entries()].flatMap(([set, release]) =>
+            release.heartbeat.state.kind === 'settled' && release.control.state.kind === 'settled'
+              ? []
+              : [set.proxyInstanceId],
+          ),
+        ),
+      ];
       return cleanupContribution('provider control and IPC authority release', {
         ipcSocket: ipcReleaseCapability !== null && ipcReleaseCapability.state.kind !== 'settled',
         providerControlProxyInstanceIds: retainedProviderIds,
@@ -635,7 +685,6 @@ export async function runShutdownSequence({
         })),
       });
     },
-    remainder: { owner: 'none' },
     hold: (settlement) => {
       const inFlight = authorityReleaseSettlements();
       return settlement.cause === 'timed-out' && inFlight.length > 0

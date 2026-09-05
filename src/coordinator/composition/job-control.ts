@@ -1,4 +1,3 @@
-// Bundles abort/scope job-control (lifecycleController-bound) with the drain admission gate (idleTimer-bound) as one control-plane helper. The two halves share zero state; if drain logic grows, split into drain-gate.ts rather than packing more concerns here.
 import type { AbortRefusal, AbortResult, JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
@@ -12,9 +11,6 @@ type CreateBackendControlDeps = {
   listExecutionServices: () => ProjectRequestPort[];
   getLifecycleController: () => LifecycleController | null;
   getProgressStore: () => JobStore;
-  /** Coordinator-owned abort registry for internal KB jobs (source-import,
-   * reindex). Consulted before returning `notFound` so that
-   * `coral-cli abort <kb-job-id>` reaches the KB job's AbortController. */
   internalJobAbortRegistry: JobAbortRegistryPort;
 };
 

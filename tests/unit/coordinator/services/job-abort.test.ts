@@ -7,7 +7,7 @@ describe('JobAbortService', () => {
     const refusal = {
       jobId: 'held-job',
       reason: 'process absence is not yet proven',
-      nextStep: 'Run coral-cli abort held-job again to abandon without another signal.',
+      nextStep: 'Run coral-cli abort jobs held-job again to abandon without another signal.',
     };
     const abort = vi.fn(() => ({ aborted: [], notFound: [], refused: [refusal] }));
     const service = new JobAbortService({

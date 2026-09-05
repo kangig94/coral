@@ -22,17 +22,6 @@ export interface KbJobRecorderDeps {
   internalJobOwner?: InternalJobRuntime['owner'];
 }
 
-/**
- * Run handle for an internal KB job.
- *
- * `signal` aborts when an operator runs `coral-cli abort <jobId>` — the
- * injected `abortRegistry` triggers the registered callback, which calls
- * `controller.abort('user_abort')`. Honor it at named checkpoints in the
- * pipeline.
- *
- * `finalize()` deregisters the controller from `abortRegistry`. Idempotent —
- * call it on terminal record OR on cleanup; safe to call more than once.
- */
 export interface StartedKbInternalJob {
   jobId: string;
   startedAtMs: number;
