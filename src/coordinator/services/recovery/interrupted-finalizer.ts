@@ -56,6 +56,12 @@ type RecoveryCommitPlan = Pick<
   'launchRecord' | 'session' | 'expectedSessionVersion'
 >;
 
+declare const recoveryCommitReceiptBrand: unique symbol;
+type RecoveryCommitReceipt = Readonly<{
+  plan: RecoveryCommitPlan;
+  [recoveryCommitReceiptBrand]: true;
+}>;
+
 type TerminalAppender = <Scope>(commit: CommitContext<Scope>) => void;
 
 async function recordArtifactHandlesExact(
@@ -89,7 +95,7 @@ async function finalizeSessionExact(
   mutation: ProviderValidatedSessionContinuityMutation,
   appendBeforeRelease: TerminalAppender | undefined,
   deps: InterruptedFinalizerDeps,
-): Promise<void> {
+): Promise<RecoveryCommitReceipt> {
   const finalized = await deps.sessionManager.finalizeJobContinuityAtomic(plan.session.sessionId, {
     expectedActiveJobId: plan.launchRecord.jobId,
     expectedVersion,
@@ -99,13 +105,15 @@ async function finalizeSessionExact(
   if (!finalized) {
     throw new InterruptedRecoveryCommitError(plan.launchRecord.jobId, 'session-finalize');
   }
+  return Object.freeze({ plan }) as RecoveryCommitReceipt;
 }
 
 function exportResultAndReleaseOwnership(
-  plan: RecoveryCommitPlan,
+  receipt: RecoveryCommitReceipt,
   content: string,
   deps: InterruptedFinalizerDeps,
 ): void {
+  const { plan } = receipt;
   try {
     writeResultArtifact(
       deps.runtime.storage,
@@ -199,8 +207,8 @@ export async function finalizeInterruptedAppServerRecovery(
     };
   }
 
-  await finalizeSessionExact(plan, expectedVersion, mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(plan, content, deps);
+  const receipt = await finalizeSessionExact(plan, expectedVersion, mutation, appendTerminal, deps);
+  exportResultAndReleaseOwnership(receipt, content, deps);
 }
 
 function directTerminalAppender(status: JobStatus, terminal: JobTerminalInput): TerminalAppender {
@@ -269,6 +277,6 @@ export async function finalizeInterruptedDurableRecovery(
       return assertNever(performed.terminal);
   }
 
-  await finalizeSessionExact(plan, expectedVersion, performed.mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(plan, content, deps);
+  const receipt = await finalizeSessionExact(plan, expectedVersion, performed.mutation, appendTerminal, deps);
+  exportResultAndReleaseOwnership(receipt, content, deps);
 }

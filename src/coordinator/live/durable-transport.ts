@@ -21,6 +21,7 @@ import {
   observeRecordedContainment,
   ProcessContainmentError,
   reapRecordedContainment,
+  type RecordedContainmentObservation,
 } from '../../infra/process-containment.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -34,6 +35,7 @@ const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
 const durableProcessCleanupClockScope = Symbol('durable-process-cleanup');
+declare const durableContainmentAbsenceBrand: unique symbol;
 const DURABLE_PROCESS_CLEANUP_DEADLINE_MS =
   SIGTERM_GRACE_MS +
   SIGKILL_GRACE_MS +
@@ -77,64 +79,128 @@ export type PendingDurableLaunch = Readonly<{
   retainedIdentity(): PendingDurableLaunchIdentity;
 }>;
 
-async function requestDurableProcessTermination(
+type DurableContainmentAbsenceCapability = Readonly<{
+  kind: 'observed-absent';
+  pid: number;
+  retention: DurableProcessRetention;
+}> &
+  Readonly<{ [durableContainmentAbsenceBrand]: true }>;
+
+type DurableContainmentObservationOutcome =
+  | DurableContainmentAbsenceCapability
+  | Exclude<RecordedContainmentObservation, { kind: 'absent' }>;
+
+type DurableProcessTerminationOutcome =
+  | DurableContainmentAbsenceCapability
+  | Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>;
+
+type DurableContainmentOperation =
+  | Readonly<{ kind: 'observe' }>
+  | Readonly<{
+      kind: 'terminate';
+      signalAuthority: DurableLaunchSignalAuthority | undefined;
+      signal: AbortSignal;
+    }>;
+
+function resolveDurableProcessContainment(
   runtime: Runtime,
   retained: DurableProcessRetention,
-  signalAuthority?: DurableLaunchSignalAuthority,
-): Promise<GracefulKillByPidOutcome> {
+  operation: Readonly<{ kind: 'observe' }>,
+): Promise<DurableContainmentObservationOutcome>;
+function resolveDurableProcessContainment(
+  runtime: Runtime,
+  retained: DurableProcessRetention,
+  operation: Readonly<{
+    kind: 'terminate';
+    signalAuthority: DurableLaunchSignalAuthority | undefined;
+    signal: AbortSignal;
+  }>,
+): Promise<DurableProcessTerminationOutcome>;
+async function resolveDurableProcessContainment(
+  runtime: Runtime,
+  retained: DurableProcessRetention,
+  operation: DurableContainmentOperation,
+): Promise<DurableContainmentObservationOutcome | DurableProcessTerminationOutcome> {
   const containment = retained.containment;
   const pid = containment.pid;
-  const liveSignalAuthority =
-    signalAuthority?.pid === pid && signalAuthority.hasExited() === false ? signalAuthority : undefined;
-  const recordedRoots =
-    liveSignalAuthority === undefined || runtime.env.platform() === 'linux'
-      ? containment.childRoot === null
-        ? []
-        : [containment.childRoot]
-      : [];
-  const clock = createMonotonicClock(durableProcessCleanupClockScope, {
-    readMilliseconds: () => runtime.time.monotonicNow(),
-    sleep: (milliseconds) => runtime.time.sleep(milliseconds),
-  });
-  try {
-    const outcome = await reapRecordedContainment(
-      containment,
-      recordedRoots,
-      clock.shiftMilliseconds(clock.now(), DURABLE_PROCESS_CLEANUP_DEADLINE_MS),
+  let outcome:
+    | Readonly<{ kind: 'absence-observed' }>
+    | Exclude<RecordedContainmentObservation, { kind: 'absent' }>
+    | Exclude<GracefulKillByPidOutcome, { kind: 'observed-absent' }>;
+
+  if (operation.kind === 'observe') {
+    const observation = observeRecordedContainment(
+      { ...containment, childRoot: containment.childRoot },
       {
-        maxRecordedRoots: 1,
-        clock,
         process: runtime.process,
         platform: runtime.env.platform() as NodeJS.Platform,
         readProcessIncarnation: (targetPid, platform) => runtime.process.readProcessIncarnation(targetPid, platform),
-        ...(liveSignalAuthority === undefined
-          ? {}
-          : {
-              knownLiveChildFor: (targetPid: number) =>
-                targetPid === liveSignalAuthority.pid ? liveSignalAuthority : undefined,
-            }),
       },
     );
-    if (outcome.kind !== 'containment-absent') {
-      return { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
-    }
-    if (containment.childRoot === null || recordedRoots.length > 0) return { kind: 'observed-absent', pid };
-    const subject = { ...containment, childRoot: containment.childRoot };
-    const observation = observeRecordedContainment(subject, {
-      process: runtime.process,
-      platform: runtime.env.platform() as NodeJS.Platform,
-      readProcessIncarnation: (targetPid, platform) => runtime.process.readProcessIncarnation(targetPid, platform),
+    outcome = observation.kind === 'absent' ? { kind: 'absence-observed' } : observation;
+  } else {
+    const signalAuthority = operation.signalAuthority;
+    const liveSignalAuthority =
+      signalAuthority?.pid === pid && signalAuthority.hasExited() === false ? signalAuthority : undefined;
+    const recordedRoots =
+      liveSignalAuthority === undefined || runtime.env.platform() === 'linux'
+        ? containment.childRoot === null
+          ? []
+          : [containment.childRoot]
+        : [];
+    const clock = createMonotonicClock(durableProcessCleanupClockScope, {
+      readMilliseconds: () => runtime.time.monotonicNow(),
+      sleep: (milliseconds) => runtime.time.sleep(milliseconds),
     });
-    if (observation.kind === 'absent') return { kind: 'observed-absent', pid };
-    return observation.kind === 'alive'
-      ? { kind: 'target-alive', pid, stage: 'after-sigkill' }
-      : { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
-  } catch (error: unknown) {
-    if (error instanceof ProcessContainmentError && error.code === 'process_identity_unverified') {
-      return { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
+    try {
+      const reapOutcome = await reapRecordedContainment(
+        containment,
+        recordedRoots,
+        clock.shiftMilliseconds(clock.now(), DURABLE_PROCESS_CLEANUP_DEADLINE_MS),
+        {
+          maxRecordedRoots: 1,
+          clock,
+          process: runtime.process,
+          platform: runtime.env.platform() as NodeJS.Platform,
+          signal: operation.signal,
+          readProcessIncarnation: (targetPid, platform) => runtime.process.readProcessIncarnation(targetPid, platform),
+          ...(liveSignalAuthority === undefined
+            ? {}
+            : {
+                knownLiveChildFor: (targetPid: number) =>
+                  targetPid === liveSignalAuthority.pid ? liveSignalAuthority : undefined,
+              }),
+        },
+      );
+      if (reapOutcome.kind !== 'containment-absent') {
+        outcome = { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
+      } else if (containment.childRoot === null || recordedRoots.length > 0) {
+        outcome = { kind: 'absence-observed' };
+      } else {
+        const subject = { ...containment, childRoot: containment.childRoot };
+        const observation = observeRecordedContainment(subject, {
+          process: runtime.process,
+          platform: runtime.env.platform() as NodeJS.Platform,
+          readProcessIncarnation: (targetPid, platform) => runtime.process.readProcessIncarnation(targetPid, platform),
+        });
+        outcome =
+          observation.kind === 'absent'
+            ? { kind: 'absence-observed' }
+            : observation.kind === 'alive'
+              ? { kind: 'target-alive', pid, stage: 'after-sigkill' }
+              : { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
+      }
+    } catch (error: unknown) {
+      outcome =
+        error instanceof ProcessContainmentError && error.code === 'process_identity_unverified'
+          ? { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' }
+          : { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
     }
-    return { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
   }
+
+  return outcome.kind === 'absence-observed'
+    ? (Object.freeze({ kind: 'observed-absent', pid, retention: retained }) as DurableContainmentAbsenceCapability)
+    : outcome;
 }
 
 export type DurableProcessCleanupOutcome =
@@ -197,6 +263,8 @@ export async function spawnDurableJobTransport(params: {
   let abortedBySignal = false;
   let cleanupKey: symbol | null = null;
   let cleanupInFlight: Promise<DurableProcessCleanupOutcome> | null = null;
+  let cleanupAbortController: AbortController | null = null;
+  let cleanupGeneration = 0;
   let cleanupRetryInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
   let containmentAbsenceConfirmed = false;
   let containmentAbandoned = false;
@@ -234,12 +302,20 @@ export async function spawnDurableJobTransport(params: {
   };
   pendingLaunches.add(pendingLaunch);
 
-  const releaseCleanupOwnership = (): CleanupOwnershipReleaseDisposition => {
+  const releaseCleanupOwnership = (
+    absence: DurableContainmentAbsenceCapability,
+  ): CleanupOwnershipReleaseDisposition => {
     if (cleanupKey === null) return { kind: 'released' };
+    if (absence.retention !== retainedProcess) {
+      return { kind: 'retained', reason: 'durable containment identity changed after absence observation' };
+    }
     const wasHeld = providerResultHeld;
     if (wasHeld && !publishContainmentStatus({ kind: 'absence-confirmed' })) {
       return { kind: 'retained', reason: 'durable containment absence publication failed' };
     }
+    cleanupAbortController?.abort();
+    cleanupAbortController = null;
+    cleanupGeneration += 1;
     cleanupHandles.delete(cleanupKey);
     cleanupRetentions.delete(cleanup);
     cleanupKey = null;
@@ -278,6 +354,9 @@ export async function spawnDurableJobTransport(params: {
   const abandonCleanupOwnership = (): boolean => {
     if (!providerResultHeld || cleanupKey === null) return false;
     if (!publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false })) return false;
+    cleanupAbortController?.abort();
+    cleanupAbortController = null;
+    cleanupGeneration += 1;
     cleanupHandles.delete(cleanupKey);
     cleanupRetentions.delete(cleanup);
     cleanupKey = null;
@@ -313,10 +392,21 @@ export async function spawnDurableJobTransport(params: {
     if (publishedPid === null || retainedProcess === null)
       throw new Error('Durable cleanup was requested before a process identity was published.');
     const pid = publishedPid;
-    cleanupInFlight = requestDurableProcessTermination(runtime, retainedProcess, signalAuthority).then((outcome) => {
+    const cleanupRetention = retainedProcess;
+    const generation = ++cleanupGeneration;
+    const abortController = new AbortController();
+    cleanupAbortController = abortController;
+    const cleanupPromise = resolveDurableProcessContainment(runtime, cleanupRetention, {
+      kind: 'terminate',
+      signalAuthority,
+      signal: abortController.signal,
+    }).then((outcome) => {
+      if (generation !== cleanupGeneration || cleanupRetention !== retainedProcess) {
+        return { kind: 'ownership-retained', pid, reason: 'durable containment cleanup was superseded' } as const;
+      }
       if (outcome.kind === 'observed-absent') {
-        const release = releaseCleanupOwnership();
-        if (release.kind === 'retained') return { kind: 'ownership-retained', pid, reason: release.reason };
+        const release = releaseCleanupOwnership(outcome);
+        if (release.kind === 'retained') return { kind: 'ownership-retained', pid, reason: release.reason } as const;
       } else {
         const detail = terminationOutcomeDetail(outcome);
         enterContainmentHold(detail);
@@ -327,15 +417,22 @@ export async function spawnDurableJobTransport(params: {
       }
       return outcome;
     });
-    void cleanupInFlight.then(
+    cleanupInFlight = cleanupPromise;
+    void cleanupPromise.then(
       () => {
-        cleanupInFlight = null;
+        if (cleanupInFlight === cleanupPromise) {
+          cleanupInFlight = null;
+          if (cleanupAbortController === abortController) cleanupAbortController = null;
+        }
       },
       () => {
-        cleanupInFlight = null;
+        if (cleanupInFlight === cleanupPromise) {
+          cleanupInFlight = null;
+          if (cleanupAbortController === abortController) cleanupAbortController = null;
+        }
       },
     );
-    return cleanupInFlight;
+    return cleanupPromise;
   };
 
   const settleProviderResultContainment = async (): Promise<DurableProviderResultDisposition> => {
@@ -345,20 +442,18 @@ export async function spawnDurableJobTransport(params: {
       const childRoot = retainedProcess.containment.childRoot;
       if (childRoot !== null) {
         const subject = { ...retainedProcess.containment, childRoot };
-        const environment = {
+        const observation = observeRecordedContainment(subject, {
           process: runtime.process,
           platform: runtime.env.platform() as NodeJS.Platform,
-          readProcessIncarnation: (pid: number, platform: NodeJS.Platform) =>
-            runtime.process.readProcessIncarnation(pid, platform),
-        } as const;
-        const observation = observeRecordedContainment(subject, environment);
+          readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+        });
         if (observation.kind === 'absent') {
           await Promise.race([runtime.time.sleep(CONTAINMENT_DISAPPEARANCE_CONFIRM_MS), containmentAbsence]);
           if (containmentAbsenceConfirmed) return { kind: 'absence-confirmed' };
           if (containmentAbandoned) return { kind: 'operator-abandoned' };
-          const confirmation = observeRecordedContainment(subject, environment);
-          if (confirmation.kind === 'absent') {
-            const release = releaseCleanupOwnership();
+          const confirmation = await resolveDurableProcessContainment(runtime, retainedProcess, { kind: 'observe' });
+          if (confirmation.kind === 'observed-absent') {
+            const release = releaseCleanupOwnership(confirmation);
             return release.kind === 'released'
               ? { kind: 'absence-confirmed' }
               : { kind: 'held', reason: release.reason };
@@ -445,6 +540,7 @@ export async function spawnDurableJobTransport(params: {
       ...(launch.signalAuthority === undefined ? {} : { signalAuthority: launch.signalAuthority }),
     });
     if (launch.leaderIncarnation !== null && launch.childRoot !== null) {
+      const cleanupNeedsRetargeting = cleanupInFlight !== null;
       publishedSubject = {
         pid: launch.runtimeRecord.pid,
         incarnation: launch.leaderIncarnation,
@@ -460,6 +556,14 @@ export async function spawnDurableJobTransport(params: {
       };
       cleanupRetentions.set(cleanup, retainedProcess);
       provisionalSubject = null;
+      if (cleanupNeedsRetargeting) {
+        cleanupAbortController?.abort();
+        cleanupInFlight = null;
+        void cleanup().catch((error: unknown) => {
+          backendLog.warn(`[durable-process:${launch.runtimeRecord.pid}] Termination failed: ${errorMessage(error)}`);
+          enterContainmentHold(errorMessage(error));
+        });
+      }
     }
     if (publishedSubject !== null) options.onDurableProcessIdentity?.(publishedSubject);
   };

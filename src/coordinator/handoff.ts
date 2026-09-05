@@ -504,9 +504,10 @@ function logHandoffSignalAudit(
 
 function signalIncumbent(
   opts: HandoffOptions,
-  incumbent: IncumbentIdentity,
+  capability: HandoffSignalCapability,
   signal: HandoffSignal,
 ): HandoffSignalResult {
+  const { incumbent } = capability;
   let result: HandoffSignalResult;
   let signalError: unknown;
   try {
@@ -549,10 +550,18 @@ async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<vo
   opts.signal?.throwIfAborted();
 }
 
-type SignalVerificationResult = 'alive' | 'gone';
+declare const handoffSignalCapabilityBrand: unique symbol;
+
+type HandoffSignalCapability = Readonly<{
+  kind: 'alive';
+  incumbent: IncumbentIdentity;
+  [handoffSignalCapabilityBrand]: true;
+}>;
 
 const SIGNAL_TARGET_GONE: Readonly<{ kind: 'gone' }> = { kind: 'gone' };
 const SIGNAL_TARGET_ALIVE: Readonly<{ kind: 'alive' }> = { kind: 'alive' };
+
+type SignalVerificationResult = typeof SIGNAL_TARGET_GONE | HandoffSignalCapability;
 
 function unverifiableSignalTarget<Code extends HandoffRefusalCode>(
   code: Code,
@@ -621,7 +630,14 @@ function verifySignalTarget(
   context: HandoffVerificationContext,
 ): SignalVerificationResult {
   const observation = observeSignalTarget(incumbent, anchoredIncarnation, process, platform);
-  return observation.kind === 'unverifiable' ? refuseUnverifiableSignalTarget(observation, context) : observation.kind;
+  if (observation.kind === 'unverifiable') {
+    return refuseUnverifiableSignalTarget(observation, context);
+  }
+  if (observation.kind === 'gone') {
+    return observation;
+  }
+  assertSignalCapability(incumbent, context);
+  return Object.freeze({ kind: 'alive', incumbent }) as HandoffSignalCapability;
 }
 
 function observeSignalTarget(
@@ -774,15 +790,18 @@ function transitionAfterSigtermGrace(
     graceMs: SIGTERM_GRACE_MS,
   };
   const incumbent = refreshIncumbentForSignal(opts, pending.target, lastHealth, afterSigtermGrace);
-  if (
-    verifySignalTarget(incumbent, pending.anchoredIncarnation, opts.runtime.process, platform, afterSigtermGrace) ===
-    'gone'
-  ) {
+  const verification = verifySignalTarget(
+    incumbent,
+    pending.anchoredIncarnation,
+    opts.runtime.process,
+    platform,
+    afterSigtermGrace,
+  );
+  if (verification.kind === 'gone') {
     return { kind: 'target-gone', stage: 'before-sigkill', pid: incumbent.pid };
   }
-  assertSignalCapability(incumbent, afterSigtermGrace);
   opts.signal?.throwIfAborted();
-  const result = signalIncumbent(opts, incumbent, 'SIGKILL');
+  const result = signalIncumbent(opts, verification, 'SIGKILL');
   if (
     settleSignalAttempt(opts, incumbent, pending.anchoredIncarnation, 'SIGKILL', result, platform, {
       stage: 'after-rejected-signal',
@@ -1131,16 +1150,22 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
         pid: incumbent.pid,
       };
       const anchoredIncarnation = signalAnchorFor(incumbent.pid);
-      if (verifySignalTarget(incumbent, anchoredIncarnation, opts.runtime.process, platform, beforeSignal) === 'gone') {
+      const verification = verifySignalTarget(
+        incumbent,
+        anchoredIncarnation,
+        opts.runtime.process,
+        platform,
+        beforeSignal,
+      );
+      if (verification.kind === 'gone') {
         backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
         abandonIncumbent();
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
         continue;
       }
-      assertSignalCapability(incumbent, beforeSignal);
       assertSignalCooldown(opts, incumbent, 'SIGTERM');
       opts.signal?.throwIfAborted();
-      const sigtermResult = signalIncumbent(opts, incumbent, 'SIGTERM');
+      const sigtermResult = signalIncumbent(opts, verification, 'SIGTERM');
       if (
         settleSignalAttempt(opts, incumbent, anchoredIncarnation, 'SIGTERM', sigtermResult, platform, {
           stage: 'after-rejected-signal',

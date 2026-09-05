@@ -462,26 +462,41 @@ export class MockProcessSpawner {
       });
     }
 
-    if ((script.runtimeDelayMs ?? 0) > 0) {
-      await this.time.sleep(script.runtimeDelayMs ?? 0);
-    }
-    if (!leader.alive || !child.alive) {
-      throw new Error(`Durable process ${pid} exited before runtime was reported`);
-    }
+    const publishRuntime = (): void => {
+      if (!leader.alive || !child.alive) {
+        throw new Error(`Durable process ${pid} exited before runtime was reported`);
+      }
 
-    options.onSpawned?.({
-      runtimeRecord,
-      leaderIncarnation: leader.incarnation,
-      childRoot: { pid: childPid, incarnation: child.incarnation },
-    });
-    if (script.exit !== null) {
-      const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
-      this.schedule(child, exit.delayMs ?? 0, () => {
-        child.complete({
-          exitCode: exit.exitCode ?? 0,
-          signal: exit.signal ?? null,
-        });
+      options.onSpawned?.({
+        runtimeRecord,
+        leaderIncarnation: leader.incarnation,
+        childRoot: { pid: childPid, incarnation: child.incarnation },
       });
+      if (script.exit !== null) {
+        const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
+        this.schedule(child, exit.delayMs ?? 0, () => {
+          child.complete({
+            exitCode: exit.exitCode ?? 0,
+            signal: exit.signal ?? null,
+          });
+        });
+      }
+    };
+
+    const runtimeDelayMs = script.runtimeDelayMs ?? 0;
+    if (runtimeDelayMs > 0) {
+      await new Promise<void>((resolve, reject) => {
+        this.time.setTimeout(() => {
+          try {
+            publishRuntime();
+            resolve();
+          } catch (error: unknown) {
+            reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
+          }
+        }, runtimeDelayMs);
+      });
+    } else {
+      publishRuntime();
     }
 
     return {

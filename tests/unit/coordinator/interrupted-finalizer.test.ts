@@ -96,7 +96,9 @@ const durablePerformed = {
   artifactHandles: performed.kind === 'resolved' ? performed.artifactHandles : [],
 } as unknown as PerformedDurableRecovery;
 
-function createHarness(options: { artifactRecorded?: boolean; sessionFinalized?: boolean } = {}) {
+function createHarness(
+  options: { artifactRecorded?: boolean; sessionFinalized?: boolean; sessionFinalizeError?: Error } = {},
+) {
   const order: string[] = [];
   const append = vi.fn(() => {
     order.push('terminal');
@@ -108,6 +110,7 @@ function createHarness(options: { artifactRecorded?: boolean; sessionFinalized?:
   });
   const finalizeJobContinuityAtomic = vi.fn(async (_sessionId, commitOptions) => {
     order.push('session-cas');
+    if (options.sessionFinalizeError !== undefined) throw options.sessionFinalizeError;
     if (options.sessionFinalized === false) return false;
     commitOptions.appendBeforeRelease?.({ append });
     return true;
@@ -207,6 +210,19 @@ describe('interrupted app-server recovery finalizer', () => {
         name: 'InterruptedRecoveryCommitError',
         stage: 'session-finalize',
       }),
+    );
+
+    expect(harness.order).toEqual(['artifact-cas', 'session-cas']);
+    expect(harness.jobPools.has('interrupted-job')).toBe(true);
+    expect(harness.remove).not.toHaveBeenCalled();
+    expect(harness.releaseLaunch).not.toHaveBeenCalled();
+  });
+
+  it('preserves local ownership when the final session CAS throws', async () => {
+    const harness = createHarness({ sessionFinalizeError: new Error('session store unavailable') });
+
+    await expect(finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps)).rejects.toThrow(
+      'session store unavailable',
     );
 
     expect(harness.order).toEqual(['artifact-cas', 'session-cas']);
