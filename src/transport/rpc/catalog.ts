@@ -191,10 +191,16 @@ const providerProxySetOperationalIncidentSchema = z.discriminatedUnion('stage', 
 
 const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
-  z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),
+  z
+    .object({
+      kind: z.literal('initial-disposition-pending'),
+      exit: z.literal('initial-disposition-settlement'),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('operational-retry-owned'),
+      exit: z.literal('provider-proxy-set-release-retry'),
       incidents: z.array(providerProxySetOperationalIncidentSchema).min(1).readonly(),
     })
     .strict(),

@@ -10,6 +10,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
+import { providerOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
 
 const unconfigured = (producer: string): never => {
   throw new Error(`Test provider proxy recovery producer '${producer}' is not configured.`);
@@ -27,8 +28,19 @@ export function createTestProviderProxyContainmentProofProducer(
       observeLiveness: () => 'unknown',
     },
   });
-  return ({ identity, signal }) =>
-    prover.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+  return ({ identity, signal }) => {
+    const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
+    return prover.collectContainmentProof(
+      authorizeProviderProxySetContainmentProof(identity, {
+        mutationFence,
+        closeAdmission: async () => {
+          if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+        },
+      }),
+      db,
+      signal,
+    );
+  };
 }
 
 export function createTestProviderProxyRecoveryDispatcher(

@@ -698,6 +698,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginHeartbeatLocalFailureHold :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #commitOperatorAbandonment :: Promise.catch :: slot.containmentAuthority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
@@ -710,9 +711,8 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey, this.#releaseOperatorExitFence, this.#releaseOperatorExitFence] assignments=[]',
-  'src/coordinator/services/provider-proxy-set/index.ts :: containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
-  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[deps.collectContainmentProof, authorizeProviderProxySetContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[collectFencedContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment, releaseProviderProxySetContainmentProofFence, releaseProviderProxySetContainmentProofFence] assignments=[reapResult]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: buildInheritedAuthority :: catch#1 :: calls=[closeRedeemedProviderProxyControl] assignments=[]',
   'src/jobs/provider-operation-terminalization.ts :: readProviderHostUnserviceableEvidence :: catch#1 :: calls=[] assignments=[]',
@@ -752,11 +752,8 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.includes(' :: #promoteControlReattachment :: ')) {
     return 'Failed promotion keeps the original hold and displaced-control close failure cannot revoke the promoted authority.';
   }
-  if (fingerprint.includes(' :: containmentAbsent :: ')) {
+  if (fingerprint.includes(' :: #containmentAbsent :: ')) {
     return 'Authority-close observation cannot settle or relabel disappearance delivery.';
-  }
-  if (fingerprint.includes(' :: createInitialDispositionLatch :: ')) {
-    return 'No-op observer prevents an unhandled rejection while returning the original promise unchanged.';
   }
   if (fingerprint.includes(' :: #report :: ')) {
     return 'Lifecycle observability failure cannot interrupt an authority transition.';
@@ -824,12 +821,12 @@ const BOUNDARY_AUTHORIZATIONS: readonly JustifiedOccurrence[] = [
   },
   {
     occurrence:
-      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: ProviderOperationReconciler.containmentDisappeared',
+      'src/coordinator/composition/execution-services.ts :: consumeDisappearance :: CallExpression :: ProviderOperationReconciler.containmentDisappeared',
     justification: 'The disappearance-consumer producer closes over the concrete reconciler method.',
   },
   {
     occurrence:
-      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: ProviderOperationReconciler.representationAbandoned',
+      'src/coordinator/composition/execution-services.ts :: consumeAbandonment :: CallExpression :: ProviderOperationReconciler.representationAbandoned',
     justification: 'The abandonment-consumer producer closes over the distinct concrete reconciler method.',
   },
   {

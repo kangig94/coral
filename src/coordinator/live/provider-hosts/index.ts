@@ -88,10 +88,18 @@ export type ProviderHostClosingObligation = Readonly<{
   settlement: Promise<void>;
 }>;
 
+export type ProviderRepresentationReleaseObligation = Readonly<{
+  label: string;
+  pendingOperations: readonly string[];
+  exit: 'provider-proxy-representation-release-settlement';
+  settlement: Promise<void>;
+}>;
+
 export type ProviderHostCleanupObligations = Pick<
   ProviderHostQuiescenceReceipt,
   'liveProxySets' | 'acquisitionCleanupHolds' | 'closingHosts'
->;
+> &
+  Readonly<{ representationReleaseHolds: readonly ProviderRepresentationReleaseObligation[] }>;
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'> &
   Partial<Pick<ProviderHostManager, 'cleanupObligations'>>;
@@ -363,6 +371,7 @@ export class DefaultProviderHostManager
     return {
       liveProxySets: lifecycle?.liveSets() ?? [],
       acquisitionCleanupHolds: lifecycle?.acquisitionCleanupHolds() ?? [],
+      representationReleaseHolds: lifecycle?.representationReleaseHolds() ?? [],
       closingHosts: [...this.closingEntries.entries()].map(([entry, closing]) => ({
         label: `provider host ${entry.spec.provider} ${closing.ref.instanceId}`,
         containment: entry.containment ?? closing.containment,

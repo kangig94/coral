@@ -9,7 +9,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import {
   providerProxySetContainmentEvidenceFor,
   verifyProviderProxySetContainmentProofCurrent,
-  type ProviderProxySetContainmentProof,
+  type ProviderProxySetFencedContainmentProof,
 } from './containment-proof.js';
 import type { ProviderProxySetIdentity } from './identity.js';
 
@@ -22,13 +22,14 @@ export type ProviderProxySetContainmentSignal = 'SIGTERM' | 'SIGKILL';
 export type ProviderProxySetRecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
+  | Readonly<{ kind: 'authorization-missing' }>
   | Readonly<{ kind: 'authorization-stale' }>
   | Readonly<{ kind: 'store-unreadable' }>;
 
-/** Destructive owner port that accepts only an identity-bound opaque containment proof. */
+/** The caller retains the proof lease across this port and must release or transfer it from the result. */
 export type ProviderProxySetRecordedContainmentReaper = (
   identity: ProviderProxySetIdentity,
-  proof: ProviderProxySetContainmentProof,
+  proof: ProviderProxySetFencedContainmentProof,
   signal: AbortSignal,
   onSignal: (signal: ProviderProxySetContainmentSignal) => void,
   assertSignalAuthorized?: () => void,

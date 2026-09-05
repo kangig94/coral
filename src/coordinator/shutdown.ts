@@ -238,11 +238,16 @@ function closingHostDetail(closing: ProviderHostCleanupObligations['closingHosts
 function providerCleanupConfirmation(
   cleanup: SettlementConfirmation,
   closingHosts: ProviderHostCleanupObligations['closingHosts'],
+  representationReleaseHolds: ProviderHostCleanupObligations['representationReleaseHolds'],
 ): SettlementConfirmation {
   if (!cleanup.confirmed) return cleanup;
-  return closingHosts.length === 0
-    ? cleanup
-    : { confirmed: false, detail: closingHosts.map(closingHostDetail).join('; ') };
+  const pending = [
+    ...closingHosts.map(closingHostDetail),
+    ...representationReleaseHolds.map(
+      (hold) => `${hold.label}: ${hold.pendingOperations.join(', ') || 'capsule retirement'}; exit=${hold.exit}`,
+    ),
+  ];
+  return pending.length === 0 ? cleanup : { confirmed: false, detail: pending.join('; ') };
 }
 
 /** Authority release must remain behind the settlement ledger's no-successor gate. */
@@ -286,48 +291,6 @@ export async function runShutdownSequence({
   log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
-
-  let providerOperationMutationDrain = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
-  let providerOperationMutationHold =
-    providerOperationMutationDrain.kind === 'holding' ? providerOperationMutationDrain : null;
-  const providerOperationMutationDrainObligation: ShutdownObligation = {
-    label: 'provider operation mutation drain',
-    task: async () => {
-      if (providerOperationMutationDrain.kind === 'holding') {
-        await providerOperationMutationDrain.retryAfter;
-        providerOperationMutationDrain = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
-        if (providerOperationMutationDrain.kind === 'holding') {
-          providerOperationMutationHold = providerOperationMutationDrain;
-        }
-      }
-      return providerOperationMutationDrain.kind === 'drained'
-        ? { confirmed: true }
-        : {
-            confirmed: false,
-            detail: `provider operation mutations remain admitted; exit=${providerOperationMutationDrain.exit}`,
-          };
-    },
-    retainedAuthority: () =>
-      cleanupContribution('provider operation mutation drain', {
-        ipcSocket: true,
-        providerControlProxyInstanceIds:
-          providerProxyAuthority?.liveSets().map(({ proxyInstanceId }) => proxyInstanceId) ?? [],
-        cleanupObligations: providerOperationMutationHold?.pendingMutations ?? [],
-      }),
-    remainder: { owner: 'none' },
-    hold: () =>
-      providerOperationMutationHold === null
-        ? {
-            reason: 'required-shutdown-step-unsettled',
-            exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
-          }
-        : {
-            reason: 'provider-operation-mutations-unsettled',
-            exit: providerOperationMutationHold.exit,
-            retryAfter: providerOperationMutationHold.retryAfter,
-          },
-  };
-  await ledger.run(providerOperationMutationDrainObligation);
 
   const serverClose = createJoinableSettlementTask(() => closeServerFn(server));
   serverClose.start();
@@ -395,9 +358,15 @@ export async function runShutdownSequence({
     liveProxySets: providerProxyAuthority?.liveSets() ?? [],
     acquisitionCleanupHolds: [],
     closingHosts: [],
+    representationReleaseHolds: [],
   };
   const refreshProviderCleanup = (receipt?: ProviderHostQuiescenceReceipt): void => {
-    providerCleanup = providerHostManager.cleanupObligations?.() ?? receipt ?? providerCleanup;
+    const snapshot = providerHostManager.cleanupObligations?.() ?? receipt;
+    if (snapshot === undefined) return;
+    providerCleanup = {
+      ...snapshot,
+      representationReleaseHolds: 'representationReleaseHolds' in snapshot ? snapshot.representationReleaseHolds : [],
+    };
   };
   const providerRetainedAuthority = (label: string): ShutdownRetainedAuthorityContribution => {
     refreshProviderCleanup();
@@ -413,22 +382,84 @@ export async function runShutdownSequence({
         ? `provider acquisition guardian pid ${hold.guardianIdentity.pid}`
         : `provider acquisition ${hold.target}`,
     );
+    const representationReleaseLabels = providerCleanup.representationReleaseHolds.flatMap((hold) => [
+      hold.label,
+      ...hold.pendingOperations,
+    ]);
     return cleanupContribution(label, {
       providerControlProxyInstanceIds,
-      cleanupObligations: [...acquisitionLabels, ...providerCleanup.closingHosts.map(closingHostDetail)],
+      cleanupObligations: [
+        ...acquisitionLabels,
+        ...representationReleaseLabels,
+        ...providerCleanup.closingHosts.map(closingHostDetail),
+      ],
       operatorActions,
     });
   };
   const providerHold = () => {
     refreshProviderCleanup();
-    const closingSettlements = providerCleanup.closingHosts.map(({ settlement }) => settlement);
+    const cleanupSettlements = [
+      ...providerCleanup.closingHosts.map(({ settlement }) => settlement),
+      ...providerCleanup.representationReleaseHolds.map(({ settlement }) => settlement),
+    ];
     return {
       reason: 'required-shutdown-step-unsettled' as const,
       exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' as const,
-      ...(closingSettlements.length === 0
+      ...(cleanupSettlements.length === 0
         ? {}
-        : { retryAfter: Promise.allSettled(closingSettlements).then(() => undefined) }),
+        : { retryAfter: Promise.allSettled(cleanupSettlements).then(() => undefined) }),
     };
+  };
+  let providerRecoveryObligation: ShutdownObligation | null = null;
+  let providerOperationMutationDrain: ProviderOperationReconcilerStopDisposition | null = null;
+  let providerOperationMutationHold: Extract<ProviderOperationReconcilerStopDisposition, { kind: 'holding' }> | null =
+    null;
+  const providerOperationMutationDrainObligation: ShutdownObligation = {
+    label: 'provider operation mutation drain',
+    task: async () => {
+      if (providerRecoveryObligation === null || !ledger.isDischarged(providerRecoveryObligation)) {
+        return {
+          confirmed: false,
+          detail: 'provider operation mutation admission remains open while provider recovery is held',
+        };
+      }
+      if (providerOperationMutationDrain === null) {
+        providerOperationMutationDrain = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
+        providerOperationMutationHold =
+          providerOperationMutationDrain.kind === 'holding' ? providerOperationMutationDrain : null;
+      }
+      if (providerOperationMutationDrain.kind === 'holding') {
+        await providerOperationMutationDrain.retryAfter;
+        providerOperationMutationDrain = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
+      }
+      providerOperationMutationHold =
+        providerOperationMutationDrain.kind === 'holding' ? providerOperationMutationDrain : null;
+      return providerOperationMutationDrain.kind === 'drained'
+        ? { confirmed: true }
+        : {
+            confirmed: false,
+            detail: `provider operation mutations remain admitted; exit=${providerOperationMutationDrain.exit}`,
+          };
+    },
+    retainedAuthority: () =>
+      cleanupContribution('provider operation mutation drain', {
+        ipcSocket: true,
+        providerControlProxyInstanceIds:
+          providerProxyAuthority?.liveSets().map(({ proxyInstanceId }) => proxyInstanceId) ?? [],
+        cleanupObligations: providerOperationMutationHold?.pendingMutations ?? [],
+      }),
+    remainder: { owner: 'none' },
+    hold: () =>
+      providerOperationMutationHold === null
+        ? {
+            reason: 'required-shutdown-step-unsettled',
+            exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+          }
+        : {
+            reason: 'provider-operation-mutations-unsettled',
+            exit: providerOperationMutationHold.exit,
+            retryAfter: providerOperationMutationHold.retryAfter,
+          },
   };
 
   if (mode === 'hard') {
@@ -447,9 +478,6 @@ export async function runShutdownSequence({
     const providerHostShutdown: ShutdownObligation = {
       label: 'provider host shutdown',
       task: async (signal) => {
-        if (!ledger.isDischarged(providerOperationMutationDrainObligation)) {
-          return { confirmed: false, detail: 'provider host shutdown awaits provider operation mutation drain' };
-        }
         let receipt: ProviderHostQuiescenceReceipt | undefined;
         try {
           receipt = await providerHostManager.shutdown(signal);
@@ -461,14 +489,21 @@ export async function runShutdownSequence({
           providerCleanup.acquisitionCleanupHolds,
           signal,
         );
+        refreshProviderCleanup();
         if (cleanup.confirmed) providerCleanup = { ...providerCleanup, acquisitionCleanupHolds: [] };
-        return providerCleanupConfirmation(cleanup, providerCleanup.closingHosts);
+        return providerCleanupConfirmation(
+          cleanup,
+          providerCleanup.closingHosts,
+          providerCleanup.representationReleaseHolds,
+        );
       },
       retainedAuthority: () => providerRetainedAuthority('provider host shutdown'),
       remainder: { owner: 'none' },
       hold: providerHold,
     };
+    providerRecoveryObligation = providerHostShutdown;
     await ledger.run(providerHostShutdown);
+    await ledger.run(providerOperationMutationDrainObligation);
 
     let childTerminationDisposition: TerminateAllDisposition | null = null;
     const childTermination: ShutdownObligation = {
@@ -492,10 +527,14 @@ export async function runShutdownSequence({
           return Promise.resolve({ confirmed: false, detail: 'terminalization awaits the store availability check' });
         }
         if (!storeServicesAvailable) return Promise.resolve({ confirmed: true });
-        if (!ledger.isDischarged(providerHostShutdown) || !ledger.isDischarged(childTermination)) {
+        if (
+          !ledger.isDischarged(providerHostShutdown) ||
+          !ledger.isDischarged(providerOperationMutationDrainObligation) ||
+          !ledger.isDischarged(childTermination)
+        ) {
           return Promise.resolve({
             confirmed: false,
-            detail: 'terminalization awaits provider-host and child containment discharge',
+            detail: 'terminalization awaits provider-host recovery, mutation drain, and child containment discharge',
           });
         }
         return confirmedTask(() => markJobsAsErrorFn('Backend shutting down', signal));
@@ -523,9 +562,6 @@ export async function runShutdownSequence({
     const providerHostDrain: ShutdownObligation = {
       label: 'provider host drain for handoff',
       task: async (signal) => {
-        if (!ledger.isDischarged(providerOperationMutationDrainObligation)) {
-          return { confirmed: false, detail: 'provider host drain awaits provider operation mutation drain' };
-        }
         let receipt: ProviderHostQuiescenceReceipt | undefined;
         try {
           receipt = await providerHostManager.drainForHandoff(signal);
@@ -533,19 +569,29 @@ export async function runShutdownSequence({
           refreshProviderCleanup(receipt);
         }
         const cleanup = await reapProviderProxySets([], providerCleanup.acquisitionCleanupHolds, signal);
+        refreshProviderCleanup();
         if (cleanup.confirmed) providerCleanup = { ...providerCleanup, acquisitionCleanupHolds: [] };
-        return providerCleanupConfirmation(cleanup, providerCleanup.closingHosts);
+        return providerCleanupConfirmation(
+          cleanup,
+          providerCleanup.closingHosts,
+          providerCleanup.representationReleaseHolds,
+        );
       },
       retainedAuthority: () => providerRetainedAuthority('provider host drain for handoff'),
       remainder: { owner: 'none' },
       hold: providerHold,
     };
+    providerRecoveryObligation = providerHostDrain;
     await ledger.run(providerHostDrain);
+    await ledger.run(providerOperationMutationDrainObligation);
   }
 
   await ledger.run({
     label: 'components disposeAll',
-    task: (signal) => confirmedTask(() => runtimeState.components.disposeAll(signal)),
+    task: (signal) =>
+      ledger.isDischarged(providerOperationMutationDrainObligation)
+        ? confirmedTask(() => runtimeState.components.disposeAll(signal))
+        : Promise.resolve({ confirmed: false, detail: 'component disposal awaits provider operation mutation drain' }),
     retainedAuthority: () => cleanupContribution('components disposeAll'),
     remainder: { owner: 'process-exit' },
   });

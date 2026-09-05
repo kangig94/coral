@@ -757,119 +757,127 @@ export class ProviderOperationReconciler
 
   containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome> {
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
-    return this.#admission().run('provider-containment-disappearance', () => {
-      const parsed = containmentDisappearanceNoticeSchema.parse(notice);
-      if (
-        parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
-        parsed.operation.proxyInstanceId !== parsed.setIdentity.proxyInstanceId
-      ) {
-        return Promise.reject(new Error('containment_disappearance_identity_mismatch'));
-      }
-      const key = operationKey(parsed.operation);
-      const serializer = this.#serializerFor(key);
-      if (serializer.disappearance === null) {
-        serializer.disappearance = { notice: parsed, delivery: { kind: 'ready' } };
-        serializer.epoch += 1;
-        serializer.activeAbort?.abort(new RepresentationDriveFencedError());
-      } else if (!this.#sameDisappearanceNotice(serializer.disappearance.notice, parsed)) {
-        return Promise.reject(new Error('containment_disappearance_conflict'));
-      }
+    return this.#admission().run(
+      'provider-containment-disappearance',
+      () => {
+        const parsed = containmentDisappearanceNoticeSchema.parse(notice);
+        if (
+          parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
+          parsed.operation.proxyInstanceId !== parsed.setIdentity.proxyInstanceId
+        ) {
+          return Promise.reject(new Error('containment_disappearance_identity_mismatch'));
+        }
+        const key = operationKey(parsed.operation);
+        const serializer = this.#serializerFor(key);
+        if (serializer.disappearance === null) {
+          serializer.disappearance = { notice: parsed, delivery: { kind: 'ready' } };
+          serializer.epoch += 1;
+          serializer.activeAbort?.abort(new RepresentationDriveFencedError());
+        } else if (!this.#sameDisappearanceNotice(serializer.disappearance.notice, parsed)) {
+          return Promise.reject(new Error('containment_disappearance_conflict'));
+        }
 
-      const disappearance = serializer.disappearance;
-      switch (disappearance.delivery.kind) {
-        case 'consumed':
-          return Promise.resolve({ kind: 'accepted', acceptance: disappearance.delivery.acceptance });
-        case 'delivering':
-          return disappearance.delivery.promise;
-        case 'ready':
-          break;
-      }
+        const disappearance = serializer.disappearance;
+        switch (disappearance.delivery.kind) {
+          case 'consumed':
+            return Promise.resolve({ kind: 'accepted', acceptance: disappearance.delivery.acceptance });
+          case 'delivering':
+            return disappearance.delivery.promise;
+          case 'ready':
+            break;
+        }
 
-      const active = serializer.inFlight ?? Promise.resolve();
-      const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
-        const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
-        return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
-      };
-      const promise = active.then(consume, consume);
-      disappearance.delivery = { kind: 'delivering', promise };
-      void promise.then(
-        (outcome) => {
-          if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
-          if (outcome.kind === 'operational-failure') {
+        const active = serializer.inFlight ?? Promise.resolve();
+        const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
+          const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
+          return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
+        };
+        const promise = active.then(consume, consume);
+        disappearance.delivery = { kind: 'delivering', promise };
+        void promise.then(
+          (outcome) => {
+            if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+            if (outcome.kind === 'operational-failure') {
+              disappearance.delivery = { kind: 'ready' };
+              return;
+            }
+            disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
+            this.wake();
+          },
+          () => {
+            if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
             disappearance.delivery = { kind: 'ready' };
-            return;
-          }
-          disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
-          this.wake();
-        },
-        () => {
-          if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
-          disappearance.delivery = { kind: 'ready' };
-        },
-      );
-      return promise;
-    });
+          },
+        );
+        return promise;
+      },
+      notice.operation,
+    );
   }
 
   representationAbandoned(
     notice: ProviderRepresentationAbandonmentNotice,
   ): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> {
     if (!this.#canMutate()) return Promise.reject(new Error('Provider operation mutation admission is closed.'));
-    return this.#admission().run('provider-representation-abandonment', () => {
-      const parsed = providerRepresentationAbandonmentNoticeSchema.parse(notice);
-      if (
-        parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
-        parsed.operation.proxyInstanceId !== parsed.setIdentity.proxyInstanceId
-      ) {
-        return Promise.reject(new Error('provider_representation_abandonment_identity_mismatch'));
-      }
-      const key = operationKey(parsed.operation);
-      const serializer = this.#serializerFor(key);
-      if (serializer.disappearance !== null) {
-        return Promise.reject(new Error('provider_representation_abandonment_after_disappearance'));
-      }
-      if (serializer.abandonment === null) {
-        serializer.abandonment = { notice: parsed, delivery: { kind: 'ready' } };
-        serializer.epoch += 1;
-        serializer.activeAbort?.abort(new RepresentationDriveFencedError());
-      } else if (!this.#sameAbandonmentNotice(serializer.abandonment.notice, parsed)) {
-        return Promise.reject(new Error('provider_representation_abandonment_conflict'));
-      }
+    return this.#admission().run(
+      'provider-representation-abandonment',
+      () => {
+        const parsed = providerRepresentationAbandonmentNoticeSchema.parse(notice);
+        if (
+          parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
+          parsed.operation.proxyInstanceId !== parsed.setIdentity.proxyInstanceId
+        ) {
+          return Promise.reject(new Error('provider_representation_abandonment_identity_mismatch'));
+        }
+        const key = operationKey(parsed.operation);
+        const serializer = this.#serializerFor(key);
+        if (serializer.disappearance !== null) {
+          return Promise.reject(new Error('provider_representation_abandonment_after_disappearance'));
+        }
+        if (serializer.abandonment === null) {
+          serializer.abandonment = { notice: parsed, delivery: { kind: 'ready' } };
+          serializer.epoch += 1;
+          serializer.activeAbort?.abort(new RepresentationDriveFencedError());
+        } else if (!this.#sameAbandonmentNotice(serializer.abandonment.notice, parsed)) {
+          return Promise.reject(new Error('provider_representation_abandonment_conflict'));
+        }
 
-      const abandonment = serializer.abandonment;
-      switch (abandonment.delivery.kind) {
-        case 'consumed':
-          return Promise.resolve({ kind: 'accepted', acceptance: abandonment.delivery.acceptance });
-        case 'delivering':
-          return abandonment.delivery.promise;
-        case 'ready':
-          break;
-      }
+        const abandonment = serializer.abandonment;
+        switch (abandonment.delivery.kind) {
+          case 'consumed':
+            return Promise.resolve({ kind: 'accepted', acceptance: abandonment.delivery.acceptance });
+          case 'delivering':
+            return abandonment.delivery.promise;
+          case 'ready':
+            break;
+        }
 
-      const active = serializer.inFlight ?? Promise.resolve();
-      const consume = async (): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> => {
-        const outcome = await this.#driveContext.exit(() => this.#consumeRepresentationAbandonment(parsed));
-        return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
-      };
-      const promise = active.then(consume, consume);
-      abandonment.delivery = { kind: 'delivering', promise };
-      void promise.then(
-        (outcome) => {
-          if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
-          if (outcome.kind === 'operational-failure') {
+        const active = serializer.inFlight ?? Promise.resolve();
+        const consume = async (): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> => {
+          const outcome = await this.#driveContext.exit(() => this.#consumeRepresentationAbandonment(parsed));
+          return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
+        };
+        const promise = active.then(consume, consume);
+        abandonment.delivery = { kind: 'delivering', promise };
+        void promise.then(
+          (outcome) => {
+            if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
+            if (outcome.kind === 'operational-failure') {
+              abandonment.delivery = { kind: 'ready' };
+              return;
+            }
+            abandonment.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
+            this.wake();
+          },
+          () => {
+            if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
             abandonment.delivery = { kind: 'ready' };
-            return;
-          }
-          abandonment.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
-          this.wake();
-        },
-        () => {
-          if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
-          abandonment.delivery = { kind: 'ready' };
-        },
-      );
-      return promise;
-    });
+          },
+        );
+        return promise;
+      },
+      notice.operation,
+    );
   }
 
   reconcile(

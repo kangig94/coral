@@ -870,16 +870,15 @@ describe('attemptProviderProxySetInheritance', () => {
   it('reaps exact containment evidence instead of treating a missing credential as authority to proceed', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const collectContainmentProof = vi.fn(
-      createProviderProxySetContainmentProver({
-        ...runtime,
-        process: {
-          ...runtime.process,
-          readProcessIncarnation: () => null,
-          observeLiveness: () => 'absent',
-        },
-      }).collectContainmentProof,
-    );
+    const containmentProver = createProviderProxySetContainmentProver({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => null,
+        observeLiveness: () => 'absent',
+      },
+    });
+    const collectContainmentProof = vi.spyOn(containmentProver, 'collectContainmentProof');
     const reapRecordedContainment = vi.fn(async () => ({
       kind: 'containment-absent' as const,
       disappearanceReceipt: 'group:200,leader:200@linux:00000000-0000-4000-8000-000000000000:3',
@@ -892,7 +891,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-        collectContainmentProof,
+        collectContainmentProof: containmentProver.collectContainmentProof,
         reapRecordedContainment,
       },
       neverAborts,
@@ -916,16 +915,14 @@ describe('attemptProviderProxySetInheritance', () => {
   it('keeps a missing-credential set held when its recorded group is unattributable', async () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
-    const collectContainmentProof = vi.fn(
-      createProviderProxySetContainmentProver({
-        ...runtime,
-        process: {
-          ...runtime.process,
-          readProcessIncarnation: () => null,
-          observeLiveness: () => 'absent',
-        },
-      }).collectContainmentProof,
-    );
+    const containmentProver = createProviderProxySetContainmentProver({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => null,
+        observeLiveness: () => 'absent',
+      },
+    });
     const reapRecordedContainment = vi.fn(async () => ({ kind: 'recorded-group-unattributable' as const }));
 
     const outcome = await attemptProviderProxySetInheritance(
@@ -935,7 +932,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
-        collectContainmentProof,
+        collectContainmentProof: containmentProver.collectContainmentProof,
         reapRecordedContainment,
       },
       neverAborts,

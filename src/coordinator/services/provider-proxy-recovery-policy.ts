@@ -45,7 +45,7 @@ import type {
 } from './provider-proxy-set/inheritance.js';
 import {
   inspectProviderProxySetContainmentProof,
-  type ProviderProxySetContainmentProof,
+  type ProviderProxySetFencedContainmentProof,
 } from './provider-proxy-set/containment-proof.js';
 
 export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
@@ -104,8 +104,14 @@ type ContainmentProofInput = Readonly<{
 }>;
 
 type CapsuleRetirementInput = Readonly<{ path: string }>;
-type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
-type RepresentationAbandonmentConsumerInput = Readonly<{ notice: ProviderRepresentationAbandonmentNotice }>;
+type DisappearanceConsumerInput = Readonly<{
+  notice: ContainmentDisappearanceNotice;
+  mutationProof?: ProviderProxySetFencedContainmentProof;
+}>;
+type RepresentationAbandonmentConsumerInput = Readonly<{
+  notice: ProviderRepresentationAbandonmentNotice;
+  mutationProof?: ProviderProxySetFencedContainmentProof;
+}>;
 
 export type ProviderProxyRecoveryProducerInput = {
   'disappearance-terminalization': DisappearanceTerminalizationInput;
@@ -125,7 +131,7 @@ export interface ProviderProxyRecoveryProducerPorts {
   'role-control'(input: RoleControlInput): Promise<unknown>;
   'set-inheritance'(input: SetInheritanceInput): Promise<ProviderProxySetInheritanceOutcome>;
   'capsule-redemption'(input: CapsuleRedemptionInput): Promise<ProviderProxySetRedemptionOutcome>;
-  'containment-proof'(input: ContainmentProofInput): Promise<ProviderProxySetContainmentProof>;
+  'containment-proof'(input: ContainmentProofInput): Promise<ProviderProxySetFencedContainmentProof>;
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
@@ -320,8 +326,9 @@ function sameOperationIdentity(left: OperationIdentity, right: OperationIdentity
   );
 }
 
-function containmentProofRequiresReap(value: unknown): value is ProviderProxySetContainmentProof {
-  return inspectProviderProxySetContainmentProof(value)?.evidence.kind === 'reap-required';
+function containmentProofRequiresReap(value: unknown): value is ProviderProxySetFencedContainmentProof {
+  const proof = inspectProviderProxySetContainmentProof(value);
+  return proof?.authorization === 'fenced' && proof.evidence.kind === 'reap-required';
 }
 
 function classifyFulfillment(
@@ -388,6 +395,9 @@ function classifyFulfillment(
     const proof = inspectProviderProxySetContainmentProof(value);
     if (proof === null) {
       return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
+    }
+    if (proof.authorization !== 'fenced') {
+      return unknown(producerId, new Error('provider_proxy_containment_proof_authorization_missing'));
     }
     if (context.setIdentity === undefined || !providerProxySetIdentitiesEqual(context.setIdentity, proof.identity)) {
       return corrupt(producerId, new Error('provider_proxy_containment_proof_identity_mismatch'));
@@ -566,12 +576,28 @@ export function createProviderProxyRecoveryDispatcher(
       const aborters = new Set<(reason: unknown) => void>();
       const exactSources = new Map<string, Observation>();
       const reattachmentSources = new Map<string, Observation>();
+      const disposeCachedEvidence = (transferred?: Readonly<{ sourceId: string; value: unknown }>): void => {
+        for (const sources of [exactSources, reattachmentSources]) {
+          for (const [sourceId, observation] of sources) {
+            if (
+              observation.kind === 'evidence' &&
+              (transferred === undefined ||
+                sourceId !== transferred.sourceId ||
+                observation.value !== transferred.value)
+            ) {
+              sinks.disposeLateEvidence?.(observation.value, sourceId);
+            }
+          }
+          sources.clear();
+        }
+      };
 
       const retireFatal = (observation: Extract<Observation, { kind: 'corrupt' | 'refused' | 'unknown' }>): void => {
         if (retired) return;
         retired = true;
         const error = fatalError(seam, context, observation);
         for (const abort of aborters) abort(error);
+        disposeCachedEvidence();
         effects.fatal(sinks, error);
       };
 
@@ -595,14 +621,17 @@ export function createProviderProxyRecoveryDispatcher(
         }
         retired = true;
         if (redemption.kind === 'evidence') {
+          disposeCachedEvidence({ sourceId: 'redemption', value: redemption.value });
           sinks.evidence(redemption.value, 'redemption');
           return;
         }
         if (absence.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
+          disposeCachedEvidence({ sourceId: 'absence', value: absence.value });
           sinks.evidence(absence.value, 'absence');
           return;
         }
         if (redemption.kind === 'unavailable') {
+          disposeCachedEvidence();
           effects.retry(sinks, { producerId: redemption.producerId, incident: redemption.incident });
           return;
         }
@@ -614,6 +643,7 @@ export function createProviderProxyRecoveryDispatcher(
         retired = true;
         const reason = new Error(`provider_proxy_control_reattachment_decided:${sourceId}`);
         for (const abort of aborters) abort(reason);
+        disposeCachedEvidence({ sourceId, value });
         sinks.evidence(value, sourceId);
       };
 
@@ -654,12 +684,14 @@ export function createProviderProxyRecoveryDispatcher(
           if (absence === undefined) return;
           retired = true;
           for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
+          disposeCachedEvidence();
           effects.retry(sinks, { producerId: 'role-control', incident: outcome.incident });
           return;
         }
         if (redemption.kind === 'unavailable' && absence !== undefined) {
           retired = true;
           for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
+          disposeCachedEvidence();
           effects.retry(sinks, { producerId: redemption.producerId, incident: redemption.incident });
         }
       };
@@ -672,11 +704,13 @@ export function createProviderProxyRecoveryDispatcher(
         if (observation.kind === 'forwarded-fatal') {
           retired = true;
           for (const abort of aborters) abort(observation.error);
+          disposeCachedEvidence();
           sinks.fatal(observation.error);
           return;
         }
         if (observation.kind === 'cancel') {
           retired = true;
+          disposeCachedEvidence();
           sinks.cancel?.(observation.reason);
           return;
         }
@@ -754,6 +788,7 @@ export function createProviderProxyRecoveryDispatcher(
           if (retired) return;
           retired = true;
           for (const abort of aborters) abort(reason);
+          disposeCachedEvidence();
           sinks.cancel?.(reason);
         },
       };

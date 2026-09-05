@@ -1438,6 +1438,7 @@ describe('provider-proxy process topology: acquisition', () => {
       flavor: FLAVOR,
       buildSetId: shared.buildSetId,
     };
+    const containmentProver = createProviderProxySetContainmentProver(environment.outerRuntime());
     const recovered = await attemptProviderProxySetInheritance(
       reference,
       db,
@@ -1447,12 +1448,7 @@ describe('provider-proxy process topology: acquisition', () => {
         coordinatorIdentity: successorIdentity,
         operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
         reapRecordedContainment: createProviderProxySetRecordedContainmentReaper(environment.outerRuntime()),
-        collectContainmentProof: (authorization, proofDb, proofSignal) =>
-          createProviderProxySetContainmentProver(environment.outerRuntime()).collectContainmentProof(
-            authorization,
-            proofDb,
-            proofSignal,
-          ),
+        collectContainmentProof: containmentProver.collectContainmentProof,
       },
       AbortSignal.timeout(15_000),
     );

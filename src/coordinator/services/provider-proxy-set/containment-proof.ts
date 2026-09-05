@@ -22,15 +22,16 @@ import {
  * Observes the dual recorded enforcers and gathers the exact recorded targets without signalling any process.
  */
 export interface ProviderProxySetContainmentProver {
-  collectContainmentProof(
-    authorization: ProviderProxySetContainmentProofAuthorization,
+  collectContainmentProof<Authorization extends ProviderProxySetContainmentProofAuthorization>(
+    authorization: Authorization,
     db: Database,
     signal: AbortSignal,
-  ): Promise<ProviderProxySetContainmentProof>;
+  ): Promise<ProviderProxySetContainmentProofForAuthorization<Authorization>>;
 }
 
 declare const providerProxySetContainmentProofAuthorizationBrand: unique symbol;
 declare const providerProxySetContainmentProofBrand: unique symbol;
+declare const providerProxySetContainmentProofFenceBrand: unique symbol;
 
 /** An exact-set authorization that only the containment prover may turn into process evidence. */
 export type ProviderProxySetContainmentProofAuthorization = Readonly<{
@@ -41,6 +42,18 @@ export type ProviderProxySetContainmentProofAuthorization = Readonly<{
 export type ProviderProxySetContainmentProof = Readonly<{
   [providerProxySetContainmentProofBrand]: true;
 }>;
+
+export type ProviderProxySetFencedContainmentProofAuthorization = ProviderProxySetContainmentProofAuthorization &
+  Readonly<{ [providerProxySetContainmentProofFenceBrand]: 'authorization' }>;
+
+export type ProviderProxySetFencedContainmentProof = ProviderProxySetContainmentProof &
+  Readonly<{ [providerProxySetContainmentProofFenceBrand]: 'proof' }>;
+
+export type ProviderProxySetContainmentProofForAuthorization<
+  Authorization extends ProviderProxySetContainmentProofAuthorization,
+> = Authorization extends ProviderProxySetFencedContainmentProofAuthorization
+  ? ProviderProxySetFencedContainmentProof
+  : ProviderProxySetContainmentProof;
 
 type ContainmentProofRecord = Readonly<{
   authorization: ProviderProxySetContainmentProofAuthorization;
@@ -68,6 +81,7 @@ export type ProviderProxySetContainmentProofFence = Readonly<{
 
 export type ProviderProxySetContainmentProofCurrentness =
   | Readonly<{ kind: 'current' }>
+  | Readonly<{ kind: 'authorization-missing' }>
   | Readonly<{ kind: 'authorization-stale' }>
   | Readonly<{ kind: 'store-unreadable' }>;
 
@@ -78,15 +92,30 @@ const authorizationRecords = new WeakMap<
 const containmentProofRecords = new WeakMap<ProviderProxySetContainmentProof, ContainmentProofRecord>();
 
 /** Reads an opaque proof for policy classification without granting signal authority. */
-export function inspectProviderProxySetContainmentProof(
-  value: unknown,
-): Readonly<{ identity: ProviderProxySetIdentity; evidence: ProviderProxySetContainmentEvidence }> | null {
+export function inspectProviderProxySetContainmentProof(value: unknown): Readonly<{
+  identity: ProviderProxySetIdentity;
+  evidence: ProviderProxySetContainmentEvidence;
+  authorization: 'fenced' | 'unfenced';
+}> | null {
   if (typeof value !== 'object' || value === null) return null;
   const record = containmentProofRecords.get(value as ProviderProxySetContainmentProof);
-  return record === undefined ? null : { identity: record.identity, evidence: record.evidence };
+  return record === undefined
+    ? null
+    : {
+        identity: record.identity,
+        evidence: record.evidence,
+        authorization: record.currentness === null ? 'unfenced' : 'fenced',
+      };
 }
 
 /** Mints the only input from which the prover may derive an exact-set proof. */
+export function authorizeProviderProxySetContainmentProof(
+  identity: ProviderProxySetIdentity,
+  fence: ProviderProxySetContainmentProofFence,
+): ProviderProxySetFencedContainmentProofAuthorization;
+export function authorizeProviderProxySetContainmentProof(
+  identity: ProviderProxySetIdentity,
+): ProviderProxySetContainmentProofAuthorization;
 export function authorizeProviderProxySetContainmentProof(
   identity: ProviderProxySetIdentity,
   fence?: ProviderProxySetContainmentProofFence,
@@ -102,9 +131,31 @@ export function authorizeProviderProxySetContainmentProof(
 
 /** Only the authorization that owns a fence lease may release that lease. */
 export function releaseProviderProxySetContainmentProofFence(
-  authorization: ProviderProxySetContainmentProofAuthorization,
+  owner: ProviderProxySetContainmentProofAuthorization | ProviderProxySetContainmentProof,
 ): void {
-  authorizationRecords.get(authorization)?.fence?.release();
+  const authorization = containmentProofRecords.get(owner as ProviderProxySetContainmentProof)?.authorization ?? owner;
+  authorizationRecords.get(authorization as ProviderProxySetContainmentProofAuthorization)?.fence?.release();
+}
+
+/** A post-proof mutation remains confined to the exact set and the proof's still-held lease. */
+export function runProviderProxySetContainmentProofMutation<Result>(
+  proof: ProviderProxySetFencedContainmentProof,
+  expectedIdentity: ProviderProxySetIdentity,
+  label: string,
+  mutation: () => Result | Promise<Result>,
+): Promise<Result> {
+  const record = containmentProofRecords.get(proof);
+  if (record === undefined) return Promise.reject(new Error('provider_proxy_set_containment_proof_invalid'));
+  if (!providerProxySetIdentitiesEqual(record.identity, expectedIdentity)) {
+    return Promise.reject(new Error('provider_proxy_set_containment_proof_identity_mismatch'));
+  }
+  if (record.currentness === null) {
+    return Promise.reject(new Error('provider_proxy_set_containment_proof_authorization_missing'));
+  }
+  if (!record.currentness.fence.isHeld()) {
+    return Promise.reject(new Error('provider_proxy_set_containment_proof_authorization_stale'));
+  }
+  return record.currentness.fence.run(label, mutation);
 }
 
 /**
@@ -217,7 +268,7 @@ export function verifyProviderProxySetContainmentProofCurrent(
   if (!providerProxySetIdentitiesEqual(record.identity, expectedIdentity)) {
     throw new Error('provider_proxy_set_containment_proof_identity_mismatch');
   }
-  if (record.currentness === null) return { kind: 'current' };
+  if (record.currentness === null) return { kind: 'authorization-missing' };
   if (!record.currentness.fence.isHeld()) return { kind: 'authorization-stale' };
 
   const generationBefore = record.currentness.fence.currentGeneration();
@@ -249,7 +300,11 @@ export function verifyProviderProxySetContainmentProofCurrent(
 /** Admission closure must settle before observation, and a failed collection must release its fence lease. */
 export function createProviderProxySetContainmentProver(runtime: Runtime): ProviderProxySetContainmentProver {
   return {
-    async collectContainmentProof(authorization, db, signal) {
+    async collectContainmentProof<Authorization extends ProviderProxySetContainmentProofAuthorization>(
+      authorization: Authorization,
+      db: Database,
+      signal: AbortSignal,
+    ): Promise<ProviderProxySetContainmentProofForAuthorization<Authorization>> {
       const authorizationRecord = authorizationRecords.get(authorization);
       if (authorizationRecord === undefined) {
         throw new Error('provider_proxy_set_containment_proof_authorization_invalid');
@@ -268,7 +323,7 @@ export function createProviderProxySetContainmentProver(runtime: Runtime): Provi
               ? null
               : { db, fence: authorizationRecord.fence, generation },
         });
-        return proof;
+        return proof as ProviderProxySetContainmentProofForAuthorization<Authorization>;
       } catch (error: unknown) {
         authorizationRecord.fence?.release();
         throw error;

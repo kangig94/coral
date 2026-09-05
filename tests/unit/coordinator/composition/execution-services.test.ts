@@ -1029,7 +1029,10 @@ describe('execution services provider-proxy proof composition', () => {
       cause: 'closed',
       error: new ControlClientError('control_client_closed', 'control closed', 'closed'),
     });
-    await flushMicrotasks();
+    await vi.waitFor(() => {
+      expect(reapRecordedContainment).toHaveBeenCalledOnce();
+      expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));
+    });
     time.tick(30_000);
     await flushMicrotasks();
     expect(proveContainmentAbsent.mock.calls.length).toBeGreaterThanOrEqual(1);

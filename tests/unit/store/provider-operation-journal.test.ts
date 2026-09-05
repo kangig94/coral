@@ -199,6 +199,32 @@ describe('provider operation journal', () => {
     fence.release();
   });
 
+  it('retains a set-fence scope through global admission close and retires it with the lease', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const target = providerOperationRecord('prepare-pending');
+    const fence = admission.closeSet(target.operation);
+    const close = admission.close();
+
+    expect(close).toMatchObject({
+      kind: 'holding',
+      pendingMutations: ['provider-operation-mutation-set-fence'],
+      exit: 'admitted-provider-operation-mutation-settlement',
+    });
+    expect(() => admission.closeSet(target.operation)).toThrow('Provider operation mutation admission is closed.');
+    expect(
+      await fence.run('fenced-release', () =>
+        admission.runSync('fenced-release-journal-mutation', () => 'admitted', target.operation),
+      ),
+    ).toBe('admitted');
+    if (close.kind !== 'holding') throw new Error('set fence was not retained by global admission close');
+
+    fence.release();
+    await close.retryAfter;
+    await expect(fence.run('stale-fenced-release', () => undefined)).rejects.toThrow(
+      'Provider operation mutation set fence is no longer held.',
+    );
+  });
+
   it('retains a detached nested poll admitted while its parent is draining', async () => {
     const db = createDb();
     const admission = providerOperationMutationAdmission(db);

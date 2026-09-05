@@ -38,6 +38,7 @@ import {
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
 import { ProviderProxyRoleControlRemoteError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import type { ContainmentCommitOutcome } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { ProviderProxyGuardianRedemptionAuthority } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -57,6 +58,8 @@ import {
   verifyProviderProxySetContainmentProofCurrent,
   type ProviderProxySetContainmentProof,
   type ProviderProxySetContainmentProofAuthorization,
+  type ProviderProxySetFencedContainmentProof,
+  type ProviderProxySetFencedContainmentProofAuthorization,
 } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import {
   ProviderProxySetLifecycle,
@@ -378,12 +381,19 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
             'capsule-redemption': ({ capsule, capsulePath, signal }) =>
               deps.redeemCapsule?.(capsule, capsulePath, signal) ?? Promise.reject(new Error('unconfigured')),
           }),
-      'containment-proof': async ({ identity, signal }) =>
-        sealedContainmentProof(
+      'containment-proof': async ({ identity, signal }) => {
+        const mutationFence = mutationAdmission.closeSet(identity);
+        return sealedContainmentProof(
           identity,
-          authorizeProviderProxySetContainmentProof(identity),
+          authorizeProviderProxySetContainmentProof(identity, {
+            mutationFence,
+            closeAdmission: async () => {
+              if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+            },
+          }),
           await deps.proveContainmentAbsent(identity, signal),
-        ),
+        );
+      },
       'capsule-retirement': ({ path }) => retireCapsule(path),
       'disappearance-consumer': ({ notice }) => deps.disappearanceConsumer.containmentDisappeared(notice),
       ...(deps.abandonmentConsumer === undefined
@@ -655,6 +665,16 @@ function containmentProofRuntime(
   };
 }
 
+function sealedContainmentProof(
+  identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+  authorization: ProviderProxySetFencedContainmentProofAuthorization,
+  evidence: ProviderProxySetContainmentEvidence,
+): Promise<ProviderProxySetFencedContainmentProof>;
+function sealedContainmentProof(
+  identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+  authorization: ProviderProxySetContainmentProofAuthorization,
+  evidence: ProviderProxySetContainmentEvidence,
+): Promise<ProviderProxySetContainmentProof>;
 async function sealedContainmentProof(
   identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
   authorization: ProviderProxySetContainmentProofAuthorization,
@@ -690,7 +710,7 @@ async function sealedContainmentProof(
 function operatorContainmentProof(
   capability: ProviderProxySetOperatorExitCapability,
   evidence: ProviderProxySetContainmentEvidence,
-): Promise<ProviderProxySetContainmentProof> {
+): Promise<ProviderProxySetFencedContainmentProof> {
   return sealedContainmentProof(capability.setIdentity, capability.containmentProofAuthorization, evidence);
 }
 
@@ -3152,6 +3172,16 @@ describe('ProviderProxySetLifecycle', () => {
     db.close();
   });
 
+  it('classifies a proof without a mutation fence as unverifiable', async () => {
+    const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+    const authorization = authorizeProviderProxySetContainmentProof(identity);
+    const proof = await sealedContainmentProof(identity, authorization, containmentEvidence('unfenced-proof'));
+
+    expect(verifyProviderProxySetContainmentProofCurrent(proof, identity)).toEqual({
+      kind: 'authorization-missing',
+    });
+  });
+
   it.each([
     {
       label: 'guardian is alive',
@@ -3407,7 +3437,11 @@ describe('ProviderProxySetLifecycle', () => {
           proxyIncarnation: testIncarnation('different-address-identity'),
           proxyProcessGroupId: identityA.proxyProcessGroupId + 20,
         };
-    const foreignAuthorization = authorizeProviderProxySetContainmentProof(identityB);
+    const foreignMutationFence = new ProviderOperationMutationAdmission().closeSet(identityB);
+    const foreignAuthorization = authorizeProviderProxySetContainmentProof(identityB, {
+      mutationFence: foreignMutationFence,
+      closeAdmission: async () => undefined,
+    });
     const foreignProof = await sealedContainmentProof(
       identityB,
       foreignAuthorization,
@@ -3437,7 +3471,11 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceReceipt: 'must-not-reap',
     }));
     const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
-    const otherAuthorization = authorizeProviderProxySetContainmentProof(harness.capability.setIdentity);
+    const otherMutationFence = new ProviderOperationMutationAdmission().closeSet(harness.capability.setIdentity);
+    const otherAuthorization = authorizeProviderProxySetContainmentProof(harness.capability.setIdentity, {
+      mutationFence: otherMutationFence,
+      closeAdmission: async () => undefined,
+    });
     const proof = await sealedContainmentProof(
       harness.capability.setIdentity,
       otherAuthorization,
@@ -3461,7 +3499,11 @@ describe('ProviderProxySetLifecycle', () => {
       proxyIncarnation: recordedIncarnation,
       proxyProcessGroupId: 9_100,
     };
-    const authorization = authorizeProviderProxySetContainmentProof(identity);
+    const mutationFence = new ProviderOperationMutationAdmission().closeSet(identity);
+    const authorization = authorizeProviderProxySetContainmentProof(identity, {
+      mutationFence,
+      closeAdmission: async () => undefined,
+    });
     const proof = await sealedContainmentProof(identity, authorization, {
       kind: 'reap-required',
       containment: { pid: 9_100, incarnation: recordedIncarnation, processGroupId: 9_100 },
@@ -3734,7 +3776,7 @@ describe('ProviderProxySetLifecycle', () => {
       expect.objectContaining({
         kind: 'contained',
         disappearanceReceipt: 'operator-exact-absence',
-        claimDischarge: { kind: 'initial-disposition-retry-owned' },
+        claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
       }),
     );
     expect(lifecycle.snapshot().represented).toBe(1);
@@ -3874,7 +3916,7 @@ describe('ProviderProxySetLifecycle', () => {
           { role: 'guardian', observation: 'unknown' },
           { role: 'reaper', observation: 'unknown' },
         ],
-        claimDischarge: { kind: 'initial-disposition-retry-owned' },
+        claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
       }),
     );
     expect(lifecycle.snapshot().represented).toBe(1);
@@ -3955,6 +3997,9 @@ describe('ProviderProxySetLifecycle', () => {
       const disappearanceReceipt = 'guardian:guardian-receipt;reaper:reaper-receipt';
       if (winner === 'role-control') {
         roleControlResult.resolve({ disappearanceReceipt });
+        await drainMicrotasks();
+        expect(notices).toHaveLength(0);
+        absenceResult.resolve(enforcersUnobservable);
       } else {
         absenceResult.resolve(containmentEvidence(disappearanceReceipt));
       }
@@ -3969,9 +4014,7 @@ describe('ProviderProxySetLifecycle', () => {
         ]),
       );
 
-      if (winner === 'role-control') {
-        absenceResult.resolve(containmentEvidence('guardian:late-guardian;reaper:late-reaper'));
-      } else {
+      if (winner === 'containment-proof') {
         roleControlResult.resolve({
           disappearanceReceipt: 'guardian:late-guardian;reaper:late-reaper',
         });
@@ -4140,7 +4183,7 @@ describe('ProviderProxySetLifecycle', () => {
       kind: 'abandoned',
       setIdentity: address,
       enforcerObservations: enforcersUnobservable.observations,
-      claimDischarge: { kind: 'initial-disposition-retry-owned' },
+      claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
       effect: { signalsSent: [], containmentAbsent: false, representationAction: 'abandonment-release-started' },
     });
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
@@ -4746,10 +4789,66 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot()).toEqual(
       expect.objectContaining({ represented: 1, states: ['absence-delivery-pending'], pendingOperationCounts: [1] }),
     );
+    expect(lifecycle.liveSets()).toEqual([authority]);
     expect(() => lifecycle.containmentAbsent(authority.setIdentity, 'public-proof-receipt')).not.toThrow();
     expect(() => lifecycle.containmentAbsent(authority.setIdentity, 'conflicting-receipt')).toThrow(
       'provider_proxy_containment_absence_conflict',
     );
+  });
+
+  it('reports an authority-null representation release through its settlement exit', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    let deliveryAttempts = 0;
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: {
+        containmentDisappeared: async (notice) => {
+          deliveryAttempts += 1;
+          return deliveryAttempts === 1
+            ? {
+                kind: 'operational-failure' as const,
+                code: 'disappearance_consumer_unavailable' as const,
+                reason: 'retry gap',
+              }
+            : {
+                kind: 'accepted' as const,
+                acceptance: {
+                  kind: 'accepted' as const,
+                  operation: notice.operation,
+                  disposition: 'record-absent' as const,
+                },
+              };
+        },
+      },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+
+    lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'authority-null-release');
+    await drainMicrotasks();
+
+    expect(lifecycle.liveSets()).toEqual([]);
+    const holds = lifecycle.representationReleaseHolds();
+    expect(holds).toEqual([
+      expect.objectContaining({
+        pendingOperations: [expect.stringContaining(record.operation.operationId)],
+        exit: 'provider-proxy-representation-release-settlement',
+        settlement: expect.any(Promise),
+      }),
+    ]);
+    const [hold] = holds;
+    if (hold === undefined) throw new Error('expected representation release hold');
+
+    clock.elapse(1_000);
+    clock.runDue();
+    await expect(hold.settlement).resolves.toBeUndefined();
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
   });
 
   it('dispatches post-start disappearance corruption through the global fatal route', async () => {
@@ -4822,12 +4921,17 @@ describe('ProviderProxySetLifecycle', () => {
     };
     const dispatcher: ProviderProxyRecoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
       {
-        'containment-proof': async ({ identity }) =>
-          sealedContainmentProof(
+        'containment-proof': async ({ identity }) => {
+          const mutationFence = new ProviderOperationMutationAdmission().closeSet(identity);
+          return sealedContainmentProof(
             identity,
-            authorizeProviderProxySetContainmentProof(identity),
+            authorizeProviderProxySetContainmentProof(identity, {
+              mutationFence,
+              closeAdmission: async () => undefined,
+            }),
             await noContainmentProof(),
-          ),
+          );
+        },
         'disappearance-terminalization': () => {
           throw new ProviderOperationTerminalMetadataError(record.operation);
         },
@@ -4868,31 +4972,25 @@ describe('ProviderProxySetLifecycle', () => {
     const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'nested-disappearance-fatal');
     const outcome = await acceptance.initialDisposition.then(
       () => ({ kind: 'fulfilled' as const }),
-      (error: unknown) => ({ kind: 'rejected' as const, error }),
+      (error: unknown) => ({ kind: 'rejected' as const, branded: isProviderProxyRecoveryFatalError(error) }),
     );
 
     expect({
-      initialDisposition: outcome.kind,
+      initialDisposition: outcome,
       globalFatalCalls: globalFatals.length,
-      branded: outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(outcome.error),
-      sameObject: outcome.kind === 'rejected' && outcome.error === globalFatals[0],
       fatalIdentities: globalFatals.map((fatal) => ({
         branded: isProviderProxyRecoveryFatalError(fatal),
-        sameOutcome: outcome.kind === 'rejected' && outcome.error === fatal,
         producerId: fatal.producerId,
         causeName: fatal.cause instanceof Error ? fatal.cause.name : typeof fatal.cause,
       })),
       representedPendingRows: lifecycle.snapshot().pendingOperationCounts[0],
       activeRetryTimers: clock.timers.filter((timer) => timer.active).length,
     }).toEqual({
-      initialDisposition: 'rejected',
+      initialDisposition: { kind: 'rejected', branded: true },
       globalFatalCalls: 1,
-      branded: true,
-      sameObject: true,
       fatalIdentities: [
         {
           branded: true,
-          sameOutcome: true,
           producerId: 'disappearance-terminalization',
           causeName: 'ProviderOperationTerminalMetadataError',
         },
@@ -4991,6 +5089,7 @@ describe('ProviderProxySetLifecycle', () => {
     );
     await expect(acceptance.initialDisposition).resolves.toEqual({
       kind: 'operational-retry-owned',
+      exit: 'provider-proxy-set-release-retry',
       incidents: [
         expect.objectContaining({
           stage: 'capsule-retirement',
@@ -5055,6 +5154,122 @@ describe('ProviderProxySetLifecycle', () => {
     expect(decisions).toEqual([
       `Provider proxy set action=stop-and-reap reason=provider_authority_lost fault=heartbeat-failed subject=proxy liveClaims=0 set=${setReference(authority.setIdentity)} error=teardown latched terminalReason=teardown-latched`,
     ]);
+  });
+
+  it('retains a committed absence until a later fenced proof is current', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const proofEvidence = deferred<ProviderProxySetContainmentEvidence>();
+    const containmentDisappeared = vi.fn(
+      async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
+        kind: 'accepted' as const,
+        acceptance: {
+          kind: 'accepted' as const,
+          operation: notice.operation,
+          disposition: 'terminalization-committed' as const,
+        },
+      }),
+    );
+    const authority = fakeAuthority({
+      record,
+      commitContainment: async () => ({
+        kind: 'containment-absent',
+        disappearanceReceipt: 'committed-before-proof',
+      }),
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: new ManualClock(),
+      proveContainmentAbsent: () => proofEvidence.promise,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    await drainMicrotasks();
+
+    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['containing'] }));
+    expect(containmentDisappeared).not.toHaveBeenCalled();
+
+    proofEvidence.resolve(enforcersUnobservable);
+    await drainMicrotasks();
+
+    expect(containmentDisappeared).toHaveBeenCalledOnce();
+  });
+
+  it('retains a fenced proof until a later committed absence can consume it', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const containmentCommit = deferred<ContainmentCommitOutcome>();
+    const containmentDisappeared = vi.fn(
+      async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
+        kind: 'accepted' as const,
+        acceptance: {
+          kind: 'accepted' as const,
+          operation: notice.operation,
+          disposition: 'terminalization-committed' as const,
+        },
+      }),
+    );
+    const authority = fakeAuthority({ record, commitContainment: () => containmentCommit.promise });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    await drainMicrotasks();
+
+    expect(lifecycle.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['containing'] }));
+    expect(containmentDisappeared).not.toHaveBeenCalled();
+
+    containmentCommit.resolve({ kind: 'containment-absent', disappearanceReceipt: 'proof-before-commit' });
+    await drainMicrotasks();
+
+    expect(containmentDisappeared).toHaveBeenCalledOnce();
+  });
+
+  it('releases a cached fenced proof before the next containment retry', async () => {
+    const clock = new ManualClock();
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
+    const authority = fakeAuthority({
+      commitContainment: () => new Promise<ContainmentCommitOutcome>(() => undefined),
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).toHaveBeenCalledOnce();
+
+    clock.elapse(30_000);
+    clock.runDue();
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect(proveContainmentAbsent).toHaveBeenCalledTimes(2);
   });
 
   it('does not let a later not-sent retry erase an unknown containment outcome', async () => {

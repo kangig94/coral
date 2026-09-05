@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   ProviderOperationAtomicTerminalizationError,
@@ -25,6 +25,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { providerOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
 
 type Settlement = Readonly<{ kind: 'value'; value: unknown }> | Readonly<{ kind: 'throw'; error: unknown }>;
 
@@ -50,8 +51,12 @@ async function testContainmentProof(reapRequired: boolean) {
     },
   };
   try {
+    const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
     const proof = await createProviderProxySetContainmentProver(runtime).collectContainmentProof(
-      authorizeProviderProxySetContainmentProof(identity),
+      authorizeProviderProxySetContainmentProof(identity, {
+        mutationFence,
+        closeAdmission: async () => undefined,
+      }),
       db,
       new AbortController().signal,
     );
@@ -211,6 +216,99 @@ function errorWithHostileCode(): Error {
 }
 
 describe('provider proxy recovery producer classification', () => {
+  it('disposes a cached non-reap absence proof when redemption wins exact recovery', async () => {
+    const absence = await testContainmentProof(false);
+    const disposeLateEvidence = vi.fn();
+    const evidence = vi.fn();
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({
+      'containment-proof': async () => absence.proof,
+      'capsule-redemption': () => ({ kind: 'redeemed', set: { setIdentity: absence.identity } }) as never,
+    });
+    const turn = dispatcher.begin(
+      'exact-capsule-recovery',
+      { setIdentity: absence.identity },
+      {
+        evidence,
+        retry: vi.fn(),
+        fatal: vi.fn(),
+        disposeLateEvidence,
+      },
+    );
+
+    turn.start({ sourceId: 'absence', producerId: 'containment-proof', input: {} } as ProviderProxyRecoveryAnySource);
+    await Promise.resolve();
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'capsule-redemption',
+      input: {},
+    } as ProviderProxyRecoveryAnySource);
+    await Promise.resolve();
+
+    expect(evidence).toHaveBeenCalledWith(expect.objectContaining({ kind: 'redeemed' }), 'redemption');
+    expect(disposeLateEvidence).toHaveBeenCalledOnce();
+    expect(disposeLateEvidence).toHaveBeenCalledWith(absence.proof, 'absence');
+  });
+
+  it('disposes cached absence proof when exact recovery retires on conflicting evidence', async () => {
+    const absence = await testContainmentProof(true);
+    const redemption = { kind: 'redeemed', set: { setIdentity: absence.identity } };
+    const disposeLateEvidence = vi.fn();
+    const fatal = vi.fn();
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({
+      'containment-proof': async () => absence.proof,
+      'capsule-redemption': () => redemption as never,
+    });
+    const turn = dispatcher.begin(
+      'exact-capsule-recovery',
+      { setIdentity: absence.identity },
+      {
+        evidence: vi.fn(),
+        retry: vi.fn(),
+        fatal,
+        disposeLateEvidence,
+      },
+    );
+
+    turn.start({ sourceId: 'absence', producerId: 'containment-proof', input: {} } as ProviderProxyRecoveryAnySource);
+    await Promise.resolve();
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'capsule-redemption',
+      input: {},
+    } as ProviderProxyRecoveryAnySource);
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+
+    expect(fatal).toHaveBeenCalledOnce();
+    expect(disposeLateEvidence).toHaveBeenCalledTimes(2);
+    expect(disposeLateEvidence).toHaveBeenCalledWith(absence.proof, 'absence');
+    expect(disposeLateEvidence).toHaveBeenCalledWith(redemption, 'redemption');
+  });
+
+  it('disposes cached absence proof when the recovery turn is cancelled', async () => {
+    const absence = await testContainmentProof(false);
+    const disposeLateEvidence = vi.fn();
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({
+      'containment-proof': async () => absence.proof,
+    });
+    const turn = dispatcher.begin(
+      'exact-capsule-recovery',
+      { setIdentity: absence.identity },
+      {
+        evidence: vi.fn(),
+        retry: vi.fn(),
+        fatal: vi.fn(),
+        disposeLateEvidence,
+      },
+    );
+
+    turn.start({ sourceId: 'absence', producerId: 'containment-proof', input: {} } as ProviderProxyRecoveryAnySource);
+    await Promise.resolve();
+    turn.cancel(new Error('cancelled'));
+
+    expect(disposeLateEvidence).toHaveBeenCalledOnce();
+    expect(disposeLateEvidence).toHaveBeenCalledWith(absence.proof, 'absence');
+  });
+
   it('classifies every closed producer with positive and opposite facts', async () => {
     const record = providerOperationRecord('executing');
     const positive = new Map<ProviderProxyRecoveryProducerId, unknown>([

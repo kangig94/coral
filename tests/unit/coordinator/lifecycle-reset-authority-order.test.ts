@@ -806,7 +806,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
     });
     expect(deps.terminateAllFn).toHaveBeenCalledOnce();
-    expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
+    expect(deps.runtimeState.components.disposeAll).not.toHaveBeenCalled();
     expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
     expect(discussDispose).toHaveBeenCalledOnce();
     expect(reactorDispose).toHaveBeenCalledOnce();
@@ -818,6 +818,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     if (held.disposition !== 'held') throw new Error('expected held shutdown');
     await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
     expect(deps.providerHostManager.shutdown).toHaveBeenCalledTimes(2);
+    expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
     expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
     expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
     expect(onStopped).toHaveBeenCalledOnce();

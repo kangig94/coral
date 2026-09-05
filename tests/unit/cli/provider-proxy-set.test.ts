@@ -280,10 +280,10 @@ describe('backend provider-proxy-set contain', () => {
         kind: 'contained',
         setIdentity: address,
         disappearanceReceipt: 'proxy-group-absent',
-        claimDischarge: { kind: 'initial-disposition-retry-owned' },
+        claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
         effect: containedEffect,
       }),
-    ).resolves.toEqual(expect.objectContaining({ stderr: expect.stringContaining('still owns retry') }));
+    ).resolves.toEqual(expect.objectContaining({ stderr: expect.stringContaining('still represents the set') }));
     expect(process.exitCode).toBe(75);
 
     await expect(
@@ -294,7 +294,7 @@ describe('backend provider-proxy-set contain', () => {
           { role: 'guardian', observation: 'absent' },
           { role: 'reaper', observation: 'unknown' },
         ],
-        claimDischarge: { kind: 'initial-disposition-retry-owned' },
+        claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
         effect: abandonedEffect,
       }),
     ).resolves.toEqual(
@@ -311,6 +311,7 @@ describe('backend provider-proxy-set contain', () => {
         disappearanceReceipt: 'proxy-group-absent',
         claimDischarge: {
           kind: 'operational-retry-owned',
+          exit: 'provider-proxy-set-release-retry',
           incidents: [
             {
               stage: 'disappearance-delivery',
@@ -452,7 +453,11 @@ describe('backend provider-proxy-set contain', () => {
         kind: 'contained',
         setIdentity: address,
         disappearanceReceipt: 'receipt',
-        claimDischarge: { kind: 'operational-retry-owned', incidents: [] },
+        claimDischarge: {
+          kind: 'operational-retry-owned',
+          exit: 'provider-proxy-set-release-retry',
+          incidents: [],
+        },
       }).success,
     ).toBe(false);
     expect(

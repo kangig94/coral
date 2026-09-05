@@ -60,10 +60,10 @@ function formatProviderProxySetClaimDischarge(
   switch (discharge.kind) {
     case 'completed':
       return 'Every durable claim was accepted by its successor and the set representation was released.';
-    case 'initial-disposition-retry-owned':
-      return 'Claim discharge has not reached an initial disposition; Coral still owns retry and still represents the set.';
+    case 'initial-disposition-pending':
+      return `Claim discharge has not reached an initial disposition; Coral still represents the set until ${discharge.exit}.`;
     case 'operational-retry-owned':
-      return `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s); Coral still represents the set until every successor accepts and capsule retirement completes.`;
+      return `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s) with exit=${discharge.exit}; Coral still represents the set until every successor accepts and capsule retirement completes.`;
     default:
       return assertNever(discharge);
   }

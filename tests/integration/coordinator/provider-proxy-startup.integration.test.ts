@@ -38,6 +38,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
   insertProviderOperation,
+  providerOperationMutationAdmission,
   readProviderOperation,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
@@ -241,15 +242,27 @@ function lifecycleFor(
               pid === identity.guardianPid ? observations.guardian : observations.reaper,
           },
         };
-        try {
-          return await createProviderProxySetContainmentProver(proofRuntime).collectContainmentProof(
-            authorizeProviderProxySetContainmentProof(identity),
-            db,
-            signal,
-          );
-        } finally {
-          db.close();
-        }
+        const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
+        let fenceReleased = false;
+        const proofFence = {
+          ...mutationFence,
+          release: () => {
+            if (fenceReleased) return;
+            fenceReleased = true;
+            mutationFence.release();
+            db.close();
+          },
+        };
+        return createProviderProxySetContainmentProver(proofRuntime).collectContainmentProof(
+          authorizeProviderProxySetContainmentProof(identity, {
+            mutationFence: proofFence,
+            closeAdmission: async () => {
+              if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+            },
+          }),
+          db,
+          signal,
+        );
       },
       'capsule-retirement': retireCapsule,
       ...(redeemCapsule === undefined

@@ -47,7 +47,10 @@ import {
   providerProxySetIdentityFromRecord,
 } from '../services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
-import { authorizeProviderProxySetContainmentProof } from '../services/provider-proxy-set/containment-proof.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  runProviderProxySetContainmentProofMutation,
+} from '../services/provider-proxy-set/containment-proof.js';
 import type { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-recovery-policy.js';
 import {
   discoverProviderHandoffCapsules,
@@ -124,16 +127,43 @@ export function createExecutionServices({
         }
         return providerProxyInheritance.redeemDiscoveredCapsule(capsule, capsulePath, signal);
       },
-      'containment-proof': ({ identity, signal }) =>
-        world.providerProxySetContainmentProver.collectContainmentProof(
-          authorizeProviderProxySetContainmentProof(identity),
-          getProgressStore().getDb(),
+      'containment-proof': ({ identity, signal }) => {
+        const db = getProgressStore().getDb();
+        const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
+        return world.providerProxySetContainmentProver.collectContainmentProof(
+          authorizeProviderProxySetContainmentProof(identity, {
+            mutationFence,
+            closeAdmission: async () => {
+              if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+            },
+          }),
+          db,
           signal,
-        ),
+        );
+      },
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
-      'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
-      'representation-abandonment-consumer': ({ notice }) =>
-        providerOperationReconciler.representationAbandoned(notice),
+      'disappearance-consumer': ({ notice, mutationProof }) => {
+        const consumeDisappearance = () => providerOperationReconciler.containmentDisappeared(notice);
+        return mutationProof === undefined
+          ? consumeDisappearance()
+          : runProviderProxySetContainmentProofMutation(
+              mutationProof,
+              notice.setIdentity,
+              'provider-containment-disappearance-fenced-release',
+              consumeDisappearance,
+            );
+      },
+      'representation-abandonment-consumer': ({ notice, mutationProof }) => {
+        const consumeAbandonment = () => providerOperationReconciler.representationAbandoned(notice);
+        return mutationProof === undefined
+          ? consumeAbandonment()
+          : runProviderProxySetContainmentProofMutation(
+              mutationProof,
+              notice.setIdentity,
+              'provider-representation-abandonment-fenced-release',
+              consumeAbandonment,
+            );
+      },
     },
     fatalSink: { fatal: onProviderProxyLifecycleFatal },
   });

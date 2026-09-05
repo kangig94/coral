@@ -187,15 +187,27 @@ function heldFailureDetail(held: ShutdownSequenceHold): string {
 }
 
 describe('runShutdownSequence drain budget', () => {
-  it('holds provider-host teardown behind an admitted provider-operation mutation', async () => {
+  it('runs provider-host recovery before closing provider-operation mutation admission', async () => {
+    const order: string[] = [];
     const mutationSettlement = new Promise<void>(() => {});
-    const stopProviderOperationReconciler = vi.fn(() => ({
-      kind: 'holding' as const,
-      pendingMutations: ['provider-operation:job-1:operation-1'],
-      exit: 'admitted-provider-operation-mutation-settlement' as const,
-      retryAfter: mutationSettlement,
-    }));
+    const stopProviderOperationReconciler = vi.fn(() => {
+      order.push('mutation-admission-close');
+      return {
+        kind: 'holding' as const,
+        pendingMutations: ['provider-operation:job-1:operation-1'],
+        exit: 'admitted-provider-operation-mutation-settlement' as const,
+        retryAfter: mutationSettlement,
+      };
+    });
     const harness = buildHarness({ stopProviderOperationReconciler });
+    const drainForHandoff = harness.ctx.providerHostManager.drainForHandoff;
+    harness.ctx.providerHostManager = {
+      ...harness.ctx.providerHostManager,
+      drainForHandoff: async (signal) => {
+        order.push('provider-host-recovery');
+        return drainForHandoff(signal);
+      },
+    };
     const sequence = runShutdownSequence(harness.ctx);
 
     for (let advanced = 0; advanced <= HANDOFF_DRAIN_TIMEOUT_MS + 100; advanced += 100) {
@@ -216,7 +228,95 @@ describe('runShutdownSequence drain budget', () => {
       },
     });
     expect(stopProviderOperationReconciler).toHaveBeenCalledOnce();
-    expect(harness.callLog).not.toContain('drainForHandoff');
+    expect(order).toEqual(['provider-host-recovery', 'mutation-admission-close']);
+  });
+
+  it('requires mutation drain before later finalization and authority release', async () => {
+    let settleMutation!: () => void;
+    const mutationSettlement = new Promise<void>((resolve) => {
+      settleMutation = resolve;
+    });
+    let observeAdmissionClose!: () => void;
+    const admissionCloseStarted = new Promise<void>((resolve) => {
+      observeAdmissionClose = resolve;
+    });
+    let stopAttempts = 0;
+    const stopProviderOperationReconciler = vi.fn(() => {
+      stopAttempts += 1;
+      observeAdmissionClose();
+      return stopAttempts === 1
+        ? {
+            kind: 'holding' as const,
+            pendingMutations: ['provider-operation:job-1:operation-1'],
+            exit: 'admitted-provider-operation-mutation-settlement' as const,
+            retryAfter: mutationSettlement,
+          }
+        : { kind: 'drained' as const };
+    });
+    const harness = buildHarness({ stopProviderOperationReconciler });
+    const sequence = runShutdownSequence(harness.ctx);
+    await admissionCloseStarted;
+
+    expect(stopProviderOperationReconciler).toHaveBeenCalledOnce();
+    expect(harness.callLog).not.toContain('components.disposeAll');
+    expect(harness.closeIpcCalled()).toBe(false);
+
+    settleMutation();
+    await expect(sequence).resolves.toEqual({ disposition: 'settled' });
+    expect(stopProviderOperationReconciler).toHaveBeenCalledTimes(2);
+    expect(harness.callLog).toContain('components.disposeAll');
+    expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('keeps mutation admission open through an authority-null representation retry gap', async () => {
+    let settleRepresentationRelease!: () => void;
+    const representationReleaseSettlement = new Promise<void>((resolve) => {
+      settleRepresentationRelease = resolve;
+    });
+    let releasePending = true;
+    const stopProviderOperationReconciler = vi.fn(() => ({ kind: 'drained' as const }));
+    const harness = buildHarness({ stopProviderOperationReconciler });
+    const receipt = {
+      kind: 'provider-hosts-quiesced' as const,
+      liveProxySets: [],
+      acquisitionCleanupHolds: [],
+      closingHosts: [],
+    };
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => receipt,
+      shutdown: async () => receipt,
+      cleanupObligations: () => ({
+        ...receipt,
+        representationReleaseHolds: releasePending
+          ? [
+              {
+                label: 'provider proxy representation release authority-null',
+                pendingOperations: ['provider-operation:job-1:operation-1'],
+                exit: 'provider-proxy-representation-release-settlement' as const,
+                settlement: representationReleaseSettlement,
+              },
+            ]
+          : [],
+      }),
+    };
+
+    const held = requireHeld(await runShutdownSequence(harness.ctx));
+
+    expect(stopProviderOperationReconciler).not.toHaveBeenCalled();
+    expect(held.retainedAuthority).toMatchObject({
+      providerControlProxyInstanceIds: [],
+      cleanupObligations: expect.arrayContaining([
+        'provider proxy representation release authority-null',
+        'provider-operation:job-1:operation-1',
+      ]),
+    });
+    expect(harness.closeIpcCalled()).toBe(false);
+
+    releasePending = false;
+    settleRepresentationRelease();
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(stopProviderOperationReconciler).toHaveBeenCalledOnce();
+    expect(harness.closeIpcCalled()).toBe(true);
   });
 
   it('returns a hold within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
@@ -372,8 +472,10 @@ describe('runShutdownSequence drain budget', () => {
   });
 
   it('holds hard shutdown when provider-host containment exceeds the lifecycle deadline', async () => {
+    const stopProviderOperationReconciler = vi.fn(() => ({ kind: 'drained' as const }));
     const harness = buildHarness({
       hooksOnShutdown: async () => {},
+      stopProviderOperationReconciler,
     });
     harness.ctx.reason = 'test-cleanup';
     let providerSignal: AbortSignal | undefined;
@@ -407,6 +509,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(heldFailureDetail(held)).toContain('child termination: budget-exhausted');
     expect(held.retainedAuthority.operatorActions).toEqual([]);
     expect(providerSignal?.aborted).toBe(true);
+    expect(stopProviderOperationReconciler).not.toHaveBeenCalled();
     expect(harness.callLog).not.toContain('terminateAllFn');
     expect(harness.closeIpcCalled()).toBe(false);
   });
@@ -445,6 +548,7 @@ describe('runShutdownSequence drain budget', () => {
             recoveryCapability: { retry },
           },
         ] as never,
+        representationReleaseHolds: [],
         closingHosts: [],
       }),
     };
@@ -879,7 +983,12 @@ describe('runShutdownSequence drain budget', () => {
         acquisitionCleanupHolds: [],
         closingHosts: [],
       }),
-      cleanupObligations: () => ({ liveProxySets: [set], acquisitionCleanupHolds: [], closingHosts: [] }),
+      cleanupObligations: () => ({
+        liveProxySets: [set],
+        acquisitionCleanupHolds: [],
+        representationReleaseHolds: [],
+        closingHosts: [],
+      }),
     };
     harness.ctx.closeIpcServerFn = async () => {
       authorityCalls.push('closeIpc');
@@ -893,7 +1002,12 @@ describe('runShutdownSequence drain budget', () => {
       retainedAuthority: {
         ipcSocket: true,
         providerControlProxyInstanceIds: ['handoff-held'],
-        cleanupObligations: ['provider host drain for handoff', 'provider control and IPC authority release'],
+        cleanupObligations: [
+          'provider host drain for handoff',
+          'provider operation mutation drain',
+          'components disposeAll',
+          'provider control and IPC authority release',
+        ],
         operatorActions: [
           {
             kind: 'provider-proxy-set-containment',
@@ -1038,6 +1152,7 @@ describe('runShutdownSequence drain budget', () => {
       cleanupObligations: () => ({
         liveProxySets: [retainedSet],
         acquisitionCleanupHolds: [acquisitionHold],
+        representationReleaseHolds: [],
         closingHosts: [],
       }),
     };
@@ -1055,6 +1170,8 @@ describe('runShutdownSequence drain budget', () => {
         cleanupObligations: [
           'provider host drain for handoff',
           'provider acquisition pending-handoff-acquisition',
+          'provider operation mutation drain',
+          'components disposeAll',
           'provider control and IPC authority release',
         ],
       },

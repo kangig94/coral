@@ -8,6 +8,7 @@ import type { ProviderEventHandler } from '../../../provider-proxy/control-clien
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { Database } from '../../../store/db.js';
+import { providerOperationMutationAdmission } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
   ProviderProxyRoleControlUnavailableError,
@@ -49,9 +50,14 @@ import {
 import {
   authorizeProviderProxySetContainmentProof,
   providerProxySetContainmentEvidenceFor,
+  releaseProviderProxySetContainmentProofFence,
+  type ProviderProxySetFencedContainmentProof,
   type ProviderProxySetContainmentProver,
 } from './containment-proof.js';
-import type { ProviderProxySetRecordedContainmentReaper } from './recorded-containment-reaper.js';
+import type {
+  ProviderProxySetRecordedContainmentReapResult,
+  ProviderProxySetRecordedContainmentReaper,
+} from './recorded-containment-reaper.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
@@ -123,6 +129,25 @@ export type ProviderProxySetRedemptionOutcome =
       method: Extract<ProviderProxyRoleControlAvailabilityIncident, { kind: 'role-heartbeat-indeterminate' }>['method'];
     }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
+
+async function collectFencedContainmentProof(
+  identity: ProviderProxySetIdentity,
+  db: Database,
+  deps: ProviderProxySetInheritanceDeps,
+  signal: AbortSignal,
+): Promise<ProviderProxySetFencedContainmentProof> {
+  const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
+  return deps.collectContainmentProof(
+    authorizeProviderProxySetContainmentProof(identity, {
+      mutationFence,
+      closeAdmission: async () => {
+        if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+      },
+    }),
+    db,
+    signal,
+  );
+}
 
 type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutcome, { kind: 'protocol-incompatible' }>;
 
@@ -485,16 +510,22 @@ export async function attemptProviderProxySetInheritance(
   } catch (error: unknown) {
     if (!(error instanceof ProviderProxyRoleControlUnavailableError)) throw error;
     try {
-      const proof = await deps.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+      const proof = await collectFencedContainmentProof(identity, db, deps, signal);
       const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
       if (evidence.kind === 'reap-required') {
-        const reapResult = await deps.reapRecordedContainment(identity, proof, signal, () => undefined);
+        let reapResult: ProviderProxySetRecordedContainmentReapResult;
+        try {
+          reapResult = await deps.reapRecordedContainment(identity, proof, signal, () => undefined);
+        } finally {
+          releaseProviderProxySetContainmentProofFence(proof);
+        }
         if (reapResult.kind === 'containment-absent') {
           return { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt };
         }
         if (reapResult.kind === 'recorded-group-unattributable') return reapResult;
-        throw new Error(`provider_proxy_inheritance_unfenced_reap_${reapResult.kind}`, { cause: error });
+        throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`, { cause: error });
       }
+      releaseProviderProxySetContainmentProofFence(proof);
     } catch (proofError: unknown) {
       throw new AggregateError(
         [error, proofError],
@@ -505,15 +536,23 @@ export async function attemptProviderProxySetInheritance(
     return { kind: 'temporarily-unavailable', incident: error.incident };
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
-  const proof = await deps.collectContainmentProof(authorizeProviderProxySetContainmentProof(identity), db, signal);
+  const proof = await collectFencedContainmentProof(identity, db, deps, signal);
   const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
-  if (evidence.kind !== 'reap-required') return outcome;
-  const reapResult = await deps.reapRecordedContainment(identity, proof, signal, () => undefined);
+  if (evidence.kind !== 'reap-required') {
+    releaseProviderProxySetContainmentProofFence(proof);
+    return outcome;
+  }
+  let reapResult: ProviderProxySetRecordedContainmentReapResult;
+  try {
+    reapResult = await deps.reapRecordedContainment(identity, proof, signal, () => undefined);
+  } finally {
+    releaseProviderProxySetContainmentProofFence(proof);
+  }
   if (reapResult.kind === 'containment-absent') {
     return { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt };
   }
   if (reapResult.kind === 'recorded-group-unattributable') return reapResult;
-  throw new Error(`provider_proxy_inheritance_unfenced_reap_${reapResult.kind}`);
+  throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`);
 }
 
 /**
