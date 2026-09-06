@@ -308,7 +308,13 @@ export function createProviderProxyAcquisitionSteps(
         kind: 'guardian-containment',
         label: 'guardian',
         run: guardianSpawnUndo,
+        setAddress: {
+          buildSetId,
+          hostFingerprint,
+          proxyInstanceId: setMinted.proxyInstanceId,
+        },
         guardianIdentity: guardianSpawnUndo.guardianIdentity,
+        captureRecoveryProof: guardianSpawnUndo.captureRecoveryProof,
       };
     },
 

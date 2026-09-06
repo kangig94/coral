@@ -20,6 +20,7 @@ import {
   type ProviderProxySetAuthorityDependencies,
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { providerProxyDisappearanceReceipt } from '#src/provider-proxy/protocol.js';
 import { handoffCapsuleV3Schema } from '#src/provider-proxy/handoff-capsule.js';
 import type {
   CoordinatorIdentity,
@@ -27,6 +28,8 @@ import type {
   ProxyIdentity,
   ReaperIdentity,
 } from '#src/provider-proxy/protocol.js';
+
+const immediateRetryTime = { sleep: async () => undefined };
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -131,7 +134,28 @@ function acquisitionSteps(
     spawnGuardian: async () => ({
       kind: 'guardian-containment',
       label: 'guardian',
+      setAddress: {
+        buildSetId: GUARDIAN.buildSetId,
+        hostFingerprint: GUARDIAN.hostFingerprint,
+        proxyInstanceId: PROXY.proxyInstanceId,
+      },
       guardianIdentity: { pid: GUARDIAN.pid, incarnation: GUARDIAN.incarnation, processGroupId: GUARDIAN.pid },
+      captureRecoveryProof: () => {
+        const subject = {
+          guardianIdentity: { pid: GUARDIAN.pid, incarnation: GUARDIAN.incarnation, processGroupId: GUARDIAN.pid },
+          reaper: { kind: 'possible-unidentified' as const },
+          constructionContainmentSettled: false,
+          proxy: { kind: 'possible-unidentified' as const },
+        };
+        return {
+          subject,
+          absenceEvidence: () =>
+            ({
+              recoverySubject: subject,
+              disappearanceReceipt: providerProxyDisappearanceReceipt(subject.guardianIdentity, []),
+            }) as never,
+        };
+      },
       run: () => {
         if (!guardianAbsent) throw new Error('guardian absence is unobservable');
       },
@@ -199,12 +223,21 @@ function acquisitionSteps(
 }
 
 const live = (): AbortSignal => new AbortController().signal;
+const acceptHoldForTest = () => ({
+  kind: 'accepted' as const,
+  owner: 'durable-provider-proxy-acquisition-hold-store' as const,
+});
 
 describe('fresh acquisition handoff capsule unwind', () => {
   it('removes the capsule after a proven publication refusal', async () => {
     const acquisition = acquisitionSteps('refused');
 
-    const result = await acquireProviderProxySet({ steps: acquisition.steps, deadlineSignal: live() });
+    const result = await acquireProviderProxySet({
+      steps: acquisition.steps,
+      time: immediateRetryTime,
+      deadlineSignal: live(),
+      acceptHold: () => ({ kind: 'accepted', owner: 'durable-provider-proxy-acquisition-hold-store' }),
+    });
 
     expect(result).toMatchObject({
       kind: 'provider_proxy_acquisition_failed',
@@ -217,7 +250,12 @@ describe('fresh acquisition handoff capsule unwind', () => {
   it('retains the capsule when publication is unknown', async () => {
     const acquisition = acquisitionSteps('unknown');
 
-    const result = await acquireProviderProxySet({ steps: acquisition.steps, deadlineSignal: live() });
+    const result = await acquireProviderProxySet({
+      steps: acquisition.steps,
+      time: immediateRetryTime,
+      acceptHold: acceptHoldForTest,
+      deadlineSignal: live(),
+    });
 
     if (result.kind !== 'handed-over') throw new Error(`expected handoff, received ${result.kind}`);
     expect(providerProxyAcquisitionSessionDescriptor(result.session)).toMatchObject({
@@ -230,7 +268,12 @@ describe('fresh acquisition handoff capsule unwind', () => {
   it('reports the capsule when its undo fails', async () => {
     const acquisition = acquisitionSteps('refused', true);
 
-    const result = await acquireProviderProxySet({ steps: acquisition.steps, deadlineSignal: live() });
+    const result = await acquireProviderProxySet({
+      steps: acquisition.steps,
+      time: immediateRetryTime,
+      acceptHold: acceptHoldForTest,
+      deadlineSignal: live(),
+    });
 
     expect(result).toMatchObject({
       kind: 'provider_proxy_acquisition_failed',
@@ -242,7 +285,12 @@ describe('fresh acquisition handoff capsule unwind', () => {
   it('retains the capsule until held guardian cleanup later confirms absence', async () => {
     const acquisition = acquisitionSteps('refused', false, true);
 
-    const result = await acquireProviderProxySet({ steps: acquisition.steps, deadlineSignal: live() });
+    const result = await acquireProviderProxySet({
+      steps: acquisition.steps,
+      time: immediateRetryTime,
+      deadlineSignal: live(),
+      acceptHold: () => ({ kind: 'accepted', owner: 'durable-provider-proxy-acquisition-hold-store' }),
+    });
 
     expect(result).toMatchObject({
       kind: 'provider_proxy_acquisition_held',
@@ -251,8 +299,12 @@ describe('fresh acquisition handoff capsule unwind', () => {
     expect(statSync(acquisition.capsulePath).isFile()).toBe(true);
     if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
     acquisition.confirmGuardianAbsent();
-    await expect(result.recoveryCapability.retry(live())).resolves.toEqual({
+    await expect(result.recoveryCapability.retry(live())).resolves.toMatchObject({
       kind: 'absence-confirmed',
+      evidence: {
+        recoverySubject: result.recoverySubject,
+        disappearanceReceipt: providerProxyDisappearanceReceipt(result.guardianIdentity, []),
+      },
       strandedArtifacts: [],
     });
     expect(() => statSync(acquisition.capsulePath)).toThrow();

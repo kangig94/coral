@@ -1,6 +1,12 @@
 import type { ProviderProxyOperationAuthority } from './operation-route.js';
 import type { PublicationReceipt } from './set-publication.js';
 import type { RecordedContainmentIdentity } from '../../../infra/process-containment.js';
+import type { TimePort } from '../../../infra/port-types.js';
+import type {
+  GuardianSpawnUndoRecoverySubject,
+  GuardianSpawnUndoRecoveryProof,
+  ProviderProxyAcquisitionAbsenceEvidence,
+} from './spawn-undo.js';
 import {
   handOverProviderProxyAcquisitionControlSession,
   providerProxyControlSessionOwner,
@@ -20,14 +26,28 @@ import {
  */
 
 type AcquisitionUndoAction = Readonly<{ label: string; run(): Promise<void> | void }>;
+type ProviderProxyAcquisitionSetAddress = Pick<
+  ProviderProxyOperationAuthority['setIdentity'],
+  'buildSetId' | 'hostFingerprint' | 'proxyInstanceId'
+>;
 
 export type AcquisitionUndo =
   | (AcquisitionUndoAction & Readonly<{ kind?: 'ordinary' }>)
-  | (AcquisitionUndoAction & Readonly<{ kind: 'guardian-containment'; guardianIdentity: RecordedContainmentIdentity }>)
+  | (AcquisitionUndoAction &
+      Readonly<{
+        kind: 'guardian-containment';
+        setAddress: ProviderProxyAcquisitionSetAddress;
+        guardianIdentity: RecordedContainmentIdentity;
+        captureRecoveryProof(): GuardianSpawnUndoRecoveryProof;
+      }>)
   | (AcquisitionUndoAction & Readonly<{ kind: 'recovery-capability' }>);
 
 export type ProviderProxyAcquisitionRecoveryOutcome =
-  | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
+  | Readonly<{
+      kind: 'absence-confirmed';
+      evidence: ProviderProxyAcquisitionAbsenceEvidence;
+      strandedArtifacts: readonly string[];
+    }>
   | Readonly<{ kind: 'held'; reason: string }>;
 
 export type ProviderProxyAcquisitionRecoveryCapability = Readonly<{
@@ -47,7 +67,9 @@ export type ProviderProxyAcquisitionHeld<Owner extends string> = Readonly<{
   cut: string;
   reason: string;
   strandedArtifacts: readonly string[];
+  setAddress: ProviderProxyAcquisitionSetAddress;
   guardianIdentity: RecordedContainmentIdentity;
+  recoverySubject: GuardianSpawnUndoRecoverySubject;
   recoveryCapability: ProviderProxyAcquisitionRecoveryCapability;
 }>;
 
@@ -87,6 +109,13 @@ export interface ProviderProxyAcquisitionSteps {
 
 export type ProviderProxyAcquisitionOptions = Readonly<{
   steps: ProviderProxyAcquisitionSteps;
+  time: Pick<TimePort, 'sleep'>;
+  acceptHold(hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'>):
+    | Promise<Readonly<{ kind: 'accepted'; owner: 'durable-provider-proxy-acquisition-hold-store' }>>
+    | Readonly<{
+        kind: 'accepted';
+        owner: 'durable-provider-proxy-acquisition-hold-store';
+      }>;
   /**
    * The initial acquisition and cleanup attempt share this budget. Expiry cannot discharge an unresolved
    * guardian; it returns a recovery capability to the next owner instead.
@@ -141,7 +170,9 @@ async function unwind(
   Readonly<{
     strandedArtifacts: readonly string[];
     hold: Readonly<{
+      setAddress: ProviderProxyAcquisitionSetAddress;
       guardianIdentity: RecordedContainmentIdentity;
+      recoverySubject: GuardianSpawnUndoRecoverySubject;
       recoveryCapability: ProviderProxyAcquisitionRecoveryCapability;
     }> | null;
   }>
@@ -172,6 +203,7 @@ async function unwind(
   }
 
   const guardianUndo = guardianHold;
+  const recoveryProof = guardianUndo.captureRecoveryProof();
   let retrying: Promise<ProviderProxyAcquisitionRecoveryOutcome> | null = null;
   const recoveryCapability: ProviderProxyAcquisitionRecoveryCapability = {
     retry(signal) {
@@ -190,7 +222,11 @@ async function unwind(
             recoveryStranded.push(undo.label);
           }
         }
-        return { kind: 'absence-confirmed', strandedArtifacts: recoveryStranded };
+        return {
+          kind: 'absence-confirmed',
+          evidence: recoveryProof.absenceEvidence(),
+          strandedArtifacts: recoveryStranded,
+        };
       })().finally(() => {
         retrying = null;
       });
@@ -199,7 +235,12 @@ async function unwind(
   };
   return {
     strandedArtifacts: stranded,
-    hold: { guardianIdentity: guardianUndo.guardianIdentity, recoveryCapability },
+    hold: {
+      setAddress: guardianUndo.setAddress,
+      guardianIdentity: guardianUndo.guardianIdentity,
+      recoverySubject: recoveryProof.subject,
+      recoveryCapability,
+    },
   };
 }
 
@@ -215,7 +256,7 @@ export async function acquireProviderProxySet(
   ): Promise<ProviderProxyAcquisitionFailure | ProviderProxyAcquisitionHeld<'provider-host-acquisition'>> => {
     const cleanup = await unwind(undos, options.deadlineSignal, options.onCleanupFailure);
     if (cleanup.hold !== null) {
-      return {
+      const hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'> = {
         kind: 'provider_proxy_acquisition_held',
         owner: 'provider-host-acquisition',
         cut,
@@ -223,6 +264,23 @@ export async function acquireProviderProxySet(
         strandedArtifacts: cleanup.strandedArtifacts,
         ...cleanup.hold,
       };
+      for (;;) {
+        try {
+          const acceptance = await options.acceptHold(hold);
+          if (acceptance.owner !== 'durable-provider-proxy-acquisition-hold-store') {
+            throw new Error('provider_proxy_acquisition_durable_hold_owner_not_accepted');
+          }
+          break;
+        } catch (error: unknown) {
+          try {
+            options.onCleanupFailure?.('durable acquisition hold', error);
+          } catch {
+            // A reporting failure cannot release the recovery obligation retained by this loop.
+          }
+          await options.time.sleep(1_000);
+        }
+      }
+      return hold;
     }
     return {
       kind: 'provider_proxy_acquisition_failed',

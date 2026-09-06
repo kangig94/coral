@@ -8,6 +8,7 @@ import {
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
   type ProviderProxySetOperatorDisposition,
+  type ProviderProxySetDurableDispositionSkipStatus,
   type ProviderProxySetOperatorExit,
   type ProviderProxySetOperatorStatus,
 } from '../../../provider-proxy/operator-disposition-vocabulary.js';
@@ -135,6 +136,7 @@ export interface BackendHealth {
       metadataSeq?: number;
     }>;
     providerProxySets?: ProviderProxySetOperatorStatus[];
+    providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
   };
 }
 
@@ -216,6 +218,7 @@ function parseProviderProxySetOperatorExit(value: unknown): ProviderProxySetOper
   switch (value.kind) {
     case 'none':
     case 'contain':
+    case 'abandon':
       return { kind: value.kind };
     case 'gated':
       return isNonNegativeFiniteNumber(value.remainingMs) ? { kind: 'gated', remainingMs: value.remainingMs } : null;
@@ -257,6 +260,43 @@ function parseProviderProxySetHold(value: unknown): ProviderProxySet['holds'][nu
       ? undefined
       : providerProxySetEnforcerObservationsSchema.safeParse(value.enforcerObservations);
   if (observations !== undefined && !observations.success) return null;
+  let durableObservation: ProviderProxySetOperatorDisposition['durableObservation'];
+  if (value.durableObservation !== undefined) {
+    if (!isRecord(value.durableObservation) || typeof value.durableObservation.writerIncarnation !== 'string') {
+      return null;
+    }
+    switch (value.durableObservation.kind) {
+      case 'stale':
+        if (
+          value.durableObservation.reobserveAction !== 'automatic-exact-set-containment-observation' &&
+          value.durableObservation.reobserveAction !== 'automatic-exact-acquisition-containment-observation'
+        ) {
+          return null;
+        }
+        durableObservation = {
+          kind: 'stale',
+          writerIncarnation: value.durableObservation.writerIncarnation,
+          reobserveAction: value.durableObservation.reobserveAction,
+        };
+        break;
+      case 'current-writer':
+        durableObservation = {
+          kind: 'current-writer',
+          writerIncarnation: value.durableObservation.writerIncarnation,
+        };
+        break;
+      case 'successor-observed':
+        if (typeof value.durableObservation.observedByIncarnation !== 'string') return null;
+        durableObservation = {
+          kind: 'successor-observed',
+          writerIncarnation: value.durableObservation.writerIncarnation,
+          observedByIncarnation: value.durableObservation.observedByIncarnation,
+        };
+        break;
+      default:
+        return null;
+    }
+  }
   return {
     disposition: value.disposition as ProviderProxySetOperatorDisposition['disposition'],
     ...(value.role === undefined ? {} : { role: value.role }),
@@ -272,7 +312,29 @@ function parseProviderProxySetHold(value: unknown): ProviderProxySet['holds'][nu
     ...(observations === undefined ? {} : { enforcerObservations: observations.data }),
     incidentReason: value.incidentReason,
     waitingFor: value.waitingFor as ProviderProxySetOperatorDisposition['waitingFor'],
+    ...(durableObservation === undefined ? {} : { durableObservation }),
   };
+}
+
+function parseProviderProxyDispositionSkips(value: unknown): ProviderProxySetDurableDispositionSkipStatus[] | null {
+  if (!Array.isArray(value)) return null;
+  const records: ProviderProxySetDurableDispositionSkipStatus[] = [];
+  for (const record of value) {
+    if (
+      !isRecord(record) ||
+      typeof record.key !== 'string' ||
+      (record.setToken !== null && typeof record.setToken !== 'string') ||
+      record.unavailableAction !== 'reconciliation-and-retirement'
+    ) {
+      return null;
+    }
+    records.push({
+      key: record.key,
+      setToken: record.setToken,
+      unavailableAction: 'reconciliation-and-retirement',
+    });
+  }
+  return records;
 }
 
 function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | null {
@@ -513,6 +575,11 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   if (value.providerProxySets !== undefined && providerProxySets === null) {
     return null;
   }
+  const providerProxyDispositionSkips =
+    value.providerProxyDispositionSkips === undefined
+      ? null
+      : parseProviderProxyDispositionSkips(value.providerProxyDispositionSkips);
+  if (value.providerProxyDispositionSkips !== undefined && providerProxyDispositionSkips === null) return null;
   if (
     value.carriers !== undefined &&
     (!isRecord(value.carriers) ||
@@ -527,6 +594,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     diagnostics: {
       ...value,
       ...(providerProxySets === null ? {} : { providerProxySets: providerProxySets.understoodRows }),
+      ...(providerProxyDispositionSkips === null ? {} : { providerProxyDispositionSkips }),
     },
     skippedProviderProxySetRows: providerProxySets?.skippedRows ?? 0,
     skippedProviderProxySetTokens: providerProxySets?.skippedSetTokens ?? [],

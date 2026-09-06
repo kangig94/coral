@@ -998,7 +998,7 @@ describe('buildGuardianSpawnUndo', () => {
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
-    await undo();
+    await expect(undo()).resolves.toBeUndefined();
 
     // detached:true makes the guardian its own process-group leader (and it spawns the reaper into that
     // group before this coordinator holds control on either), so undo must reap the whole group — the
@@ -1019,7 +1019,9 @@ describe('buildGuardianSpawnUndo', () => {
     );
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
-    await buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)();
+    await expect(
+      buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)(),
+    ).resolves.toBeUndefined();
 
     expect(killCalls).toEqual([
       { pid: -spawned.pid, signal: 'SIGTERM' },

@@ -4,6 +4,7 @@ import type { ProviderEventHandler } from '../../../provider-proxy/control-clien
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import { acquireProviderProxySet, type ProviderProxyAcquisitionHeld } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
+import type { ProviderProxyAcquisitionAbsenceEvidence } from '../provider-proxy/spawn-undo.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 import {
@@ -55,6 +56,7 @@ export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisition
     runtime: Runtime;
     /** Cancellation must not classify publication uncertainty as an ordinary failure. */
     signal: AbortSignal;
+    acceptHold: NonNullable<Parameters<typeof acquireProviderProxySet>[0]['acceptHold']>;
   }>;
 
 export type ProviderProxySetAcquisitionOutcome =
@@ -76,7 +78,11 @@ type TransferableProviderProxySetAcquisition = Extract<
 >;
 
 export type ProviderProxySetAcquisitionCleanupDisposition =
-  | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
+  | Readonly<{
+      kind: 'absence-confirmed';
+      evidence?: ProviderProxyAcquisitionAbsenceEvidence;
+      strandedArtifacts: readonly string[];
+    }>
   | Readonly<{
       kind: 'transfer-required';
       successor: 'provider-proxy-set-lifecycle';
@@ -200,6 +206,8 @@ export function ensureProviderProxySet(
   });
   return acquireProviderProxySet({
     steps,
+    time: env.runtime.time,
+    acceptHold: env.acceptHold,
     deadlineSignal: AbortSignal.any([AbortSignal.timeout(PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS), env.signal]),
   })
     .then(

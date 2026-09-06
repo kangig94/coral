@@ -20,6 +20,10 @@ import {
   notifyProviderProxyControlEstablished,
   subscribeProviderProxyControlEstablished,
 } from '../live/provider-proxy/operation-route.js';
+import {
+  reobserveDurableProviderProxyAcquisitionContainment,
+  validateGuardianSpawnUndoRecoverySubject,
+} from '../live/provider-proxy/spawn-undo.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -47,6 +51,7 @@ import {
   providerProxySetIdentityFromRecord,
 } from '../services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
+import { ProviderProxySetOperatorDispositionStore } from '../services/provider-proxy-set/operator-disposition-store.js';
 import {
   authorizeProviderProxySetContainmentProof,
   runProviderProxySetContainmentProofMutation,
@@ -326,6 +331,31 @@ export function createExecutionServices({
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
     reapRecordedContainment: world.reapRecordedContainment,
+    operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(
+      runtime.storage,
+      runtime.paths.coral.coordinator.runDir,
+    ),
+    writerIncarnation: world.identity.instanceId,
+    collectOperatorDispositionContainmentProof: (identity, signal) => {
+      const db = getProgressStore().getDb();
+      const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
+      return world.providerProxySetContainmentProver.collectContainmentProof(
+        authorizeProviderProxySetContainmentProof(identity, {
+          mutationFence,
+          closeAdmission: async () => {
+            if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+          },
+        }),
+        db,
+        signal,
+      );
+    },
+    reobserveAcquisitionContainment: (subject, signal) =>
+      reobserveDurableProviderProxyAcquisitionContainment(
+        runtime,
+        validateGuardianSpawnUndoRecoverySubject(subject),
+        signal,
+      ),
     fenceProviderOperationMutations: (identity) =>
       providerOperationMutationAdmission(getProgressStore().getDb()).closeSet(identity),
     onProgressPremiseViolation: (violation) =>
@@ -387,8 +417,9 @@ export function createExecutionServices({
     }
   };
 
-  const initializeProviderProxyLifecycle = (): void => {
+  const initializeProviderProxyLifecycle = async (): Promise<void> => {
     if (providerProxyLifecycleInitialized) return;
+    providerProxyLifecycle.activateDurableOperatorDispositions();
     providerProxyLifecycle.initializeClaimSlots();
     if (world.providerProxyInheritance === undefined) {
       providerProxyLifecycle.completeStartupDiscovery();
@@ -410,6 +441,10 @@ export function createExecutionServices({
       );
     }
     providerProxyLifecycleInitialized = true;
+    const durableReconciliation = await providerProxyLifecycle.reconcileDurableOperatorDispositions();
+    if (durableReconciliation.kind === 'retry') {
+      backendLog.warn(`Durable provider proxy set disposition reconciliation failed: ${durableReconciliation.reason}`);
+    }
   };
 
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
@@ -488,7 +523,7 @@ export function createExecutionServices({
     },
     reconcileProviderOperationsAtStartup: async (signal) => {
       await initializeProviderProxyClaims();
-      initializeProviderProxyLifecycle();
+      await initializeProviderProxyLifecycle();
       return providerOperationReconciler.reconcileAtStartup(signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),

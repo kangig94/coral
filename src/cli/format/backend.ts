@@ -1188,6 +1188,8 @@ export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus):
   switch (set.operatorExit.kind) {
     case 'contain':
       return `action=coral-cli backend provider-proxy-set contain ${set.setToken}`;
+    case 'abandon':
+      return `action=coral-cli backend provider-proxy-set abandon ${set.setToken}`;
     case 'gated':
       return (
         `action=wait ~${Math.ceil(set.operatorExit.remainingMs)}ms for the operator-exit gate, ` +
@@ -1227,8 +1229,9 @@ function formatRunningStatus(health: RunningHealth): string {
     lines.push(`Queue depth: ${health.queueDepth}`);
   }
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
+  const durableDispositionSkips = health.diagnostics?.providerProxyDispositionSkips ?? [];
   const skippedProviderProxySetRows = health.skippedProviderProxySetRows;
-  if (providerProxySets.length > 0 || skippedProviderProxySetRows > 0) {
+  if (providerProxySets.length > 0 || skippedProviderProxySetRows > 0 || durableDispositionSkips.length > 0) {
     lines.push('', 'Provider proxy sets:');
     for (const set of providerProxySets) {
       lines.push(
@@ -1241,8 +1244,16 @@ function formatRunningStatus(health: RunningHealth): string {
           incident.cause === undefined
             ? ''
             : ` cause=${incident.cause} attempts=${incident.attempts ?? 'unknown'} elapsedMs=${incident.elapsedMs ?? 'unknown'} boundMs=${incident.boundMs ?? 'unknown'}`;
+        const durable =
+          incident.durableObservation === undefined
+            ? ''
+            : incident.durableObservation.kind === 'successor-observed'
+              ? ` durable=${incident.durableObservation.kind} writer=${incident.durableObservation.writerIncarnation} observedBy=${incident.durableObservation.observedByIncarnation}`
+              : incident.durableObservation.kind === 'stale'
+                ? ` durable=${incident.durableObservation.kind} writer=${incident.durableObservation.writerIncarnation} reobserve=${incident.durableObservation.reobserveAction}`
+                : ` durable=${incident.durableObservation.kind} writer=${incident.durableObservation.writerIncarnation}`;
         lines.push(
-          `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}`,
+          `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}${durable}`,
         );
       }
       lines.push(`    ${formatProviderProxySetOperatorExit(set)}`);
@@ -1254,6 +1265,12 @@ function formatRunningStatus(health: RunningHealth): string {
       lines.push(...health.skippedProviderProxySetTokens.map((token) => `    skipped set=${token}`));
       lines.push(
         '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
+      );
+    }
+    for (const skipped of durableDispositionSkips) {
+      lines.push(
+        `  Durable provider proxy disposition this build could not read: key=${skipped.key}${skipped.setToken === null ? '' : ` set=${skipped.setToken}`}.`,
+        `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`,
       );
     }
   }

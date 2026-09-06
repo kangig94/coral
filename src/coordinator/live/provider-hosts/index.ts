@@ -537,7 +537,12 @@ export class DefaultProviderHostManager
     const settlement = Promise.resolve(
       ensureProviderProxySet(
         entry,
-        { runtime: this.runtime, signal: this.proxySetAcquisitionStop.signal, ...config },
+        {
+          runtime: this.runtime,
+          signal: this.proxySetAcquisitionStop.signal,
+          ...config,
+          acceptHold: (hold) => lifecycle.persistAcquisitionCleanupHold(admission.slotId, hold),
+        },
         async (outcome) => {
           pending.resolveOutcome(outcome);
           if (pending.stop !== null) {

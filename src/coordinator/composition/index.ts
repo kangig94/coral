@@ -972,6 +972,23 @@ export function createCoordinatorCore(
         : lifecycle.authorizeOperatorExit(request.setIdentity);
     if (authorization.kind === 'unsupported-contract') return authorization;
     if (authorization.kind !== 'authorized') {
+      if (
+        contract === 'current' &&
+        authorization.kind === 'set-not-found' &&
+        abandonWithoutAbsence &&
+        lifecycle.abandonDurableAcquisition(request.setIdentity)
+      ) {
+        return {
+          kind: 'representation-release-abandoned',
+          setIdentity: request.setIdentity,
+          successor: { owner: 'operator-command', acceptance: 'accepted' },
+          effect: {
+            signalsSent: [],
+            containmentAbsent: false,
+            representationAction: 'fatal-release-abandoned',
+          },
+        };
+      }
       return {
         ...authorization,
         setIdentity: request.setIdentity,
@@ -1249,6 +1266,9 @@ export function createCoordinatorCore(
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
           providerProxySets?: NonNullable<HealthSnapshot['diagnostics']>['providerProxySets'];
+          providerProxyDispositionSkips?: NonNullable<
+            NonNullable<HealthSnapshot['diagnostics']>['providerProxyDispositionSkips']
+          >;
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
@@ -1256,17 +1276,23 @@ export function createCoordinatorCore(
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
-        const providerProxySets = [
-          ...(world.providerProxyLifecycleRef.get()?.snapshot().operatorSets ?? []),
-        ] satisfies NonNullable<NonNullable<HealthSnapshot['diagnostics']>['providerProxySets']>;
+        const providerProxySnapshot = world.providerProxyLifecycleRef.get()?.snapshot();
+        const providerProxySets = [...(providerProxySnapshot?.operatorSets ?? [])] satisfies NonNullable<
+          NonNullable<HealthSnapshot['diagnostics']>['providerProxySets']
+        >;
         if (providerProxySets.length > 0) {
           diagnostics.providerProxySets = providerProxySets;
+        }
+        const providerProxyDispositionSkips = providerProxySnapshot?.skippedDurableOperatorDispositions ?? [];
+        if (providerProxyDispositionSkips.length > 0) {
+          diagnostics.providerProxyDispositionSkips = [...providerProxyDispositionSkips];
         }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||
           diagnostics.mutationBlocked !== undefined ||
           diagnostics.consumerStuck !== undefined ||
-          diagnostics.providerProxySets !== undefined;
+          diagnostics.providerProxySets !== undefined ||
+          diagnostics.providerProxyDispositionSkips !== undefined;
 
         return {
           status: coarseStatus,

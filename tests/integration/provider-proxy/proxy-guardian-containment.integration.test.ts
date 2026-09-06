@@ -137,6 +137,8 @@ import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { createFakeProviderServerHandle } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
@@ -548,6 +550,11 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     claims,
     controlEstablished: () => undefined,
     time: { ...timer, now: () => 0, monotonicNow: () => 0n },
+    ...testProviderProxySetLifecycleDurability(new InMemoryStorage({ ...timer, now: () => 0 }), {
+      ...timer,
+      now: () => 0,
+      monotonicNow: () => 0n,
+    }),
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': () => new Promise<never>(() => undefined),
     }),
@@ -558,6 +565,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     },
     reportLifecycle: () => undefined,
   });
+  lifecycle.activateDurableOperatorDispositions();
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
   const authority = {
@@ -1404,6 +1412,7 @@ describe('provider proxy cumulative root rotation', () => {
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,
+      ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
       }),
@@ -1415,6 +1424,7 @@ describe('provider proxy cumulative root rotation', () => {
       reportLifecycle: () => undefined,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });
+    lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();

@@ -20,6 +20,7 @@ import {
   type HandoffCapsule,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
@@ -193,6 +194,7 @@ describe('provider proxy capsule discovery', () => {
       claims,
       controlEstablished: () => undefined,
       time: runtime.time,
+      ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'capsule-redemption': () => new Promise<never>(() => undefined),
       }),
@@ -201,6 +203,7 @@ describe('provider proxy capsule discovery', () => {
       },
       reportLifecycle: () => undefined,
     });
+    lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules(discovered, retainsEveryCapsule);
     const snapshotBeforeAdmission = lifecycle.snapshot();

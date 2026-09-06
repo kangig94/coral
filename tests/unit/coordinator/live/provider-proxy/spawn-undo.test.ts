@@ -6,11 +6,16 @@ import {
   type ProviderProxyAcquisitionSteps,
   type ProviderProxyAcquisitionResult,
 } from '#src/coordinator/live/provider-proxy/index.js';
-import { buildGuardianSpawnUndo } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
+import {
+  buildGuardianSpawnUndo,
+  isProviderProxyAcquisitionAbsenceEvidenceFor,
+  reobserveDurableProviderProxyAcquisitionContainment,
+} from '#src/coordinator/live/provider-proxy/spawn-undo.js';
 import { controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import {
   GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE,
+  providerProxyDisappearanceReceipt,
   type GuardianIdentity,
   type ProxyIdentity,
   type ReaperIdentity,
@@ -19,6 +24,8 @@ import { buildEnforcementOutcomeHandlers } from '#src/provider-proxy/role-main.j
 import type { SpawnedRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+
+const immediateRetryTime = { sleep: async () => undefined };
 
 const guardian: GuardianIdentity = {
   guardianInstanceId: '11111111-1111-4111-8111-111111111111',
@@ -79,17 +86,88 @@ function failAcquisitionAfterGuardianSpawn(
     spawnGuardian: async () => ({
       kind: 'guardian-containment',
       label: 'guardian',
+      setAddress: {
+        buildSetId: guardian.buildSetId,
+        hostFingerprint: guardian.hostFingerprint,
+        proxyInstanceId: proxy.proxyInstanceId,
+      },
       run: undo,
       guardianIdentity: undo.guardianIdentity,
+      captureRecoveryProof: undo.captureRecoveryProof,
     }),
     establishControl: async () => {
       throw new Error(reason);
     },
   };
-  return acquireProviderProxySet({ steps, deadlineSignal: new AbortController().signal });
+  return acquireProviderProxySet({
+    steps,
+    time: immediateRetryTime,
+    deadlineSignal: new AbortController().signal,
+    acceptHold: () => ({ kind: 'accepted', owner: 'durable-provider-proxy-acquisition-hold-store' }),
+  });
 }
 
 describe('guardian spawn undo', () => {
+  it('does not retire construction-settled containment while its exact recorded reaper remains alive', async () => {
+    const reaperLiveness = 'alive' as const;
+    const runtime = {
+      env: { platform: () => 'linux' },
+      process: {
+        readProcessIncarnation: (pid: number) => (pid === reaper.pid ? reaper.incarnation : null),
+        observeLiveness: () => reaperLiveness,
+      },
+    } as unknown as Runtime;
+    const subject = {
+      guardianIdentity: { pid: guardian.pid, incarnation: guardian.incarnation, processGroupId: guardian.pid },
+      reaper: { kind: 'recorded' as const, pid: reaper.pid, incarnation: reaper.incarnation },
+      constructionContainmentSettled: true,
+      proxy: { kind: 'possible-unidentified' as const },
+    };
+
+    await expect(
+      reobserveDurableProviderProxyAcquisitionContainment(runtime, subject, new AbortController().signal),
+    ).resolves.toEqual({ kind: 'held', observation: 'alive', reason: 'reaper_alive' });
+  });
+
+  it('accepts guardian process-group absence as decisive for an unidentified possible reaper', async () => {
+    const killedGroups = new Set<number>();
+    let monotonicNow = 0n;
+    const runtime = {
+      env: { platform: () => 'linux' },
+      process: {
+        kill: (pid: number, signal: NodeJS.Signals | 0) => {
+          if (signal === 'SIGKILL') killedGroups.add(pid);
+          return true;
+        },
+        observeLiveness: (pid: number) => (killedGroups.has(pid) ? 'absent' : 'alive'),
+        observeRecordedProcessAsync: async () => 'alive' as const,
+        readProcessIncarnation: () => guardian.incarnation,
+      },
+      time: {
+        monotonicNow: () => monotonicNow,
+        sleep: async (ms: number) => {
+          monotonicNow += BigInt(ms);
+        },
+      },
+    } as unknown as Runtime;
+    const subject = {
+      guardianIdentity: { pid: guardian.pid, incarnation: guardian.incarnation, processGroupId: guardian.pid },
+      reaper: { kind: 'possible-unidentified' as const },
+      constructionContainmentSettled: false,
+      proxy: { kind: 'not-created' as const },
+    };
+
+    const outcome = await reobserveDurableProviderProxyAcquisitionContainment(
+      runtime,
+      subject,
+      new AbortController().signal,
+    );
+
+    expect(outcome).toMatchObject({ kind: 'containment-absent' });
+    if (outcome.kind !== 'containment-absent') throw new Error(`expected confirmed absence, received ${outcome.kind}`);
+    expect(isProviderProxyAcquisitionAbsenceEvidenceFor(outcome.evidence, subject)).toBe(true);
+  });
+
   it('settles acquisition cleanup when the guardian confirms absence before holder publication', async () => {
     const { child, spawned } = guardianSpawnWithEvents();
     const undo = buildGuardianSpawnUndo({} as Runtime, spawned, 'linux', () => guardian.incarnation);
@@ -136,6 +214,7 @@ describe('guardian spawn undo', () => {
       kind: 'provider_proxy_acquisition_held',
       cut: 'control establishment',
       strandedArtifacts: ['guardian'],
+      recoverySubject: { reaper: { kind: 'possible-unidentified' } },
     });
     if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
     await expect(result.recoveryCapability.retry(new AbortController().signal)).resolves.toMatchObject({
@@ -144,7 +223,7 @@ describe('guardian spawn undo', () => {
     });
   });
 
-  it('reaps the transferred proxy group before the guardian group', async () => {
+  it('reaps transferred proxy and guardian groups and accepts the guardian group absence for the reaper', async () => {
     const killedGroups = new Set<number>();
     const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
       if (signal === 'SIGKILL') killedGroups.add(pid);
@@ -184,6 +263,8 @@ describe('guardian spawn undo', () => {
       [-guardian.pid, 'SIGTERM'],
       [-guardian.pid, 'SIGKILL'],
     ]);
+    const proof = undo.captureRecoveryProof();
+    expect(isProviderProxyAcquisitionAbsenceEvidenceFor(proof.absenceEvidence(), proof.subject)).toBe(true);
   });
 
   it('holds the transferred proxy group without signaling the guardian when attribution is lost', async () => {
@@ -267,8 +348,14 @@ describe('guardian spawn undo', () => {
       spawnGuardian: async () => ({
         kind: 'guardian-containment',
         label: 'guardian',
+        setAddress: {
+          buildSetId: guardian.buildSetId,
+          hostFingerprint: guardian.hostFingerprint,
+          proxyInstanceId: proxy.proxyInstanceId,
+        },
         run: undo,
         guardianIdentity: undo.guardianIdentity,
+        captureRecoveryProof: undo.captureRecoveryProof,
       }),
       establishControl: async () => {
         throw new Error('publication failed');
@@ -277,6 +364,8 @@ describe('guardian spawn undo', () => {
 
     const result = await acquireProviderProxySet({
       steps,
+      time: immediateRetryTime,
+      acceptHold: () => ({ kind: 'accepted', owner: 'durable-provider-proxy-acquisition-hold-store' }),
       deadlineSignal: new AbortController().signal,
     });
 
@@ -294,10 +383,28 @@ describe('guardian spawn undo', () => {
     expect(close).not.toHaveBeenCalled();
     expect(kill).not.toHaveBeenCalled();
     if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
-    await expect(result.recoveryCapability.retry(new AbortController().signal)).resolves.toEqual({
+    const outcome = await result.recoveryCapability.retry(new AbortController().signal);
+    expect(outcome).toMatchObject({
       kind: 'absence-confirmed',
+      evidence: {
+        recoverySubject: result.recoverySubject,
+        disappearanceReceipt: providerProxyDisappearanceReceipt(result.guardianIdentity, [
+          { pid: reaper.pid, incarnation: reaper.incarnation },
+        ]),
+      },
       strandedArtifacts: [],
     });
+    if (outcome.kind !== 'absence-confirmed') throw new Error('expected confirmed absence');
+    const proof = undo.captureRecoveryProof();
+    const unrelatedSubject = {
+      ...proof.subject,
+      guardianIdentity: { ...proof.subject.guardianIdentity, pid: proof.subject.guardianIdentity.pid + 1 },
+    };
+    const attemptedCrossSubjectMint = (
+      proof.absenceEvidence as unknown as (subject: typeof unrelatedSubject) => ReturnType<typeof proof.absenceEvidence>
+    )(unrelatedSubject);
+    expect(attemptedCrossSubjectMint.recoverySubject).toBe(proof.subject);
+    expect(isProviderProxyAcquisitionAbsenceEvidenceFor(attemptedCrossSubjectMint, unrelatedSubject)).toBe(false);
     expect(close).toHaveBeenCalledOnce();
   });
 });

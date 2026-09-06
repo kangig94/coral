@@ -465,7 +465,8 @@ import {
 function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0 | 75 {
   if (status.status !== 'ok') return 0;
   return status.health.skippedProviderProxySetRows > 0 ||
-    (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0
+    (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0 ||
+    (status.health.diagnostics?.providerProxyDispositionSkips?.length ?? 0) > 0
     ? 75
     : 0;
 }

@@ -59,6 +59,7 @@ export type ProviderProxySetOperatorExit =
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'gated'; remainingMs: number }>
   | Readonly<{ kind: 'contain' }>
+  | Readonly<{ kind: 'abandon' }>
   | Readonly<{
       kind: 'refused';
       ground:
@@ -82,6 +83,23 @@ export type ProviderProxySetOperatorDisposition = Readonly<{
   enforcerObservations?: ProviderProxySetEnforcerObservations;
   incidentReason: string;
   waitingFor: ProviderProxySetOperatorDispositionWaitingFor;
+  durableObservation?:
+    | Readonly<{
+        kind: 'stale';
+        writerIncarnation: string;
+        reobserveAction:
+          | 'automatic-exact-set-containment-observation'
+          | 'automatic-exact-acquisition-containment-observation';
+      }>
+    | Readonly<{
+        kind: 'current-writer';
+        writerIncarnation: string;
+      }>
+    | Readonly<{
+        kind: 'successor-observed';
+        writerIncarnation: string;
+        observedByIncarnation: string;
+      }>;
 }>;
 
 export type ProviderProxySetOperatorStatus = Readonly<{
@@ -90,4 +108,10 @@ export type ProviderProxySetOperatorStatus = Readonly<{
   liveClaims: number;
   operatorExit: ProviderProxySetOperatorExit;
   holds: readonly ProviderProxySetOperatorDisposition[];
+}>;
+
+export type ProviderProxySetDurableDispositionSkipStatus = Readonly<{
+  key: string;
+  setToken: string | null;
+  unavailableAction: 'reconciliation-and-retirement';
 }>;

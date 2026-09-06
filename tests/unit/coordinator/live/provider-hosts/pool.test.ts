@@ -20,6 +20,8 @@ import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-p
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import type { ProviderProxySetRecoveryAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import type { ProviderProxyAcquisitionRecoveryOutcome } from '#src/coordinator/live/provider-proxy/index.js';
+import { reobserveDurableProviderProxyAcquisitionContainment } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
 import {
   createOwnedProviderProxyAcquisitionControlSession,
   handOverProviderProxyAcquisitionControlSession,
@@ -58,6 +60,7 @@ import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -284,6 +287,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     claims,
     controlEstablished: () => undefined,
     time: runtime.time,
+    ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'capsule-redemption': () => new Promise<never>(() => undefined),
       'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, containmentProofDb),
@@ -294,6 +298,7 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     reportLifecycle: () => undefined,
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });
+  lifecycle.activateDurableOperatorDispositions();
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
   const ref = new ProviderProxySetLifecycleRef();
@@ -1308,24 +1313,35 @@ describe('provider host pool proxy set registry', () => {
       proxySetAcquisition,
       providerProxyLifecycleRef: lifecycleRef,
     });
-    const recovery = createDeferred<
-      | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
-      | Readonly<{ kind: 'held'; reason: string }>
-    >();
-    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
-      await onSettled({
+    const recovery = createDeferred<ProviderProxyAcquisitionRecoveryOutcome>();
+    const exactSubject = {
+      guardianIdentity: { pid: 101, incarnation: testIncarnation(101), processGroupId: 101 },
+      reaper: { kind: 'possible-unidentified' as const },
+      constructionContainmentSettled: true,
+      proxy: { kind: 'possible-unidentified' as const },
+    };
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, env, onSettled) => {
+      const hold = {
         kind: 'provider_proxy_acquisition_held',
-        owner: 'provider-host-manager',
+        owner: 'provider-host-acquisition',
         cut: 'control establishment',
         reason: 'guardian teardown was unobservable',
         strandedArtifacts: ['guardian'],
+        setAddress: {
+          buildSetId: '11111111-1111-4111-8111-111111111111',
+          hostFingerprint: 'a'.repeat(64),
+          proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+        },
         guardianIdentity: {
           pid: 101,
           incarnation: testIncarnation(101),
           processGroupId: 101,
         },
+        recoverySubject: exactSubject,
         recoveryCapability: { retry: () => recovery.promise },
-      });
+      } as const;
+      await env.acceptHold(hold);
+      await onSettled({ ...hold, owner: 'provider-host-manager' });
     });
     const spec = createSharedSpec();
 
@@ -1337,7 +1353,17 @@ describe('provider host pool proxy set registry', () => {
     first.close();
     second.close();
     await manager.shutdown();
-    recovery.resolve({ kind: 'absence-confirmed', strandedArtifacts: [] });
+    const observed = await reobserveDurableProviderProxyAcquisitionContainment(
+      runtime,
+      exactSubject,
+      new AbortController().signal,
+    );
+    if (observed.kind !== 'containment-absent') throw new Error('expected exact acquisition absence evidence');
+    recovery.resolve({
+      kind: 'absence-confirmed',
+      evidence: observed.evidence,
+      strandedArtifacts: [],
+    });
     await Promise.resolve();
     await Promise.resolve();
     expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));

@@ -54,6 +54,8 @@ import type { ProcessPort, Runtime } from '#src/runtime/ports.js';
 import { ProviderOperationTerminalizationUnavailableError } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
+import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
@@ -277,6 +279,7 @@ function lifecycleFor(
     claims,
     controlEstablished: () => undefined,
     time: options.time,
+    ...testProviderProxySetLifecycleDurability(new InMemoryStorage(options.time), options.time),
     recoveryDispatcher,
     reapRecordedContainment: async () => ({
       kind: 'containment-absent',
@@ -284,6 +287,7 @@ function lifecycleFor(
     }),
     reportLifecycle: () => undefined,
   });
+  lifecycle.activateDurableOperatorDispositions();
   lifecycle.initializeClaimSlots();
   return lifecycle;
 }
@@ -375,7 +379,7 @@ type ProductionStartupHarness = Readonly<{
 const FIXTURE_PROCESS_LONG_GONE_INCARNATION = testIncarnation(9_000);
 
 function noCapsuleStorage(base: StoragePort): StoragePort {
-  return { ...base, readdirSync: (() => []) as StoragePort['readdirSync'] };
+  return Object.assign(base, { readdirSync: (() => []) as StoragePort['readdirSync'] });
 }
 
 /**
@@ -394,7 +398,7 @@ function sandboxedRuntime(time: TimePort): Runtime {
   return {
     ...base,
     time,
-    storage: noCapsuleStorage(base.storage),
+    storage: noCapsuleStorage(new InMemoryStorage(time)),
     process: absentProcessPort(base.process),
   } satisfies Runtime;
 }
@@ -436,7 +440,7 @@ function composeProductionStartup(
     ...options.progressStore,
   };
   const world = {
-    identity: { buildSetId: FIXTURE_BUILD_SET_ID },
+    identity: { instanceId: randomUUID(), buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
     operationRegistry: new LocalOperationRegistry(),
     providerProxyClaims: new ProviderProxySetClaimMirror(),
@@ -493,6 +497,9 @@ function capsuleBackedStorage(
   };
   let present = true;
   let offset = 0;
+  let capsuleDirectorySyncPending = false;
+  const baseUnlinkSync = base.unlinkSync.bind(base);
+  const baseSyncDirectoryDurableSync = base.syncDirectoryDurableSync.bind(base);
   const absent = (): Error => Object.assign(new Error('capsule absent'), { code: 'ENOENT' });
   const requirePresent = (): void => {
     if (!present) throw absent();
@@ -505,8 +512,7 @@ function capsuleBackedStorage(
       ? stat
       : { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
   }
-  const storage = {
-    ...base,
+  const storage = Object.assign(base, {
     readdirSync: (() => (options.discover && present ? [basename(path)] : [])) as unknown as StoragePort['readdirSync'],
     lstatSync: lstatCapsule,
     statSync: ((_path: string, statOptions?: { bigint: true }) => {
@@ -529,12 +535,20 @@ function capsuleBackedStorage(
       return count;
     },
     closeSync: () => undefined,
-    unlinkSync: () => {
+    unlinkSync: (targetPath: string) => {
+      if (targetPath !== path) return baseUnlinkSync(targetPath);
       options.unlink();
       present = false;
+      capsuleDirectorySyncPending = true;
     },
-    syncDirectoryDurableSync: options.syncDirectoryDurableSync,
-  } as StoragePort;
+    syncDirectoryDurableSync: (directoryPath: string) => {
+      if (capsuleDirectorySyncPending && directoryPath === dirname(path)) {
+        capsuleDirectorySyncPending = false;
+        return options.syncDirectoryDurableSync();
+      }
+      return baseSyncDirectoryDurableSync(directoryPath);
+    },
+  }) as StoragePort;
   return { storage, path, exists: () => present };
 }
 
@@ -662,11 +676,16 @@ async function roleRecoveryStartupCase(
   const time = new VirtualTime();
   const realRuntime = createRealRuntime('prod');
   const capsule = v3CapsuleFor(record);
-  const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
-    discover: false,
-    unlink: () => undefined,
-    syncDirectoryDurableSync: () => true,
-  });
+  const capsuleStorage = capsuleBackedStorage(
+    new InMemoryStorage(time),
+    realRuntime.paths.coral.generation.root,
+    capsule,
+    {
+      discover: false,
+      unlink: () => undefined,
+      syncDirectoryDurableSync: () => true,
+    },
+  );
   const runtime = { ...realRuntime, time, storage: capsuleStorage.storage } satisfies Runtime;
   const alternateOperation = { ...record.operation, jobId: randomUUID(), operationId: randomUUID() };
   const guardianOpen = vi.fn(async () => {
@@ -768,11 +787,16 @@ async function inheritanceDeadlinePrecedenceStartupCase(mode: 'disagreement' | '
   const deadline = controlledRecoveryDeadline(endpointTime);
   const realRuntime = createRealRuntime('prod');
   const capsule = v3CapsuleFor(record);
-  const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
-    discover: false,
-    unlink: () => undefined,
-    syncDirectoryDurableSync: () => true,
-  });
+  const capsuleStorage = capsuleBackedStorage(
+    new InMemoryStorage(deadline.time),
+    realRuntime.paths.coral.generation.root,
+    capsule,
+    {
+      discover: false,
+      unlink: () => undefined,
+      syncDirectoryDurableSync: () => true,
+    },
+  );
   const runtime = { ...realRuntime, time: deadline.time, storage: capsuleStorage.storage } satisfies Runtime;
   const alternateOperation = { ...record.operation, jobId: randomUUID(), operationId: randomUUID() };
   const releaseFinalResponse = deferred<void>();
@@ -930,7 +954,7 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
   });
   const syncDirectoryDurableSync = vi.fn(() => mode !== 'directory-sync-unavailable');
   const capsuleStorage = capsuleBackedStorage(
-    realRuntime.storage,
+    new InMemoryStorage(time),
     realRuntime.paths.coral.generation.root,
     v3CapsuleFor(record),
     { discover: true, unlink, syncDirectoryDurableSync },

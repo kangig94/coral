@@ -54,6 +54,7 @@ const environment = {
   // The ordinary case: nothing is stopping the provider host manager, so this attempt's only deadline is its
   // own internal one.
   signal: new AbortController().signal,
+  acceptHold: () => ({ kind: 'accepted' as const, owner: 'durable-provider-proxy-acquisition-hold-store' as const }),
 };
 
 function fakeSet(): ProviderProxyOperationAuthority {
@@ -306,7 +307,18 @@ describe('ensureProviderProxySet', () => {
       cut: 'control establishment',
       reason: 'guardian teardown was unobservable',
       strandedArtifacts: ['guardian'],
+      setAddress: {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      },
       guardianIdentity: { pid: 101, incarnation: testIncarnation(101), processGroupId: 101 },
+      recoverySubject: {
+        guardianIdentity: { pid: 101, incarnation: testIncarnation(101), processGroupId: 101 },
+        reaper: { kind: 'possible-unidentified' as const },
+        constructionContainmentSettled: false,
+        proxy: { kind: 'possible-unidentified' as const },
+      },
       recoveryCapability: { retry },
     };
     mockedAcquire.mockResolvedValueOnce(held);

@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = 'tests/invariants/fixtures/durable-schema-independence';
-const SCHEMA_CATALOG_SHA256 = 'fd1b6cae3f239fa5bff330b8ed13ef07bd5a1439e96b74ead16e620a3db715f1';
+const SCHEMA_CATALOG_SHA256 = '6234ee41b3c78324ff14913bdfd973d8070e2ad2f6a49d4af6998b19d32f65c0';
 
 type SchemaKey = `${string}#${string}`;
 
@@ -28,6 +28,9 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/coordinator/handoff-routing/status.ts#retirementHistoryTruncatedSchema',
   'src/coordinator/handoff-routing/status.ts#validatedTargetSummarySchema',
   'src/coordinator/runtime-components/recovery-component.ts#recoveryQuarantineHealthRowSchema',
+  'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetAcquisitionDispositionRecordSchema',
+  'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetOperatorDispositionFileSchema',
+  'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetOperatorDispositionRecordSchema',
   'src/coordinator/shutdown-abandonment.ts#shutdownAbandonmentStatusSchema',
   'src/discuss/projections.ts#persistedDiscussSnapshotSchema',
   'src/discuss/events.ts#persistedDiscussRuntimeSchema',
@@ -143,6 +146,7 @@ const DURABLE_SCHEMA_REGISTRIES = new Set<SchemaKey>([
 ]);
 
 const DURABLE_SCHEMA_COMPONENTS = new Set<SchemaKey>([
+  'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableAcquisitionRecoverySubjectSchema',
   'src/discuss/session-types.ts#transcriptMetadataSchema',
   'src/jobs/event-bodies.ts#providerHostRefIdentitySchema',
   'src/provider-proxy/bootstrap-capsule.ts#commonBootstrapCapsuleShape',

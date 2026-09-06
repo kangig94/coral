@@ -47,7 +47,7 @@ import {
   providerProxyHeartbeatHoldBound,
 } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
-import { providerProxyDisappearanceReceipt } from '#src/provider-proxy/enforcement.js';
+import { providerProxyDisappearanceReceipt } from '#src/provider-proxy/protocol.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
@@ -85,6 +85,7 @@ import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -1865,12 +1866,14 @@ describe('createProviderProxySetInheritance', () => {
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
       time: runtime.time,
+      ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': createTestProviderProxyContainmentProofProducer(runtime, unusedDb),
       }),
       reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
+    lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules(
       [{ path: '/capsules/claim-backed.handoff.json', capsule }],
@@ -1936,12 +1939,14 @@ describe('createProviderProxySetInheritance', () => {
       claims,
       controlEstablished: established,
       time,
+      ...testProviderProxySetLifecycleDurability(runtime.storage, time),
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': createTestProviderProxyContainmentProofProducer({ ...runtime, time }, unusedDb),
       }),
       reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
+    lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const inheritance = createProviderProxySetInheritance({
@@ -2010,6 +2015,7 @@ describe('createProviderProxySetInheritance', () => {
       claims,
       controlEstablished: () => undefined,
       time,
+      ...testProviderProxySetLifecycleDurability(runtime.storage, time),
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': createTestProviderProxyContainmentProofProducer(inheritedRuntime, unusedDb),
         'disappearance-consumer': async ({ notice }) => ({
@@ -2020,6 +2026,7 @@ describe('createProviderProxySetInheritance', () => {
       reapRecordedContainment: unexpectedLifecycleRecordedContainmentReap,
       reportLifecycle: () => undefined,
     });
+    lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
 

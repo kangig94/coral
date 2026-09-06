@@ -60,6 +60,7 @@ import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -167,16 +168,18 @@ function lifecycleForSchedule(
 ): ProviderProxySetLifecycle {
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize([record]);
+  const time = {
+    now: () => 100,
+    monotonicNow: () => 100n,
+    setTimeout: () => ({ unref: () => undefined }),
+    clearTimeout: () => undefined,
+  };
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
     controlEstablished: () => undefined,
-    time: {
-      now: () => 100,
-      monotonicNow: () => 100n,
-      setTimeout: () => ({ unref: () => undefined }),
-      clearTimeout: () => undefined,
-    },
+    time,
+    ...testProviderProxySetLifecycleDurability(containmentProofRuntime.storage, time),
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
       {
         'containment-proof': createTestProviderProxyContainmentProofProducer(
@@ -194,6 +197,7 @@ function lifecycleForSchedule(
     },
     reportLifecycle: () => undefined,
   });
+  lifecycle.activateDurableOperatorDispositions();
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
   lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);

@@ -18,6 +18,7 @@ import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 
 type CreateEnforcerDeadlineStateMachine = typeof createEnforcerDeadlineStateMachine;
 type ConnectRoleControlWithRetry = typeof connectRoleControlWithRetry;
@@ -203,6 +204,10 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { CURRENT_HANDOFF_CAPSULE_VERSION } from '#src/provider-proxy/handoff-capsule.js';
 
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
+const acceptHoldForTest = () => ({
+  kind: 'accepted' as const,
+  owner: 'durable-provider-proxy-acquisition-hold-store' as const,
+});
 
 /**
  * Drives the real spawn topology in-process rather than against the built backend artifact.
@@ -1263,7 +1268,12 @@ describe('provider-proxy process topology: acquisition', () => {
     cleanups.push(() => closeHandles(environment));
 
     const steps = createProviderProxyAcquisitionSteps(acquisitionOptions(environment, baseDir, shared));
-    const result = await acquireProviderProxySet({ steps, deadlineSignal: AbortSignal.timeout(15_000) });
+    const result = await acquireProviderProxySet({
+      steps,
+      time: environment.outerRuntime().time,
+      acceptHold: acceptHoldForTest,
+      deadlineSignal: AbortSignal.timeout(15_000),
+    });
 
     expect(result.kind).toBe('acquired');
     if (result.kind !== 'acquired') throw new Error(`unreachable: ${JSON.stringify(result)}`);
@@ -1309,6 +1319,7 @@ describe('provider-proxy process topology: acquisition', () => {
       claims,
       controlEstablished: () => undefined,
       time: environment.outerRuntime().time,
+      ...testProviderProxySetLifecycleDurability(environment.outerRuntime().storage, environment.outerRuntime().time),
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': createTestProviderProxyContainmentProofProducer(
           environment.outerRuntime(),
@@ -1324,6 +1335,7 @@ describe('provider-proxy process topology: acquisition', () => {
       },
       reportLifecycle: () => undefined,
     });
+    lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     const routeKey = 'fresh-reaper-channel';
@@ -1332,6 +1344,8 @@ describe('provider-proxy process topology: acquisition', () => {
 
     const acquired = await acquireProviderProxySet({
       steps: createProviderProxyAcquisitionSteps(acquisitionOptions(environment, baseDir, shared)),
+      time: environment.outerRuntime().time,
+      acceptHold: acceptHoldForTest,
       deadlineSignal: AbortSignal.timeout(15_000),
     });
     if (acquired.kind !== 'acquired') throw new Error(`acquisition failed: ${JSON.stringify(acquired)}`);
@@ -1381,6 +1395,8 @@ describe('provider-proxy process topology: acquisition', () => {
 
     const acquired = await acquireProviderProxySet({
       steps: createProviderProxyAcquisitionSteps(acquisitionOptions(environment, baseDir, shared)),
+      time: environment.outerRuntime().time,
+      acceptHold: acceptHoldForTest,
       deadlineSignal: AbortSignal.timeout(15_000),
     });
     if (acquired.kind !== 'acquired') throw new Error(`acquisition failed: ${JSON.stringify(acquired)}`);
@@ -1484,7 +1500,12 @@ describe('provider-proxy process topology: acquisition', () => {
       ...acquisitionOptions(environment, baseDir, shared),
       runtime: environment.outerRuntime(),
     });
-    const result = await acquireProviderProxySet({ steps, deadlineSignal: AbortSignal.timeout(15_000) });
+    const result = await acquireProviderProxySet({
+      steps,
+      time: environment.outerRuntime().time,
+      acceptHold: acceptHoldForTest,
+      deadlineSignal: AbortSignal.timeout(15_000),
+    });
 
     expect(result).toMatchObject({
       kind: 'provider_proxy_acquisition_failed',

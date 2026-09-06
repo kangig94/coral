@@ -10,7 +10,10 @@ import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
-import type { ProviderProxySetOperatorStatus } from '../provider-proxy/operator-disposition-vocabulary.js';
+import type {
+  ProviderProxySetDurableDispositionSkipStatus,
+  ProviderProxySetOperatorStatus,
+} from '../provider-proxy/operator-disposition-vocabulary.js';
 
 interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -175,6 +178,7 @@ export type HealthSnapshot = {
       metadataSeq?: number;
     }>;
     providerProxySets?: ProviderProxySetOperatorStatus[];
+    providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
   };
 };
 

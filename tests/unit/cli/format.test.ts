@@ -937,6 +937,27 @@ describe('cli format', () => {
       expect(output).not.toContain(`provider-proxy-set abandon ${skippedToken}`);
     });
 
+    it('renders the exact durable disposition key and unavailable action', () => {
+      const key = 'provider-proxy-set-operator-disposition.v2:pps2.future:writer:subject';
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          diagnostics: {
+            providerProxyDispositionSkips: [
+              { key, setToken: null, unavailableAction: 'reconciliation-and-retirement' as const },
+            ],
+          },
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain(`key=${key}`);
+      expect(output).toContain('Unavailable action: reconciliation-and-retirement');
+      expect(output).toContain('will neither reconcile nor retire the record');
+    });
+
     it('formats the redacted system provider scope without profile details', () => {
       const status = {
         status: 'ok',

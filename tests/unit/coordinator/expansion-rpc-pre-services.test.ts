@@ -20,8 +20,11 @@ function makeRuntime(): Runtime {
       clearInterval,
     },
     storage: {
+      existsSync: () => false,
       mkdirSync: () => {},
+      readFileSync: () => '',
       rmSync: () => {},
+      writeAtomicDurableSync: () => true,
       writeAtomicSync: () => {},
     },
     process: {

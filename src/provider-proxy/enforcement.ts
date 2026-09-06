@@ -23,6 +23,7 @@ import {
   type HolderObservation,
   type ObservedHolderAbsenceAuthorization,
 } from './holder-lifecycle.js';
+import { providerProxyDisappearanceReceipt } from './protocol.js';
 
 /** The subset of the deadline machine this loop drives. */
 export type EnforcementDeadlineMachine<Scope extends symbol> = Pick<
@@ -153,23 +154,6 @@ export interface ArmedEnforcer {
 /** The only key under which a root can be signalled. */
 function rootKey(root: RecordedProcessIdentity): string {
   return `${root.pid}@${root.incarnation}`;
-}
-
-/**
- * Teardown produces a receipt naming what was confirmed absent, so a caller can tell "the recorded set is
- * gone" from "the leader exited". The group and every root appear, because leader exit alone is never
- * absence evidence.
- */
-export function providerProxyDisappearanceReceipt(
-  containment: RecordedContainmentIdentity,
-  roots: readonly RecordedProcessIdentity[],
-): string {
-  const targets = [
-    `group:${containment.processGroupId}`,
-    `leader:${containment.pid}@${containment.incarnation}`,
-    ...roots.map((root) => `root:${root.pid}@${root.incarnation}`),
-  ];
-  return targets.join(',');
 }
 
 export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcerOptions<Scope>): ArmedEnforcer {

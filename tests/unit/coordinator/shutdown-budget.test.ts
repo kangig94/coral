@@ -344,6 +344,7 @@ describe('runShutdownSequence drain budget', () => {
       kind: 'fatal-successor-pending' as const,
       error: fatalError,
       successor,
+      operatorDispositionRecording: { kind: 'recorded' as const },
     });
     let releasePending = true;
     const harness = buildHarness({ providerProxyAuthority: { liveSets: () => [set] } });
@@ -369,6 +370,7 @@ describe('runShutdownSequence drain budget', () => {
                   exit: 'provider-proxy-set-operator-abandonment' as const,
                   error: fatalError,
                   successor,
+                  operatorDispositionRecording: { kind: 'recorded' as const },
                 },
                 exit: 'provider-proxy-representation-release-settlement' as const,
                 settlement: representationReleaseSettlement,
@@ -1678,10 +1680,25 @@ describe('required provider-proxy shutdown steps', () => {
       cut: 'guardian-spawned',
       reason: 'cleanup deadline elapsed',
       strandedArtifacts: [],
+      setAddress: {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      },
       guardianIdentity: {
         pid: 4242,
         incarnation: testIncarnation('shutdown-hold'),
         processGroupId: 4242,
+      },
+      recoverySubject: {
+        guardianIdentity: {
+          pid: 4242,
+          incarnation: testIncarnation('shutdown-hold'),
+          processGroupId: 4242,
+        },
+        reaper: { kind: 'possible-unidentified' as const },
+        constructionContainmentSettled: false,
+        proxy: { kind: 'possible-unidentified' as const },
       },
       recoveryCapability: { retry },
     };

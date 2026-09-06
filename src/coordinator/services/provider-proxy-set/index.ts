@@ -12,6 +12,7 @@ import {
 import { type HandoffCapsule, type HandoffCapsuleV3 } from '../../../provider-proxy/handoff-capsule.js';
 import {
   providerProxySetEnforcerVerdict,
+  type ProviderProxySetContainmentEvidence,
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
@@ -65,6 +66,7 @@ import type {
   ProviderProxySetRecordedContainmentReaper,
   ProviderProxySetRecordedContainmentReapResult,
 } from './recorded-containment-reaper.js';
+import { reobserveDurableProviderProxySetContainment } from './recorded-containment-reaper.js';
 import type {
   ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
@@ -127,6 +129,26 @@ import {
   type ProviderProxySetKey,
   type ProviderProxySetProtection,
 } from './identity.js';
+import {
+  durableProviderProxySetAcquisitionDispositionKey,
+  durableProviderProxySetOperatorDispositionRecord,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_GENERATION,
+  type DurableProviderProxySetAcquisitionDispositionRecord,
+  type DurableProviderProxySetContainmentHoldOutcome,
+  type DurableProviderProxySetOperatorDispositionRecord,
+  type DurableProviderProxySetOperatorDispositionSkip,
+  type ProviderProxySetOperatorDispositionStore,
+} from './operator-disposition-store.js';
+import {
+  reobserveDurableProviderProxyAcquisitionDisposition,
+  reobserveDurableProviderProxySetDisposition,
+  settleDurableOperatorDispositionReconciliation,
+  type DurableOperatorDispositionReconciliationSettlement,
+} from './operator-disposition-reconciliation.js';
+import {
+  isProviderProxyAcquisitionAbsenceEvidenceFor,
+  type ProviderProxyAcquisitionAbsenceEvidence,
+} from '../../live/provider-proxy/spawn-undo.js';
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
@@ -263,7 +285,7 @@ type PendingReleaseSlot = {
   initialDisposition: InitialDispositionLatch;
   representationReleaseSettlement: Promise<ProviderProxyRepresentationReleaseSettlement>;
   settleRepresentationRelease(disposition: ProviderProxyRepresentationReleaseSettlement): void;
-  fatalSettlement: Extract<ProviderProxyRepresentationReleaseSettlement, { kind: 'fatal-successor-pending' }> | null;
+  fatalSettlement: ProviderProxyRepresentationReleaseFatalSettlement | null;
   operatorExitNotBeforeMonotonicMs: bigint | null;
   operatorExitGeneration: number;
   attemptToken: number;
@@ -436,6 +458,7 @@ export type ProviderProxySetLifecycleSnapshot = Readonly<{
   pendingOperationCounts: readonly number[];
   operatorDispositions: readonly ProviderProxySetOperatorDisposition[];
   operatorSets: readonly ProviderProxySetOperatorStatus[];
+  skippedDurableOperatorDispositions: readonly DurableProviderProxySetOperatorDispositionSkip[];
 }>;
 
 export type ProviderProxySetLifecycleProgressViolation = Readonly<{
@@ -479,6 +502,14 @@ export type ContainmentAbsenceInitialDisposition =
       incidents: readonly [ContainmentAbsenceOperationalIncident, ...ContainmentAbsenceOperationalIncident[]];
     }>;
 
+export type ProviderProxySetOperatorDispositionRecording =
+  | Readonly<{ kind: 'recorded' }>
+  | Readonly<{
+      kind: 'held';
+      reason: string;
+      exit: 'provider-proxy-set-operator-abandonment';
+    }>;
+
 export type ProviderProxyRepresentationReleaseSuccessor = Readonly<{
   owner: 'operator-command';
   acceptance: 'pending';
@@ -492,7 +523,13 @@ export type ProviderProxyRepresentationReleaseSettlement =
       kind: 'fatal-successor-pending';
       error: ProviderProxySetLifecycleFatalError;
       successor: ProviderProxyRepresentationReleaseSuccessor;
+      operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
     }>;
+
+type ProviderProxyRepresentationReleaseFatalSettlement = Exclude<
+  ProviderProxyRepresentationReleaseSettlement,
+  Readonly<{ kind: 'released' }>
+>;
 
 export type ProviderProxyRepresentationReleaseDisposition =
   | Readonly<{ kind: 'in-progress' }>
@@ -502,6 +539,7 @@ export type ProviderProxyRepresentationReleaseDisposition =
       exit: 'provider-proxy-set-operator-abandonment';
       error: ProviderProxySetLifecycleFatalError;
       successor: ProviderProxyRepresentationReleaseSuccessor;
+      operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
     }>;
 
 type InitialDispositionState = 'pending' | 'resolved' | 'rejected';
@@ -519,7 +557,7 @@ type ProviderProxySetOperatorClaimDischarge =
 
 type ProviderProxySetOperatorClaimDischargeObservation =
   | ProviderProxySetOperatorClaimDischarge
-  | Extract<ProviderProxyRepresentationReleaseSettlement, { kind: 'fatal-successor-pending' }>;
+  | ProviderProxyRepresentationReleaseFatalSettlement;
 
 export type ProviderProxySetOperatorExitEffect = Readonly<{
   signalsSent: readonly ProviderProxySetContainmentSignal[];
@@ -596,11 +634,11 @@ type InitialDispositionLatch = {
     | Readonly<{ kind: 'resolved'; disposition: ContainmentAbsenceInitialDisposition }>
     | Readonly<{
         kind: 'rejected';
-        disposition: Extract<ProviderProxyRepresentationReleaseSettlement, { kind: 'fatal-successor-pending' }>;
+        disposition: ProviderProxyRepresentationReleaseFatalSettlement;
       }>;
   readonly promise: Promise<ContainmentAbsenceInitialDisposition>;
   resolve(value: ContainmentAbsenceInitialDisposition): void;
-  reject(disposition: Extract<ProviderProxyRepresentationReleaseSettlement, { kind: 'fatal-successor-pending' }>): void;
+  reject(disposition: ProviderProxyRepresentationReleaseFatalSettlement): void;
 };
 
 type AbsenceDeliveryState =
@@ -626,6 +664,19 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
+  operatorDispositionStore: ProviderProxySetOperatorDispositionStore;
+  writerIncarnation: string;
+  collectOperatorDispositionContainmentProof(
+    identity: ProviderProxySetIdentity,
+    signal: AbortSignal,
+  ): Promise<ProviderProxySetFencedContainmentProof>;
+  reobserveAcquisitionContainment(
+    subject: DurableProviderProxySetAcquisitionDispositionRecord['recoverySubject'],
+    signal: AbortSignal,
+  ): Promise<
+    | Readonly<{ kind: 'containment-absent'; evidence: ProviderProxyAcquisitionAbsenceEvidence }>
+    | Readonly<{ kind: 'held'; observation: 'alive' | 'unknown'; reason: string }>
+  >;
   fenceProviderOperationMutations?(identity: ProviderProxySetIdentity): ProviderOperationMutationSetFence;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
   reportLifecycle(severity: ProviderProxySetLogSeverity, message: string): void;
@@ -859,6 +910,12 @@ export class ProviderProxySetLifecycle {
   readonly #capsuleGrants = new Map<string, string>();
   readonly #foreignRetirementOwners = new Map<string, ForeignCapsuleRetirementOwner>();
   readonly #operatorDispositions = new Map<ProviderProxySetKey, Map<string, ProviderProxySetOperatorDisposition>>();
+  readonly #durableOperatorDispositions = new Map<string, DurableProviderProxySetOperatorDispositionRecord>();
+  readonly #durableAcquisitionDispositions = new Map<string, DurableProviderProxySetAcquisitionDispositionRecord>();
+  readonly #skippedDurableOperatorDispositions: readonly DurableProviderProxySetOperatorDispositionSkip[];
+  #durableReobservationTimer: TimerHandle | null = null;
+  #durableOperatorDispositionsActivated = false;
+  readonly #durablePredecessorRecordsNeedStaleWrite: boolean;
   readonly #operatorExitFenceAuthorizations = new Map<
     ProviderProxySetKey,
     ProviderProxySetFencedContainmentProofAuthorization
@@ -868,6 +925,373 @@ export class ProviderProxySetLifecycle {
 
   constructor(deps: ProviderProxySetLifecycleDeps) {
     this.#deps = deps;
+    const durable = deps.operatorDispositionStore.read();
+    this.#skippedDurableOperatorDispositions = durable.skipped;
+    const writerIncarnation = deps.writerIncarnation;
+    const staleRecords = durable.records.map((record) =>
+      record.writerIncarnation === writerIncarnation
+        ? record
+        : {
+            ...record,
+            status: {
+              kind: 'stale' as const,
+              markedByIncarnation: writerIncarnation,
+              markedAtMs: deps.time.now(),
+            },
+          },
+    );
+    for (const record of staleRecords) this.#durableOperatorDispositions.set(record.key, record);
+    const staleAcquisitionRecords = durable.acquisitionRecords.map((record) =>
+      record.writerIncarnation === writerIncarnation
+        ? record
+        : {
+            ...record,
+            status: {
+              kind: 'stale' as const,
+              markedByIncarnation: writerIncarnation,
+              markedAtMs: deps.time.now(),
+            },
+          },
+    );
+    for (const record of staleAcquisitionRecords) this.#durableAcquisitionDispositions.set(record.key, record);
+    this.#durablePredecessorRecordsNeedStaleWrite =
+      staleRecords.some((record, index) => record !== durable.records[index]) ||
+      staleAcquisitionRecords.some((record, index) => record !== durable.acquisitionRecords[index]);
+    for (const skipped of durable.skipped) {
+      deps.reportLifecycle(
+        'warn',
+        `Skipped durable provider proxy set disposition key=${skipped.key}; reconciliation and retirement will not be performed by this build.`,
+      );
+    }
+  }
+
+  activateDurableOperatorDispositions(): void {
+    if (this.#durableOperatorDispositionsActivated) return;
+    if (this.#durablePredecessorRecordsNeedStaleWrite) {
+      this.#deps.operatorDispositionStore.replace([
+        ...this.#durableOperatorDispositions.values(),
+        ...this.#durableAcquisitionDispositions.values(),
+      ]);
+    }
+    this.#durableOperatorDispositionsActivated = true;
+  }
+
+  #assertDurableOperatorDispositionAuthority(): void {
+    if (!this.#durableOperatorDispositionsActivated) {
+      throw new Error('provider_proxy_set_operator_disposition_authority_not_activated');
+    }
+  }
+
+  #replaceDurableOperatorDispositions(
+    identity: ProviderProxySetIdentity,
+    dispositions: ReadonlyMap<string, ProviderProxySetOperatorDisposition>,
+    status:
+      | Readonly<{ kind: 'current-writer'; recordedAtMs: number }>
+      | Readonly<{
+          kind: 'successor-observed';
+          observedByIncarnation: string;
+          observedAtMs: number;
+          evidence: ProviderProxySetContainmentEvidence | Readonly<{ kind: 'canonical-hold-observation' }>;
+        }> = { kind: 'current-writer', recordedAtMs: this.#deps.time.now() },
+  ): void {
+    this.#assertDurableOperatorDispositionAuthority();
+    const store = this.#deps.operatorDispositionStore;
+    const writerIncarnation = this.#deps.writerIncarnation;
+    const setKey = providerProxySetKey(identity);
+    const existingRecords = [...this.#durableOperatorDispositions.values()].filter(
+      (record) => providerProxySetKey(record.setIdentity) === setKey,
+    );
+    const preservedStaleRecords = existingRecords.filter(
+      (record) => record.status.kind !== 'current-writer' && !dispositions.has(record.subjectKey),
+    );
+    const preservedStaleKeys = new Set(preservedStaleRecords.map((record) => record.key));
+    const retiredKeys = existingRecords
+      .filter((record) => !preservedStaleKeys.has(record.key))
+      .map((record) => record.key);
+    const records = [...dispositions].map(([subjectKey, disposition]) => {
+      const predecessor = [...this.#durableOperatorDispositions.values()].find(
+        (record) =>
+          providerProxySetKey(record.setIdentity) === setKey &&
+          record.subjectKey === subjectKey &&
+          record.status.kind !== 'current-writer',
+      );
+      return durableProviderProxySetOperatorDispositionRecord({
+        writerIncarnation: predecessor?.writerIncarnation ?? writerIncarnation,
+        setIdentity: identity,
+        subjectKey,
+        disposition,
+        status:
+          predecessor === undefined
+            ? status
+            : {
+                kind: 'successor-observed' as const,
+                observedByIncarnation: writerIncarnation,
+                observedAtMs: this.#deps.time.now(),
+                evidence: { kind: 'canonical-hold-observation' as const },
+              },
+      });
+    });
+    store.replace(records, retiredKeys);
+    for (const key of retiredKeys) this.#durableOperatorDispositions.delete(key);
+    for (const record of records) this.#durableOperatorDispositions.set(record.key, record);
+  }
+
+  #setOperatorDispositions(
+    identity: ProviderProxySetIdentity,
+    dispositions: Map<string, ProviderProxySetOperatorDisposition>,
+  ): void {
+    this.#replaceDurableOperatorDispositions(identity, dispositions);
+    const setKey = providerProxySetKey(identity);
+    if (dispositions.size === 0) this.#operatorDispositions.delete(setKey);
+    else this.#operatorDispositions.set(setKey, dispositions);
+  }
+
+  #deleteOperatorDispositions(identity: ProviderProxySetIdentity): void {
+    this.#replaceDurableOperatorDispositions(identity, new Map());
+    this.#operatorDispositions.delete(providerProxySetKey(identity));
+  }
+
+  #clearLocalOperatorDispositions(identity: ProviderProxySetIdentity): void {
+    this.#operatorDispositions.delete(providerProxySetKey(identity));
+  }
+
+  #recordDurableAcquisitionDisposition(
+    routeKey: string,
+    hold: ProviderProxyAcquisitionHeld<string>,
+    disposition: ProviderProxySetOperatorDisposition,
+  ): void {
+    this.#assertDurableOperatorDispositionAuthority();
+    const store = this.#deps.operatorDispositionStore;
+    const writerIncarnation = this.#deps.writerIncarnation;
+    const key = durableProviderProxySetAcquisitionDispositionKey(hold.setAddress, writerIncarnation);
+    const retiredKeys = [...this.#durableAcquisitionDispositions.values()]
+      .filter(
+        (record) =>
+          record.setAddress.buildSetId === hold.setAddress.buildSetId &&
+          record.setAddress.hostFingerprint === hold.setAddress.hostFingerprint &&
+          record.setAddress.proxyInstanceId === hold.setAddress.proxyInstanceId &&
+          record.status.kind === 'current-writer',
+      )
+      .map((record) => record.key);
+    const record: DurableProviderProxySetAcquisitionDispositionRecord = {
+      generation: PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_GENERATION,
+      scope: 'acquisition',
+      key,
+      writerIncarnation,
+      setAddress: hold.setAddress,
+      recoverySubject: hold.recoverySubject,
+      routeKey,
+      disposition,
+      status: { kind: 'current-writer', recordedAtMs: this.#deps.time.now() },
+    };
+    store.replace([record], retiredKeys);
+    for (const retired of retiredKeys) this.#durableAcquisitionDispositions.delete(retired);
+    this.#durableAcquisitionDispositions.set(record.key, record);
+  }
+
+  #retireDurableAcquisitionDisposition(
+    record: DurableProviderProxySetAcquisitionDispositionRecord,
+    evidence: ProviderProxyAcquisitionAbsenceEvidence,
+  ): void {
+    this.#assertDurableOperatorDispositionAuthority();
+    if (
+      !isProviderProxyAcquisitionAbsenceEvidenceFor(evidence, record.recoverySubject) ||
+      evidence.disappearanceReceipt.length === 0
+    ) {
+      throw new Error('provider_proxy_set_acquisition_absence_evidence_mismatch');
+    }
+    const store = this.#deps.operatorDispositionStore;
+    if (this.#durableAcquisitionDispositions.get(record.key) !== record) return;
+    store.replace([], [record.key]);
+    this.#durableAcquisitionDispositions.delete(record.key);
+  }
+
+  #retireDurableSetDispositionsAfterContainmentAbsence(
+    identity: ProviderProxySetIdentity,
+    proof: ProviderProxySetFencedContainmentProof,
+    disappearanceReceipt: string,
+  ): void {
+    this.#assertDurableOperatorDispositionAuthority();
+    if (disappearanceReceipt.length === 0) {
+      throw new Error('provider_proxy_set_containment_absence_evidence_missing');
+    }
+    const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
+    if (evidence.kind !== 'reap-required') {
+      throw new Error('provider_proxy_set_durable_retirement_evidence_not_decisive');
+    }
+    const setKey = providerProxySetKey(identity);
+    const retiredKeys = [...this.#durableOperatorDispositions.values()]
+      .filter((record) => providerProxySetKey(record.setIdentity) === setKey)
+      .map((record) => record.key);
+    if (retiredKeys.length === 0) return;
+    this.#deps.operatorDispositionStore.replace([], retiredKeys);
+    for (const key of retiredKeys) this.#durableOperatorDispositions.delete(key);
+  }
+
+  #retireDurableSetDispositionsAfterOperatorAbandonment(
+    identity: ProviderProxySetIdentity,
+    evidence: OperatorAbandonmentEvidence,
+  ): void {
+    this.#assertDurableOperatorDispositionAuthority();
+    if (evidence.kind !== 'operator-abandoned') {
+      throw new Error('provider_proxy_set_operator_abandonment_evidence_missing');
+    }
+    const setKey = providerProxySetKey(identity);
+    const retiredKeys = [...this.#durableOperatorDispositions.values()]
+      .filter((record) => providerProxySetKey(record.setIdentity) === setKey)
+      .map((record) => record.key);
+    if (retiredKeys.length === 0) return;
+    this.#deps.operatorDispositionStore.replace([], retiredKeys);
+    for (const key of retiredKeys) this.#durableOperatorDispositions.delete(key);
+  }
+
+  async reconcileDurableOperatorDispositions(
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<DurableOperatorDispositionReconciliationSettlement> {
+    const settlement = await settleDurableOperatorDispositionReconciliation(() =>
+      this.#performDurableOperatorDispositionReconciliation(signal),
+    );
+    if (settlement.kind === 'retry' && !signal.aborted) {
+      this.#scheduleDurableOperatorDispositionReconciliation();
+    }
+    return settlement;
+  }
+
+  async #performDurableOperatorDispositionReconciliation(signal: AbortSignal): Promise<void> {
+    this.#assertDurableOperatorDispositionAuthority();
+    const collectProof = this.#deps.collectOperatorDispositionContainmentProof;
+    const writerIncarnation = this.#deps.writerIncarnation;
+    {
+      const staleBySet = new Map<ProviderProxySetKey, DurableProviderProxySetOperatorDispositionRecord[]>();
+      for (const record of this.#durableOperatorDispositions.values()) {
+        if (
+          record.status.kind !== 'stale' &&
+          !(record.status.kind === 'successor-observed' && record.status.evidence.kind !== 'canonical-hold-observation')
+        )
+          continue;
+        const setKey = providerProxySetKey(record.setIdentity);
+        const records = staleBySet.get(setKey) ?? [];
+        records.push(record);
+        staleBySet.set(setKey, records);
+      }
+      for (const records of staleBySet.values()) {
+        signal.throwIfAborted();
+        const first = records[0];
+        if (first === undefined) continue;
+        const identity = first.setIdentity;
+        const observation = await reobserveDurableProviderProxySetDisposition({
+          identity,
+          signal,
+          collectProof,
+          reobserveContainment: (reobservedIdentity, proof, reobservationSignal) =>
+            reobserveDurableProviderProxySetContainment({
+              identity: reobservedIdentity,
+              proof,
+              signal: reobservationSignal,
+              reapRecordedContainment: this.#deps.reapRecordedContainment,
+            }),
+        });
+        if (observation.kind === 'retry') {
+          this.#deps.onError?.(
+            `Durable provider proxy set disposition re-observation failed set=${providerProxySetReference(identity)} error=${observation.reason}`,
+          );
+          continue;
+        }
+        if (observation.kind === 'retire') {
+          try {
+            this.#retireDurableSetDispositionsAfterContainmentAbsence(
+              identity,
+              observation.proof,
+              observation.disappearanceReceipt,
+            );
+          } finally {
+            releaseProviderProxySetContainmentProofFence(observation.proof);
+          }
+          continue;
+        }
+        this.#recordDurableSetReobservation(records, observation.evidence, observation.reapOutcome);
+      }
+    }
+    const reobserveAcquisition = this.#deps.reobserveAcquisitionContainment;
+    {
+      for (const record of [...this.#durableAcquisitionDispositions.values()]) {
+        if (record.status.kind !== 'stale' && record.status.kind !== 'successor-acquisition-observed') continue;
+        signal.throwIfAborted();
+        const observation = await reobserveDurableProviderProxyAcquisitionDisposition({
+          subject: record.recoverySubject,
+          signal,
+          observe: reobserveAcquisition,
+        });
+        if (observation.kind === 'retry') {
+          this.#deps.onError?.(
+            `Durable provider proxy acquisition disposition re-observation failed key=${record.key} error=${observation.reason}`,
+          );
+          continue;
+        }
+        if (observation.kind === 'retire') {
+          this.#retireDurableAcquisitionDisposition(record, observation.evidence);
+          continue;
+        }
+        const next: DurableProviderProxySetAcquisitionDispositionRecord = {
+          ...record,
+          disposition: { ...record.disposition, incidentReason: observation.reason },
+          status: {
+            kind: 'successor-acquisition-observed',
+            observedByIncarnation: writerIncarnation,
+            observedAtMs: this.#deps.time.now(),
+            observation: observation.observation,
+          },
+        };
+        this.#deps.operatorDispositionStore.replace([next]);
+        this.#durableAcquisitionDispositions.set(next.key, next);
+      }
+    }
+    this.#scheduleDurableOperatorDispositionReconciliation();
+  }
+
+  #scheduleDurableOperatorDispositionReconciliation(): void {
+    if (
+      this.#durableReobservationTimer === null &&
+      ([...this.#durableOperatorDispositions.values()].some(
+        (record) =>
+          record.status.kind === 'stale' ||
+          (record.status.kind === 'successor-observed' && record.status.evidence.kind !== 'canonical-hold-observation'),
+      ) ||
+        [...this.#durableAcquisitionDispositions.values()].some(
+          (record) => record.status.kind === 'stale' || record.status.kind === 'successor-acquisition-observed',
+        ))
+    ) {
+      this.#durableReobservationTimer = this.#deps.time.setTimeout(() => {
+        this.#durableReobservationTimer = null;
+        void this.reconcileDurableOperatorDispositions().then((settlement) => {
+          if (settlement.kind === 'retry') {
+            this.#deps.onError?.(
+              `Durable provider proxy disposition scheduled reconciliation failed: ${settlement.reason}`,
+            );
+          }
+        });
+      }, REATTACHMENT_HOLD_RETRY_MS);
+      this.#durableReobservationTimer.unref?.();
+    }
+  }
+
+  #recordDurableSetReobservation(
+    records: readonly DurableProviderProxySetOperatorDispositionRecord[],
+    evidence: ProviderProxySetContainmentEvidence,
+    reapOutcome?: DurableProviderProxySetContainmentHoldOutcome,
+  ): void {
+    const next = records.map((record) => ({
+      ...record,
+      status: {
+        kind: 'successor-observed' as const,
+        observedByIncarnation: this.#deps.writerIncarnation,
+        observedAtMs: this.#deps.time.now(),
+        evidence,
+        ...(reapOutcome === undefined ? {} : { reapOutcome }),
+      },
+    }));
+    this.#deps.operatorDispositionStore.replace(next);
+    for (const record of next) this.#durableOperatorDispositions.set(record.key, record);
   }
 
   #reapRecordedContainment(
@@ -1003,6 +1427,10 @@ export class ProviderProxySetLifecycle {
     const slot = this.#slots.get(slotId);
     if (slot?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
     if (slot.cleanupHold !== null) throw new Error('provider_proxy_set_acquisition_cleanup_already_owned');
+    const durable = [...this.#durableAcquisitionDispositions.values()].find(
+      (record) => providerProxySetAddressKey(record.setAddress) === providerProxySetAddressKey(hold.setAddress),
+    );
+    if (durable === undefined) throw new Error('provider_proxy_acquisition_durable_hold_missing');
     slot.cleanupHold = hold;
     this.#report(
       'warn',
@@ -1010,6 +1438,20 @@ export class ProviderProxySetLifecycle {
     );
     this.#runAcquisitionCleanupRetry(slot);
     return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
+  }
+
+  persistAcquisitionCleanupHold(
+    slotId: string,
+    hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'>,
+  ): Readonly<{ kind: 'accepted'; owner: 'durable-provider-proxy-acquisition-hold-store' }> {
+    const slot = this.#slots.get(slotId);
+    if (slot?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
+    this.#recordDurableAcquisitionDisposition(slot.routeKey, hold, {
+      disposition: 'held',
+      incidentReason: singleLineErrorSummary(hold.reason),
+      waitingFor: 'independent-containment-absence',
+    });
+    return { kind: 'accepted', owner: 'durable-provider-proxy-acquisition-hold-store' };
   }
 
   acquisitionCleanupPending(
@@ -1032,6 +1474,13 @@ export class ProviderProxySetLifecycle {
   ): void {
     const slot = this.#slots.get(slotId);
     if (slot?.kind !== 'acquiring' || slot.cleanupHold !== hold) return;
+    if (hold.kind === 'provider_proxy_acquisition_held') {
+      if (confirmation.evidence === undefined) {
+        throw new Error('provider_proxy_set_acquisition_absence_evidence_missing');
+      }
+      const record = this.#durableAcquisitionRecordForHold(hold);
+      this.#retireDurableAcquisitionDisposition(record, confirmation.evidence);
+    }
     this.#slots.delete(slotId);
     if (confirmation.strandedArtifacts.length > 0) {
       this.#report(
@@ -1050,6 +1499,23 @@ export class ProviderProxySetLifecycle {
       const current = this.#slots.get(slot.slotId);
       if (current !== slot || slot.cleanupAttemptToken !== token) return;
       if (outcome.kind === 'absence-confirmed') {
+        if (hold.kind === 'provider_proxy_acquisition_held') {
+          if (outcome.evidence === undefined) {
+            this.#deps.onError?.('Provider proxy acquisition absence was reported without decisive evidence');
+            return;
+          }
+          const record = this.#durableAcquisitionRecordForHold(hold);
+          try {
+            this.#retireDurableAcquisitionDisposition(record, outcome.evidence);
+          } catch (error) {
+            this.#report(
+              'warn',
+              `Provider proxy acquisition absence remains held because durable retirement failed key=${record.key} error=${singleLineErrorSummary(error)}`,
+            );
+            this.#scheduleAcquisitionCleanupRetry(slot);
+            return;
+          }
+        }
         this.#slots.delete(slot.slotId);
         if (outcome.strandedArtifacts.length > 0) {
           this.#report(
@@ -1068,16 +1534,46 @@ export class ProviderProxySetLifecycle {
         outcome.kind === 'delegated'
           ? 'delegation returned before the lifecycle slot accepted ownership'
           : outcome.reason;
+      if (hold.kind === 'provider_proxy_acquisition_held') {
+        try {
+          this.#recordDurableAcquisitionDisposition(slot.routeKey, hold, {
+            disposition: 'held',
+            incidentReason: singleLineErrorSummary(reason),
+            waitingFor: 'independent-containment-absence',
+          });
+        } catch (error) {
+          this.#report(
+            'warn',
+            `Provider proxy acquisition cleanup remains held because durable reporting failed guardianPid=${hold.guardianIdentity.pid} error=${singleLineErrorSummary(error)}`,
+          );
+        }
+      }
       this.#report(
         'warn',
         `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(reason)}`,
       );
-      slot.cleanupRetryTimer = this.#deps.time.setTimeout(() => {
-        slot.cleanupRetryTimer = null;
-        this.#runAcquisitionCleanupRetry(slot);
-      }, REATTACHMENT_HOLD_RETRY_MS);
-      slot.cleanupRetryTimer.unref?.();
+      this.#scheduleAcquisitionCleanupRetry(slot);
     });
+  }
+
+  #scheduleAcquisitionCleanupRetry(slot: Extract<ProviderProxySetSlot, { kind: 'acquiring' }>): void {
+    slot.cleanupRetryTimer = this.#deps.time.setTimeout(() => {
+      slot.cleanupRetryTimer = null;
+      this.#runAcquisitionCleanupRetry(slot);
+    }, REATTACHMENT_HOLD_RETRY_MS);
+    slot.cleanupRetryTimer.unref?.();
+  }
+
+  #durableAcquisitionRecordForHold(
+    hold: ProviderProxyAcquisitionHeld<string>,
+  ): DurableProviderProxySetAcquisitionDispositionRecord {
+    const record = [...this.#durableAcquisitionDispositions.values()].find(
+      (candidate) =>
+        providerProxySetAddressKey(candidate.setAddress) === providerProxySetAddressKey(hold.setAddress) &&
+        JSON.stringify(candidate.recoverySubject) === JSON.stringify(hold.recoverySubject),
+    );
+    if (record === undefined) throw new Error('provider_proxy_acquisition_durable_hold_subject_mismatch');
+    return record;
   }
 
   acquisitionPublicationUnknown(
@@ -1162,8 +1658,8 @@ export class ProviderProxySetLifecycle {
     }
     this.#slots.set(key, slot);
     this.#slots.delete(slotId);
-    this.#operatorDispositions.set(
-      key,
+    this.#setOperatorDispositions(
+      identity,
       new Map([
         [
           JSON.stringify(['acquisition-publication', null]),
@@ -1280,6 +1776,21 @@ export class ProviderProxySetLifecycle {
     });
   }
 
+  abandonDurableAcquisition(address: ProviderProxySetAddress): boolean {
+    this.#assertDurableOperatorDispositionAuthority();
+    const addressKey = providerProxySetAddressKey(address);
+    const records = [...this.#durableAcquisitionDispositions.values()].filter(
+      (record) => providerProxySetAddressKey(record.setAddress) === addressKey,
+    );
+    if (records.length === 0) return false;
+    this.#deps.operatorDispositionStore.replace(
+      [],
+      records.map((record) => record.key),
+    );
+    for (const record of records) this.#durableAcquisitionDispositions.delete(record.key);
+    return true;
+  }
+
   representationReleaseHolds(): readonly Readonly<{
     label: string;
     proxyInstanceId: string;
@@ -1335,7 +1846,7 @@ export class ProviderProxySetLifecycle {
       const window = slot.controlReattachmentWindow;
       if (window === null || this.#deps.claims.claimsFor(slot.identity).length !== 0) return;
       this.#clearControlReattachment(slot, window);
-      this.#operatorDispositions.delete(slot.key);
+      this.#clearLocalOperatorDispositions(slot.identity);
       this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, 'graceful_idle', 0));
       return;
     }
@@ -1344,7 +1855,7 @@ export class ProviderProxySetLifecycle {
       if (liveClaims !== 0) return;
       const retirementReason =
         slot.kind === 'draining' && slot.retirementDecision !== null ? slot.retirementDecision.reason : 'graceful_idle';
-      this.#operatorDispositions.delete(slot.key);
+      this.#clearLocalOperatorDispositions(slot.identity);
       this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, retirementReason, liveClaims));
       return;
     }
@@ -2344,6 +2855,7 @@ export class ProviderProxySetLifecycle {
     abandonmentEvidence: OperatorAbandonmentEvidence,
     mutationProof: ProviderProxySetFencedContainmentProof | null,
   ): Extract<ProviderProxySetSlot, { kind: 'abandonment-delivery-pending' }> {
+    this.#retireDurableSetDispositionsAfterOperatorAbandonment(slot.identity, abandonmentEvidence);
     const pending: Extract<ProviderProxySetSlot, { kind: 'abandonment-delivery-pending' }> = {
       ...this.#pendingReleaseFields(slot, mutationProof),
       kind: 'abandonment-delivery-pending',
@@ -2375,9 +2887,111 @@ export class ProviderProxySetLifecycle {
 
   snapshot(): ProviderProxySetLifecycleSnapshot {
     const slots = [...this.#slots.values()];
-    const operatorDispositions = [...this.#operatorDispositions.values()].flatMap((dispositions) => [
-      ...dispositions.values(),
-    ]);
+    const durableSets = new Map<
+      ProviderProxySetKey,
+      Readonly<{
+        identity: ProviderProxySetIdentity;
+        dispositions: Map<string, ProviderProxySetOperatorDisposition>;
+      }>
+    >();
+    for (const record of this.#durableOperatorDispositions.values()) {
+      const setKey = providerProxySetKey(record.setIdentity);
+      const current = durableSets.get(setKey) ?? { identity: record.setIdentity, dispositions: new Map() };
+      const durableObservation: NonNullable<ProviderProxySetOperatorDisposition['durableObservation']> =
+        record.status.kind === 'stale'
+          ? {
+              kind: 'stale',
+              writerIncarnation: record.writerIncarnation,
+              reobserveAction: 'automatic-exact-set-containment-observation',
+            }
+          : record.status.kind === 'current-writer'
+            ? { kind: 'current-writer', writerIncarnation: record.writerIncarnation }
+            : {
+                kind: 'successor-observed',
+                writerIncarnation: record.writerIncarnation,
+                observedByIncarnation: record.status.observedByIncarnation,
+              };
+      const disposition =
+        record.status.kind === 'successor-observed' && record.status.evidence.kind !== 'canonical-hold-observation'
+          ? {
+              disposition: 'held' as const,
+              incidentReason:
+                record.status.reapOutcome !== undefined
+                  ? `exact set containment re-observation ended ${record.status.reapOutcome.kind}`
+                  : record.status.evidence.kind === 'store-unreadable'
+                    ? 'exact set containment store is unreadable'
+                    : 'exact set containment enforcers were re-observed without decisive absence',
+              waitingFor:
+                record.status.evidence.kind === 'store-unreadable'
+                  ? ('store-repair' as const)
+                  : ('independent-containment-absence' as const),
+              ...(record.status.evidence.kind === 'enforcers-observed'
+                ? { enforcerObservations: record.status.evidence.observations }
+                : {}),
+              durableObservation,
+            }
+          : { ...record.disposition, durableObservation };
+      current.dispositions.set(record.subjectKey, disposition);
+      durableSets.set(setKey, current);
+    }
+    for (const [setKey, dispositions] of this.#operatorDispositions) {
+      const slot = this.#slots.get(setKey);
+      if (slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign') continue;
+      if (!durableSets.has(setKey)) {
+        durableSets.set(setKey, { identity: slot.identity, dispositions: new Map(dispositions) });
+      }
+    }
+    const operatorDispositions = [...durableSets.values()].flatMap(({ dispositions }) => [...dispositions.values()]);
+    const operatorSets: ProviderProxySetOperatorStatus[] = [...durableSets].map(([key, { identity, dispositions }]) => {
+      const slot = this.#slots.get(key);
+      const setIdentity = providerProxySetAddress(identity);
+      return {
+        setIdentity,
+        setToken: encodeProviderProxySetAddress(setIdentity),
+        liveClaims: this.#deps.claims.claimsFor(identity).length,
+        operatorExit:
+          slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign'
+            ? { kind: 'none' as const }
+            : this.#operatorExit(slot, dispositions),
+        holds: [...dispositions.values()],
+      };
+    });
+    for (const record of this.#durableAcquisitionDispositions.values()) {
+      const durableObservation: NonNullable<ProviderProxySetOperatorDisposition['durableObservation']> =
+        record.status.kind === 'stale'
+          ? {
+              kind: 'stale',
+              writerIncarnation: record.writerIncarnation,
+              reobserveAction: 'automatic-exact-acquisition-containment-observation',
+            }
+          : record.status.kind === 'successor-acquisition-observed'
+            ? {
+                kind: 'successor-observed',
+                writerIncarnation: record.writerIncarnation,
+                observedByIncarnation: record.status.observedByIncarnation,
+              }
+            : { kind: 'current-writer', writerIncarnation: record.writerIncarnation };
+      const disposition = { ...record.disposition, durableObservation };
+      operatorDispositions.push(disposition);
+      const addressKey = providerProxySetAddressKey(record.setAddress);
+      const representedIndex = operatorSets.findIndex(
+        ({ setIdentity }) => providerProxySetAddressKey(setIdentity) === addressKey,
+      );
+      if (representedIndex >= 0) {
+        const represented = operatorSets[representedIndex];
+        if (represented !== undefined) {
+          operatorSets[representedIndex] = { ...represented, holds: [...represented.holds, disposition] };
+        }
+        continue;
+      }
+      operatorSets.push({
+        setIdentity: record.setAddress,
+        setToken: encodeProviderProxySetAddress(record.setAddress),
+        liveClaims: 0,
+        operatorExit: { kind: 'abandon' },
+        holds: [disposition],
+      });
+    }
     return {
       startupDiscoveryCompleted: this.#startupDiscoveryCompleted,
       represented: slots.length,
@@ -2389,20 +3003,8 @@ export class ProviderProxySetLifecycle {
           : [],
       ),
       operatorDispositions,
-      operatorSets: [...this.#operatorDispositions].flatMap(([key, dispositions]) => {
-        const slot = this.#slots.get(key);
-        if (slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign') return [];
-        const setIdentity = providerProxySetAddress(slot.identity);
-        return [
-          {
-            setIdentity,
-            setToken: encodeProviderProxySetAddress(setIdentity),
-            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-            operatorExit: this.#operatorExit(slot, dispositions),
-            holds: [...dispositions.values()],
-          },
-        ];
-      }),
+      operatorSets,
+      skippedDurableOperatorDispositions: this.#skippedDurableOperatorDispositions,
     };
   }
 
@@ -2699,7 +3301,7 @@ export class ProviderProxySetLifecycle {
             this.#releaseAcquisitionPublicationSession(slot, error);
             return;
           }
-          this.#operatorDispositions.delete(slot.key);
+          this.#deleteOperatorDispositions(slot.identity);
           this.#establish(established.set, established.publicationReceipt, slot.routeKey, slot.capsulePath, 'serve');
           return;
         }
@@ -2748,8 +3350,8 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot) return;
     slot.completedAttempts += 1;
     const incident = singleLineErrorSummary(reason);
-    this.#operatorDispositions.set(
-      slot.key,
+    this.#setOperatorDispositions(
+      slot.identity,
       new Map([
         [
           JSON.stringify(['acquisition-publication', null]),
@@ -2810,8 +3412,8 @@ export class ProviderProxySetLifecycle {
       operatorExitGeneration: 0,
     };
     this.#slots.set(slot.key, recovering);
-    this.#operatorDispositions.set(
-      slot.key,
+    this.#setOperatorDispositions(
+      slot.identity,
       new Map([
         [
           JSON.stringify(['acquisition-publication', null]),
@@ -2852,7 +3454,7 @@ export class ProviderProxySetLifecycle {
             }
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
-            this.#operatorDispositions.delete(slot.key);
+            this.#deleteOperatorDispositions(slot.identity);
             this.#establish(
               outcome.set,
               outcome.publicationReceipt,
@@ -3166,7 +3768,7 @@ export class ProviderProxySetLifecycle {
                   return;
                 }
                 this.#clearControlReattachment(slot, window);
-                this.#operatorDispositions.delete(slot.key);
+                this.#deleteOperatorDispositions(slot.identity);
                 this.#containmentAbsent(slot.identity, outcome.disappearanceReceipt, proof);
               },
               (error: unknown) => {
@@ -3284,7 +3886,7 @@ export class ProviderProxySetLifecycle {
     slot.controlReattachmentBoundMs = promoted.autonomousDeadline.adoptionWindowMs;
     slot.operatorExitNotBeforeMonotonicMs = null;
     this.#flushPreserveReports(slot);
-    this.#operatorDispositions.delete(slot.key);
+    this.#deleteOperatorDispositions(slot.identity);
     if (slot.kind === 'available' && slot.routeKey !== null) this.#routeIndex.set(slot.routeKey, slot.key);
     this.#deps.controlEstablished(promoted);
     if (slot.kind === 'draining') this.claimsChanged(slot.identity);
@@ -3355,7 +3957,7 @@ export class ProviderProxySetLifecycle {
     }
     slot.attemptToken += 1;
     this.#clearControlReattachment(slot, window);
-    this.#operatorDispositions.delete(slot.key);
+    this.#clearLocalOperatorDispositions(slot.identity);
     this.#beginContainment(slot, {
       action: 'await-containment-absence',
       reason,
@@ -3388,7 +3990,7 @@ export class ProviderProxySetLifecycle {
   ): void {
     slot.attemptToken += 1;
     this.#clearControlReattachment(slot, window);
-    this.#operatorDispositions.delete(slot.key);
+    this.#clearLocalOperatorDispositions(slot.identity);
     slot.containmentAuthority = decisive.authority;
     this.#beginFaultContainment(slot, {
       action: 'stop-and-reap',
@@ -3495,7 +4097,7 @@ export class ProviderProxySetLifecycle {
                   return;
                 }
                 this.#clearControlReattachment(slot, window);
-                this.#operatorDispositions.delete(slot.key);
+                this.#deleteOperatorDispositions(slot.identity);
                 this.#containmentAbsent(slot.identity, outcome.disappearanceReceipt, proof);
               },
               (error: unknown) => {
@@ -3643,8 +4245,9 @@ export class ProviderProxySetLifecycle {
     outcome: 'not-sent' | 'outcome-unknown',
   ): void {
     const setKey = providerProxySetKey(decision.setIdentity);
-    const dispositions = this.#operatorDispositions.get(setKey);
-    if (dispositions === undefined) return;
+    const existing = this.#operatorDispositions.get(setKey);
+    if (existing === undefined) return;
+    const dispositions = new Map(existing);
     const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
     const method = 'method' in decision && typeof decision.method === 'string' ? decision.method : undefined;
     const subjectKey = JSON.stringify([role ?? null, method ?? null]);
@@ -3654,6 +4257,7 @@ export class ProviderProxySetLifecycle {
       ...current,
       waitingFor: outcome === 'not-sent' ? 'containment-authorization' : 'containment-outcome-unknown',
     });
+    this.#setOperatorDispositions(decision.setIdentity, dispositions);
   }
 
   #recordDecision(slot: EstablishedSlot, decision: ProviderProxySetDecision, errorIdentity?: string): void {
@@ -3677,21 +4281,17 @@ export class ProviderProxySetLifecycle {
     }
     const setKey = providerProxySetKey(decision.setIdentity);
     if (decision.action === 'drain') {
-      this.#operatorDispositions.delete(setKey);
+      this.#deleteOperatorDispositions(decision.setIdentity);
       return;
     }
     if (decision.reason === 'containment_refused_live_claims') {
-      this.#recordNonAuthorizingDisposition(setKey, decision);
+      this.#recordNonAuthorizingDisposition(decision);
       return;
     }
     const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
     const method = 'method' in decision && typeof decision.method === 'string' ? decision.method : undefined;
     const subjectKey = JSON.stringify([role ?? null, method ?? null]);
-    let dispositions = this.#operatorDispositions.get(setKey);
-    if (dispositions === undefined) {
-      dispositions = new Map();
-      this.#operatorDispositions.set(setKey, dispositions);
-    }
+    const dispositions = new Map(this.#operatorDispositions.get(setKey) ?? []);
     const incidentReason =
       'incidentReason' in decision && typeof decision.incidentReason === 'string'
         ? decision.incidentReason
@@ -3719,6 +4319,7 @@ export class ProviderProxySetLifecycle {
         disposition: 'held',
         waitingFor: decision.fault === 'control-channel-fault' ? 'control-reattachment' : 'heartbeat-evidence-window',
       });
+      this.#setOperatorDispositions(decision.setIdentity, dispositions);
       return;
     }
     dispositions.set(subjectKey, {
@@ -3726,25 +4327,19 @@ export class ProviderProxySetLifecycle {
       disposition: 'awaiting-containment-absence',
       waitingFor: 'independent-containment-absence',
     });
+    this.#setOperatorDispositions(decision.setIdentity, dispositions);
   }
 
   /**
    * Branches on `refusedDecision.reason` rather than a wrapper-level field: the five sources keep their own
    * shape, so `role`/`method`/`cause` are read from the nested decision instead of the (absent) wrapper ones.
    */
-  #recordNonAuthorizingDisposition(
-    setKey: ProviderProxySetKey,
-    decision: ProviderProxySetContainmentRefusedDecision,
-  ): void {
+  #recordNonAuthorizingDisposition(decision: ProviderProxySetContainmentRefusedDecision): void {
     const refused = decision.refusedDecision;
     const role = 'role' in refused ? refused.role : undefined;
     const method = 'method' in refused ? refused.method : 'policy' in refused ? refused.policy.method : undefined;
     const subjectKey = JSON.stringify([role ?? null, method ?? null]);
-    let dispositions = this.#operatorDispositions.get(setKey);
-    if (dispositions === undefined) {
-      dispositions = new Map();
-      this.#operatorDispositions.set(setKey, dispositions);
-    }
+    const dispositions = new Map(this.#operatorDispositions.get(providerProxySetKey(decision.setIdentity)) ?? []);
     const incidentReason =
       'incidentReason' in refused
         ? refused.incidentReason
@@ -3773,6 +4368,7 @@ export class ProviderProxySetLifecycle {
       incidentReason,
       waitingFor,
     });
+    this.#setOperatorDispositions(decision.setIdentity, dispositions);
   }
 
   #recordOperatorExitRefusal(
@@ -3780,19 +4376,26 @@ export class ProviderProxySetLifecycle {
     incidentReason: string,
     waitingFor: ProviderProxySetOperatorDisposition['waitingFor'],
     enforcerObservations?: ProviderProxySetEnforcerObservations,
-  ): void {
+  ): ProviderProxySetOperatorDispositionRecording {
     const setKey = providerProxySetKey(slot.identity);
-    let dispositions = this.#operatorDispositions.get(setKey);
-    if (dispositions === undefined) {
-      dispositions = new Map();
-      this.#operatorDispositions.set(setKey, dispositions);
-    }
+    const dispositions = new Map(this.#operatorDispositions.get(setKey) ?? []);
     dispositions.set(JSON.stringify(['operator-exit', null]), {
       disposition: 'operator-exit-refused',
       ...(enforcerObservations === undefined ? {} : { enforcerObservations }),
       incidentReason,
       waitingFor,
     });
+    try {
+      this.#setOperatorDispositions(slot.identity, dispositions);
+      return { kind: 'recorded' };
+    } catch (error) {
+      this.#operatorDispositions.set(setKey, dispositions);
+      return {
+        kind: 'held',
+        reason: singleLineErrorSummary(error),
+        exit: 'provider-proxy-set-operator-abandonment',
+      };
+    }
   }
 
   #recordPreserveDecision(
@@ -3928,7 +4531,7 @@ export class ProviderProxySetLifecycle {
       const transition = applyAnswer(current, observation, timing);
       slot.heartbeatEvidenceWindows.set(key, transition.window);
       if (transition.effect === 'accepted' || transition.effect === 'challenge-mismatch') {
-        this.#recordHeartbeatAccepted(slot, incident.role, incident.method);
+        this.#recordHeartbeatAccepted(slot, incident);
         return;
       }
       if (transition.effect === 'method-not-found') {
@@ -4049,21 +4652,20 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  #recordHeartbeatAccepted(
-    slot: EstablishedSlot,
-    role: ProviderProxyHeartbeatObservation['role'],
-    method: ProviderProxyHeartbeatObservation['method'],
-  ): void {
+  #recordHeartbeatAccepted(slot: EstablishedSlot, incident: ProviderProxyHeartbeatObservation): void {
+    const { role, method } = incident;
     const setKey = providerProxySetKey(slot.identity);
-    const dispositions = this.#operatorDispositions.get(setKey);
+    const existingDispositions = this.#operatorDispositions.get(setKey);
+    const dispositions = existingDispositions === undefined ? undefined : new Map(existingDispositions);
     const subjectKey = JSON.stringify([role, method]);
     const operatorDisposition = dispositions?.get(subjectKey);
     let recoveredLiveClaimsHold = false;
     if (operatorDisposition?.disposition === 'held') {
       dispositions?.delete(subjectKey);
       recoveredLiveClaimsHold = true;
-      if (dispositions?.size === 0) this.#operatorDispositions.delete(setKey);
+      this.#setOperatorDispositions(slot.identity, dispositions ?? new Map());
     }
+    this.#retireMatchingDurableDispositionAfterAcceptedHeartbeat(slot.identity, incident);
     if (recoveredLiveClaimsHold && !this.#hasLiveClaimsHold(slot)) {
       slot.operatorExitNotBeforeMonotonicMs = null;
       slot.operatorExitGeneration += 1;
@@ -4081,6 +4683,24 @@ export class ProviderProxySetLifecycle {
       slot.preserveReports.delete(key);
       this.#reportDecision(report.decision, `summary=recovered suppressed=${report.suppressed}`);
     }
+  }
+
+  #retireMatchingDurableDispositionAfterAcceptedHeartbeat(
+    identity: ProviderProxySetIdentity,
+    incident: ProviderProxyHeartbeatObservation,
+  ): void {
+    if (incident.observation.kind !== 'reply') {
+      throw new Error('provider_proxy_set_durable_heartbeat_retirement_evidence_invalid');
+    }
+    const subjectKey = JSON.stringify([incident.role, incident.method]);
+    const setKey = providerProxySetKey(identity);
+    const retiredKeys = [...this.#durableOperatorDispositions.values()]
+      .filter((record) => providerProxySetKey(record.setIdentity) === setKey && record.subjectKey === subjectKey)
+      .map((record) => record.key);
+    if (retiredKeys.length === 0) return;
+    this.#assertDurableOperatorDispositionAuthority();
+    this.#deps.operatorDispositionStore.replace([], retiredKeys);
+    for (const key of retiredKeys) this.#durableOperatorDispositions.delete(key);
   }
 
   #dispositionProtocolIncompatibleCapsule(
@@ -4597,17 +5217,18 @@ export class ProviderProxySetLifecycle {
     slot: ReleaseDeliveryPendingSlot,
     operation: OperationIdentity,
     error: ProviderProxySetLifecycleFatalError,
-  ): void {
+  ): ProviderProxyRepresentationReleaseFatalSettlement {
     const key = operationKey(operation);
     slot.initialDeliveries.set(key, { kind: 'fatal', error });
     const disposition = this.#settleFatalRepresentationRelease(slot, error);
     this.#rejectInitialDisposition(slot, disposition);
+    return disposition;
   }
 
   #settleFatalRepresentationRelease(
     slot: ReleaseDeliveryPendingSlot,
     error: ProviderProxySetLifecycleFatalError,
-  ): Extract<ProviderProxyRepresentationReleaseSettlement, { kind: 'fatal-successor-pending' }> {
+  ): ProviderProxyRepresentationReleaseFatalSettlement {
     if (slot.fatalSettlement !== null) return slot.fatalSettlement;
     const successor: ProviderProxyRepresentationReleaseSuccessor = {
       owner: 'operator-command',
@@ -4615,12 +5236,27 @@ export class ProviderProxySetLifecycle {
       inspectCommand: 'coral-cli backend status',
       actionCommand: `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(slot.address)}`,
     };
-    const disposition = { kind: 'fatal-successor-pending' as const, error, successor };
-    slot.fatalSettlement = disposition;
     slot.retirementState = 'fatal';
     slot.operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow();
     this.#clearRepresentationReleaseTimers(slot);
-    this.#recordOperatorExitRefusal(slot, 'operator_exit_representation_release_fatal', 'operator-abandonment');
+    const recording = this.#recordOperatorExitRefusal(
+      slot,
+      'operator_exit_representation_release_fatal',
+      'operator-abandonment',
+    );
+    const disposition: ProviderProxyRepresentationReleaseFatalSettlement = {
+      kind: 'fatal-successor-pending',
+      error,
+      successor,
+      operatorDispositionRecording: recording,
+    };
+    slot.fatalSettlement = disposition;
+    if (recording.kind === 'held') {
+      this.#report(
+        'warn',
+        `Provider proxy set operator-exit refusal remains in memory because durable reporting failed set=${providerProxySetReference(slot.identity)} error=${recording.reason}`,
+      );
+    }
     slot.settleRepresentationRelease(disposition);
     return disposition;
   }
@@ -4634,7 +5270,7 @@ export class ProviderProxySetLifecycle {
 
   #rejectInitialDisposition(
     slot: ReleaseDeliveryPendingSlot,
-    disposition: Extract<ProviderProxyRepresentationReleaseSettlement, { kind: 'fatal-successor-pending' }>,
+    disposition: ProviderProxyRepresentationReleaseFatalSettlement,
   ): void {
     if (slot.initialDisposition.state !== 'pending') return;
     slot.initialDisposition.reject(disposition);
@@ -4758,7 +5394,7 @@ export class ProviderProxySetLifecycle {
 
   #removeRepresentationSlot(slot: ReleaseDeliveryPendingSlot): void {
     this.#slots.delete(slot.key);
-    this.#operatorDispositions.delete(slot.key);
+    this.#deleteOperatorDispositions(slot.identity);
     this.#identityIndex.delete(slot.identity);
     for (const [address, path] of this.#capsuleAddresses) {
       if (path === slot.capsulePath) this.#capsuleAddresses.delete(address);

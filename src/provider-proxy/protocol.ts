@@ -1,9 +1,10 @@
-import { processIncarnationSchema, type ProcessIncarnation } from '../infra/node-process.js';
 import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
+import { processIncarnationSchema, type ProcessIncarnation } from '../infra/node-process.js';
+import type { RecordedContainmentIdentity, RecordedProcessIdentity } from '../infra/process-containment.js';
 import { jsonValueSchema } from '../infra/json-value.js';
 import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import {
@@ -28,6 +29,18 @@ import {
 } from './ledger.js';
 
 export const GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE = 74;
+
+export function providerProxyDisappearanceReceipt(
+  containment: RecordedContainmentIdentity,
+  roots: readonly RecordedProcessIdentity[],
+): string {
+  const targets = [
+    `group:${containment.processGroupId}`,
+    `leader:${containment.pid}@${containment.incarnation}`,
+    ...roots.map((root) => `root:${root.pid}@${root.incarnation}`),
+  ];
+  return targets.join(',');
+}
 
 /**
  * Every control method carries a `.vN` suffix, and every one of them is `.v1`.

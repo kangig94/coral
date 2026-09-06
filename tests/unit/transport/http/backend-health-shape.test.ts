@@ -212,6 +212,21 @@ describe('/health typed shape (AC10a)', () => {
     });
   });
 
+  it('preserves keyed durable disposition skips and their unavailable action', () => {
+    const skip = {
+      key: `provider-proxy-set-operator-disposition.v2:${PROVIDER_PROXY_SET.setToken}:future`,
+      setToken: PROVIDER_PROXY_SET.setToken,
+      unavailableAction: 'reconciliation-and-retirement' as const,
+    };
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxyDispositionSkips: [skip] },
+      })?.health.diagnostics?.providerProxyDispositionSkips,
+    ).toEqual([skip]);
+  });
+
   it.each([
     { coverage: 'partial', liveJobs: 1, unknownJobs: 0, recoveryDefectJobs: 0 },
     { coverage: 'complete', liveJobs: -1, unknownJobs: 0, recoveryDefectJobs: 0 },
