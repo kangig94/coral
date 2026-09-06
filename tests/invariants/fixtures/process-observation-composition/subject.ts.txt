@@ -1,0 +1,13 @@
+export type Observation =
+  | Readonly<{ kind: 'present' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unobservable'; reason: string }>;
+
+export interface ProcessPort {
+  observe(): Observation;
+}
+
+export function translate(observation: Observation): Observation {
+  return observation;
+}
+

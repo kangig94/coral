@@ -7,7 +7,14 @@ import { describe, expect, it } from 'vitest';
 import { codeTextOnly } from '../helpers/ts-code-text.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
-const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs', 'src/store', 'src/coordinator'] as const;
+const SCOPED_ROOTS = [
+  'src/kb',
+  'src/providers',
+  'src/jobs',
+  'src/store',
+  'src/coordinator',
+  'src/provider-proxy',
+] as const;
 const TIMER_SCOPED_ROOTS = [
   'src/kb',
   'src/jobs',
