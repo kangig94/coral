@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle } from '#src/infra/port-types.js';
+import { ProcessContainmentError } from '#src/infra/process-containment.js';
 import {
   createRecordedProcessObserver,
   observeProcessLiveness,
@@ -3288,6 +3289,39 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 
+  it('returns a retryable hold with every delivered signal when reaping cannot confirm absence', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+      async (_identity, _proof, _signal, onSignal) => {
+        onSignal('SIGTERM');
+        onSignal('SIGKILL');
+        throw new ProcessContainmentError(
+          'process_containment_reap_failed',
+          'Recorded containment remained present at the exit deadline.',
+        );
+      },
+    );
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('must-not-be-minted'));
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).resolves.toEqual({
+      kind: 'containment-unconfirmed',
+      setIdentity,
+      recoveryAction: { kind: 'retry-exact-set-containment' },
+      effect: {
+        signalsSent: ['SIGTERM', 'SIGKILL'],
+        containmentAbsent: false,
+        representationAction: 'none',
+      },
+    });
+
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(harness.lifecycle.snapshot().represented).toBe(1);
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+    expect(harness.lifecycle.authorizeOperatorExit(setIdentity).kind).toBe('authorized');
+  });
+
   it('rejects a root published after reaping instead of minting a disappearance receipt', async () => {
     const record = providerOperationRecord('executing');
     const lateRecord = providerOperationRecord('executing', {
@@ -3585,6 +3619,44 @@ describe('ProviderProxySetLifecycle', () => {
       }),
     );
     expect(reapRecordedContainment).toHaveBeenCalledTimes(1);
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+  });
+
+  it('retains an attributable set and delivered effects when signal authorization is refused', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+      async (_identity, _proof, _signal, onSignal) => {
+        onSignal('SIGTERM');
+        return { kind: 'signal-authorization-refused' };
+      },
+    );
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('must-not-be-minted'));
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).resolves.toEqual({
+      kind: 'signal-authorization-refused',
+      setIdentity,
+      effect: { ...noOperatorExitEffect, signalsSent: ['SIGTERM'] },
+    });
+
+    expect(harness.lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        represented: 1,
+        operatorSets: expect.arrayContaining([
+          expect.objectContaining({
+            setIdentity,
+            operatorExit: { kind: 'refused', ground: 'signal-authorization-refused' },
+          }),
+        ]),
+        operatorDispositions: expect.arrayContaining([
+          expect.objectContaining({
+            incidentReason: 'operator_exit_signal_authorization_refused',
+            waitingFor: 'operator-abandonment',
+          }),
+        ]),
+      }),
+    );
     expect(harness.stopAndReap).not.toHaveBeenCalled();
   });
 

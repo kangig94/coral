@@ -13,8 +13,22 @@ export type AbortRefusal = Readonly<{
   nextStep: string;
 }>;
 
+export type AbortHold = Readonly<{
+  jobId: string;
+  reason: string;
+  nextStep: string;
+}>;
+
+export type AbortAbandonment = Readonly<{
+  jobId: string;
+  reason: string;
+  nextStep: string;
+}>;
+
 export type AbortResult = {
   aborted: string[];
   notFound: string[];
   refused?: AbortRefusal[];
+  held?: AbortHold[];
+  abandoned?: AbortAbandonment[];
 };

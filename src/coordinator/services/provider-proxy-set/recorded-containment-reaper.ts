@@ -18,10 +18,10 @@ const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
 /** Signals the exact recorded containment with one stage of the bounded escalation. */
 export type ProviderProxySetContainmentSignal = 'SIGTERM' | 'SIGKILL';
 
-/** The only terminal observations produced by exact recorded-containment reaping. */
 export type ProviderProxySetRecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
+  | Readonly<{ kind: 'signal-authorization-refused' }>
   | Readonly<{ kind: 'authorization-missing' }>
   | Readonly<{ kind: 'authorization-stale' }>
   | Readonly<{ kind: 'store-unreadable' }>;

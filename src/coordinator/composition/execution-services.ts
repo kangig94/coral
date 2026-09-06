@@ -208,6 +208,12 @@ export function createExecutionServices({
           reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
           nextAttemptAtMs: runtime.time.now() + 25,
         };
+      case 'signal-authorization-refused':
+        return {
+          kind: 'retry-scheduled',
+          reason: 'Signal authorization could not be established for every recorded-containment target.',
+          nextAttemptAtMs: runtime.time.now() + 25,
+        };
       case 'not-bequeathed':
         return {
           kind: 'retry-scheduled',
@@ -250,6 +256,11 @@ export function createExecutionServices({
           return {
             kind: 'temporarily-unavailable',
             reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
+          };
+        case 'signal-authorization-refused':
+          return {
+            kind: 'temporarily-unavailable',
+            reason: 'Signal authorization could not be established for every recorded-containment target.',
           };
         case 'containment-disappeared':
           providerProxyLifecycle.containmentAbsent(

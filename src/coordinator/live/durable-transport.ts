@@ -176,8 +176,10 @@ async function resolveDurableProcessContainment(
               }),
         },
       );
-      if (reapOutcome.kind !== 'containment-absent') {
+      if (reapOutcome.kind === 'recorded-group-unattributable') {
         outcome = { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
+      } else if (reapOutcome.kind === 'signal-authorization-refused') {
+        outcome = { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
       } else if (containment.childRoot === null || recordedRoots.length > 0) {
         outcome = { kind: 'absence-observed' };
       } else {

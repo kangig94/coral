@@ -177,7 +177,20 @@ export async function finalizeInterruptedAppServerRecovery(
   let content: string;
   let mutation: ProviderValidatedSessionContinuityMutation;
   let appendTerminal: TerminalAppender;
-  if (performed.kind === 'unsupported') {
+  if (performed.kind === 'user-aborted') {
+    if (plan.reason !== 'user_abort') {
+      throw new Error(
+        `Recovered app-server user-abort evidence does not match finalization reason for ${status.jobId}.`,
+      );
+    }
+    content = '';
+    mutation = { kind: 'preserve' };
+    appendTerminal = directTerminalAppender(status, {
+      content,
+      durationMs,
+      outcome: { kind: 'aborted', reason: 'user_abort' },
+    });
+  } else if (performed.kind === 'unsupported') {
     content = '';
     mutation = { kind: 'preserve' };
     const fault = {
@@ -190,6 +203,11 @@ export async function finalizeInterruptedAppServerRecovery(
       appendJobRecoveryFaultTerminalInCommit(commit, fault, terminalOptions, { content, durationMs });
     };
   } else {
+    if (plan.reason === 'user_abort') {
+      throw new Error(
+        `Recovered app-server user-abort finalization lacks provider acknowledgment for ${status.jobId}.`,
+      );
+    }
     mutation = performed.mutation;
     const fault: SessionInterruptedFault = {
       trigger: plan.reason,

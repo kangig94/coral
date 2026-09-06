@@ -118,6 +118,18 @@ const refusedAbortResult = {
   ],
 } satisfies AbortResult;
 
+const abandonedAbortResult = {
+  aborted: [],
+  notFound: [],
+  abandoned: [
+    {
+      jobId: 'job-6',
+      reason: 'recovery ownership was released without proof of recorded containment absence',
+      nextStep: 'Inspect the recorded process because it may still be live.',
+    },
+  ],
+} satisfies AbortResult;
+
 const personaSeedResult = {
   seed_used: 7,
   sigma_used: 1.2,
@@ -305,6 +317,37 @@ describe('cli format', () => {
           'Abort held for job-4: the recorded durable process containment is unavailable\n' +
           'Next step: Run coral-cli jobs detail job-4; Coral retains ownership until the recorded containment is observed absent.',
       );
+    });
+
+    it('formats an asynchronous abort hold with its exit', () => {
+      expect(
+        formatAbortResult({
+          aborted: [],
+          notFound: [],
+          held: [
+            {
+              jobId: 'job-5',
+              reason: 'provider interruption acknowledgment is pending',
+              nextStep: 'Wait for provider acknowledgment, then inspect the job.',
+            },
+          ],
+        }),
+      ).toBe(
+        'No jobs aborted\n' +
+          'Abort held for job-5: provider interruption acknowledgment is pending\n' +
+          'Next step: Wait for provider acknowledgment, then inspect the job.',
+      );
+    });
+
+    it('reports explicit abandonment without claiming the job was aborted', () => {
+      const formatted = formatAbortResult(abandonedAbortResult);
+
+      expect(formatted).toBe(
+        'No jobs aborted\n' +
+          'Recovery ownership abandoned for job-6: recovery ownership was released without proof of recorded containment absence\n' +
+          'Next step: Inspect the recorded process because it may still be live.',
+      );
+      expect(formatted).not.toContain('Aborted jobs');
     });
   });
 

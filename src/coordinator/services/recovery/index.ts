@@ -5,7 +5,6 @@ import { StoreDecodeError } from '../../../store/body-codec.js';
 import {
   observeRecordedContainment,
   ProcessContainmentError,
-  type RecordedContainmentAbortResult,
   type RecordedContainmentObservation,
 } from '../../../infra/process-containment.js';
 import { backendLog } from '../../../infra/backend-log.js';
@@ -23,7 +22,7 @@ import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
-import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
+import { RecoveryRegistry, type RecoveryAbortDisposition } from '../../../jobs/reconcile/registry.js';
 import type { TimerHandle } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
@@ -168,7 +167,7 @@ type RecoveryAdoptionContext = {
   signal: AbortSignal;
   coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason: InterruptedAppServerReason;
-  abandonHeldJob(jobId: string): RecordedContainmentAbortResult;
+  abandonHeldJob(jobId: string): RecoveryAbortDisposition;
 };
 
 type CoordinatorRecoveryControls = {
@@ -601,7 +600,6 @@ export function createRecoveryCoordinator(
     clearRecoveryPoller(jobId);
     state.adoptedRunningPids.delete(jobId);
     state.recoveryRegistry?.remove(jobId);
-    state.recoveryRegistry?.clearCancelled(jobId);
     takeAdoptedJobCleanup(jobId)?.();
     maybeReleaseRecoveryRegistry();
   };
@@ -705,9 +703,11 @@ export function createRecoveryCoordinator(
     }
     state.adoptedRunningJobCleanups.clear();
     state.adoptedRunningPids.clear();
-    // If a queued job ACKed aborted but was not finalized before teardown clears
-    // this set, next boot re-recovers it. That narrow fallback is safe: it
-    // reverts to the pre-abort queued recovery behavior.
+    if (state.recoveryRegistry !== null) {
+      for (const [jobId] of [...state.recoveryRegistry]) {
+        state.recoveryRegistry.remove(jobId);
+      }
+    }
     state.cancelledRecoveryJobIds.clear();
     state.providerOperationRecoveries.clear();
     resetRecoveryState({ forceRegistryRelease: true });
@@ -731,7 +731,7 @@ export function createRecoveryCoordinator(
   };
 
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
-  let abandonHeldRecoveryJob = (_jobId: string): RecordedContainmentAbortResult => ({
+  let abandonHeldRecoveryJob = (_jobId: string): RecoveryAbortDisposition => ({
     kind: 'refused',
     reason: 'durable containment abandonment is unavailable before recovery initialization',
   });
@@ -1023,18 +1023,49 @@ export function createRecoveryCoordinator(
         item: CoordinatorRecoveryItem,
         controls: CoordinatorRecoveryControls,
       ): Promise<RecoveryDisposition> => {
-        controls.setProcessLocalCleanup(() => state.recoveryRegistry?.remove(jobId));
+        controls.setProcessLocalCleanup(() => {
+          state.recoveryRegistry?.remove(jobId);
+          state.recoveryRegistry?.clearCancelled(jobId);
+        });
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
+        const pendingAbort = state.recoveryRegistry?.getAbortDisposition(jobId)?.settlement;
+        if (pendingAbort !== undefined) {
+          await pendingAbort.catch(() => undefined);
+          signal.throwIfAborted();
+        }
         if (isAppServerRuntime(runtimeRecord)) {
+          const abortDisposition = state.recoveryRegistry?.getAbortDisposition(jobId);
+          const userCancelled = abortDisposition?.kind === 'finalization-pending';
+          if (abortDisposition !== undefined && !userCancelled) {
+            controls.clearProcessLocalCleanup();
+            const detail = `${abortDisposition.reason}. ${abortDisposition.nextStep}`;
+            controls.report(`Held recovered app-server abort for ${jobId}: ${abortDisposition.reason}\n`);
+            return { kind: 'quarantine', detail };
+          }
+          if (!userCancelled) {
+            state.recoveryRegistry?.setAbortHandler(jobId, () => ({
+              kind: 'refused',
+              reason: 'startup recovery already owns app-server finalization',
+              nextStep:
+                `Wait for startup recovery to finish, then run coral-cli jobs detail ${jobId} before retrying ` +
+                'an abort.',
+            }));
+          }
           signal.throwIfAborted();
           try {
             await startTrackedFinalization(jobId, signal, (fence) =>
               service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
-                reason: interruptedAppServerReason,
+                reason: userCancelled ? 'user_abort' : interruptedAppServerReason,
                 ...fence,
               }),
             );
           } catch (error: unknown) {
+            if (userCancelled) {
+              controls.clearProcessLocalCleanup();
+              const detail = `User-abort terminal finalization failed after provider acknowledgment: ${errorMessage(error)}`;
+              controls.report(`Held acknowledged recovered app-server abort for ${jobId}: ${errorMessage(error)}\n`);
+              return { kind: 'quarantine', detail };
+            }
             // Carrier-detached recovery could not confirm its committed provider proxy set is gone within
             // budget. That is honestly fatal for this job alone: finalizing anyway risks a second local
             // kernel racing a carrier that may still be live, so this job is quarantined nonterminal rather
@@ -1049,7 +1080,11 @@ export function createRecoveryCoordinator(
             throw error;
           }
           signal.throwIfAborted();
-          controls.report(`Recovered interrupted app-server job: ${jobId}\n`);
+          controls.report(
+            userCancelled
+              ? `Finalized user-aborted recovered app-server job: ${jobId}\n`
+              : `Recovered interrupted app-server job: ${jobId}\n`,
+          );
           return {
             kind: 'advanced',
             outcome: 'settled',
@@ -1063,7 +1098,7 @@ export function createRecoveryCoordinator(
                   : {}),
               },
             ],
-            detail: 'interrupted app-server job finalized',
+            detail: userCancelled ? 'user-aborted app-server job finalized' : 'interrupted app-server job finalized',
           };
         }
         if (!isDurableCliRuntime(runtimeRecord)) {
@@ -1382,6 +1417,7 @@ export function createRecoveryCoordinator(
           }
           state.unansweredAdoptionProbes.delete(jobId);
           if (observation.kind === 'alive') return;
+          if (state.recoveryRegistry?.getAbortDisposition(jobId)?.settlement !== undefined) return;
 
           clearRecoveryPoller(jobId);
           state.adoptedRunningPids.delete(jobId);
@@ -1774,7 +1810,7 @@ export function createRecoveryCoordinator(
       };
     };
 
-    abandonHeldRecoveryJob = (jobId): RecordedContainmentAbortResult => {
+    abandonHeldRecoveryJob = (jobId): RecoveryAbortDisposition => {
       const statusRead = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
       const runtimeRecord = progressStore.readRuntimeProjection(jobId);
       if (
@@ -1830,18 +1866,28 @@ export function createRecoveryCoordinator(
           backendLog.warn(`Failed to append durable containment abandonment for ${jobId}: ${errorMessage(error)}`);
         }
       }
-      recoveryRegistry.markCancelled(jobId);
-      const finalization = runCoordinatorWalk({
-        subjectKey: jobId,
-        signal,
-        coordinatorCommit: ctx.coordinatorCommit,
-        summary: `Operator-abandoned durable recovery finalization for ${jobId}`,
-        settle: (item, controls) => retryCoordinatorItem(item, controls, signal),
-      });
-      void finalization.catch((error: unknown) => {
-        backendLog.warn(`Operator-abandoned durable recovery finalization failed for ${jobId}: ${errorMessage(error)}`);
-      });
-      return { kind: 'accepted' };
+      if (jobStatus !== null && !isTerminalPhase(jobStatus.phase)) {
+        recoveryRegistry.markCancelled(jobId);
+        const finalization = runCoordinatorWalk({
+          subjectKey: jobId,
+          signal,
+          coordinatorCommit: ctx.coordinatorCommit,
+          summary: `Operator-abandoned durable recovery finalization for ${jobId}`,
+          settle: (item, controls) => retryCoordinatorItem(item, controls, signal),
+        });
+        void finalization.catch((error: unknown) => {
+          backendLog.warn(
+            `Operator-abandoned durable recovery finalization failed for ${jobId}: ${errorMessage(error)}`,
+          );
+        });
+      }
+      return {
+        kind: 'abandoned',
+        reason: 'recovery ownership was released without proof of recorded containment absence',
+        nextStep:
+          `Run coral-cli jobs detail ${jobId}; the recorded containment may still be live and is no longer ` +
+          'owned by recovery.',
+      };
     };
 
     for (const statusRead of listDurableCliContainmentStatuses(progressStore.getDb())) {

@@ -50,6 +50,8 @@ function providerProxySetOperatorRefusalGuidance(ground: ProviderProxySetOperato
       return `restore process observation and run ${contain}; after external verification, the explicit alternative is ${abandon}`;
     case 'recorded-group-unattributable':
       return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence or signalling the group`;
+    case 'signal-authorization-refused':
+      return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence`;
     case 'store-unreadable':
       return 'run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable';
     case 'representation-release-fatal':
@@ -205,6 +207,14 @@ export function formatProviderProxySetContainResult(
         `Effect: ${effect}.`,
         `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
       ].join('\n');
+    case 'signal-authorization-refused':
+      return [
+        `No containment verdict for ${token}: signal authorization was refused for an observed-live recorded target.`,
+        'Observed: the containment was attributable and at least one recorded target was present before signal authorization.',
+        'Not observed: absence of every recorded target or authority to signal every target still present at delivery.',
+        `Effect: ${effect}.`,
+        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+      ].join('\n');
     case 'store-unreadable':
       return [
         `Refusing forced containment for ${token}: an unreadable durable provider-operation row may hide a provider root.`,
@@ -212,6 +222,14 @@ export function formatProviderProxySetContainResult(
         'Not observed: enforcer state and the complete recorded target set were not established.',
         `Effect: ${effect}. The abandon command cannot override this store fence.`,
         `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+      ].join('\n');
+    case 'containment-unconfirmed':
+      return [
+        `No containment verdict for ${token}: recorded-containment reaping did not confirm absence.`,
+        'Observed: the recorded-containment attempt ended without absence proof.',
+        'Not observed: absence of the recorded proxy process group and every recorded provider root.',
+        `Effect: ${effect}.`,
+        `Next step: run ${retry}.`,
       ].join('\n');
     default:
       return assertNever(result);

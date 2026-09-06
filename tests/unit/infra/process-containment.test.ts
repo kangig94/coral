@@ -225,7 +225,7 @@ describe('recorded process containment', () => {
 
     await expect(
       reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), fake.environment),
-    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+    ).resolves.toEqual({ kind: 'signal-authorization-refused' });
     expect(fake.signals).toEqual([]);
   });
 
@@ -249,7 +249,7 @@ describe('recorded process containment', () => {
 
     await expect(
       reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 6_500), fake.environment),
-    ).resolves.toEqual({ kind: 'recorded-group-unattributable' });
+    ).resolves.toEqual({ kind: 'signal-authorization-refused' });
     expect(fake.signals).toEqual([{ pid: -containment.processGroupId, signal: 'SIGTERM', at: 0 }]);
   });
 
@@ -261,6 +261,18 @@ describe('recorded process containment', () => {
         knownLivePids: new Set([containment.pid]),
         exitedPids: new Set([containment.pid]),
       },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 6_500), fake.environment),
+    ).resolves.toEqual({ kind: 'signal-authorization-refused' });
+    expect(fake.signals).toEqual([]);
+  });
+
+  it('reserves an unattributable result for a mismatched recorded leader identity', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+      { leaderIncarnation: testIncarnation('replacement-leader') },
     );
 
     await expect(

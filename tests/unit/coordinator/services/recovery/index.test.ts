@@ -15,7 +15,11 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
-import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
+import type {
+  ProviderRecoveryAuthority,
+  ProviderRecoveryAuthorityCapture,
+  RecoveryCapableService,
+} from '#src/jobs/reconcile/contracts.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
@@ -186,7 +190,7 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
     finalizeInterruptedDurableJob: vi.fn(async () => {}),
     adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
     recoverQueuedJob: vi.fn(async () => 'recovered-job'),
-    interruptAppServerJob: vi.fn(async () => {}),
+    interruptAppServerJob: vi.fn(async () => ({ kind: 'acknowledged' as const })),
     completeRecoveredJob: vi.fn(),
     ...overrides,
   } as RecoveryCapableService;
@@ -767,6 +771,231 @@ describe('runStartupRecovery provider-operation ownership', () => {
   );
 });
 
+describe('runStartupRecovery app-server aborts', () => {
+  it('finalizes an acknowledged abort during authority capture as a user abort', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const proxyInstanceId = randomUUID();
+    seedRunningAppServerJob(progressStore, { jobId, sessionId, provider: 'codex', proxyInstanceId });
+
+    const captureStarted = deferred();
+    let capturedLaunch!: JobLaunch;
+    let resolveAuthority!: (capture: ProviderRecoveryAuthorityCapture) => void;
+    const authorityCapture = new Promise<ProviderRecoveryAuthorityCapture>((resolve) => {
+      resolveAuthority = resolve;
+    });
+    const interruptAppServerJob = vi.fn(async () => ({ kind: 'acknowledged' as const }));
+    const finalizationStarted = deferred();
+    const releaseFinalization = deferred();
+    const finalizeInterruptedAppServerJob = vi.fn(async () => {
+      finalizationStarted.resolve();
+      await releaseFinalization.promise;
+    });
+    const fakeService = createFakeService({
+      captureProviderRecoveryAuthority: vi.fn((launchRecord) => {
+        capturedLaunch = launchRecord;
+        captureStarted.resolve();
+        return authorityCapture;
+      }),
+      interruptAppServerJob,
+      finalizeInterruptedAppServerJob,
+    });
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'app-server-abort-recovery-test',
+    );
+
+    const startup = runStartupRecovery();
+    await captureStarted.promise;
+    const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
+    expect(recoveryRegistry?.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      held: [
+        {
+          jobId,
+          reason: 'waiting for recovery authority and provider acknowledgment of app-server interruption',
+          nextStep:
+            `Run coral-cli jobs detail ${jobId}; if interruption is refused, repair the reported condition, ` +
+            'then use coral-cli backend recovery-quarantine list and run its exact retry command.',
+        },
+      ],
+    });
+    expect(recoveryRegistry?.has(jobId)).toBe(true);
+
+    resolveAuthority({
+      ok: true,
+      authority: {
+        launchRecord: capturedLaunch,
+        session: { sessionId, providerContinuity: null, projectRoot: PROJECT_ROOT, version: 1 },
+        boundProvider: { name: 'codex' },
+      } as unknown as ProviderRecoveryAuthority,
+    });
+    await finalizationStarted.promise;
+
+    expect(interruptAppServerJob).toHaveBeenCalledOnce();
+    expect(recoveryRegistry?.has(jobId)).toBe(true);
+    expect(recoveryRegistry?.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      held: [
+        {
+          jobId,
+          reason: 'the provider acknowledged interruption; user-abort terminal finalization remains pending',
+          nextStep:
+            `Wait for startup recovery to finalize ${jobId}; if it remains held, use coral-cli ` +
+            'backend recovery-quarantine list and run its exact retry command.',
+        },
+      ],
+    });
+    expect(finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ reason: 'user_abort' }),
+    );
+
+    releaseFinalization.resolve();
+    await startup;
+    expect(recoveryRegistry?.has(jobId)).toBe(false);
+    await recoveryCoordinator.teardown();
+  });
+
+  it('retains an acknowledged abort when user-abort terminal finalization fails', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const proxyInstanceId = randomUUID();
+    seedRunningAppServerJob(progressStore, { jobId, sessionId, provider: 'codex', proxyInstanceId });
+
+    const captureStarted = deferred();
+    let capturedLaunch!: JobLaunch;
+    let resolveAuthority!: (capture: ProviderRecoveryAuthorityCapture) => void;
+    const authorityCapture = new Promise<ProviderRecoveryAuthorityCapture>((resolve) => {
+      resolveAuthority = resolve;
+    });
+    const fakeService = createFakeService({
+      captureProviderRecoveryAuthority: vi.fn((launchRecord) => {
+        capturedLaunch = launchRecord;
+        captureStarted.resolve();
+        return authorityCapture;
+      }),
+      interruptAppServerJob: vi.fn(async () => ({ kind: 'acknowledged' as const })),
+      finalizeInterruptedAppServerJob: vi.fn(async () => {
+        throw new Error('terminal commit unavailable');
+      }),
+    });
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'app-server-abort-finalization-failure-test',
+    );
+
+    const startup = runStartupRecovery();
+    await captureStarted.promise;
+    const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
+    recoveryRegistry?.abort([jobId]);
+    resolveAuthority({
+      ok: true,
+      authority: {
+        launchRecord: capturedLaunch,
+        session: { sessionId, providerContinuity: null, projectRoot: PROJECT_ROOT, version: 1 },
+        boundProvider: { name: 'codex' },
+      } as unknown as ProviderRecoveryAuthority,
+    });
+    await startup;
+
+    expect(recoveryRegistry?.has(jobId)).toBe(true);
+    expect(recoveryRegistry?.getAbortDisposition(jobId)).toMatchObject({
+      kind: 'finalization-pending',
+      reason: 'the provider acknowledged interruption; user-abort terminal finalization remains pending',
+    });
+    expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+    await recoveryCoordinator.teardown();
+  });
+});
+
+describe('runStartupRecovery adopted durable aborts', () => {
+  it('defers absence finalization until the active abort settlement records cancellation', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const pid = 70_100;
+    const incarnation = testIncarnation('pending-adopted-abort');
+    seedRunningDurableJob(progressStore, { jobId, sessionId, pid });
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
+      jobId,
+      pid,
+      incarnation,
+      processGroupId: pid,
+      childRoot: { pid: pid + 1, incarnation },
+    });
+
+    let containmentAbsent = false;
+    vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation(() => (containmentAbsent ? 'absent' : 'alive'));
+    vi.spyOn(runtime.process, 'readProcessIncarnation').mockImplementation(() =>
+      containmentAbsent ? null : incarnation,
+    );
+    const intervalCallbacks: Array<() => void> = [];
+    vi.spyOn(runtime.time, 'setInterval').mockImplementation((callback) => {
+      intervalCallbacks.push(callback);
+      return { unref: vi.fn() };
+    });
+    vi.spyOn(runtime.time, 'clearInterval').mockImplementation(() => undefined);
+    const finalizeInterruptedDurableJob = vi.fn(async () => {});
+    const fakeService = createFakeService({ finalizeInterruptedDurableJob });
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'pending-adopted-abort-recovery-test',
+    );
+
+    await runStartupRecovery();
+    const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
+    let acceptAbort!: (value: { kind: 'accepted' }) => void;
+    const settlement = new Promise<{ kind: 'accepted' }>((resolve) => {
+      acceptAbort = resolve;
+    });
+    recoveryRegistry?.setAbortHandler(jobId, () => ({
+      kind: 'held',
+      reason: 'recorded containment absence confirmation is pending',
+      nextStep: 'Wait for absence confirmation.',
+      settlement,
+    }));
+    recoveryRegistry?.abort([jobId]);
+
+    containmentAbsent = true;
+    const poll = intervalCallbacks[0];
+    if (poll === undefined) throw new Error('Expected adopted durable recovery poller');
+    poll();
+    await Promise.resolve();
+    expect(finalizeInterruptedDurableJob).not.toHaveBeenCalled();
+    expect(recoveryRegistry?.has(jobId)).toBe(true);
+
+    acceptAbort({ kind: 'accepted' });
+    await settlement;
+    await Promise.resolve();
+    poll();
+    await vi.waitFor(() => expect(finalizeInterruptedDurableJob).toHaveBeenCalledOnce());
+    expect(finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ cancelled: true }),
+      expect.anything(),
+    );
+    await vi.waitFor(() => expect(recoveryRegistry?.has(jobId)).toBe(false));
+    await recoveryCoordinator.teardown();
+  });
+});
+
 describe('runStartupRecovery durable containment holds', () => {
   it('retries identity-safe reaping until absence without adopting held work', async () => {
     const runtime = createRealRuntime('prod');
@@ -937,7 +1166,19 @@ describe('runStartupRecovery durable containment holds', () => {
     const startup = runStartupRecovery();
     await sigtermDelivered.promise;
     const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
-    expect(recoveryRegistry?.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+    expect(recoveryRegistry?.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      abandoned: [
+        {
+          jobId,
+          reason: 'recovery ownership was released without proof of recorded containment absence',
+          nextStep:
+            `Run coral-cli jobs detail ${jobId}; the recorded containment may still be live and is no longer ` +
+            'owned by recovery.',
+        },
+      ],
+    });
     await vi.waitFor(() => expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce());
     releaseGrace.resolve();
     await startup;

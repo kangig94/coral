@@ -109,6 +109,18 @@ const containCommandCases: readonly ContainCommandCase[] = [
     message: 'SIGTERM was sent',
   },
   {
+    name: 'containment remains unconfirmed after signal delivery',
+    result: {
+      kind: 'containment-unconfirmed',
+      setIdentity: address,
+      recoveryAction: { kind: 'retry-exact-set-containment' },
+      effect: { ...noEffect, signalsSent: ['SIGTERM', 'SIGKILL'] as const },
+    },
+    exitCode: 75,
+    stream: 'stderr',
+    message: 'reaping did not confirm absence',
+  },
+  {
     name: 'enforcer-alive',
     result: {
       kind: 'enforcer-alive',
@@ -133,6 +145,17 @@ const containCommandCases: readonly ContainCommandCase[] = [
     exitCode: 75,
     stream: 'stderr',
     message: 'the recorded leader identity is gone',
+  },
+  {
+    name: 'signal authorization refused',
+    result: {
+      kind: 'signal-authorization-refused',
+      setIdentity: address,
+      effect: noEffect,
+    },
+    exitCode: 75,
+    stream: 'stderr',
+    message: 'signal authorization was refused for an observed-live recorded target',
   },
   {
     name: 'enforcer-unobservable',
@@ -453,6 +476,19 @@ describe('backend provider-proxy-set contain', () => {
     expect(process.exitCode).toBe(75);
   });
 
+  it('reports signal refusal without claiming the recorded leader is gone', async () => {
+    const output = await runContain({
+      kind: 'signal-authorization-refused',
+      setIdentity: address,
+      effect: noEffect,
+    });
+
+    expect(output.stderr).toContain('the containment was attributable');
+    expect(output.stderr).not.toContain('the recorded leader identity is gone');
+    expect(output.stderr).toContain(`provider-proxy-set abandon ${encodeProviderProxySetAddress(address)}`);
+    expect(process.exitCode).toBe(75);
+  });
+
   it('turns the shipped draining response body into a named no-verdict result', async () => {
     const operations = createProviderProxySetCommandOperations({
       getClient: async () =>
@@ -585,6 +621,31 @@ describe('backend provider-proxy-set contain', () => {
         effect: noEffect,
       }).success,
     ).toBe(false);
+  });
+
+  it('requires effects and a recovery action on an unconfirmed containment hold', () => {
+    const hold = {
+      kind: 'containment-unconfirmed',
+      setIdentity: address,
+      recoveryAction: { kind: 'retry-exact-set-containment' },
+      effect: { ...noEffect, signalsSent: ['SIGTERM'] as const },
+    } as const;
+
+    expect(providerProxySetContainResponseSchema.parse(hold)).toEqual(hold);
+    expect(providerProxySetContainBooleanResponseSchema.parse(hold)).toEqual(hold);
+    expect(providerProxySetContainResponseSchema.safeParse({ ...hold, effect: undefined }).success).toBe(false);
+    expect(providerProxySetContainResponseSchema.safeParse({ ...hold, recoveryAction: undefined }).success).toBe(false);
+  });
+
+  it('carries signal-authorization refusal through both containment response contracts', () => {
+    const refusal = {
+      kind: 'signal-authorization-refused',
+      setIdentity: address,
+      effect: noEffect,
+    } as const;
+
+    expect(providerProxySetContainResponseSchema.parse(refusal)).toEqual(refusal);
+    expect(providerProxySetContainBooleanResponseSchema.parse(refusal)).toEqual(refusal);
   });
 
   it('accepts a pre-reap abandonment receipt with absent enforcer observations', () => {

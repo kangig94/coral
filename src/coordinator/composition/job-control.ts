@@ -1,4 +1,10 @@
-import type { AbortRefusal, AbortResult, JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
+import type {
+  AbortAbandonment,
+  AbortHold,
+  AbortRefusal,
+  AbortResult,
+  JobAbortRegistryPort,
+} from '../../jobs/contracts/abort-registry.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../lifecycle.js';
 import type { JobStore } from '../../jobs/store.js';
@@ -30,12 +36,30 @@ export function createCoordinatorControl({
     const pending = new Set(jobIds);
     const aborted: string[] = [];
     const refused: AbortRefusal[] = [];
+    const held: AbortHold[] = [];
+    const abandoned: AbortAbandonment[] = [];
 
     const retainRefusals = (result: AbortResult): void => {
       for (const refusal of result.refused ?? []) {
         if (!pending.has(refusal.jobId)) continue;
         pending.delete(refusal.jobId);
         refused.push(refusal);
+      }
+    };
+
+    const retainHolds = (result: AbortResult): void => {
+      for (const hold of result.held ?? []) {
+        if (!pending.has(hold.jobId)) continue;
+        pending.delete(hold.jobId);
+        held.push(hold);
+      }
+    };
+
+    const retainAbandonments = (result: AbortResult): void => {
+      for (const abandonment of result.abandoned ?? []) {
+        if (!pending.has(abandonment.jobId)) continue;
+        pending.delete(abandonment.jobId);
+        abandoned.push(abandonment);
       }
     };
 
@@ -54,6 +78,8 @@ export function createCoordinatorControl({
           aborted.push(jobId);
         }
         retainRefusals(result);
+        retainHolds(result);
+        retainAbandonments(result);
       }
     }
 
@@ -71,6 +97,8 @@ export function createCoordinatorControl({
         aborted.push(jobId);
       }
       retainRefusals(result);
+      retainHolds(result);
+      retainAbandonments(result);
     }
 
     if (pending.size > 0) {
@@ -81,9 +109,17 @@ export function createCoordinatorControl({
         aborted.push(jobId);
       }
       retainRefusals(result);
+      retainHolds(result);
+      retainAbandonments(result);
     }
 
-    return { aborted, notFound: [...pending], ...(refused.length === 0 ? {} : { refused }) };
+    return {
+      aborted,
+      notFound: [...pending],
+      ...(refused.length === 0 ? {} : { refused }),
+      ...(held.length === 0 ? {} : { held }),
+      ...(abandoned.length === 0 ? {} : { abandoned }),
+    };
   }
 
   function scopeCheckJobs(

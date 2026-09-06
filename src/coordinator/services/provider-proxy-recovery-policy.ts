@@ -356,6 +356,7 @@ function classifyFulfillment(
         'inherited',
         'containment-disappeared',
         'recorded-group-unattributable',
+        'signal-authorization-refused',
         'not-bequeathed',
         'temporarily-unavailable',
       ].includes(String(value.kind))

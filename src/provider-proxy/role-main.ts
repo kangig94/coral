@@ -335,9 +335,10 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
         clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
         environment,
       );
-      return outcome.kind === 'containment-absent'
-        ? { kind: 'settled' }
-        : holding('the recorded proxy group became unattributable');
+      if (outcome.kind === 'containment-absent') return { kind: 'settled' };
+      return outcome.kind === 'recorded-group-unattributable'
+        ? holding('the recorded proxy group became unattributable')
+        : holding('signal authorization could not be established for the recorded proxy group');
     } catch (error: unknown) {
       return holding(error instanceof Error ? error.message : String(error));
     }

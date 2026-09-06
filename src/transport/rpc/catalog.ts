@@ -312,7 +312,15 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
     })
     .strict(),
   z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainResultBase }).strict(),
+  z.object({ kind: z.literal('signal-authorization-refused'), ...providerProxySetContainResultBase }).strict(),
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
+  z
+    .object({
+      kind: z.literal('containment-unconfirmed'),
+      ...providerProxySetContainResultBase,
+      recoveryAction: z.object({ kind: z.literal('retry-exact-set-containment') }).strict(),
+    })
+    .strict(),
 ]);
 
 export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema;
@@ -389,12 +397,19 @@ export const providerProxySetContainBooleanResponseSchema = z.discriminatedUnion
     })
     .strict(),
   z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainBooleanResultBase }).strict(),
+  z.object({ kind: z.literal('signal-authorization-refused'), ...providerProxySetContainBooleanResultBase }).strict(),
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainBooleanResultBase }).strict(),
+  z
+    .object({
+      kind: z.literal('containment-unconfirmed'),
+      ...providerProxySetContainBooleanResultBase,
+      recoveryAction: z.object({ kind: z.literal('retry-exact-set-containment') }).strict(),
+    })
+    .strict(),
 ]);
 
 export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
 export type ProviderProxySetContainBooleanRequest = z.output<typeof providerProxySetContainBooleanRequestSchema>;
-/** Exhaustive wire verdict including observable effects of a partially completed containment attempt. */
 export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;
 export type ProviderProxySetContainBooleanResponse = z.output<typeof providerProxySetContainBooleanResponseSchema>;
 

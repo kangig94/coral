@@ -8,6 +8,7 @@ import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
 import type { SessionJobClaimReleaseResult } from '../../sessions/contracts.js';
+import type { RecoveredAppServerFinalizationReason } from './interrupted-reason.js';
 
 export type ProviderRecoveryLaunch = JobLaunch & {
   readonly sessionId: string;
@@ -44,12 +45,16 @@ export type ProviderRecoveryAuthorityCapture =
   | Readonly<{ ok: true; authority: ProviderRecoveryAuthority }>
   | Readonly<{ ok: false; failure: ProviderBindingFailure }>;
 
+export type RecoveredAppServerInterruptResult =
+  | Readonly<{ kind: 'acknowledged' }>
+  | Readonly<{ kind: 'refused'; reason: string; nextStep: string }>;
+
 export interface RecoveryCapableService {
   captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;
   finalizeInterruptedAppServerJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
-    context: { reason: 'restart' | 'handoff' } & RecoveryCommitFence,
+    context: { reason: RecoveredAppServerFinalizationReason } & RecoveryCommitFence,
   ): Promise<void>;
   finalizeInterruptedDurableJob(
     authority: ProviderRecoveryAuthority,
@@ -66,7 +71,10 @@ export interface RecoveryCapableService {
     runtimeRecord: JobRuntime,
   ): Promise<{ adopted: boolean; cleanup: () => void }>;
   recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string>;
-  interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void>;
+  interruptAppServerJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: AppServerRuntime,
+  ): Promise<RecoveredAppServerInterruptResult>;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,

@@ -231,7 +231,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     finalizeInterruptedDurableJob: vi.fn(async () => {}),
-    interruptAppServerJob: vi.fn(async () => {}),
+    interruptAppServerJob: vi.fn(async () => ({ kind: 'acknowledged' as const })),
     ...overrides,
   };
 }
@@ -843,8 +843,17 @@ describe('recovery coordinator shutdown', () => {
       ).toEqual({ state: 'active', stage: 'settle' });
 
       expect(harness.controller.getRecoveryRegistry()?.abort([RUNNING_ADOPTION_JOB_ID])).toEqual({
-        aborted: [RUNNING_ADOPTION_JOB_ID],
+        aborted: [],
         notFound: [],
+        abandoned: [
+          {
+            jobId: RUNNING_ADOPTION_JOB_ID,
+            reason: 'recovery ownership was released without proof of recorded containment absence',
+            nextStep:
+              `Run coral-cli jobs detail ${RUNNING_ADOPTION_JOB_ID}; the recorded containment may still be live ` +
+              'and is no longer owned by recovery.',
+          },
+        ],
       });
       await vi.waitFor(() => {
         expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
@@ -911,8 +920,17 @@ describe('recovery coordinator shutdown', () => {
         'Recovery reconciliation completed with durable containment held for repair or operator abandonment. Launch fence lifted.\n',
       );
       expect(recoveryRegistry?.abort([RUNNING_ADOPTION_JOB_ID])).toEqual({
-        aborted: [RUNNING_ADOPTION_JOB_ID],
+        aborted: [],
         notFound: [],
+        abandoned: [
+          {
+            jobId: RUNNING_ADOPTION_JOB_ID,
+            reason: 'recovery ownership was released without proof of recorded containment absence',
+            nextStep:
+              `Run coral-cli jobs detail ${RUNNING_ADOPTION_JOB_ID}; the recorded containment may still be live ` +
+              'and is no longer owned by recovery.',
+          },
+        ],
       });
       expect(readDurableCliContainmentStatus(harness.progressStore.getDb(), RUNNING_ADOPTION_JOB_ID)).toMatchObject({
         kind: 'valid',

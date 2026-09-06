@@ -135,6 +135,38 @@ describe('createCoordinatorControl.abortJobs', () => {
     expect(executionAbort).not.toHaveBeenCalled();
     expect(internalAbort).not.toHaveBeenCalled();
   });
+
+  it('preserves an asynchronous recovery abort hold without trying another owner', () => {
+    const runtime = new SimulationRuntime();
+    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const internalAbort = vi.spyOn(internalJobAbortRegistry, 'abort');
+    const executionAbort = vi.fn();
+    const hold = {
+      jobId: 'recovered-job',
+      reason: 'identity-safe reaping is awaiting confirmed absence',
+      nextStep: 'Wait for cleanup, then inspect the job.',
+    };
+    const recoveryRegistry = {
+      size: 1,
+      has: (jobId: string) => jobId === hold.jobId,
+      abort: () => ({ aborted: [], notFound: [], held: [hold] }),
+    };
+    const control = createCoordinatorControl({
+      world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
+      listExecutionServices: () => [{ abort: executionAbort }] as never,
+      getLifecycleController: () => ({ getRecoveryRegistry: () => recoveryRegistry }) as never,
+      getProgressStore: () => ({}) as never,
+      internalJobAbortRegistry,
+    });
+
+    expect(control.abortJobs([hold.jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      held: [hold],
+    });
+    expect(executionAbort).not.toHaveBeenCalled();
+    expect(internalAbort).not.toHaveBeenCalled();
+  });
 });
 
 describe('createCoordinatorControl.scopeCheckJobs', () => {

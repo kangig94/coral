@@ -339,7 +339,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     finalizeInterruptedDurableJob: vi.fn(async () => {}),
-    interruptAppServerJob: vi.fn(async () => {}),
+    interruptAppServerJob: vi.fn(async () => ({ kind: 'acknowledged' as const })),
     ...overrides,
   };
 }
@@ -2561,7 +2561,19 @@ describe('lifecycle recovery', () => {
         getProgressStore: () => progressStore,
         internalJobAbortRegistry: { abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }) } as never,
       });
-      expect(control.abortJobs([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+      expect(control.abortJobs([jobId])).toEqual({
+        aborted: [],
+        notFound: [],
+        abandoned: [
+          {
+            jobId,
+            reason: 'recovery ownership was released without proof of recorded containment absence',
+            nextStep:
+              `Run coral-cli jobs detail ${jobId}; the recorded containment may still be live and is no longer ` +
+              'owned by recovery.',
+          },
+        ],
+      });
 
       await vi.waitFor(() => {
         expect(progressStore.readStatus(jobId)).toMatchObject({
@@ -2599,6 +2611,7 @@ describe('lifecycle recovery', () => {
       projectRoot,
     });
     const jobId = '00000000-0000-4000-8000-000000000702';
+    const finalizeInterruptedDurableJob = vi.spyOn(service, 'finalizeInterruptedDurableJob');
     // Real PID adoption/kill semantics require an actual child process here.
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], { stdio: 'ignore' });
     await new Promise<void>((resolve, reject) => {
@@ -2644,7 +2657,20 @@ describe('lifecycle recovery', () => {
         } as never,
       });
 
-      expect(control.abortJobs([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+      expect(control.abortJobs([jobId])).toEqual({
+        aborted: [],
+        notFound: [],
+        held: [
+          {
+            jobId,
+            reason:
+              'identity-safe SIGTERM/SIGKILL reaping is in progress until recorded containment absence is confirmed',
+            nextStep:
+              `Run coral-cli jobs detail ${jobId}; if cleanup remains held, run coral-cli abort jobs ${jobId} ` +
+              'again to explicitly abandon ownership.',
+          },
+        ],
+      });
 
       await vi.waitFor(
         () => {
@@ -2654,6 +2680,12 @@ describe('lifecycle recovery', () => {
           });
         },
         { timeout: 4_000 },
+      );
+      expect(finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ cancelled: true }),
+        expect.anything(),
       );
     } finally {
       child.kill('SIGKILL');

@@ -113,7 +113,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     });
   const reportAbortResult = (result: AbortResult): void => {
     process.stdout.write(formatAbortResult(result) + '\n');
-    if ((result.refused?.length ?? 0) > 0) process.exitCode = ABORT_REFUSED_EXIT_CODE;
+    if ((result.refused?.length ?? 0) + (result.held?.length ?? 0) + (result.abandoned?.length ?? 0) > 0) {
+      process.exitCode = ABORT_REFUSED_EXIT_CODE;
+    }
   };
 
   const jobsCommand = program.command('jobs');

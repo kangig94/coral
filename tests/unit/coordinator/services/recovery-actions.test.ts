@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyRecoveryAction, COORDINATOR_NOT_APPLICABLE_FACTS } from '#src/coordinator/services/recovery/actions.js';
 import { writeDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
-import type { ProviderJobLaunch } from '#src/jobs/records.js';
+import type { ProviderRecoveryAuthorityCapture } from '#src/jobs/reconcile/contracts.js';
+import type { AppServerRuntime, ProviderJobLaunch } from '#src/jobs/records.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -133,6 +134,90 @@ function recoveryFixture(
 }
 
 describe('registerRunningRecovery provider-binding holds', () => {
+  it('reports an app-server abort as held until recovery authority and provider acknowledgment arrive', async () => {
+    const runtime = new SimulationRuntime();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const cancelledJobIds = new Set<string>();
+    const recoveryRegistry = new RecoveryRegistry(cancelledJobIds);
+    const appServerRuntime: AppServerRuntime = {
+      transport: 'app-server',
+      startTime: '2026-09-04T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        hostRef: {
+          provider: 'codex',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
+        },
+      },
+    };
+    let resolveAuthority!: (value: ProviderRecoveryAuthorityCapture) => void;
+    const authorityCapture = new Promise<ProviderRecoveryAuthorityCapture>((resolve) => {
+      resolveAuthority = resolve;
+    });
+    const interruptAppServerJob = vi.fn(async () => ({ kind: 'acknowledged' as const }));
+
+    try {
+      const registration = applyRecoveryAction(
+        { type: 'registerRunning', jobId: JOB_ID, launchRecord: launchRecord(), runtimeRecord: appServerRuntime },
+        {
+          progressStore: { getDb: () => db } as never,
+          recoveryRegistry,
+          queuedRecoverable: [],
+          runningRecoverable: [],
+          log: vi.fn(),
+          runtime,
+          createInvocationContext: () => ({}) as never,
+          getRecoveryService: () =>
+            ({
+              captureProviderRecoveryAuthority: () => authorityCapture,
+              interruptAppServerJob,
+            }) as never,
+          signal: new AbortController().signal,
+          settleFault: vi.fn(),
+          settleClaim: vi.fn(),
+          setProcessLocalCleanup: vi.fn(),
+          clearProcessLocalCleanup: vi.fn(),
+        },
+      );
+
+      expect(recoveryRegistry.abort([JOB_ID])).toEqual({
+        aborted: [],
+        notFound: [],
+        held: [
+          {
+            jobId: JOB_ID,
+            reason: 'waiting for recovery authority and provider acknowledgment of app-server interruption',
+            nextStep:
+              `Run coral-cli jobs detail ${JOB_ID}; if interruption is refused, repair the reported condition, ` +
+              'then use coral-cli backend recovery-quarantine list and run its exact retry command.',
+          },
+        ],
+      });
+      expect(recoveryRegistry.has(JOB_ID)).toBe(true);
+
+      resolveAuthority({
+        ok: true,
+        authority: { launchRecord: launchRecord(), session: {}, boundProvider: {} },
+      } as unknown as ProviderRecoveryAuthorityCapture);
+      await registration;
+
+      expect(interruptAppServerJob).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(recoveryRegistry.getAbortDisposition(JOB_ID)).toMatchObject({
+          kind: 'finalization-pending',
+          reason: 'the provider acknowledged interruption; user-abort terminal finalization remains pending',
+        }),
+      );
+      expect(recoveryRegistry.has(JOB_ID)).toBe(true);
+      expect(cancelledJobIds.has(JOB_ID)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   it('preserves operator abandonment when registering a persisted durable hold', async () => {
     const fixture = recoveryFixture('alive', 'linux', { captureSucceeds: true });
     try {

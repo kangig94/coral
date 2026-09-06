@@ -34,6 +34,7 @@ import type {
 
 export type PerformedInterruptedRecovery =
   | Readonly<{ kind: 'unsupported' }>
+  | Readonly<{ kind: 'user-aborted' }>
   | Readonly<{
       kind: 'resolved';
       mutation: ProviderValidatedSessionContinuityMutation;
@@ -115,6 +116,13 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     throw new ProcessContainmentError(
       'process_identity_unverified',
       'The recorded carrier leader identity is gone, but the surviving process group cannot be attributed.',
+      { pid: containment.pid, processGroupId: containment.processGroupId },
+    );
+  }
+  if (reapResult.kind === 'signal-authorization-refused') {
+    throw new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'Signal authorization could not be established for every recorded carrier containment target.',
       { pid: containment.pid, processGroupId: containment.processGroupId },
     );
   }

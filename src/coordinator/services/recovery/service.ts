@@ -28,9 +28,10 @@ import type {
   ProviderRecoveryAuthorityCapture,
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
+  RecoveredAppServerInterruptResult,
 } from '../../../jobs/reconcile/contracts.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
-import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
+import type { RecoveredAppServerFinalizationReason } from '../../../jobs/reconcile/interrupted-reason.js';
 import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../../child-principal-registry.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../../security/child-principal-env.js';
 import type { ProviderOperationProtectedEnvironment } from '../../../jobs/contracts/provider-operation-lifecycle.js';
@@ -159,27 +160,50 @@ export class RecoveryService {
     return result;
   }
 
-  async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
+  async interruptAppServerJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: AppServerRuntime,
+  ): Promise<RecoveredAppServerInterruptResult> {
     const { launchRecord, session, boundProvider } = authority;
     if (runtimeRecord.providerMeta.leaseState !== 'acquired') {
-      backendLog.warn(
-        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: no acquired provider lease evidence.`,
-      );
-      return;
+      return {
+        kind: 'refused',
+        reason: 'no acquired provider lease evidence identifies an interruptible host',
+        nextStep:
+          `Run coral-cli jobs detail ${launchRecord.jobId}; after provider lease recovery completes, run ` +
+          'coral-cli backend recovery-quarantine list and use its exact retry command.',
+      };
     }
     // The provider-operation reconciler alone resolves saga-owned hosts; generic recovery must not address
     // their shared proxy set or infer absence from missing process-local attachment state.
     if (hasProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId)) {
-      backendLog.warn(
-        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: its acquired host is owned by a durable provider proxy operation.`,
-      );
-      return;
+      return {
+        kind: 'refused',
+        reason: 'a durable provider proxy operation owns the acquired host',
+        nextStep:
+          `Run coral-cli jobs detail ${launchRecord.jobId}; after provider-operation recovery transfers or settles ` +
+          'that ownership, run coral-cli backend recovery-quarantine list and use its exact retry command.',
+      };
     }
     const appServer = boundProvider.appServer;
-    if (appServer?.supportsInterrupt !== true) return;
+    if (appServer?.supportsInterrupt !== true) {
+      return {
+        kind: 'refused',
+        reason: `provider '${launchRecord.provider}' does not support app-server interruption`,
+        nextStep:
+          `Run coral-cli jobs detail ${launchRecord.jobId}; repair the provider binding, then run coral-cli backend ` +
+          'recovery-quarantine list and use its exact retry command.',
+      };
+    }
     const continuity = this.sessionProviderContinuity(session);
     if (!continuity) {
-      return;
+      return {
+        kind: 'refused',
+        reason: 'the recovered session has no provider continuity that can identify the active turn',
+        nextStep:
+          `Run coral-cli jobs detail ${launchRecord.jobId}; restore provider continuity, then run coral-cli backend ` +
+          'recovery-quarantine list and use its exact retry command.',
+      };
     }
 
     const request = toProviderRequest(launchRecord, session.conversationRef);
@@ -189,18 +213,22 @@ export class RecoveryService {
         jobId: launchRecord.jobId,
       })
     ) {
-      return;
+      return { kind: 'acknowledged' };
     }
-    backendLog.warn(
-      `Cannot interrupt recovered app-server job ${launchRecord.jobId}: the bound host is unavailable or exact provider turn coordinates are absent.`,
-    );
+    return {
+      kind: 'refused',
+      reason: 'the provider did not acknowledge interruption for the recorded host and turn',
+      nextStep:
+        `Run coral-cli jobs detail ${launchRecord.jobId}; when the recorded provider host is available, run ` +
+        'coral-cli backend recovery-quarantine list and use its exact retry command.',
+    };
   }
 
   async finalizeInterruptedAppServerJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
     options: {
-      reason: InterruptedAppServerReason;
+      reason: RecoveredAppServerFinalizationReason;
       signal: AbortSignal;
       onCommitStart(): void;
     },
@@ -235,21 +263,24 @@ export class RecoveryService {
       providerOperation,
     );
     options.signal.throwIfAborted();
-    const performed = await performInterruptedAppServerRecovery(plan, boundProvider, {
-      time: this.deps.runtime.time,
-      env: this.deps.runtime.env,
-      storage: this.deps.runtime.storage,
-      jobDir: (jobId) => this.deps.progressStore.jobDir(jobId),
-      signal: options.signal,
-      reapCarrier: (record) =>
-        reapProviderOperationCarrier(record, {
-          process: this.deps.runtime.process,
-          platform: this.deps.runtime.env.platform() as NodeJS.Platform,
-          db: this.deps.progressStore.getDb(),
-          clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
-          signal: options.signal,
-        }),
-    });
+    const performed =
+      options.reason === 'user_abort'
+        ? ({ kind: 'user-aborted' } as const)
+        : await performInterruptedAppServerRecovery(plan, boundProvider, {
+            time: this.deps.runtime.time,
+            env: this.deps.runtime.env,
+            storage: this.deps.runtime.storage,
+            jobDir: (jobId) => this.deps.progressStore.jobDir(jobId),
+            signal: options.signal,
+            reapCarrier: (record) =>
+              reapProviderOperationCarrier(record, {
+                process: this.deps.runtime.process,
+                platform: this.deps.runtime.env.platform() as NodeJS.Platform,
+                db: this.deps.progressStore.getDb(),
+                clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
+                signal: options.signal,
+              }),
+          });
     options.signal.throwIfAborted();
     options.onCommitStart();
     await finalizeInterruptedAppServerRecovery(plan, performed, status, {

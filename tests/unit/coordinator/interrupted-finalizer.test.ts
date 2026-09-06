@@ -126,6 +126,7 @@ function createHarness(
 
   return {
     order,
+    append,
     recordArtifactHandleAtomic,
     finalizeJobContinuityAtomic,
     remove,
@@ -146,6 +147,32 @@ function createHarness(
 }
 
 describe('interrupted app-server recovery finalizer', () => {
+  it('records a provider-acknowledged user cancellation as user_abort', async () => {
+    const harness = createHarness();
+    const userAbortPlan = { ...plan, reason: 'user_abort' } as unknown as AppServerInterruptedRecoveryPlan;
+
+    await finalizeInterruptedAppServerRecovery(userAbortPlan, { kind: 'user-aborted' }, status, harness.deps);
+
+    expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
+      'interrupted-session',
+      expect.objectContaining({
+        expectedActiveJobId: 'interrupted-job',
+        expectedVersion: 7,
+        mutation: { kind: 'preserve' },
+      }),
+    );
+    expect(harness.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'job.terminal.recorded',
+        body: expect.objectContaining({
+          terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'user_abort' } }),
+        }),
+      }),
+    );
+    expect(harness.remove).toHaveBeenCalledWith('interrupted-job');
+    expect(harness.releaseLaunch).toHaveBeenCalledWith('interrupted-job', 'continuation');
+  });
+
   it('persists artifact handles before terminal settlement and carries the advanced CAS version', async () => {
     const harness = createHarness();
 

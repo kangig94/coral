@@ -128,6 +128,9 @@ export function buildGuardianSpawnUndo(
         if (proxyResult.kind === 'recorded-group-unattributable') {
           throw new Error('proxy process-group cleanup is holding because the recorded group became unattributable');
         }
+        if (proxyResult.kind === 'signal-authorization-refused') {
+          throw new Error('proxy process-group cleanup is holding because signal authorization was refused');
+        }
       }
       const result = await reapRecordedContainment(
         guardianIdentity,
@@ -143,6 +146,9 @@ export function buildGuardianSpawnUndo(
       );
       if (result.kind === 'recorded-group-unattributable') {
         throw new Error('guardian process-group cleanup is holding because the recorded group became unattributable');
+      }
+      if (result.kind === 'signal-authorization-refused') {
+        throw new Error('guardian process-group cleanup is holding because signal authorization was refused');
       }
       absenceConfirmed = true;
     } catch (error: unknown) {

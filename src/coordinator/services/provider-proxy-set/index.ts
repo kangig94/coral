@@ -1,6 +1,7 @@
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
+import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { assertNever, errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
@@ -537,7 +538,6 @@ export type ProviderProxySetBooleanOperatorExitAuthorization =
   | ProviderProxySetOperatorExitAuthorization
   | Readonly<{ kind: 'unsupported-contract' }>;
 
-/** An exact-set operator verdict whose effect records every signal and representation-release transition. */
 export type ProviderProxySetOperatorExitResult = (
   | Readonly<{
       kind: 'contained';
@@ -570,7 +570,13 @@ export type ProviderProxySetOperatorExitResult = (
       enforcerObservations: ProviderProxySetEnforcerObservations;
     }>
   | Readonly<{ kind: 'recorded-group-unattributable'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{ kind: 'signal-authorization-refused'; setIdentity: ProviderProxySetAddress }>
   | Readonly<{ kind: 'store-unreadable'; setIdentity: ProviderProxySetAddress }>
+  | Readonly<{
+      kind: 'containment-unconfirmed';
+      setIdentity: ProviderProxySetAddress;
+      recoveryAction: Readonly<{ kind: 'retry-exact-set-containment' }>;
+    }>
 ) &
   Readonly<{ effect: ProviderProxySetOperatorExitEffect }>;
 
@@ -1513,6 +1519,8 @@ export class ProviderProxySetLifecycle {
         return { kind: 'refused', ground: 'enforcer-unobservable' };
       case 'operator_exit_recorded_group_unattributable':
         return { kind: 'refused', ground: 'recorded-group-unattributable' };
+      case 'operator_exit_signal_authorization_refused':
+        return { kind: 'refused', ground: 'signal-authorization-refused' };
       case 'operator_exit_store_unreadable':
         return { kind: 'refused', ground: 'store-unreadable' };
       case 'operator_exit_representation_release_fatal':
@@ -1853,6 +1861,14 @@ export class ProviderProxySetLifecycle {
           };
         }
         this.#releaseOperatorExitFence(capability);
+        if (error instanceof ProcessContainmentError && error.code === 'process_containment_reap_failed') {
+          return {
+            kind: 'containment-unconfirmed',
+            setIdentity: address,
+            recoveryAction: { kind: 'retry-exact-set-containment' },
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
         throw error;
       }
       const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
@@ -1921,6 +1937,15 @@ export class ProviderProxySetLifecycle {
         this.#releaseOperatorExitFence(capability);
         return {
           kind: 'recorded-group-unattributable',
+          setIdentity: address,
+          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+        };
+      }
+      if (reapResult.kind === 'signal-authorization-refused') {
+        this.#recordOperatorExitRefusal(slot, 'operator_exit_signal_authorization_refused', 'operator-abandonment');
+        this.#releaseOperatorExitFence(capability);
+        return {
+          kind: 'signal-authorization-refused',
           setIdentity: address,
           effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
         };

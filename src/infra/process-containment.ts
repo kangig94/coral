@@ -171,7 +171,8 @@ export type RecordedContainmentAbortResult =
 
 export type RecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent' }>
-  | Readonly<{ kind: 'recorded-group-unattributable' }>;
+  | Readonly<{ kind: 'recorded-group-unattributable' }>
+  | Readonly<{ kind: 'signal-authorization-refused' }>;
 
 function reapFailure(message: string, context: Readonly<Record<string, unknown>> = {}): ProcessContainmentError {
   return new ProcessContainmentError('process_containment_reap_failed', message, context);
@@ -505,7 +506,10 @@ function assertSignalCallWithinBounds<Scope extends symbol>(
   }
 }
 
-type RecordedSetSignalResult = Readonly<{ kind: 'delivered'; count: number }> | Readonly<{ kind: 'refused' }>;
+type RecordedSetSignalResult =
+  | Readonly<{ kind: 'delivered'; count: number }>
+  | Readonly<{ kind: 'recorded-group-unattributable' }>
+  | Readonly<{ kind: 'signal-authorization-refused' }>;
 
 function knownLiveChildMayAuthorizeSignal<Scope extends symbol>(
   identity: RecordedProcessIdentity,
@@ -556,25 +560,24 @@ async function signalRecordedSet<Scope extends symbol>(
   }
 
   let delivered = 0;
-  let refused = false;
+  let authorizationRefused = false;
   try {
     if (observation.containment === 'present') {
       const refreshed = await observeContainmentAsync(containment, exitDeadline, environment);
-      if (refreshed.kind === 'unobservable' || refreshed.observation === 'recorded-group-unattributable') {
-        return { kind: 'refused' };
-      }
+      if (refreshed.kind === 'unobservable') return { kind: 'signal-authorization-refused' };
+      if (refreshed.observation === 'recorded-group-unattributable') return { kind: refreshed.observation };
       if (refreshed.observation === 'present') {
-        if (!identityMayAuthorizeSignal(containment, environment)) refused = true;
+        if (!identityMayAuthorizeSignal(containment, environment)) authorizationRefused = true;
         else if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
       }
     }
     for (const [index, root] of recordedRoots.entries()) {
       if (observation.recordedRoots[index] !== 'present') continue;
       const refreshed = await observeProcessIdentityAsync(root, exitDeadline, environment);
-      if (refreshed.kind === 'unobservable') return { kind: 'refused' };
+      if (refreshed.kind === 'unobservable') return { kind: 'signal-authorization-refused' };
       if (refreshed.observation !== 'present') continue;
       if (!identityMayAuthorizeSignal(root, environment)) {
-        refused = true;
+        authorizationRefused = true;
         continue;
       }
       if (deliverSignal(root.pid, signal, exitDeadline, environment)) delivered += 1;
@@ -583,7 +586,7 @@ async function signalRecordedSet<Scope extends symbol>(
     if (error instanceof ProcessContainmentError) throw error;
     throw reapFailure(`Recorded containment ${signal} delivery failed.`, { signal });
   }
-  return refused ? { kind: 'refused' } : { kind: 'delivered', count: delivered };
+  return authorizationRefused ? { kind: 'signal-authorization-refused' } : { kind: 'delivered', count: delivered };
 }
 
 function signalRecordedSetSynchronously<Scope extends symbol>(
@@ -595,16 +598,16 @@ function signalRecordedSetSynchronously<Scope extends symbol>(
   environment: ProcessContainmentEnvironment<Scope>,
 ): RecordedSetSignalResult {
   let delivered = 0;
-  let refused = false;
+  let authorizationRefused = false;
   try {
     if (observation.containment === 'present' && observeContainment(containment, environment) === 'present') {
-      if (!identityMayAuthorizeSignal(containment, environment)) refused = true;
+      if (!identityMayAuthorizeSignal(containment, environment)) authorizationRefused = true;
       else if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
     }
     for (const [index, root] of recordedRoots.entries()) {
       if (observation.recordedRoots[index] === 'present' && observeProcessIdentity(root, environment) === 'present') {
         if (!identityMayAuthorizeSignal(root, environment)) {
-          refused = true;
+          authorizationRefused = true;
           continue;
         }
         if (deliverSignal(root.pid, signal, exitDeadline, environment)) delivered += 1;
@@ -614,7 +617,7 @@ function signalRecordedSetSynchronously<Scope extends symbol>(
     if (error instanceof ProcessContainmentError) throw error;
     throw reapFailure(`Recorded containment ${signal} delivery failed.`, { signal });
   }
-  return refused ? { kind: 'refused' } : { kind: 'delivered', count: delivered };
+  return authorizationRefused ? { kind: 'signal-authorization-refused' } : { kind: 'delivered', count: delivered };
 }
 
 /** A recycled leader forbids every signal, and a signal attempt cannot erase a refusal disposition. */
@@ -649,7 +652,7 @@ export function abortRecordedContainment<Scope extends symbol>(
     const targeted =
       (observation.containment === 'present' ? 1 : 0) +
       observation.recordedRoots.filter((root) => root === 'present').length;
-    if (delivery.kind === 'refused') {
+    if (delivery.kind !== 'delivered') {
       return { kind: 'refused', reason: 'the platform cannot authorize every recorded containment signal' };
     }
     if (delivery.count === targeted) return { kind: 'accepted' };
@@ -765,7 +768,7 @@ export async function reapRecordedContainment<Scope extends symbol>(
   }
 
   let delivery = await signalRecordedSet(containment, recordedRoots, observation, 'SIGTERM', exitDeadline, environment);
-  if (delivery.kind === 'refused') return { kind: 'recorded-group-unattributable' };
+  if (delivery.kind !== 'delivered') return delivery;
   const termWaitDeadline = environment.clock.earlier(
     exitDeadline,
     environment.clock.shiftMilliseconds(environment.clock.now(), SIGTERM_GRACE_MS),
@@ -783,7 +786,7 @@ export async function reapRecordedContainment<Scope extends symbol>(
   observationResult = await observeRecordedSet(containment, recordedRoots, exitDeadline, environment);
   observation = requireObservedSet(observationResult, 'exit deadline');
   delivery = await signalRecordedSet(containment, recordedRoots, observation, 'SIGKILL', exitDeadline, environment);
-  if (delivery.kind === 'refused') return { kind: 'recorded-group-unattributable' };
+  if (delivery.kind !== 'delivered') return delivery;
   const killWaitDeadline = environment.clock.earlier(
     exitDeadline,
     environment.clock.shiftMilliseconds(environment.clock.now(), SIGKILL_GRACE_MS),

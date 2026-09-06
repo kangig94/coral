@@ -2,7 +2,11 @@ import { currentEventMetadata, withInvocationScope } from './invocation-scope.js
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
-import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../jobs/reconcile/contracts.js';
+import type {
+  ProviderRecoveryAuthority,
+  RecoveredAppServerInterruptResult,
+  RecoveryCapableService,
+} from '../jobs/reconcile/contracts.js';
 import type {
   JobLaunchRequest,
   JobResumeRequest,
@@ -299,7 +303,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.finalizeInterruptedDurableJob(authority, runtimeRecord, observation, fence);
   }
 
-  async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
+  async interruptAppServerJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: AppServerRuntime,
+  ): Promise<RecoveredAppServerInterruptResult> {
     return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
   }
 

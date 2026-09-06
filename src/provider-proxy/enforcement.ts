@@ -232,6 +232,12 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
           reason: 'The recorded leader identity is gone, but the surviving process group cannot be attributed.',
         };
       }
+      if (outcome.kind === 'signal-authorization-refused') {
+        return {
+          kind: 'reap-failed',
+          reason: 'Signal authorization could not be established for every recorded-containment target.',
+        };
+      }
     } catch (error: unknown) {
       return { kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' };
     }

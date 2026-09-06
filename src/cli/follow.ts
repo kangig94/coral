@@ -266,7 +266,9 @@ function fallbackExitCode(): number {
 }
 
 function classifyAbortResult(result: AbortResult): AbortAttempt {
-  return result.refused?.length ? { kind: 'refused', result } : { kind: 'succeeded' };
+  return (result.refused?.length ?? 0) + (result.held?.length ?? 0) + (result.abandoned?.length ?? 0) > 0
+    ? { kind: 'refused', result }
+    : { kind: 'succeeded' };
 }
 
 async function finishAbortAttempt(
@@ -596,6 +598,8 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         aborted: results.flatMap((result) => result.aborted),
         notFound: results.flatMap((result) => result.notFound),
         refused: results.flatMap((result) => result.refused ?? []),
+        held: results.flatMap((result) => result.held ?? []),
+        abandoned: results.flatMap((result) => result.abandoned ?? []),
       };
     },
     connect: async ({ jobIds, cursor, timeoutSeconds, signal }) => {

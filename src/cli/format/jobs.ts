@@ -132,6 +132,14 @@ export function formatAbortResult(result: AbortResult): string {
       `Abort held for ${refusal.jobId}: ${refusal.reason}`,
       `Next step: ${refusal.nextStep}`,
     ]),
+    ...(result.held ?? []).flatMap((hold) => [
+      `Abort held for ${hold.jobId}: ${hold.reason}`,
+      `Next step: ${hold.nextStep}`,
+    ]),
+    ...(result.abandoned ?? []).flatMap((abandonment) => [
+      `Recovery ownership abandoned for ${abandonment.jobId}: ${abandonment.reason}`,
+      `Next step: ${abandonment.nextStep}`,
+    ]),
   ]);
 }
 

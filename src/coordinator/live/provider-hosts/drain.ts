@@ -74,6 +74,13 @@ function containmentReaperWithClock<Scope extends symbol>(
         { pid: containment.pid, processGroupId: containment.processGroupId },
       );
     }
+    if (outcome.kind === 'signal-authorization-refused') {
+      throw new ProcessContainmentError(
+        'process_containment_reap_failed',
+        'Signal authorization could not be established for the recorded provider-host process group.',
+        { pid: containment.pid, processGroupId: containment.processGroupId },
+      );
+    }
   };
 }
 

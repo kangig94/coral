@@ -942,6 +942,36 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
+  it('keeps a missing-credential set held when signal authorization is refused', async () => {
+    mockedReadCapsule.mockReturnValueOnce(null);
+    const loc = locator();
+    const containmentProver = createProviderProxySetContainmentProver({
+      ...runtime,
+      process: {
+        ...runtime.process,
+        readProcessIncarnation: () => null,
+        observeLiveness: () => 'absent',
+      },
+    });
+    const reapRecordedContainment = vi.fn(async () => ({ kind: 'signal-authorization-refused' as const }));
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        collectContainmentProof: containmentProver.collectContainmentProof,
+        reapRecordedContainment,
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'signal-authorization-refused' });
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
   it('reports not-bequeathed when the capsule disagrees with the committed locator', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc, { proxyInstanceId: randomUUID() }));

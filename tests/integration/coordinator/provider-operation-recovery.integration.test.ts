@@ -110,7 +110,7 @@ describe('provider-operation startup recovery ownership', () => {
       finalizeInterruptedDurableJob: vi.fn(async () => {}),
       adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
       recoverQueuedJob,
-      interruptAppServerJob: vi.fn(async () => {}),
+      interruptAppServerJob: vi.fn(async () => ({ kind: 'acknowledged' as const })),
       completeRecoveredJob: vi.fn(),
     } as RecoveryCapableService;
     const cancelOperation: DurableProviderProxyOperationAuthority['cancelOperation'] = async (

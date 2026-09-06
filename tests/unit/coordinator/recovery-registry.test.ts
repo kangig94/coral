@@ -120,6 +120,30 @@ describe('RecoveryRegistry', () => {
     expect(reg.has('j1')).toBe(false);
   });
 
+  it('releases explicitly abandoned recovery ownership without reporting the job aborted', () => {
+    const cancelledJobIds = new Set<string>();
+    const reg = new RecoveryRegistry(cancelledJobIds);
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeRuntimeRecord(), () => ({
+      kind: 'abandoned',
+      reason: 'recovery ownership was released without proof of process absence',
+      nextStep: 'Inspect the process outside Coral.',
+    }));
+
+    expect(reg.abort(['j1'])).toEqual({
+      aborted: [],
+      notFound: [],
+      abandoned: [
+        {
+          jobId: 'j1',
+          reason: 'recovery ownership was released without proof of process absence',
+          nextStep: 'Inspect the process outside Coral.',
+        },
+      ],
+    });
+    expect(reg.has('j1')).toBe(false);
+    expect(cancelledJobIds.has('j1')).toBe(false);
+  });
+
   it('retains running-job ownership when its containment abort is refused', () => {
     const cancelledJobIds = new Set<string>();
     const reg = new RecoveryRegistry(cancelledJobIds);
@@ -136,7 +160,8 @@ describe('RecoveryRegistry', () => {
           jobId: 'j1',
           reason: 'leader pid recycled',
           nextStep:
-            'Run coral-cli jobs detail j1; Coral retains ownership until the recorded containment is observed absent.',
+            'Run coral-cli jobs detail j1; restore signal authorization or wait until the recorded containment ' +
+            'is observed absent, then retry the abort.',
         },
       ],
     });
@@ -164,20 +189,85 @@ describe('RecoveryRegistry', () => {
     expect(result.notFound).toEqual(['missing']);
   });
 
-  it('uses the registered app-server abort delegate instead of a PID handler', () => {
+  it('retains an app-server entry after acknowledgment until terminal finalization releases it', async () => {
     const reg = new RecoveryRegistry();
     const abortDelegate = vi.fn();
+    const acknowledged = {
+      kind: 'finalization-pending' as const,
+      reason: 'provider interruption was acknowledged; terminal finalization remains pending',
+      nextStep: 'Wait for terminal finalization.',
+    };
+    let acknowledge!: (value: typeof acknowledged) => void;
+    const settlement = new Promise<typeof acknowledged>((resolve) => {
+      acknowledge = resolve;
+    });
 
     reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeAppServerRuntimeRecord(), () => {
       abortDelegate();
-      return { kind: 'accepted' };
+      return {
+        kind: 'held',
+        reason: 'provider interruption acknowledgment is pending',
+        nextStep: 'Wait for the provider acknowledgment, then inspect the job.',
+        settlement,
+      };
     });
 
     expect(reg.abort(['j1'])).toEqual({
-      aborted: ['j1'],
+      aborted: [],
       notFound: [],
+      held: [
+        {
+          jobId: 'j1',
+          reason: 'provider interruption acknowledgment is pending',
+          nextStep: 'Wait for the provider acknowledgment, then inspect the job.',
+        },
+      ],
     });
     expect(abortDelegate).toHaveBeenCalledTimes(1);
+    expect(reg.has('j1')).toBe(true);
+
+    acknowledge(acknowledged);
+    await settlement;
+    await Promise.resolve();
+
+    expect(reg.has('j1')).toBe(true);
+    expect(reg.abort(['j1'])).toEqual({
+      aborted: [],
+      notFound: [],
+      held: [{ jobId: 'j1', reason: acknowledged.reason, nextStep: acknowledged.nextStep }],
+    });
+  });
+
+  it('retains ownership when an asynchronous abort owner settles with refusal', async () => {
+    const reg = new RecoveryRegistry();
+    const settlement = Promise.resolve({
+      kind: 'refused' as const,
+      reason: 'the provider did not acknowledge interruption',
+      nextStep: 'Repair provider continuity, then retry recovery.',
+    });
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeAppServerRuntimeRecord(), () => ({
+      kind: 'held',
+      reason: 'provider interruption acknowledgment is pending',
+      nextStep: 'Wait for the provider acknowledgment, then inspect the job.',
+      settlement,
+    }));
+
+    reg.abort(['j1']);
+    await settlement;
+    await Promise.resolve();
+
+    expect(reg.abort(['j1'])).toEqual({
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'j1',
+          reason: 'the provider did not acknowledge interruption',
+          nextStep: 'Repair provider continuity, then retry recovery.',
+        },
+      ],
+    });
+    expect(reg.has('j1')).toBe(true);
   });
 
   it('groups entries by projectRoot', () => {

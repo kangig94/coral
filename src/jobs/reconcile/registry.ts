@@ -1,6 +1,51 @@
 import type { JobLaunch, JobRuntime } from '../records.js';
 import type { AbortResult } from '../contracts/abort-registry.js';
-import type { RecordedContainmentAbortResult } from '../../infra/process-containment.js';
+
+type RecoveryAbortAcceptedDisposition = Readonly<{ kind: 'accepted'; settlement?: undefined }>;
+type RecoveryAbortRefusedDisposition = Readonly<{
+  kind: 'refused';
+  reason: string;
+  nextStep?: string;
+  settlement?: undefined;
+}>;
+type RecoveryAbortAbandonedDisposition = Readonly<{
+  kind: 'abandoned';
+  reason: string;
+  nextStep: string;
+  settlement?: undefined;
+}>;
+type RecoveryAbortSettledHoldDisposition = Readonly<{
+  kind: 'held';
+  reason: string;
+  nextStep: string;
+  settlement?: undefined;
+}>;
+type RecoveryAbortFinalizationPendingDisposition = Readonly<{
+  kind: 'finalization-pending';
+  reason: string;
+  nextStep: string;
+  settlement?: undefined;
+}>;
+type RecoveryAbortSettledDisposition =
+  | RecoveryAbortAcceptedDisposition
+  | RecoveryAbortRefusedDisposition
+  | RecoveryAbortAbandonedDisposition
+  | RecoveryAbortSettledHoldDisposition
+  | RecoveryAbortFinalizationPendingDisposition;
+type RecoveryAbortPendingDisposition = Readonly<{
+  kind: 'held';
+  reason: string;
+  nextStep: string;
+  settlement: Promise<RecoveryAbortSettledDisposition>;
+}>;
+
+export type RecoveryAbortDisposition = RecoveryAbortSettledDisposition | RecoveryAbortPendingDisposition;
+
+export type ActiveRecoveryAbortDisposition =
+  | RecoveryAbortRefusedDisposition
+  | RecoveryAbortSettledHoldDisposition
+  | RecoveryAbortFinalizationPendingDisposition
+  | RecoveryAbortPendingDisposition;
 
 export interface RecoveryEntry {
   launchRecord: JobLaunch;
@@ -9,7 +54,8 @@ export interface RecoveryEntry {
 
 export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
-  private readonly abortHandlers = new Map<string, () => RecordedContainmentAbortResult>();
+  private readonly abortHandlers = new Map<string, () => RecoveryAbortDisposition>();
+  private readonly abortDispositions = new Map<string, ActiveRecoveryAbortDisposition>();
   private readonly cancelledJobIds: Set<string>;
 
   constructor(cancelledJobIds: Set<string> = new Set()) {
@@ -20,9 +66,10 @@ export class RecoveryRegistry {
     jobId: string,
     launchRecord: JobLaunch,
     runtimeRecord?: JobRuntime,
-    abortHandler?: () => RecordedContainmentAbortResult,
+    abortHandler?: () => RecoveryAbortDisposition,
   ): void {
     this.entries.set(jobId, { launchRecord, runtimeRecord });
+    this.abortDispositions.delete(jobId);
 
     if (abortHandler) {
       this.abortHandlers.set(jobId, abortHandler);
@@ -39,16 +86,23 @@ export class RecoveryRegistry {
     return this.entries.get(jobId);
   }
 
-  setAbortHandler(jobId: string, abortHandler: () => RecordedContainmentAbortResult): boolean {
+  setAbortHandler(jobId: string, abortHandler: () => RecoveryAbortDisposition): boolean {
     if (!this.entries.has(jobId)) return false;
     this.abortHandlers.set(jobId, abortHandler);
+    this.abortDispositions.delete(jobId);
     return true;
+  }
+
+  getAbortDisposition(jobId: string): ActiveRecoveryAbortDisposition | undefined {
+    return this.abortDispositions.get(jobId);
   }
 
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];
     const notFound: string[] = [];
     const refused: NonNullable<AbortResult['refused']> = [];
+    const held: NonNullable<AbortResult['held']> = [];
+    const abandoned: NonNullable<AbortResult['abandoned']> = [];
     for (const jobId of jobIds) {
       const entry = this.entries.get(jobId);
       if (!entry) {
@@ -60,20 +114,78 @@ export class RecoveryRegistry {
         notFound.push(jobId);
         continue;
       }
-      const disposition = abortHandler?.() ?? { kind: 'accepted' as const };
+      const disposition = this.abortDispositions.get(jobId) ?? abortHandler?.() ?? { kind: 'accepted' as const };
       if (disposition.kind === 'refused') {
         refused.push({
           jobId,
           reason: disposition.reason,
-          nextStep: `Run coral-cli jobs detail ${jobId}; Coral retains ownership until the recorded containment is observed absent.`,
+          nextStep:
+            disposition.nextStep ??
+            `Run coral-cli jobs detail ${jobId}; restore signal authorization or wait until the recorded ` +
+              'containment is observed absent, then retry the abort.',
         });
+        continue;
+      }
+      if (disposition.kind === 'abandoned') {
+        this.remove(jobId);
+        abandoned.push({ jobId, reason: disposition.reason, nextStep: disposition.nextStep });
+        continue;
+      }
+      if (disposition.kind === 'finalization-pending') {
+        this.abortDispositions.set(jobId, disposition);
+        held.push({ jobId, reason: disposition.reason, nextStep: disposition.nextStep });
+        continue;
+      }
+      if (disposition.kind === 'held') {
+        const settlement = disposition.settlement;
+        const activeDisposition: ActiveRecoveryAbortDisposition = {
+          kind: 'held',
+          reason: disposition.reason,
+          nextStep: disposition.nextStep,
+          ...(settlement === undefined ? {} : { settlement }),
+        };
+        this.abortDispositions.set(jobId, activeDisposition);
+        if (settlement !== undefined) this.trackAbortSettlement(jobId, settlement);
+        held.push({ jobId, reason: disposition.reason, nextStep: disposition.nextStep });
         continue;
       }
       this.cancelledJobIds.add(jobId);
       this.remove(jobId);
       aborted.push(jobId);
     }
-    return { aborted, notFound, ...(refused.length === 0 ? {} : { refused }) };
+    return {
+      aborted,
+      notFound,
+      ...(refused.length === 0 ? {} : { refused }),
+      ...(held.length === 0 ? {} : { held }),
+      ...(abandoned.length === 0 ? {} : { abandoned }),
+    };
+  }
+
+  private trackAbortSettlement(jobId: string, settlement: Promise<RecoveryAbortSettledDisposition>): void {
+    void settlement.then(
+      (disposition) => {
+        if (this.abortDispositions.get(jobId)?.settlement !== settlement) return;
+        if (disposition.kind === 'accepted') {
+          this.cancelledJobIds.add(jobId);
+          this.remove(jobId);
+          return;
+        }
+        if (disposition.kind === 'abandoned') {
+          this.remove(jobId);
+          return;
+        }
+        this.abortDispositions.set(jobId, disposition);
+      },
+      (error: unknown) => {
+        if (this.abortDispositions.get(jobId)?.settlement !== settlement) return;
+        this.abortDispositions.set(jobId, {
+          kind: 'refused',
+          reason: error instanceof Error ? error.message : String(error),
+          nextStep: `Run coral-cli jobs detail ${jobId}, repair the abort owner, then retry the abort.`,
+        });
+      },
+    );
   }
 
   markCancelled(jobId: string): void {
@@ -87,6 +199,7 @@ export class RecoveryRegistry {
   remove(jobId: string): void {
     this.entries.delete(jobId);
     this.abortHandlers.delete(jobId);
+    this.abortDispositions.delete(jobId);
   }
 
   [Symbol.iterator](): IterableIterator<[string, RecoveryEntry]> {

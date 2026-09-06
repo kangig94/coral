@@ -65,6 +65,7 @@ export type ProviderProxySetOperatorExit =
         | 'enforcer-alive'
         | 'enforcer-unobservable'
         | 'recorded-group-unattributable'
+        | 'signal-authorization-refused'
         | 'store-unreadable'
         | 'representation-release-fatal';
     }>;

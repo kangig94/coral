@@ -6,7 +6,7 @@ import type {
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
 } from '../../../jobs/reconcile/contracts.js';
-import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
+import type { RecoveredAppServerFinalizationReason } from '../../../jobs/reconcile/interrupted-reason.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { readContinuityRef } from '../../../sessions/continuity.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
@@ -21,7 +21,7 @@ type InterruptedRecoveryPlanBase = Readonly<{
   launchRecord: ProviderRecoveryLaunch;
   session: ProviderRecoverySession;
   runtimeRecord: AppServerRuntime;
-  reason: InterruptedAppServerReason;
+  reason: RecoveredAppServerFinalizationReason;
   request: ProviderRequest;
   continuity: ProviderContinuityBlob | undefined;
   preservedConversationRef: string | undefined;
@@ -73,7 +73,7 @@ export type DurableInterruptedRecoveryPlan =
 export function planInterruptedAppServerRecovery(
   authority: ProviderRecoveryAuthority,
   runtimeRecord: AppServerRuntime,
-  reason: InterruptedAppServerReason,
+  reason: RecoveredAppServerFinalizationReason,
   capabilities: Readonly<{ recovery: boolean; probe: boolean }>,
   providerOperation: ProviderOperationCarrierRecord | null,
 ): AppServerInterruptedRecoveryPlan {
