@@ -3886,6 +3886,133 @@ describe('ProviderProxySetLifecycle', () => {
     },
   );
 
+  it.each([
+    { producerSettlement: 'synchronous' as const, contract: 'current' as const, mode: 'contain' as const },
+    { producerSettlement: 'asynchronous' as const, contract: 'current' as const, mode: 'contain' as const },
+    { producerSettlement: 'synchronous' as const, contract: 'current' as const, mode: 'abandon' as const },
+    { producerSettlement: 'asynchronous' as const, contract: 'current' as const, mode: 'abandon' as const },
+    { producerSettlement: 'synchronous' as const, contract: 'boolean' as const, mode: 'contain' as const },
+    { producerSettlement: 'asynchronous' as const, contract: 'boolean' as const, mode: 'contain' as const },
+    { producerSettlement: 'synchronous' as const, contract: 'boolean' as const, mode: 'abandon' as const },
+    { producerSettlement: 'asynchronous' as const, contract: 'boolean' as const, mode: 'abandon' as const },
+  ])(
+    'returns the $contract RPC $mode verdict when initial capsule retirement fails $producerSettlement',
+    async ({ producerSettlement, contract, mode }) => {
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const clock = new ManualClock();
+      const authority = fakeAuthority();
+      const retirementFailure = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      const retireCapsule = vi.fn((): CapsuleRetirementAttemptOutcome | Promise<CapsuleRetirementAttemptOutcome> => {
+        if (producerSettlement === 'synchronous') throw retirementFailure;
+        return Promise.reject(retirementFailure);
+      });
+      const globalFatals: ProviderProxySetLifecycleFatalError[] = [];
+      const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+        async (_identity, _proof, _signal, onSignal) => {
+          onSignal('SIGTERM');
+          return { kind: 'containment-absent', disappearanceReceipt: 'operator-observed-absence' };
+        },
+      );
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent: noContainmentProof,
+        reapRecordedContainment,
+        retireCapsule,
+        onFatal: (error) => globalFatals.push(error),
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/operator-exit.handoff.v3.json');
+      latchAuthorityFault(authority, terminalAuthorityFault());
+      clock.elapse(30_000);
+      const address = providerProxySetAddress(authority.setIdentity);
+      const authorization =
+        contract === 'current'
+          ? lifecycle.authorizeOperatorExit(address)
+          : lifecycle.authorizeBooleanOperatorExit(address);
+      if (authorization.kind !== 'authorized') {
+        throw new Error(`expected authorization, received ${authorization.kind}`);
+      }
+      const proof = await operatorContainmentProof(
+        authorization.capability,
+        mode === 'contain' ? containmentEvidence('operator-observed-absence') : enforcersUnobservable,
+      );
+      const abandonWithoutAbsence = mode === 'abandon';
+      const releaseStartedEffect = abandonWithoutAbsence
+        ? {
+            signalsSent: [] as const,
+            containmentAbsent: false,
+            representationAction: 'abandonment-release-started' as const,
+          }
+        : {
+            signalsSent: ['SIGTERM'] as const,
+            containmentAbsent: true,
+            representationAction: 'absence-release-started' as const,
+          };
+
+      const completion =
+        contract === 'current'
+          ? lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence)
+          : lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence);
+      await expect(completion).resolves.toEqual(
+        contract === 'current'
+          ? abandonWithoutAbsence
+            ? {
+                kind: 'representation-release-abandoned',
+                setIdentity: address,
+                successor: { owner: 'operator-command', acceptance: 'accepted' },
+                effect: { ...releaseStartedEffect, representationAction: 'fatal-release-abandoned' },
+              }
+            : {
+                kind: 'representation-release-abandonment-required',
+                setIdentity: address,
+                effect: releaseStartedEffect,
+              }
+          : abandonWithoutAbsence
+            ? {
+                kind: 'abandoned',
+                setIdentity: address,
+                enforcerObservations: enforcersUnobservable.observations,
+                claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
+                effect: releaseStartedEffect,
+              }
+            : {
+                kind: 'contained',
+                setIdentity: address,
+                disappearanceReceipt: 'operator-observed-absence',
+                claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
+                effect: releaseStartedEffect,
+              },
+      );
+
+      expect(globalFatals).toHaveLength(1);
+      expect(isProviderProxyRecoveryFatalError(globalFatals[0])).toBe(true);
+      if (contract === 'current' && abandonWithoutAbsence) {
+        expect(lifecycle.representationReleaseHolds()).toEqual([]);
+        return;
+      }
+      expect(lifecycle.snapshot().operatorSets).toContainEqual(
+        expect.objectContaining({
+          setIdentity: address,
+          operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
+        }),
+      );
+      expect(lifecycle.representationReleaseHolds()).toEqual([
+        expect.objectContaining({
+          disposition: expect.objectContaining({
+            kind: 'fatal-successor-pending',
+            exit: 'provider-proxy-set-operator-abandonment',
+            successor: expect.objectContaining({ owner: 'operator-command', acceptance: 'pending' }),
+          }),
+        }),
+      ]);
+    },
+  );
+
   it('abandons representation through the distinct claim consumer without constructing a stop-and-reap action', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
