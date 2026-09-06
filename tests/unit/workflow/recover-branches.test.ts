@@ -1496,12 +1496,21 @@ describe('workflow recovery branch rules', () => {
       .run(JSON.stringify(sessionEntry), sessionId);
 
     backend.runtime.spawner.enqueueDurable({ pid: 41_424, exit: null });
-    const durable = await backend.runtime.process.durable.launch({
+    let durable = await backend.runtime.process.durable.launch({
       provider: 'codex',
       command: 'codex',
       args: ['exec'],
       jobDir: backend.progressStore.jobDir(childJobId),
     });
+    if (durable.disposition === 'held') {
+      const reason = durable.reason;
+      while (durable.disposition === 'held') {
+        await durable.retryAfter;
+        const retry = await durable.retry();
+        if (retry.disposition === 'settled') throw new Error(reason);
+        durable = retry;
+      }
+    }
     const childLaunch: JobLaunch = {
       jobId: childJobId,
       owner: { kind: 'workflow', id: failedWorkflowId },

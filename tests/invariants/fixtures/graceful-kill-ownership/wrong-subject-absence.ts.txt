@@ -1,0 +1,11 @@
+async function launch(child: Child, other: Child, runtime: Runtime): Promise<LaunchResult> {
+  gracefulKill(child, runtime, observeLiveness);
+  if (observeLiveness(other.pid) === 'absent') {
+    return { disposition: 'settled' };
+  }
+  return {
+    disposition: 'held',
+    retryAfter: child.closed,
+    retry: () => launch(child, other, runtime),
+  };
+}

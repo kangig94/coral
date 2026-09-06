@@ -13,6 +13,7 @@ import type {
   DurableContainmentStatus,
   DurableLaunchResult,
   DurableLaunchSignalAuthority,
+  DurablePendingLaunchObligation,
   DurableProvisionalProcessSubject,
   Runtime,
 } from '../../runtime/ports.js';
@@ -293,11 +294,14 @@ export async function spawnDurableJobTransport(params: {
   let retainedProcess: DurableProcessRetention | null = null;
   let resolvePendingLaunch!: () => void;
   let pendingLaunchOwned = true;
+  let pendingWrapperObligation: DurablePendingLaunchObligation | null = null;
   const pendingSettlement = new Promise<void>((resolve) => {
     resolvePendingLaunch = resolve;
   });
   const pendingLaunch: PendingDurableLaunch = {
-    settled: pendingSettlement,
+    get settled() {
+      return pendingWrapperObligation?.settled ?? pendingSettlement;
+    },
     retainedIdentity: () => ({
       kind: 'awaiting-wrapper-identity',
       provider: options.provider,
@@ -312,6 +316,16 @@ export async function spawnDurableJobTransport(params: {
     resolvePendingLaunch();
   };
   pendingLaunches.add(pendingLaunch);
+
+  const acceptPendingWrapper = (obligation: DurablePendingLaunchObligation): Readonly<{ kind: 'accepted' }> => {
+    if (pendingWrapperObligation !== null && pendingWrapperObligation !== obligation) {
+      throw new Error('Durable launch changed its pending wrapper obligation.');
+    }
+    pendingWrapperObligation = obligation;
+    void obligation.settled.then(releasePendingLaunch);
+    if (abortedBySignal) obligation.requestTermination();
+    return { kind: 'accepted' };
+  };
 
   const releaseCleanupOwnership = (
     absence: DurableContainmentAbsenceCapability,
@@ -620,14 +634,18 @@ export async function spawnDurableJobTransport(params: {
       jobDir: options.jobDir,
       envAdditions: options.extraEnv,
       env: options.exactEnv,
-      onWrapperSpawned: publishWrapperSpawned,
+      onWrapperSpawned: acceptPendingWrapper,
+      onWrapperIdentified: publishWrapperSpawned,
       onSpawned: publishSpawned,
     };
     if (options.signal) {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
-        if (cleanupKey === null) return;
+        if (cleanupKey === null) {
+          pendingWrapperObligation?.requestTermination();
+          return;
+        }
         enterContainmentHold('termination requested; process absence is not yet proven');
         void cleanup().then(
           () => undefined,
@@ -645,7 +663,17 @@ export async function spawnDurableJobTransport(params: {
     }
     let durable: DurableLaunchResult;
     try {
-      durable = await runtime.process.durable.launch(launchOptions);
+      let launchDisposition = await runtime.process.durable.launch(launchOptions);
+      if (launchDisposition.disposition === 'held') {
+        const reason = launchDisposition.reason;
+        while (launchDisposition.disposition === 'held') {
+          await launchDisposition.retryAfter;
+          const retried = await launchDisposition.retry();
+          if (retried.disposition === 'settled') throw new Error(reason);
+          launchDisposition = retried;
+        }
+      }
+      durable = launchDisposition;
     } catch (launchError: unknown) {
       if (cleanupKey === null) throw launchError;
       while (true) {
@@ -760,7 +788,7 @@ export async function spawnDurableJobTransport(params: {
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
     }
   } finally {
-    releasePendingLaunch();
+    if (pendingWrapperObligation === null) releasePendingLaunch();
     if (abortHandler && options.signal) {
       options.signal.removeEventListener('abort', abortHandler);
     }

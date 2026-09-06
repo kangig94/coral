@@ -48,7 +48,9 @@ import type {
 import type {
   DurableExecutionTransport,
   DurableCliProcessSubject,
+  DurableLaunchHeld,
   DurableLaunchHandle,
+  DurableLaunchRetryDisposition,
   DurableLaunchSignalAuthority,
   IdPort,
   ProcessPort,
@@ -450,8 +452,74 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: buildSpawnEnv(),
       });
-      wrapper.unref();
-      wrapper.channel?.unref();
+      let wrapperUnreferenced = false;
+      const unrefWrapper = (): void => {
+        if (wrapperUnreferenced) return;
+        wrapperUnreferenced = true;
+        wrapper.unref();
+        wrapper.channel?.unref();
+      };
+
+      let wrapperClosed = false;
+      const wrapperSettlement = new Promise<void>((resolve) => {
+        wrapper.on('close', () => {
+          wrapperClosed = true;
+          resolve();
+        });
+      });
+
+      const holdLaunchFailure = (reason: string): DurableLaunchHeld => {
+        const retry = async (): Promise<DurableLaunchRetryDisposition> => {
+          gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+          if (wrapperClosed) return { disposition: 'settled' };
+          if (wrapper.pid !== undefined) {
+            try {
+              if (observeProcessLiveness(wrapper.pid) === 'absent') return { disposition: 'settled' };
+            } catch {
+              // Unknown liveness retains the close-backed launch obligation.
+            }
+          }
+          return holdLaunchFailure(reason);
+        };
+        return {
+          disposition: 'held',
+          owner: 'launch-caller',
+          pid: wrapper.pid ?? null,
+          reason,
+          retryAfter: Promise.race([wrapperSettlement, time.sleep(DURABLE_POLL_INTERVAL_MS)]),
+          retry,
+        };
+      };
+
+      let ownershipAccepted = false;
+      const resolveLaunchFailure = async (reason: string): Promise<DurableLaunchHeld> => {
+        let disposition = holdLaunchFailure(reason);
+        if (ownershipAccepted) return disposition;
+        while (true) {
+          await disposition.retryAfter;
+          const retry = await disposition.retry();
+          if (retry.disposition === 'settled') throw new Error(reason);
+          disposition = retry;
+        }
+      };
+
+      try {
+        const ownershipAcceptance = options.onWrapperSpawned?.({
+          pid: wrapper.pid ?? null,
+          settled: wrapperSettlement,
+          requestTermination: () =>
+            gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
+        });
+        if (options.onWrapperSpawned !== undefined && ownershipAcceptance?.kind !== 'accepted') {
+          return resolveLaunchFailure('Durable wrapper ownership was not accepted.');
+        }
+        if (ownershipAcceptance?.kind === 'accepted') {
+          ownershipAccepted = true;
+          unrefWrapper();
+        }
+      } catch (error: unknown) {
+        return resolveLaunchFailure(`Durable wrapper ownership was refused: ${errorMessage(error)}`);
+      }
 
       const signalAuthority: DurableLaunchSignalAuthority | undefined =
         wrapper.pid === undefined
@@ -472,8 +540,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         }
       }
       if (wrapper.pid === undefined || initiallyObservedLeaderIncarnation === null) {
-        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-        throw new Error(
+        return resolveLaunchFailure(
           'Durable launch could not establish the wrapper process identity before provider spawn. Retry the job; if this persists, verify process inspection permissions.',
         );
       }
@@ -489,7 +556,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         wrapper,
       });
       try {
-        options.onWrapperSpawned?.({
+        options.onWrapperIdentified?.({
           runtimeRecord: provisionalRuntimeRecord,
           pid: wrapper.pid,
           leaderIncarnation: initiallyObservedLeaderIncarnation,
@@ -502,26 +569,29 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           });
         });
       } catch (error: unknown) {
-        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
         void readiness.catch(() => {});
-        throw error;
+        return resolveLaunchFailure(errorMessage(error));
       }
 
-      const { runtimeRecord, reportedLeaderIncarnation, childRoot, exitPromise } = await readiness;
+      let ready;
+      try {
+        ready = await readiness;
+      } catch (error: unknown) {
+        return resolveLaunchFailure(errorMessage(error));
+      }
+      const { runtimeRecord, reportedLeaderIncarnation, childRoot, exitPromise } = ready;
       if (
         initiallyObservedLeaderIncarnation !== null &&
         reportedLeaderIncarnation !== null &&
         initiallyObservedLeaderIncarnation !== reportedLeaderIncarnation
       ) {
-        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
         void exitPromise.catch(() => {});
-        throw new Error('Durable wrapper identity changed before launch readiness. Retry the job.');
+        return resolveLaunchFailure('Durable wrapper identity changed before launch readiness. Retry the job.');
       }
       const leaderIncarnation = initiallyObservedLeaderIncarnation ?? reportedLeaderIncarnation;
       if (leaderIncarnation === null || childRoot === null) {
-        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
         void exitPromise.catch(() => {});
-        throw new Error(
+        return resolveLaunchFailure(
           'Durable launch could not establish a recoverable process identity. Retry the job; if this persists, verify process inspection permissions.',
         );
       }
@@ -539,14 +609,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           ...(signalAuthority === undefined ? {} : { signalAuthority }),
         });
       } catch (error: unknown) {
-        gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
         void exitPromise.catch(() => {});
-        throw error;
+        return resolveLaunchFailure(errorMessage(error));
       }
       const launchHandle = randomUUID() as DurableLaunchHandle;
       durableExitRegistrations.set(launchHandle, { pid: runtimeRecord.pid, processSubject, exitPromise });
+      unrefWrapper();
 
       return {
+        disposition: 'launched',
         launchHandle,
         pid: runtimeRecord.pid,
         stdoutPath: runtimeRecord.stdoutPath,

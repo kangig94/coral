@@ -17,12 +17,14 @@ export type UndischargedRemainder =
   | Readonly<{ owner: 'none' }>;
 
 export type ShutdownHoldReason =
+  | 'kb-daemon-shutdown-unsettled'
   | 'process-incarnation-probes-unsettled'
   | 'lifecycle-reactor-disposal-unsettled'
   | 'provider-operation-mutations-unsettled'
   | 'required-shutdown-step-unsettled';
 
 export type ShutdownHoldExit =
+  | 'kb-daemon-process-close'
   | 'process-incarnation-probe-settlement'
   | 'lifecycle-reactor-disposal-settlement'
   | 'admitted-provider-operation-mutation-settlement'

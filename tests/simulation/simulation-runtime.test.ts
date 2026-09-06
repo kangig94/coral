@@ -1,10 +1,10 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import type { StoragePort } from '#src/infra/port-types.js';
-import type { DurableProvisionalLaunch } from '#src/runtime/ports.js';
+import type { DurablePendingLaunchObligation, DurableProvisionalLaunch } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { createSimulationBackend } from '#tools/simulation/core/backend.js';
@@ -784,7 +784,16 @@ describe('simulation runtime', () => {
     });
 
     await Promise.resolve();
-    const durable = await durableLaunchPromise;
+    let durable = await durableLaunchPromise;
+    if (durable.disposition === 'held') {
+      const reason = durable.reason;
+      while (durable.disposition === 'held') {
+        await durable.retryAfter;
+        const retry = await durable.retry();
+        if (retry.disposition === 'settled') throw new Error(reason);
+        durable = retry;
+      }
+    }
     const durableExitPromise = runtime.process.durable.waitForExit(durable);
 
     runtime.time.tick(5);
@@ -1131,6 +1140,110 @@ describe('simulation runtime', () => {
     expect(runtime.process.observeLiveness(pid)).toBe('alive');
     expect(incarnation).not.toBeNull();
     expect(runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform)).toBe(incarnation);
+  });
+
+  it('settles a wrapper internally when simulated ownership acceptance is malformed', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueDurable({
+      pid: 30_002,
+      exit: null,
+      kills: [{ signal: 'SIGTERM', delayMs: 1, exitSignal: 'SIGTERM' }],
+    });
+    let observeWrapper!: (obligation: DurablePendingLaunchObligation) => void;
+    const wrapperObserved = new Promise<DurablePendingLaunchObligation>((resolve) => {
+      observeWrapper = resolve;
+    });
+    const onWrapperIdentified = vi.fn();
+    const onSpawned = vi.fn();
+
+    const launch = runtime.process.durable.launch({
+      provider: 'codex',
+      command: 'codex',
+      args: ['--exec'],
+      jobDir: '/tmp/sim/jobs/refused-wrapper',
+      onWrapperSpawned: ((obligation: DurablePendingLaunchObligation) => {
+        observeWrapper(obligation);
+      }) as never,
+      onWrapperIdentified,
+      onSpawned,
+    });
+    const obligation = await wrapperObserved;
+    let launchSettled = false;
+    void launch.then(
+      () => {
+        launchSettled = true;
+      },
+      () => {
+        launchSettled = true;
+      },
+    );
+
+    await Promise.resolve();
+    expect(launchSettled).toBe(false);
+    expect(runtime.process.observeLiveness(30_002)).toBe('alive');
+    expect(onWrapperIdentified).not.toHaveBeenCalled();
+    expect(onSpawned).not.toHaveBeenCalled();
+
+    runtime.time.tick(100);
+    await flushMicrotasks();
+    runtime.time.tick(1);
+
+    await obligation.settled;
+    await expect(launch).rejects.toThrow('Durable wrapper ownership was not accepted.');
+    expect(runtime.process.observeLiveness(30_002)).toBe('absent');
+    expect(onWrapperIdentified).not.toHaveBeenCalled();
+    expect(onSpawned).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'immediate', runtimeDelayMs: 0 },
+    { label: 'delayed', runtimeDelayMs: 10 },
+  ])('settles a no-owner wrapper when $label runtime publication throws', async ({ runtimeDelayMs }) => {
+    const runtime = new SimulationRuntime();
+    const pid = 30_003 + runtimeDelayMs;
+    runtime.spawner.enqueueDurable({
+      pid,
+      exit: null,
+      runtimeDelayMs,
+      kills: [{ signal: 'SIGTERM', delayMs: 1, exitSignal: 'SIGTERM' }],
+    });
+    let observePublication!: () => void;
+    const publicationObserved = new Promise<void>((resolve) => {
+      observePublication = resolve;
+    });
+
+    const launch = runtime.process.durable.launch({
+      provider: 'codex',
+      command: 'codex',
+      args: ['--exec'],
+      jobDir: `/tmp/sim/jobs/${runtimeDelayMs === 0 ? 'immediate' : 'delayed'}-publication-failure`,
+      onSpawned: () => {
+        observePublication();
+        throw new Error('synthetic runtime publication failure');
+      },
+    });
+    if (runtimeDelayMs > 0) runtime.time.tick(runtimeDelayMs);
+    await publicationObserved;
+
+    let launchSettled = false;
+    void launch.then(
+      () => {
+        launchSettled = true;
+      },
+      () => {
+        launchSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(launchSettled).toBe(false);
+    expect(runtime.process.observeLiveness(pid)).toBe('alive');
+
+    runtime.time.tick(100);
+    await flushMicrotasks();
+    runtime.time.tick(1);
+
+    await expect(launch).rejects.toThrow('synthetic runtime publication failure');
+    expect(runtime.process.observeLiveness(pid)).toBe('absent');
   });
 
   // Without advancing the clock, which is the whole point. A script can retire a pid and allocate the same

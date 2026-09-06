@@ -1,0 +1,9 @@
+function launch(child: Child, runtime: Runtime): void {
+  const owner = {
+    stop: () => {
+      gracefulKill(child, runtime, observeLiveness);
+      return;
+    },
+  };
+  void owner;
+}

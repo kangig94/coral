@@ -1,0 +1,4 @@
+async function launch(child: Child, runtime: Runtime): Promise<LaunchResult> {
+  gracefulKill(child, runtime, observeLiveness);
+  return withholdResult();
+}

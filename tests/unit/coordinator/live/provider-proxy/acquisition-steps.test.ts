@@ -14,9 +14,11 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   return {
     ...original,
     spawnRoleProcess: vi.fn(() => ({
+      kind: 'spawned',
       child: { on: vi.fn() },
       pid: 101,
       incarnation: testIncarnation(11),
+      spawnFailed: new Promise<never>(() => undefined),
     })),
   };
 });

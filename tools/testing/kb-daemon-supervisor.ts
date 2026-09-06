@@ -32,7 +32,7 @@ export type MockKbDaemonSupervisorOptions = {
 };
 
 export function createMockKbDaemonSupervisor(options: MockKbDaemonSupervisorOptions = {}): KbDaemonSupervisor {
-  const health = options.health ?? createOnlineKbDaemonHealth();
+  let health = options.health ?? createOnlineKbDaemonHealth();
   return {
     read: options.read ?? vi.fn(() => health),
     start: options.start ?? vi.fn(async () => health),
@@ -65,7 +65,12 @@ export function createMockKbDaemonSupervisor(options: MockKbDaemonSupervisorOpti
     listActiveKbJobs: options.listActiveKbJobs ?? vi.fn(async () => ({ active: [] })),
     stop: options.stop ?? vi.fn(async () => health),
     restart: options.restart ?? vi.fn(async () => health),
-    dispose: options.dispose ?? vi.fn(async () => undefined),
+    dispose:
+      options.dispose ??
+      vi.fn(async () => {
+        health = { ...health, phase: 'stopped', pid: null, readyAt: null };
+        return { kind: 'confirmed-absent' as const, snapshot: health };
+      }),
     onExit: options.onExit ?? vi.fn(() => () => {}),
   };
 }

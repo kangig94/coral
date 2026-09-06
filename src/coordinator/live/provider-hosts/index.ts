@@ -1,8 +1,9 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
-import type {
-  ContainedProviderServerHandle,
-  ProviderServerHandle,
-  SpawnProviderServerFn,
+import {
+  PROVIDER_CONTAINMENT_ACCEPTED,
+  type ContainedProviderServerHandle,
+  type ProviderServerHandle,
+  type SpawnProviderServerFn,
 } from '../../../providers/app-server-transport.js';
 import type { ProviderHostDiagnosticsSnapshot } from '../../../providers/host-diagnostics.js';
 import type { ProviderHostInventoryRecord } from '../../services/provider-host-administration.js';
@@ -699,6 +700,7 @@ export class DefaultProviderHostManager
             generation,
             (containment) => {
               entry.containment = containment;
+              return PROVIDER_CONTAINMENT_ACCEPTED;
             },
           );
           void spawned.then(

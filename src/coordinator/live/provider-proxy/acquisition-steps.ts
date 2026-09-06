@@ -23,6 +23,7 @@ import {
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
   runtimeControlTimer,
+  requireSpawnedRole,
   spawnRoleProcess,
   type RoleConnectRetryOptions,
   type RoleSpawnPorts,
@@ -290,14 +291,16 @@ export function createProviderProxyAcquisitionSteps(
         platform,
         readProcessIncarnation,
       };
-      const spawned = spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
-        pluginRoot: options.pluginRoot,
-        detached: true,
-        envAdditions: {
-          [BUILD_FLAVOR_ENV_KEY]: flavor,
-          [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
-        },
-      });
+      const spawned = await requireSpawnedRole(
+        spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
+          pluginRoot: options.pluginRoot,
+          detached: true,
+          envAdditions: {
+            [BUILD_FLAVOR_ENV_KEY]: flavor,
+            [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
+          },
+        }),
+      );
       guardianSpawn = spawned;
       guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
       guardianSpawnUndo.retainPossibleProxy();

@@ -252,12 +252,21 @@ describe('simulation app-server and recording', () => {
 
     const durableRuntime = new SimulationRuntime();
     durableRuntime.spawner.enqueueDurable(recordingToDurableScript(loaded));
-    const durable = await durableRuntime.process.durable.launch({
+    let durable = await durableRuntime.process.durable.launch({
       provider: 'mock-provider',
       command: 'mock-provider',
       args: ['--exec'],
       jobDir: '/tmp/sim/jobs/recording-roundtrip',
     });
+    if (durable.disposition === 'held') {
+      const reason = durable.reason;
+      while (durable.disposition === 'held') {
+        await durable.retryAfter;
+        const retry = await durable.retry();
+        if (retry.disposition === 'settled') throw new Error(reason);
+        durable = retry;
+      }
+    }
     const exitPromise = durableRuntime.process.durable.waitForExit(durable);
 
     await advance(durableRuntime, 4);

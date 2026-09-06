@@ -676,7 +676,7 @@ export function createSimulationBackend(
 
   const listenHost = scenario.listen?.host ?? DEFAULT_LISTEN_HOST;
   const listenPort = scenario.listen?.port ?? DEFAULT_LISTEN_PORT;
-  const kbDaemonHealth: KbDaemonHealthSnapshot = {
+  let kbDaemonHealth: KbDaemonHealthSnapshot = {
     enabled: true,
     phase: 'online',
     generation: 1,
@@ -711,7 +711,10 @@ export function createSimulationBackend(
     listActiveKbJobs: async () => ({ active: [] }),
     stop: async () => ({ ...kbDaemonHealth }),
     restart: async () => ({ ...kbDaemonHealth }),
-    dispose: async () => undefined,
+    dispose: async () => {
+      kbDaemonHealth = { ...kbDaemonHealth, phase: 'stopped', pid: null, readyAt: null };
+      return { kind: 'confirmed-absent', snapshot: { ...kbDaemonHealth } };
+    },
     onExit: () => () => {},
   };
 

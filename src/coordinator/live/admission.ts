@@ -11,6 +11,7 @@ import {
 } from './durable-transport.js';
 import {
   type ContainedProviderServerHandle,
+  type ProviderContainmentAcceptance,
   type ProviderResponseObservationSink,
   type SpawnProviderServerOptions,
   spawnProviderServerTransport,
@@ -156,7 +157,9 @@ export class LaunchCoordinator {
     options: SpawnProviderServerOptions,
     observeProviderResponse: ProviderResponseObservationSink = () => {},
     generation = this.allocateProviderServerGeneration(),
-    recordContainment?: (containment: ContainedProviderServerHandle['containmentIdentity']) => void,
+    recordContainment?: (
+      containment: ContainedProviderServerHandle['containmentIdentity'],
+    ) => ProviderContainmentAcceptance,
   ): Promise<ContainedProviderServerHandle> {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
     assertProviderHostPlatformSupported(this.runtime.env.platform());

@@ -303,6 +303,7 @@ function roleSenderPorts(directory: string, orphanTimeoutMs?: string): ProviderR
 
 function fakeSpawnedRole(): unknown {
   return {
+    kind: 'spawned',
     child: {},
     pid: 2_000_000_000,
     incarnation: testIncarnation(1),

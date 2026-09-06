@@ -64,6 +64,7 @@ export type RoleSpawnOptions = Readonly<{
 }>;
 
 export type SpawnedRoleProcess = Readonly<{
+  kind: 'spawned';
   child: ChildProcessLike;
   pid: number;
   incarnation: ProcessIncarnation;
@@ -77,6 +78,16 @@ export type SpawnedRoleProcess = Readonly<{
   spawnFailed: Promise<never>;
 }>;
 
+export type HeldRoleSpawn = Readonly<{
+  kind: 'held';
+  child: ChildProcessLike;
+  error: RoleSpawnError;
+  settled: Promise<void>;
+  retry(): Promise<void>;
+}>;
+
+export type RoleSpawnDisposition = SpawnedRoleProcess | HeldRoleSpawn;
+
 /** Mirrors `kb-daemon-supervisor.ts`'s own entrypoint resolution: reuse the artifact already running when
  *  its basename matches, otherwise resolve it under the plugin root's bundled bridge. */
 function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | undefined): string {
@@ -86,19 +97,13 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
   return join(pluginRoot, 'bridge', 'coral-backend.cjs');
 }
 
-/**
- * Spawns one role process from the existing backend artifact and verifies its identity before returning it.
- *
- * A pid alone is not an identity — it is recycled — so a spawn whose incarnation cannot be read fails rather
- * than handing back a bare pid nothing could later verify against. The failed child is killed rather than
- * left to run unaccounted for.
- */
+/** Never releases a spawned role whose incarnation cannot be proven until its close-backed retry settles. */
 export function spawnRoleProcess(
   role: ProviderRole,
   capsulePath: string,
   ports: RoleSpawnPorts,
   options: RoleSpawnOptions,
-): SpawnedRoleProcess {
+): RoleSpawnDisposition {
   const entrypoint = resolveBackendArtifact(options.pluginRoot, options.currentEntrypoint ?? process.argv[1]);
   const command = options.command ?? process.execPath;
   const child = ports.process.spawn({
@@ -119,6 +124,10 @@ export function spawnRoleProcess(
   });
   spawnFailed.catch(() => {});
 
+  const settled = new Promise<void>((resolve) => {
+    child.on('close', () => resolve());
+  });
+
   // Nothing in this process reads the role's stdout/stderr. Draining keeps the OS pipe buffer from filling
   // and backpressuring the role's own writes, and the `'error'` listeners keep a later stream error from
   // reaching this process as an uncaught exception — the same guard `kb-daemon-supervisor.ts` installs on
@@ -127,31 +136,57 @@ export function spawnRoleProcess(
   child.stdout?.on('error', () => {});
   child.stderr?.on('data', () => {});
   child.stderr?.on('error', () => {});
-  // A role is meant to outlive the process that spawned it, exactly like `runtime/real.ts`'s own detached,
-  // unref'd durable-CLI wrapper spawn — so holding this handle must not itself keep this process's event
-  // loop alive.
-  child.unref?.();
-
-  const killFailedSpawn = (): void =>
-    gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
+  const holdFailedSpawn = (error: RoleSpawnError): HeldRoleSpawn => ({
+    kind: 'held',
+    child,
+    error,
+    settled,
+    retry: async () => {
+      gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
+      if (typeof child.pid === 'number') {
+        try {
+          if (ports.runtime.process.observeLiveness(child.pid) === 'absent') return;
+        } catch {
+          // Unknown liveness retains the close-backed obligation.
+        }
+      }
+      await settled;
+    },
+  });
 
   if (typeof child.pid !== 'number') {
-    killFailedSpawn();
-    throw new RoleSpawnError('role_spawn_no_pid', role, `Spawning the ${role} role did not return a pid.`);
-  }
-
-  const readIncarnation = ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation;
-  const incarnation = readIncarnation(child.pid, ports.platform);
-  if (incarnation === null) {
-    killFailedSpawn();
-    throw new RoleSpawnError(
-      'role_spawn_incarnation_unavailable',
-      role,
-      `Could not read the incarnation of the spawned ${role} process (pid ${child.pid}).`,
+    return holdFailedSpawn(
+      new RoleSpawnError('role_spawn_no_pid', role, `Spawning the ${role} role did not return a pid.`),
     );
   }
 
-  return { child, pid: child.pid, incarnation, spawnFailed };
+  const readIncarnation = ports.readProcessIncarnation ?? ports.runtime.process.readProcessIncarnation;
+  let incarnation: ProcessIncarnation | null;
+  try {
+    incarnation = readIncarnation(child.pid, ports.platform);
+  } catch {
+    incarnation = null;
+  }
+  if (incarnation === null) {
+    return holdFailedSpawn(
+      new RoleSpawnError(
+        'role_spawn_incarnation_unavailable',
+        role,
+        `Could not read the incarnation of the spawned ${role} process (pid ${child.pid}).`,
+      ),
+    );
+  }
+
+  // Only an incarnation-bound role may stop keeping its current owner alive.
+  child.unref?.();
+  return { kind: 'spawned', child, pid: child.pid, incarnation, spawnFailed };
+}
+
+/** A held role cannot reject until its close-or-absence obligation has settled. */
+export async function requireSpawnedRole(disposition: RoleSpawnDisposition): Promise<SpawnedRoleProcess> {
+  if (disposition.kind === 'spawned') return disposition;
+  await disposition.retry();
+  throw disposition.error;
 }
 
 /** Adapts the `Runtime` time port to the shape every control endpoint and client in this domain expects.

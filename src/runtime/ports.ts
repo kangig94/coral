@@ -66,7 +66,8 @@ export type DurableLaunchOptions = {
   envAdditions?: Record<string, string>;
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;
-  onWrapperSpawned?(
+  onWrapperSpawned?(obligation: DurablePendingLaunchObligation): DurableLaunchOwnershipAcceptance;
+  onWrapperIdentified?(
     launch: Readonly<{
       runtimeRecord: DurableCliRuntimeRecord;
       pid: number;
@@ -77,6 +78,14 @@ export type DurableLaunchOptions = {
   /** Runs after the wrapper identifies its child and before launch readiness is returned. */
   onSpawned?(launch: DurableProvisionalLaunch): void;
 };
+
+export type DurablePendingLaunchObligation = Readonly<{
+  pid: number | null;
+  settled: Promise<void>;
+  requestTermination(): void;
+}>;
+
+export type DurableLaunchOwnershipAcceptance = Readonly<{ kind: 'accepted' }>;
 
 export type DurableCliProcessSubject = RecordedProcessIdentity &
   Readonly<{
@@ -122,6 +131,7 @@ declare const durableLaunchHandleBrand: unique symbol;
 export type DurableLaunchHandle = string & { readonly [durableLaunchHandleBrand]: true };
 
 export type DurableLaunchResult = {
+  disposition: 'launched';
   launchHandle: DurableLaunchHandle;
   pid: number;
   stdoutPath: string;
@@ -131,8 +141,21 @@ export type DurableLaunchResult = {
   signalAuthority?: DurableLaunchSignalAuthority;
 };
 
+export type DurableLaunchHeld = Readonly<{
+  disposition: 'held';
+  owner: 'launch-caller';
+  pid: number | null;
+  reason: string;
+  retryAfter: Promise<void>;
+  retry(): Promise<DurableLaunchRetryDisposition>;
+}>;
+
+export type DurableLaunchRetryDisposition = DurableLaunchHeld | Readonly<{ disposition: 'settled' }>;
+
+export type DurableLaunchDisposition = DurableLaunchResult | DurableLaunchHeld;
+
 export interface DurableExecutionTransport {
-  launch(options: DurableLaunchOptions): Promise<DurableLaunchResult>;
+  launch(options: DurableLaunchOptions): Promise<DurableLaunchDisposition>;
   waitForExit(handle: DurableLaunchResult): Promise<DurableProcessExit>;
 }
 

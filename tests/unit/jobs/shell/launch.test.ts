@@ -1012,6 +1012,7 @@ describe('ExecutionService launch', () => {
               childRoot: processSubject.childRoot,
             });
             return {
+              disposition: 'launched',
               launchHandle: 'abandonment-launch' as never,
               pid: runtimeRecord.pid,
               stdoutPath: runtimeRecord.stdoutPath,
@@ -1124,6 +1125,7 @@ describe('ExecutionService launch', () => {
               childRoot: processSubject.childRoot,
             });
             return {
+              disposition: 'launched',
               launchHandle: 'identity-publication-failure' as never,
               pid: runtimeRecord.pid,
               stdoutPath: runtimeRecord.stdoutPath,
@@ -1259,6 +1261,7 @@ describe('ExecutionService launch', () => {
               childRoot: processSubject.childRoot,
             });
             return {
+              disposition: 'launched',
               launchHandle: 'failed-containment-delete' as never,
               pid: runtimeRecord.pid,
               stdoutPath: runtimeRecord.stdoutPath,

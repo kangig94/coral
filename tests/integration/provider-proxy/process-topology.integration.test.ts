@@ -1512,7 +1512,11 @@ describe('provider-proxy process topology: acquisition', () => {
   }
 
   it('does not signal a guardian process group already observed absent', async () => {
-    const spawned = { pid: 900_101, incarnation: testIncarnation('base-900101') } as SpawnedRoleProcess;
+    const spawned = {
+      kind: 'spawned',
+      pid: 900_101,
+      incarnation: testIncarnation('base-900101'),
+    } as SpawnedRoleProcess;
     const { runtime, kill } = undoRuntimeWithLiveness(() => 'absent');
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
 
@@ -1521,7 +1525,11 @@ describe('provider-proxy process topology: acquisition', () => {
   });
 
   it('holds rather than claiming success when a guardian process group cannot be observed at all', async () => {
-    const spawned = { pid: 900_102, incarnation: testIncarnation('base-900102') } as SpawnedRoleProcess;
+    const spawned = {
+      kind: 'spawned',
+      pid: 900_102,
+      incarnation: testIncarnation('base-900102'),
+    } as SpawnedRoleProcess;
     const { runtime, kill } = undoRuntimeWithLiveness(() => 'unknown');
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
 

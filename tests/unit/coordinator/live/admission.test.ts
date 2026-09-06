@@ -639,13 +639,132 @@ describe('launch admission', () => {
     });
   });
 
+  it('retains a held durable launch until its join settles before propagating failure', async () => {
+    const base = createRealRuntime('prod');
+    let observeLaunch!: () => void;
+    const launchObserved = new Promise<void>((resolve) => {
+      observeLaunch = resolve;
+    });
+    let settleRetry!: () => void;
+    const retryAfter = new Promise<void>((resolve) => {
+      settleRetry = resolve;
+    });
+    const retry = vi.fn(async () => ({ disposition: 'settled' as const }));
+    const launch = vi.fn(async () => {
+      observeLaunch();
+      return {
+        disposition: 'held' as const,
+        owner: 'launch-caller' as const,
+        pid: TEST_PROVIDER_PID,
+        reason: 'synthetic held launch',
+        retryAfter,
+        retry,
+      };
+    });
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const spawn = localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/held-durable-launch',
+      permitGranted: true,
+    });
+    await launchObserved;
+
+    let terminationSettled = false;
+    const termination = localCoordinator.terminateAll().then((result) => {
+      terminationSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(terminationSettled).toBe(false);
+    expect(retry).not.toHaveBeenCalled();
+
+    settleRetry();
+
+    await expect(spawn).rejects.toThrow('synthetic held launch');
+    expect(retry).toHaveBeenCalledOnce();
+    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+  });
+
+  it('terminates an accepted wrapper aborted before identification and retains it until settlement', async () => {
+    const base = createRealRuntime('prod');
+    const controller = new AbortController();
+    const requestTermination = vi.fn();
+    let acceptWrapper!: () => void;
+    const wrapperAccepted = new Promise<void>((resolve) => {
+      acceptWrapper = resolve;
+    });
+    let settleWrapper!: () => void;
+    const wrapperSettlement = new Promise<void>((resolve) => {
+      settleWrapper = resolve;
+    });
+    const launch = vi.fn((options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
+      options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        settled: wrapperSettlement,
+        requestTermination,
+      });
+      acceptWrapper();
+      return new Promise<never>(() => undefined);
+    });
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    void localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/accepted-pending-wrapper',
+      permitGranted: true,
+      signal: controller.signal,
+    });
+    await wrapperAccepted;
+
+    controller.abort();
+
+    expect(requestTermination).toHaveBeenCalledOnce();
+    let terminationSettled = false;
+    const termination = localCoordinator.terminateAll().then((result) => {
+      terminationSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(terminationSettled).toBe(false);
+
+    settleWrapper();
+
+    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+  });
+
   it('reaps a live Darwin wrapper before propagating a readiness rejection', async () => {
     const base = createRealRuntime('prod');
     const incarnation = testIncarnation(7_001);
     let elapsedMs = 0n;
     let exited = false;
+    let settleWrapper!: () => void;
+    const wrapperSettlement = new Promise<void>((resolve) => {
+      settleWrapper = resolve;
+    });
     const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
       options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        settled: wrapperSettlement,
+        requestTermination: () => undefined,
+      });
+      options.onWrapperIdentified?.({
         runtimeRecord: {
           transport: 'durable-cli',
           pid: TEST_PROVIDER_PID,
@@ -663,6 +782,7 @@ describe('launch admission', () => {
       if (signal === 0) return !exited;
       expect(pid).toBe(-TEST_PROVIDER_PID);
       exited = true;
+      settleWrapper();
       return true;
     });
     const runtime: Runtime = {
@@ -705,8 +825,17 @@ describe('launch admission', () => {
     const incarnation = testIncarnation(7_002);
     let elapsedMs = 0n;
     const requestTermination = vi.fn();
+    let settleWrapper!: () => void;
+    const wrapperSettlement = new Promise<void>((resolve) => {
+      settleWrapper = resolve;
+    });
     const launch = vi.fn(async (options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
       options.onWrapperSpawned?.({
+        pid: TEST_PROVIDER_PID,
+        settled: wrapperSettlement,
+        requestTermination,
+      });
+      options.onWrapperIdentified?.({
         runtimeRecord: {
           transport: 'durable-cli',
           pid: TEST_PROVIDER_PID,
@@ -753,11 +882,13 @@ describe('launch admission', () => {
             provider: 'codex',
             jobDir: '/tmp/provisional-readiness-rejection',
           });
-          expect(control?.abandon()).toEqual({
+          const abandonment = control?.abandon();
+          expect(abandonment).toEqual({
             kind: 'abandoned',
             reason: 'job ownership was released without proof of process absence',
             nextStep: 'Inspect the recorded process because it may still be live.',
           });
+          if (abandonment?.kind === 'abandoned') settleWrapper();
         }
         return { kind: 'published' as const };
       },
@@ -898,6 +1029,7 @@ describe('launch admission', () => {
           launch: async (options) => {
             options.onSpawned?.({ runtimeRecord, leaderIncarnation: incarnation, childRoot });
             return {
+              disposition: 'launched',
               launchHandle: 'held-result' as never,
               pid: TEST_PROVIDER_PID,
               stdoutPath: runtimeRecord.stdoutPath,
@@ -1005,6 +1137,7 @@ describe('launch admission', () => {
           launch: async (options) => {
             options.onSpawned?.({ runtimeRecord, leaderIncarnation: incarnation, childRoot });
             return {
+              disposition: 'launched',
               launchHandle: 'failed-absence-publication' as never,
               pid: TEST_PROVIDER_PID,
               stdoutPath: runtimeRecord.stdoutPath,

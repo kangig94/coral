@@ -552,6 +552,37 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(false);
   });
 
+  it('keeps shutdown held when KB daemon disposal reports an unclosed process', async () => {
+    const harness = buildHarness({ hooksOnShutdown: async () => {} });
+    const retryAfter = new Promise<void>(() => undefined);
+    harness.ctx.kbDaemonSupervisor = {
+      dispose: vi.fn(async () => ({
+        kind: 'holding' as const,
+        snapshot: {} as never,
+        reason: 'KB daemon process 183 has not been observed absent',
+        exit: 'kb-daemon-process-close' as const,
+        retryAfter,
+        retry: async () => {
+          throw new Error('retry requires process close');
+        },
+      })),
+    } as never;
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let advanced = 0; advanced <= HANDOFF_DRAIN_TIMEOUT_MS + 100; advanced += 100) {
+      harness.time.tick(100);
+      await flush();
+    }
+    const held = requireHeld(await sequence);
+
+    expect(held).toMatchObject({
+      reason: 'kb-daemon-shutdown-unsettled',
+      exit: 'kb-daemon-process-close',
+    });
+    expect(held.retainedAuthority.cleanupObligations).toContain('kb child shutdown');
+    expect(harness.closeIpcCalled()).toBe(false);
+  });
+
   it('holds hard shutdown when provider-host containment exceeds the lifecycle deadline', async () => {
     const stopProviderOperationReconciler = vi.fn(() => ({ kind: 'drained' as const }));
     const harness = buildHarness({

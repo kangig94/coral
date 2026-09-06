@@ -702,7 +702,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       expansionRpc: vi.fn(),
       stop: async () => childHealth,
       restart: async () => childHealth,
-      dispose: async () => undefined,
+      dispose: async () => ({ kind: 'confirmed-absent', snapshot: childHealth }),
     } as never;
     const lifecycle = createLifecycle(deps, async () => []);
 

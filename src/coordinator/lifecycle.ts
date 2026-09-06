@@ -45,6 +45,7 @@ import type {
   ProcessExitRemainderAcceptance,
   ShutdownDeferredFailure,
   ShutdownHoldExit,
+  ShutdownHoldReason,
   ShutdownOperatorAction,
   ShutdownSequenceDisposition,
 } from './shutdown-settlement.js';
@@ -843,11 +844,7 @@ export type LifecycleController = {
 const SHUTDOWN_AUTOMATIC_RETRY_LIMIT = 3;
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
-type LifecycleShutdownHoldReason =
-  | 'process-incarnation-probes-unsettled'
-  | 'lifecycle-reactor-disposal-unsettled'
-  | 'provider-operation-mutations-unsettled'
-  | 'required-shutdown-step-unsettled';
+type LifecycleShutdownHoldReason = ShutdownHoldReason;
 
 type LifecycleShutdownRecovery = Readonly<{
   kind: 'retry-shutdown';
@@ -1296,11 +1293,12 @@ async function runLifecycleStartup({
     idleTimer.stopWatching();
     state.ownershipCheckerTeardown?.();
     state.ownershipCheckerTeardown = null;
-    // The KB daemon is started fire-and-forget above, so a failure at any later startup step can find a child
-    // already spawned. Everything else this block closes is in-process and dies with us; the daemon is the one
-    // piece that outlives this coordinator when it is skipped.
     try {
-      await kbDaemonSupervisor?.dispose('coordinator startup failed');
+      let disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
+      while (disposal?.kind === 'holding') {
+        await disposal.retryAfter;
+        disposal = await disposal.retry();
+      }
     } catch {
       // best effort
     }

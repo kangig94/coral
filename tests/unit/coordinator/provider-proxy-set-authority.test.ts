@@ -934,6 +934,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 
 function fakeSpawnedGuardian(pid: number, seed: number): SpawnedRoleProcess {
   return {
+    kind: 'spawned',
     child: {} as unknown as ChildProcessLike,
     pid,
     incarnation: testIncarnation(seed),

@@ -14,35 +14,37 @@ import {
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 
-/**
- * `spawnRoleProcess` has no dedicated coverage anywhere else: `process-topology.integration.test.ts` drives
- * it only through the full role-main topology, which never exercises the failure branches (`role_spawn_no_pid`,
- * an unreadable incarnation), the two `resolveBackendArtifact` branches, or the exact shape of the spawn call
- * itself. A regression dropping `envAdditions` — the flavor env a spawned peer needs to find the right
- * capsule — would pass every existing test.
- */
-
 /** A minimal `ChildProcessLike` built on a real `EventEmitter`, so `.on('error', ...)`/emitting `'error'`
  *  behave exactly as they do on a genuine Node child: no listener at emit time would throw. `ChildProcessLike`
  *  itself declares no `emit`, so the emitter is kept alongside the cast view rather than cast away with it. */
 function createFakeChild(pid: number | undefined): {
   child: ChildProcessLike;
   killSignals: NodeJS.Signals[];
+  unref: ReturnType<typeof vi.fn>;
+  emitClose(): void;
   emitError(error: Error): void;
 } {
   const killSignals: NodeJS.Signals[] = [];
   const emitter = new EventEmitter();
+  const unref = vi.fn();
   const child = Object.assign(emitter, {
     pid,
     stdin: null,
     stdout: null,
     stderr: null,
+    unref,
     kill: (signal?: NodeJS.Signals) => {
       killSignals.push(signal ?? 'SIGTERM');
       return true;
     },
   }) as unknown as ChildProcessLike;
-  return { child, killSignals, emitError: (error) => emitter.emit('error', error) };
+  return {
+    child,
+    killSignals,
+    unref,
+    emitClose: () => emitter.emit('close', null, 'SIGTERM'),
+    emitError: (error) => emitter.emit('error', error),
+  };
 }
 
 type FakePortsOptions = Readonly<{
@@ -69,34 +71,111 @@ function baseOptions(overrides: Partial<RoleSpawnOptions> = {}): RoleSpawnOption
 }
 
 describe('spawnRoleProcess', () => {
-  it('kills the child and throws role_spawn_no_pid when spawn returns no pid', () => {
-    const { child, killSignals } = createFakeChild(undefined);
+  it('retains a pid-less child until its joinable retry observes close', async () => {
+    const { child, killSignals, unref, emitClose } = createFakeChild(undefined);
     const ports = fakePorts({ spawn: () => child });
 
-    expect(() => spawnRoleProcess('proxy', '/capsule.json', ports, baseOptions())).toThrow(RoleSpawnError);
-    try {
-      spawnRoleProcess('proxy', '/capsule.json', ports, baseOptions());
-    } catch (error: unknown) {
-      expect(error).toMatchObject({ code: 'role_spawn_no_pid', role: 'proxy' });
-    }
+    const disposition = spawnRoleProcess('proxy', '/capsule.json', ports, baseOptions());
+    expect(disposition).toMatchObject({
+      kind: 'held',
+      error: expect.objectContaining({ code: 'role_spawn_no_pid', role: 'proxy' }),
+      settled: expect.any(Promise),
+      retry: expect.any(Function),
+    });
+    if (disposition.kind !== 'held') throw new Error('Expected pid-less role spawn to be held');
+    expect(unref).not.toHaveBeenCalled();
+    expect(disposition.error).toBeInstanceOf(RoleSpawnError);
+    expect(killSignals).toEqual([]);
+
+    const retry = disposition.retry();
     expect(killSignals).toContain('SIGTERM');
+    let retrySettled = false;
+    void retry.then(() => {
+      retrySettled = true;
+    });
+    await Promise.resolve();
+    expect(retrySettled).toBe(false);
+
+    emitClose();
+    await retry;
   });
 
-  it('kills the child and throws role_spawn_incarnation_unavailable when the incarnation cannot be read', () => {
-    const { child, killSignals } = createFakeChild(6_000);
-    const ports = fakePorts({ spawn: () => child, readProcessIncarnation: () => null });
+  it('retains a live child with an unreadable incarnation until its joinable retry observes close', async () => {
+    const { child, killSignals, unref, emitClose } = createFakeChild(6_000);
+    const runtime = {
+      ...realRuntime,
+      process: { ...realRuntime.process, observeLiveness: () => 'alive' as const },
+    };
+    const ports = fakePorts({ spawn: () => child, runtime, readProcessIncarnation: () => null });
 
-    expect(() => spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions())).toThrow(RoleSpawnError);
-    try {
-      spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions());
-    } catch (error: unknown) {
-      expect(error).toMatchObject({ code: 'role_spawn_incarnation_unavailable', role: 'reaper' });
-    }
+    const disposition = spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions());
+    expect(disposition).toMatchObject({
+      kind: 'held',
+      child,
+      error: expect.objectContaining({ code: 'role_spawn_incarnation_unavailable', role: 'reaper' }),
+      settled: expect.any(Promise),
+      retry: expect.any(Function),
+    });
+    if (disposition.kind !== 'held') throw new Error('Expected unreadable role spawn to be held');
+    expect(unref).not.toHaveBeenCalled();
+    expect(disposition.error).toBeInstanceOf(RoleSpawnError);
+    expect(killSignals).toEqual([]);
+
+    const retry = disposition.retry();
     expect(killSignals).toContain('SIGTERM');
+    let retrySettled = false;
+    void retry.then(() => {
+      retrySettled = true;
+    });
+    await Promise.resolve();
+    expect(retrySettled).toBe(false);
+
+    emitClose();
+    await retry;
+  });
+
+  it('retains a live child when the incarnation probe throws until its joinable retry observes close', async () => {
+    const { child, killSignals, unref, emitClose } = createFakeChild(6_001);
+    const runtime = {
+      ...realRuntime,
+      process: { ...realRuntime.process, observeLiveness: () => 'alive' as const },
+    };
+    const ports = fakePorts({
+      spawn: () => child,
+      runtime,
+      readProcessIncarnation: () => {
+        throw new Error('synthetic process probe failure');
+      },
+    });
+
+    const disposition = spawnRoleProcess('guardian', '/capsule.json', ports, baseOptions());
+    expect(disposition).toMatchObject({
+      kind: 'held',
+      child,
+      error: expect.objectContaining({ code: 'role_spawn_incarnation_unavailable', role: 'guardian' }),
+      settled: expect.any(Promise),
+      retry: expect.any(Function),
+    });
+    if (disposition.kind !== 'held') throw new Error('Expected throwing role probe to be held');
+    expect(unref).not.toHaveBeenCalled();
+    expect(disposition.error).toBeInstanceOf(RoleSpawnError);
+    expect(killSignals).toEqual([]);
+
+    const retry = disposition.retry();
+    expect(killSignals).toContain('SIGTERM');
+    let retrySettled = false;
+    void retry.then(() => {
+      retrySettled = true;
+    });
+    await Promise.resolve();
+    expect(retrySettled).toBe(false);
+
+    emitClose();
+    await retry;
   });
 
   it('reads the spawned identity through the runtime process port by default', () => {
-    const { child } = createFakeChild(6_001);
+    const { child, unref } = createFakeChild(6_001);
     const readProcessIncarnation = vi.fn(() => testIncarnation(1_001));
     const runtime = {
       ...realRuntime,
@@ -107,6 +186,7 @@ describe('spawnRoleProcess', () => {
       spawnRoleProcess('reaper', '/capsule.json', fakePorts({ spawn: () => child, runtime }), baseOptions()),
     ).toMatchObject({ pid: 6_001, incarnation: testIncarnation(1_001) });
     expect(readProcessIncarnation).toHaveBeenCalledWith(6_001, 'linux');
+    expect(unref).toHaveBeenCalledOnce();
   });
 
   it('reuses the current entrypoint when it is already coral-backend.cjs', () => {
@@ -177,6 +257,7 @@ describe('spawnRoleProcess', () => {
     const ports = fakePorts({ spawn: () => child, readProcessIncarnation: () => testIncarnation(1_000) });
 
     const spawned = spawnRoleProcess('reaper', '/capsule.json', ports, baseOptions());
+    if (spawned.kind !== 'spawned') throw new Error('Expected readable role spawn to succeed');
     const failure = new Error('ENOENT: spawn failed');
     // Reaching this line at all is part of what the test proves: Node's EventEmitter re-throws an 'error'
     // emitted with no listener, so if `spawnRoleProcess` had not already attached one, this call itself would

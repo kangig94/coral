@@ -2,7 +2,7 @@ import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { buildJsonRpcError } from '../infra/json-rpc.js';
-import { MAX_BUFFER } from '../infra/process-constants.js';
+import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -29,6 +29,8 @@ export type ProviderResponseObservationSink = HostResponseObservationSink;
 
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
 export const PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
+export const PROVIDER_CONTAINMENT_ACCEPTED = Symbol('provider-containment-accepted');
+export type ProviderContainmentAcceptance = typeof PROVIDER_CONTAINMENT_ACCEPTED;
 
 class ProviderServerLineTooLargeError extends Error {
   readonly code = 'provider_server_line_too_large';
@@ -154,6 +156,7 @@ type ProviderServerEntry = {
   diagnosticRef: ProviderHostDiagnosticReference;
   observeProviderResponse: ProviderResponseObservationSink;
   closed: boolean;
+  processSettlement: ProviderProcessSettlement;
   closeRequested: boolean;
   closePromise: Promise<Error | void>;
   resolveClose: (outcome: Error | void) => void;
@@ -179,7 +182,7 @@ export type SpawnProviderServerFn = (
   options: SpawnProviderServerOptions,
   observeProviderResponse: ProviderResponseObservationSink,
   generation: number,
-  recordContainment?: (containment: RecordedContainmentIdentity) => void,
+  recordContainment?: (containment: RecordedContainmentIdentity) => ProviderContainmentAcceptance,
 ) => Promise<ContainedProviderServerHandle>;
 
 function resolveProviderServerInitializeTimeoutMs(timeoutMs: number | undefined): number {
@@ -194,7 +197,7 @@ type SpawnProviderServerTransportParams = {
   generation: number;
   observeProviderResponse: ProviderResponseObservationSink;
   detached?: boolean;
-  recordContainment?: (containment: RecordedContainmentIdentity) => void;
+  recordContainment?: (containment: RecordedContainmentIdentity) => ProviderContainmentAcceptance;
 };
 
 export function spawnProviderServerTransport(
@@ -204,12 +207,20 @@ export function spawnProviderServerTransport(params: SpawnProviderServerTranspor
 export async function spawnProviderServerTransport(
   params: SpawnProviderServerTransportParams,
 ): Promise<ProviderServerHandle> {
-  const spawned = spawnProviderServerProcess(params);
+  const spawned = await spawnProviderServerProcess(params);
   bindProviderServerEvents(spawned.entry, spawned.pipes, params.runtime);
   const containmentIdentity =
-    params.detached === true ? establishDetachedProviderServerIdentity(spawned.entry, params.runtime) : undefined;
+    params.detached === true ? await establishDetachedProviderServerIdentity(spawned.entry, params.runtime) : undefined;
   if (containmentIdentity !== undefined) {
-    params.recordContainment?.(containmentIdentity);
+    try {
+      const acceptance = params.recordContainment?.(containmentIdentity);
+      if (params.recordContainment !== undefined && acceptance !== PROVIDER_CONTAINMENT_ACCEPTED) {
+        throw new Error('Provider containment owner did not accept the spawned process group.');
+      }
+    } catch (error: unknown) {
+      await terminateUnownedProviderServer(spawned.entry, params.runtime);
+      throw error;
+    }
   }
   const rpc = createProviderServerRpc(spawned.entry, params.runtime);
   await initializeSpawnedProviderServer(
@@ -224,9 +235,37 @@ export async function spawnProviderServerTransport(
 
 type ProviderServerPipes = ReturnType<typeof requirePipedHandles>;
 
-function spawnProviderServerProcess(
+type ProviderProcessSettlement = {
+  child: ChildProcessLike;
+  pid: number | null;
+  closed: boolean;
+  processClosePromise: Promise<void>;
+  resolve(): void;
+};
+
+function createProviderProcessSettlement(child: ChildProcessLike): ProviderProcessSettlement {
+  let resolve!: () => void;
+  const settlement: ProviderProcessSettlement = {
+    child,
+    pid: child.pid ?? null,
+    closed: false,
+    processClosePromise: new Promise<void>((settle) => {
+      resolve = settle;
+    }),
+    resolve: () => resolve(),
+  };
+  child.on('close', () => {
+    if (settlement.closed) return;
+    settlement.closed = true;
+    settlement.resolve();
+  });
+  child.on('error', () => undefined);
+  return settlement;
+}
+
+async function spawnProviderServerProcess(
   params: SpawnProviderServerTransportParams,
-): Readonly<{ entry: ProviderServerEntry; pipes: ProviderServerPipes }> {
+): Promise<Readonly<{ entry: ProviderServerEntry; pipes: ProviderServerPipes }>> {
   const { runtime, options, generation, observeProviderResponse } = params;
   if (options.signal?.aborted) {
     throw createProviderServerSpawnAbortError(options.provider, options.signal);
@@ -241,11 +280,19 @@ function spawnProviderServerProcess(
     ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
     ...(params.detached === undefined ? {} : { detached: params.detached }),
   });
-  const pipes = requirePipedHandles(child, options.command);
-  const pid = child.pid;
-  if (pid === undefined) {
+  const processSettlement = createProviderProcessSettlement(child);
+  let pipes: ProviderServerPipes;
+  try {
+    pipes = requirePipedHandles(child, options.command);
+  } catch (error: unknown) {
+    await terminateProviderServerProcess(processSettlement, runtime);
+    throw error;
+  }
+  if (child.pid === undefined) {
+    await terminateProviderServerProcess(processSettlement, runtime);
     throw new Error(`Failed to spawn ${options.command}: child pid is unavailable`);
   }
+  const pid = child.pid;
   pipes.stdout.setEncoding('utf8');
   pipes.stderr.setEncoding('utf8');
 
@@ -268,6 +315,7 @@ function spawnProviderServerProcess(
     diagnosticRef: createProviderHostDiagnosticReference(generation, diagnostics),
     observeProviderResponse,
     closed: false,
+    processSettlement,
     closeRequested: false,
     closePromise,
     resolveClose,
@@ -276,10 +324,41 @@ function spawnProviderServerProcess(
   return Object.freeze({ entry, pipes });
 }
 
-function establishDetachedProviderServerIdentity(
+async function terminateProviderServerProcess(settlement: ProviderProcessSettlement, runtime: Runtime): Promise<void> {
+  let firstAttempt = true;
+  while (true) {
+    if (settlement.closed) return;
+    let retryTermination = firstAttempt;
+    if (settlement.pid !== null) {
+      try {
+        const liveness = runtime.process.observeLiveness(settlement.pid);
+        if (liveness === 'absent') return;
+        retryTermination ||= liveness === 'alive';
+      } catch {
+        // An unobservable process cannot discharge the spawn boundary's ownership.
+      }
+    }
+    if (retryTermination) {
+      gracefulKill(settlement.child, runtime, (targetPid) => runtime.process.observeLiveness(targetPid));
+    }
+    firstAttempt = false;
+
+    const result = await Promise.race([
+      settlement.processClosePromise.then(() => 'closed' as const),
+      runtime.time.sleep(SIGTERM_GRACE_MS).then(() => 'retry' as const),
+    ]);
+    if (result === 'closed') return;
+  }
+}
+
+function terminateUnownedProviderServer(entry: ProviderServerEntry, runtime: Runtime): Promise<void> {
+  return terminateProviderServerProcess(entry.processSettlement, runtime);
+}
+
+async function establishDetachedProviderServerIdentity(
   entry: ProviderServerEntry,
   runtime: Runtime,
-): RecordedContainmentIdentity {
+): Promise<RecordedContainmentIdentity> {
   let incarnation: ProcessIncarnation | null;
   try {
     incarnation = runtime.process.readProcessIncarnation(entry.pid, runtime.env.platform() as NodeJS.Platform);
@@ -287,12 +366,13 @@ function establishDetachedProviderServerIdentity(
     incarnation = null;
   }
   if (incarnation === null) {
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
-    throw new ProcessContainmentError(
+    const error = new ProcessContainmentError(
       'process_identity_unverified',
       `Could not read the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
       { provider: entry.provider, pid: entry.pid },
     );
+    await terminateUnownedProviderServer(entry, runtime);
+    throw error;
   }
 
   // Signal 0 tests existence and permission without delivering a signal. Addressing -pid proves a signalable
@@ -304,12 +384,13 @@ function establishDetachedProviderServerIdentity(
     processGroupIsSignalable = false;
   }
   if (!processGroupIsSignalable) {
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
-    throw new ProcessContainmentError(
+    const error = new ProcessContainmentError(
       'process_identity_unverified',
       `The spawned ${entry.provider} provider server (pid ${entry.pid}) is not a process-group leader.`,
       { provider: entry.provider, pid: entry.pid },
     );
+    await terminateUnownedProviderServer(entry, runtime);
+    throw error;
   }
 
   const containmentIdentity = Object.freeze({
@@ -320,7 +401,7 @@ function establishDetachedProviderServerIdentity(
   try {
     assertRecordedContainmentIdentity(containmentIdentity);
   } catch (error: unknown) {
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+    await terminateUnownedProviderServer(entry, runtime);
     throw error;
   }
   return containmentIdentity;
@@ -422,12 +503,10 @@ async function initializeSpawnedProviderServer(
       signal: options.signal,
     });
   } catch (error) {
-    // A detached caller records containment before initialization and owns the group from that point onward.
-    // Uncontained callers still need this layer to reap the child because no upstream owner can target it.
     const initError = error instanceof Error ? error : createProviderHostFault(entry, `initialize failed`);
     detachProviderServer(entry, initError);
     if (killOnFailure) {
-      gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+      await terminateUnownedProviderServer(entry, runtime);
     }
     throw initError;
   }
@@ -468,7 +547,7 @@ function exposeProviderServerHandle(
     },
     close: async () => {
       shutdownProviderServer(entry, 'closed', runtime);
-      await entry.closePromise;
+      await terminateUnownedProviderServer(entry, runtime);
     },
   };
 }

@@ -1,0 +1,6 @@
+function launch(child: Child, runtime: Runtime): void {
+  run(() => {
+    gracefulKill(child, runtime, observeLiveness);
+    return;
+  });
+}

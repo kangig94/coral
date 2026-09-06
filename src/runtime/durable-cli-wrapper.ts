@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync, unlinkSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
@@ -52,7 +53,8 @@ function parseLaunchPayload(payloadPath: string): LaunchPayload {
   return parsed as LaunchPayload;
 }
 
-function groupMembers(
+/** The observation cannot settle until its observer child closes or is observed absent. */
+export function groupMembers(
   processGroupId: number,
   time: ReturnType<typeof createRealTimePort>,
 ): Promise<readonly number[] | null> {
@@ -60,6 +62,9 @@ function groupMembers(
     const observed = spawn('ps', ['-axo', 'pid=,pgid='], { stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
     let settled = false;
+    const closed = new Promise<void>((resolve) => {
+      observed.once('close', () => resolve());
+    });
     const finish = (members: readonly number[] | null): void => {
       if (settled) return;
       settled = true;
@@ -67,14 +72,26 @@ function groupMembers(
       resolve(members);
     };
     const timeout = time.setTimeout(() => {
-      gracefulKill(observed as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-      finish(null);
+      void (async () => {
+        if (observed.pid !== undefined) {
+          try {
+            if (observeProcessLiveness(observed.pid) === 'absent') {
+              finish(null);
+              return;
+            }
+          } catch {
+            // An unobservable process cannot discharge the observation boundary's ownership.
+          }
+        }
+        gracefulKill(observed as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        await closed;
+      })();
     }, GROUP_OBSERVATION_TIMEOUT_MS);
     observed.stdout?.setEncoding('utf8');
     observed.stdout?.on('data', (chunk: string | Buffer) => {
       if (output.length <= 1024 * 1024) output += chunk.toString();
     });
-    observed.once('error', () => finish(null));
+    observed.once('error', () => undefined);
     observed.once('close', (code) => {
       if (code !== 0 || output.length > 1024 * 1024) {
         finish(null);
@@ -413,9 +430,11 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   childStdin.end();
 }
 
-const [modeOrPayloadPath, processGroupIdArgument, exitArgument] = process.argv.slice(2);
-if (modeOrPayloadPath === GROUP_FINALIZER_MODE) {
-  runGroupFinalizer(processGroupIdArgument, exitArgument);
-} else {
-  void runWrapper(modeOrPayloadPath);
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [modeOrPayloadPath, processGroupIdArgument, exitArgument] = process.argv.slice(2);
+  if (modeOrPayloadPath === GROUP_FINALIZER_MODE) {
+    runGroupFinalizer(processGroupIdArgument, exitArgument);
+  } else {
+    void runWrapper(modeOrPayloadPath);
+  }
 }

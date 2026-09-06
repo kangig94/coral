@@ -75,6 +75,17 @@ export type KbDaemonHealthSnapshot = {
   setupError?: SerializedCoralSetupError;
 };
 
+export type KbDaemonDisposalSettlement =
+  | Readonly<{ kind: 'confirmed-absent'; snapshot: KbDaemonHealthSnapshot }>
+  | Readonly<{
+      kind: 'holding';
+      snapshot: KbDaemonHealthSnapshot;
+      reason: string;
+      exit: 'kb-daemon-process-close';
+      retryAfter: Promise<void>;
+      retry(signal?: AbortSignal): Promise<KbDaemonDisposalSettlement>;
+    }>;
+
 export interface KbDaemonSupervisor {
   read(): KbDaemonHealthSnapshot;
   onExit?(listener: (snapshot: KbDaemonHealthSnapshot) => void): () => void;
@@ -88,7 +99,7 @@ export interface KbDaemonSupervisor {
   listActiveKbJobs?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonHealthSnapshot>;
   restart(reason?: string): Promise<KbDaemonHealthSnapshot>;
-  dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
+  dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonDisposalSettlement>;
 }
 
 export type KbDaemonCurateAssistantHandler = (
@@ -267,7 +278,7 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
     listActiveKbJobs: async () => ({ active: [] }),
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
-    dispose: async () => undefined,
+    dispose: async () => ({ kind: 'confirmed-absent', snapshot: { ...snapshot } }),
   };
 }
 
@@ -928,7 +939,33 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       pipedHandles = requirePipedHandles(spawned, command);
     } catch (error: unknown) {
       if (spawned !== null) {
+        const failedSpawn = spawned;
+        const startedAtForExit = startedAt;
+        daemonProcess = failedSpawn;
+        pid = failedSpawn.pid ?? null;
+        failedSpawn.on('error', (spawnError) => {
+          if (daemonProcess === failedSpawn) setFailure(`daemon process error: ${formatError(spawnError)}`);
+        });
+        failedSpawn.on('close', (code, signal) => {
+          lastExit = {
+            code,
+            signal,
+            at: runtime.time.now(),
+            uptimeMs: startedAtForExit === null ? null : Math.max(0, runtime.time.now() - startedAtForExit),
+          };
+          if (daemonProcess === failedSpawn) {
+            daemonProcess = null;
+            pid = null;
+            readyAt = null;
+            rejectPendingRequests('KB daemon exited', generation);
+            abortActiveParentRequests('KB daemon exited', generation);
+            if (phase === 'stopping') phase = 'stopped';
+            notifyExitListeners();
+          }
+        });
+        setFailure(`spawn failed: ${formatError(error)}`);
         safeKill(spawned, 'SIGTERM');
+        return read();
       }
       daemonProcess = null;
       pid = null;
@@ -1075,18 +1112,19 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     return read();
   };
 
-  const stopNow = async (reason = 'stop', signal?: AbortSignal): Promise<KbDaemonHealthSnapshot> => {
+  const stopNow = async (reason = 'stop', signal?: AbortSignal): Promise<KbDaemonDisposalSettlement> => {
     const activeDaemonProcess = daemonProcess;
     if (activeDaemonProcess === null) {
       phase = 'stopped';
       pid = null;
       readyAt = null;
       rejectPendingRequests('KB daemon stopped');
-      return read();
+      return { kind: 'confirmed-absent', snapshot: read() };
     }
 
     phase = 'stopping';
-    const closed = waitForClose(activeDaemonProcess).then(() => 'closed' as const);
+    const closeSettlement = waitForClose(activeDaemonProcess);
+    const closed = closeSettlement.then(() => 'closed' as const);
     try {
       activeDaemonProcess.stdin?.write(
         encodeKbDaemonMessage({
@@ -1111,7 +1149,31 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       gracefulKill(activeDaemonProcess, runtime, (pid) => runtime.process.observeLiveness(pid));
     }
     rejectPendingRequests('KB daemon stopped');
-    return read();
+    if (result === 'closed' || daemonProcess !== activeDaemonProcess) {
+      return { kind: 'confirmed-absent', snapshot: read() };
+    }
+    if (typeof activeDaemonProcess.pid === 'number') {
+      try {
+        if (runtime.process.observeLiveness(activeDaemonProcess.pid) === 'absent') {
+          if (daemonProcess === activeDaemonProcess) {
+            daemonProcess = null;
+            pid = null;
+            readyAt = null;
+          }
+          return { kind: 'confirmed-absent', snapshot: read() };
+        }
+      } catch {
+        // Unknown liveness retains the close-backed shutdown obligation.
+      }
+    }
+    return {
+      kind: 'holding',
+      snapshot: read(),
+      reason: `KB daemon process ${activeDaemonProcess.pid ?? 'unknown'} has not been observed absent`,
+      exit: 'kb-daemon-process-close',
+      retryAfter: closeSettlement,
+      retry: (retrySignal) => runExclusive(() => stopNow(reason, retrySignal)),
+    };
   };
 
   return {
@@ -1137,7 +1199,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     expansionRpc: expansionRpcNow,
     abortKbJobs: abortKbJobsNow,
     listActiveKbJobs: listActiveKbJobsNow,
-    stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
+    stop: async (reason, stopOptions) => (await runExclusive(() => stopNow(reason, stopOptions?.signal))).snapshot,
     restart: (reason = 'restart') =>
       runExclusive(async () => {
         if (disposed) {
@@ -1153,7 +1215,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       }),
     dispose: async (reason = 'dispose', disposeOptions) => {
       requestRecoveryEnabled = false;
-      await runExclusive(() => {
+      return runExclusive(() => {
         // Re-assert inside the exclusive turn: a start/restart queued ahead of us
         // re-enables recovery, so disabling only before runExclusive would let a
         // post-dispose read/mutate revive the daemon. This second write is load-bearing.

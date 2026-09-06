@@ -22,9 +22,12 @@ import type {
 import type { RecordedProcessIdentity } from '../../../src/infra/process-containment.js';
 import type {
   DurableExecutionTransport,
+  DurableLaunchDisposition,
   DurableLaunchHandle,
+  DurableLaunchHeld,
   DurableLaunchOptions,
   DurableLaunchResult,
+  DurableLaunchRetryDisposition,
   RuntimeExecOptions,
   RuntimeSpawnOptions,
 } from '../../../src/runtime/ports.js';
@@ -58,6 +61,8 @@ type MockProcessSpawnerOptions = {
   buildDurableEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
   runtimePid: number;
 };
+
+const DURABLE_LAUNCH_RETRY_INTERVAL_MS = 100;
 
 function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputChunk[] {
   if (value === undefined) {
@@ -167,7 +172,7 @@ export class MockDurableTransport implements DurableExecutionTransport {
     this.spawner.enqueueDurable(script);
   }
 
-  async launch(options: DurableLaunchOptions): Promise<DurableLaunchResult> {
+  async launch(options: DurableLaunchOptions): Promise<DurableLaunchDisposition> {
     this.launchCalls.push({
       ...options,
       args: [...options.args],
@@ -379,7 +384,7 @@ export class MockProcessSpawner {
     }
   }
 
-  async launchDurable(options: DurableLaunchOptions): Promise<DurableLaunchResult> {
+  async launchDurable(options: DurableLaunchOptions): Promise<DurableLaunchDisposition> {
     const script = this.durableScripts.shift() ?? {};
     const pid = script.pid ?? this.allocatePid();
     const stdoutPath = script.runtimeRecord?.stdoutPath ?? join(options.jobDir, 'stdout');
@@ -438,11 +443,54 @@ export class MockProcessSpawner {
       stdoutPath,
       stderrPath,
     };
+    const wrapperSettlement = exitDeferred.promise.then(
+      () => undefined,
+      () => undefined,
+    );
+    const holdLaunchFailure = (reason: string): DurableLaunchHeld => {
+      const retry = async (): Promise<DurableLaunchRetryDisposition> => {
+        this.applyKill(leader, 'SIGTERM');
+        if (!leader.alive || this.observeLiveness(pid) === 'absent') return { disposition: 'settled' };
+        return holdLaunchFailure(reason);
+      };
+      return {
+        disposition: 'held',
+        owner: 'launch-caller',
+        pid,
+        reason,
+        retryAfter: Promise.race([wrapperSettlement, this.time.sleep(DURABLE_LAUNCH_RETRY_INTERVAL_MS)]),
+        retry,
+      };
+    };
+    let ownershipAccepted = false;
+    const resolveLaunchFailure = async (reason: string): Promise<DurableLaunchHeld> => {
+      let disposition = holdLaunchFailure(reason);
+      if (ownershipAccepted) return disposition;
+      while (true) {
+        await disposition.retryAfter;
+        const retry = await disposition.retry();
+        if (retry.disposition === 'settled') throw new Error(reason);
+        disposition = retry;
+      }
+    };
     try {
-      options.onWrapperSpawned?.({ runtimeRecord, pid, leaderIncarnation: leader.incarnation });
+      const acceptance = options.onWrapperSpawned?.({
+        pid,
+        settled: wrapperSettlement,
+        requestTermination: () => this.applyKill(leader, 'SIGTERM'),
+      });
+      if (options.onWrapperSpawned !== undefined && acceptance?.kind !== 'accepted') {
+        return resolveLaunchFailure('Durable wrapper ownership was not accepted.');
+      }
+      ownershipAccepted = acceptance?.kind === 'accepted';
     } catch (error: unknown) {
-      child.complete({ exitCode: null, signal: 'SIGTERM' });
-      throw error;
+      const detail = error instanceof Error ? error.message : String(error);
+      return resolveLaunchFailure(`Durable wrapper ownership was refused: ${detail}`);
+    }
+    try {
+      options.onWrapperIdentified?.({ runtimeRecord, pid, leaderIncarnation: leader.incarnation });
+    } catch (error: unknown) {
+      return resolveLaunchFailure(error instanceof Error ? error.message : String(error));
     }
 
     for (const chunk of asChunks(script.stdout)) {
@@ -484,22 +532,27 @@ export class MockProcessSpawner {
     };
 
     const runtimeDelayMs = script.runtimeDelayMs ?? 0;
-    if (runtimeDelayMs > 0) {
-      await new Promise<void>((resolve, reject) => {
-        this.time.setTimeout(() => {
-          try {
-            publishRuntime();
-            resolve();
-          } catch (error: unknown) {
-            reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
-          }
-        }, runtimeDelayMs);
-      });
-    } else {
-      publishRuntime();
+    try {
+      if (runtimeDelayMs > 0) {
+        await new Promise<void>((resolve, reject) => {
+          this.time.setTimeout(() => {
+            try {
+              publishRuntime();
+              resolve();
+            } catch (error: unknown) {
+              reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
+            }
+          }, runtimeDelayMs);
+        });
+      } else {
+        publishRuntime();
+      }
+    } catch (error: unknown) {
+      return resolveLaunchFailure(error instanceof Error ? error.message : String(error));
     }
 
     return {
+      disposition: 'launched',
       launchHandle: `simulation-durable-launch:${leader.incarnation}` as DurableLaunchHandle,
       pid,
       stdoutPath,

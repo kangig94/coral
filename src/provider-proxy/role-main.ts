@@ -73,6 +73,7 @@ import { createProxyAppServerHostAuthority } from './provider-root-authority.js'
 import { createSemanticOperationRuntime, type SemanticOperationStageHandle } from './semantic-operation-runner.js';
 import {
   connectRoleControlWithRetry,
+  requireSpawnedRole,
   runtimeControlTimer,
   spawnRoleProcess,
   type RoleSpawnPorts,
@@ -679,11 +680,13 @@ export async function startProviderGuardianRole(
   let proxySpawn: SpawnedRoleProcess | null = null;
 
   try {
-    reaperSpawn = spawnRoleProcess('reaper', reaperCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
-      pluginRoot: ports.pluginRoot,
-      detached: false,
-      envAdditions: roleEnv,
-    });
+    reaperSpawn = await requireSpawnedRole(
+      spawnRoleProcess('reaper', reaperCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
+        pluginRoot: ports.pluginRoot,
+        detached: false,
+        envAdditions: roleEnv,
+      }),
+    );
 
     const reaperConnected = connectRoleControlWithRetry(capsule.reaperControlEndpoint, timer, {
       connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
@@ -750,11 +753,13 @@ export async function startProviderGuardianRole(
     await guardian.listen();
     ports.onGuardianListening?.();
 
-    proxySpawn = spawnRoleProcess('proxy', proxyCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
-      pluginRoot: ports.pluginRoot,
-      detached: true,
-      envAdditions: roleEnv,
-    });
+    proxySpawn = await requireSpawnedRole(
+      spawnRoleProcess('proxy', proxyCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
+        pluginRoot: ports.pluginRoot,
+        detached: true,
+        envAdditions: roleEnv,
+      }),
+    );
 
     const containmentRecorded = guardian.recordContainment({
       pid: proxySpawn.pid,

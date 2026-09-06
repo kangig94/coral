@@ -348,11 +348,28 @@ export async function runShutdownSequence({
   });
 
   if (kbDaemonSupervisor !== undefined) {
+    let kbDaemonHold: Awaited<ReturnType<KbDaemonSupervisor['dispose']>> | null = null;
     await ledger.run({
       label: 'kb child shutdown',
-      task: (signal) => confirmedTask(() => kbDaemonSupervisor.dispose(reason, { signal })),
+      task: async (signal) => {
+        kbDaemonHold = await kbDaemonSupervisor.dispose(reason, { signal });
+        return kbDaemonHold.kind === 'confirmed-absent'
+          ? { confirmed: true }
+          : { confirmed: false, detail: kbDaemonHold.reason };
+      },
       retainedAuthority: () => cleanupContribution('kb child shutdown'),
       remainder: { owner: 'none' },
+      hold: () =>
+        kbDaemonHold?.kind === 'holding'
+          ? {
+              reason: 'kb-daemon-shutdown-unsettled',
+              exit: kbDaemonHold.exit,
+              retryAfter: kbDaemonHold.retryAfter,
+            }
+          : {
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+            },
     });
   }
 
