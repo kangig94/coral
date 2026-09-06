@@ -22,7 +22,11 @@ import {
 } from '../../live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
 import type { ProviderProxyAcquisitionHeld } from '../../live/provider-proxy/index.js';
-import type { ProviderProxySetAcquisitionCleanupHold } from '../../live/provider-hosts/proxy-set-acquisition.js';
+import type {
+  ProviderProxySetAcquisitionCleanupDisposition,
+  ProviderProxySetAcquisitionCleanupHold,
+  ProviderProxySetAcquisitionCleanupOutcome,
+} from '../../live/provider-hosts/proxy-set-acquisition.js';
 import {
   closeProviderProxyAcquisitionSession,
   establishProviderProxyAcquisitionSession,
@@ -294,6 +298,7 @@ type ProviderProxySetSlot =
       attemptAbort: AbortController | null;
       recoveryPhase: 'redemption' | 'containment-wait';
       routeKey: string | null;
+      acquisitionCleanupHold: ProviderProxySetAcquisitionCleanupHold | null;
       operatorExitNotBeforeMonotonicMs: bigint;
       operatorExitGeneration: number;
     }
@@ -329,6 +334,7 @@ type ProviderProxySetSlot =
       capsuleBinding: HandoffCapsuleV3;
       routeKey: string;
       session: OwnedProviderProxyAcquisitionControlSession<'provider-proxy-set-lifecycle'>;
+      acquisitionCleanupHold: ProviderProxySetAcquisitionCleanupHold | null;
       decorateAuthority(authority: DurableProviderProxyOperationAuthority): DurableProviderProxyOperationAuthority;
       completedAttempts: number;
       retryTimer: TimerHandle | null;
@@ -522,6 +528,10 @@ export type ProviderProxySetOperatorExitAuthorization =
   | Readonly<{ kind: 'set-not-found' }>
   | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
   | Readonly<{ kind: 'deadline-pending'; remainingMs: number }>;
+
+export type ProviderProxySetBooleanOperatorExitAuthorization =
+  | ProviderProxySetOperatorExitAuthorization
+  | Readonly<{ kind: 'unsupported-contract' }>;
 
 /** An exact-set operator verdict whose effect records every signal and representation-release transition. */
 export type ProviderProxySetOperatorExitResult = (
@@ -963,15 +973,15 @@ export class ProviderProxySetLifecycle {
   acquisitionCleanupConfirmed(
     slotId: string,
     hold: ProviderProxySetAcquisitionCleanupHold,
-    strandedArtifacts: readonly string[],
+    confirmation: Extract<ProviderProxySetAcquisitionCleanupDisposition, { kind: 'absence-confirmed' }>,
   ): void {
     const slot = this.#slots.get(slotId);
     if (slot?.kind !== 'acquiring' || slot.cleanupHold !== hold) return;
     this.#slots.delete(slotId);
-    if (strandedArtifacts.length > 0) {
+    if (confirmation.strandedArtifacts.length > 0) {
       this.#report(
         'warn',
-        `Provider proxy set acquisition containment is absent with stranded artifacts: ${strandedArtifacts.join(', ')}`,
+        `Provider proxy set acquisition containment is absent with stranded artifacts: ${confirmation.strandedArtifacts.join(', ')}`,
       );
     }
     this.#deps.onSlotReleased?.(slot.routeKey);
@@ -999,9 +1009,13 @@ export class ProviderProxySetLifecycle {
         hold.kind === 'provider_proxy_acquisition_held'
           ? `guardianPid=${hold.guardianIdentity.pid}`
           : `target=${hold.target}`;
+      const reason =
+        outcome.kind === 'delegated'
+          ? 'delegation returned before the lifecycle slot accepted ownership'
+          : outcome.reason;
       this.#report(
         'warn',
-        `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(outcome.reason)}`,
+        `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(reason)}`,
       );
       slot.cleanupRetryTimer = this.#deps.time.setTimeout(() => {
         slot.cleanupRetryTimer = null;
@@ -1015,7 +1029,7 @@ export class ProviderProxySetLifecycle {
     slotId: string,
     handoff: ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>,
     decorateAuthority: (authority: DurableProviderProxyOperationAuthority) => DurableProviderProxyOperationAuthority,
-  ): void {
+  ): Readonly<{ kind: 'accepted'; owner: 'provider-proxy-set-lifecycle' }> {
     const acquiring = this.#slots.get(slotId);
     if (acquiring?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
     const refuseSession = (reason: string): never => {
@@ -1057,10 +1071,10 @@ export class ProviderProxySetLifecycle {
       providerProxyControlSessionOwner.lifecycle,
       handoff.incident,
     );
-    this.#slots.delete(slotId);
     const key = this.#identityIndex.add(identity);
     this.#capsuleAddresses.set(addressKey, capsulePath);
     this.#capsuleGrants.set(capsuleBinding.grantId, capsulePath);
+    const incident = singleLineErrorSummary(handoff.incident.reason);
     const slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }> = {
       kind: 'recovering',
       recoveryKind: 'acquisition-publication',
@@ -1075,11 +1089,24 @@ export class ProviderProxySetLifecycle {
       attemptToken: 0,
       routeKey: acquiring.routeKey,
       session: accepted.session,
+      acquisitionCleanupHold: null,
       decorateAuthority,
       unsubscribeFault: null,
     };
+    if (acquiring.cleanupHold !== null) {
+      slot.acquisitionCleanupHold = {
+        kind: 'provider_proxy_acquisition_publication_cleanup',
+        owner: 'provider-proxy-set-lifecycle',
+        target: providerProxySetReference(identity),
+        reason: incident,
+        exit: 'publication-confirmation-or-control-reattachment',
+        recoveryCapability: {
+          retry: (signal) => this.#retryAcquisitionPublicationCleanup(slot, signal),
+        },
+      };
+    }
     this.#slots.set(key, slot);
-    const incident = singleLineErrorSummary(handoff.incident.reason);
+    this.#slots.delete(slotId);
     this.#operatorDispositions.set(
       key,
       new Map([
@@ -1102,6 +1129,7 @@ export class ProviderProxySetLifecycle {
       if (fault.kind === 'heartbeat-failed') this.#releaseAcquisitionPublicationSession(slot, fault.error);
     });
     this.#runAcquisitionPublicationRetry(slot);
+    return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
   }
 
   acquisitionSucceeded(
@@ -1109,11 +1137,12 @@ export class ProviderProxySetLifecycle {
     authority: DurableProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
     capsulePath: string | null = null,
-  ): void {
+  ): Readonly<{ kind: 'accepted'; owner: 'provider-proxy-set-lifecycle' }> {
     const acquiring = this.#slots.get(slotId);
     if (acquiring?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
-    this.#slots.delete(slotId);
     this.#establish(authority, publicationReceipt, acquiring.routeKey, capsulePath, 'serve');
+    this.#slots.delete(slotId);
+    return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
   }
 
   registerInheritedSet(
@@ -1184,9 +1213,16 @@ export class ProviderProxySetLifecycle {
   }
 
   acquisitionCleanupHolds(): readonly ProviderProxySetAcquisitionCleanupHold[] {
-    return [...this.#slots.values()].flatMap((slot) =>
-      slot.kind === 'acquiring' && slot.cleanupHold !== null ? [slot.cleanupHold] : [],
-    );
+    return [...this.#slots.values()].flatMap((slot) => {
+      if (slot.kind === 'acquiring') return slot.cleanupHold === null ? [] : [slot.cleanupHold];
+      if (
+        slot.kind === 'capsule-recovering' ||
+        (slot.kind === 'recovering' && slot.recoveryKind === 'acquisition-publication')
+      ) {
+        return slot.acquisitionCleanupHold === null ? [] : [slot.acquisitionCleanupHold];
+      }
+      return [];
+    });
   }
 
   representationReleaseHolds(): readonly Readonly<{
@@ -1438,6 +1474,20 @@ export class ProviderProxySetLifecycle {
       default:
         return { kind: 'none' };
     }
+  }
+
+  authorizeBooleanOperatorExit(address: ProviderProxySetAddress): ProviderProxySetBooleanOperatorExitAuthorization {
+    const key = this.#identityIndex.keyForAddress(address);
+    if (key === null) return { kind: 'set-not-found' };
+    const slot = this.#slots.get(key);
+    if (slot === undefined) return { kind: 'set-not-found' };
+    if (
+      (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
+      slot.fatalSettlement !== null
+    ) {
+      return { kind: 'unsupported-contract' };
+    }
+    return this.authorizeOperatorExit(address);
   }
 
   authorizeOperatorExit(address: ProviderProxySetAddress): ProviderProxySetOperatorExitAuthorization {
@@ -2312,6 +2362,7 @@ export class ProviderProxySetLifecycle {
       attemptAbort: null,
       recoveryPhase: 'redemption',
       routeKey: null,
+      acquisitionCleanupHold: null,
       operatorExitNotBeforeMonotonicMs: this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
       operatorExitGeneration: 0,
     });
@@ -2503,6 +2554,27 @@ export class ProviderProxySetLifecycle {
     );
   }
 
+  async #retryAcquisitionPublicationCleanup(
+    slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
+    signal: AbortSignal,
+  ): Promise<ProviderProxySetAcquisitionCleanupOutcome> {
+    if (signal.aborted) return { kind: 'held', reason: 'publication recovery retry was cancelled' };
+    const current = this.#slots.get(slot.key);
+    if (current === undefined) {
+      return { kind: 'held', reason: 'publication recovery ownership could not be observed' };
+    }
+    if (providerProxySetSlotIsLive[current.kind]) {
+      return { kind: 'delegated', owner: 'provider-proxy-set-lifecycle' };
+    }
+    if (current === slot) {
+      if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+      slot.retryTimer = null;
+      this.#runAcquisitionPublicationRetry(slot);
+      return { kind: 'held', reason: 'publication confirmation remains pending' };
+    }
+    return { kind: 'held', reason: `provider proxy set recovery remains ${current.kind}` };
+  }
+
   #holdAcquisitionPublicationSession(
     slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
     reason: string,
@@ -2567,6 +2639,7 @@ export class ProviderProxySetLifecycle {
       attemptAbort: null,
       recoveryPhase: 'redemption',
       routeKey: slot.routeKey,
+      acquisitionCleanupHold: slot.acquisitionCleanupHold,
       operatorExitNotBeforeMonotonicMs,
       operatorExitGeneration: 0,
     };

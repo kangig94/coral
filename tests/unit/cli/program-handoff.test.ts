@@ -5,6 +5,7 @@ import type * as HandoffNoticeMod from '#src/cli/handoff-notice.js';
 import type * as GenerationMutationMod from '#src/store/generation-mutation-coordination.js';
 import type * as BackendStatusMod from '#src/transport/http/backend/status.js';
 import type * as ProgramMod from '#src/cli/program.js';
+import type * as BackendCommandMod from '#src/cli/commands/backend.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import { filterForwardableCoralEnv } from '#src/infra/env-sanitize.js';
@@ -26,6 +27,15 @@ vi.mock('#src/store/generation-mutation-coordination.js', async (importOriginal)
 vi.mock('#src/transport/http/backend/status.js', async (importOriginal) => {
   const actual = await importOriginal<typeof BackendStatusMod>();
   return { ...actual, getBackendStatusFull: mockState.getBackendStatusFull };
+});
+
+vi.mock('#src/cli/commands/backend.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof BackendCommandMod>();
+  const createBackendStatusCommandOperations: typeof actual.createBackendStatusCommandOperations = (...args) => ({
+    ...actual.createBackendStatusCommandOperations(...args),
+    readProviderProxySetHolderStatusDirect: async () => [],
+  });
+  return { ...actual, createBackendStatusCommandOperations };
 });
 
 vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => {

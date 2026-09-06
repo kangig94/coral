@@ -5122,6 +5122,9 @@ describe('ProviderProxySetLifecycle', () => {
     expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
 
     const address = providerProxySetAddress(authority.setIdentity);
+    const beforeBooleanAuthorization = lifecycle.snapshot();
+    expect(lifecycle.authorizeBooleanOperatorExit(address)).toEqual({ kind: 'unsupported-contract' });
+    expect(lifecycle.snapshot()).toEqual(beforeBooleanAuthorization);
     const authorization = lifecycle.authorizeOperatorExit(address);
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
     await expect(

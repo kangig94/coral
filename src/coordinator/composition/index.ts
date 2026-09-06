@@ -963,10 +963,14 @@ export function createCoordinatorCore(
     contract: 'current' | 'boolean',
     abandonWithoutAbsence: boolean,
     signal?: AbortSignal,
-  ): Promise<ProviderProxySetBooleanOperatorExitResult> => {
+  ): Promise<ProviderProxySetBooleanOperatorExitResult | Readonly<{ kind: 'unsupported-contract' }>> => {
     const lifecycle = world.providerProxyLifecycleRef.get();
     if (lifecycle === null) throw new Error('provider_proxy_set_operator_exit_unavailable');
-    const authorization = lifecycle.authorizeOperatorExit(request.setIdentity);
+    const authorization =
+      contract === 'boolean'
+        ? lifecycle.authorizeBooleanOperatorExit(request.setIdentity)
+        : lifecycle.authorizeOperatorExit(request.setIdentity);
+    if (authorization.kind === 'unsupported-contract') return authorization;
     if (authorization.kind !== 'authorized') {
       return {
         ...authorization,
@@ -1081,15 +1085,15 @@ export function createCoordinatorCore(
         providerProxySetContainResponseSchema.parse(
           await containProviderProxySet(request, 'current', request.mode === 'abandon', signal),
         ),
-      containBoolean: async (request, signal) =>
-        providerProxySetContainBooleanResponse(
-          await containProviderProxySet(
-            { setIdentity: request.setIdentity, mode: 'contain' },
-            'boolean',
-            request.abandonWithoutAbsence,
-            signal,
-          ),
-        ),
+      containBoolean: async (request, signal) => {
+        const result = await containProviderProxySet(
+          { setIdentity: request.setIdentity, mode: 'contain' },
+          'boolean',
+          request.abandonWithoutAbsence,
+          signal,
+        );
+        return result.kind === 'unsupported-contract' ? result : providerProxySetContainBooleanResponse(result);
+      },
     },
     kb: kbRpcPort,
     discuss: {

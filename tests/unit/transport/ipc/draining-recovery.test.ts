@@ -92,6 +92,7 @@ function createDrainingPorts(containmentKind: 'contained' | 'abandoned' = 'aband
     },
     providerProxySets: {
       contain: vi.fn(async () => containmentResult(containmentKind)),
+      containBoolean: vi.fn(async () => containmentResult(containmentKind)),
     },
   } as unknown as HttpHandlerPorts;
 }
@@ -111,7 +112,7 @@ function writeContainmentRequest(socket: Socket): void {
     `${JSON.stringify({
       kind: 'request',
       id: 1,
-      method: 'coordinator.provider_proxy_set.contain',
+      method: 'coordinator.provider_proxy_set.contain.v2',
       params: { setIdentity, mode: 'contain' },
       auth: { kind: 'boot', token: 'boot-token' },
     })}\n`,
@@ -131,15 +132,21 @@ describe('draining IPC recovery ingress', () => {
       containmentKind: undefined,
     },
     {
-      method: 'coordinator.provider_proxy_set.contain',
+      method: 'coordinator.provider_proxy_set.contain.v2',
       params: { setIdentity, mode: 'abandon' },
       invoked: (ports: HttpHandlerPorts) => ports.providerProxySets?.contain,
       containmentKind: 'abandoned' as const,
     },
     {
-      method: 'coordinator.provider_proxy_set.contain',
+      method: 'coordinator.provider_proxy_set.contain.v2',
       params: { setIdentity, mode: 'contain' },
       invoked: (ports: HttpHandlerPorts) => ports.providerProxySets?.contain,
+      containmentKind: 'contained' as const,
+    },
+    {
+      method: 'coordinator.provider_proxy_set.contain',
+      params: { setIdentity, abandonWithoutAbsence: false },
+      invoked: (ports: HttpHandlerPorts) => ports.providerProxySets?.containBoolean,
       containmentKind: 'contained' as const,
     },
   ])(
@@ -243,7 +250,7 @@ describe('draining IPC recovery ingress', () => {
         await expect(
           requestIpcMethod(
             path,
-            'coordinator.provider_proxy_set.contain',
+            'coordinator.provider_proxy_set.contain.v2',
             { setIdentity, mode: 'contain' },
             { auth: { kind: 'boot', token: 'boot-token' } },
           ),
@@ -254,6 +261,32 @@ describe('draining IPC recovery ingress', () => {
       }
     },
   );
+
+  it('returns method-not-found before accepting a legacy request whose state needs the current response', async () => {
+    const ports = createDrainingPorts();
+    ports.providerProxySets!.containBoolean = vi.fn(async () => ({ kind: 'unsupported-contract' as const }));
+    const listener = createIpcServer(ports);
+    const wakeRetainedShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+
+    try {
+      await expect(
+        requestIpcMethod(
+          path,
+          'coordinator.provider_proxy_set.contain',
+          { setIdentity, abandonWithoutAbsence: true },
+          { auth: { kind: 'boot', token: 'boot-token' } },
+        ),
+      ).rejects.toMatchObject({ rpcCode: -32601 });
+      expect(ports.providerProxySets!.containBoolean).toHaveBeenCalledOnce();
+      expect(ports.providerProxySets!.contain).not.toHaveBeenCalled();
+      expect(wakeRetainedShutdown).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
 
   it('keeps unrelated catalog methods closed while draining', async () => {
     const ports = createDrainingPorts();

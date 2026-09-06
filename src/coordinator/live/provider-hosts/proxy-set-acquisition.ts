@@ -2,16 +2,11 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
-import {
-  acquireProviderProxySet,
-  type ProviderProxyAcquisitionHeld,
-  type ProviderProxyAcquisitionRecoveryCapability,
-} from '../provider-proxy/index.js';
+import { acquireProviderProxySet, type ProviderProxyAcquisitionHeld } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 import {
-  closeProviderProxyAcquisitionSession,
   handOverProviderProxyAcquisitionControlSession,
   providerProxyControlSessionOwner,
   type ProviderProxyAcquisitionSessionHandedOver,
@@ -69,10 +64,29 @@ export type ProviderProxySetAcquisitionOutcome =
       publicationReceipt: PublicationReceipt;
     }>
   | Readonly<{ kind: 'failed'; reason: string; strandedArtifacts: readonly string[] }>
+  | Readonly<{ kind: 'outcome-unknown'; reason: string }>
   | ProviderProxyAcquisitionHeld<'provider-host-manager'>
   | ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
 
 export type ProviderProxySetAcquisitionStopDisposition = 'contain' | 'handoff';
+
+type TransferableProviderProxySetAcquisition = Extract<
+  ProviderProxySetAcquisitionOutcome,
+  { kind: 'acquired' | 'handed-over' }
+>;
+
+export type ProviderProxySetAcquisitionCleanupDisposition =
+  | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
+  | Readonly<{
+      kind: 'transfer-required';
+      successor: 'provider-proxy-set-lifecycle';
+      acquisition: TransferableProviderProxySetAcquisition;
+    }>
+  | Readonly<{ kind: 'held'; reason: string }>;
+
+export type ProviderProxySetAcquisitionCleanupOutcome =
+  | Extract<ProviderProxySetAcquisitionCleanupDisposition, { kind: 'absence-confirmed' | 'held' }>
+  | Readonly<{ kind: 'delegated'; owner: 'provider-proxy-set-lifecycle' }>;
 
 export type ProviderProxySetAcquisitionCleanupHold =
   | ProviderProxyAcquisitionHeld<'provider-host-manager'>
@@ -81,60 +95,59 @@ export type ProviderProxySetAcquisitionCleanupHold =
       owner: 'provider-host-manager';
       target: string;
       reason: string;
-      recoveryCapability: ProviderProxyAcquisitionRecoveryCapability;
+      recoveryCapability: Readonly<{
+        retry(signal: AbortSignal): Promise<ProviderProxySetAcquisitionCleanupOutcome>;
+      }>;
+    }>
+  | Readonly<{
+      kind: 'provider_proxy_acquisition_publication_cleanup';
+      owner: 'provider-proxy-set-lifecycle';
+      target: string;
+      reason: string;
+      exit: 'publication-confirmation-or-control-reattachment';
+      recoveryCapability: Readonly<{
+        retry(signal: AbortSignal): Promise<ProviderProxySetAcquisitionCleanupOutcome>;
+      }>;
     }>;
 
 export async function disposeStoppedProviderProxySetAcquisition(
   outcome: ProviderProxySetAcquisitionOutcome,
   disposition: ProviderProxySetAcquisitionStopDisposition,
   signal?: AbortSignal,
-): Promise<void> {
-  if (outcome.kind === 'failed') return;
+): Promise<ProviderProxySetAcquisitionCleanupDisposition> {
+  if (outcome.kind === 'failed') {
+    return { kind: 'absence-confirmed', strandedArtifacts: outcome.strandedArtifacts };
+  }
+  if (outcome.kind === 'outcome-unknown') return { kind: 'held', reason: outcome.reason };
   if (outcome.kind === 'provider_proxy_acquisition_held') {
-    const recovery = await outcome.recoveryCapability.retry(signal ?? new AbortController().signal);
-    if (recovery.kind === 'held') throw new Error(`provider_proxy_set_acquisition_cleanup_held: ${recovery.reason}`);
-    return;
+    try {
+      return await outcome.recoveryCapability.retry(signal ?? new AbortController().signal);
+    } catch (error: unknown) {
+      return { kind: 'held', reason: error instanceof Error ? error.message : String(error) };
+    }
   }
   if (outcome.kind === 'handed-over') {
-    closeProviderProxyAcquisitionSession(
-      outcome.session,
-      disposition === 'contain' ? 'provider host manager stopped for shutdown' : 'provider host manager handed off',
-    );
-    if (disposition === 'contain') {
-      throw new Error('provider_proxy_set_acquisition_containment_unconfirmed');
-    }
-    return;
+    return {
+      kind: 'transfer-required',
+      successor: 'provider-proxy-set-lifecycle',
+      acquisition: outcome,
+    };
   }
   if (disposition === 'contain') {
-    const containment = await outcome.set.stopAndReap(signal ?? new AbortController().signal);
-    if ('unconfirmed' in containment) {
-      throw new Error(`provider_proxy_set_acquisition_containment_unconfirmed: ${containment.unconfirmed}`);
+    try {
+      const containment = await outcome.set.stopAndReap(signal ?? new AbortController().signal);
+      return 'unconfirmed' in containment
+        ? { kind: 'held', reason: `provider_proxy_set_acquisition_containment_unconfirmed: ${containment.unconfirmed}` }
+        : { kind: 'absence-confirmed', strandedArtifacts: [] };
+    } catch (error: unknown) {
+      return { kind: 'held', reason: error instanceof Error ? error.message : String(error) };
     }
-    return;
   }
-
-  const releases = [
-    (() => {
-      try {
-        outcome.set.stopHeartbeats();
-        return Promise.resolve();
-      } catch (error: unknown) {
-        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    })(),
-    (() => {
-      try {
-        return Promise.resolve(outcome.set.initiateControlClose());
-      } catch (error: unknown) {
-        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    })(),
-  ];
-  const settled = await Promise.allSettled(releases);
-  const failures = settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-  if (failures.length > 0) {
-    throw new AggregateError(failures, 'Provider proxy set acquisition handoff release failed.');
-  }
+  return {
+    kind: 'transfer-required',
+    successor: 'provider-proxy-set-lifecycle',
+    acquisition: outcome,
+  };
 }
 
 /**
@@ -210,9 +223,8 @@ export function ensureProviderProxySet(
       },
       (error: unknown) => {
         return onSettled({
-          kind: 'failed',
+          kind: 'outcome-unknown',
           reason: error instanceof Error ? error.message : String(error),
-          strandedArtifacts: [],
         });
       },
     )

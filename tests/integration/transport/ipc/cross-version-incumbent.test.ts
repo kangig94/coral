@@ -30,7 +30,11 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
-import { providerProxySetContainBooleanRequestSchema } from '#src/transport/rpc/catalog.js';
+import {
+  providerProxySetContainBooleanRequestSchema,
+  providerProxySetContainBooleanRpcSpec,
+  providerProxySetContainRpcSpec,
+} from '#src/transport/rpc/catalog.js';
 
 const incumbentInstanceId = 'healthy-foreign-incumbent';
 const providerProxySetAddress: ProviderProxySetAddress = {
@@ -245,7 +249,7 @@ describe('cross-version incumbent', () => {
       if (request.method === 'transport.ping' || request.method === 'transport.health') {
         return { kind: 'response', id: request.id, result: incumbentHealth() };
       }
-      if (request.method === 'coordinator.provider_proxy_set.contain') {
+      if (request.method === providerProxySetContainBooleanRpcSpec.name) {
         const predecessorRequest = providerProxySetContainBooleanRequestSchema.safeParse(request.params);
         if (!predecessorRequest.success) {
           return {
@@ -292,11 +296,16 @@ describe('cross-version incumbent', () => {
       key: 'unreadable-provider-operation',
       revision: `sha256:${'b'.repeat(64)}`,
     });
-    expect(methods).toContain('coordinator.provider_proxy_set.contain');
+    expect(methods).toContain(providerProxySetContainRpcSpec.name);
+    expect(methods).toContain(providerProxySetContainBooleanRpcSpec.name);
     expect(methods).toContain('coordinator.recovery_quarantine.discard_provider_operation');
     expect(
       requests
-        .filter((request) => request.method === 'coordinator.provider_proxy_set.contain')
+        .filter(
+          (request) =>
+            request.method === providerProxySetContainRpcSpec.name ||
+            request.method === providerProxySetContainBooleanRpcSpec.name,
+        )
         .map((request) => request.params),
     ).toEqual([
       { setIdentity: providerProxySetAddress, mode: 'contain' },

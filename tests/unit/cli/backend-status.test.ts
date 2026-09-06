@@ -80,6 +80,8 @@ const storeReset: StoreResetCommandOperations = {
   },
 };
 
+const noDirectProviderProxySetHolders = async () => [] as const;
+
 let stdout = '';
 let stderr = '';
 
@@ -131,6 +133,7 @@ describe('backend status generation readiness', () => {
       getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
     };
     const program = new Command();
     program.exitOverride();
@@ -154,6 +157,7 @@ describe('backend status generation readiness', () => {
       }),
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
     };
     const program = new Command();
     program.exitOverride();
@@ -228,6 +232,107 @@ describe('backend status generation readiness', () => {
     expect(stdout.indexOf('Backend state is unknown')).toBeLessThan(stdout.indexOf('set proxy='));
     expect(process.exitCode).toBe(75);
   });
+
+  it.each([{ status: 'no_record_no_socket' } as const, { status: 'recorded_process_absent', pid: 4242 } as const])(
+    'renders a parked direct holder for coordinator-unavailable status $status',
+    async (backendResult) => {
+      const roleIdentity = { role: 'reaper' as const, pid: 4200, incarnation: testIncarnation(4200) };
+      const directHolderStatus: DirectProviderProxySetHolderStatus = {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+        guardian: { kind: 'unreachable', reason: 'connection refused' },
+        reaper: {
+          kind: 'answered',
+          status: {
+            disposition: 'unobservable',
+            phase: 'published',
+            holder: {
+              instanceId: '33333333-3333-4333-8333-333333333333',
+              pid: 4100,
+              incarnation: testIncarnation(4100),
+            },
+            controlEpoch: 1,
+            transitionSequence: 2,
+            changedAtMs: TEST_TIME.now(),
+            enforcementHold: {
+              kind: 'reap-failed',
+              reason: 'process-containment-reap-failed',
+              attempts: 5,
+              roleIdentity,
+              retry: { state: 'operator-action-required' },
+            },
+          },
+        },
+      };
+      const readProviderProxySetHolderStatusDirect = vi.fn(async () => [directHolderStatus]);
+      const status: BackendStatusCommandOperations = {
+        inspectReadiness: () => ({ kind: 'no-legacy' }),
+        getStatus: async () => backendResult,
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+        readProviderProxySetHolderStatusDirect,
+      };
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, { storeReset, backendStatus: status });
+
+      await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+      expect(readProviderProxySetHolderStatusDirect).toHaveBeenCalledOnce();
+      expect(stdout).toContain(`set proxy=${directHolderStatus.proxyInstanceId}`);
+      expect(stdout).toContain('operator-action-required');
+      expect(stdout).toContain(
+        `coral-cli backend provider-proxy-set retry-role-reap --role reaper --pid 4200 --incarnation '${testIncarnation(4200)}'`,
+      );
+      expect(process.exitCode).toBe(75);
+    },
+  );
+
+  it('treats two direct departed answers without a hold as a clean fallback verdict', async () => {
+    const holder = {
+      instanceId: '33333333-3333-4333-8333-333333333333',
+      pid: 4100,
+      incarnation: testIncarnation(4100),
+    };
+    const departed = {
+      kind: 'answered' as const,
+      status: {
+        disposition: 'departed' as const,
+        phase: 'published' as const,
+        holder,
+        controlEpoch: 1,
+        transitionSequence: 2,
+        changedAtMs: TEST_TIME.now(),
+        enforcementHold: null,
+      },
+    };
+    const directHolderStatus: DirectProviderProxySetHolderStatus = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'a'.repeat(64),
+      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      guardian: departed,
+      reaper: departed,
+    };
+    const readProviderProxySetHolderStatusDirect = vi.fn(async () => [directHolderStatus]);
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'no_record_no_socket' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(readProviderProxySetHolderStatusDirect).toHaveBeenCalledOnce();
+    expect(stdout).toContain('guardian: departed');
+    expect(stdout).toContain('reaper:   departed');
+    expect(process.exitCode).toBe(0);
+  });
 });
 
 describe('backend status live handoff disposition', () => {
@@ -235,6 +340,7 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -281,6 +387,7 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -310,6 +417,7 @@ describe('backend status live handoff disposition', () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getLiveHandoffResult: () =>
         liveHandoffResult({
           kind: 'run-current',
@@ -562,6 +670,7 @@ describe('backend status local exit combination', () => {
             );
       const status: BackendStatusCommandOperations = {
         inspectReadiness: () => ({ kind: 'no-legacy' }),
+        readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
         getStatus: async () =>
           daemonContribution === 75
             ? { status: 'undecodable_record', reason: 'corrupt-json', path: '/run/coordinator.json' }
@@ -848,6 +957,7 @@ describe('backend routing status', () => {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getRoutingStatus: async () => routingStatus,
     };
     const program = new Command();
@@ -866,6 +976,7 @@ describe('backend routing status', () => {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getRoutingStatus: async () => ({
         kind: 'current',
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -903,6 +1014,7 @@ describe('backend routing status', () => {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getRoutingStatus: async () => ({
         kind: 'current',
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -976,6 +1088,7 @@ describe('backend routing status', () => {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
       getRoutingStatus: async () => ({
         kind: 'current',
         generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -1730,6 +1843,7 @@ describe('backend startup diagnostic classification', () => {
       getStatus: async () => classified,
       getLiveHandoffResult: () => null,
       getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
     };
     const program = new Command();
     program.exitOverride();

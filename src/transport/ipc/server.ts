@@ -25,7 +25,12 @@ import {
 import { isRelocatedSocket } from '../../infra/path/index.js';
 import { documentedCoralSetupError, type DocumentedCoralSetupErrorCode } from '../../runtime/errors.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
-import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
+import {
+  providerProxySetContainBooleanRpcSpec,
+  providerProxySetContainRpcSpec,
+  rpcCatalog,
+  type RpcMethodSpec,
+} from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
@@ -253,7 +258,9 @@ function readIpcOperationalSpec(method: string): IpcOperationalSpec | null {
 }
 
 function acceptedDrainingRecovery(method: string, body: unknown): boolean {
-  if (method === 'coordinator.provider_proxy_set.contain') return true;
+  if (method === providerProxySetContainRpcSpec.name || method === providerProxySetContainBooleanRpcSpec.name) {
+    return true;
+  }
   if (method !== 'jobs.abort' || body === null || typeof body !== 'object') return false;
   const aborted = (body as { aborted?: unknown }).aborted;
   return Array.isArray(aborted) && aborted.length > 0;
@@ -897,6 +904,13 @@ async function dispatchFrame(
     subscriptionController = new AbortController();
     socket.once('close', abortDispatchOnClose);
     const invocation = await entry.dispatch(parsed.data, principal, subscriptionController.signal);
+    if (invocation.kind === 'unsupported-method') {
+      await writeEnvelope(socket, methodNotFoundResponse(request.id), {
+        drainTimeoutMs: options.writeDrainTimeoutMs,
+      });
+      socket.end();
+      return;
+    }
     if (invocation.kind === 'unary') {
       // Domain-level errors (statusCode >= 400) ride a JSON-RPC `error`
       // envelope so the client rejects with a typed error instead of

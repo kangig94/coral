@@ -761,7 +761,7 @@ async function handleCatalogUnaryRoute(
   }
 
   const result = await executeCatalogRequest(spec, request, deps, principal);
-  if (result.kind !== 'unary') {
+  if (result.kind === 'subscription') {
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
 

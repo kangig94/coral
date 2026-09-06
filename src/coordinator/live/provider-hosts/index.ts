@@ -37,6 +37,7 @@ import {
   disposeStoppedProviderProxySetAcquisition,
   ensureProviderProxySet,
   type ProviderProxySetAcquisitionCleanupHold,
+  type ProviderProxySetAcquisitionCleanupOutcome,
   type ProviderProxySetAcquisitionConfig,
   type ProviderProxySetAcquisitionOutcome,
   type ProviderProxySetAcquisitionStopDisposition,
@@ -292,12 +293,8 @@ type PendingProviderProxySetAcquisition = {
   readonly slotId: string;
   readonly outcome: Promise<ProviderProxySetAcquisitionOutcome>;
   readonly resolveOutcome: (outcome: ProviderProxySetAcquisitionOutcome) => void;
-  readonly cleanupCompletion: Promise<
-    Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>
-  >;
-  readonly resolveCleanupCompletion: (
-    outcome: Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>,
-  ) => void;
+  readonly cleanupCompletion: Promise<ProviderProxySetAcquisitionCleanupOutcome>;
+  readonly resolveCleanupCompletion: (outcome: ProviderProxySetAcquisitionCleanupOutcome) => void;
   cleanupHold: Extract<
     ProviderProxySetAcquisitionCleanupHold,
     { kind: 'provider_proxy_acquisition_pending_cleanup' }
@@ -447,9 +444,8 @@ export class DefaultProviderHostManager
     const outcome = new Promise<ProviderProxySetAcquisitionOutcome>((resolve) => {
       resolveOutcome = resolve;
     });
-    type CleanupCompletion = Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>;
-    let resolveCleanupCompletion!: (outcome: CleanupCompletion) => void;
-    const cleanupCompletion = new Promise<CleanupCompletion>((resolve) => {
+    let resolveCleanupCompletion!: (outcome: ProviderProxySetAcquisitionCleanupOutcome) => void;
+    const cleanupCompletion = new Promise<ProviderProxySetAcquisitionCleanupOutcome>((resolve) => {
       resolveCleanupCompletion = resolve;
     });
     const pending: PendingProviderProxySetAcquisition = {
@@ -463,10 +459,7 @@ export class DefaultProviderHostManager
       settlement: null,
       stop: null,
     };
-    let retrying: Promise<
-      | Readonly<{ kind: 'absence-confirmed'; strandedArtifacts: readonly string[] }>
-      | Readonly<{ kind: 'held'; reason: string }>
-    > | null = null;
+    let retrying: Promise<ProviderProxySetAcquisitionCleanupOutcome> | null = null;
     const cleanupHold: Extract<
       ProviderProxySetAcquisitionCleanupHold,
       { kind: 'provider_proxy_acquisition_pending_cleanup' }
@@ -487,14 +480,42 @@ export class DefaultProviderHostManager
                 throw new Error('provider_proxy_set_acquisition_cleanup_disposition_missing');
               }
               if (acquired.kind === 'handed-over' && stop.disposition === 'contain') {
-                lifecycle.acquisitionPublicationUnknown(admission.slotId, acquired, (set) =>
+                const acceptance = lifecycle.acquisitionPublicationUnknown(admission.slotId, acquired, (set) =>
                   this.observeGenerationCapacity(identityKey, entry, set),
                 );
+                if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+                  throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+                }
                 const held = { kind: 'held' as const, reason: 'containment ownership transferred for recovery' };
                 pending.resolveCleanupCompletion(held);
                 return held;
               }
-              await disposeStoppedProviderProxySetAcquisition(acquired, stop.disposition, signal);
+              const disposition = await disposeStoppedProviderProxySetAcquisition(acquired, stop.disposition, signal);
+              if (disposition.kind === 'held') {
+                pending.resolveCleanupCompletion(disposition);
+                return disposition;
+              }
+              if (disposition.kind === 'transfer-required') {
+                const acceptance =
+                  disposition.acquisition.kind === 'acquired'
+                    ? lifecycle.acquisitionSucceeded(
+                        admission.slotId,
+                        this.observeGenerationCapacity(identityKey, entry, disposition.acquisition.set),
+                        disposition.acquisition.publicationReceipt,
+                      )
+                    : lifecycle.acquisitionPublicationUnknown(admission.slotId, disposition.acquisition, (set) =>
+                        this.observeGenerationCapacity(identityKey, entry, set),
+                      );
+                if (acceptance.owner !== disposition.successor) {
+                  throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+                }
+                const delegated = { kind: 'delegated' as const, owner: acceptance.owner };
+                pending.resolveCleanupCompletion(delegated);
+                return delegated;
+              }
+              lifecycle.acquisitionCleanupConfirmed(admission.slotId, cleanupHold, disposition);
+              pending.resolveCleanupCompletion(disposition);
+              return disposition;
             } catch (error: unknown) {
               const held = {
                 kind: 'held' as const,
@@ -503,10 +524,6 @@ export class DefaultProviderHostManager
               pending.resolveCleanupCompletion(held);
               return held;
             }
-            const strandedArtifacts = acquired.kind === 'failed' ? acquired.strandedArtifacts : [];
-            lifecycle.acquisitionCleanupConfirmed(admission.slotId, cleanupHold, strandedArtifacts);
-            pending.resolveCleanupCompletion({ kind: 'absence-confirmed' });
-            return { kind: 'absence-confirmed' as const, strandedArtifacts };
           })().finally(() => {
             retrying = null;
           });
@@ -529,13 +546,19 @@ export class DefaultProviderHostManager
           }
           if (outcome.kind === 'acquired') {
             const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
-            lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
+            const acceptance = lifecycle.acquisitionSucceeded(admission.slotId, set, outcome.publicationReceipt);
+            if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+              throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
+            }
             return;
           }
           if (outcome.kind === 'handed-over') {
-            lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
+            const acceptance = lifecycle.acquisitionPublicationUnknown(admission.slotId, outcome, (set) =>
               this.observeGenerationCapacity(identityKey, entry, set),
             );
+            if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
+              throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
+            }
             return;
           }
           if (outcome.kind === 'provider_proxy_acquisition_held') {
@@ -543,6 +566,15 @@ export class DefaultProviderHostManager
             if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
               throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
             }
+            return;
+          }
+          if (outcome.kind === 'outcome-unknown') {
+            const acceptance = lifecycle.acquisitionCleanupPending(admission.slotId, cleanupHold);
+            if (acceptance.kind !== 'accepted' || acceptance.owner !== 'provider-proxy-set-lifecycle') {
+              throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
+            }
+            pending.stop = { disposition: 'contain' };
+            pending.cleanupOwnerAccepted = true;
             return;
           }
           lifecycle.acquisitionFailed(admission.slotId);

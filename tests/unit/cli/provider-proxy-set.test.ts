@@ -10,7 +10,12 @@ import {
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
-import { providerProxySetContainResponseSchema } from '#src/transport/rpc/catalog.js';
+import {
+  providerProxySetContainBooleanResponseSchema,
+  providerProxySetContainBooleanRpcSpec,
+  providerProxySetContainResponseSchema,
+  providerProxySetContainRpcSpec,
+} from '#src/transport/rpc/catalog.js';
 
 const address: ProviderProxySetAddress = {
   buildSetId: '11111111-1111-4111-8111-111111111111',
@@ -354,27 +359,54 @@ describe('backend provider-proxy-set contain', () => {
     expect(process.exitCode).toBe(75);
   });
 
-  it('does not substitute predecessor containment for explicit abandonment after schema rejection', async () => {
-    const request = vi.fn().mockRejectedValue(new IpcRpcError({ code: -32602, message: 'Invalid params' }));
+  it('falls back to predecessor abandonment only after the addressed method is absent', async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === providerProxySetContainRpcSpec.name) {
+        throw new IpcRpcError({ code: -32601, message: 'Method not found' });
+      }
+      return {
+        kind: 'abandoned',
+        setIdentity: address,
+        enforcerObservations: [
+          { role: 'guardian', observation: 'absent' },
+          { role: 'reaper', observation: 'unknown' },
+        ],
+        claimDischarge: { kind: 'completed' },
+        effect: abandonedEffect,
+      };
+    });
     const operations = createProviderProxySetCommandOperations({
       getClient: async () => ({ request }) as never,
     });
 
     const result = await operations.contain({ setIdentity: address, mode: 'abandon' });
 
-    expect(request).toHaveBeenCalledExactlyOnceWith(
-      'coordinator.provider_proxy_set.contain',
-      { setIdentity: address, mode: 'abandon' },
-      expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
-    );
+    expect(request.mock.calls).toEqual([
+      [
+        providerProxySetContainRpcSpec.name,
+        { setIdentity: address, mode: 'abandon' },
+        expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
+      ],
+      [
+        providerProxySetContainBooleanRpcSpec.name,
+        { setIdentity: address, abandonWithoutAbsence: true },
+        expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
+      ],
+    ]);
     expect(result).toEqual({
-      kind: 'unsupported-coordinator',
+      kind: 'abandoned',
       setIdentity: address,
+      enforcerObservations: [
+        { role: 'guardian', observation: 'absent' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+      claimDischarge: { kind: 'completed' },
+      effect: abandonedEffect,
     });
     await expect(runContain(result)).resolves.toEqual(
-      expect.objectContaining({ stderr: expect.stringContaining('does not support') }),
+      expect.objectContaining({ stdout: expect.stringContaining('was abandoned') }),
     );
-    expect(process.exitCode).toBe(75);
+    expect(process.exitCode).toBe(0);
   });
 
   it('renders a stale authorization with the signal that was already delivered', async () => {
@@ -453,7 +485,7 @@ describe('backend provider-proxy-set contain', () => {
     const result = await operations.contain({ setIdentity: address, mode: 'contain' });
 
     expect(request).toHaveBeenCalledWith(
-      'coordinator.provider_proxy_set.contain',
+      providerProxySetContainRpcSpec.name,
       { setIdentity: address, mode: 'contain' },
       expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
     );
@@ -533,6 +565,24 @@ describe('backend provider-proxy-set contain', () => {
           { role: 'reaper', observation: 'absent' },
         ],
         claimDischarge: { kind: 'completed' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps current fatal representation-release outcomes outside the predecessor response', () => {
+    expect(
+      providerProxySetContainBooleanResponseSchema.safeParse({
+        kind: 'representation-release-abandoned',
+        setIdentity: address,
+        successor: { owner: 'operator-command', acceptance: 'accepted' },
+        effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
+      }).success,
+    ).toBe(false);
+    expect(
+      providerProxySetContainBooleanResponseSchema.safeParse({
+        kind: 'representation-release-abandonment-required',
+        setIdentity: address,
+        effect: noEffect,
       }).success,
     ).toBe(false);
   });

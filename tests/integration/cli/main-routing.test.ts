@@ -674,6 +674,7 @@ describe('cli main routing', () => {
           getStatus,
           getLiveHandoffResult: () => null,
           getRoutingStatus: async () => ({ kind: 'absent' }),
+          readProviderProxySetHolderStatusDirect: async () => [],
         },
       });
       return program;

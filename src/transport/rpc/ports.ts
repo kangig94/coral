@@ -83,7 +83,7 @@ export interface ProviderProxySetRequestPort {
   containBoolean(
     request: ProviderProxySetContainBooleanRequest,
     signal?: AbortSignal,
-  ): Promise<ProviderProxySetContainBooleanResponse>;
+  ): Promise<ProviderProxySetContainBooleanResponse | Readonly<{ kind: 'unsupported-contract' }>>;
 }
 
 type MaybePromise<T> = T | Promise<T>;

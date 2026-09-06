@@ -14,6 +14,7 @@ const expectedRpcRequires = {
   'coordinator.provider_host.inspect': 'system:debug',
   'coordinator.provider_host.evict': 'system:shutdown',
   'coordinator.provider_proxy_set.contain': 'system:shutdown',
+  'coordinator.provider_proxy_set.contain.v2': 'system:shutdown',
   'coordinator.equipExpansion': 'expansion:manage',
   'coordinator.unequipExpansion': 'expansion:manage',
   'coordinator.removeExpansionCatalog': 'expansion:manage',
@@ -75,7 +76,8 @@ type ExpectedOperationalRouteId =
   | 'ipc.transport.shutdown'
   | 'ipc.transport.kb.restart'
   | 'ipc.jobs.abort.drain-recovery'
-  | 'ipc.provider-proxy-set.contain.drain-recovery';
+  | 'ipc.provider-proxy-set.contain.drain-recovery'
+  | 'ipc.provider-proxy-set.contain-boolean.drain-recovery';
 
 type OperationalRouteSummary = {
   readonly transport: 'http' | 'ipc';
@@ -177,6 +179,14 @@ const expectedOperationalSpecs = {
     authentication: 'principal',
   },
   'ipc.provider-proxy-set.contain.drain-recovery': {
+    transport: 'ipc',
+    method: 'coordinator.provider_proxy_set.contain.v2',
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'catalog',
+    authentication: 'principal',
+  },
+  'ipc.provider-proxy-set.contain-boolean.drain-recovery': {
     transport: 'ipc',
     method: 'coordinator.provider_proxy_set.contain',
     requires: 'system:shutdown',

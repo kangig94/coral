@@ -117,8 +117,10 @@ import {
   providerHostListRequestSchema,
   providerHostListResponseSchema,
   providerHostSelectorRequestSchema,
+  providerProxySetContainBooleanRpcSpec,
   providerProxySetContainBooleanRequestSchema,
   providerProxySetContainBooleanResponseSchema,
+  providerProxySetContainRpcSpec,
   providerProxySetContainRequestSchema,
   providerProxySetContainResponseSchema,
   unreadableProviderOperationDiscardRequestSchema,
@@ -453,6 +455,30 @@ function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0
     (status.health.diagnostics?.providerProxySets?.length ?? 0) > 0
     ? 75
     : 0;
+}
+
+function hasUsableCoordinatorDiagnostics(
+  status: BackendStatusFull,
+): status is Extract<BackendStatusFull, { status: 'ok' }> {
+  return 'health' in status;
+}
+
+function directProviderProxySetHolderStatusExitContribution(
+  readings: readonly DirectProviderProxySetHolderStatusRow[],
+): 0 | 75 {
+  for (const reading of readings) {
+    if ('kind' in reading) return 75;
+    const roles = [reading.guardian, reading.reaper];
+    if (
+      roles.some(
+        (role) =>
+          role.kind !== 'answered' || role.status.disposition !== 'departed' || role.status.enforcementHold !== null,
+      )
+    ) {
+      return 75;
+    }
+  }
+  return 0;
 }
 
 const OFFLINE_OPERATOR_FLAVOR_HELP =
@@ -1312,18 +1338,15 @@ export function createProviderProxySetCommandOperations(
         let response: unknown;
         let booleanContract = false;
         try {
-          response = await client.request('coordinator.provider_proxy_set.contain', request, requestOptions);
+          response = await client.request(providerProxySetContainRpcSpec.name, request, requestOptions);
         } catch (error: unknown) {
-          if (!(error instanceof IpcRpcError) || error.rpcCode !== -32602) throw error;
-          if (request.mode === 'abandon') {
-            return { kind: 'unsupported-coordinator', setIdentity: request.setIdentity };
-          }
+          if (!(error instanceof IpcRpcError) || error.rpcCode !== -32601) throw error;
           booleanContract = true;
           response = await client.request(
-            'coordinator.provider_proxy_set.contain',
+            providerProxySetContainBooleanRpcSpec.name,
             providerProxySetContainBooleanRequestSchema.parse({
               setIdentity: request.setIdentity,
-              abandonWithoutAbsence: false,
+              abandonWithoutAbsence: request.mode === 'abandon',
             }),
             requestOptions,
           );
@@ -1391,10 +1414,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       ]);
       const liveHandoffResult = backendStatus.getLiveHandoffResult();
       process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
-      if (status.status === 'unreachable') {
+      let directHolderStatusExitContribution: BackendStatusLocalExitContribution = 0;
+      if (!hasUsableCoordinatorDiagnostics(status)) {
         const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
           readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
-        process.stdout.write(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
+        if (direct.length > 0) {
+          process.stdout.write(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
+        }
+        directHolderStatusExitContribution = directProviderProxySetHolderStatusExitContribution(direct);
       }
       const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
       const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
@@ -1403,6 +1430,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         handoffRoutingStatusExitContribution(routingStatusRead),
         handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
         providerProxySetNoVerdictExitContribution(status),
+        directHolderStatusExitContribution,
       ];
       process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
     } catch (error) {

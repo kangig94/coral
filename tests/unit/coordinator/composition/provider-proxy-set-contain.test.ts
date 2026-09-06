@@ -51,7 +51,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { ProviderProxySetOperatorExitResult } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
-import { providerProxySetContainRpcSpec } from '#src/transport/rpc/catalog.js';
+import { providerProxySetContainBooleanRpcSpec } from '#src/transport/rpc/catalog.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
@@ -182,7 +182,9 @@ describe('provider proxy set operator RPC composition', () => {
   });
 
   it('answers a boolean abandonment request with its strict response generation', async () => {
-    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
+    const authorize = vi
+      .spyOn(harness.lifecycle, 'authorizeBooleanOperatorExit')
+      .mockReturnValue({ kind: 'authorized', capability });
     vi.spyOn(harness.prover, 'collectContainmentProof').mockResolvedValue(opaqueProof);
     const complete = vi.spyOn(harness.lifecycle, 'completeBooleanOperatorExit').mockResolvedValue({
       kind: 'unattributable-group-abandoned',
@@ -195,15 +197,16 @@ describe('provider proxy set operator RPC composition', () => {
       },
     });
 
-    const request = providerProxySetContainRpcSpec.requestSchema.parse({
+    const request = providerProxySetContainBooleanRpcSpec.requestSchema.parse({
       setIdentity: address,
       abandonWithoutAbsence: true,
     });
-    if (!('abandonWithoutAbsence' in request)) throw new Error('expected boolean containment request');
 
     const ports = captured.ports;
     if (ports === null) throw new Error('coordinator ports were not captured');
-    await expect(executeCatalogRequest(providerProxySetContainRpcSpec, request, ports, operator)).resolves.toEqual({
+    await expect(
+      executeCatalogRequest(providerProxySetContainBooleanRpcSpec, request, ports, operator),
+    ).resolves.toEqual({
       kind: 'unary',
       body: {
         kind: 'unattributable-group-abandoned',
@@ -216,7 +219,38 @@ describe('provider proxy set operator RPC composition', () => {
         },
       },
     });
+    expect(authorize).toHaveBeenCalledExactlyOnceWith(address);
     expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, true, undefined);
+  });
+
+  it('refuses a legacy-only state before authorization or containment-proof collection', async () => {
+    const authorizeBoolean = vi
+      .spyOn(harness.lifecycle, 'authorizeBooleanOperatorExit')
+      .mockReturnValue({ kind: 'unsupported-contract' });
+    const authorizeCurrent = vi.spyOn(harness.lifecycle, 'authorizeOperatorExit');
+    const proof = vi.spyOn(harness.prover, 'collectContainmentProof');
+    const complete = vi.spyOn(harness.lifecycle, 'completeBooleanOperatorExit');
+    const request = providerProxySetContainBooleanRpcSpec.requestSchema.parse({
+      setIdentity: address,
+      abandonWithoutAbsence: true,
+    });
+    const ports = captured.ports;
+    if (ports === null) throw new Error('coordinator ports were not captured');
+
+    await expect(
+      executeCatalogRequest(providerProxySetContainBooleanRpcSpec, request, ports, operator),
+    ).resolves.toEqual({
+      kind: 'unsupported-method',
+      statusCode: 404,
+      body: {
+        code: 'unsupported_method',
+        message: 'The legacy containment contract cannot represent this provider-proxy set state.',
+      },
+    });
+    expect(authorizeBoolean).toHaveBeenCalledExactlyOnceWith(address);
+    expect(authorizeCurrent).not.toHaveBeenCalled();
+    expect(proof).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it('completes with the issued capability after it goes stale while proof is in flight', async () => {

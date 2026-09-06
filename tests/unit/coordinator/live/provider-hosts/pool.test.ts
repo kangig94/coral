@@ -1268,6 +1268,36 @@ describe('provider host pool proxy set registry', () => {
     await manager.shutdown();
   });
 
+  it('retains an acquisition rejection as an unknown cleanup hold', async () => {
+    const server = createFakeProviderServerHandle();
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    mockedEnsureProxySet.mockImplementationOnce(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'outcome-unknown', reason: 'acquisition promise rejected' });
+    });
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+    const [hold] = manager.cleanupObligations().acquisitionCleanupHolds;
+
+    expect(hold).toMatchObject({
+      kind: 'provider_proxy_acquisition_pending_cleanup',
+      owner: 'provider-host-manager',
+    });
+    if (hold === undefined) throw new Error('unknown acquisition cleanup hold was not retained');
+    await expect(hold.recoveryCapability.retry(new AbortController().signal)).resolves.toEqual({
+      kind: 'held',
+      reason: 'acquisition promise rejected',
+    });
+    lease.close();
+    const receipt = await manager.shutdown();
+    expect(receipt.acquisitionCleanupHolds).toContain(hold);
+  });
+
   it('keeps an acquisition slot reserved while lifecycle owns a held guardian cleanup', async () => {
     const server = createFakeProviderServerHandle();
     const lifecycleRef = createProxySetLifecycleRef();
@@ -1563,6 +1593,52 @@ describe('provider host pool proxy set registry', () => {
     expect(manager.liveSets()).toEqual([]);
   });
 
+  it('delegates a late handoff acquisition to the lifecycle before the drain settles', async () => {
+    const server = createFakeProviderServerHandle();
+    const lifecycleRef = createProxySetLifecycleRef();
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: lifecycleRef,
+    });
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'not-requested' }));
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => {});
+    const set = fakeDurableProxySet('late-handoff-acquisition', {
+      stopAndReap,
+      stopHeartbeats,
+      initiateControlClose,
+    });
+    let settleAcquisition: (() => Promise<void>) | undefined;
+    mockedEnsureProxySet.mockImplementationOnce(
+      (_entry, _env, onSettled) =>
+        new Promise<void>((resolve, reject) => {
+          settleAcquisition = () =>
+            Promise.resolve(onSettled({ kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT })).then(
+              resolve,
+              reject,
+            );
+        }),
+    );
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+    lease.close();
+    const drain = manager.drainForHandoff();
+    await Promise.resolve();
+    if (settleAcquisition === undefined) throw new Error('acquisition settlement was not captured');
+    await settleAcquisition();
+    const receipt = await drain;
+
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(stopHeartbeats).not.toHaveBeenCalled();
+    expect(initiateControlClose).not.toHaveBeenCalled();
+    expect(receipt.liveProxySets.map(({ proxyInstanceId }) => proxyInstanceId)).toEqual([set.proxyInstanceId]);
+    expect(receipt.acquisitionCleanupHolds).toEqual([]);
+    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['available'] }));
+  });
+
   it('retains a timed-out acquisition cleanup until a reachable retry confirms absence', async () => {
     const server = createFakeProviderServerHandle();
     const lifecycleRef = createProxySetLifecycleRef();
@@ -1618,7 +1694,7 @@ describe('provider host pool proxy set registry', () => {
     expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));
   });
 
-  it('assigns a deadline-expired acquisition to handoff release before its callback can settle', async () => {
+  it('keeps a deadline-expired publication recovery visible after lifecycle handoff', async () => {
     const server = createFakeProviderServerHandle();
     const lifecycleRef = createProxySetLifecycleRef();
     const manager = new StubbedContainmentProviderHostManager({
@@ -1647,9 +1723,20 @@ describe('provider host pool proxy set registry', () => {
     if (settleAcquisition === undefined) throw new Error('acquisition settlement was not captured');
     await settleAcquisition();
 
-    expect(retained.stop).toHaveBeenCalledTimes(3);
-    expect(retained.close).toHaveBeenCalledTimes(3);
-    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 0, states: [] }));
+    expect(retained.stop).not.toHaveBeenCalled();
+    expect(retained.close).not.toHaveBeenCalled();
+    expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['recovering'] }));
+    const [hold] = manager.cleanupObligations().acquisitionCleanupHolds;
+    expect(hold).toMatchObject({
+      kind: 'provider_proxy_acquisition_publication_cleanup',
+      owner: 'provider-proxy-set-lifecycle',
+      exit: 'publication-confirmation-or-control-reattachment',
+    });
+    if (hold === undefined) throw new Error('publication recovery hold was not retained');
+    await expect(hold.recoveryCapability.retry(new AbortController().signal)).resolves.toEqual({
+      kind: 'held',
+      reason: 'publication confirmation remains pending',
+    });
   });
 });
 

@@ -1,6 +1,7 @@
 import type { Capability } from '../../security/capability.js';
 import {
   jobsAbortRpcSpec,
+  providerProxySetContainBooleanRpcSpec,
   providerProxySetContainRpcSpec,
   transportOperationalCarveouts,
   type RequestBindingRule,
@@ -38,6 +39,7 @@ export type IpcOperationalSpec = OperationalBaseSpec & {
       | 'transport.shutdown'
       | 'transport.kb.restart'
       | typeof jobsAbortRpcSpec.name
+      | typeof providerProxySetContainBooleanRpcSpec.name
       | typeof providerProxySetContainRpcSpec.name;
   };
 };
@@ -141,6 +143,15 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     transport: 'ipc',
     ipc: { method: providerProxySetContainRpcSpec.name },
     requires: providerProxySetContainRpcSpec.requires,
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'catalog' },
+    authentication: 'principal',
+  },
+  {
+    id: 'ipc.provider-proxy-set.contain-boolean.drain-recovery',
+    transport: 'ipc',
+    ipc: { method: providerProxySetContainBooleanRpcSpec.name },
+    requires: providerProxySetContainBooleanRpcSpec.requires,
     requiresRunningLifecycle: false,
     dispatch: { kind: 'catalog' },
     authentication: 'principal',

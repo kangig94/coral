@@ -12,9 +12,12 @@ vi.mock('#src/coordinator/live/provider-proxy/index.js', () => ({
 
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
-import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import {
+  disposeStoppedProviderProxySetAcquisition,
+  ensureProviderProxySet,
+} from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
-import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import {
@@ -53,13 +56,41 @@ const environment = {
   signal: new AbortController().signal,
 };
 
-function fakeSet(): ProviderProxySetAuthority {
+function fakeSet(): ProviderProxyOperationAuthority {
+  const proxyInstanceId = '00000000-0000-4000-8000-000000000002';
   return {
-    proxyInstanceId: 'proxy-1',
+    proxyInstanceId,
     stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
     commitContainment: async () => ({ kind: 'containment-absent', disappearanceReceipt: 'r' }),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},
+    autonomousDeadline: {
+      orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+      adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+      heartbeatHoldBound: {
+        spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
+      },
+    },
+    registerSuccessionOperation: async () => ({ kind: 'registered' }),
+    setIdentity: {
+      buildSetId: '00000000-0000-4000-8000-000000000001',
+      hostFingerprint: 'a'.repeat(64),
+      guardianInstanceId: '00000000-0000-4000-8000-000000000003',
+      guardianPid: 100,
+      guardianIncarnation: testIncarnation(1),
+      guardianControlEndpoint: '/tmp/guardian.sock',
+      proxyInstanceId,
+      proxyPid: 200,
+      reaperInstanceId: '00000000-0000-4000-8000-000000000004',
+      reaperPid: 300,
+      reaperIncarnation: testIncarnation(2),
+      reaperControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'posix-group',
+      proxyIncarnation: testIncarnation(3),
+      proxyProcessGroupId: 200,
+      canonicalEndpoint: '/tmp/proxy.sock',
+    },
   };
 }
 
@@ -95,6 +126,60 @@ function publicationUnknownAcquisitionHandoff(capsuleBinding: HandoffCapsuleV3) 
     { kind: 'publication-unknown', role: 'guardian', reason: 'publication response was lost' },
   );
 }
+
+describe('disposeStoppedProviderProxySetAcquisition', () => {
+  it('requires lifecycle transfer for a live acquisition selected for handoff', async () => {
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'r' }));
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => {});
+    const set = {
+      ...fakeSet(),
+      stopAndReap,
+      stopHeartbeats,
+      initiateControlClose,
+    };
+    const acquisition = { kind: 'acquired' as const, set, publicationReceipt: PUBLICATION_RECEIPT };
+
+    await expect(disposeStoppedProviderProxySetAcquisition(acquisition, 'handoff')).resolves.toEqual({
+      kind: 'transfer-required',
+      successor: 'provider-proxy-set-lifecycle',
+      acquisition,
+    });
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(stopHeartbeats).not.toHaveBeenCalled();
+    expect(initiateControlClose).not.toHaveBeenCalled();
+  });
+
+  it('confirms absence only after stop-and-reap observes it', async () => {
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'joint-absence' }));
+    const set = { ...fakeSet(), stopAndReap };
+
+    await expect(
+      disposeStoppedProviderProxySetAcquisition(
+        { kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT },
+        'contain',
+      ),
+    ).resolves.toEqual({ kind: 'absence-confirmed', strandedArtifacts: [] });
+    expect(stopAndReap).toHaveBeenCalledOnce();
+  });
+
+  it('returns a hold when containment cannot be observed', async () => {
+    const set = {
+      ...fakeSet(),
+      stopAndReap: vi.fn(async () => ({ unconfirmed: 'guardian observation unavailable' })),
+    };
+
+    await expect(
+      disposeStoppedProviderProxySetAcquisition(
+        { kind: 'acquired', set, publicationReceipt: PUBLICATION_RECEIPT },
+        'contain',
+      ),
+    ).resolves.toEqual({
+      kind: 'held',
+      reason: 'provider_proxy_set_acquisition_containment_unconfirmed: guardian observation unavailable',
+    });
+  });
+});
 
 describe('ensureProviderProxySet', () => {
   it('reports a failed outcome without attempting acquisition when the coordinator’s own incarnation cannot be read', () => {
@@ -264,7 +349,7 @@ describe('ensureProviderProxySet', () => {
     closeProviderProxyAcquisitionSession(session, 'test complete');
   });
 
-  it('reports a failed outcome when the acquisition promise itself rejects', async () => {
+  it('reports an unknown outcome when the acquisition promise itself rejects', async () => {
     mockedAcquire.mockRejectedValueOnce(new Error('spawn exploded'));
     let outcome: unknown;
 
@@ -275,6 +360,9 @@ describe('ensureProviderProxySet', () => {
       });
     });
 
-    expect(outcome).toEqual({ kind: 'failed', reason: 'spawn exploded', strandedArtifacts: [] });
+    expect(outcome).toEqual({ kind: 'outcome-unknown', reason: 'spawn exploded' });
+    await expect(
+      disposeStoppedProviderProxySetAcquisition({ kind: 'outcome-unknown', reason: 'spawn exploded' }, 'contain'),
+    ).resolves.toEqual({ kind: 'held', reason: 'spawn exploded' });
   });
 });

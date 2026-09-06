@@ -24,7 +24,9 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainBooleanRpcSpec,
   providerProxySetContainBooleanResponseSchema,
+  providerProxySetContainRpcSpec,
   providerProxySetContainResponseSchema,
   unreadableProviderOperationDiscardResultSchema,
   type ProviderProxySetContainBooleanRequest,
@@ -49,6 +51,7 @@ function decodePathSegment(segment: string): string | null {
 
 export type CatalogRequestExecution =
   | { kind: 'unary'; body: unknown; statusCode?: number }
+  | { kind: 'unsupported-method'; body: unknown; statusCode: 404 }
   | { kind: 'subscription'; notifications: AsyncIterable<unknown> };
 
 const BACKEND_RECOVERING_MESSAGE = 'recovering — retry after 500ms';
@@ -72,6 +75,10 @@ function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
 
 function unary(body: unknown, statusCode?: number): CatalogRequestExecution {
   return statusCode === undefined ? { kind: 'unary', body } : { kind: 'unary', body, statusCode };
+}
+
+function unsupportedMethod(message: string): CatalogRequestExecution {
+  return { kind: 'unsupported-method', body: { code: 'unsupported_method', message }, statusCode: 404 };
 }
 
 function unaryHttp(response: { statusCode: number; body: unknown }): CatalogRequestExecution {
@@ -575,7 +582,9 @@ function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<Cata
 function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const route = context.spec.name;
   if (route.startsWith('coordinator.provider_host.')) return executeProviderHostCatalogRequest(context);
-  if (route === 'coordinator.provider_proxy_set.contain') return executeProviderProxySetContainCatalogRequest(context);
+  if (route === providerProxySetContainRpcSpec.name || route === providerProxySetContainBooleanRpcSpec.name) {
+    return executeProviderProxySetContainCatalogRequest(context);
+  }
 
   switch (route) {
     case 'coordinator.recovery_quarantine.clear':
@@ -592,6 +601,7 @@ function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Pr
 }
 
 async function executeProviderProxySetContainCatalogRequest({
+  spec,
   request,
   rpcPorts,
   abortSignal,
@@ -599,12 +609,15 @@ async function executeProviderProxySetContainCatalogRequest({
   if (rpcPorts.providerProxySets === undefined) {
     throw new Error('provider_proxy_set_operator_exit_unavailable');
   }
-  if ('abandonWithoutAbsence' in (request as ProviderProxySetContainBooleanRequest)) {
-    return unary(
-      providerProxySetContainBooleanResponseSchema.parse(
-        await rpcPorts.providerProxySets.containBoolean(request as ProviderProxySetContainBooleanRequest, abortSignal),
-      ),
+  if (spec.name === providerProxySetContainBooleanRpcSpec.name) {
+    const result = await rpcPorts.providerProxySets.containBoolean(
+      request as ProviderProxySetContainBooleanRequest,
+      abortSignal,
     );
+    if (result.kind === 'unsupported-contract') {
+      return unsupportedMethod('The legacy containment contract cannot represent this provider-proxy set state.');
+    }
+    return unary(providerProxySetContainBooleanResponseSchema.parse(result));
   }
   return unary(
     providerProxySetContainResponseSchema.parse(
