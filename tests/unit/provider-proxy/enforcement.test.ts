@@ -396,12 +396,12 @@ describe('reaper lifetime after pairing loss', () => {
 
     harness.enforcer.arm();
     await runPublishedHolderCheck(harness);
+    await vi.waitFor(() => expect(harness.scheduler.pending()).toBe(1));
 
     expect(harness.observeContainmentLiveness).toHaveBeenCalled();
     expect(harness.outcomes).toHaveLength(0);
     expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
     expect(harness.signalContainment).not.toHaveBeenCalled();
-    expect(harness.scheduler.pending()).toBe(1);
   });
 
   it('stays armed when the recorded containment is unobservable', async () => {
@@ -416,12 +416,12 @@ describe('reaper lifetime after pairing loss', () => {
 
     harness.enforcer.arm();
     await runPublishedHolderCheck(harness);
+    await vi.waitFor(() => expect(harness.scheduler.pending()).toBe(1));
 
     expect(harness.observeContainmentLiveness).toHaveBeenCalledWith(-CONTAINMENT.processGroupId);
     expect(harness.outcomes).toHaveLength(0);
     expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
     expect(harness.signalContainment).not.toHaveBeenCalled();
-    expect(harness.scheduler.pending()).toBe(1);
   });
 
   it('does not probe the recorded containment while pairing remains intact', async () => {

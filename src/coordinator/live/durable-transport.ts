@@ -5,6 +5,7 @@ import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
+import type { AbortHoldDisposition } from '../../jobs/contracts/abort-registry.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type {
@@ -180,6 +181,10 @@ async function resolveDurableProcessContainment(
         outcome = { kind: 'signal-refused', pid, reason: 'expected-incarnation-mismatch' };
       } else if (reapOutcome.kind === 'signal-authorization-refused') {
         outcome = { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
+      } else if (reapOutcome.kind === 'identity-unobservable') {
+        outcome = reapOutcome.signalDelivered
+          ? { kind: 'target-unobservable', pid, stage: 'after-sigterm' }
+          : { kind: 'signal-refused', pid, reason: 'signal-authorizing-incarnation-unavailable' };
       } else if (containment.childRoot === null || recordedRoots.length > 0) {
         outcome = { kind: 'absence-observed' };
       } else {
@@ -367,10 +372,21 @@ export async function spawnDurableJobTransport(params: {
     }
   };
 
-  const abandonCleanupOwnership = (): boolean => {
-    if (!providerResultHeld || cleanupKey === null) return false;
-    if (publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false }).kind === 'retained') {
-      return false;
+  const abandonCleanupOwnership = (): AbortHoldDisposition => {
+    if (!providerResultHeld || cleanupKey === null) {
+      return {
+        kind: 'retained',
+        reason: 'durable containment ownership is no longer held',
+        nextStep: 'Inspect the job before retrying durable abandonment.',
+      };
+    }
+    const publication = publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false });
+    if (publication.kind === 'retained') {
+      return {
+        kind: 'retained',
+        reason: publication.reason,
+        nextStep: 'Retry the abort after durable containment status can be persisted.',
+      };
     }
     cleanupAbortController?.abort();
     cleanupAbortController = null;
@@ -384,7 +400,11 @@ export async function spawnDurableJobTransport(params: {
     }
     containmentAbandoned = true;
     resolveContainmentAbsence();
-    return true;
+    return {
+      kind: 'abandoned',
+      reason: 'job ownership was released without proof of process absence',
+      nextStep: 'Inspect the recorded process because it may still be live.',
+    };
   };
 
   const enterContainmentHold = (reason: string): void => {

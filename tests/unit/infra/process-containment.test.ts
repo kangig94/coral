@@ -6,7 +6,6 @@ import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotoni
 import {
   abortRecordedContainment,
   observeRecordedContainment,
-  ProcessContainmentError,
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
@@ -387,15 +386,9 @@ describe('recorded process containment', () => {
       { unreadablePids: new Set([containment.pid]) },
     );
 
-    const failure = await reapRecordedContainment(
-      containment,
-      [],
-      deadlineAfter(fake.environment, 10_000),
-      fake.environment,
-    ).catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(ProcessContainmentError);
-    expect(failure).toMatchObject({ code: 'process_identity_unverified' });
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
+    ).resolves.toEqual({ kind: 'identity-unobservable', signalDelivered: false });
     expect(fake.signals).toEqual([]);
   });
 
@@ -408,16 +401,52 @@ describe('recorded process containment', () => {
       { groupLiveness: 'unknown' },
     );
 
-    const failure = await reapRecordedContainment(
-      containment,
-      [],
-      deadlineAfter(fake.environment, 10_000),
-      fake.environment,
-    ).catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(ProcessContainmentError);
-    expect(failure).toMatchObject({ code: 'process_identity_unverified' });
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
+    ).resolves.toEqual({ kind: 'identity-unobservable', signalDelivered: false });
     expect(fake.signals, 'nothing may be signalled on an answer nobody has').toEqual([]);
+  });
+
+  it('retains delivered-signal evidence when identity observation becomes unavailable during the wait', async () => {
+    const fake = createFakeEnvironment({ groupAlive: true, leaderAlive: true, providerRootAlive: false });
+    const observeRecordedProcessAsync = fake.environment.process.observeRecordedProcessAsync;
+    if (observeRecordedProcessAsync === undefined) throw new Error('fake environment must observe asynchronously');
+    let observations = 0;
+
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), {
+        ...fake.environment,
+        process: {
+          ...fake.environment.process,
+          observeRecordedProcessAsync: async (identity, signal) => {
+            observations += 1;
+            return observations > 2 ? 'unknown' : observeRecordedProcessAsync(identity, signal);
+          },
+        },
+      }),
+    ).resolves.toEqual({ kind: 'identity-unobservable', signalDelivered: true });
+    expect(fake.signals).toEqual([{ pid: -containment.processGroupId, signal: 'SIGTERM', at: 0 }]);
+  });
+
+  it('retains a partial delivery when a later target becomes unobservable during signal authorization', async () => {
+    const fake = createFakeEnvironment({ groupAlive: true, leaderAlive: true, providerRootAlive: true });
+    const observeRecordedProcessAsync = fake.environment.process.observeRecordedProcessAsync;
+    if (observeRecordedProcessAsync === undefined) throw new Error('fake environment must observe asynchronously');
+    let observations = 0;
+
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 10_000), {
+        ...fake.environment,
+        process: {
+          ...fake.environment.process,
+          observeRecordedProcessAsync: async (identity, signal) => {
+            observations += 1;
+            return observations > 3 ? 'unknown' : observeRecordedProcessAsync(identity, signal);
+          },
+        },
+      }),
+    ).resolves.toEqual({ kind: 'identity-unobservable', signalDelivered: true });
+    expect(fake.signals).toEqual([{ pid: -containment.processGroupId, signal: 'SIGTERM', at: 0 }]);
   });
 
   it.each(['alive', 'unknown'] as const)(

@@ -5,7 +5,9 @@ import type {
   ProviderProxySetFencedContainmentProof,
 } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import type { ProviderProxySetOperatorExitResult } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
+import type { ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 
 const observedEnforcerEvidence: ProviderProxySetContainmentEvidence = {
   kind: 'enforcers-observed',
@@ -43,7 +45,16 @@ declare const unfencedProof: ProviderProxySetContainmentProof;
 declare const fencedProof: ProviderProxySetFencedContainmentProof;
 declare const reaper: ProviderProxySetRecordedContainmentReaper;
 declare const signal: AbortSignal;
+declare const setAddress: ProviderProxySetAddress;
 
 // @ts-expect-error recorded-containment reaping requires proof-owned mutation-fence authority.
 void reaper(identity, unfencedProof, signal, () => {});
 void reaper(identity, fencedProof, signal, () => {});
+
+// @ts-expect-error an operator-exit disposition cannot cross the RPC boundary without its process and
+// representation effects.
+const identityRefusalWithoutEffects: ProviderProxySetOperatorExitResult = {
+  kind: 'identity-unobservable',
+  setIdentity: setAddress,
+};
+void identityRefusalWithoutEffects;

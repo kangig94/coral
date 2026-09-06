@@ -357,6 +357,7 @@ function classifyFulfillment(
         'containment-disappeared',
         'recorded-group-unattributable',
         'signal-authorization-refused',
+        'identity-unobservable',
         'not-bequeathed',
         'temporarily-unavailable',
       ].includes(String(value.kind))

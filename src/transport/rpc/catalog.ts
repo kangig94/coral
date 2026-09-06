@@ -313,6 +313,7 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
     .strict(),
   z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainResultBase }).strict(),
   z.object({ kind: z.literal('signal-authorization-refused'), ...providerProxySetContainResultBase }).strict(),
+  z.object({ kind: z.literal('identity-unobservable'), ...providerProxySetContainResultBase }).strict(),
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
   z
     .object({
@@ -398,6 +399,7 @@ export const providerProxySetContainBooleanResponseSchema = z.discriminatedUnion
     .strict(),
   z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainBooleanResultBase }).strict(),
   z.object({ kind: z.literal('signal-authorization-refused'), ...providerProxySetContainBooleanResultBase }).strict(),
+  z.object({ kind: z.literal('identity-unobservable'), ...providerProxySetContainBooleanResultBase }).strict(),
   z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainBooleanResultBase }).strict(),
   z
     .object({

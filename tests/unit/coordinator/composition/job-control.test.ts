@@ -29,7 +29,11 @@ describe('createCoordinatorControl.abortJobs', () => {
   it('reports the first unresolved cleanup as held and uses a later abort as explicit abandonment', () => {
     const runtime = new SimulationRuntime();
     const registry = new AbortRegistry(runtime.ids);
-    const abandon = vi.fn(() => true);
+    const abandon = vi.fn(() => ({
+      kind: 'abandoned' as const,
+      reason: 'job ownership was released without proof of process absence',
+      nextStep: 'Inspect the recorded process because it may still be live.',
+    }));
     const jobId = registry.register('held-job');
     registry.getSignal(jobId)?.addEventListener(
       'abort',
@@ -57,14 +61,41 @@ describe('createCoordinatorControl.abortJobs', () => {
     });
     expect(abandon).not.toHaveBeenCalled();
 
-    expect(registry.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+    expect(registry.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      abandoned: [
+        {
+          jobId,
+          reason: 'job ownership was released without proof of process absence',
+          nextStep: 'Inspect the recorded process because it may still be live.',
+        },
+      ],
+    });
+    expect(abandon).toHaveBeenCalledOnce();
+    expect(registry.has(jobId)).toBe(true);
+    expect(registry.abort([jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      abandoned: [
+        {
+          jobId,
+          reason: 'job ownership was released without proof of process absence',
+          nextStep: 'Inspect the recorded process because it may still be live.',
+        },
+      ],
+    });
     expect(abandon).toHaveBeenCalledOnce();
   });
 
   it('keeps reporting a hold when durable abandonment is not accepted', () => {
     const runtime = new SimulationRuntime();
     const registry = new AbortRegistry(runtime.ids);
-    const abandon = vi.fn(() => false);
+    const abandon = vi.fn(() => ({
+      kind: 'retained' as const,
+      reason: 'durable containment status could not be persisted',
+      nextStep: 'Retry durable abandonment.',
+    }));
     const jobId = registry.register('held-job');
     registry.hold(jobId, 'process absence is not yet proven', 'Retry durable abandonment.', abandon);
     registry.abort([jobId]);
@@ -75,7 +106,7 @@ describe('createCoordinatorControl.abortJobs', () => {
       refused: [
         {
           jobId,
-          reason: 'process absence is not yet proven',
+          reason: 'durable containment status could not be persisted',
           nextStep: 'Retry durable abandonment.',
         },
       ],

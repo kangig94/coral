@@ -53,6 +53,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { formatAbortResult } from '#src/cli/format/jobs.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -1052,7 +1053,19 @@ describe('ExecutionService launch', () => {
     await vi.waitFor(() => expect(retryActive).toBe(true));
 
     expect(abortRegistry.abort([decision.jobId]).refused).toHaveLength(1);
-    expect(abortRegistry.abort([decision.jobId])).toEqual({ aborted: [decision.jobId], notFound: [] });
+    const abandonment = abortRegistry.abort([decision.jobId]);
+    expect(abandonment).toEqual({
+      aborted: [],
+      notFound: [],
+      abandoned: [
+        {
+          jobId: decision.jobId,
+          reason: 'job ownership was released without proof of process absence',
+          nextStep: 'Inspect the recorded process because it may still be live.',
+        },
+      ],
+    });
+    expect(formatAbortResult(abandonment)).toContain('Warning: Process absence remains unproven.');
     await vi.waitFor(() => expect(retryActive).toBe(false));
 
     expect(statusAtDiagnosticFailure).toMatchObject({
@@ -1174,7 +1187,17 @@ describe('ExecutionService launch', () => {
     expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toEqual({ kind: 'missing' });
 
     progressStore.getDb().exec('DROP TRIGGER fail_durable_publication');
-    expect(abortRegistry.abort([decision.jobId])).toEqual({ aborted: [decision.jobId], notFound: [] });
+    expect(abortRegistry.abort([decision.jobId])).toEqual({
+      aborted: [],
+      notFound: [],
+      abandoned: [
+        {
+          jobId: decision.jobId,
+          reason: 'job ownership was released without proof of process absence',
+          nextStep: 'Inspect the recorded process because it may still be live.',
+        },
+      ],
+    });
     expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toMatchObject({
       kind: 'valid',
       status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },
@@ -1315,8 +1338,15 @@ describe('ExecutionService launch', () => {
 
     progressStore.getDb().exec('DROP TRIGGER fail_containment_delete');
     expect(abortRegistry.abort([decision.jobId])).toEqual({
-      aborted: [decision.jobId],
+      aborted: [],
       notFound: [],
+      abandoned: [
+        {
+          jobId: decision.jobId,
+          reason: 'job ownership was released without proof of process absence',
+          nextStep: 'Inspect the recorded process because it may still be live.',
+        },
+      ],
     });
     expect(abortHolds.has(decision.jobId)).toBe(false);
     expect(abortRegistry.has(decision.jobId)).toBe(true);

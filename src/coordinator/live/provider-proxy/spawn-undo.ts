@@ -131,6 +131,13 @@ export function buildGuardianSpawnUndo(
         if (proxyResult.kind === 'signal-authorization-refused') {
           throw new Error('proxy process-group cleanup is holding because signal authorization was refused');
         }
+        if (proxyResult.kind === 'identity-unobservable') {
+          throw new Error(
+            proxyResult.signalDelivered
+              ? 'proxy process-group cleanup is holding because identity became unobservable after a signal was delivered'
+              : 'proxy process-group cleanup is holding because identity observation did not authorize a signal',
+          );
+        }
       }
       const result = await reapRecordedContainment(
         guardianIdentity,
@@ -149,6 +156,13 @@ export function buildGuardianSpawnUndo(
       }
       if (result.kind === 'signal-authorization-refused') {
         throw new Error('guardian process-group cleanup is holding because signal authorization was refused');
+      }
+      if (result.kind === 'identity-unobservable') {
+        throw new Error(
+          result.signalDelivered
+            ? 'guardian process-group cleanup is holding because identity became unobservable after a signal was delivered'
+            : 'guardian process-group cleanup is holding because identity observation did not authorize a signal',
+        );
       }
       absenceConfirmed = true;
     } catch (error: unknown) {

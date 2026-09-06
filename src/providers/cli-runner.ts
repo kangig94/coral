@@ -5,11 +5,12 @@ import type {
   DurableProvisionalProcessSubject,
 } from '../runtime/ports.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
+import type { AbortHoldDisposition } from '../jobs/contracts/abort-registry.js';
 import type { ProviderCliRunner } from './protocol.js';
 
 export type DurableContainmentOperatorControl = Readonly<{
   retry(): void;
-  abandon(): boolean;
+  abandon(): AbortHoldDisposition;
 }>;
 
 export type DurableProcessPublicationDisposition =

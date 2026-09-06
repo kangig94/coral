@@ -1,4 +1,4 @@
-import type { AbortResult, JobAbortRegistryPort } from '../contracts/abort-registry.js';
+import type { AbortHoldDisposition, AbortResult, JobAbortRegistryPort } from '../contracts/abort-registry.js';
 import type { IdPort } from '../../runtime/ports.js';
 
 export class AbortRegistry implements JobAbortRegistryPort {
@@ -12,9 +12,12 @@ export class AbortRegistry implements JobAbortRegistryPort {
     string,
     Readonly<{
       refusal: NonNullable<AbortResult['refused']>[number];
-      abandon: () => boolean;
+      abandon: () => AbortHoldDisposition;
     }>
   >();
+  /** An abandoned job keeps its entry until its terminal phase is persisted, so a later abort must still be
+   *  answered as the abandonment it already is rather than as a fresh abort that succeeded. */
+  private readonly abandonments = new Map<string, NonNullable<AbortResult['abandoned']>[number]>();
 
   register(jobId: string = this.ids.uuid(), onAbort?: () => void): string {
     const controller = new AbortController();
@@ -23,10 +26,11 @@ export class AbortRegistry implements JobAbortRegistryPort {
     }
     this.controllers.set(jobId, controller);
     this.holds.delete(jobId);
+    this.abandonments.delete(jobId);
     return jobId;
   }
 
-  hold(jobId: string, reason: string, nextStep: string, abandon: () => boolean): void {
+  hold(jobId: string, reason: string, nextStep: string, abandon: () => AbortHoldDisposition): void {
     if (!this.controllers.has(jobId)) return;
     this.holds.set(jobId, {
       refusal: { jobId, reason, nextStep },
@@ -54,19 +58,30 @@ export class AbortRegistry implements JobAbortRegistryPort {
     const aborted: string[] = [];
     const notFound: string[] = [];
     const refused: NonNullable<AbortResult['refused']> = [];
+    const abandoned: NonNullable<AbortResult['abandoned']> = [];
     for (const jobId of jobIds) {
       const controller = this.controllers.get(jobId);
       if (!controller) {
         notFound.push(jobId);
         continue;
       }
+      const priorAbandonment = this.abandonments.get(jobId);
+      if (priorAbandonment !== undefined) {
+        abandoned.push(priorAbandonment);
+        continue;
+      }
       const heldBeforeRequest = this.holds.get(jobId);
       if (controller.signal.aborted && heldBeforeRequest !== undefined) {
-        if (heldBeforeRequest.abandon()) {
+        const disposition = heldBeforeRequest.abandon();
+        if (disposition.kind === 'abandoned') {
+          // Ownership of cleanup is what abandonment releases; the entry stays until the terminal phase is
+          // persisted, because the job still has to reach one.
           this.holds.delete(jobId);
-          aborted.push(jobId);
+          const record = { jobId, reason: disposition.reason, nextStep: disposition.nextStep };
+          this.abandonments.set(jobId, record);
+          abandoned.push(record);
         } else {
-          refused.push((this.holds.get(jobId) ?? heldBeforeRequest).refusal);
+          refused.push({ jobId, reason: disposition.reason, nextStep: disposition.nextStep });
         }
         continue;
       }
@@ -78,11 +93,17 @@ export class AbortRegistry implements JobAbortRegistryPort {
         refused.push(hold.refusal);
       }
     }
-    return { aborted, notFound, ...(refused.length === 0 ? {} : { refused }) };
+    return {
+      aborted,
+      notFound,
+      ...(refused.length === 0 ? {} : { refused }),
+      ...(abandoned.length === 0 ? {} : { abandoned }),
+    };
   }
 
   /** Call after terminal phase is persisted. */
   remove(jobId: string): void {
+    this.abandonments.delete(jobId);
     this.controllers.delete(jobId);
     this.holds.delete(jobId);
   }

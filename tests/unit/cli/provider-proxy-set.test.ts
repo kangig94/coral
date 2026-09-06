@@ -158,6 +158,17 @@ const containCommandCases: readonly ContainCommandCase[] = [
     message: 'signal authorization was refused for an observed-live recorded target',
   },
   {
+    name: 'identity unobservable before signal authorization',
+    result: {
+      kind: 'identity-unobservable',
+      setIdentity: address,
+      effect: noEffect,
+    },
+    exitCode: 75,
+    stream: 'stderr',
+    message: 'process identity could not be observed',
+  },
+  {
     name: 'enforcer-unobservable',
     result: {
       kind: 'enforcer-unobservable',
@@ -489,6 +500,19 @@ describe('backend provider-proxy-set contain', () => {
     expect(process.exitCode).toBe(75);
   });
 
+  it('refuses pre-signal identity uncertainty with recovery and abandonment exits', async () => {
+    const output = await runContain({
+      kind: 'identity-unobservable',
+      setIdentity: address,
+      effect: noEffect,
+    });
+
+    expect(output.stderr).toContain('before Coral delivered any process signal');
+    expect(output.stderr).toContain(`provider-proxy-set contain ${encodeProviderProxySetAddress(address)}`);
+    expect(output.stderr).toContain(`provider-proxy-set abandon ${encodeProviderProxySetAddress(address)}`);
+    expect(process.exitCode).toBe(75);
+  });
+
   it('turns the shipped draining response body into a named no-verdict result', async () => {
     const operations = createProviderProxySetCommandOperations({
       getClient: async () =>
@@ -646,6 +670,18 @@ describe('backend provider-proxy-set contain', () => {
 
     expect(providerProxySetContainResponseSchema.parse(refusal)).toEqual(refusal);
     expect(providerProxySetContainBooleanResponseSchema.parse(refusal)).toEqual(refusal);
+  });
+
+  it('carries pre-signal identity refusal through both containment response contracts', () => {
+    const refusal = {
+      kind: 'identity-unobservable',
+      setIdentity: address,
+      effect: noEffect,
+    } as const;
+
+    expect(providerProxySetContainResponseSchema.parse(refusal)).toEqual(refusal);
+    expect(providerProxySetContainBooleanResponseSchema.parse(refusal)).toEqual(refusal);
+    expect(providerProxySetContainResponseSchema.safeParse({ ...refusal, effect: undefined }).success).toBe(false);
   });
 
   it('accepts a pre-reap abandonment receipt with absent enforcer observations', () => {

@@ -114,6 +114,7 @@ export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
   | Readonly<{ kind: 'signal-authorization-refused' }>
+  | Readonly<{ kind: 'identity-unobservable'; signalDelivered: boolean }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>
   | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
@@ -523,7 +524,11 @@ export async function attemptProviderProxySetInheritance(
         if (reapResult.kind === 'containment-absent') {
           return { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt };
         }
-        if (reapResult.kind === 'recorded-group-unattributable' || reapResult.kind === 'signal-authorization-refused') {
+        if (
+          reapResult.kind === 'recorded-group-unattributable' ||
+          reapResult.kind === 'signal-authorization-refused' ||
+          reapResult.kind === 'identity-unobservable'
+        ) {
           return reapResult;
         }
         throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`, { cause: error });
@@ -554,7 +559,11 @@ export async function attemptProviderProxySetInheritance(
   if (reapResult.kind === 'containment-absent') {
     return { kind: 'containment-disappeared', disappearanceReceipt: reapResult.disappearanceReceipt };
   }
-  if (reapResult.kind === 'recorded-group-unattributable' || reapResult.kind === 'signal-authorization-refused') {
+  if (
+    reapResult.kind === 'recorded-group-unattributable' ||
+    reapResult.kind === 'signal-authorization-refused' ||
+    reapResult.kind === 'identity-unobservable'
+  ) {
     return reapResult;
   }
   throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`);

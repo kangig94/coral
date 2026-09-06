@@ -117,6 +117,14 @@ export class ProcessContainmentError extends Error {
   }
 }
 
+class ContainmentIdentityObservationError extends ProcessContainmentError {
+  constructor() {
+    super('process_identity_unverified', 'Recorded containment liveness could not be observed.');
+    this.name = 'ContainmentIdentityObservationError';
+    Object.setPrototypeOf(this, ContainmentIdentityObservationError.prototype);
+  }
+}
+
 type TargetObservation = 'absent' | 'present' | 'recorded-group-unattributable';
 
 type RecordedSetObservation = Readonly<{
@@ -140,10 +148,7 @@ function throwObservationFailure(reason: 'deadline' | 'identity', deadlineName: 
   if (reason === 'deadline') {
     throw reapFailure(`Recorded containment observation could not complete before the ${deadlineName}.`);
   }
-  throw new ProcessContainmentError(
-    'process_identity_unverified',
-    'Recorded containment liveness could not be observed.',
-  );
+  throw new ContainmentIdentityObservationError();
 }
 
 function requireObservedSet(result: AsyncRecordedSetObservation, deadlineName: string): RecordedSetObservation {
@@ -172,7 +177,8 @@ export type RecordedContainmentAbortResult =
 export type RecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent' }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
-  | Readonly<{ kind: 'signal-authorization-refused' }>;
+  | Readonly<{ kind: 'signal-authorization-refused' }>
+  | Readonly<{ kind: 'identity-unobservable'; signalDelivered: boolean }>;
 
 function reapFailure(message: string, context: Readonly<Record<string, unknown>> = {}): ProcessContainmentError {
   return new ProcessContainmentError('process_containment_reap_failed', message, context);
@@ -564,7 +570,7 @@ async function signalRecordedSet<Scope extends symbol>(
   try {
     if (observation.containment === 'present') {
       const refreshed = await observeContainmentAsync(containment, exitDeadline, environment);
-      if (refreshed.kind === 'unobservable') return { kind: 'signal-authorization-refused' };
+      if (refreshed.kind === 'unobservable') throwObservationFailure(refreshed.reason, 'exit deadline');
       if (refreshed.observation === 'recorded-group-unattributable') return { kind: refreshed.observation };
       if (refreshed.observation === 'present') {
         if (!identityMayAuthorizeSignal(containment, environment)) authorizationRefused = true;
@@ -574,7 +580,7 @@ async function signalRecordedSet<Scope extends symbol>(
     for (const [index, root] of recordedRoots.entries()) {
       if (observation.recordedRoots[index] !== 'present') continue;
       const refreshed = await observeProcessIdentityAsync(root, exitDeadline, environment);
-      if (refreshed.kind === 'unobservable') return { kind: 'signal-authorization-refused' };
+      if (refreshed.kind === 'unobservable') throwObservationFailure(refreshed.reason, 'exit deadline');
       if (refreshed.observation !== 'present') continue;
       if (!identityMayAuthorizeSignal(root, environment)) {
         authorizationRefused = true;
@@ -756,6 +762,31 @@ export async function reapRecordedContainment<Scope extends symbol>(
   assertContainmentAuthorized(environment.signal);
   assertRecordedSet(containment, recordedRoots, environment.maxRecordedRoots);
 
+  let signalDelivered = false;
+  const trackedEnvironment: ProcessContainmentEnvironment<Scope> = {
+    ...environment,
+    onSignal: (effect) => {
+      signalDelivered = true;
+      environment.onSignal?.(effect);
+    },
+  };
+
+  try {
+    return await reapObservedRecordedContainment(containment, recordedRoots, exitDeadline, trackedEnvironment);
+  } catch (error: unknown) {
+    if (error instanceof ContainmentIdentityObservationError) {
+      return { kind: 'identity-unobservable', signalDelivered };
+    }
+    throw error;
+  }
+}
+
+async function reapObservedRecordedContainment<Scope extends symbol>(
+  containment: RecordedContainmentIdentity,
+  recordedRoots: readonly RecordedProcessIdentity[],
+  exitDeadline: MonotonicInstant<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<Exclude<RecordedContainmentReapResult, { kind: 'identity-unobservable' }>> {
   let observationResult = await observeRecordedSet(containment, recordedRoots, exitDeadline, environment);
   let observation = requireObservedSet(observationResult, 'exit deadline');
   let verdict = recordedSetAbsenceVerdict(observation);

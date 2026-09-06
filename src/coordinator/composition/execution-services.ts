@@ -214,6 +214,14 @@ export function createExecutionServices({
           reason: 'Signal authorization could not be established for every recorded-containment target.',
           nextAttemptAtMs: runtime.time.now() + 25,
         };
+      case 'identity-unobservable':
+        return {
+          kind: 'retry-scheduled',
+          reason: outcome.signalDelivered
+            ? 'Process identity became unobservable after a recorded-containment signal was delivered.'
+            : 'Process identity could not be observed before recorded-containment signal authorization.',
+          nextAttemptAtMs: runtime.time.now() + 25,
+        };
       case 'not-bequeathed':
         return {
           kind: 'retry-scheduled',
@@ -261,6 +269,13 @@ export function createExecutionServices({
           return {
             kind: 'temporarily-unavailable',
             reason: 'Signal authorization could not be established for every recorded-containment target.',
+          };
+        case 'identity-unobservable':
+          return {
+            kind: 'temporarily-unavailable',
+            reason: outcome.signalDelivered
+              ? 'Process identity became unobservable after a recorded-containment signal was delivered.'
+              : 'Process identity could not be observed before recorded-containment signal authorization.',
           };
         case 'containment-disappeared':
           providerProxyLifecycle.containmentAbsent(

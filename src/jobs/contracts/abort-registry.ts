@@ -25,6 +25,18 @@ export type AbortAbandonment = Readonly<{
   nextStep: string;
 }>;
 
+export type AbortHoldDisposition =
+  | Readonly<{
+      kind: 'abandoned';
+      reason: string;
+      nextStep: string;
+    }>
+  | Readonly<{
+      kind: 'retained';
+      reason: string;
+      nextStep: string;
+    }>;
+
 export type AbortResult = {
   aborted: string[];
   notFound: string[];

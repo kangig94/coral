@@ -52,6 +52,8 @@ function providerProxySetOperatorRefusalGuidance(ground: ProviderProxySetOperato
       return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence or signalling the group`;
     case 'signal-authorization-refused':
       return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence`;
+    case 'identity-unobservable':
+      return `restore process-identity observation and run ${contain}; after external verification, the explicit alternative is ${abandon}`;
     case 'store-unreadable':
       return 'run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable';
     case 'representation-release-fatal':
@@ -212,6 +214,14 @@ export function formatProviderProxySetContainResult(
         `No containment verdict for ${token}: signal authorization was refused for an observed-live recorded target.`,
         'Observed: the containment was attributable and at least one recorded target was present before signal authorization.',
         'Not observed: absence of every recorded target or authority to signal every target still present at delivery.',
+        `Effect: ${effect}.`,
+        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+      ].join('\n');
+    case 'identity-unobservable':
+      return [
+        `Refusing to signal ${token}: process identity could not be observed.`,
+        'Observed: identity observation became unavailable before Coral delivered any process signal.',
+        'Not observed: whether the recorded proxy process group and every recorded provider root still identify this set.',
         `Effect: ${effect}.`,
         `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
       ].join('\n');

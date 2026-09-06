@@ -238,6 +238,14 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
           reason: 'Signal authorization could not be established for every recorded-containment target.',
         };
       }
+      if (outcome.kind === 'identity-unobservable') {
+        return {
+          kind: 'reap-failed',
+          reason: outcome.signalDelivered
+            ? 'Process identity became unobservable after a recorded-containment signal was delivered.'
+            : 'Process identity could not be observed before recorded-containment signal authorization.',
+        };
+      }
     } catch (error: unknown) {
       return { kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' };
     }

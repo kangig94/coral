@@ -90,6 +90,13 @@ export async function reapDurableCliProcess(
           kind: 'held',
           reason: 'signal authorization could not be established for every recorded-containment target',
         };
+      case 'identity-unobservable':
+        return {
+          kind: 'held',
+          reason: outcome.signalDelivered
+            ? 'process identity became unobservable after a recorded-containment signal was delivered'
+            : 'process identity could not be observed before recorded-containment signal authorization',
+        };
     }
   } catch (error: unknown) {
     return { kind: 'held', reason: errorMessage(error) };

@@ -206,6 +206,7 @@ const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
   'enforcer-unobservable',
   'recorded-group-unattributable',
   'signal-authorization-refused',
+  'identity-unobservable',
   'store-unreadable',
   'representation-release-fatal',
 ] as const;

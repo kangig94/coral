@@ -1051,7 +1051,7 @@ describe('buildGuardianSpawnUndo', () => {
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
     await expect(buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation)()).rejects.toThrow(
-      'guardian process-group cleanup is holding because absence could not be confirmed',
+      'guardian process-group cleanup is holding because identity observation did not authorize a signal',
     );
 
     expect(killCalls).toEqual([]);

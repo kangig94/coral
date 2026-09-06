@@ -344,7 +344,8 @@ describe('cli format', () => {
 
       expect(formatted).toBe(
         'No jobs aborted\n' +
-          'Recovery ownership abandoned for job-6: recovery ownership was released without proof of recorded containment absence\n' +
+          'Job ownership abandoned for job-6: recovery ownership was released without proof of recorded containment absence\n' +
+          'Warning: Process absence remains unproven.\n' +
           'Next step: Inspect the recorded process because it may still be live.',
       );
       expect(formatted).not.toContain('Aborted jobs');

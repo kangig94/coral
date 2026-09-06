@@ -346,7 +346,9 @@ describe('registerRunningRecovery provider-binding holds', () => {
       const disposition = await fixture.run();
 
       if (disposition.kind !== 'quarantine') throw new Error(`expected quarantine, received ${disposition.kind}`);
-      expect(disposition.detail).toContain('liveness could not be observed');
+      expect(disposition.detail).toContain(
+        'process identity could not be observed before recorded-containment signal authorization',
+      );
       expect(fixture.kill).not.toHaveBeenCalled();
       expect(fixture.settleFault).not.toHaveBeenCalled();
       expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);

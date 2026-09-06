@@ -22,6 +22,7 @@ export type ProviderProxySetRecordedContainmentReapResult =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'recorded-group-unattributable' }>
   | Readonly<{ kind: 'signal-authorization-refused' }>
+  | Readonly<{ kind: 'identity-unobservable'; signalDelivered: boolean }>
   | Readonly<{ kind: 'authorization-missing' }>
   | Readonly<{ kind: 'authorization-stale' }>
   | Readonly<{ kind: 'store-unreadable' }>;

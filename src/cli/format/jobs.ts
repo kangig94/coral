@@ -137,7 +137,8 @@ export function formatAbortResult(result: AbortResult): string {
       `Next step: ${hold.nextStep}`,
     ]),
     ...(result.abandoned ?? []).flatMap((abandonment) => [
-      `Recovery ownership abandoned for ${abandonment.jobId}: ${abandonment.reason}`,
+      `Job ownership abandoned for ${abandonment.jobId}: ${abandonment.reason}`,
+      'Warning: Process absence remains unproven.',
       `Next step: ${abandonment.nextStep}`,
     ]),
   ]);

@@ -268,6 +268,7 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
   'enforcer-unobservable': 75,
   'recorded-group-unattributable': 75,
   'signal-authorization-refused': 75,
+  'identity-unobservable': 75,
   'store-unreadable': 75,
   'containment-unconfirmed': 75,
 };

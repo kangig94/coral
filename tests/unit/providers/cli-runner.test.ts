@@ -21,7 +21,14 @@ describe('bindProviderRunner', () => {
       retryIntervalMs: 500,
       abandonment: 'abort-job' as const,
     };
-    const control = { retry: vi.fn(), abandon: vi.fn(() => true) };
+    const control = {
+      retry: vi.fn(),
+      abandon: vi.fn(() => ({
+        kind: 'abandoned' as const,
+        reason: 'job ownership was released without proof of process absence',
+        nextStep: 'Inspect the recorded process because it may still be live.',
+      })),
+    };
     const spawner: ProviderDurableSpawner = {
       spawnDurableJob: (options) => {
         capturedOptionsHadCallback = typeof options.onDurableProcessIdentity === 'function';

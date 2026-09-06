@@ -126,6 +126,15 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
       { pid: containment.pid, processGroupId: containment.processGroupId },
     );
   }
+  if (reapResult.kind === 'identity-unobservable') {
+    throw new ProcessContainmentError(
+      reapResult.signalDelivered ? 'process_containment_reap_failed' : 'process_identity_unverified',
+      reapResult.signalDelivered
+        ? 'Carrier identity became unobservable after a recorded-containment signal was delivered.'
+        : 'Carrier identity could not be observed before recorded-containment signal authorization.',
+      { pid: containment.pid, processGroupId: containment.processGroupId },
+    );
+  }
 
   try {
     deleteProviderOperation(deps.db, record);

@@ -3322,6 +3322,65 @@ describe('ProviderProxySetLifecycle', () => {
     expect(harness.lifecycle.authorizeOperatorExit(setIdentity).kind).toBe('authorized');
   });
 
+  it('refuses signal authorization when process identity is unobservable before any signal', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'identity-unobservable',
+      signalDelivered: false,
+    }));
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('must-not-be-minted'));
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).resolves.toEqual({
+      kind: 'identity-unobservable',
+      setIdentity,
+      effect: noOperatorExitEffect,
+    });
+
+    expect(harness.lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        represented: 1,
+        operatorSets: expect.arrayContaining([
+          expect.objectContaining({
+            setIdentity,
+            operatorExit: { kind: 'refused', ground: 'identity-unobservable' },
+          }),
+        ]),
+        operatorDispositions: expect.arrayContaining([
+          expect.objectContaining({
+            incidentReason: 'operator_exit_identity_unobservable',
+            waitingFor: 'operator-abandonment',
+          }),
+        ]),
+      }),
+    );
+    expect(harness.lifecycle.authorizeOperatorExit(setIdentity).kind).toBe('authorized');
+  });
+
+  it('retains containment with an explicit retry exit when identity becomes unobservable after a signal', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+      async (_identity, _proof, _signal, onSignal) => {
+        onSignal('SIGTERM');
+        return { kind: 'identity-unobservable', signalDelivered: true };
+      },
+    );
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('must-not-be-minted'));
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, false)).resolves.toEqual({
+      kind: 'containment-unconfirmed',
+      setIdentity,
+      recoveryAction: { kind: 'retry-exact-set-containment' },
+      effect: { ...noOperatorExitEffect, signalsSent: ['SIGTERM'] },
+    });
+
+    expect(harness.lifecycle.snapshot().represented).toBe(1);
+    expect(harness.lifecycle.authorizeOperatorExit(setIdentity).kind).toBe('authorized');
+  });
+
   it('rejects a root published after reaping instead of minting a disappearance receipt', async () => {
     const record = providerOperationRecord('executing');
     const lateRecord = providerOperationRecord('executing', {

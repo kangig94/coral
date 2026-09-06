@@ -336,9 +336,17 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
         environment,
       );
       if (outcome.kind === 'containment-absent') return { kind: 'settled' };
-      return outcome.kind === 'recorded-group-unattributable'
-        ? holding('the recorded proxy group became unattributable')
-        : holding('signal authorization could not be established for the recorded proxy group');
+      if (outcome.kind === 'recorded-group-unattributable') {
+        return holding('the recorded proxy group became unattributable');
+      }
+      if (outcome.kind === 'identity-unobservable') {
+        return holding(
+          outcome.signalDelivered
+            ? 'process identity became unobservable after a recorded proxy-group signal was delivered'
+            : 'process identity could not be observed before recorded proxy-group signal authorization',
+        );
+      }
+      return holding('signal authorization could not be established for the recorded proxy group');
     } catch (error: unknown) {
       return holding(error instanceof Error ? error.message : String(error));
     }

@@ -81,6 +81,15 @@ function containmentReaperWithClock<Scope extends symbol>(
         { pid: containment.pid, processGroupId: containment.processGroupId },
       );
     }
+    if (outcome.kind === 'identity-unobservable') {
+      throw new ProcessContainmentError(
+        outcome.signalDelivered ? 'process_containment_reap_failed' : 'process_identity_unverified',
+        outcome.signalDelivered
+          ? 'Provider-host identity became unobservable after a containment signal was delivered.'
+          : 'Provider-host identity could not be observed before containment signal authorization.',
+        { pid: containment.pid, processGroupId: containment.processGroupId },
+      );
+    }
   };
 }
 

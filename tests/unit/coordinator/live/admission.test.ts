@@ -753,7 +753,11 @@ describe('launch admission', () => {
             provider: 'codex',
             jobDir: '/tmp/provisional-readiness-rejection',
           });
-          expect(control?.abandon()).toBe(true);
+          expect(control?.abandon()).toEqual({
+            kind: 'abandoned',
+            reason: 'job ownership was released without proof of process absence',
+            nextStep: 'Inspect the recorded process because it may still be live.',
+          });
         }
         return { kind: 'published' as const };
       },
@@ -1073,7 +1077,11 @@ describe('launch admission', () => {
     expect(clearInterval).not.toHaveBeenCalled();
     expect(settled).toBe(false);
 
-    expect(holdControl?.abandon()).toBe(true);
+    expect(holdControl?.abandon()).toEqual({
+      kind: 'abandoned',
+      reason: 'job ownership was released without proof of process absence',
+      nextStep: 'Inspect the recorded process because it may still be live.',
+    });
     resolveExit(exitRecord);
     await expect(spawn).resolves.toMatchObject({ code: 0, aborted: true });
     expect(clearInterval).toHaveBeenCalledWith(retryHandle);

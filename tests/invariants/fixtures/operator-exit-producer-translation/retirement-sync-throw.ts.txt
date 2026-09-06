@@ -1,0 +1,18 @@
+const dispatcher = {
+  begin() {
+    return {
+      start(source) {
+        let produced;
+        try {
+          produced = invokeProducer(options.producers, source);
+        } catch (error) {
+          throw error;
+        }
+        void Promise.resolve(produced).then(
+          (value) => submit(source.sourceId, classifyFulfillment(source.producerId, value, context)),
+          (error) => submit(source.sourceId, classifyRejection(source.producerId, source.input, error, seam)),
+        );
+      },
+    };
+  },
+};
