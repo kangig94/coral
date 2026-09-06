@@ -24,6 +24,12 @@ import { providerOperationRecordSchema, type ProviderOperationRecord } from '#sr
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import {
+  readDurableCliContainmentStatus,
+  writeDurableCliContainmentStatus,
+  writeDurableCliProcessRuntimeMeta,
+} from '#src/jobs/runtime-meta-store.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
@@ -126,6 +132,20 @@ function seedRunningAppServerJob(
   });
 }
 
+function seedRunningDurableJob(
+  progressStore: JobStore,
+  options: { jobId: string; sessionId: string; pid: number },
+): void {
+  seedQueuedProviderJob(progressStore, { ...options, enqueueSequence: 1 });
+  progressStore.appendRuntimeStarted(options.jobId, {
+    transport: 'durable-cli',
+    pid: options.pid,
+    stdoutPath: '/tmp/coral-held-recovery.stdout',
+    stderrPath: '/tmp/coral-held-recovery.stderr',
+    startTime: '2026-04-27T00:00:01.000Z',
+  });
+}
+
 function committedOperation(overrides: {
   jobId: string;
   operationId: string;
@@ -170,6 +190,66 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
     completeRecoveredJob: vi.fn(),
     ...overrides,
   } as RecoveryCapableService;
+}
+
+async function createHeldRecoveryCoordinator(
+  runtime: ReturnType<typeof createRealRuntime>,
+  progressStore: JobStore,
+  fakeService: RecoveryCapableService,
+  instanceId: string,
+) {
+  const getRecoveryService = (): RecoveryCapableService => fakeService;
+  const createInvocationContext = (projectRoot: string): InvocationContext => ({
+    projectRoot: fixtureCanonicalWorkDir(projectRoot),
+    pluginRoot: '/tmp/plugin',
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+  });
+  const signal = new AbortController().signal;
+  const log = vi.fn();
+  const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => progressStore.commit(cb);
+  const boundRecovery = await createBoundJobsRecoveryHarness({
+    identity: {
+      pluginRoot: '/tmp/plugin',
+      namespace: NAMESPACE,
+      version: 'test-version',
+      buildSetId: '00000000-0000-4000-8000-000000000000',
+      bundleHash: 'test-bundle',
+      cliBundleHash: 'test-cli-bundle',
+      claudeAppserverBundleHash: 'test-claude-bundle',
+      durableWrapperBundleHash: 'test-durable-wrapper-bundle',
+      flavor: 'prod',
+      instanceId,
+      token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
+      now: () => runtime.time.now(),
+      log,
+    },
+    runtime,
+    progressStore,
+    providerRegistry: {} as never,
+    getRecoveryService,
+    createInvocationContext,
+    signal,
+    coordinatorCommit,
+  });
+  const recoveryCoordinator = createRecoveryCoordinator(
+    {
+      progressStore,
+      runtime,
+      runtimeState: { setLaunchFenceActive: vi.fn() },
+      eventBus: { emit: vi.fn() } as never,
+      getRecoveryService,
+      createInvocationContext,
+      log,
+    },
+    boundRecovery.bound,
+  );
+  return {
+    recoveryCoordinator,
+    runStartupRecovery: () => boundRecovery.run(recoveryCoordinator),
+  };
 }
 
 describe('runStartupRecovery provider-operation ownership', () => {
@@ -685,6 +765,195 @@ describe('runStartupRecovery provider-operation ownership', () => {
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('runStartupRecovery durable containment holds', () => {
+  it('retries identity-safe reaping until absence without adopting held work', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const pid = 70_101;
+    const incarnation = testIncarnation('held-recovery');
+    const record = {
+      jobId,
+      pid,
+      incarnation,
+      processGroupId: pid,
+      childRoot: { pid: pid + 1, incarnation },
+    };
+    seedRunningDurableJob(progressStore, { jobId, sessionId, pid });
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), record);
+    writeDurableCliContainmentStatus(progressStore.getDb(), {
+      jobId,
+      evidence: { kind: 'current', record },
+      disposition: {
+        kind: 'held',
+        reason: 'the process ignored termination before restart',
+        retryIntervalMs: 500,
+        abandonment: 'abort-job',
+      },
+    });
+
+    let monotonicMs = 0n;
+    vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => {
+      monotonicMs += 25n;
+      return monotonicMs;
+    });
+    vi.spyOn(runtime.time, 'sleep').mockResolvedValue();
+    let containmentAbsent = false;
+    vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+    vi.spyOn(runtime.process, 'observeLiveness').mockImplementation(() => (containmentAbsent ? 'absent' : 'alive'));
+    vi.spyOn(runtime.process, 'readProcessIncarnation').mockImplementation(() =>
+      containmentAbsent ? null : incarnation,
+    );
+    vi.spyOn(runtime.process, 'observeRecordedProcessAsync').mockImplementation(async () =>
+      containmentAbsent ? 'absent' : 'alive',
+    );
+    vi.spyOn(runtime.process, 'observeProcessIdentities').mockImplementation(async (owners) =>
+      owners.map((owner) =>
+        containmentAbsent
+          ? { owner, evidence: { kind: 'pid-absent' as const } }
+          : { owner, evidence: { kind: 'incarnation' as const, incarnation } },
+      ),
+    );
+    let termAttempts = 0;
+    const kill = vi.spyOn(runtime.process, 'kill').mockImplementation((target, signalName) => {
+      if (target === -pid && signalName === 'SIGTERM') {
+        termAttempts += 1;
+        if (termAttempts === 2) containmentAbsent = true;
+      }
+      return true;
+    });
+    const intervalCallbacks: Array<{ callback: () => void; milliseconds: number }> = [];
+    const retryHandle = { unref: vi.fn() };
+    const setInterval = vi.spyOn(runtime.time, 'setInterval').mockImplementation((callback, milliseconds) => {
+      intervalCallbacks.push({ callback, milliseconds });
+      return retryHandle;
+    });
+    const clearInterval = vi.spyOn(runtime.time, 'clearInterval').mockImplementation(() => undefined);
+
+    const fakeService = createFakeService();
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'held-durable-recovery-test',
+    );
+
+    await runStartupRecovery();
+
+    expect(fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledOnce();
+    expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+    expect(kill).toHaveBeenCalledWith(-pid, 'SIGTERM');
+    expect(kill).toHaveBeenCalledWith(pid + 1, 'SIGTERM');
+    expect(kill).toHaveBeenCalledWith(-pid, 'SIGKILL');
+    expect(kill).toHaveBeenCalledWith(pid + 1, 'SIGKILL');
+    expect(readDurableCliContainmentStatus(progressStore.getDb(), jobId)).toMatchObject({
+      kind: 'valid',
+      status: { disposition: { kind: 'held' } },
+    });
+    const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
+    expect(recoveryRegistry?.has(jobId)).toBe(true);
+    expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 500);
+    expect(retryHandle.unref).toHaveBeenCalledOnce();
+    const retryHeldCleanup = intervalCallbacks.find(({ milliseconds }) => milliseconds === 500)?.callback;
+    if (retryHeldCleanup === undefined) throw new Error('Expected held recovery retry callback');
+    retryHeldCleanup();
+    await vi.waitFor(() => expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce());
+    expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+    expect(termAttempts).toBe(2);
+    expect(clearInterval).toHaveBeenCalledWith(retryHandle);
+    await vi.waitFor(() => expect(recoveryRegistry?.has(jobId)).toBe(false));
+    await recoveryCoordinator.teardown();
+  });
+
+  it('revokes an in-flight reap before operator abandonment can be followed by SIGKILL', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const pid = 70_102;
+    const incarnation = testIncarnation('abandoned-held-recovery');
+    const record = {
+      jobId,
+      pid,
+      incarnation,
+      processGroupId: pid,
+      childRoot: { pid: pid + 1, incarnation },
+    };
+    seedRunningDurableJob(progressStore, { jobId, sessionId, pid });
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), record);
+    writeDurableCliContainmentStatus(progressStore.getDb(), {
+      jobId,
+      evidence: { kind: 'current', record },
+      disposition: {
+        kind: 'held',
+        reason: 'the process ignored termination before restart',
+        retryIntervalMs: 500,
+        abandonment: 'abort-job',
+      },
+    });
+
+    let monotonicMs = 0n;
+    vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => {
+      monotonicMs += 25n;
+      return monotonicMs;
+    });
+    const sigtermDelivered = deferred();
+    const releaseGrace = deferred();
+    let termSent = false;
+    let graceBlocked = false;
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async () => {
+      if (!termSent) return;
+      if (graceBlocked) return;
+      graceBlocked = true;
+      await releaseGrace.promise;
+    });
+    vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
+    vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(incarnation);
+    vi.spyOn(runtime.process, 'observeRecordedProcessAsync').mockResolvedValue('alive');
+    vi.spyOn(runtime.process, 'observeProcessIdentities').mockImplementation(async (owners) =>
+      owners.map((owner) => ({ owner, evidence: { kind: 'incarnation' as const, incarnation } })),
+    );
+    const kill = vi.spyOn(runtime.process, 'kill').mockImplementation((_target, signalName) => {
+      if (signalName === 'SIGTERM') {
+        termSent = true;
+        sigtermDelivered.resolve();
+      }
+      return true;
+    });
+    const setInterval = vi.spyOn(runtime.time, 'setInterval').mockReturnValue({ unref: vi.fn() });
+
+    const fakeService = createFakeService();
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'abandoned-held-durable-recovery-test',
+    );
+
+    const startup = runStartupRecovery();
+    await sigtermDelivered.promise;
+    const recoveryRegistry = recoveryCoordinator.getRecoveryRegistry();
+    expect(recoveryRegistry?.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+    await vi.waitFor(() => expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce());
+    releaseGrace.resolve();
+    await startup;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(kill).toHaveBeenCalledWith(-pid, 'SIGTERM');
+    expect(kill.mock.calls.every(([, signalName]) => signalName === 'SIGTERM')).toBe(true);
+    expect(setInterval).not.toHaveBeenCalled();
+    expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+    expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce();
+    expect(readDurableCliContainmentStatus(progressStore.getDb(), jobId)).toMatchObject({
+      kind: 'valid',
+      status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },
+    });
+    await recoveryCoordinator.teardown();
+  });
 });
 
 describe('recovery coordinator teardown', () => {

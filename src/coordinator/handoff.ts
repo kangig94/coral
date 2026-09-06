@@ -166,10 +166,10 @@ export interface HandoffSignalLedger {
   cooldownDisposition(input: {
     socketPath: string;
     incumbent: IncumbentIdentity;
-    nowMs: number;
+    nowMonotonicMs: bigint;
     cooldownMs: number;
   }): HandoffSignalCooldownDisposition;
-  write(record: HandoffSignalRecord): void;
+  write(record: HandoffSignalRecord, acceptedAtMonotonicMs: bigint): void;
 }
 
 type HandoffSignalLedgerStorage = Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'writeAtomicSync'>;
@@ -181,6 +181,7 @@ export function createFileHandoffSignalLedger(options: {
 }): HandoffSignalLedger {
   const path = join(options.runDir, SIGNAL_LEDGER_FILE);
   const legacyPath = join(options.runDir, LEGACY_SIGNAL_LEDGER_FILE);
+  const acceptedAtMonotonicMsByRecord = new Map<string, bigint>();
   const readAt = (
     recordPath: string,
     version: HandoffSignalLedgerRecord['version'],
@@ -205,8 +206,15 @@ export function createFileHandoffSignalLedger(options: {
       return false;
     }
   };
+  const acceptedAtMonotonicMsFor = (candidate: HandoffSignalLedgerCandidate, nowMonotonicMs: bigint): bigint => {
+    const key = candidate.record.publicationId ?? `${candidate.address}:${JSON.stringify(candidate.record)}`;
+    const acceptedAtMonotonicMs = acceptedAtMonotonicMsByRecord.get(key);
+    if (acceptedAtMonotonicMs !== undefined) return acceptedAtMonotonicMs;
+    acceptedAtMonotonicMsByRecord.set(key, nowMonotonicMs);
+    return nowMonotonicMs;
+  };
   return {
-    cooldownDisposition: ({ socketPath, incumbent, nowMs, cooldownMs }) => {
+    cooldownDisposition: ({ socketPath, incumbent, nowMonotonicMs, cooldownMs }) => {
       const current = readAt(path, HANDOFF_SIGNAL_RECORD_VERSION);
       const legacy = readAt(legacyPath, 1);
       const matchingCurrent = current !== null && isSameSignalTarget(current, socketPath, incumbent) ? current : null;
@@ -231,24 +239,29 @@ export function createFileHandoffSignalLedger(options: {
             ]),
       ];
       const independent = candidates.filter((candidate) => candidate.provenance !== 'paired-shadow');
-      const active = independent.filter((candidate) => nowMs - candidate.record.signaledAtMs < cooldownMs);
+      const timed = independent.map((candidate) => ({
+        candidate,
+        acceptedAtMonotonicMs: acceptedAtMonotonicMsFor(candidate, nowMonotonicMs),
+      }));
+      const active = timed.filter((candidate) => Number(nowMonotonicMs - candidate.acceptedAtMonotonicMs) < cooldownMs);
       active.sort((left, right) => {
-        const recency = right.record.signaledAtMs - left.record.signaledAtMs;
-        if (recency !== 0) return recency;
-        const leftIsIndeterminate = left.record.version === 1 && left.record.accepted !== true;
-        const rightIsIndeterminate = right.record.version === 1 && right.record.accepted !== true;
+        if (left.acceptedAtMonotonicMs !== right.acceptedAtMonotonicMs) {
+          return left.acceptedAtMonotonicMs > right.acceptedAtMonotonicMs ? -1 : 1;
+        }
+        const leftIsIndeterminate = left.candidate.record.version === 1 && left.candidate.record.accepted !== true;
+        const rightIsIndeterminate = right.candidate.record.version === 1 && right.candidate.record.accepted !== true;
         return Number(rightIsIndeterminate) - Number(leftIsIndeterminate);
       });
       const selectedCandidate = active[0];
       if (selectedCandidate === undefined) return { kind: 'clear' };
-      const selected = selectedCandidate.record;
-      const ageMs = nowMs - selected.signaledAtMs;
+      const selected = selectedCandidate.candidate.record;
+      const ageMs = Number(nowMonotonicMs - selectedCandidate.acceptedAtMonotonicMs);
       const timing = { signal: selected.signal, ageMs, retryInMs: cooldownMs - ageMs };
       return selected.version === 1 && selected.accepted !== true
         ? { kind: 'foreign-signal-attempt', ...timing }
         : { kind: 'accepted-signal', ...timing };
     },
-    write: (record) => {
+    write: (record, acceptedAtMonotonicMs) => {
       try {
         options.storage.mkdirSync(options.runDir, { recursive: true });
       } catch {
@@ -269,6 +282,7 @@ export function createFileHandoffSignalLedger(options: {
       if (!shadowWritten) {
         return;
       }
+      acceptedAtMonotonicMsByRecord.set(publicationId, acceptedAtMonotonicMs);
       writeAt(path, { ...record, publicationId });
     },
   };
@@ -416,7 +430,7 @@ function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity
   const disposition = ledger.cooldownDisposition({
     socketPath: opts.socketPath,
     incumbent,
-    nowMs: opts.runtime.time.now(),
+    nowMonotonicMs: opts.runtime.time.monotonicNow(),
     cooldownMs,
   });
   if (disposition.kind === 'clear') return;
@@ -450,18 +464,21 @@ function recordSignal(
   opts: HandoffOptions,
   incumbent: IncumbentIdentity,
   signal: HandoffSignal,
-  acceptedAtMs: number,
+  acceptedAtMonotonicMs: bigint,
 ): void {
-  opts.signalLedger?.write({
-    version: HANDOFF_SIGNAL_RECORD_VERSION,
-    accepted: true,
-    socketPath: opts.socketPath,
-    pid: incumbent.pid,
-    ...(incumbent.incarnation === undefined ? {} : { incarnation: incumbent.incarnation }),
-    ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
-    signal,
-    signaledAtMs: acceptedAtMs,
-  });
+  opts.signalLedger?.write(
+    {
+      version: HANDOFF_SIGNAL_RECORD_VERSION,
+      accepted: true,
+      socketPath: opts.socketPath,
+      pid: incumbent.pid,
+      ...(incumbent.incarnation === undefined ? {} : { incarnation: incumbent.incarnation }),
+      ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
+      signal,
+      signaledAtMs: opts.runtime.time.now(),
+    },
+    acceptedAtMonotonicMs,
+  );
 }
 
 function signalErrorMessage(error: unknown): string {
@@ -714,7 +731,7 @@ function settleSignalAttempt(
 
 type PendingSignalSettlement = Readonly<{
   signal: HandoffSignal;
-  acceptedAtMs: number;
+  acceptedAtMonotonicMs: bigint;
   target: IncumbentIdentity;
   anchoredIncarnation: ProcessIncarnation | null;
 }>;
@@ -811,13 +828,13 @@ function transitionAfterSigtermGrace(
   ) {
     return { kind: 'target-gone', stage: 'after-rejected-sigkill', pid: incumbent.pid };
   }
-  const acceptedAtMs = opts.runtime.time.now();
-  recordSignal(opts, incumbent, 'SIGKILL', acceptedAtMs);
+  const acceptedAtMonotonicMs = opts.runtime.time.monotonicNow();
+  recordSignal(opts, incumbent, 'SIGKILL', acceptedAtMonotonicMs);
   return {
     kind: 'sigkill-accepted',
     pending: {
       signal: 'SIGKILL',
-      acceptedAtMs,
+      acceptedAtMonotonicMs,
       target: incumbent,
       anchoredIncarnation: pending.anchoredIncarnation,
     },
@@ -952,7 +969,7 @@ function createBoundCoordinator(sawIncumbent: boolean, opts: HandoffOptions): Bo
  */
 export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<BoundCoordinator> {
   let opts = { ...initialOptions };
-  const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
+  const deadlineMonotonicMs = opts.runtime.time.monotonicNow() + BigInt(opts.totalBudgetMs);
   const platform = opts.runtime.env.platform() as NodeJS.Platform;
   const signalPolicy = resolveSignalPolicy(opts);
   let sawIncumbent = false;
@@ -1007,7 +1024,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
         }
         opts.signal?.throwIfAborted();
         const graceMs = activePendingSignal.signal === 'SIGTERM' ? SIGTERM_GRACE_MS : SIGKILL_GRACE_MS;
-        if (opts.runtime.time.now() - activePendingSignal.acceptedAtMs < graceMs) {
+        if (opts.runtime.time.monotonicNow() - activePendingSignal.acceptedAtMonotonicMs < BigInt(graceMs)) {
           continue;
         }
         const transition = advanceExpiredPendingSignal(opts, activePendingSignal, signalPolicy, lastHealth, platform);
@@ -1052,7 +1069,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
     }
 
     sawIncumbent = true;
-    let remaining = deadline - opts.runtime.time.now();
+    let remaining = Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow());
     if (remaining > 0) {
       const shutdownCredentialIdentity = readFreshDiscovery(opts, lastHealth);
       let discoveryMerge = mergeVerifiedDiscovery(incumbent, shutdownCredentialIdentity);
@@ -1085,7 +1102,10 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       discoveryMerge = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
       if (discoveryMerge.kind === 'changed') {
         resetForNewIncumbent(discoveryMerge.fresh);
-        await sleepForHandoffPoll(opts, Math.min(SOCKET_BIND_POLL_MS, deadline - opts.runtime.time.now()));
+        await sleepForHandoffPoll(
+          opts,
+          Math.min(SOCKET_BIND_POLL_MS, Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow())),
+        );
         continue;
       }
       incumbent = discoveryMerge.incumbent;
@@ -1119,7 +1139,7 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       takeSignalAnchor(incumbent.pid);
     }
 
-    remaining = deadline - opts.runtime.time.now();
+    remaining = Number(deadlineMonotonicMs - opts.runtime.time.monotonicNow());
     if (remaining <= 0) {
       opts.signal?.throwIfAborted();
       if (incumbent === null) {
@@ -1178,11 +1198,11 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
         continue;
       }
-      const acceptedAtMs = opts.runtime.time.now();
-      recordSignal(opts, incumbent, 'SIGTERM', acceptedAtMs);
+      const acceptedAtMonotonicMs = opts.runtime.time.monotonicNow();
+      recordSignal(opts, incumbent, 'SIGTERM', acceptedAtMonotonicMs);
       pendingSignal = {
         signal: 'SIGTERM',
-        acceptedAtMs,
+        acceptedAtMonotonicMs,
         target: incumbent,
         anchoredIncarnation,
       };

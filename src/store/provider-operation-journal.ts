@@ -158,7 +158,10 @@ export class ProviderOperationMutationAdmission {
     }
     const setKey = set === undefined ? (inheritedMutation?.setKey ?? null) : providerOperationMutationSetKey(set);
     const setFence = setKey === null ? undefined : this.#closedSets.get(setKey);
-    if (setFence !== undefined && (inherited === undefined || !setFence.admittedTokens.has(inherited))) {
+    if (
+      setFence !== undefined &&
+      (inherited === undefined || !this.#active.has(inherited) || !setFence.admittedTokens.has(inherited))
+    ) {
       throw new Error('Provider operation mutation admission is closed for this proxy set.');
     }
 
@@ -175,6 +178,7 @@ export class ProviderOperationMutationAdmission {
     } finally {
       if (setKey !== null) this.#advanceSetGeneration(setKey);
       this.#active.delete(token);
+      this.#removeTokenFromSetFences(token);
       release();
       this.#settleRelease();
     }
@@ -186,7 +190,10 @@ export class ProviderOperationMutationAdmission {
     const inheritedAdmission = inheritedMutation !== undefined;
     const setKey = set === undefined ? (inheritedMutation?.setKey ?? null) : providerOperationMutationSetKey(set);
     const setFence = setKey === null ? undefined : this.#closedSets.get(setKey);
-    if (setFence !== undefined && (inherited === undefined || !setFence.admittedTokens.has(inherited))) {
+    if (
+      setFence !== undefined &&
+      (inherited === undefined || !this.#active.has(inherited) || !setFence.admittedTokens.has(inherited))
+    ) {
       throw new Error('Provider operation mutation admission is closed for this proxy set.');
     }
     if (inheritedAdmission) {
@@ -209,6 +216,7 @@ export class ProviderOperationMutationAdmission {
     } finally {
       if (setKey !== null) this.#advanceSetGeneration(setKey);
       this.#active.delete(token);
+      this.#removeTokenFromSetFences(token);
       release();
       this.#settleRelease();
     }
@@ -341,8 +349,8 @@ export class ProviderOperationMutationAdmission {
       return await this.#context.run(token, mutation);
     } finally {
       this.#advanceSetGeneration(setKey);
-      fence.admittedTokens.delete(token);
       this.#active.delete(token);
+      this.#removeTokenFromSetFences(token);
       release();
       this.#settleRelease();
     }
@@ -356,6 +364,10 @@ export class ProviderOperationMutationAdmission {
       if (active.length === 0) return;
       await Promise.all(active.map(({ settlement }) => settlement));
     }
+  }
+
+  #removeTokenFromSetFences(token: symbol): void {
+    for (const fence of this.#closedSets.values()) fence.admittedTokens.delete(token);
   }
 
   #advanceSetGeneration(setKey: string): void {

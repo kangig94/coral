@@ -857,6 +857,43 @@ describe('runShutdownSequence drain budget', () => {
     expect(heldFailureDetail(held)).toContain('later cleanup: budget-exhausted');
   });
 
+  it('uses monotonic time for the initial budget and every retry budget', async () => {
+    const scheduler = new VirtualTime();
+    const wallNow = vi.fn(() => {
+      throw new Error('wall time must not drive settlement budgets');
+    });
+    const time = {
+      now: wallNow,
+      monotonicNow: () => scheduler.monotonicNow(),
+      sleep: scheduler.sleep.bind(scheduler),
+    };
+    let attempts = 0;
+    const blocking: ShutdownObligation = {
+      label: 'blocking finalizer',
+      task: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('retry required');
+        return { confirmed: true };
+      },
+      retainedAuthority: () => ({ cleanupObligations: ['blocking finalizer'] }),
+      remainder: { owner: 'none' },
+    };
+    const authorityToken = {};
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: () => Promise.resolve({ confirmed: true, token: authorityToken }),
+      commit: () => Promise.resolve({ confirmed: true }),
+      retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 900, time, log: () => {}, pollMs: 50 });
+
+    await expect(ledger.run(blocking)).resolves.toMatchObject({ kind: 'declined', cause: 'rejected' });
+    const held = requireHeld(await ledger.gate(boundary));
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
+
+    expect(wallNow).not.toHaveBeenCalled();
+  });
+
   it('disposes the lifecycle reactor before releasing the IPC socket', async () => {
     const harness = buildHarness({
       hooksOnShutdown: async () => {},

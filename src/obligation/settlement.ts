@@ -177,7 +177,7 @@ export type SettlementLedgerOptions<
   Failure,
 > = Readonly<{
   budgetMs: number;
-  time: Pick<TimePort, 'now' | 'sleep'>;
+  time: Pick<TimePort, 'monotonicNow' | 'sleep'>;
   log: (message: string) => void;
   pollMs: number;
   remainderRole: (remainder: Remainder) => RemainderSettlementRole;
@@ -325,7 +325,7 @@ export class SettlementLedger<
     Acceptance,
     Failure
   >;
-  private deadline: number;
+  private deadlineMonotonicMs: bigint;
 
   constructor(
     options: SettlementLedgerOptions<
@@ -340,14 +340,15 @@ export class SettlementLedger<
     >,
   ) {
     this.options = options;
-    this.deadline = options.time.now() + options.budgetMs;
+    this.deadlineMonotonicMs = options.time.monotonicNow() + BigInt(options.budgetMs);
   }
 
   private register(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>): void {
     if (!this.entries.has(obligation)) this.entries.set(obligation, { kind: 'pending' });
   }
 
-  private remainingBudget = (): number => Math.max(0, this.deadline - this.options.time.now());
+  private remainingBudget = (): number =>
+    Math.max(0, Number(this.deadlineMonotonicMs - this.options.time.monotonicNow()));
 
   remainingBudgetMs(): number {
     return this.remainingBudget();
@@ -373,7 +374,7 @@ export class SettlementLedger<
     obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
     budgetMs: number,
   ): Promise<Settlement> {
-    this.deadline = this.options.time.now() + budgetMs;
+    this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
     return this.run(obligation);
   }
 
@@ -420,7 +421,9 @@ export class SettlementLedger<
       token = result.token;
       return { confirmed: true };
     });
-    if (budgetMs !== null) this.deadline = this.options.time.now() + budgetMs;
+    if (budgetMs !== null) {
+      this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
+    }
     const settlement = await settleObligation(preparation, this.remainingBudget, this.options.time, this.options.log);
     if (settlement.kind === 'declined') return { kind: 'declined', settlement };
     if (token === null) throw new Error('authority preparation discharged without a token');
@@ -433,7 +436,9 @@ export class SettlementLedger<
     budgetMs: number | null,
   ): Promise<Settlement> {
     const commit = this.boundaryObligation(boundary, (signal) => boundary.commit(token, signal));
-    if (budgetMs !== null) this.deadline = this.options.time.now() + budgetMs;
+    if (budgetMs !== null) {
+      this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
+    }
     return settleObligation(commit, this.remainingBudget, this.options.time, this.options.log);
   }
 

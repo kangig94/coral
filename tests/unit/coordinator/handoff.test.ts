@@ -221,7 +221,7 @@ afterEach(() => {
 function durableLedgerDisposition(input: {
   detail?: unknown;
   shadow?: unknown;
-  nowMs: number;
+  nowMonotonicMs: number;
   cooldownMs?: number;
 }): HandoffSignalCooldownDisposition {
   const runDir = mkdtempSync(join(tmpdir(), 'coral-handoff-ledger-'));
@@ -245,7 +245,7 @@ function durableLedgerDisposition(input: {
       instanceId: 'same-incumbent',
       source: 'discovery',
     },
-    nowMs: input.nowMs,
+    nowMonotonicMs: BigInt(input.nowMonotonicMs),
     cooldownMs: input.cooldownMs ?? 60_000,
   });
 }
@@ -550,6 +550,91 @@ describe('bindWithHandoff', () => {
       stage: 'handoff-deadline',
       socketPath: '/tmp/coral.sock',
     });
+  });
+
+  it('expires the handoff budget on monotonic time when the wall clock moves backward', async () => {
+    const { options, time } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+    });
+    let wallClockOffsetMs = 0;
+    vi.spyOn(time, 'now').mockImplementation(() => Number(time.monotonicNow()) + wallClockOffsetMs);
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
+
+    let outcome: unknown;
+    void bindWithHandoff(options).then(
+      (bound) => {
+        outcome = bound;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    await flush();
+    wallClockOffsetMs = -60_000;
+    for (let i = 0; i < 10; i += 1) {
+      time.tick(100);
+      await flush();
+    }
+
+    expectHandoffRefusal(outcome, 'handoff_socket_holder_unverified', {
+      stage: 'handoff-deadline',
+      socketPath: '/tmp/coral.sock',
+    });
+  });
+
+  it('times signal grace on monotonic time across forward and backward wall-clock corrections', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 7776,
+      incarnation: testIncarnation(554_000),
+      source: 'health',
+    };
+    const abort = new AbortController();
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      signal: abort.signal,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'clock-correction-incumbent',
+        token: 'token-clock-correction',
+        bootToken: 'boot-token-clock-correction',
+        shutdownToken: 'shutdown-token-clock-correction',
+      }),
+    });
+    let wallClockOffsetMs = 0;
+    vi.spyOn(time, 'now').mockImplementation(() => Number(time.monotonicNow()) + wallClockOffsetMs);
+    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    const promise = bindWithHandoff(options).catch((error: unknown) => error);
+    for (let i = 0; i < 10 && !killCalls.some((call) => call.signal === 'SIGTERM'); i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
+
+    wallClockOffsetMs = 60_000;
+    await flush();
+    time.tick(200);
+    await flush();
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
+
+    wallClockOffsetMs = -60_000;
+    for (let i = 0; i < SIGTERM_GRACE_MS / 200 + 5; i += 1) {
+      time.tick(200);
+      await flush();
+      if (killCalls.some((call) => call.signal === 'SIGKILL')) break;
+    }
+    expect(killCalls).toEqual([
+      { pid: verifiedIdentity.pid, signal: 'SIGTERM' },
+      { pid: verifiedIdentity.pid, signal: 'SIGKILL' },
+    ]);
+
+    const abortReason = new Error('test complete');
+    abort.abort(abortReason);
+    time.tick(200);
+    await expect(promise).resolves.toBe(abortReason);
   });
 
   it('reports an observed-live incumbent after SIGKILL grace', async () => {
@@ -859,6 +944,7 @@ describe('bindWithHandoff', () => {
     expect(signalLedger.write).toHaveBeenCalledTimes(1);
     expect(signalLedger.write).toHaveBeenCalledWith(
       expect.objectContaining({ version: 2, accepted: true, signal: 'SIGTERM' }),
+      expect.anything(),
     );
   });
 
@@ -1653,7 +1739,7 @@ describe('bindWithHandoff', () => {
   it.each([
     {
       case: 'genuine v0.10.9 bytes',
-      nowMs: 2_000,
+      nowMonotonicMs: 2_000,
       shadow: {
         version: 1,
         socketPath: '/tmp/coral.sock',
@@ -1663,11 +1749,11 @@ describe('bindWithHandoff', () => {
         signal: 'SIGTERM',
         signaledAtMs: 1_000,
       },
-      expected: { kind: 'foreign-signal-attempt', signal: 'SIGTERM', ageMs: 1_000, retryInMs: 59_000 },
+      expected: { kind: 'foreign-signal-attempt', signal: 'SIGTERM', ageMs: 0, retryInMs: 60_000 },
     },
     {
       case: 'this build paired shadow and detail',
-      nowMs: 2_000,
+      nowMonotonicMs: 2_000,
       detail: {
         version: 2,
         accepted: true,
@@ -1690,11 +1776,11 @@ describe('bindWithHandoff', () => {
         signaledAtMs: 1_000,
         publicationId: 'paired-publication',
       },
-      expected: { kind: 'accepted-signal', signal: 'SIGKILL', ageMs: 1_000, retryInMs: 59_000 },
+      expected: { kind: 'accepted-signal', signal: 'SIGKILL', ageMs: 0, retryInMs: 60_000 },
     },
     {
       case: 'two independent publications',
-      nowMs: 3_000,
+      nowMonotonicMs: 3_000,
       detail: {
         version: 2,
         accepted: true,
@@ -1715,11 +1801,11 @@ describe('bindWithHandoff', () => {
         signal: 'SIGKILL',
         signaledAtMs: 2_000,
       },
-      expected: { kind: 'foreign-signal-attempt', signal: 'SIGKILL', ageMs: 1_000, retryInMs: 59_000 },
+      expected: { kind: 'foreign-signal-attempt', signal: 'SIGKILL', ageMs: 0, retryInMs: 60_000 },
     },
     {
       case: 'a wall clock that stepped backward',
-      nowMs: 1_000,
+      nowMonotonicMs: 1_000,
       detail: {
         version: 2,
         accepted: true,
@@ -1742,11 +1828,11 @@ describe('bindWithHandoff', () => {
         signaledAtMs: 1_000,
         publicationId: 'after-clock-step',
       },
-      expected: { kind: 'accepted-signal', signal: 'SIGTERM', ageMs: -9_000, retryInMs: 69_000 },
+      expected: { kind: 'accepted-signal', signal: 'SIGTERM', ageMs: 0, retryInMs: 60_000 },
     },
     {
       case: 'an independent conservative record tied on recency',
-      nowMs: 2_000,
+      nowMonotonicMs: 2_000,
       detail: {
         version: 2,
         accepted: true,
@@ -1767,10 +1853,60 @@ describe('bindWithHandoff', () => {
         signal: 'SIGKILL',
         signaledAtMs: 1_000,
       },
-      expected: { kind: 'foreign-signal-attempt', signal: 'SIGKILL', ageMs: 1_000, retryInMs: 59_000 },
+      expected: { kind: 'foreign-signal-attempt', signal: 'SIGKILL', ageMs: 0, retryInMs: 60_000 },
     },
-  ])('classifies ledger cooldown disposition from durable $case', ({ detail, shadow, nowMs, expected }) => {
-    expect(durableLedgerDisposition({ detail, shadow, nowMs })).toEqual(expected);
+  ])('classifies ledger cooldown disposition from durable $case', ({ detail, shadow, nowMonotonicMs, expected }) => {
+    expect(durableLedgerDisposition({ detail, shadow, nowMonotonicMs })).toEqual(expected);
+  });
+
+  it('releases an observed durable cooldown only after its monotonic interval elapses', () => {
+    const target: IncumbentIdentity = {
+      pid: 2467,
+      incarnation: testIncarnation(899),
+      source: 'discovery',
+      instanceId: 'same-incumbent',
+    };
+    const detail = JSON.stringify({
+      version: 2,
+      accepted: true,
+      socketPath: '/tmp/coral.sock',
+      pid: target.pid,
+      incarnation: target.incarnation,
+      instanceId: target.instanceId,
+      signal: 'SIGTERM',
+      signaledAtMs: 9_999_999,
+      publicationId: 'observed-publication',
+    });
+    const storage = {
+      readFileSync: (path: string) => {
+        if (path === '/tmp/run/handoff-signal.v2.json') return detail;
+        throw new Error('ENOENT');
+      },
+      mkdirSync: vi.fn(),
+      writeAtomicSync: vi.fn(),
+    } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
+    const dispositionAt = (nowMonotonicMs: bigint) =>
+      signalLedger.cooldownDisposition({
+        socketPath: '/tmp/coral.sock',
+        incumbent: target,
+        nowMonotonicMs,
+        cooldownMs: 60_000,
+      });
+
+    expect(dispositionAt(1_000n)).toEqual({
+      kind: 'accepted-signal',
+      signal: 'SIGTERM',
+      ageMs: 0,
+      retryInMs: 60_000,
+    });
+    expect(dispositionAt(60_999n)).toEqual({
+      kind: 'accepted-signal',
+      signal: 'SIGTERM',
+      ageMs: 59_999,
+      retryInMs: 1,
+    });
+    expect(dispositionAt(61_000n)).toEqual({ kind: 'clear' });
   });
 
   it('writes a shipped-v0.10.9-valid cooldown shadow before accepted V2 detail', async () => {
@@ -1844,14 +1980,14 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
   });
 
-  it('uses a newer accepted V1 shadow instead of stale matching V2 detail for cooldown', async () => {
+  it('holds cooldown for accepted durable records without deriving elapsed time from audit timestamps', async () => {
     const target: IncumbentIdentity = {
       pid: 2467,
       incarnation: testIncarnation(899),
       source: 'discovery',
       instanceId: 'same-incumbent',
     };
-    let nowMs = 0;
+    let auditNowMs = 0;
     const storage = {
       readFileSync: (path: string) => {
         if (path === '/tmp/run/handoff-signal.v2.json') {
@@ -1863,7 +1999,7 @@ describe('bindWithHandoff', () => {
             incarnation: target.incarnation,
             instanceId: target.instanceId,
             signal: 'SIGTERM',
-            signaledAtMs: nowMs - 70_000,
+            signaledAtMs: auditNowMs - 70_000,
           });
         }
         if (path === '/tmp/run/handoff-signal.json') {
@@ -1875,7 +2011,7 @@ describe('bindWithHandoff', () => {
             incarnation: target.incarnation,
             instanceId: target.instanceId,
             signal: 'SIGTERM',
-            signaledAtMs: nowMs - 1_000,
+            signaledAtMs: auditNowMs - 1_000,
           });
         }
         throw new Error('ENOENT');
@@ -1897,7 +2033,7 @@ describe('bindWithHandoff', () => {
         shutdownToken: 'same-shutdown-token',
       }),
     });
-    nowMs = time.now();
+    auditNowMs = time.now();
     mockedProbe.mockReturnValue(target.incarnation ?? null);
 
     const outcome = await bindWithHandoff(options).catch((error: Error) => error);
@@ -1907,8 +2043,8 @@ describe('bindWithHandoff', () => {
       pid: 2467,
       requestedSignal: 'SIGTERM',
       previousSignal: 'SIGTERM',
-      ageMs: 1_000,
-      retryInMs: 59_000,
+      ageMs: 0,
+      retryInMs: 60_000,
     });
     expect(killCalls).toEqual([]);
   });
@@ -1945,22 +2081,22 @@ describe('bindWithHandoff', () => {
       signal: 'SIGTERM' as const,
       signaledAtMs: 10_000,
     };
-    signalLedger.write(record);
+    signalLedger.write(record, 10_000n);
     rejectDetail = true;
-    signalLedger.write({ ...record, signal: 'SIGKILL', signaledAtMs: 1_000 });
+    signalLedger.write({ ...record, signal: 'SIGKILL', signaledAtMs: 1_000 }, 11_000n);
 
     expect(
       signalLedger.cooldownDisposition({
         socketPath: '/tmp/coral.sock',
         incumbent: target,
-        nowMs: 1_000,
+        nowMonotonicMs: 12_000n,
         cooldownMs: 60_000,
       }),
     ).toEqual({
       kind: 'accepted-signal',
-      signal: 'SIGTERM',
-      ageMs: -9_000,
-      retryInMs: 69_000,
+      signal: 'SIGKILL',
+      ageMs: 1_000,
+      retryInMs: 59_000,
     });
   });
 
@@ -2072,8 +2208,8 @@ describe('bindWithHandoff', () => {
       pid: 2467,
       requestedSignal: 'SIGTERM',
       previousSignal: 'SIGTERM',
-      ageMs: 600,
-      retryInMs: 9_400,
+      ageMs: 0,
+      retryInMs: 10_000,
     });
     expect(killCalls).toEqual([]);
   });
@@ -2084,13 +2220,13 @@ describe('bindWithHandoff', () => {
       incarnation: testIncarnation(900),
       source: 'health',
     };
-    let lastSignaledAtMs = 0;
+    let lastSignaledAtMonotonicMs = 0n;
     const signalLedger: HandoffSignalLedger = {
-      cooldownDisposition: ({ nowMs, cooldownMs }) => ({
+      cooldownDisposition: ({ nowMonotonicMs, cooldownMs }) => ({
         kind: 'accepted-signal',
         signal: 'SIGTERM',
-        ageMs: nowMs - lastSignaledAtMs,
-        retryInMs: cooldownMs - (nowMs - lastSignaledAtMs),
+        ageMs: Number(nowMonotonicMs - lastSignaledAtMonotonicMs),
+        retryInMs: cooldownMs - Number(nowMonotonicMs - lastSignaledAtMonotonicMs),
       }),
       write: vi.fn(),
     };
@@ -2108,7 +2244,7 @@ describe('bindWithHandoff', () => {
         shutdownToken: 'same-shutdown-token',
       }),
     });
-    lastSignaledAtMs = time.now();
+    lastSignaledAtMonotonicMs = time.monotonicNow();
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
 
@@ -2125,6 +2261,74 @@ describe('bindWithHandoff', () => {
       previousSignal: 'SIGTERM',
       ageMs: 600,
       retryInMs: 9_400,
+    });
+    expect(killCalls).toEqual([]);
+  });
+
+  it('does not let a forward wall-clock correction expire an active signal cooldown', async () => {
+    const files = new Map<string, string>();
+    const storage = {
+      readFileSync: (path: string) => {
+        const value = files.get(path);
+        if (value === undefined) throw new Error('ENOENT');
+        return value;
+      },
+      mkdirSync: vi.fn(),
+      writeAtomicSync: (path: string, value: string) => {
+        files.set(path, value);
+      },
+    } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
+    const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 2469,
+      incarnation: testIncarnation(901),
+      source: 'discovery',
+      instanceId: 'forward-clock-incumbent',
+      token: 'same-token',
+      bootToken: 'same-boot-token',
+      shutdownToken: 'same-shutdown-token',
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 0,
+      signalLedger,
+      signalCooldownMs: 10_000,
+      readDiscovery: () => verifiedIdentity,
+    });
+    signalLedger.write(
+      {
+        version: 2,
+        accepted: true,
+        socketPath: '/tmp/coral.sock',
+        pid: verifiedIdentity.pid,
+        incarnation: verifiedIdentity.incarnation,
+        instanceId: verifiedIdentity.instanceId,
+        signal: 'SIGTERM',
+        signaledAtMs: time.now(),
+      },
+      time.monotonicNow(),
+    );
+    vi.spyOn(time, 'now').mockImplementation(() => Number(time.monotonicNow()) + 60_000);
+    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+
+    let outcome: unknown;
+    void bindWithHandoff(options).then(
+      (bound) => {
+        outcome = bound;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    await flush();
+
+    expectHandoffRefusal(outcome, 'handoff_signal_cooldown_active', {
+      stage: 'before-signal',
+      pid: verifiedIdentity.pid,
+      requestedSignal: 'SIGTERM',
+      previousSignal: 'SIGTERM',
+      ageMs: 0,
+      retryInMs: 10_000,
     });
     expect(killCalls).toEqual([]);
   });

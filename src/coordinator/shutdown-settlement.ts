@@ -112,7 +112,7 @@ export type ShutdownSettlementLedger = SettlementLedger<
 
 export type ShutdownSettlementLedgerOptions = Readonly<{
   budgetMs: number;
-  time: Pick<TimePort, 'now' | 'sleep'>;
+  time: Pick<TimePort, 'monotonicNow' | 'sleep'>;
   log: (message: string) => void;
   pollMs: number;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;

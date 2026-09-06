@@ -4389,9 +4389,9 @@ describe('lifecycle recovery', () => {
               key: retained.subject.key,
               revision: retained.subject.revision.kind === 'fingerprint' ? retained.subject.revision.value : null,
             }),
-          ).resolves.toMatchObject({ disposition: 'advanced' });
-          expect(fakeService.adoptRunningJob).toHaveBeenCalledOnce();
-          expect(quarantine.read('coordinator-job-recovery', jobId)).toBeNull();
+          ).resolves.toMatchObject({ disposition: 'continuation' });
+          expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+          expect(quarantine.read('coordinator-job-recovery', jobId)).toMatchObject({ state: 'continuation' });
         }
       } finally {
         monotonicNow.mockRestore();

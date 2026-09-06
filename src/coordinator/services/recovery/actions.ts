@@ -62,7 +62,7 @@ export type RunningRecoverableJob = {
   runtimeRecord: JobRuntime;
 };
 
-async function reapDurableCliProcess(
+export async function reapDurableCliProcess(
   runtime: Runtime,
   record: DurableCliProcessRuntimeMeta | DurableCliProvisionalProcessRuntimeMeta,
   signal: AbortSignal,
@@ -375,14 +375,27 @@ async function registerRunningRecovery(
   const recordedContainment = isDurableCliRuntime(action.runtimeRecord)
     ? readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
     : null;
-  recoveryRegistry.register(
-    action.jobId,
-    action.launchRecord,
-    action.runtimeRecord,
-    isDurableCliRuntime(action.runtimeRecord)
-      ? () => abortDurableCliProcess(runtime, recordedContainment ?? { kind: 'unavailable', reason: 'missing' })
-      : undefined,
-  );
+  const persistedContainment = isDurableCliRuntime(action.runtimeRecord)
+    ? readDurableCliContainmentStatus(progressStore.getDb(), action.jobId)
+    : null;
+  const resumesHeldContainment =
+    persistedContainment?.kind === 'valid' && persistedContainment.status.disposition.kind === 'held';
+  const resumesOperatorAbandonment =
+    persistedContainment?.kind === 'valid' && persistedContainment.status.disposition.kind === 'operator-abandoned';
+  if (!resumesHeldContainment || !recoveryRegistry.has(action.jobId)) {
+    recoveryRegistry.register(
+      action.jobId,
+      action.launchRecord,
+      action.runtimeRecord,
+      isDurableCliRuntime(action.runtimeRecord)
+        ? resumesHeldContainment
+          ? () => abandonHeldJob(action.jobId)
+          : resumesOperatorAbandonment
+            ? undefined
+            : () => abortDurableCliProcess(runtime, recordedContainment ?? { kind: 'unavailable', reason: 'missing' })
+        : undefined,
+    );
+  }
   setProcessLocalCleanup(() => recoveryRegistry.remove(action.jobId));
   const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
   signal.throwIfAborted();
@@ -453,10 +466,6 @@ async function registerRunningRecovery(
       });
       return { kind: 'accepted' };
     });
-  } else {
-    recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord, () =>
-      abortDurableCliProcess(runtime, recordedContainment ?? { kind: 'unavailable', reason: 'missing' }),
-    );
   }
   runningRecoverable.push({
     jobId: action.jobId,

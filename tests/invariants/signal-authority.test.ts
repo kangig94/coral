@@ -274,6 +274,7 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
         time: {
           now: () => now,
+          monotonicNow: () => BigInt(now),
           sleep: async (ms) => {
             now += ms;
           },

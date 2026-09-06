@@ -199,6 +199,49 @@ describe('provider operation journal', () => {
     fence.release();
   });
 
+  it('rejects a delayed descendant after its admitted parent drains from a set fence', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const target = providerOperationRecord('prepare-pending');
+    let finishParent!: () => void;
+    let startDescendant!: () => void;
+    const parentMayFinish = new Promise<void>((resolve) => {
+      finishParent = resolve;
+    });
+    const descendantMayStart = new Promise<void>((resolve) => {
+      startDescendant = resolve;
+    });
+    let descendant!: Promise<void>;
+    let journalMutationRan = false;
+    const parent = admission.run(
+      'provider-event:parent',
+      async () => {
+        descendant = descendantMayStart.then(() => {
+          admission.runSync(
+            'provider-operation:delayed-descendant',
+            () => {
+              journalMutationRan = true;
+            },
+            target.operation,
+          );
+        });
+        await parentMayFinish;
+      },
+      target.operation,
+    );
+    await Promise.resolve();
+
+    const fence = admission.closeSet(target.operation);
+    if (fence.kind !== 'holding') throw new Error('scoped parent was not retained by the fence');
+    finishParent();
+    await parent;
+    await fence.retryAfter;
+
+    startDescendant();
+    await expect(descendant).rejects.toThrow('Provider operation mutation admission is closed for this proxy set.');
+    expect(journalMutationRan).toBe(false);
+    fence.release();
+  });
+
   it('retains a set-fence scope through global admission close and retires it with the lease', async () => {
     const admission = new ProviderOperationMutationAdmission();
     const target = providerOperationRecord('prepare-pending');

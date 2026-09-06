@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { applyRecoveryAction, COORDINATOR_NOT_APPLICABLE_FACTS } from '#src/coordinator/services/recovery/actions.js';
-import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import { writeDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
 import type { ProviderJobLaunch } from '#src/jobs/records.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
@@ -39,7 +39,11 @@ function runtimeRecord(): DurableCliRuntimeRecord {
   };
 }
 
-function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: NodeJS.Platform = 'linux') {
+function recoveryFixture(
+  liveness: 'alive' | 'absent' | 'unknown',
+  platform: NodeJS.Platform = 'linux',
+  options: { captureSucceeds?: boolean } = {},
+) {
   const runtime = new SimulationRuntime();
   vi.spyOn(runtime.env, 'platform').mockReturnValue(platform);
   let monotonicMs = 0n;
@@ -74,6 +78,8 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
   runtime.process.kill = kill;
   const recoveryRegistry = new RecoveryRegistry();
   const settleFault = vi.fn(() => COORDINATOR_NOT_APPLICABLE_FACTS);
+  const abandonHeldJob = vi.fn(() => ({ kind: 'accepted' as const }));
+  const runningRecoverable: Array<{ jobId: string }> = [];
   let cleanup: (() => void) | null = null;
 
   const run = () =>
@@ -83,16 +89,19 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
         progressStore: { getDb: () => db } as never,
         recoveryRegistry,
         queuedRecoverable: [],
-        runningRecoverable: [],
+        runningRecoverable: runningRecoverable as never,
         log: vi.fn(),
         runtime,
         createInvocationContext: () => ({}) as never,
         getRecoveryService: () =>
           ({
-            captureProviderRecoveryAuthority: async () => ({
-              ok: false,
-              failure: { provider: 'codex', reason: 'profile-unavailable', selector: 'default' },
-            }),
+            captureProviderRecoveryAuthority: async () =>
+              options.captureSucceeds
+                ? { ok: true, authority: { launchRecord: launchRecord() } }
+                : {
+                    ok: false,
+                    failure: { provider: 'codex', reason: 'profile-unavailable', selector: 'default' },
+                  },
           }) as never,
         signal: new AbortController().signal,
         settleFault,
@@ -103,6 +112,7 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
         clearProcessLocalCleanup: () => {
           cleanup = null;
         },
+        abandonHeldJob,
       },
     );
 
@@ -114,6 +124,8 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
       observedIncarnation = incarnation;
     },
     recoveryRegistry,
+    abandonHeldJob,
+    runningRecoverable,
     settleFault,
     run,
     cleanup: () => cleanup,
@@ -121,6 +133,44 @@ function recoveryFixture(liveness: 'alive' | 'absent' | 'unknown', platform: Nod
 }
 
 describe('registerRunningRecovery provider-binding holds', () => {
+  it('preserves operator abandonment when registering a persisted durable hold', async () => {
+    const fixture = recoveryFixture('alive', 'linux', { captureSucceeds: true });
+    try {
+      const incarnation = testIncarnation('held');
+      const record = {
+        jobId: JOB_ID,
+        pid: PID,
+        incarnation,
+        processGroupId: PID,
+        childRoot: { pid: PID + 1, incarnation },
+      };
+      writeDurableCliProcessRuntimeMeta(fixture.db, record);
+      writeDurableCliContainmentStatus(fixture.db, {
+        jobId: JOB_ID,
+        evidence: { kind: 'current', record },
+        disposition: {
+          kind: 'held',
+          reason: 'the process ignored termination',
+          retryIntervalMs: 500,
+          abandonment: 'abort-job',
+        },
+      });
+      fixture.setObservedIncarnation(incarnation);
+      const preinstalledAbandon = vi.fn(() => ({ kind: 'accepted' as const }));
+      fixture.recoveryRegistry.register(JOB_ID, launchRecord(), runtimeRecord(), preinstalledAbandon);
+
+      await expect(fixture.run()).resolves.toMatchObject({ kind: 'advanced', outcome: 'settled' });
+
+      expect(fixture.runningRecoverable).toEqual([expect.objectContaining({ jobId: JOB_ID })]);
+      expect(fixture.recoveryRegistry.abort([JOB_ID])).toEqual({ aborted: [JOB_ID], notFound: [] });
+      expect(preinstalledAbandon).toHaveBeenCalledOnce();
+      expect(fixture.abandonHeldJob).not.toHaveBeenCalled();
+      expect(fixture.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.db.close();
+    }
+  });
+
   it('keeps an unknown durable process owned and returns an operator-retryable quarantine', async () => {
     const fixture = recoveryFixture('unknown');
     try {

@@ -36,6 +36,7 @@ import {
   durableOwnershipStatusEvidence,
   finalizeDeadAdoptedJob,
   logRecoveryActionFailure,
+  reapDurableCliProcess,
   COORDINATOR_CLAIM_RELEASE_OBLIGATION,
   COORDINATOR_NOT_APPLICABLE_FACTS,
   COORDINATOR_TERMINAL_OBLIGATION,
@@ -98,6 +99,8 @@ type RecoveryCoordinatorState = {
   /** Consecutive ticks whose liveness probe could not answer, per adopted job. Reset by any answer. */
   unansweredAdoptionProbes: Map<string, number>;
   recoveryPollIntervals: Map<string, TimerHandle>;
+  heldRecoveryReapGenerations: Map<string, number>;
+  heldRecoveryReapControllers: Map<string, AbortController>;
   adoptedRunningJobCleanups: Map<string, () => void>;
   inflightFinalizations: Map<
     string,
@@ -530,6 +533,8 @@ export function createRecoveryCoordinator(
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
     unansweredAdoptionProbes: new Map<string, number>(),
     recoveryPollIntervals: new Map<string, TimerHandle>(),
+    heldRecoveryReapGenerations: new Map<string, number>(),
+    heldRecoveryReapControllers: new Map<string, AbortController>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     inflightFinalizations: new Map(),
     providerOperationRecoveries: new Map<string, Promise<ProviderOperationRecoveryAcceptance>>(),
@@ -626,6 +631,40 @@ export function createRecoveryCoordinator(
     return { evidence, observation };
   };
 
+  const cancelHeldRecoveryReap = (jobId: string): boolean => {
+    state.heldRecoveryReapGenerations.set(jobId, (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1);
+    const controller = state.heldRecoveryReapControllers.get(jobId);
+    state.heldRecoveryReapControllers.delete(jobId);
+    controller?.abort();
+    return controller !== undefined;
+  };
+
+  const runHeldRecoveryReap = async (
+    jobId: string,
+    record: Parameters<typeof reapDurableCliProcess>[1],
+    parentSignal: AbortSignal,
+  ): Promise<Awaited<ReturnType<typeof reapDurableCliProcess>> | Readonly<{ kind: 'superseded' }>> => {
+    cancelHeldRecoveryReap(jobId);
+    const generation = (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1;
+    state.heldRecoveryReapGenerations.set(jobId, generation);
+    const controller = new AbortController();
+    const forwardAbort = (): void => controller.abort();
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener('abort', forwardAbort, { once: true });
+    state.heldRecoveryReapControllers.set(jobId, controller);
+    try {
+      const result = await reapDurableCliProcess(runtime, record, controller.signal);
+      return state.heldRecoveryReapGenerations.get(jobId) === generation && !controller.signal.aborted
+        ? result
+        : { kind: 'superseded' };
+    } finally {
+      parentSignal.removeEventListener('abort', forwardAbort);
+      if (state.heldRecoveryReapControllers.get(jobId) === controller) {
+        state.heldRecoveryReapControllers.delete(jobId);
+      }
+    }
+  };
+
   const resetRecoveryState = (options: { forceRegistryRelease?: boolean } = {}): void => {
     if (options.forceRegistryRelease) {
       state.recoveryRegistry = null;
@@ -642,6 +681,10 @@ export function createRecoveryCoordinator(
       runtime.time.clearInterval(pollInterval);
     }
     state.recoveryPollIntervals.clear();
+    for (const jobId of [...state.heldRecoveryReapControllers.keys()]) {
+      cancelHeldRecoveryReap(jobId);
+    }
+    state.heldRecoveryReapGenerations.clear();
 
     for (const jobId of [...state.adoptedRunningPids.keys()]) {
       releaseAdoptedJob(jobId);
@@ -786,6 +829,12 @@ export function createRecoveryCoordinator(
     });
     reportCoordinatorRecovery(options.summary, report, messages);
     return report;
+  };
+
+  const deleteCoordinatorRecoveryQuarantine = (jobId: string): boolean => {
+    const record = quarantine.read('coordinator-job-recovery', jobId);
+    if (record === null) return true;
+    return quarantine.delete({ boundary: 'coordinator-job-recovery', subject: record.subject });
   };
 
   const settleFault = (
@@ -1065,10 +1114,159 @@ export function createRecoveryCoordinator(
         }
 
         const containment = observeDurableRecoveryContainment(jobId, runtimeRecord);
-        const operatorAbandoned =
+        let operatorAbandoned =
           persistedContainment.kind === 'valid' &&
           persistedContainment.status.disposition.kind === 'operator-abandoned';
-        if (containment.observation.kind === 'absent' || operatorAbandoned) {
+        let absenceConfirmed = containment.observation.kind === 'absent';
+        if (
+          persistedContainment.kind === 'valid' &&
+          persistedContainment.status.disposition.kind === 'held' &&
+          !absenceConfirmed
+        ) {
+          const retryIntervalMs = persistedContainment.status.disposition.retryIntervalMs;
+          const cleanup =
+            containment.evidence.kind === 'current' || containment.evidence.kind === 'provisional'
+              ? await runHeldRecoveryReap(jobId, containment.evidence.record, signal)
+              : { kind: 'held' as const, reason: durableOwnershipEvidenceHoldReason(containment.evidence) };
+          if (cleanup.kind === 'superseded') {
+            signal.throwIfAborted();
+            return {
+              kind: 'deferred',
+              authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+              detail: 'durable containment reap ownership transferred',
+            };
+          }
+          const statusAfterCleanup = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
+          operatorAbandoned =
+            statusAfterCleanup.kind === 'valid' && statusAfterCleanup.status.disposition.kind === 'operator-abandoned';
+          if (cleanup.kind === 'absence-confirmed') {
+            absenceConfirmed = true;
+          } else if (!operatorAbandoned) {
+            writeDurableCliContainmentStatus(progressStore.getDb(), {
+              jobId,
+              evidence: durableOwnershipStatusEvidence(containment.evidence),
+              disposition: {
+                kind: 'held',
+                reason: cleanup.reason,
+                retryIntervalMs,
+                abandonment: 'abort-job',
+              },
+            });
+            if (!state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId))) {
+              throw new Error('Durable containment hold was not accepted by the recovery registry.');
+            }
+            if (!state.recoveryPollIntervals.has(jobId)) {
+              let retryInFlight = false;
+              const retryHeldCleanup = async (): Promise<void> => {
+                if (state.teardownRequested) return;
+                const currentStatus = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
+                if (currentStatus.kind === 'valid' && currentStatus.status.disposition.kind === 'operator-abandoned') {
+                  clearRecoveryPoller(jobId);
+                  return;
+                }
+
+                const currentContainment = observeDurableRecoveryContainment(jobId, runtimeRecord);
+                const retryCleanup =
+                  currentContainment.observation.kind === 'absent'
+                    ? ({ kind: 'absence-confirmed' } as const)
+                    : currentContainment.evidence.kind === 'current' ||
+                        currentContainment.evidence.kind === 'provisional'
+                      ? await runHeldRecoveryReap(jobId, currentContainment.evidence.record, signal)
+                      : {
+                          kind: 'held' as const,
+                          reason: durableOwnershipEvidenceHoldReason(currentContainment.evidence),
+                        };
+                if (retryCleanup.kind === 'superseded') return;
+                const statusAfterCleanup = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
+                if (
+                  statusAfterCleanup.kind === 'valid' &&
+                  statusAfterCleanup.status.disposition.kind === 'operator-abandoned'
+                ) {
+                  clearRecoveryPoller(jobId);
+                  return;
+                }
+                if (retryCleanup.kind === 'held') {
+                  writeDurableCliContainmentStatus(progressStore.getDb(), {
+                    jobId,
+                    evidence: durableOwnershipStatusEvidence(currentContainment.evidence),
+                    disposition: {
+                      kind: 'held',
+                      reason: retryCleanup.reason,
+                      retryIntervalMs,
+                      abandonment: 'abort-job',
+                    },
+                  });
+                  if (
+                    currentStatus.kind !== 'valid' ||
+                    currentStatus.status.disposition.kind !== 'held' ||
+                    currentStatus.status.disposition.reason !== retryCleanup.reason
+                  ) {
+                    progressStore.appendProgress(
+                      jobId,
+                      launchRecord.sessionId,
+                      `Durable recovery cleanup remains held (${retryCleanup.reason}).`,
+                    );
+                  }
+                  return;
+                }
+
+                clearRecoveryPoller(jobId);
+                if (!deleteCoordinatorRecoveryQuarantine(jobId)) return;
+                await runCoordinatorWalk({
+                  subjectKey: jobId,
+                  signal,
+                  coordinatorCommit,
+                  summary: `Held durable recovery finalization for ${jobId}`,
+                  settle: settleRunningRecovery,
+                  settleFailure: (item, error, controls) =>
+                    settleUnexpectedRecoveryFailure(
+                      item,
+                      jobId,
+                      'Held durable recovery finalization failed',
+                      error,
+                      coordinatorCommit,
+                      controls.report,
+                    ),
+                });
+              };
+              const pollInterval = runtime.time.setInterval(() => {
+                if (retryInFlight) return;
+                retryInFlight = true;
+                void retryHeldCleanup()
+                  .catch((error: unknown) => {
+                    log(`Held durable recovery retry failed for ${jobId}: ${formatError(error)}\n`);
+                  })
+                  .finally(() => {
+                    retryInFlight = false;
+                  });
+              }, retryIntervalMs);
+              pollInterval.unref?.();
+              state.recoveryPollIntervals.set(jobId, pollInterval);
+            }
+            if (!state.recoveryPollIntervals.has(jobId)) {
+              throw new Error('Durable containment retry was not accepted by the recovery coordinator.');
+            }
+            controls.clearProcessLocalCleanup();
+            progressStore.appendProgress(
+              jobId,
+              launchRecord.sessionId,
+              `Durable recovery cleanup remains held (${cleanup.reason}). Identity-safe reaping continues every ` +
+                `${retryIntervalMs}ms until absence is confirmed, or run coral-cli abort jobs ${jobId} to abandon ` +
+                'job ownership without proving process absence or sending another signal.',
+            );
+            controls.report(`Held durable recovery cleanup: ${jobId}: ${cleanup.reason}\n`);
+            return {
+              kind: 'deferred',
+              continuation: { kind: 'durable-containment-reap', key: jobId },
+              detail:
+                `${cleanup.reason}. Identity-safe reaping continues every ${retryIntervalMs}ms until absence is ` +
+                `confirmed, or run coral-cli abort jobs ${jobId} to abandon job ownership without proving process ` +
+                'absence or sending another signal.',
+            };
+          }
+        }
+
+        if (absenceConfirmed || operatorAbandoned) {
           if (operatorAbandoned) state.cancelledRecoveryJobIds.add(jobId);
           drainRecoveredProgress();
           await startTrackedFinalization(jobId, signal, (fence) =>
@@ -1606,21 +1804,10 @@ export function createRecoveryCoordinator(
 
       try {
         withImmediate(progressStore.getDb(), () => {
-          const quarantineRow = progressStore
-            .getDb()
-            .prepare<
-              [string, string],
-              { state: string }
-            >('SELECT state FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?')
-            .get('coordinator-job-recovery', jobId);
-          if (quarantineRow?.state === 'retrying') {
+          writeDurableCliContainmentStatus(progressStore.getDb(), abandonedStatus);
+          if (!deleteCoordinatorRecoveryQuarantine(jobId)) {
             throw new Error('coordinator job recovery already owns this hold retry');
           }
-          writeDurableCliContainmentStatus(progressStore.getDb(), abandonedStatus);
-          progressStore
-            .getDb()
-            .prepare<[string, string]>('DELETE FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?')
-            .run('coordinator-job-recovery', jobId);
         });
       } catch (error: unknown) {
         return {
@@ -1628,6 +1815,8 @@ export function createRecoveryCoordinator(
           reason: `durable containment abandonment could not be recorded: ${errorMessage(error)}`,
         };
       }
+      clearRecoveryPoller(jobId);
+      cancelHeldRecoveryReap(jobId);
 
       const jobStatus = progressStore.readStatus(jobId);
       if (jobStatus !== null) {
@@ -1669,6 +1858,7 @@ export function createRecoveryCoordinator(
       ) {
         continue;
       }
+      if (statusRead.kind === 'valid' && !deleteCoordinatorRecoveryQuarantine(jobId)) continue;
       recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => abandonHeldRecoveryJob(jobId));
     }
 
