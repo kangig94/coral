@@ -1005,6 +1005,72 @@ describe('launch admission', () => {
     ).toBe(1);
   });
 
+  it('releases cleanup ownership before propagating a wrapper crash', async () => {
+    const base = createRealRuntime('prod');
+    const incarnation = testIncarnation(7_002);
+    const childRoot = { pid: TEST_PROVIDER_PID + 1, incarnation };
+    const runtimeRecord = {
+      transport: 'durable-cli' as const,
+      pid: TEST_PROVIDER_PID,
+      stdoutPath: '/tmp/wrapper-crash/stdout',
+      stderrPath: '/tmp/wrapper-crash/stderr',
+      startTime: new Date(0).toISOString(),
+    };
+    const wrapperError = new Error('synthetic wrapper crash');
+    const runtime: Runtime = {
+      ...base,
+      time: {
+        ...base.time,
+        sleep: async () => undefined,
+      },
+      process: {
+        ...base.process,
+        observeLiveness: () => 'absent',
+        readProcessIncarnation: () => null,
+        durable: {
+          launch: async (options) => {
+            options.onSpawned?.({ runtimeRecord, leaderIncarnation: incarnation, childRoot });
+            return {
+              disposition: 'launched',
+              launchHandle: 'wrapper-crash' as never,
+              pid: TEST_PROVIDER_PID,
+              stdoutPath: runtimeRecord.stdoutPath,
+              stderrPath: runtimeRecord.stderrPath,
+              runtimeRecord,
+              processSubject: {
+                pid: TEST_PROVIDER_PID,
+                incarnation,
+                processGroupId: TEST_PROVIDER_PID,
+                childRoot,
+              },
+            };
+          },
+          waitForExit: async () => {
+            throw wrapperError;
+          },
+        },
+      },
+    };
+    const localCoordinator = new LaunchCoordinator({ runtime });
+    const cleanupOwnership = localCoordinator as unknown as {
+      readonly cleanupHandles: Map<symbol, DurableProcessCleanup>;
+      readonly cleanupRetentions: Map<DurableProcessCleanup, unknown>;
+    };
+
+    await expect(
+      localCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/wrapper-crash',
+        permitGranted: true,
+      }),
+    ).rejects.toBe(wrapperError);
+
+    expect(cleanupOwnership.cleanupHandles.size).toBe(0);
+    expect(cleanupOwnership.cleanupRetentions.size).toBe(0);
+  });
+
   it('publishes a durable hold and makes abort an explicit abandonment without absence proof', async () => {
     const base = createRealRuntime('prod');
     const incarnation = testIncarnation(7_002);

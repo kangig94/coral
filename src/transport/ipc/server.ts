@@ -257,13 +257,12 @@ function readIpcOperationalSpec(method: string): IpcOperationalSpec | null {
   return IPC_OPERATIONAL_SPECS.find((spec) => spec.ipc.method === method) ?? null;
 }
 
-function acceptedDrainingRecovery(method: string, body: unknown): boolean {
-  if (method === providerProxySetContainRpcSpec.name || method === providerProxySetContainBooleanRpcSpec.name) {
-    return true;
-  }
-  if (method !== 'jobs.abort' || body === null || typeof body !== 'object') return false;
-  const aborted = (body as { aborted?: unknown }).aborted;
-  return Array.isArray(aborted) && aborted.length > 0;
+function acceptedDrainingRecovery(method: string): boolean {
+  return (
+    method === 'jobs.abort' ||
+    method === providerProxySetContainRpcSpec.name ||
+    method === providerProxySetContainBooleanRpcSpec.name
+  );
 }
 
 function armShutdownRecoveryContinuation(socket: Socket, continuation: () => void): () => void {
@@ -927,9 +926,7 @@ async function dispatchFrame(
         return;
       }
       const completeShutdownRecovery =
-        drainingRecoveryIngress &&
-        acceptedDrainingRecovery(request.method, invocation.body) &&
-        onShutdownRecoveryAccepted !== null
+        drainingRecoveryIngress && acceptedDrainingRecovery(request.method) && onShutdownRecoveryAccepted !== null
           ? armShutdownRecoveryContinuation(socket, onShutdownRecoveryAccepted)
           : null;
       const wroteResponse = await writeEnvelope(

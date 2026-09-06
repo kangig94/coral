@@ -765,6 +765,12 @@ export async function spawnDurableJobTransport(params: {
       }
 
       if (durableState.exitError) {
+        const disposition = await settleProviderResultContainment();
+        if (disposition.kind === 'held') {
+          enterContainmentHold(disposition.reason);
+          await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), containmentAbsence]);
+          continue;
+        }
         throw durableState.exitError instanceof Error
           ? durableState.exitError
           : new Error(errorMessage(durableState.exitError));

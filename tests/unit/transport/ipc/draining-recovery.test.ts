@@ -177,6 +177,50 @@ describe('draining IPC recovery ingress', () => {
     },
   );
 
+  it.each([
+    {
+      outcome: 'operator abandonment',
+      result: {
+        aborted: [],
+        notFound: [],
+        abandoned: [
+          {
+            jobId: 'held-job',
+            reason: 'cleanup ownership released by operator',
+            nextStep: 'inspect the process outside Coral',
+          },
+        ],
+      },
+    },
+    {
+      outcome: 'nothing left to abort',
+      result: { aborted: [], notFound: ['held-job'] },
+    },
+  ])('wakes retained shutdown after jobs.abort reports $outcome', async ({ result }) => {
+    const ports = createDrainingPorts();
+    ports.jobs.abort = vi.fn(() => result);
+    const listener = createIpcServer(ports);
+    const retryShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = retryShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+
+    try {
+      await expect(
+        requestIpcMethod(
+          path,
+          'jobs.abort',
+          { jobs: ['held-job'], projectRoot: PROJECT_ROOT },
+          { auth: { kind: 'boot', token: 'boot-token' } },
+        ),
+      ).resolves.toEqual(result);
+      await vi.waitFor(() => expect(retryShutdown).toHaveBeenCalledOnce());
+      expect(ports.jobs.abort).toHaveBeenCalledOnce();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
   it('wakes retained shutdown when the client disconnects before a successful containment returns', async () => {
     const ports = createDrainingPorts('contained');
     let finishContainment!: () => void;
