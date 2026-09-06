@@ -698,6 +698,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginHeartbeatLocalFailureHold :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #commitOperatorAbandonment :: Promise.catch :: slot.containmentAuthority.initiateControlClose().catch',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey, this.#releaseOperatorExitFence, this.#releaseOperatorExitFence] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
@@ -710,7 +711,6 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #runContainmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runControlReattachmentAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #runReattachmentHoldAttempt :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
-  'src/coordinator/services/provider-proxy-set/index.ts :: completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey, this.#releaseOperatorExitFence, this.#releaseOperatorExitFence] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#1 :: calls=[collectFencedContainmentProof, providerProxySetContainmentEvidenceFor, deps.reapRecordedContainment, releaseProviderProxySetContainmentProofFence, releaseProviderProxySetContainmentProofFence] assignments=[reapResult]',
   'src/coordinator/services/provider-proxy-set/inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
@@ -770,7 +770,7 @@ function rejectionJustification(fingerprint: string): string {
   if (fingerprint.includes(' :: #runReattachmentHoldAttempt :: ')) {
     return 'The post-bound hold retains itself and schedules its own restrained retry after exact-set reaping rejects.';
   }
-  if (fingerprint.includes(' :: completeOperatorExit :: ')) {
+  if (fingerprint.includes(' :: #completeOperatorExit :: ')) {
     return fingerprint.includes('catch#1')
       ? 'Lifecycle converts a moved attempt after signalling into an honest partial authorization-stale outcome.'
       : 'A best-effort control close cannot revoke accepted operator abandonment or relabel its process observation.';

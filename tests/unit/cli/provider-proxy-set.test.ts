@@ -156,7 +156,7 @@ const containCommandCases: readonly ContainCommandCase[] = [
     result: { kind: 'unsupported-coordinator', setIdentity: address },
     exitCode: 75,
     stream: 'stderr',
-    message: 'does not support coordinator.provider_proxy_set.contain',
+    message: 'does not support the requested containment operation',
   },
   {
     name: 'unsupported-coordinator-result',
@@ -354,6 +354,29 @@ describe('backend provider-proxy-set contain', () => {
     expect(process.exitCode).toBe(75);
   });
 
+  it('does not substitute predecessor containment for explicit abandonment after schema rejection', async () => {
+    const request = vi.fn().mockRejectedValue(new IpcRpcError({ code: -32602, message: 'Invalid params' }));
+    const operations = createProviderProxySetCommandOperations({
+      getClient: async () => ({ request }) as never,
+    });
+
+    const result = await operations.contain({ setIdentity: address, mode: 'abandon' });
+
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      'coordinator.provider_proxy_set.contain',
+      { setIdentity: address, mode: 'abandon' },
+      expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
+    );
+    expect(result).toEqual({
+      kind: 'unsupported-coordinator',
+      setIdentity: address,
+    });
+    await expect(runContain(result)).resolves.toEqual(
+      expect.objectContaining({ stderr: expect.stringContaining('does not support') }),
+    );
+    expect(process.exitCode).toBe(75);
+  });
+
   it('renders a stale authorization with the signal that was already delivered', async () => {
     const output = await runContain({
       kind: 'authorization-stale',
@@ -369,6 +392,20 @@ describe('backend provider-proxy-set contain', () => {
     expect(output.stderr).toContain('recorded-containment absence was not confirmed');
     expect(output.stderr).toContain('Coral did not start representation release');
     expect(process.exitCode).toBe(75);
+  });
+
+  it('reports accepted ownership of a fatal representation-release remainder', async () => {
+    const output = await runContain({
+      kind: 'representation-release-abandoned',
+      setIdentity: address,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
+    });
+
+    expect(output.stdout).toContain('fatal representation release was abandoned');
+    expect(output.stdout).toContain('operator command accepted the unresolved representation-release remainder');
+    expect(output.stdout).toContain('fatal operation was not retried');
+    expect(process.exitCode).toBe(0);
   });
 
   it('names abandonment as the exit from an unattributable recorded-group hold', async () => {

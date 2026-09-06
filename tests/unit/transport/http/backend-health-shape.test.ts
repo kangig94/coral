@@ -497,6 +497,7 @@ describe('/health typed shape (AC10a)', () => {
     { kind: 'refused', ground: 'enforcer-unobservable' },
     { kind: 'refused', ground: 'recorded-group-unattributable' },
     { kind: 'refused', ground: 'store-unreadable' },
+    { kind: 'refused', ground: 'representation-release-fatal' },
   ] as const)('accepts an asserted operator exit: $kind', (operatorExit) => {
     const parsed = parseBackendHealth({
       ...HEALTHY_BASE,

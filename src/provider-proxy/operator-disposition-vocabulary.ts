@@ -61,7 +61,12 @@ export type ProviderProxySetOperatorExit =
   | Readonly<{ kind: 'contain' }>
   | Readonly<{
       kind: 'refused';
-      ground: 'enforcer-alive' | 'enforcer-unobservable' | 'recorded-group-unattributable' | 'store-unreadable';
+      ground:
+        | 'enforcer-alive'
+        | 'enforcer-unobservable'
+        | 'recorded-group-unattributable'
+        | 'store-unreadable'
+        | 'representation-release-fatal';
     }>;
 
 export type ProviderProxySetOperatorDisposition = Readonly<{

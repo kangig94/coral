@@ -25,7 +25,10 @@ import {
   type RecoveryQuarantineClearResult,
 } from '../../recovery/source-registry.js';
 import { encodeProviderProxySetAddress } from '../../provider-proxy/set-address.js';
-import type { ProviderProxySetContainResponse } from '../../transport/rpc/catalog.js';
+import type {
+  ProviderProxySetContainBooleanResponse,
+  ProviderProxySetContainResponse,
+} from '../../transport/rpc/catalog.js';
 import type { UnreadableProviderOperationDiscardResult } from '../../recovery/unreadable-provider-operation.js';
 import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { ProviderProxySetOperatorExit } from '../../provider-proxy/operator-disposition-vocabulary.js';
@@ -49,27 +52,38 @@ function providerProxySetOperatorRefusalGuidance(ground: ProviderProxySetOperato
       return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence or signalling the group`;
     case 'store-unreadable':
       return 'run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable';
+    case 'representation-release-fatal':
+      return `run ${abandon}; this accepts the unresolved representation release without retrying its fatal operation`;
     default:
       return assertNever(ground);
   }
 }
 
 function formatProviderProxySetClaimDischarge(
-  discharge: Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>['claimDischarge'],
+  discharge: Extract<
+    ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse,
+    { kind: 'contained' | 'abandoned' | 'unattributable-group-abandoned' }
+  >['claimDischarge'],
 ): string {
   switch (discharge.kind) {
     case 'completed':
       return 'Every durable claim was accepted by its successor and the set representation was released.';
     case 'initial-disposition-pending':
       return `Claim discharge has not reached an initial disposition; Coral still represents the set until ${discharge.exit}.`;
+    case 'initial-disposition-retry-owned':
+      return 'Claim discharge has not reached an initial disposition; the coordinator still owns retry and still represents the set.';
     case 'operational-retry-owned':
-      return `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s) with exit=${discharge.exit}; Coral still represents the set until every successor accepts and capsule retirement completes.`;
+      return 'exit' in discharge
+        ? `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s) with exit=${discharge.exit}; Coral still represents the set until every successor accepts and capsule retirement completes.`
+        : `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s); the coordinator still represents the set until every successor accepts and capsule retirement completes.`;
     default:
       return assertNever(discharge);
   }
 }
 
-export function formatProviderProxySetContainResult(result: ProviderProxySetContainResponse): string {
+export function formatProviderProxySetContainResult(
+  result: ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse,
+): string {
   const token = encodeProviderProxySetAddress(result.setIdentity);
   const retry = `coral-cli backend provider-proxy-set contain ${token}`;
   const observations = (values: ReadonlyArray<{ role: string; observation: string }>): string =>
@@ -85,7 +99,9 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
       ? 'Coral did not start representation release'
       : result.effect.representationAction === 'absence-release-started'
         ? 'Coral started evidence-backed representation release'
-        : 'Coral started operator-abandonment representation release',
+        : result.effect.representationAction === 'abandonment-release-started'
+          ? 'Coral started operator-abandonment representation release'
+          : 'the operator accepted the fatal representation-release remainder',
   ].join('; ');
   switch (result.kind) {
     case 'contained':
@@ -105,6 +121,31 @@ export function formatProviderProxySetContainResult(result: ProviderProxySetCont
         `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
         'Next step: run coral-cli backend status and verify the proxy, guardian, reaper, and provider processes externally.',
+      ].join('\n');
+    case 'unattributable-group-abandoned':
+      return [
+        `Provider proxy set ${token} was abandoned after its recorded process group became unattributable.`,
+        'Observed: the recorded leader identity is gone.',
+        'Not observed: absence of the process group or proof that its numeric group id still belongs to this set.',
+        `Effect: ${effect}.`,
+        formatProviderProxySetClaimDischarge(result.claimDischarge),
+        'Next step: run coral-cli backend status and verify the proxy and provider processes externally.',
+      ].join('\n');
+    case 'representation-release-abandoned':
+      return [
+        `Provider proxy set ${token}'s fatal representation release was abandoned.`,
+        'Observed: the operator command accepted the unresolved representation-release remainder.',
+        'Not observed: successful delivery or capsule retirement; the fatal operation was not retried.',
+        `Effect: ${effect}.`,
+        'Next step: run coral-cli backend status.',
+      ].join('\n');
+    case 'representation-release-abandonment-required':
+      return [
+        `Provider proxy set ${token} has a fatal representation release that containment cannot finish.`,
+        'Observed: the fatal settlement completed with operator acceptance still pending.',
+        'Not observed: successful delivery or capsule retirement.',
+        `Effect: ${effect}.`,
+        `Next step: run coral-cli backend provider-proxy-set abandon ${token}.`,
       ].join('\n');
     case 'set-not-found':
       return [

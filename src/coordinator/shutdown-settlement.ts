@@ -27,6 +27,7 @@ export type ShutdownHoldExit =
   | 'lifecycle-reactor-disposal-settlement'
   | 'admitted-provider-operation-mutation-settlement'
   | 'provider-operation-mutation-admission-availability'
+  | 'provider-proxy-set-release-retry'
   | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
   | 'authority-release-settlement';
 

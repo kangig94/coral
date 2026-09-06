@@ -15,6 +15,8 @@ import type {
   ProviderHostEvictResponse,
   ProviderHostInspectResponse,
   ProviderHostListResponse,
+  ProviderProxySetContainBooleanRequest,
+  ProviderProxySetContainBooleanResponse,
   ProviderProxySetContainRequest,
   ProviderProxySetContainResponse,
 } from './catalog.js';
@@ -78,6 +80,10 @@ export interface ProviderHostRequestPort {
 
 export interface ProviderProxySetRequestPort {
   contain(request: ProviderProxySetContainRequest, signal?: AbortSignal): Promise<ProviderProxySetContainResponse>;
+  containBoolean(
+    request: ProviderProxySetContainBooleanRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProxySetContainBooleanResponse>;
 }
 
 type MaybePromise<T> = T | Promise<T>;

@@ -159,6 +159,18 @@ export const providerProxySetContainRequestSchema = z
   })
   .strict();
 
+export const providerProxySetContainBooleanRequestSchema = z
+  .object({
+    setIdentity: providerProxySetAddressSchema,
+    abandonWithoutAbsence: z.boolean(),
+  })
+  .strict();
+
+const providerProxySetContainAcceptedRequestSchema = z.union([
+  providerProxySetContainRequestSchema,
+  providerProxySetContainBooleanRequestSchema,
+]);
+
 const providerProxySetOperationalIncidentBase = {
   reason: z.string().min(1),
   nextAttemptAtMs: z.number().finite(),
@@ -206,11 +218,27 @@ const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+const providerProxySetContainBooleanClaimDischargeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('completed') }).strict(),
+  z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),
+  z
+    .object({
+      kind: z.literal('operational-retry-owned'),
+      incidents: z.array(providerProxySetOperationalIncidentSchema).min(1).readonly(),
+    })
+    .strict(),
+]);
+
 const providerProxySetContainEffectSchema = z
   .object({
     signalsSent: z.array(z.enum(['SIGTERM', 'SIGKILL'])).readonly(),
     containmentAbsent: z.boolean(),
-    representationAction: z.enum(['none', 'absence-release-started', 'abandonment-release-started']),
+    representationAction: z.enum([
+      'none',
+      'absence-release-started',
+      'abandonment-release-started',
+      'fatal-release-abandoned',
+    ]),
   })
   .strict();
 const providerProxySetContainResultBase = {
@@ -232,6 +260,19 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
       ...providerProxySetContainResultBase,
       enforcerObservations: providerProxySetEnforcerObservationsSchema,
       claimDischarge: providerProxySetClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('representation-release-abandoned'),
+      ...providerProxySetContainResultBase,
+      successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('representation-release-abandonment-required'),
+      ...providerProxySetContainResultBase,
     })
     .strict(),
   z.object({ kind: z.literal('set-not-found'), ...providerProxySetContainResultBase }).strict(),
@@ -270,9 +311,104 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
 
 export const providerProxySetContainResponseSchema = providerProxySetContainKnownResponseSchema;
 
+const providerProxySetContainBooleanLifecycleStateSchema = z.enum([
+  'acquiring',
+  'capsule-recovering',
+  'capsule-foreign',
+  'recovering',
+  'available',
+  'draining',
+  'reattaching',
+  'containing',
+  'containment-wait',
+  'absence-delivery-pending',
+  'abandonment-delivery-pending',
+]);
+
+export const providerProxySetContainBooleanResponseSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('contained'),
+      ...providerProxySetContainResultBase,
+      disappearanceReceipt: z.string().min(1),
+      claimDischarge: providerProxySetContainBooleanClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('abandoned'),
+      ...providerProxySetContainResultBase,
+      enforcerObservations: z.union([
+        providerProxySetAliveEnforcerObservationsSchema,
+        providerProxySetUnobservableEnforcerObservationsSchema,
+      ]),
+      claimDischarge: providerProxySetContainBooleanClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('unattributable-group-abandoned'),
+      ...providerProxySetContainResultBase,
+      claimDischarge: providerProxySetContainBooleanClaimDischargeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('representation-release-abandoned'),
+      ...providerProxySetContainResultBase,
+      successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('representation-release-abandonment-required'),
+      ...providerProxySetContainResultBase,
+    })
+    .strict(),
+  z.object({ kind: z.literal('set-not-found'), ...providerProxySetContainResultBase }).strict(),
+  z
+    .object({
+      kind: z.literal('not-held'),
+      ...providerProxySetContainResultBase,
+      state: providerProxySetContainBooleanLifecycleStateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('deadline-pending'),
+      ...providerProxySetContainResultBase,
+      remainingMs: z.number().finite().nonnegative(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('authorization-stale'), ...providerProxySetContainResultBase }).strict(),
+  z
+    .object({
+      kind: z.literal('enforcer-alive'),
+      ...providerProxySetContainResultBase,
+      enforcerObservations: providerProxySetAliveEnforcerObservationsSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('enforcer-unobservable'),
+      ...providerProxySetContainResultBase,
+      enforcerObservations: providerProxySetUnobservableEnforcerObservationsSchema,
+    })
+    .strict(),
+  z.object({ kind: z.literal('recorded-group-unattributable'), ...providerProxySetContainResultBase }).strict(),
+  z.object({ kind: z.literal('store-unreadable'), ...providerProxySetContainResultBase }).strict(),
+]);
+
+const providerProxySetContainAcceptedResponseSchema = z.union([
+  providerProxySetContainResponseSchema,
+  providerProxySetContainBooleanResponseSchema,
+]);
+
 export type ProviderProxySetContainRequest = z.output<typeof providerProxySetContainRequestSchema>;
+export type ProviderProxySetContainBooleanRequest = z.output<typeof providerProxySetContainBooleanRequestSchema>;
 /** Exhaustive wire verdict including observable effects of a partially completed containment attempt. */
 export type ProviderProxySetContainResponse = z.output<typeof providerProxySetContainResponseSchema>;
+export type ProviderProxySetContainBooleanResponse = z.output<typeof providerProxySetContainBooleanResponseSchema>;
 
 export const recoveryQuarantineClearRpcSpec = {
   name: 'coordinator.recovery_quarantine.clear',
@@ -335,8 +471,8 @@ export const providerProxySetContainRpcSpec = {
   name: 'coordinator.provider_proxy_set.contain',
   kind: 'unary',
   requires: 'system:shutdown',
-  requestSchema: providerProxySetContainRequestSchema,
-  responseSchema: providerProxySetContainResponseSchema,
+  requestSchema: providerProxySetContainAcceptedRequestSchema,
+  responseSchema: providerProxySetContainAcceptedResponseSchema,
   responseKind: 'json',
   portKey: 'providerProxySets',
   http: { method: 'POST', path: '/coordinator/provider-proxy-sets/contain' },

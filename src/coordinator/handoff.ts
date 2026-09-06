@@ -421,42 +421,20 @@ function isSameSignalTarget(
   );
 }
 
-function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity, signal: HandoffSignal): void {
+function signalCooldownDisposition(
+  opts: HandoffOptions,
+  incumbent: IncumbentIdentity,
+): HandoffSignalCooldownDisposition {
   const ledger = opts.signalLedger;
   if (ledger === undefined) {
-    return;
+    return { kind: 'clear' };
   }
   const cooldownMs = opts.signalCooldownMs ?? DEFAULT_SIGNAL_COOLDOWN_MS;
-  const disposition = ledger.cooldownDisposition({
+  return ledger.cooldownDisposition({
     socketPath: opts.socketPath,
     incumbent,
     nowMonotonicMs: opts.runtime.time.monotonicNow(),
     cooldownMs,
-  });
-  if (disposition.kind === 'clear') return;
-  if (disposition.kind === 'foreign-signal-attempt') {
-    throw new HandoffEscalationError({
-      code: 'handoff_legacy_signal_attempt_indeterminate',
-      context: {
-        stage: 'before-signal',
-        pid: incumbent.pid,
-        requestedSignal: signal,
-        previousSignal: disposition.signal,
-        ageMs: disposition.ageMs,
-        retryInMs: disposition.retryInMs,
-      },
-    });
-  }
-  throw new HandoffEscalationError({
-    code: 'handoff_signal_cooldown_active',
-    context: {
-      stage: 'before-signal',
-      pid: incumbent.pid,
-      requestedSignal: signal,
-      previousSignal: disposition.signal,
-      ageMs: disposition.ageMs,
-      retryInMs: disposition.retryInMs,
-    },
   });
 }
 
@@ -1183,7 +1161,11 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
         await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
         continue;
       }
-      assertSignalCooldown(opts, incumbent, 'SIGTERM');
+      const cooldown = signalCooldownDisposition(opts, incumbent);
+      if (cooldown.kind !== 'clear') {
+        await sleepForHandoffPoll(opts, Math.min(SOCKET_BIND_POLL_MS, cooldown.retryInMs));
+        continue;
+      }
       opts.signal?.throwIfAborted();
       const sigtermResult = signalIncumbent(opts, verification, 'SIGTERM');
       if (

@@ -12,7 +12,7 @@ import type { ServerResponse } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
-import { formatError } from '../../infra/error-format.js';
+import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
@@ -41,8 +41,12 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainBooleanResponseSchema,
   providerProxySetContainResponseSchema,
   unreadableProviderOperationDiscardResultSchema,
+  type ProviderProxySetContainBooleanResponse,
+  type ProviderProxySetContainRequest,
+  type ProviderProxySetContainResponse,
 } from '../../transport/rpc/catalog.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -126,6 +130,7 @@ import {
 } from '../../sessions/lifecycle-reactor.js';
 import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
 import { jobInCallerScope } from '../../jobs/scope.js';
+import type { ProviderProxySetBooleanOperatorExitResult } from '../services/provider-proxy-set/index.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -155,6 +160,54 @@ const EVENT_STREAM_CAPACITY_RESPONSE = {
 };
 
 const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'error', 'failed', 'closed']);
+
+type ProviderProxySetContainSuccess = Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>;
+type ProviderProxySetContainBooleanSuccess = Extract<
+  ProviderProxySetContainBooleanResponse,
+  { kind: 'contained' | 'abandoned' | 'unattributable-group-abandoned' }
+>;
+
+function providerProxySetContainBooleanClaimDischarge(
+  discharge: ProviderProxySetContainSuccess['claimDischarge'],
+): ProviderProxySetContainBooleanSuccess['claimDischarge'] {
+  switch (discharge.kind) {
+    case 'completed':
+      return discharge;
+    case 'initial-disposition-pending':
+      return { kind: 'initial-disposition-retry-owned' };
+    case 'operational-retry-owned':
+      return { kind: discharge.kind, incidents: discharge.incidents };
+    default:
+      return assertNever(discharge);
+  }
+}
+
+function providerProxySetContainBooleanResponse(
+  response: ProviderProxySetBooleanOperatorExitResult,
+): ProviderProxySetContainBooleanResponse {
+  if (response.kind === 'contained') {
+    return providerProxySetContainBooleanResponseSchema.parse({
+      ...response,
+      claimDischarge: providerProxySetContainBooleanClaimDischarge(response.claimDischarge),
+    });
+  }
+  if (response.kind === 'unattributable-group-abandoned') {
+    return providerProxySetContainBooleanResponseSchema.parse({
+      ...response,
+      claimDischarge: providerProxySetContainBooleanClaimDischarge(response.claimDischarge),
+    });
+  }
+  if (response.kind === 'abandoned') {
+    return providerProxySetContainBooleanResponseSchema.parse({
+      ...response,
+      claimDischarge: providerProxySetContainBooleanClaimDischarge(response.claimDischarge),
+    });
+  }
+  if (response.kind === 'not-held' && response.state === 'reattachment-hold') {
+    return providerProxySetContainBooleanResponseSchema.parse({ ...response, state: 'reattaching' });
+  }
+  return providerProxySetContainBooleanResponseSchema.parse(response);
+}
 
 function isTerminalDiscussStatus(status: string): boolean {
   return TERMINAL_DISCUSS_STATUSES.has(status);
@@ -905,6 +958,32 @@ export function createCoordinatorCore(
     },
   });
 
+  const containProviderProxySet = async (
+    request: ProviderProxySetContainRequest,
+    contract: 'current' | 'boolean',
+    abandonWithoutAbsence: boolean,
+    signal?: AbortSignal,
+  ): Promise<ProviderProxySetBooleanOperatorExitResult> => {
+    const lifecycle = world.providerProxyLifecycleRef.get();
+    if (lifecycle === null) throw new Error('provider_proxy_set_operator_exit_unavailable');
+    const authorization = lifecycle.authorizeOperatorExit(request.setIdentity);
+    if (authorization.kind !== 'authorized') {
+      return {
+        ...authorization,
+        setIdentity: request.setIdentity,
+        effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+      };
+    }
+    const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
+      authorization.capability.containmentProofAuthorization,
+      getProgressStore().getDb(),
+      signal ?? new AbortController().signal,
+    );
+    return contract === 'boolean'
+      ? lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
+      : lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
+  };
+
   const rpcPorts: RpcPorts = {
     sessions: {
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
@@ -998,26 +1077,19 @@ export function createCoordinatorCore(
         providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector)),
     },
     providerProxySets: {
-      contain: async (request, signal) => {
-        const lifecycle = world.providerProxyLifecycleRef.get();
-        if (lifecycle === null) throw new Error('provider_proxy_set_operator_exit_unavailable');
-        const authorization = lifecycle.authorizeOperatorExit(request.setIdentity);
-        if (authorization.kind !== 'authorized') {
-          return providerProxySetContainResponseSchema.parse({
-            ...authorization,
-            setIdentity: request.setIdentity,
-            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
-          });
-        }
-        const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
-          authorization.capability.containmentProofAuthorization,
-          getProgressStore().getDb(),
-          signal ?? new AbortController().signal,
-        );
-        return providerProxySetContainResponseSchema.parse(
-          await lifecycle.completeOperatorExit(authorization.capability, proof, request.mode === 'abandon', signal),
-        );
-      },
+      contain: async (request, signal) =>
+        providerProxySetContainResponseSchema.parse(
+          await containProviderProxySet(request, 'current', request.mode === 'abandon', signal),
+        ),
+      containBoolean: async (request, signal) =>
+        providerProxySetContainBooleanResponse(
+          await containProviderProxySet(
+            { setIdentity: request.setIdentity, mode: 'contain' },
+            'boolean',
+            request.abandonWithoutAbsence,
+            signal,
+          ),
+        ),
     },
     kb: kbRpcPort,
     discuss: {

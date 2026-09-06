@@ -1980,7 +1980,7 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
   });
 
-  it('holds cooldown for accepted durable records without deriving elapsed time from audit timestamps', async () => {
+  it('keeps a fresh contender alive until an accepted durable cooldown elapses monotonically', async () => {
     const target: IncumbentIdentity = {
       pid: 2467,
       incarnation: testIncarnation(899),
@@ -2020,12 +2020,17 @@ describe('bindWithHandoff', () => {
       writeAtomicSync: vi.fn(),
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
     const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
+    let signalAccepted = false;
     const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      bindAttempt: async () => (signalAccepted ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' }),
       totalBudgetMs: 0,
       signalLedger,
-      signalCooldownMs: 60_000,
-      killReturns: () => false,
+      signalCooldownMs: 1_000,
+      observeLiveness: () => (signalAccepted ? 'absent' : 'alive'),
+      killReturns: () => {
+        signalAccepted = true;
+        return true;
+      },
       readDiscovery: () => ({
         ...target,
         token: 'same-token',
@@ -2034,19 +2039,21 @@ describe('bindWithHandoff', () => {
       }),
     });
     auditNowMs = time.now();
-    mockedProbe.mockReturnValue(target.incarnation ?? null);
+    mockedProbe.mockImplementation(() => (signalAccepted ? null : (target.incarnation ?? null)));
 
-    const outcome = await bindWithHandoff(options).catch((error: Error) => error);
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(999);
+    await flush();
 
-    expectHandoffRefusal(outcome, 'handoff_signal_cooldown_active', {
-      stage: 'before-signal',
-      pid: 2467,
-      requestedSignal: 'SIGTERM',
-      previousSignal: 'SIGTERM',
-      ageMs: 0,
-      retryInMs: 60_000,
-    });
     expect(killCalls).toEqual([]);
+
+    time.tick(1);
+    await flush();
+    expect(killCalls).toEqual([{ pid: target.pid, signal: 'SIGTERM' }]);
+
+    time.tick(200);
+    await expect(promise).resolves.toMatchObject({ acquiredViaHandoff: true });
   });
 
   it('uses the newer shadow when the wall clock steps backward before a detail write fails', () => {
@@ -2154,7 +2161,7 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
   });
 
-  it('decodes a genuine shipped V1 ledger entry as an indeterminate legacy attempt', async () => {
+  it('waits through a genuine shipped V1 attempt before signaling', async () => {
     const verifiedIdentity: IncumbentIdentity = {
       pid: 2467,
       incarnation: testIncarnation(899),
@@ -2178,11 +2185,17 @@ describe('bindWithHandoff', () => {
       writeAtomicSync: vi.fn(),
     } as unknown as Parameters<typeof createFileHandoffSignalLedger>[0]['storage'];
     const signalLedger = createFileHandoffSignalLedger({ storage, ids: countingIds(), runDir: '/tmp/run' });
+    let signalAccepted = false;
     const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
-      totalBudgetMs: 500,
+      bindAttempt: async () => (signalAccepted ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' }),
+      totalBudgetMs: 0,
       signalLedger,
-      signalCooldownMs: 10_000,
+      signalCooldownMs: 1_000,
+      observeLiveness: () => (signalAccepted ? 'absent' : 'alive'),
+      killReturns: () => {
+        signalAccepted = true;
+        return true;
+      },
       readDiscovery: () => ({
         ...verifiedIdentity,
         source: 'discovery',
@@ -2194,27 +2207,24 @@ describe('bindWithHandoff', () => {
     });
     legacyAttemptedAtMs = time.now();
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
-    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+    mockedProbe.mockImplementation(() => (signalAccepted ? null : (verifiedIdentity.incarnation ?? null)));
 
-    const promise = bindWithHandoff(options).catch((error: Error) => error);
-    for (let i = 0; i < 30; i += 1) {
-      await flush();
-      time.tick(200);
-    }
-    const outcome = await promise;
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(999);
+    await flush();
 
-    expectHandoffRefusal(outcome, 'handoff_legacy_signal_attempt_indeterminate', {
-      stage: 'before-signal',
-      pid: 2467,
-      requestedSignal: 'SIGTERM',
-      previousSignal: 'SIGTERM',
-      ageMs: 0,
-      retryInMs: 10_000,
-    });
     expect(killCalls).toEqual([]);
+
+    time.tick(1);
+    await flush();
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
+
+    time.tick(200);
+    await expect(promise).resolves.toMatchObject({ acquiredViaHandoff: true });
   });
 
-  it('rate-limits a repeated SIGTERM from an accepted V2 record for the same incumbent', async () => {
+  it('keeps one contender across the repeated-signal cooldown', async () => {
     const verifiedIdentity: IncumbentIdentity = {
       pid: 2468,
       incarnation: testIncarnation(900),
@@ -2222,19 +2232,25 @@ describe('bindWithHandoff', () => {
     };
     let lastSignaledAtMonotonicMs = 0n;
     const signalLedger: HandoffSignalLedger = {
-      cooldownDisposition: ({ nowMonotonicMs, cooldownMs }) => ({
-        kind: 'accepted-signal',
-        signal: 'SIGTERM',
-        ageMs: Number(nowMonotonicMs - lastSignaledAtMonotonicMs),
-        retryInMs: cooldownMs - Number(nowMonotonicMs - lastSignaledAtMonotonicMs),
-      }),
+      cooldownDisposition: ({ nowMonotonicMs, cooldownMs }) => {
+        const ageMs = Number(nowMonotonicMs - lastSignaledAtMonotonicMs);
+        return ageMs >= cooldownMs
+          ? { kind: 'clear' }
+          : { kind: 'accepted-signal', signal: 'SIGTERM', ageMs, retryInMs: cooldownMs - ageMs };
+      },
       write: vi.fn(),
     };
+    let signalAccepted = false;
     const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
-      totalBudgetMs: 500,
+      bindAttempt: async () => (signalAccepted ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' }),
+      totalBudgetMs: 0,
       signalLedger,
-      signalCooldownMs: 10_000,
+      signalCooldownMs: 1_000,
+      observeLiveness: () => (signalAccepted ? 'absent' : 'alive'),
+      killReturns: () => {
+        signalAccepted = true;
+        return true;
+      },
       readDiscovery: () => ({
         ...verifiedIdentity,
         source: 'discovery',
@@ -2246,23 +2262,20 @@ describe('bindWithHandoff', () => {
     });
     lastSignaledAtMonotonicMs = time.monotonicNow();
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
-    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+    mockedProbe.mockImplementation(() => (signalAccepted ? null : (verifiedIdentity.incarnation ?? null)));
 
-    const promise = bindWithHandoff(options).catch((e: Error) => e);
-    for (let i = 0; i < 30; i += 1) {
-      await flush();
-      time.tick(200);
-    }
-    const outcome = await promise;
-    expectHandoffRefusal(outcome, 'handoff_signal_cooldown_active', {
-      stage: 'before-signal',
-      pid: 2468,
-      requestedSignal: 'SIGTERM',
-      previousSignal: 'SIGTERM',
-      ageMs: 600,
-      retryInMs: 9_400,
-    });
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(999);
+    await flush();
     expect(killCalls).toEqual([]);
+
+    time.tick(1);
+    await flush();
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
+
+    time.tick(200);
+    await expect(promise).resolves.toMatchObject({ acquiredViaHandoff: true });
   });
 
   it('does not let a forward wall-clock correction expire an active signal cooldown', async () => {
@@ -2288,11 +2301,17 @@ describe('bindWithHandoff', () => {
       bootToken: 'same-boot-token',
       shutdownToken: 'same-shutdown-token',
     };
+    let signalAccepted = false;
     const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      bindAttempt: async () => (signalAccepted ? { kind: 'bound' } : { kind: 'incumbent', reason: 'live-listener' }),
       totalBudgetMs: 0,
       signalLedger,
-      signalCooldownMs: 10_000,
+      signalCooldownMs: 1_000,
+      observeLiveness: () => (signalAccepted ? 'absent' : 'alive'),
+      killReturns: () => {
+        signalAccepted = true;
+        return true;
+      },
       readDiscovery: () => verifiedIdentity,
     });
     signalLedger.write(
@@ -2309,28 +2328,21 @@ describe('bindWithHandoff', () => {
       time.monotonicNow(),
     );
     vi.spyOn(time, 'now').mockImplementation(() => Number(time.monotonicNow()) + 60_000);
-    mockedProbe.mockReturnValue(verifiedIdentity.incarnation ?? null);
+    mockedProbe.mockImplementation(() => (signalAccepted ? null : (verifiedIdentity.incarnation ?? null)));
 
-    let outcome: unknown;
-    void bindWithHandoff(options).then(
-      (bound) => {
-        outcome = bound;
-      },
-      (error: unknown) => {
-        outcome = error;
-      },
-    );
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(999);
     await flush();
 
-    expectHandoffRefusal(outcome, 'handoff_signal_cooldown_active', {
-      stage: 'before-signal',
-      pid: verifiedIdentity.pid,
-      requestedSignal: 'SIGTERM',
-      previousSignal: 'SIGTERM',
-      ageMs: 0,
-      retryInMs: 10_000,
-    });
     expect(killCalls).toEqual([]);
+
+    time.tick(1);
+    await flush();
+    expect(killCalls).toEqual([{ pid: verifiedIdentity.pid, signal: 'SIGTERM' }]);
+
+    time.tick(200);
+    await expect(promise).resolves.toMatchObject({ acquiredViaHandoff: true });
   });
 
   it('manual signal policy refuses process signals after graceful handoff fails', async () => {

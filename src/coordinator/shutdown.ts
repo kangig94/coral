@@ -244,7 +244,9 @@ function providerCleanupConfirmation(
   const pending = [
     ...closingHosts.map(closingHostDetail),
     ...representationReleaseHolds.map(
-      (hold) => `${hold.label}: ${hold.pendingOperations.join(', ') || 'capsule retirement'}; exit=${hold.exit}`,
+      (hold) =>
+        `${hold.label}: ${hold.pendingOperations.join(', ') || 'capsule retirement'}; ` +
+        `disposition=${hold.disposition.kind}; exit=${hold.exit}`,
     ),
   ];
   return pending.length === 0 ? cleanup : { confirmed: false, detail: pending.join('; ') };
@@ -371,7 +373,23 @@ export async function runShutdownSequence({
   const providerRetainedAuthority = (label: string): ShutdownRetainedAuthorityContribution => {
     refreshProviderCleanup();
     const providerControlProxyInstanceIds = providerCleanup.liveProxySets.map(({ proxyInstanceId }) => proxyInstanceId);
-    const operatorActions: ShutdownOperatorAction[] = providerControlProxyInstanceIds.map((proxyInstanceId) => ({
+    const representationReleaseRetryProxyInstanceIds = new Set(
+      providerCleanup.representationReleaseHolds.flatMap((hold) =>
+        hold.disposition.kind === 'fatal-successor-pending' ? [] : [hold.proxyInstanceId],
+      ),
+    );
+    const fatalRepresentationReleaseProxyInstanceIds = providerCleanup.representationReleaseHolds.flatMap((hold) =>
+      hold.disposition.kind === 'fatal-successor-pending' ? [hold.proxyInstanceId] : [],
+    );
+    const operatorActionProxyInstanceIds = [
+      ...new Set([
+        ...providerControlProxyInstanceIds.filter(
+          (proxyInstanceId) => !representationReleaseRetryProxyInstanceIds.has(proxyInstanceId),
+        ),
+        ...fatalRepresentationReleaseProxyInstanceIds,
+      ]),
+    ];
+    const operatorActions: ShutdownOperatorAction[] = operatorActionProxyInstanceIds.map((proxyInstanceId) => ({
       kind: 'provider-proxy-set-containment',
       proxyInstanceId,
       inspectCommand: 'coral-cli backend status',
@@ -398,13 +416,18 @@ export async function runShutdownSequence({
   };
   const providerHold = () => {
     refreshProviderCleanup();
+    const representationReleaseRetryPending = providerCleanup.representationReleaseHolds.some(
+      ({ disposition }) => disposition.kind !== 'fatal-successor-pending',
+    );
     const cleanupSettlements = [
       ...providerCleanup.closingHosts.map(({ settlement }) => settlement),
       ...providerCleanup.representationReleaseHolds.map(({ settlement }) => settlement),
     ];
     return {
       reason: 'required-shutdown-step-unsettled' as const,
-      exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' as const,
+      exit: representationReleaseRetryPending
+        ? ('provider-proxy-set-release-retry' as const)
+        : ('required-cleanup-capability-confirmation-or-durable-operator-abandonment' as const),
       ...(cleanupSettlements.length === 0
         ? {}
         : { retryAfter: Promise.allSettled(cleanupSettlements).then(() => undefined) }),
@@ -760,7 +783,16 @@ export async function runShutdownSequence({
       });
     },
     retainedAuthority: () => {
+      refreshProviderCleanup();
       synchronizeProviderReleaseCapabilities();
+      const representationReleaseRetryProxyInstanceIds = new Set(
+        providerCleanup.representationReleaseHolds.flatMap((hold) =>
+          hold.disposition.kind === 'fatal-successor-pending' ? [] : [hold.proxyInstanceId],
+        ),
+      );
+      const fatalRepresentationReleaseProxyInstanceIds = providerCleanup.representationReleaseHolds.flatMap((hold) =>
+        hold.disposition.kind === 'fatal-successor-pending' ? [hold.proxyInstanceId] : [],
+      );
       const retainedProviderIds = [
         ...new Set(
           [...providerReleaseCapabilities.entries()].flatMap(([set, release]) =>
@@ -770,10 +802,18 @@ export async function runShutdownSequence({
           ),
         ),
       ];
+      const operatorActionProxyInstanceIds = [
+        ...new Set([
+          ...retainedProviderIds.filter(
+            (proxyInstanceId) => !representationReleaseRetryProxyInstanceIds.has(proxyInstanceId),
+          ),
+          ...fatalRepresentationReleaseProxyInstanceIds,
+        ]),
+      ];
       return cleanupContribution('provider control and IPC authority release', {
         ipcSocket: ipcReleaseCapability !== null && ipcReleaseCapability.state.kind !== 'settled',
         providerControlProxyInstanceIds: retainedProviderIds,
-        operatorActions: retainedProviderIds.map((proxyInstanceId) => ({
+        operatorActions: operatorActionProxyInstanceIds.map((proxyInstanceId) => ({
           kind: 'provider-proxy-set-containment',
           proxyInstanceId,
           inspectCommand: 'coral-cli backend status',

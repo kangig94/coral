@@ -24,8 +24,10 @@ import {
   providerHostEvictResponseSchema,
   providerHostInspectResponseSchema,
   providerHostListResponseSchema,
+  providerProxySetContainBooleanResponseSchema,
   providerProxySetContainResponseSchema,
   unreadableProviderOperationDiscardResultSchema,
+  type ProviderProxySetContainBooleanRequest,
   type ProviderProxySetContainRequest,
   type ProviderHostSelectorRequest,
 } from './rpc/catalog.js';
@@ -596,6 +598,13 @@ async function executeProviderProxySetContainCatalogRequest({
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   if (rpcPorts.providerProxySets === undefined) {
     throw new Error('provider_proxy_set_operator_exit_unavailable');
+  }
+  if ('abandonWithoutAbsence' in (request as ProviderProxySetContainBooleanRequest)) {
+    return unary(
+      providerProxySetContainBooleanResponseSchema.parse(
+        await rpcPorts.providerProxySets.containBoolean(request as ProviderProxySetContainBooleanRequest, abortSignal),
+      ),
+    );
   }
   return unary(
     providerProxySetContainResponseSchema.parse(

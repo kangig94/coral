@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = 'tests/invariants/fixtures/durable-schema-independence';
-const SCHEMA_CATALOG_SHA256 = 'b85b4e10246a095375b430187367241792749b210ee017a62f36ce1d5b423cd5';
+const SCHEMA_CATALOG_SHA256 = 'e7dbeea6edfc4f5237fd68928ad1bd6e83e00c838dc31c479c32c023b885ea24';
 
 type SchemaKey = `${string}#${string}`;
 
@@ -121,6 +121,7 @@ const IN_MEMORY_PERSISTENCE_CONTEXT_SCHEMAS = new Set<SchemaKey>([
   'src/transport/rpc/catalog.ts#providerHostEvictResponseSchema',
   'src/transport/rpc/catalog.ts#providerHostInspectResponseSchema',
   'src/transport/rpc/catalog.ts#providerHostListResponseSchema',
+  'src/transport/rpc/catalog.ts#providerProxySetContainBooleanResponseSchema',
   'src/transport/rpc/catalog.ts#providerProxySetContainResponseSchema',
   'src/transport/rpc/catalog.ts#unreadableProviderOperationDiscardResultSchema',
 ]);

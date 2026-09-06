@@ -117,6 +117,8 @@ import {
   providerHostListRequestSchema,
   providerHostListResponseSchema,
   providerHostSelectorRequestSchema,
+  providerProxySetContainBooleanRequestSchema,
+  providerProxySetContainBooleanResponseSchema,
   providerProxySetContainRequestSchema,
   providerProxySetContainResponseSchema,
   unreadableProviderOperationDiscardRequestSchema,
@@ -125,6 +127,7 @@ import {
   type ProviderHostInspectResponse,
   type ProviderHostListResponse,
   type ProviderHostSelectorRequest,
+  type ProviderProxySetContainBooleanResponse,
   type ProviderProxySetContainRequest,
   type ProviderProxySetContainResponse,
 } from '../../transport/rpc/catalog.js';
@@ -253,6 +256,8 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
 > = {
   contained: 0,
   abandoned: 0,
+  'representation-release-abandoned': 0,
+  'representation-release-abandonment-required': 75,
   'set-not-found': 1,
   'not-held': 1,
   'deadline-pending': 75,
@@ -274,23 +279,40 @@ export const UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES: Readonly<
   owned: 75,
 };
 
-function providerProxySetContainExitCode(result: ProviderProxySetContainResponse): 0 | 1 | 75 {
-  if ((result.kind === 'contained' || result.kind === 'abandoned') && result.claimDischarge.kind !== 'completed') {
-    return 75;
+function providerProxySetContainExitCode(
+  result: ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse,
+): 0 | 1 | 75 {
+  switch (result.kind) {
+    case 'contained':
+    case 'abandoned':
+    case 'unattributable-group-abandoned':
+      return result.claimDischarge.kind === 'completed' ? 0 : 75;
+    default:
+      return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];
   }
-  return PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES[result.kind];
+}
+
+function providerProxySetContainResultMatchesAddress(
+  result: Pick<ProviderProxySetContainResponse, 'setIdentity'>,
+  requested: ProviderProxySetAddress,
+): boolean {
+  return (
+    result.setIdentity.buildSetId === requested.buildSetId &&
+    result.setIdentity.hostFingerprint === requested.hostFingerprint &&
+    result.setIdentity.proxyInstanceId === requested.proxyInstanceId
+  );
 }
 
 function formatProviderProxySetContainNoVerdict(
-  result: Exclude<ProviderProxySetContainCommandResult, ProviderProxySetContainResponse>,
+  result: Readonly<{ kind: ProviderProxySetContainNoVerdictKind; setIdentity: ProviderProxySetAddress }>,
 ): string {
   const token = encodeProviderProxySetAddress(result.setIdentity);
   const kind = result.kind;
   switch (kind) {
     case 'unsupported-coordinator':
       return [
-        `No containment verdict for ${token}: this coordinator does not support coordinator.provider_proxy_set.contain.`,
-        'Observed: the coordinator rejected the method before accepting a containment operation.',
+        `No containment verdict for ${token}: this coordinator does not support the requested containment operation.`,
+        'Observed: the coordinator rejected the request before accepting a containment operation.',
         'Not observed: enforcer state or recorded-target state.',
         'Effect: no process signal was sent and no representation release was started.',
         'Next step: upgrade or restart into this Coral build, then run coral-cli backend status before retrying the exact token.',
@@ -507,6 +529,7 @@ const PROVIDER_PROXY_SET_CONTAIN_NO_VERDICT_KINDS: ReadonlySet<string> = new Set
 /** A decoded containment verdict or a named reason this CLI cannot establish one. */
 export type ProviderProxySetContainCommandResult =
   | ProviderProxySetContainResponse
+  | ProviderProxySetContainBooleanResponse
   | Readonly<{ kind: ProviderProxySetContainNoVerdictKind; setIdentity: ProviderProxySetAddress }>;
 
 /** Narrows the CLI-only outcomes, whose shared union discriminant the compiler cannot exclude member-wise. */
@@ -1282,20 +1305,36 @@ export function createProviderProxySetCommandOperations(
       const request = providerProxySetContainRequestSchema.parse(input);
       try {
         const client = await getClient();
-        const response = await client.request('coordinator.provider_proxy_set.contain', request, {
+        const requestOptions = {
           timeoutMs: TOOL_TIMEOUT_MS,
           ...childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
-        });
+        };
+        let response: unknown;
+        let booleanContract = false;
+        try {
+          response = await client.request('coordinator.provider_proxy_set.contain', request, requestOptions);
+        } catch (error: unknown) {
+          if (!(error instanceof IpcRpcError) || error.rpcCode !== -32602) throw error;
+          if (request.mode === 'abandon') {
+            return { kind: 'unsupported-coordinator', setIdentity: request.setIdentity };
+          }
+          booleanContract = true;
+          response = await client.request(
+            'coordinator.provider_proxy_set.contain',
+            providerProxySetContainBooleanRequestSchema.parse({
+              setIdentity: request.setIdentity,
+              abandonWithoutAbsence: false,
+            }),
+            requestOptions,
+          );
+        }
         if (isRecord(response) && response.code === 'backend_shutting_down') {
           return { kind: 'coordinator-draining', setIdentity: request.setIdentity };
         }
-        const parsed = providerProxySetContainResponseSchema.safeParse(response);
-        if (
-          parsed.success &&
-          parsed.data.setIdentity.buildSetId === request.setIdentity.buildSetId &&
-          parsed.data.setIdentity.hostFingerprint === request.setIdentity.hostFingerprint &&
-          parsed.data.setIdentity.proxyInstanceId === request.setIdentity.proxyInstanceId
-        ) {
+        const parsed = booleanContract
+          ? providerProxySetContainBooleanResponseSchema.safeParse(response)
+          : providerProxySetContainResponseSchema.safeParse(response);
+        if (parsed.success && providerProxySetContainResultMatchesAddress(parsed.data, request.setIdentity)) {
           return parsed.data;
         }
         return { kind: 'unsupported-coordinator-result', setIdentity: request.setIdentity };
@@ -1634,12 +1673,12 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   providerProxySetCommand
     .command('abandon')
     .description(
-      'Release one exact held provider-proxy set without absence proof, including an unattributable recorded group; signals no process and performs no reap',
+      'Release one exact held provider-proxy set without absence proof, including an unattributable recorded group, or accept its fatal representation-release remainder; signals no process and performs no reap',
     )
     .argument('<set-token>', 'Canonical pps1 token copied from `coral-cli backend status`', parseProviderProxySetToken)
     .addHelpText(
       'after',
-      '\nAfter external verification, abandonment releases Coral representation despite observed life, unknown observation, or an unattributable recorded group. It cannot override an unreadable-store fence.',
+      '\nAfter external verification, abandonment releases Coral representation despite observed life, unknown observation, an unattributable recorded group, or a fatal representation release. It cannot override an unreadable-store fence before representation release starts.',
     )
     .action(async (setIdentity: ProviderProxySetAddress) => {
       try {

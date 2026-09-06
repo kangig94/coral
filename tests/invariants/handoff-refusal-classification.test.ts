@@ -91,8 +91,6 @@ describe('handoff refusal classification ownership', () => {
       'refreshIncumbentForSignal:handoff_fresh_discovery_unavailable',
       'refreshIncumbentForSignal:handoff_fresh_discovery_changed',
       'assertSignalCapability:handoff_signal_capability_unavailable',
-      'assertSignalCooldown:handoff_legacy_signal_attempt_indeterminate',
-      'assertSignalCooldown:handoff_signal_cooldown_active',
       'refuseUnverifiableSignalTarget:handoff_process_identity_unavailable',
       'refuseUnverifiableSignalTarget:handoff_platform_identity_insufficient',
       'refuseUnverifiableSignalTarget:handoff_published_incarnation_missing',

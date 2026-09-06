@@ -30,6 +30,7 @@ import {
   type JsonRpcRequestEnvelope,
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
+import { providerProxySetContainBooleanRequestSchema } from '#src/transport/rpc/catalog.js';
 
 const incumbentInstanceId = 'healthy-foreign-incumbent';
 const providerProxySetAddress: ProviderProxySetAddress = {
@@ -205,7 +206,7 @@ describe('cross-version incumbent', () => {
     );
   });
 
-  it('reaches a shipped coordinator fallback on a long state root for both new no-verdict commands', async () => {
+  it('reaches a shipped coordinator fallback and retries its strict containment request shape', async () => {
     const homeRoot = makeTempRoot('coral-cross-version-long-home-');
     const home = join(homeRoot, 'state-root-' + 'x'.repeat(140));
     const configuredTempDirectory = makeTempRoot('coral-v0109-socket-');
@@ -244,6 +245,25 @@ describe('cross-version incumbent', () => {
       if (request.method === 'transport.ping' || request.method === 'transport.health') {
         return { kind: 'response', id: request.id, result: incumbentHealth() };
       }
+      if (request.method === 'coordinator.provider_proxy_set.contain') {
+        const predecessorRequest = providerProxySetContainBooleanRequestSchema.safeParse(request.params);
+        if (!predecessorRequest.success) {
+          return {
+            kind: 'error',
+            id: request.id,
+            error: { code: -32602, message: 'Invalid params' },
+          };
+        }
+        return {
+          kind: 'response',
+          id: request.id,
+          result: {
+            kind: 'set-not-found',
+            setIdentity: predecessorRequest.data.setIdentity,
+            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+          },
+        };
+      }
       return {
         kind: 'error',
         id: request.id,
@@ -262,7 +282,11 @@ describe('cross-version incumbent', () => {
       revision: `sha256:${'b'.repeat(64)}`,
     });
 
-    expect(containment).toEqual({ kind: 'unsupported-coordinator', setIdentity: providerProxySetAddress });
+    expect(containment).toEqual({
+      kind: 'set-not-found',
+      setIdentity: providerProxySetAddress,
+      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+    });
     expect(discard).toEqual({
       kind: 'unsupported-coordinator',
       key: 'unreadable-provider-operation',
@@ -270,6 +294,14 @@ describe('cross-version incumbent', () => {
     });
     expect(methods).toContain('coordinator.provider_proxy_set.contain');
     expect(methods).toContain('coordinator.recovery_quarantine.discard_provider_operation');
+    expect(
+      requests
+        .filter((request) => request.method === 'coordinator.provider_proxy_set.contain')
+        .map((request) => request.params),
+    ).toEqual([
+      { setIdentity: providerProxySetAddress, mode: 'contain' },
+      { setIdentity: providerProxySetAddress, abandonWithoutAbsence: false },
+    ]);
     expect(requests).toContainEqual(
       expect.objectContaining({
         method: 'transport.health',

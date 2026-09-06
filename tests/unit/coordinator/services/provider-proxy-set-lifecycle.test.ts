@@ -25,6 +25,7 @@ import {
 } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
+import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import {
   createProviderProxyOperationAuthority,
   providerProxyOperationControlIsHeld,
@@ -3587,6 +3588,35 @@ describe('ProviderProxySetLifecycle', () => {
     expect(harness.stopAndReap).not.toHaveBeenCalled();
   });
 
+  it('preserves one boolean abandonment attempt and its signals when the recorded group is unattributable', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+      async (_identity, _proof, _signal, onSignal) => {
+        onSignal('SIGTERM');
+        onSignal('SIGKILL');
+        return { kind: 'recorded-group-unattributable' };
+      },
+    );
+    const harness = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    const setIdentity = providerProxySetAddress(providerProxySetIdentityFromRecord(record));
+    const proof = await operatorContainmentProof(harness.capability, containmentEvidence('must-not-be-minted'));
+
+    await expect(harness.lifecycle.completeBooleanOperatorExit(harness.capability, proof, true)).resolves.toEqual({
+      kind: 'unattributable-group-abandoned',
+      setIdentity,
+      claimDischarge: { kind: 'completed' },
+      effect: {
+        signalsSent: ['SIGTERM', 'SIGKILL'],
+        containmentAbsent: false,
+        representationAction: 'abandonment-release-started',
+      },
+    });
+
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(harness.lifecycle.snapshot().represented).toBe(0);
+    expect(harness.stopAndReap).not.toHaveBeenCalled();
+  });
+
   it('fences an attributable unreadable row before observation or recorded-containment reaping', async () => {
     const record = providerOperationRecord('executing');
     const db = containmentProofDatabase(record);
@@ -4847,7 +4877,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     clock.elapse(1_000);
     clock.runDue();
-    await expect(hold.settlement).resolves.toBeUndefined();
+    await expect(hold.settlement).resolves.toEqual({ kind: 'released' });
     expect(lifecycle.representationReleaseHolds()).toEqual([]);
   });
 
@@ -4998,6 +5028,187 @@ describe('ProviderProxySetLifecycle', () => {
       representedPendingRows: 1,
       activeRetryTimers: 0,
     });
+  });
+
+  it('settles a late disappearance fatal to an actionable operator successor without retrying it', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const globalFatals: ProviderProxySetLifecycleFatalError[] = [];
+    let deliveryAttempts = 0;
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: {
+        containmentDisappeared: async (notice): Promise<DisappearanceDeliveryAttemptOutcome> => {
+          deliveryAttempts += 1;
+          if (deliveryAttempts === 1) {
+            return {
+              kind: 'operational-failure',
+              code: 'disappearance_consumer_unavailable',
+              reason: 'consumer unavailable',
+            };
+          }
+          if (deliveryAttempts === 2) return {} as DisappearanceDeliveryAttemptOutcome;
+          return {
+            kind: 'accepted',
+            acceptance: {
+              kind: 'accepted',
+              operation: notice.operation,
+              disposition: 'record-absent',
+            },
+          };
+        },
+      },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      onFatal: (error) => globalFatals.push(error),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const authority = fakeAuthority({ record });
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    latchAuthorityFault(authority, terminalAuthorityFault());
+
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'late-disappearance-fatal');
+    await expect(acceptance.initialDisposition).resolves.toEqual(
+      expect.objectContaining({ kind: 'operational-retry-owned' }),
+    );
+    const [initialHold] = lifecycle.representationReleaseHolds();
+    if (initialHold === undefined) throw new Error('expected representation release hold');
+    expect(initialHold.disposition).toEqual({
+      kind: 'operational-retry-owned',
+      exit: 'provider-proxy-set-release-retry',
+    });
+
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect(globalFatals).toHaveLength(1);
+    const [fatalHold] = lifecycle.representationReleaseHolds();
+    if (fatalHold === undefined) throw new Error('expected fatal representation release hold');
+    expect(fatalHold.disposition).toEqual({
+      kind: 'fatal-successor-pending',
+      exit: 'provider-proxy-set-operator-abandonment',
+      error: globalFatals[0],
+      successor: {
+        owner: 'operator-command',
+        acceptance: 'pending',
+        inspectCommand: 'coral-cli backend status',
+        actionCommand: `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(
+          providerProxySetAddress(authority.setIdentity),
+        )}`,
+      },
+    });
+    await expect(initialHold.settlement).resolves.toEqual({
+      kind: 'fatal-successor-pending',
+      error: globalFatals[0],
+      successor: fatalHold.disposition.kind === 'fatal-successor-pending' ? fatalHold.disposition.successor : undefined,
+    });
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: providerProxySetAddress(authority.setIdentity),
+        operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
+      }),
+    );
+
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(deliveryAttempts).toBe(2);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+
+    const address = providerProxySetAddress(authority.setIdentity);
+    const authorization = lifecycle.authorizeOperatorExit(address);
+    if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
+    await expect(
+      lifecycle.completeOperatorExit(
+        authorization.capability,
+        await operatorContainmentProof(authorization.capability, enforcersUnobservable),
+        true,
+      ),
+    ).resolves.toEqual({
+      kind: 'representation-release-abandoned',
+      setIdentity: address,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
+    });
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+  });
+
+  it('settles a late capsule-retirement fatal to an operator successor without retrying it', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const globalFatals: ProviderProxySetLifecycleFatalError[] = [];
+    const retireCapsule = vi
+      .fn(async (): Promise<CapsuleRetirementAttemptOutcome> => ({ kind: 'retired' }))
+      .mockResolvedValueOnce({
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'capsule-directory-durability-unavailable' },
+      })
+      .mockResolvedValueOnce({} as CapsuleRetirementAttemptOutcome)
+      .mockResolvedValue({ kind: 'retired' });
+    const authority = fakeAuthority({
+      stopAndReap: async () => ({ disappearanceReceipt: 'exact-absence' }),
+    });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+      onFatal: (error) => globalFatals.push(error),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/set.handoff.json');
+    latchAuthorityFault(authority, terminalAuthorityFault());
+
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'late-retirement-fatal');
+    await expect(acceptance.initialDisposition).resolves.toEqual(
+      expect.objectContaining({ kind: 'operational-retry-owned' }),
+    );
+    const [initialHold] = lifecycle.representationReleaseHolds();
+    if (initialHold === undefined) throw new Error('expected representation release hold');
+
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect(globalFatals).toHaveLength(1);
+    const [fatalHold] = lifecycle.representationReleaseHolds();
+    if (fatalHold === undefined) throw new Error('expected fatal representation release hold');
+    expect(fatalHold.disposition).toEqual({
+      kind: 'fatal-successor-pending',
+      exit: 'provider-proxy-set-operator-abandonment',
+      error: globalFatals[0],
+      successor: {
+        owner: 'operator-command',
+        acceptance: 'pending',
+        inspectCommand: 'coral-cli backend status',
+        actionCommand: `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(
+          providerProxySetAddress(authority.setIdentity),
+        )}`,
+      },
+    });
+    await expect(initialHold.settlement).resolves.toEqual({
+      kind: 'fatal-successor-pending',
+      error: globalFatals[0],
+      successor: fatalHold.disposition.kind === 'fatal-successor-pending' ? fatalHold.disposition.successor : undefined,
+    });
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(retireCapsule).toHaveBeenCalledTimes(2);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+    expect(lifecycle.representationReleaseHolds()).toHaveLength(1);
   });
 
   it('retains absence and its capsule until every captured operation acknowledges durable disposition', async () => {

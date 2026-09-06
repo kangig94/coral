@@ -44,6 +44,7 @@ import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
   ShutdownDeferredFailure,
+  ShutdownHoldExit,
   ShutdownOperatorAction,
   ShutdownSequenceDisposition,
 } from './shutdown-settlement.js';
@@ -850,13 +851,7 @@ type LifecycleShutdownHoldReason =
 
 type LifecycleShutdownRecovery = Readonly<{
   kind: 'retry-shutdown';
-  exit:
-    | 'process-incarnation-probe-settlement'
-    | 'lifecycle-reactor-disposal-settlement'
-    | 'admitted-provider-operation-mutation-settlement'
-    | 'provider-operation-mutation-admission-availability'
-    | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
-    | 'authority-release-settlement';
+  exit: ShutdownHoldExit;
   owner: Readonly<
     | { kind: 'lifecycle-finalization-continuation'; instanceId: string }
     | { kind: 'lifecycle-shutdown-hold'; instanceId: string }

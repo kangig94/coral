@@ -50,6 +50,10 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set/lifecycle-ref.js';
+import type {
+  ProviderProxyRepresentationReleaseDisposition,
+  ProviderProxyRepresentationReleaseSettlement,
+} from '../../services/provider-proxy-set/index.js';
 import type { ProviderProxySetProtection } from '../../services/provider-proxy-set/identity.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 export type { ProviderHostEntry } from './state.js';
@@ -90,9 +94,11 @@ export type ProviderHostClosingObligation = Readonly<{
 
 export type ProviderRepresentationReleaseObligation = Readonly<{
   label: string;
+  proxyInstanceId: string;
   pendingOperations: readonly string[];
+  disposition: ProviderProxyRepresentationReleaseDisposition;
   exit: 'provider-proxy-representation-release-settlement';
-  settlement: Promise<void>;
+  settlement: Promise<ProviderProxyRepresentationReleaseSettlement>;
 }>;
 
 export type ProviderHostCleanupObligations = Pick<

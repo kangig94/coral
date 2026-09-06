@@ -269,8 +269,8 @@ describe('runShutdownSequence drain budget', () => {
   });
 
   it('keeps mutation admission open through an authority-null representation retry gap', async () => {
-    let settleRepresentationRelease!: () => void;
-    const representationReleaseSettlement = new Promise<void>((resolve) => {
+    let settleRepresentationRelease!: (disposition: { kind: 'released' }) => void;
+    const representationReleaseSettlement = new Promise<{ kind: 'released' }>((resolve) => {
       settleRepresentationRelease = resolve;
     });
     let releasePending = true;
@@ -291,7 +291,12 @@ describe('runShutdownSequence drain budget', () => {
           ? [
               {
                 label: 'provider proxy representation release authority-null',
+                proxyInstanceId: 'authority-null',
                 pendingOperations: ['provider-operation:job-1:operation-1'],
+                disposition: {
+                  kind: 'operational-retry-owned' as const,
+                  exit: 'provider-proxy-set-release-retry' as const,
+                },
                 exit: 'provider-proxy-representation-release-settlement' as const,
                 settlement: representationReleaseSettlement,
               },
@@ -313,10 +318,86 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(false);
 
     releasePending = false;
-    settleRepresentationRelease();
+    settleRepresentationRelease({ kind: 'released' });
     await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
     expect(stopProviderOperationReconciler).toHaveBeenCalledOnce();
     expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('names the operator successor for a fatal representation release', async () => {
+    const authorityCalls: string[] = [];
+    const set = fakeSet('release-pending', authorityCalls);
+    const fatalError = new Error('fatal release remains operator-owned') as never;
+    const successor = {
+      owner: 'operator-command' as const,
+      acceptance: 'pending' as const,
+      inspectCommand: 'coral-cli backend status' as const,
+      actionCommand: 'coral-cli backend provider-proxy-set abandon release-pending-token',
+    };
+    const representationReleaseSettlement = Promise.resolve({
+      kind: 'fatal-successor-pending' as const,
+      error: fatalError,
+      successor,
+    });
+    let releasePending = true;
+    const harness = buildHarness({ providerProxyAuthority: { liveSets: () => [set] } });
+    const receipt = {
+      kind: 'provider-hosts-quiesced' as const,
+      liveProxySets: [set],
+      acquisitionCleanupHolds: [],
+      closingHosts: [],
+    };
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => receipt,
+      shutdown: async () => receipt,
+      cleanupObligations: () => ({
+        ...receipt,
+        representationReleaseHolds: releasePending
+          ? [
+              {
+                label: 'provider proxy representation release release-pending',
+                proxyInstanceId: 'release-pending',
+                pendingOperations: ['provider-operation:job-1:operation-1'],
+                disposition: {
+                  kind: 'fatal-successor-pending' as const,
+                  exit: 'provider-proxy-set-operator-abandonment' as const,
+                  error: fatalError,
+                  successor,
+                },
+                exit: 'provider-proxy-representation-release-settlement' as const,
+                settlement: representationReleaseSettlement,
+              },
+            ]
+          : [],
+      }),
+    };
+
+    const held = requireHeld(await runShutdownSequence(harness.ctx));
+
+    expect(held).toMatchObject({
+      exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+      retainedAuthority: {
+        providerControlProxyInstanceIds: ['release-pending'],
+        operatorActions: [
+          {
+            kind: 'provider-proxy-set-containment',
+            proxyInstanceId: 'release-pending',
+            inspectCommand: 'coral-cli backend status',
+            actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
+          },
+        ],
+      },
+    });
+    expect(held.deferredFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          error: expect.objectContaining({ message: expect.stringContaining('disposition=fatal-successor-pending') }),
+        }),
+      ]),
+    );
+
+    releasePending = false;
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
   });
 
   it('returns a hold within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
