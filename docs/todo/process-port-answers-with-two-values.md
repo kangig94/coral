@@ -1,0 +1,76 @@
+# The process port answers two ways at four members
+
+## What was found
+
+Sixteen consecutive review rounds on `fix/demolition-requires-observed-death` produced BLOCKING findings
+that are one sentence: a boundary that can be uncertain answers through a type that cannot express
+uncertainty, and a caller reads the missing third answer as proof. A fatal escaping through a rejected
+promise; a reap that signalled and could not confirm, throwing; an unobservable identity escaping as an
+internal error; abandonment reported as a completed abort in two registries; `gracefulKill` fired at a live
+child followed by a throw, in three places; a handoff cleanup returning `void` that its caller read as
+confirmed absence; a daemon disposal typed `Promise<void>` discarding the health snapshot it was handed.
+
+The chokepoint that should have prevented this already exists. `ProcessPort` owns the primitives,
+`no-domain-ambient-io` bans raw `node:child_process` across the domains, and `signal-authority` scans the
+tree for `process.kill`. **None of the findings came from bypassing that owner.** They came from the owner
+itself answering two ways at four members, so callers re-derive the third answer by hand, differently, at
+roughly fifty-five sites:
+
+- `readProcessIncarnation(): ProcessIncarnation | null` — its own JSDoc says `null` means absent *or*
+  unreadable *or* no probe, and every caller pairs it with a separate liveness call to guess which.
+- `kill(): boolean` — collapses ESRCH (decisive absence), EPERM (alive and unsignalable) and every other
+  errno into `false`. `gracefulKillByPid` names the collapse in a literal: `reason: 'kill-port-returned-false'`.
+- `spawn(): ChildProcessLike` — launch failure arrives later on the child's `'error'` event, so four callers
+  each re-implement the listener-first race, one of them explaining the uncaught-exception hazard in a comment.
+- `gracefulKill(...): void` — while its pid twin `gracefulKillByPid` returns a disposition.
+
+The batch form of the identity question already has the union the single form lacks:
+`ProcessIdentityObservation['evidence']` is `incarnation | pid-absent | unobservable(cause)`.
+
+## What was done
+
+The gate, not the cure. `tests/invariants/process-observation-composition.test.ts` resolves types through the
+TypeScript checker rather than matching identifier names — the earlier per-shape invariants are evaded by a
+rename or by receiving a primitive as an injected parameter, which this tree already does — and holds four
+rules: the owner's members may not answer with a bare boolean, a nullable, or nothing; a function carrying one
+of the registered vocabularies may not answer with a boolean or nothing, nor throw from a branch that has just
+discriminated a non-first answer; the registry is fingerprinted; and the boundaries not yet converted sit in a
+self-pruning ledger. `src/provider-proxy` was added to the ambient-IO ban's roots, which cost nothing because
+it had no raw imports to lose.
+
+**The ledger is the migration list.** It holds the boundaries this entry is about, each with a written reason,
+and an entry that would now pass fails the test — so the list can only shrink.
+
+## What remains
+
+Fix the four members. The move is compiler-driven: the call sites break and are converted mechanically, the
+four spawn-race re-implementations collapse into the port, and `SettlementConfirmation` in
+`src/obligation/settlement.ts` gains the third answer at the one seam where observation enters settlement — a
+task that observed *alive* and one that observed *unknown* both arrive today as `confirmed: false` with the
+argument in a string rather than the type. The four sibling `src/infra/process-*.ts` files are the §7
+subdivision trigger and become `src/infra/process/`.
+
+When that lands, delete what it makes redundant: `tests/invariants/graceful-kill-ownership.test.ts` and its
+fixtures reconstruct from caller bodies what `gracefulKill`'s return would say;
+`tests/invariants/operator-exit-producer-translation.test.ts` checks by name what the composition rule checks
+by type; the bare-`safeKill` half of `timeout-kill-escalation` once `safeKill` is unexported, keeping its
+signal-sequence half, which is a different invariant. Also the `'kill-port-returned-false'` reason literal and
+`observeRecordedTarget`'s private spelling of `unknown` as `unobservable` — one concept, two spellings, in one
+module.
+
+## Why it did not happen with the gate
+
+It touches `runtime/ports.ts`, `runtime/real.ts`, `app-server-transport.ts`, `kb-daemon-supervisor.ts`,
+`durable-transport.ts` and `handoff.ts` — the files carrying uncommitted work and the heaviest churn on the
+branch. A behaviour-changing migration across them while the branch is under active review makes a reviewer
+unable to tell whether a new outcome came from the conversion or from the work already in flight. The gate is
+additive and changes no runtime behaviour, so it lands first and stops the next instance; the conversion
+belongs after the branch does.
+
+## What this will not fix
+
+Classification stays a per-site judgement: the type forces *a* remainder, never the right one — `process-exit`
+against `none` was decided by hand for the KB daemon and will be again. Cross-version compatibility (§10) and
+documentation drift are different axes. And a brand proves *an* observation was decisive, not that it was
+this subject's: `ProcessContainmentEvidence` carries a receipt string compared at the call site, so
+"evidence for the exact obligation it discharges" remains something a reader checks.
