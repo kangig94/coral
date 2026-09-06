@@ -74,6 +74,7 @@ type ExpectedOperationalRouteId =
   | 'ipc.transport.ping'
   | 'ipc.transport.health'
   | 'ipc.transport.shutdown'
+  | 'ipc.coordinator.shutdown-obligation.abandon'
   | 'ipc.transport.kb.restart'
   | 'ipc.jobs.abort.drain-recovery'
   | 'ipc.provider-proxy-set.contain.drain-recovery'
@@ -86,7 +87,14 @@ type OperationalRouteSummary = {
   readonly variant?: 'default' | 'detailed';
   readonly requires: Capability;
   readonly requiresRunningLifecycle: boolean;
-  readonly dispatchKind: 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart' | 'catalog';
+  readonly dispatchKind:
+    | 'ping'
+    | 'health'
+    | 'event-stream'
+    | 'shutdown'
+    | 'shutdown-abandon'
+    | 'kb-restart'
+    | 'catalog';
   readonly authentication: 'none' | 'principal';
 };
 
@@ -160,6 +168,14 @@ const expectedOperationalSpecs = {
     requires: 'system:shutdown',
     requiresRunningLifecycle: false,
     dispatchKind: 'shutdown',
+    authentication: 'principal',
+  },
+  'ipc.coordinator.shutdown-obligation.abandon': {
+    transport: 'ipc',
+    method: 'coordinator.shutdown_obligation.abandon',
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'shutdown-abandon',
     authentication: 'principal',
   },
   'ipc.transport.kb.restart': {

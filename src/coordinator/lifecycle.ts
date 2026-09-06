@@ -110,6 +110,12 @@ import {
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
+import { recordShutdownObligationAbandonment } from './shutdown-abandonment.js';
+import type {
+  ShutdownObligationAbandonRequest,
+  ShutdownObligationAbandonResult,
+  ShutdownObligationSubject,
+} from '../obligation/shutdown-abandonment.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
 import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
@@ -836,6 +842,7 @@ export type LifecycleDeps = {
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
   shutdown(reason: string): Promise<LifecycleShutdownDisposition>;
+  abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult;
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
@@ -892,6 +899,7 @@ type LifecycleControlState = LifecycleWiringState & {
   shutdownRetryAfter: Promise<void> | null;
   shutdownRetry: (() => Promise<ShutdownSequenceDisposition>) | null;
   lastShutdownDisposition: LifecycleShutdownDisposition | null;
+  operatorAbandonedShutdownObligations: Set<ShutdownObligationSubject>;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
   providerOperationMutationAdmission: ProviderOperationMutationAdmission | null;
@@ -1365,6 +1373,7 @@ export function createLifecycle(
     shutdownRetryAfter: null,
     shutdownRetry: null,
     lastShutdownDisposition: null,
+    operatorAbandonedShutdownObligations: new Set(),
     started: false,
     ownershipCheckerTeardown: null,
     recoveryCoordinator: null,
@@ -1392,6 +1401,7 @@ export function createLifecycle(
 
   async function shutdown(reason: string): Promise<LifecycleShutdownDisposition> {
     if (state.shutdownPromise) return state.shutdownPromise;
+    state.lastShutdownDisposition = null;
 
     // Calling `abort()` with no reason sets `signal.reason` to the platform
     // default (a DOMException whose `.name === 'AbortError'`). Downstream
@@ -1505,6 +1515,7 @@ export function createLifecycle(
           hooks,
           discussStores,
           log,
+          isShutdownObligationAbandoned: (subject) => state.operatorAbandonedShutdownObligations.has(subject),
           ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
         }),
       );
@@ -1594,9 +1605,45 @@ export function createLifecycle(
       });
   }
 
+  function abandonmentDetail(subject: ShutdownObligationSubject): string {
+    return subject === 'app-server-handoff-quiesce'
+      ? 'App-server write completion was not observed; the write may or may not have landed.'
+      : `${subject} completion was not observed; the obligation may still be active.`;
+  }
+
+  function abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult {
+    const disposition = state.lastShutdownDisposition;
+    if (disposition === null || disposition.disposition === 'finalized') {
+      return { kind: 'not-held', subject: request.subject };
+    }
+    const offered = disposition.recovery.retainedOwnership.operatorActions.some(
+      (action) => action.kind === 'shutdown-obligation-abandonment' && action.subject === request.subject,
+    );
+    if (!offered) return { kind: 'not-offered', subject: request.subject };
+
+    const recorded = recordShutdownObligationAbandonment(
+      {
+        storage: runtime.storage,
+        time: runtime.time,
+        runDir: runtime.paths.coral.coordinator.runDir,
+      },
+      {
+        subject: request.subject,
+        instanceId,
+        detail: abandonmentDetail(request.subject),
+      },
+    );
+    if (recorded.kind === 'refused') {
+      return { kind: 'status-write-refused', subject: request.subject, detail: recorded.detail };
+    }
+    state.operatorAbandonedShutdownObligations.add(request.subject);
+    return { kind: 'accepted', receipt: recorded.receipt };
+  }
+
   return {
     start,
     shutdown,
+    abandonShutdownObligation,
     requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;

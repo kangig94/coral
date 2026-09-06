@@ -14,6 +14,8 @@ export type StaticCommandPath =
   | 'backend recovery-quarantine list'
   | 'backend recovery-quarantine clear'
   | 'backend recovery-quarantine discard-provider-operation'
+  | 'backend shutdown-recovery status'
+  | 'backend shutdown-recovery abandon'
   | 'backend provider-host list'
   | 'backend provider-host inspect'
   | 'backend provider-host evict'
@@ -72,6 +74,8 @@ export const commandClassMap = {
   'backend recovery-quarantine list': 'directRead',
   'backend recovery-quarantine clear': 'mutate',
   'backend recovery-quarantine discard-provider-operation': 'mutate',
+  'backend shutdown-recovery status': 'directRead',
+  'backend shutdown-recovery abandon': 'mutate',
   'backend provider-host list': 'servedRead',
   'backend provider-host inspect': 'servedRead',
   'backend provider-host evict': 'mutate',
@@ -125,6 +129,7 @@ export const commandContainerPaths = new Set<string>([
   'backend',
   'backend kb-commit',
   'backend recovery-quarantine',
+  'backend shutdown-recovery',
   'backend provider-host',
   'backend provider-proxy-set',
   'backend routing-status',

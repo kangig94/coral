@@ -132,9 +132,7 @@ type ProviderProxySetHeartbeatDispositionFields = Readonly<{
 }>;
 
 /**
- * This decision requires a continuous window with no peer answer and without material scheduler lateness.
- * With live claims present it is not itself authorized to settle peer disappearance — see
- * `ProviderProxySetHeartbeatBoundRefusalDecision`, its non-authorizing counterpart.
+ * Heartbeat silence alone must never authorize peer disappearance.
  */
 type ProviderProxySetHeartbeatHoldExhaustedFields = ProviderProxySetHeartbeatDispositionFields &
   Readonly<{

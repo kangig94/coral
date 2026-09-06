@@ -223,6 +223,27 @@ function makeRuntime(): Runtime {
   } as unknown as Runtime;
 }
 
+function configureShutdownStatusStorage(
+  runtime: Runtime,
+  options: { existing?: string; publish?: boolean } = {},
+): { write: ReturnType<typeof vi.fn>; read: () => string | null } {
+  const statusPath = '/tmp/shutdown-abandonment-status.v1.json';
+  let status = options.existing ?? null;
+  const originalRead = runtime.storage.readFileSync.bind(runtime.storage);
+  const write = vi.fn((path: string, data: string | Uint8Array) => {
+    if (path !== statusPath || options.publish === false) return false;
+    status = typeof data === 'string' ? data : Buffer.from(data).toString('utf-8');
+    return true;
+  });
+  Object.assign(runtime.storage, {
+    existsSync: (path: string) => path === statusPath && status !== null,
+    readFileSync: (path: string, encoding: 'utf-8') =>
+      path === statusPath && status !== null ? status : originalRead(path, encoding),
+    writeAtomicDurableSync: write,
+  });
+  return { write, read: () => status };
+}
+
 function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typeof createStoreServicesRef> } {
   const runtime = makeRuntime();
   const servicesRef = createStoreServicesRef();
@@ -852,7 +873,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(held).toMatchObject({
       disposition: 'held',
       reason: 'required-shutdown-step-unsettled',
-      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
+      recovery: { exit: 'durable-operator-abandonment' },
     });
     expect(deps.providerHostManager.shutdown).toHaveBeenCalledOnce();
     expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
@@ -870,6 +891,150 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
     expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
     expect(onStopped).toHaveBeenCalledOnce();
+  });
+
+  it('accepts only an advertised subject after durable status publication', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const persisted = configureShutdownStatusStorage(baseDeps.runtime);
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      terminateAllFn: vi.fn(() => ({
+        kind: 'unresolved-at-deadline' as const,
+        processes: [{ kind: 'target-unobservable' as const, pid: 4_244, stage: 'after-sigkill' as const }],
+        pendingLaunches: 0,
+        retainedLaunches: [],
+        cleanupHandles: 1,
+        retainedProcesses: [],
+        cleanupFailures: 0,
+        owner: 'launch-coordinator' as const,
+      })),
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    expect(held.disposition).toBe('held');
+
+    expect(lifecycle.abandonShutdownObligation({ subject: 'app-server-handoff-quiesce' })).toEqual({
+      kind: 'not-offered',
+      subject: 'app-server-handoff-quiesce',
+    });
+    expect(persisted.write).not.toHaveBeenCalled();
+
+    const accepted = lifecycle.abandonShutdownObligation({ subject: 'child-termination' });
+    expect(accepted).toMatchObject({
+      kind: 'accepted',
+      receipt: {
+        instanceId: 'test-instance',
+        subject: 'child-termination',
+        disposition: 'abandoned-unconfirmed',
+      },
+    });
+    expect(persisted.read()).toContain('"instanceId": "test-instance"');
+    expect(persisted.read()).toContain('"disposition": "abandoned-unconfirmed"');
+
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toEqual({ disposition: 'finalized' });
+  });
+
+  it('withdraws the prior held offer while a retry attempt is active', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const persisted = configureShutdownStatusStorage(baseDeps.runtime);
+    const terminateAllFn = vi.fn(() => ({
+      kind: 'unresolved-at-deadline' as const,
+      processes: [{ kind: 'target-unobservable' as const, pid: 4_244, stage: 'after-sigkill' as const }],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator' as const,
+    }));
+    const lifecycle = createLifecycle({ ...baseDeps, terminateAllFn }, async () => []);
+
+    await lifecycle.start();
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+
+    const retry = held.recovery.retry();
+    expect(lifecycle.abandonShutdownObligation({ subject: 'child-termination' })).toEqual({
+      kind: 'not-held',
+      subject: 'child-termination',
+    });
+    expect(persisted.write).not.toHaveBeenCalled();
+
+    const retried = await retry;
+    expect(retried.disposition).toBe('held');
+    expect(lifecycle.abandonShutdownObligation({ subject: 'child-termination' })).toMatchObject({
+      kind: 'accepted',
+      receipt: { instanceId: 'test-instance', subject: 'child-termination' },
+    });
+  });
+
+  it('refuses abandonment when durable status publication is not confirmed', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    configureShutdownStatusStorage(baseDeps.runtime, { publish: false });
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      terminateAllFn: vi.fn(() => ({
+        kind: 'unresolved-at-deadline' as const,
+        processes: [{ kind: 'target-unobservable' as const, pid: 4_244, stage: 'after-sigkill' as const }],
+        pendingLaunches: 0,
+        retainedLaunches: [],
+        cleanupHandles: 1,
+        retainedProcesses: [],
+        cleanupFailures: 0,
+        owner: 'launch-coordinator' as const,
+      })),
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    expect(lifecycle.abandonShutdownObligation({ subject: 'child-termination' })).toEqual({
+      kind: 'status-write-refused',
+      subject: 'child-termination',
+      detail: 'atomic durable status publication was not confirmed',
+    });
+
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toMatchObject({ disposition: 'held' });
+  });
+
+  it('does not authorize a current shutdown from another instance persisted status', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    configureShutdownStatusStorage(baseDeps.runtime, {
+      existing: JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            subject: 'child-termination',
+            instanceId: 'stale-instance',
+            recordedAt: '2026-09-07T00:00:00.000Z',
+            disposition: 'abandoned-unconfirmed',
+            detail: 'completion unconfirmed',
+            statusPath: '/tmp/shutdown-abandonment-status.v1.json',
+          },
+        ],
+      }),
+    });
+    const terminateAllFn = vi.fn(() => ({
+      kind: 'unresolved-at-deadline' as const,
+      processes: [{ kind: 'target-unobservable' as const, pid: 4_244, stage: 'after-sigkill' as const }],
+      pendingLaunches: 0,
+      retainedLaunches: [],
+      cleanupHandles: 1,
+      retainedProcesses: [],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator' as const,
+    }));
+    const lifecycle = createLifecycle({ ...baseDeps, terminateAllFn }, async () => []);
+
+    await lifecycle.start();
+    const held = await lifecycle.shutdown('unit-hard-stop');
+    if (held.disposition !== 'held') throw new Error('expected held shutdown');
+    await expect(held.recovery.retry()).resolves.toMatchObject({ disposition: 'held' });
+    expect(terminateAllFn.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('returns a retryable hold for a live child even when the probe registry is empty', async () => {
@@ -927,7 +1092,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       reason: 'required-shutdown-step-unsettled',
       recovery: {
         kind: 'retry-shutdown',
-        exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+        exit: 'durable-operator-abandonment',
         retainedOwnership: {
           kind: 'coordinator-exclusive-authority',
           backendInfo: { kind: 'backend-info', instanceId: 'test-instance' },
@@ -937,7 +1102,7 @@ describe('lifecycle reset authority and finalizer order', () => {
             'crashed job terminalization',
             'provider control and IPC authority release',
           ],
-          operatorActions: [
+          operatorActions: expect.arrayContaining([
             {
               kind: 'retained-job-containment',
               jobId: 'job-live-child',
@@ -945,7 +1110,7 @@ describe('lifecycle reset authority and finalizer order', () => {
               jobDir: '/tmp/coral/jobs/job-live-child',
               actionCommand: 'coral-cli abort jobs job-live-child',
             },
-          ],
+          ]),
         },
       },
     });
@@ -1403,7 +1568,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(held).toMatchObject({
       disposition: 'held',
       reason: 'required-shutdown-step-unsettled',
-      recovery: { exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment' },
+      recovery: { exit: 'durable-operator-abandonment' },
     });
     expect(deps.runtimeState.getLifecycle()).toBe('draining');
     expect(deps.removeBackendInfoIfOwnerFn).not.toHaveBeenCalled();

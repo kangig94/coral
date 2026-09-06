@@ -1253,7 +1253,7 @@ function formatRunningStatus(health: RunningHealth): string {
       );
       lines.push(...health.skippedProviderProxySetTokens.map((token) => `    skipped set=${token}`));
       lines.push(
-        '    No containment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
+        '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
       );
     }
   }

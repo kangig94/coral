@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = 'tests/invariants/fixtures/durable-schema-independence';
-const SCHEMA_CATALOG_SHA256 = '49d6878aee6779fe32bc4412935b2f6ce4fc4b1c7ad68630e888e5d3631da75b';
+const SCHEMA_CATALOG_SHA256 = 'fd1b6cae3f239fa5bff330b8ed13ef07bd5a1439e96b74ead16e620a3db715f1';
 
 type SchemaKey = `${string}#${string}`;
 
@@ -28,6 +28,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/coordinator/handoff-routing/status.ts#retirementHistoryTruncatedSchema',
   'src/coordinator/handoff-routing/status.ts#validatedTargetSummarySchema',
   'src/coordinator/runtime-components/recovery-component.ts#recoveryQuarantineHealthRowSchema',
+  'src/coordinator/shutdown-abandonment.ts#shutdownAbandonmentStatusSchema',
   'src/discuss/projections.ts#persistedDiscussSnapshotSchema',
   'src/discuss/events.ts#persistedDiscussRuntimeSchema',
   'src/discuss/session-types.ts#discussStateSchema',

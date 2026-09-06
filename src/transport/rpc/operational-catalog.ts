@@ -6,10 +6,18 @@ import {
   transportOperationalCarveouts,
   type RequestBindingRule,
 } from './catalog.js';
+import { shutdownObligationAbandonMethod } from '../../obligation/shutdown-abandonment.js';
 
 const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
 
-type OperationalDispatchKind = 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart' | 'catalog';
+type OperationalDispatchKind =
+  | 'ping'
+  | 'health'
+  | 'event-stream'
+  | 'shutdown'
+  | 'shutdown-abandon'
+  | 'kb-restart'
+  | 'catalog';
 type OperationalAuthentication = 'none' | 'principal';
 
 type OperationalBaseSpec = {
@@ -37,6 +45,7 @@ export type IpcOperationalSpec = OperationalBaseSpec & {
       | 'transport.ping'
       | 'transport.health'
       | 'transport.shutdown'
+      | typeof shutdownObligationAbandonMethod
       | 'transport.kb.restart'
       | typeof jobsAbortRpcSpec.name
       | typeof providerProxySetContainBooleanRpcSpec.name
@@ -118,6 +127,15 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     requires: 'system:shutdown',
     requiresRunningLifecycle: false,
     dispatch: { kind: 'shutdown' },
+    authentication: 'principal',
+  },
+  {
+    id: 'ipc.coordinator.shutdown-obligation.abandon',
+    transport: 'ipc',
+    ipc: { method: shutdownObligationAbandonMethod },
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatch: { kind: 'shutdown-abandon' },
     authentication: 'principal',
   },
   {

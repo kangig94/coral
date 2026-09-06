@@ -39,6 +39,9 @@ function buildHarness(opts: {
   stopProviderOperationReconciler?: NonNullable<
     Parameters<typeof runShutdownSequence>[0]['stopProviderOperationReconciler']
   >;
+  isShutdownObligationAbandoned?: NonNullable<
+    Parameters<typeof runShutdownSequence>[0]['isShutdownObligationAbandoned']
+  >;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
 }): Harness {
   const time = new VirtualTime();
@@ -149,6 +152,9 @@ function buildHarness(opts: {
     log: (msg) => {
       logLines.push(msg);
     },
+    ...(opts.isShutdownObligationAbandoned === undefined
+      ? {}
+      : { isShutdownObligationAbandoned: opts.isShutdownObligationAbandoned }),
     ...(opts.acceptProcessExitRemainder === undefined
       ? {}
       : { acceptProcessExitRemainder: opts.acceptProcessExitRemainder }),
@@ -378,14 +384,14 @@ describe('runShutdownSequence drain budget', () => {
       exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
       retainedAuthority: {
         providerControlProxyInstanceIds: ['release-pending'],
-        operatorActions: [
+        operatorActions: expect.arrayContaining([
           {
             kind: 'provider-proxy-set-containment',
             proxyInstanceId: 'release-pending',
             inspectCommand: 'coral-cli backend status',
             actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
           },
-        ],
+        ]),
       },
     });
     expect(held.deferredFailures).toEqual(
@@ -438,7 +444,9 @@ describe('runShutdownSequence drain budget', () => {
     expect(hookSignal).not.toBeNull();
     expect((hookSignal as unknown as AbortSignal).aborted).toBe(true);
     expect(heldFailureDetail(held)).toContain('hooks.onShutdown: timed-out');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
 
     expect(harness.closeIpcCalled()).toBe(false);
   });
@@ -619,7 +627,9 @@ describe('runShutdownSequence drain budget', () => {
     expect(sawExceeded).toBe(true);
     expect(heldFailureDetail(held)).toContain('provider host shutdown: timed-out');
     expect(heldFailureDetail(held)).toContain('child termination: budget-exhausted');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
     expect(providerSignal?.aborted).toBe(true);
     expect(stopProviderOperationReconciler).not.toHaveBeenCalled();
     expect(harness.callLog).not.toContain('terminateAllFn');
@@ -670,12 +680,12 @@ describe('runShutdownSequence drain budget', () => {
       disposition: 'held',
       reason: 'required-shutdown-step-unsettled',
       retainedAuthority: {
-        operatorActions: [
+        operatorActions: expect.arrayContaining([
           expect.objectContaining({
             kind: 'provider-proxy-set-containment',
             proxyInstanceId: 'retained-proxy',
           }),
-        ],
+        ]),
       },
     });
 
@@ -723,7 +733,9 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.callLog.indexOf('terminateAllFn')).toBeLessThan(harness.callLog.indexOf('markJobsAsErrorFn'));
     expect(harness.logLines).toContainEqual(expect.stringContaining('crashed job terminalization settlement failed'));
     expect(heldFailureDetail(held)).toContain('crashed job terminalization: injected crash terminalization failure');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
   });
 
   it('does not terminalize jobs when child containment remains unresolved', async () => {
@@ -744,7 +756,9 @@ describe('runShutdownSequence drain budget', () => {
 
     expect(harness.ctx.markJobsAsErrorFn).not.toHaveBeenCalled();
     expect(heldFailureDetail(held)).toContain('child termination: unconfirmed');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
   });
 
   it('holds hard shutdown and names a durable child that remains alive at the deadline', async () => {
@@ -817,7 +831,9 @@ describe('runShutdownSequence drain budget', () => {
     const held = requireHeld(await runShutdownSequence(harness.ctx));
     expect(harness.callLog).toContain('discuss.dispose');
     expect(heldFailureDetail(held)).toContain('child termination:');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
     expect(harness.closeIpcCalled()).toBe(false);
   });
 
@@ -847,7 +863,9 @@ describe('runShutdownSequence drain budget', () => {
     expect(sawExceeded).toBe(true);
     expect(sawSkipped).toBe(true);
     expect(heldFailureDetail(held)).toContain('provider host drain for handoff: timed-out');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
     expect(harness.closeIpcCalled()).toBe(false);
   });
 
@@ -894,7 +912,9 @@ describe('runShutdownSequence drain budget', () => {
     expect(order).toContain('hooks:start');
     expect(order).not.toContain('closeIpc');
     expect(heldFailureDetail(held)).toContain('hooks.onShutdown: timed-out');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
   });
 
   it('returns a hold after a synchronous finalizer exhausts the budget', async () => {
@@ -913,7 +933,9 @@ describe('runShutdownSequence drain budget', () => {
     const held = requireHeld(await sequence);
 
     expect(heldFailureDetail(held)).toContain('lifecycle reactor dispose: budget-exhausted');
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
     expect(harness.closeIpcCalled()).toBe(false);
   });
 
@@ -1086,7 +1108,7 @@ describe('runShutdownSequence drain budget', () => {
           'crashed job terminalization',
           'provider control and IPC authority release',
         ],
-        operatorActions: [
+        operatorActions: expect.arrayContaining([
           {
             kind: 'retained-job-containment',
             jobId: 'hard-held-job',
@@ -1100,7 +1122,7 @@ describe('runShutdownSequence drain budget', () => {
             inspectCommand: 'coral-cli backend status',
             actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
           },
-        ],
+        ]),
       },
     });
     expect(authorityCalls).toEqual(['reap:hard-held']);
@@ -1157,14 +1179,14 @@ describe('runShutdownSequence drain budget', () => {
           'components disposeAll',
           'provider control and IPC authority release',
         ],
-        operatorActions: [
+        operatorActions: expect.arrayContaining([
           {
             kind: 'provider-proxy-set-containment',
             proxyInstanceId: 'handoff-held',
             inspectCommand: 'coral-cli backend status',
             actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
           },
-        ],
+        ]),
       },
     });
     expect(authorityCalls).toEqual([]);
@@ -1174,9 +1196,14 @@ describe('runShutdownSequence drain budget', () => {
     expect(authorityCalls).toEqual(['heartbeats:handoff-held', 'control:handoff-held', 'closeIpc']);
   });
 
-  it('retains authority through a declined app-server quiesce with no durable recovery action', async () => {
+  it('durably abandons a declined app-server quiesce through its exact recovery action', async () => {
     const authorityCalls: string[] = [];
-    const harness = buildHarness({ reason: 'replaced', hooksOnShutdown: async () => {} });
+    let abandoned = false;
+    const harness = buildHarness({
+      reason: 'replaced',
+      hooksOnShutdown: async () => {},
+      isShutdownObligationAbandoned: (subject) => abandoned && subject === 'app-server-handoff-quiesce',
+    });
     harness.ctx.handoffQuiescePorts = () => [
       { quiesceAppServerJobsForHandoff: async () => Promise.reject(new Error('quiescence unavailable')) },
     ];
@@ -1188,8 +1215,17 @@ describe('runShutdownSequence drain budget', () => {
     expect(heldFailureDetail(held)).toContain(
       'app-server handoff quiesce: unconfirmed: port 1: Error: quiescence unavailable',
     );
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual({
+      kind: 'shutdown-obligation-abandonment',
+      subject: 'app-server-handoff-quiesce',
+      inspectCommand: 'coral-cli backend shutdown-recovery status',
+      actionCommand: 'coral-cli backend shutdown-recovery abandon app-server-handoff-quiesce',
+    });
     expect(authorityCalls).toEqual([]);
+
+    abandoned = true;
+    await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls).toEqual(['closeIpc']);
   });
 
   it('retries only unresolved provider-control capabilities', async () => {
@@ -1905,7 +1941,9 @@ describe('required provider-proxy shutdown steps', () => {
     expect(heldFailureDetail(held)).toMatch(
       /provider control and IPC authority release: .*IPC socket: .*socket stuck/u,
     );
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    expect(held.retainedAuthority.operatorActions).toContainEqual(
+      expect.objectContaining({ kind: 'shutdown-obligation-abandonment' }),
+    );
     expect(callLog).toContain('control:p1');
     await expect(held.retry()).resolves.toEqual({ disposition: 'settled' });
     expect(ipcAttempts).toBe(2);

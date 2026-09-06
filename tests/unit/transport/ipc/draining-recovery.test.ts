@@ -9,6 +9,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type { ProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import { shutdownObligationAbandonMethod } from '#src/obligation/shutdown-abandonment.js';
 import type { ProviderProxySetContainResponse } from '#src/transport/rpc/catalog.js';
 
 const tempRoots: string[] = [];
@@ -124,6 +125,73 @@ afterEach(() => {
 });
 
 describe('draining IPC recovery ingress', () => {
+  it('authenticates exact shutdown-obligation abandonment and wakes only after durable acceptance', async () => {
+    const ports = createDrainingPorts();
+    const listener = createIpcServer(ports);
+    const abandon = vi.fn(() => ({
+      kind: 'accepted' as const,
+      receipt: {
+        subject: 'app-server-handoff-quiesce' as const,
+        instanceId: 'test-instance',
+        recordedAt: '2026-09-07T00:00:00.000Z',
+        disposition: 'abandoned-unconfirmed' as const,
+        detail: 'App-server write completion was not observed; the write may or may not have landed.',
+        statusPath: '/run/shutdown-abandonment-status.v1.json',
+      },
+    }));
+    listener.onShutdownObligationAbandonment = abandon;
+    const wakeRetainedShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+
+    try {
+      const params = { subject: 'app-server-handoff-quiesce' };
+      await expect(requestIpcMethod(path, shutdownObligationAbandonMethod, params)).rejects.toThrow(
+        'IPC boot token or child principal required',
+      );
+      expect(abandon).not.toHaveBeenCalled();
+
+      await expect(
+        requestIpcMethod(path, shutdownObligationAbandonMethod, params, {
+          auth: { kind: 'boot', token: 'boot-token' },
+        }),
+      ).resolves.toMatchObject({ kind: 'accepted', receipt: { disposition: 'abandoned-unconfirmed' } });
+      await vi.waitFor(() => expect(wakeRetainedShutdown).toHaveBeenCalledOnce());
+      expect(abandon).toHaveBeenCalledWith(params);
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('keeps the shutdown held when durable abandonment status is refused', async () => {
+    const ports = createDrainingPorts();
+    const listener = createIpcServer(ports);
+    listener.onShutdownObligationAbandonment = vi.fn(() => ({
+      kind: 'status-write-refused' as const,
+      subject: 'app-server-handoff-quiesce' as const,
+      detail: 'durable publication unavailable',
+    }));
+    const wakeRetainedShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+
+    try {
+      await expect(
+        requestIpcMethod(
+          path,
+          shutdownObligationAbandonMethod,
+          { subject: 'app-server-handoff-quiesce' },
+          { auth: { kind: 'boot', token: 'boot-token' } },
+        ),
+      ).resolves.toMatchObject({ kind: 'status-write-refused' });
+      expect(wakeRetainedShutdown).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
   it.each([
     {
       method: 'jobs.abort',

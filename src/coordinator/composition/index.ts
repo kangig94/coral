@@ -1449,6 +1449,8 @@ export function createCoordinatorCore(
   ipcServer.onShutdownRequest = (reason) => {
     void resolvedLifecycleController.shutdown(reason).catch(() => {});
   };
+  ipcServer.onShutdownObligationAbandonment = (request) =>
+    resolvedLifecycleController.abandonShutdownObligation(request);
   ipcServer.onShutdownRecoveryAccepted = () => {
     resolvedLifecycleController.requestShutdownRetry();
   };

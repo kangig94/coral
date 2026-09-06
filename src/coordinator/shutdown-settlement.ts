@@ -10,6 +10,7 @@ import {
   type SettlementHold,
   type SettlementObligation,
 } from '../obligation/settlement.js';
+import type { ShutdownObligationSubject } from '../obligation/shutdown-abandonment.js';
 
 export type UndischargedRemainder =
   | Readonly<{ owner: 'process-exit' }>
@@ -30,6 +31,7 @@ export type ShutdownHoldExit =
   | 'admitted-provider-operation-mutation-settlement'
   | 'provider-operation-mutation-admission-availability'
   | 'provider-proxy-set-release-retry'
+  | 'durable-operator-abandonment'
   | 'required-cleanup-capability-confirmation-or-durable-operator-abandonment'
   | 'authority-release-settlement';
 
@@ -46,6 +48,12 @@ export type ShutdownOperatorAction =
       proxyInstanceId: string;
       inspectCommand: 'coral-cli backend status';
       actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>';
+    }>
+  | Readonly<{
+      kind: 'shutdown-obligation-abandonment';
+      subject: ShutdownObligationSubject;
+      inspectCommand: 'coral-cli backend shutdown-recovery status';
+      actionCommand: `coral-cli backend shutdown-recovery abandon ${ShutdownObligationSubject}`;
     }>;
 
 export type ShutdownRetainedAuthority = Readonly<{
@@ -126,9 +134,14 @@ function unique<T>(values: readonly T[]): readonly T[] {
 }
 
 function operatorActionKey(action: ShutdownOperatorAction): string {
-  return action.kind === 'retained-job-containment'
-    ? `${action.kind}:${action.jobId}:${action.jobDir}`
-    : `${action.kind}:${action.proxyInstanceId}`;
+  switch (action.kind) {
+    case 'retained-job-containment':
+      return `${action.kind}:${action.jobId}:${action.jobDir}`;
+    case 'provider-proxy-set-containment':
+      return `${action.kind}:${action.proxyInstanceId}`;
+    case 'shutdown-obligation-abandonment':
+      return `${action.kind}:${action.subject}`;
+  }
 }
 
 function foldRetainedAuthority(
@@ -151,7 +164,7 @@ function foldRetainedAuthority(
 function defaultHold(): ShutdownHold {
   return {
     reason: 'required-shutdown-step-unsettled',
-    exit: 'required-cleanup-capability-confirmation-or-durable-operator-abandonment',
+    exit: 'durable-operator-abandonment',
   };
 }
 

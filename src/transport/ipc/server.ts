@@ -32,6 +32,13 @@ import {
   type RpcMethodSpec,
 } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
+import {
+  shutdownObligationAbandonMethod,
+  shutdownObligationAbandonRequestSchema,
+  shutdownObligationAbandonResultSchema,
+  type ShutdownObligationAbandonRequest,
+  type ShutdownObligationAbandonResult,
+} from '../../obligation/shutdown-abandonment.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
@@ -106,6 +113,9 @@ export type IpcListener = {
    * has not yet been installed). Setting/clearing is composition's job.
    */
   onShutdownRequest: ((reason: string) => void) | null;
+  onShutdownObligationAbandonment?: (
+    request: ShutdownObligationAbandonRequest,
+  ) => ShutdownObligationAbandonResult | Promise<ShutdownObligationAbandonResult>;
   onShutdownRecoveryAccepted?: (() => void) | null;
 };
 
@@ -260,6 +270,7 @@ function readIpcOperationalSpec(method: string): IpcOperationalSpec | null {
 function acceptedDrainingRecovery(method: string): boolean {
   return (
     method === 'jobs.abort' ||
+    method === shutdownObligationAbandonMethod ||
     method === providerProxySetContainRpcSpec.name ||
     method === providerProxySetContainBooleanRpcSpec.name
   );
@@ -572,6 +583,10 @@ export async function listenIpcServer(
         throw new Error('IPC listener does not support compatibility sockets');
       }
       compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
+      compatibility.onShutdownObligationAbandonment = (request) => {
+        const handler = listener.onShutdownObligationAbandonment;
+        return handler === undefined ? { kind: 'not-held', subject: request.subject } : handler(request);
+      };
       compatibility.onShutdownRecoveryAccepted = () => listener.onShutdownRecoveryAccepted?.();
       const compatibilityResult =
         compatibilityAddress.kind === 'published'
@@ -690,6 +705,11 @@ async function dispatchFrame(
   dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
   rpcPorts: HttpHandlerPorts,
   onShutdownRequest: ((reason: string) => void) | null,
+  onShutdownObligationAbandonment:
+    | ((
+        request: ShutdownObligationAbandonRequest,
+      ) => ShutdownObligationAbandonResult | Promise<ShutdownObligationAbandonResult>)
+    | null,
   onShutdownRecoveryAccepted: (() => void) | null,
   startRequest: () => void,
   finishRequest: () => void,
@@ -748,7 +768,8 @@ async function dispatchFrame(
     rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
   const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
   const backendUnavailable = draining || lifecycleState === 'stopped';
-  const drainingRecoveryIngress = draining && operationalSpec?.dispatch.kind === 'catalog';
+  const drainingRecoveryIngress =
+    draining && (operationalSpec?.dispatch.kind === 'catalog' || operationalSpec?.dispatch.kind === 'shutdown-abandon');
 
   if (operationalSpec) {
     if (operationalSpec.requiresRunningLifecycle && backendUnavailable) {
@@ -804,6 +825,53 @@ async function dispatchFrame(
         },
         { drainTimeoutMs: options.writeDrainTimeoutMs },
       );
+      socket.end();
+      return;
+    }
+
+    if (operationalSpec.dispatch.kind === 'shutdown-abandon') {
+      if (onShutdownObligationAbandonment === null) {
+        await writeEnvelope(socket, methodNotFoundResponse(request.id), {
+          drainTimeoutMs: options.writeDrainTimeoutMs,
+        });
+        socket.end();
+        return;
+      }
+      const parsedRequest = shutdownObligationAbandonRequestSchema.safeParse(request.params ?? {});
+      if (!parsedRequest.success) {
+        await writeEnvelope(socket, validationErrorResponse(request.id, parsedRequest.error), {
+          drainTimeoutMs: options.writeDrainTimeoutMs,
+        });
+        socket.end();
+        return;
+      }
+      const result = shutdownObligationAbandonResultSchema.parse(
+        await onShutdownObligationAbandonment(parsedRequest.data),
+      );
+      if (result.kind === 'accepted') {
+        writeAuditEvent(
+          'shutdown_obligation_abandoned',
+          {
+            transport: 'ipc',
+            instanceId: rpcPorts.identity.instanceId,
+            subject: result.receipt.subject,
+            disposition: result.receipt.disposition,
+            detail: result.receipt.detail,
+            statusPath: result.receipt.statusPath,
+          },
+          'warn',
+        );
+      }
+      const completeShutdownRecovery =
+        result.kind === 'accepted' && onShutdownRecoveryAccepted !== null
+          ? armShutdownRecoveryContinuation(socket, onShutdownRecoveryAccepted)
+          : null;
+      const wroteResponse = await writeEnvelope(
+        socket,
+        { kind: 'response', id: request.id, result },
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      if (!wroteResponse) completeShutdownRecovery?.();
       socket.end();
       return;
     }
@@ -1092,6 +1160,7 @@ function createTrackedIpcListener(
           dispatchMap,
           rpcPorts,
           listenerRef.current?.onShutdownRequest ?? null,
+          listenerRef.current?.onShutdownObligationAbandonment ?? null,
           listenerRef.current?.onShutdownRecoveryAccepted ?? null,
           () => {
             rpcPorts.admin.beginRequest();

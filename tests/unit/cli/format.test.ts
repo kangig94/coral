@@ -918,6 +918,25 @@ describe('cli format', () => {
       );
     });
 
+    it('renders a skipped provider-proxy-set token without offering an unauthorized operator command', () => {
+      const skippedToken = 'pps1.future-row';
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          skippedProviderProxySetRows: 1,
+          skippedProviderProxySetTokens: [skippedToken],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain(`skipped set=${skippedToken}`);
+      expect(output).toContain('No containment or abandonment command is available');
+      expect(output).not.toContain(`provider-proxy-set contain ${skippedToken}`);
+      expect(output).not.toContain(`provider-proxy-set abandon ${skippedToken}`);
+    });
+
     it('formats the redacted system provider scope without profile details', () => {
       const status = {
         status: 'ok',
