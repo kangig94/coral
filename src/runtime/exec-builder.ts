@@ -1,4 +1,5 @@
 import { EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
+import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike, ExecResult, TimerHandle } from '../infra/port-types.js';
 import type { RuntimeSpawnOptions } from './ports.js';
 
@@ -13,6 +14,8 @@ export interface BuildExecPromiseOptions {
   maxBuffer: number;
   encoding: 'utf-8';
   killProcessGroup?: boolean;
+  platform?: NodeJS.Platform;
+  readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
   spawn: (options: RuntimeSpawnOptions) => ChildProcessLike;
   kill: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   setTimeout: (fn: () => void, ms: number) => TimerHandle;
@@ -70,6 +73,8 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     kill,
     killProcessGroup = false,
     maxBuffer,
+    platform,
+    readProcessIncarnation,
     setTimeout,
     spawn,
     timeoutMs,
@@ -94,6 +99,20 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       ...(shell === undefined ? {} : { shell }),
       ...(killProcessGroup ? { detached: true } : {}),
     });
+    let processGroupLeaderIncarnation: ProcessIncarnation | null = null;
+    if (
+      killProcessGroup &&
+      child.pid !== undefined &&
+      platform !== undefined &&
+      readProcessIncarnation !== undefined &&
+      incarnationMayAuthorizeSignal(platform)
+    ) {
+      try {
+        processGroupLeaderIncarnation = readProcessIncarnation(child.pid, platform);
+      } catch {
+        processGroupLeaderIncarnation = null;
+      }
+    }
 
     child.stdin?.end();
 
@@ -117,10 +136,27 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       if (child.pid === undefined) {
         return;
       }
-      const groupSignaled = killProcessGroup ? kill(-child.pid, signal) : false;
-      if (!groupSignaled) {
-        kill(child.pid, signal);
+      if (
+        !killProcessGroup ||
+        processGroupLeaderIncarnation === null ||
+        platform === undefined ||
+        readProcessIncarnation === undefined ||
+        !incarnationMayAuthorizeSignal(platform)
+      ) {
+        child.kill(signal);
+        return;
       }
+      let groupSignaled = false;
+      try {
+        // The leader's incarnation is what proves this process-group id was not recycled; a live leader
+        // is a member of its own group, so no separate group probe adds authority here.
+        if (readProcessIncarnation(child.pid, platform) === processGroupLeaderIncarnation) {
+          groupSignaled = kill(-child.pid, signal);
+        }
+      } catch {
+        groupSignaled = false;
+      }
+      if (!groupSignaled) child.kill(signal);
     };
 
     const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {

@@ -184,7 +184,7 @@ describe('spawnRoleProcess', () => {
     });
   });
 
-  it('retains a detached failed spawn while a group descendant survives its leader', async () => {
+  it('never signals a detached failed spawn without identity and accepts only independent group absence', async () => {
     const { child, emitClose, unref } = createFakeChild(6_002);
     let groupLiveness: 'alive' | 'absent' = 'alive';
     const observeLiveness = vi.fn((pid: number) => (pid === -6_002 ? groupLiveness : 'absent'));
@@ -202,22 +202,22 @@ describe('spawnRoleProcess', () => {
 
     const firstCleanup = await disposition.retry();
     expect(firstCleanup).toMatchObject({
-      kind: 'held-alive',
-      subject: { kind: 'process-group', processGroupId: 6_002 },
-      observation: 'alive',
+      kind: 'held-unobservable',
+      subject: { kind: 'unattributable-process-group', processGroupId: 6_002 },
+      observation: 'unobservable',
       operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
       retry: expect.any(Function),
     });
     expect(observeLiveness).toHaveBeenCalledWith(-6_002);
-    expect(kill).toHaveBeenCalledWith(-6_002, 'SIGTERM');
-    expect(kill).toHaveBeenCalledWith(-6_002, 'SIGKILL');
+    expect(kill).not.toHaveBeenCalled();
     expect(unref).not.toHaveBeenCalled();
 
-    if (firstCleanup.kind !== 'held-alive') throw new Error('Expected the surviving group to remain held');
+    if (firstCleanup.kind !== 'held-unobservable') throw new Error('Expected the surviving group to remain held');
     groupLiveness = 'absent';
     await expect(firstCleanup.retry()).resolves.toMatchObject({
       kind: 'observed-absent',
       evidence: {
+        subject: { kind: 'unattributable-process-group', processGroupId: 6_002 },
         processGroupEvidence: {
           subject: { kind: 'process-group', processGroupId: 6_002 },
         },
@@ -239,14 +239,14 @@ describe('spawnRoleProcess', () => {
     const cleanup = await disposition.retry();
     expect(cleanup).toMatchObject({
       kind: 'held-unobservable',
-      subject: { kind: 'unattributable-process-group' },
+      subject: { kind: 'unattributable-process-group', processGroupId: null },
       observation: 'unobservable',
       operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
       retry: expect.any(Function),
     });
     expect(disposition.operatorExit.abandon()).toEqual({
       kind: 'operator-abandoned',
-      subject: { kind: 'unattributable-process-group' },
+      subject: { kind: 'unattributable-process-group', processGroupId: null },
       processAbsenceProven: false,
       successor: { owner: 'operator-command', acceptance: 'accepted' },
     });

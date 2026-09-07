@@ -714,6 +714,8 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       maxBuffer: execOptions.maxBuffer,
       encoding: execOptions.encoding ?? 'utf-8',
       killProcessGroup: capturedEnv.platform !== 'win32',
+      platform: capturedEnv.platform,
+      readProcessIncarnation: runtimeProcess.readProcessIncarnation,
       spawn: runtimeProcess.spawn,
       kill: runtimeProcess.kill,
       setTimeout: time.setTimeout,

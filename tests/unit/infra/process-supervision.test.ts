@@ -3,11 +3,16 @@ import { describe, expect, it } from 'vitest';
 
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
-import { gracefulKill, gracefulKillByPid } from '#src/infra/process-supervision.js';
+import {
+  cleanupSpawnedProcessGroup,
+  gracefulKill,
+  gracefulKillByPid,
+  retainSpawnedProcessGroupCleanup,
+} from '#src/infra/process-supervision.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 class FakeChild extends EventEmitter implements ChildProcessLike {
   readonly pid = 4_242;
@@ -330,5 +335,92 @@ describe('gracefulKillByPid', () => {
       stage: 'after-sigkill',
     });
     expect(killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+});
+
+describe('cleanupSpawnedProcessGroup', () => {
+  const incarnation = testIncarnation(4_242_000);
+
+  function processGroupRuntime(
+    time: VirtualTime,
+    readProcessIncarnation: () => ProcessIncarnation | null,
+    observeLiveness: (pid: number) => ProcessLiveness = () => 'alive',
+  ): { runtime: Runtime; signals: NodeJS.Signals[] } {
+    const signals: NodeJS.Signals[] = [];
+    return {
+      runtime: {
+        time,
+        env: { platform: () => 'linux' },
+        process: {
+          readProcessIncarnation,
+          observeLiveness,
+          kill: (_pid: number, signal: NodeJS.Signals | 0) => {
+            if (signal !== 0) signals.push(signal);
+            return true;
+          },
+        },
+      } as unknown as Runtime,
+      signals,
+    };
+  }
+
+  it('refuses SIGTERM when the leader incarnation changes after the initial observation', async () => {
+    const time = new VirtualTime();
+    const incarnations = [incarnation, testIncarnation(4_242_001)];
+    const { runtime, signals } = processGroupRuntime(time, () => incarnations.shift() ?? testIncarnation(4_242_001));
+    const cleanup = retainSpawnedProcessGroupCleanup(4_242, incarnation);
+
+    await expect(cleanupSpawnedProcessGroup(cleanup, runtime)).resolves.toMatchObject({
+      kind: 'held-unobservable',
+      observation: 'unobservable',
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('refuses SIGKILL when the leader incarnation changes during the SIGTERM grace', async () => {
+    const time = new VirtualTime();
+    let observedIncarnation = incarnation;
+    const { runtime, signals } = processGroupRuntime(time, () => observedIncarnation);
+    const cleanup = retainSpawnedProcessGroupCleanup(4_242, incarnation);
+
+    const disposition = cleanupSpawnedProcessGroup(cleanup, runtime);
+    expect(signals).toEqual(['SIGTERM']);
+    observedIncarnation = testIncarnation(4_242_001);
+    time.tick(SIGTERM_GRACE_MS);
+    await flushMicrotasks();
+
+    await expect(disposition).resolves.toMatchObject({ kind: 'held-unobservable', observation: 'unobservable' });
+    expect(signals).toEqual(['SIGTERM']);
+  });
+
+  it('observes absence without signaling after the leader incarnation is no longer attributable', async () => {
+    const time = new VirtualTime();
+    const { runtime, signals } = processGroupRuntime(
+      time,
+      () => testIncarnation(4_242_001),
+      (pid) => (pid === -4_242 ? 'absent' : 'alive'),
+    );
+    const cleanup = retainSpawnedProcessGroupCleanup(4_242, incarnation);
+
+    await expect(cleanupSpawnedProcessGroup(cleanup, runtime)).resolves.toMatchObject({
+      kind: 'observed-absent',
+      evidence: { subject: { kind: 'process-group', processGroupId: 4_242 } },
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('does not escalate after its abort signal settles the SIGTERM grace', async () => {
+    const time = new VirtualTime();
+    const { runtime, signals } = processGroupRuntime(time, () => incarnation);
+    const cleanup = retainSpawnedProcessGroupCleanup(4_242, incarnation);
+    const abort = new AbortController();
+
+    const disposition = cleanupSpawnedProcessGroup(cleanup, runtime, abort.signal);
+    expect(signals).toEqual(['SIGTERM']);
+    abort.abort();
+    await flushMicrotasks();
+
+    await expect(disposition).resolves.toMatchObject({ kind: 'held-alive', observation: 'alive' });
+    expect(signals).toEqual(['SIGTERM']);
   });
 });

@@ -1054,7 +1054,12 @@ describe('ExecutionService launch', () => {
     await vi.waitFor(() => expect(retryActive).toBe(true));
 
     expect(abortRegistry.abort([decision.jobId]).refused).toHaveLength(1);
-    const abandonment = abortRegistry.abort([decision.jobId]);
+    // Abandonment refuses while a cleanup attempt is settling; its named exit is repeating the abort.
+    let abandonment = abortRegistry.abort([decision.jobId]);
+    await vi.waitFor(() => {
+      abandonment = abortRegistry.abort([decision.jobId]);
+      expect(abandonment.abandoned).toHaveLength(1);
+    });
     expect(abandonment).toEqual({
       aborted: [],
       notFound: [],
@@ -1189,7 +1194,13 @@ describe('ExecutionService launch', () => {
     expect(readDurableCliContainmentStatus(progressStore.getDb(), decision.jobId)).toEqual({ kind: 'missing' });
 
     progressStore.getDb().exec('DROP TRIGGER fail_durable_publication');
-    expect(abortRegistry.abort([decision.jobId])).toEqual({
+    // Abandonment refuses while a cleanup attempt is settling; its named exit is repeating the abort.
+    let abandonment = abortRegistry.abort([decision.jobId]);
+    await vi.waitFor(() => {
+      abandonment = abortRegistry.abort([decision.jobId]);
+      expect(abandonment.abandoned).toHaveLength(1);
+    });
+    expect(abandonment).toEqual({
       aborted: [],
       notFound: [],
       abandoned: [

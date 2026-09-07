@@ -61,7 +61,7 @@ function delayedClose(onSpawned?: (child: unknown) => void): Readonly<{
 }
 
 describe('provider app-server spawn ownership', () => {
-  it('keeps an unreadable detached spawn held until its surviving process group is absent', async () => {
+  it('never signals an unreadable detached spawn and holds it until independent group absence', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
     let processGroupAlive = true;
@@ -81,39 +81,29 @@ describe('provider app-server spawn ownership', () => {
     const observation = observePromise(launch);
     await flushMicrotasks();
 
-    expect(observation.settled).toBe(false);
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGTERM' });
-
-    runtime.time.tick(SIGTERM_GRACE_MS);
-    await flushMicrotasks();
-    expect(observation.settled).toBe(false);
-    expect(runtime.spawner.killCalls).toContainEqual({ pid: -20_000, signal: 'SIGKILL' });
-
-    runtime.time.tick(SIGKILL_GRACE_MS);
     const held = await launch;
     expect(observation.settled).toBe(true);
     expect(held).toMatchObject({
-      kind: 'held-alive',
-      subject: { kind: 'process-group', processGroupId: 20_000 },
-      observation: 'alive',
+      kind: 'held-unobservable',
+      subject: { kind: 'unattributable-process-group', processGroupId: 20_000 },
+      observation: 'unobservable',
       operatorExit: { kind: 'abandon-provider-host-acquisition' },
     });
+    expect(runtime.spawner.killCalls).toEqual([]);
 
     child.close();
     await flushMicrotasks();
-    if (!('kind' in held) || held.kind !== 'held-alive') {
-      throw new Error('Expected a live process-group hold.');
+    if (!('kind' in held) || held.kind !== 'held-unobservable') {
+      throw new Error('Expected an unattributable process-group hold.');
     }
     const stillHeld = held.retry();
     runtime.time.tick(SIGTERM_GRACE_MS);
     await flushMicrotasks();
-    runtime.time.tick(SIGTERM_GRACE_MS);
-    await flushMicrotasks();
-    runtime.time.tick(SIGKILL_GRACE_MS);
     await expect(stillHeld).resolves.toMatchObject({
-      kind: 'held-alive',
-      subject: { kind: 'process-group', processGroupId: 20_000 },
+      kind: 'held-unobservable',
+      subject: { kind: 'unattributable-process-group', processGroupId: 20_000 },
     });
+    expect(runtime.spawner.killCalls).toEqual([]);
 
     processGroupAlive = false;
     const absence = held.retry();
@@ -124,6 +114,43 @@ describe('provider app-server spawn ownership', () => {
         processGroupEvidence: { subject: { kind: 'process-group', processGroupId: 20_000 } },
       },
     });
+  });
+
+  it('joins an active failed-spawn retry before operator abandonment settles', async () => {
+    const runtime = new SimulationRuntime();
+    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
+    const child = delayedClose();
+    runtime.spawner.enqueueSpawn(child.script);
+
+    const launch = spawnProviderServerTransport({
+      runtime,
+      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      generation: 1,
+      observeProviderResponse: () => {},
+      detached: true,
+      recordContainment: (() => Symbol('refused')) as unknown as () => ProviderContainmentAcceptance,
+    });
+    await flushMicrotasks();
+    runtime.time.tick(SIGTERM_GRACE_MS);
+    await flushMicrotasks();
+    runtime.time.tick(SIGKILL_GRACE_MS);
+    const held = await launch;
+    if (!('kind' in held) || held.kind !== 'held-alive') throw new Error('Expected a live process-group hold.');
+
+    const sigkillsBeforeRetry = runtime.spawner.killCalls.filter(({ signal }) => signal === 'SIGKILL').length;
+    const retry = held.retry();
+    runtime.time.tick(SIGTERM_GRACE_MS);
+    await flushMicrotasks();
+    const abandonment = held.operatorExit.abandon();
+    const abandonmentObservation = observePromise(abandonment);
+    expect(abandonmentObservation.settled).toBe(false);
+    await expect(abandonment).resolves.toMatchObject({ kind: 'operator-abandoned' });
+    await expect(retry).resolves.toMatchObject({ kind: 'operator-abandoned' });
+
+    runtime.time.tick(SIGTERM_GRACE_MS + SIGKILL_GRACE_MS);
+    await flushMicrotasks();
+    expect(runtime.spawner.killCalls.filter(({ signal }) => signal === 'SIGKILL')).toHaveLength(sigkillsBeforeRetry);
+    child.close();
   });
 
   it('keeps an uncontained failed initialization joined until its close is observed', async () => {
@@ -200,16 +227,16 @@ describe('provider app-server spawn ownership', () => {
     const held = await launch;
     expect(held).toMatchObject({
       kind: 'held-unobservable',
-      subject: { kind: 'unattributable-process-group' },
+      subject: { kind: 'unattributable-process-group', processGroupId: null },
       operatorExit: { kind: 'abandon-provider-host-acquisition' },
     });
     if (!('kind' in held) || held.kind !== 'held-unobservable') {
       throw new Error('Expected an unattributable process-group hold.');
     }
     child.close();
-    expect(held.operatorExit.abandon()).toEqual({
+    await expect(held.operatorExit.abandon()).resolves.toEqual({
       kind: 'operator-abandoned',
-      subject: { kind: 'unattributable-process-group' },
+      subject: { kind: 'unattributable-process-group', processGroupId: null },
       processAbsenceProven: false,
     });
   });

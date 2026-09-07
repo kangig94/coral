@@ -37,11 +37,13 @@ async function openReclamationTestHost(reapContainment: (identity: RecordedConta
 describe('provider host reclamation', () => {
   it('publishes a held failed spawn and lets provider-host eviction take its operator exit', async () => {
     const retry = createDeferred<ProviderServerFailedSpawnCleanupDisposition>();
-    const subject = { kind: 'unattributable-process-group' } as const;
+    const operatorAcceptance = createDeferred<void>();
+    const subject = { kind: 'unattributable-process-group', processGroupId: null } as const;
     const abandonment = { kind: 'operator-abandoned', subject, processAbsenceProven: false } as const;
     const operatorExit = {
       kind: 'abandon-provider-host-acquisition' as const,
-      abandon: vi.fn(() => {
+      abandon: vi.fn(async () => {
+        await operatorAcceptance.promise;
         retry.resolve(abandonment);
         return abandonment;
       }),
@@ -86,7 +88,15 @@ describe('provider host reclamation', () => {
       operatorExit,
     });
 
-    await expect(manager.evictHost(record.ref)).resolves.toBe(true);
+    let evictionSettled = false;
+    const eviction = manager.evictHost(record.ref).finally(() => {
+      evictionSettled = true;
+    });
+    await Promise.resolve();
+    expect(evictionSettled).toBe(false);
+    expect(manager.cleanupObligations().closingHosts).toHaveLength(1);
+    operatorAcceptance.resolve();
+    await expect(eviction).resolves.toBe(true);
     await expect(opening).resolves.toBe(failure);
     expect(operatorExit.abandon).toHaveBeenCalledOnce();
     expect(manager.listProviderHosts()).toEqual([]);

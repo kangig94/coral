@@ -781,7 +781,14 @@ async function authorizedOperatorExitForProof(
   claims.initialize([]);
   const faults = createProviderProxyAuthorityFaultLatch();
   const stopAndReap = vi.fn<DurableProviderProxyOperationAuthority['stopAndReap']>(
-    () => new Promise<never>(() => undefined),
+    (signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener(
+          'abort',
+          () => resolve({ unconfirmed: 'automatic containment attempt was cancelled' }),
+          { once: true },
+        );
+      }),
   );
   const clock = new ManualClock();
   const authority = fakeAuthority({ record, faults, stopAndReap, adoptionWindowMs: 100 });
@@ -1776,7 +1783,15 @@ describe('ProviderProxySetLifecycle', () => {
       proxyInstanceId: '22222222-2222-4222-8222-222222222222',
     };
     const recoverySubject = { kind: 'unattributable-process-group' as const };
-    const retry = vi.fn(async () => ({ kind: 'held' as const, reason: 'process group remains unattributable' }));
+    let settleRetry!: (outcome: { kind: 'held'; reason: string }) => void;
+    const retrySignal: { current: AbortSignal | null } = { current: null };
+    const retry = vi.fn(
+      (signal: AbortSignal) =>
+        new Promise<{ kind: 'held'; reason: string }>((resolve) => {
+          retrySignal.current = signal;
+          settleRetry = resolve;
+        }),
+    );
     const operatorExit: ProviderProxyAcquisitionOperatorExit = {
       kind: 'abandon-provider-proxy-acquisition',
       abandon: vi.fn<ProviderProxyAcquisitionOperatorExit['abandon']>(() => ({
@@ -1804,6 +1819,19 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.acquisitionCleanupHeld(admission.slotId, { ...acquiredHold, owner: 'provider-host-manager' });
     await drainMicrotasks();
     const retriesBeforeAbandonment = retry.mock.calls.length;
+
+    expect(lifecycle.abandonDurableAcquisition(setAddress)).toEqual({
+      kind: 'transfer-pending',
+      reason: 'an acquisition cleanup attempt is still settling',
+      waitingFor: 'cleanup-attempt-settlement',
+      exit: 'provider-proxy-set-operator-abandonment-retry',
+    });
+    expect(retrySignal.current?.aborted).toBe(true);
+    expect(operatorExit.abandon).not.toHaveBeenCalled();
+    expect(lifecycle.acquisitionCleanupHolds()).toHaveLength(1);
+    expect(store.read().acquisitionRecords).toHaveLength(1);
+    settleRetry({ kind: 'held', reason: 'process group remains unattributable' });
+    await drainMicrotasks();
 
     vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
     expect(lifecycle.abandonDurableAcquisition(setAddress)).toEqual(

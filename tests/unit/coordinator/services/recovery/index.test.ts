@@ -1169,17 +1169,19 @@ describe('runStartupRecovery durable containment holds', () => {
     expect(recoveryRegistry?.abort([jobId])).toEqual({
       aborted: [],
       notFound: [],
-      abandoned: [
+      held: [
         {
           jobId,
-          reason: 'recovery ownership was released without proof of recorded containment absence',
-          nextStep:
-            `Run coral-cli jobs detail ${jobId}; the recorded containment may still be live and is no longer ` +
-            'owned by recovery.',
+          reason: 'the active durable containment reap is still settling',
+          nextStep: 'Wait for containment reap settlement; abandonment will resume automatically.',
         },
       ],
     });
-    await vi.waitFor(() => expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce());
+    expect(fakeService.finalizeInterruptedDurableJob).not.toHaveBeenCalled();
+    expect(readDurableCliContainmentStatus(progressStore.getDb(), jobId)).toMatchObject({
+      kind: 'valid',
+      status: { disposition: { kind: 'held' } },
+    });
     releaseGrace.resolve();
     await startup;
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1188,7 +1190,8 @@ describe('runStartupRecovery durable containment holds', () => {
     expect(kill.mock.calls.every(([, signalName]) => signalName === 'SIGTERM')).toBe(true);
     expect(setInterval).not.toHaveBeenCalled();
     expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
-    expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(recoveryRegistry?.has(jobId)).toBe(false));
     expect(readDurableCliContainmentStatus(progressStore.getDb(), jobId)).toMatchObject({
       kind: 'valid',
       status: { disposition: { kind: 'operator-abandoned', processAbsenceProven: false } },

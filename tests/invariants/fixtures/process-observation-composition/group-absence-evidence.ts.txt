@@ -8,9 +8,9 @@ import type {
   ProviderServerFailedSpawnCleanupDisposition,
 } from '../../../../src/providers/app-server-transport.js';
 
-type RetainedProcessGroupSubject = Extract<RoleSpawnCleanupSubject, { kind: 'process-group' }> &
+type RetainedProcessGroupSubject = Extract<RoleSpawnCleanupSubject, { kind: 'unattributable-process-group' }> &
   Readonly<{ processGroupId: 4_132 }>;
-type OtherProcessGroupSubject = Extract<RoleSpawnCleanupSubject, { kind: 'process-group' }> &
+type OtherProcessGroupSubject = Extract<RoleSpawnCleanupSubject, { kind: 'unattributable-process-group' }> &
   Readonly<{ processGroupId: 4_133 }>;
 
 export function settleDetachedGroup(

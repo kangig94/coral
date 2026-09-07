@@ -394,6 +394,15 @@ export async function spawnDurableJobTransport(params: {
         nextStep: 'Inspect the job before retrying durable abandonment.',
       };
     }
+    // A refusal must not destroy the attempt it declines to join: this abandonment cannot await, so the
+    // attempt keeps its own ownership until it settles and the operator repeats the abort.
+    if (cleanupInFlight !== null) {
+      return {
+        kind: 'retained',
+        reason: 'the active durable containment cleanup attempt is still settling',
+        nextStep: 'Retry the abort after the active cleanup attempt settles.',
+      };
+    }
     const publication = publishContainmentStatus({ kind: 'operator-abandoned', processAbsenceProven: false });
     if (publication.kind === 'retained') {
       return {

@@ -1,4 +1,3 @@
-import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { buildJsonRpcError } from '../infra/json-rpc.js';
@@ -10,6 +9,8 @@ import { AbortError } from '../runtime/abort.js';
 import {
   cleanupSpawnedProcessGroup,
   gracefulKill,
+  observeRetainedSpawnedProcessGroup,
+  observeUnattributableSpawnedProcessGroup,
   requirePipedHandles,
   retainSpawnedProcessGroupCleanup,
   type SpawnedProcessGroupAbsenceEvidence,
@@ -195,7 +196,7 @@ export type SpawnProviderServerFn = (
 
 export type ProviderServerFailedSpawnSubject<ProcessGroupId extends number = number> =
   | Readonly<{ kind: 'process-group'; processGroupId: ProcessGroupId }>
-  | Readonly<{ kind: 'unattributable-process-group' }>;
+  | Readonly<{ kind: 'unattributable-process-group'; processGroupId: ProcessGroupId | null }>;
 
 export type ProviderServerFailedSpawnAbsenceEvidence<ProcessGroupId extends number = number> = Readonly<{
   processGroupEvidence: SpawnedProcessGroupAbsenceEvidence<ProcessGroupId>;
@@ -209,7 +210,7 @@ export type ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId extends 
 
 export type ProviderServerFailedSpawnOperatorExit<ProcessGroupId extends number = number> = Readonly<{
   kind: 'abandon-provider-host-acquisition';
-  abandon(): ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId>;
+  abandon(): Promise<ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId>>;
 }>;
 
 export type ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId extends number = number> =
@@ -219,14 +220,14 @@ export type ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId extends n
       subject: Extract<ProviderServerFailedSpawnSubject<ProcessGroupId>, { kind: 'process-group' }>;
       observation: 'alive';
       operatorExit: ProviderServerFailedSpawnOperatorExit<ProcessGroupId>;
-      retry(): Promise<ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>>;
+      retry(signal?: AbortSignal): Promise<ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>>;
     }>
   | Readonly<{
       kind: 'held-unobservable';
       subject: ProviderServerFailedSpawnSubject<ProcessGroupId>;
       observation: 'unobservable';
       operatorExit: ProviderServerFailedSpawnOperatorExit<ProcessGroupId>;
-      retry(): Promise<ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>>;
+      retry(signal?: AbortSignal): Promise<ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>>;
     }>
   | ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId>;
 
@@ -338,29 +339,39 @@ function createProviderProcessSettlement(
 
 function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
   runtime: Runtime,
+  processGroupId: ProcessGroupId | null,
   cleanup: SpawnedProcessGroupCleanupDisposition<ProcessGroupId> | null,
 ): ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId> {
   const subject: ProviderServerFailedSpawnSubject<ProcessGroupId> =
     cleanup === null
-      ? { kind: 'unattributable-process-group' }
+      ? { kind: 'unattributable-process-group', processGroupId }
       : cleanup.kind === 'observed-absent'
         ? cleanup.evidence.subject
         : cleanup.subject;
   let abandoned = false;
+  let activeRetry: Readonly<{ abort: AbortController; settlement: Promise<void> }> | null = null;
   const abandonment: ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId> = {
     kind: 'operator-abandoned',
     subject,
     processAbsenceProven: false,
   };
   let releaseAbandonment!: () => void;
+  let acceptAbandonment!: () => void;
   const abandonmentRequested = new Promise<void>((resolve) => {
     releaseAbandonment = resolve;
   });
+  const abandonmentAccepted = new Promise<void>((resolve) => {
+    acceptAbandonment = resolve;
+  });
   const operatorExit: ProviderServerFailedSpawnOperatorExit<ProcessGroupId> = {
     kind: 'abandon-provider-host-acquisition',
-    abandon: () => {
+    abandon: async () => {
       abandoned = true;
       releaseAbandonment();
+      const attempt = activeRetry;
+      attempt?.abort.abort(new Error('provider_server_spawn_cleanup_abandoned'));
+      if (attempt !== null) await attempt.settlement;
+      acceptAbandonment();
       return abandonment;
     },
   };
@@ -374,11 +385,47 @@ function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
         evidence: { processGroupEvidence: next.evidence },
       };
     }
-    const retry = async (): Promise<ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>> => {
-      if (abandoned) return abandonment;
+    const retry = async (
+      signal?: AbortSignal,
+    ): Promise<ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>> => {
+      if (abandoned) {
+        await abandonmentAccepted;
+        return abandonment;
+      }
       await Promise.race([runtime.time.sleep(SIGTERM_GRACE_MS), abandonmentRequested]);
-      if (abandoned) return abandonment;
-      return map(next === null ? null : await next.retry());
+      if (abandoned) {
+        await abandonmentAccepted;
+        return abandonment;
+      }
+      if (next === null) {
+        if (processGroupId === null) return map(null);
+        const observation = observeUnattributableSpawnedProcessGroup(processGroupId, runtime);
+        if (observation.kind === 'observed-absent') {
+          return { kind: 'observed-absent', evidence: { processGroupEvidence: observation.evidence } };
+        }
+        return map(null);
+      }
+      const abort = new AbortController();
+      const attemptSignal = signal === undefined ? abort.signal : AbortSignal.any([signal, abort.signal]);
+      const operation = next.retry(attemptSignal);
+      const attempt = {
+        abort,
+        settlement: operation.then(
+          () => undefined,
+          () => undefined,
+        ),
+      };
+      activeRetry = attempt;
+      try {
+        const outcome = await operation;
+        if (abandoned) {
+          await abandonmentAccepted;
+          return abandonment;
+        }
+        return map(outcome);
+      } finally {
+        if (activeRetry === attempt) activeRetry = null;
+      }
     };
     if (next?.kind === 'held-alive') {
       return { kind: next.kind, subject: next.subject, observation: next.observation, operatorExit, retry };
@@ -423,8 +470,15 @@ async function spawnProviderServerProcess(
     ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
     ...(params.detached === undefined ? {} : { detached: params.detached }),
   });
-  const processGroupCleanup =
-    params.detached === true && typeof child.pid === 'number' ? retainSpawnedProcessGroupCleanup(child.pid) : null;
+  let processGroupCleanup: SpawnedProcessGroupCleanup | null = null;
+  if (params.detached === true && typeof child.pid === 'number') {
+    try {
+      const incarnation = runtime.process.readProcessIncarnation(child.pid, runtime.env.platform() as NodeJS.Platform);
+      if (incarnation !== null) processGroupCleanup = retainSpawnedProcessGroupCleanup(child.pid, incarnation);
+    } catch {
+      processGroupCleanup = null;
+    }
+  }
   const processSettlement = createProviderProcessSettlement(child, params.detached === true, processGroupCleanup);
   let pipes: ProviderServerPipes;
   try {
@@ -484,7 +538,7 @@ async function terminateProviderServerProcess(
       settlement.processGroupCleanup === null
         ? null
         : await cleanupSpawnedProcessGroup(settlement.processGroupCleanup, runtime);
-    return mapDetachedProviderServerCleanup(runtime, disposition);
+    return mapDetachedProviderServerCleanup(runtime, settlement.pid, disposition);
   }
 
   let firstAttempt = true;
@@ -526,13 +580,8 @@ async function establishDetachedProviderServerIdentity(
   entry: ProviderServerEntry,
   runtime: Runtime,
 ): Promise<RecordedContainmentIdentity | HeldProviderServerSpawn> {
-  let incarnation: ProcessIncarnation | null;
-  try {
-    incarnation = runtime.process.readProcessIncarnation(entry.pid, runtime.env.platform() as NodeJS.Platform);
-  } catch {
-    incarnation = null;
-  }
-  if (incarnation === null) {
+  const cleanup = entry.processSettlement.processGroupCleanup;
+  if (cleanup === null) {
     const error = new ProcessContainmentError(
       'process_identity_unverified',
       `Could not read the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
@@ -541,18 +590,11 @@ async function establishDetachedProviderServerIdentity(
     return settleFailedProviderServerSpawn(entry.processSettlement, runtime, error);
   }
 
-  // Signal 0 tests existence and permission without delivering a signal. Addressing -pid proves a signalable
-  // process group with that id exists; it does not prove the group contains only this host's descendants.
-  let processGroupIsSignalable: boolean;
-  try {
-    processGroupIsSignalable = runtime.process.kill(-entry.pid, 0);
-  } catch {
-    processGroupIsSignalable = false;
-  }
-  if (!processGroupIsSignalable) {
+  const observation = observeRetainedSpawnedProcessGroup(cleanup, runtime);
+  if (observation.kind !== 'held-alive') {
     const error = new ProcessContainmentError(
       'process_identity_unverified',
-      `The spawned ${entry.provider} provider server (pid ${entry.pid}) is not a process-group leader.`,
+      `The spawned ${entry.provider} provider server (pid ${entry.pid}) has no attributable live process group.`,
       { provider: entry.provider, pid: entry.pid },
     );
     return settleFailedProviderServerSpawn(entry.processSettlement, runtime, error);
@@ -560,7 +602,7 @@ async function establishDetachedProviderServerIdentity(
 
   const containmentIdentity = Object.freeze({
     pid: entry.pid,
-    incarnation,
+    incarnation: cleanup.leaderIncarnation,
     processGroupId: entry.pid,
   });
   try {

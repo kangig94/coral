@@ -91,6 +91,9 @@ import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-
 
 const RECOVERY_POLL_MS = 500;
 
+/** Abandonment must be able to abort a destructive reap and wait for it, not merely ignore its result. */
+type HeldRecoveryReapAttempt = Readonly<{ abort: AbortController; settlement: Promise<void> }>;
+
 type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
   cancelledRecoveryJobIds: Set<string>;
@@ -99,7 +102,7 @@ type RecoveryCoordinatorState = {
   unansweredAdoptionProbes: Map<string, number>;
   recoveryPollIntervals: Map<string, TimerHandle>;
   heldRecoveryReapGenerations: Map<string, number>;
-  heldRecoveryReapControllers: Map<string, AbortController>;
+  heldRecoveryReapAttempts: Map<string, HeldRecoveryReapAttempt>;
   adoptedRunningJobCleanups: Map<string, () => void>;
   inflightFinalizations: Map<
     string,
@@ -533,7 +536,7 @@ export function createRecoveryCoordinator(
     unansweredAdoptionProbes: new Map<string, number>(),
     recoveryPollIntervals: new Map<string, TimerHandle>(),
     heldRecoveryReapGenerations: new Map<string, number>(),
-    heldRecoveryReapControllers: new Map<string, AbortController>(),
+    heldRecoveryReapAttempts: new Map(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     inflightFinalizations: new Map(),
     providerOperationRecoveries: new Map<string, Promise<ProviderOperationRecoveryAcceptance>>(),
@@ -629,12 +632,11 @@ export function createRecoveryCoordinator(
     return { evidence, observation };
   };
 
-  const cancelHeldRecoveryReap = (jobId: string): boolean => {
+  const cancelHeldRecoveryReap = (jobId: string): Promise<void> | null => {
     state.heldRecoveryReapGenerations.set(jobId, (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1);
-    const controller = state.heldRecoveryReapControllers.get(jobId);
-    state.heldRecoveryReapControllers.delete(jobId);
-    controller?.abort();
-    return controller !== undefined;
+    const attempt = state.heldRecoveryReapAttempts.get(jobId);
+    attempt?.abort.abort();
+    return attempt?.settlement ?? null;
   };
 
   const runHeldRecoveryReap = async (
@@ -642,14 +644,22 @@ export function createRecoveryCoordinator(
     record: Parameters<typeof reapDurableCliProcess>[1],
     parentSignal: AbortSignal,
   ): Promise<Awaited<ReturnType<typeof reapDurableCliProcess>> | Readonly<{ kind: 'superseded' }>> => {
-    cancelHeldRecoveryReap(jobId);
+    const priorSettlement = cancelHeldRecoveryReap(jobId);
+    if (priorSettlement !== null) await priorSettlement;
     const generation = (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1;
     state.heldRecoveryReapGenerations.set(jobId, generation);
     const controller = new AbortController();
     const forwardAbort = (): void => controller.abort();
     if (parentSignal.aborted) controller.abort();
     else parentSignal.addEventListener('abort', forwardAbort, { once: true });
-    state.heldRecoveryReapControllers.set(jobId, controller);
+    let markSettled!: () => void;
+    const attempt: HeldRecoveryReapAttempt = {
+      abort: controller,
+      settlement: new Promise<void>((resolve) => {
+        markSettled = resolve;
+      }),
+    };
+    state.heldRecoveryReapAttempts.set(jobId, attempt);
     try {
       const result = await reapDurableCliProcess(runtime, record, controller.signal);
       return state.heldRecoveryReapGenerations.get(jobId) === generation && !controller.signal.aborted
@@ -657,9 +667,10 @@ export function createRecoveryCoordinator(
         : { kind: 'superseded' };
     } finally {
       parentSignal.removeEventListener('abort', forwardAbort);
-      if (state.heldRecoveryReapControllers.get(jobId) === controller) {
-        state.heldRecoveryReapControllers.delete(jobId);
+      if (state.heldRecoveryReapAttempts.get(jobId) === attempt) {
+        state.heldRecoveryReapAttempts.delete(jobId);
       }
+      markSettled();
     }
   };
 
@@ -679,9 +690,11 @@ export function createRecoveryCoordinator(
       runtime.time.clearInterval(pollInterval);
     }
     state.recoveryPollIntervals.clear();
-    for (const jobId of [...state.heldRecoveryReapControllers.keys()]) {
-      cancelHeldRecoveryReap(jobId);
-    }
+    const heldRecoveryReapSettlements = [...state.heldRecoveryReapAttempts].flatMap(([jobId]) => {
+      const settlement = cancelHeldRecoveryReap(jobId);
+      return settlement === null ? [] : [settlement];
+    });
+    await Promise.allSettled(heldRecoveryReapSettlements);
     state.heldRecoveryReapGenerations.clear();
 
     for (const jobId of [...state.adoptedRunningPids.keys()]) {
@@ -1821,6 +1834,21 @@ export function createRecoveryCoordinator(
         return { kind: 'refused', reason: 'no active durable containment hold is recorded for this job' };
       }
 
+      const activeReapSettlement = cancelHeldRecoveryReap(jobId);
+      if (activeReapSettlement !== null) {
+        clearRecoveryPoller(jobId);
+        return {
+          kind: 'held',
+          reason: 'the active durable containment reap is still settling',
+          nextStep: 'Wait for containment reap settlement; abandonment will resume automatically.',
+          settlement: activeReapSettlement.then(async () => {
+            const resumed = abandonHeldRecoveryJob(jobId);
+            if (resumed.settlement !== undefined) return resumed.settlement;
+            return resumed;
+          }),
+        };
+      }
+
       let abandonedStatus: DurableCliContainmentStatus;
       if (statusRead.kind === 'valid') {
         abandonedStatus = {
@@ -1852,7 +1880,6 @@ export function createRecoveryCoordinator(
         };
       }
       clearRecoveryPoller(jobId);
-      cancelHeldRecoveryReap(jobId);
 
       const jobStatus = progressStore.readStatus(jobId);
       if (jobStatus !== null) {

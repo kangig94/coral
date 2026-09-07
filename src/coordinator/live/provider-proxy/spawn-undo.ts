@@ -12,8 +12,7 @@ import {
   type RecordedContainmentIdentity,
 } from '../../../infra/process-containment.js';
 import {
-  observeRetainedSpawnedProcessGroup,
-  retainSpawnedProcessGroupCleanup,
+  observeUnattributableSpawnedProcessGroup,
   type SpawnedProcessGroupAbsenceEvidence,
 } from '../../../infra/process-supervision.js';
 import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
@@ -240,15 +239,12 @@ export async function reobserveDurableProviderProxyAcquisitionContainment(
         reason: 'spawned process-group attribution remains unavailable',
       };
     }
-    const observation = observeRetainedSpawnedProcessGroup(
-      retainSpawnedProcessGroupCleanup(subjectInput.processGroupId),
-      runtime,
-    );
+    const observation = observeUnattributableSpawnedProcessGroup(subjectInput.processGroupId, runtime);
     return observation.kind === 'observed-absent'
       ? { kind: 'containment-absent', evidence: preIdentityRoleSpawnAbsenceEvidence(observation.evidence) }
       : {
           kind: 'held',
-          observation: observation.observation === 'alive' ? 'alive' : 'unknown',
+          observation: 'unknown',
           reason: `spawned_process_group_${observation.observation}`,
         };
   }

@@ -1006,7 +1006,7 @@ export class DefaultProviderHostManager
       const spawnCleanup = matched.spawnCleanupHold;
       if (spawnCleanup !== null) {
         const settlement = matched.spawnPromise;
-        spawnCleanup.operatorExit.abandon();
+        await spawnCleanup.operatorExit.abandon();
         if (settlement !== null) await settlement.catch(() => undefined);
         return true;
       }

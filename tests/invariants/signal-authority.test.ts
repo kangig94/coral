@@ -1,28 +1,7 @@
-// Signal-authority invariant — a signal aimed at a *number* must first establish that the number still names
-// the process it was recorded for.
-//
-// A pid is not an identity: the OS recycles it. `child.kill('SIGTERM')` is therefore out of scope here, and
-// deliberately so — the handle names one child, and Node refuses to signal through it once that child has been
-// reaped. `process.kill(pid, sig)` has no such protection. Whatever the number meant when it was written down,
-// nothing revalidates it at the moment of the call, and the failure is silent: SIGKILL to a stranger.
-//
-// This is not hypothetical and it is not rare. `incarnationMayAuthorizeSignal` exists because a macOS
-// incarnation is wall-clock at one-second resolution and cannot carry this weight at all.
-// A rule enforced by reading is a rule enforced at whatever rate people read.
-//
-// Recorded-pid calls are checked after exact self-pid and port-forwarding calls are removed. A safe call in
-// one module must never exempt a recorded-pid sibling in the same module.
-//
-// Signal 0 is not a signal. `kill(pid, 0)` and `kill(-pid, 0)` are liveness probes; the worst a recycled pid
-// does there is answer a question wrongly, which every caller already treats as inconclusive.
-//
-// One limitation, stated because a scan that hides its blind spots is worse than none: a signal delivered
-// through a *helper* is attributed to the helper's file, not the caller's. `gracefulKillByPid` lives in
-// `infra/process-supervision.ts`, so its callers (`live/durable-transport.ts`,
-// `services/recovery/actions.ts`) are invisible here. Guarding one call inside an allowlisted file and
-// deleting its entry would therefore pass while its siblings stay unguarded. Until every pid signal goes
-// through one identity-bearing helper, the remaining ALLOWLIST names modules, and
-// `docs/todo/durable-cli-signal-authority.md` names the behavioural paths.
+// Every non-probe signal aimed at a number must refresh the exact target identity inside its enclosing
+// signalling function. A guarded sibling cannot authorize another function in the same module.
+// `child.kill(signal)` remains outside the scan because the child handle, rather than a reusable number,
+// carries the target authority. Signal-zero probes carry no delivery authority.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -33,6 +12,7 @@ import { bindWithHandoff, HandoffEscalationError, type HandoffOptions } from '..
 import type { Runtime } from '../../src/runtime/ports.js';
 import type { IncumbentIdentity } from '../../src/transport/ipc/handoff.js';
 import { codeTextOnly } from '../helpers/ts-code-text.js';
+import { isFunctionScope } from '../helpers/ts-function-scope.js';
 import { testIncarnation } from '../helpers/process-incarnation.js';
 
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -40,37 +20,13 @@ const SRC_ROOT = 'src';
 
 const AUTHORITY_OWNER_FILE = 'src/infra/node-process.ts';
 
-/**
- * Files that signal a bare pid without consulting the rule, each with what stands in for it.
- *
- * An entry is a claim, and a claim that stops being true is worse than no claim — so keep them specific
- * enough to be falsified. "It is probably fine" is not an entry.
- */
-const ALLOWLIST = new Map<string, string>([
+/** Exact calls whose target identity is intrinsic to the call site rather than a recorded number. */
+const EXACT_CALL_ALLOWLIST = new Map<string, string>([
   [
-    'src/runtime/real.ts',
-    // The port itself. It forwards a signal it is handed and holds no record to check one against; the
-    // authority belongs to whoever produced the number.
+    'src/runtime/real.ts:process.kill(pid)',
     'the process port that forwards kill(); it has no recorded identity of its own to check',
   ],
-  [
-    'src/cli/run.ts',
-    // `kill(process.pid, …)` — the caller's own pid, re-raising a signal on itself so the shell sees the
-    // real cause of death. A process cannot be a stranger to itself.
-    'signals its own pid to re-raise a handoff signal',
-  ],
-  [
-    'src/runtime/exec-builder.ts',
-    // Signals the child it is at that moment awaiting, on timeout or maxBuffer, through an injected `kill`.
-    // The exposure is real but a different size: the window is the single event-loop
-    // turn between the child exiting and its 'close' reaching the `resolved` guard, not a pid recovered from
-    // a record written before a restart. Recorded rather than waved through, and it is the site that proved
-    // the scan's own blind spot.
-    'signals a child it currently holds and awaits; one-turn exit/close race, tracked with the others',
-  ],
-]);
-
-const EXACT_CALL_ALLOWLIST = new Map<string, string>([
+  ['src/cli/run.ts:process.kill(process.pid)', 'signals its own pid to re-raise a handoff signal'],
   ['src/cli/commands/backend.ts:process.kill(process.pid)', 'signals its own pid to re-raise a continuation signal'],
   [
     'src/runtime/durable-cli-wrapper.ts:process.kill(-process.pid)',
@@ -100,18 +56,7 @@ function canonicalSrcPath(filePath: string): string {
   return relative(REPO_ROOT, filePath).replace(/\\/gu, '/');
 }
 
-/**
- * Whether a file signals a pid rather than a held child.
- *
- * Read from the AST rather than a regex, because the distinction that matters is the call's *arity and
- * argument shape*: `kill(sig)` is a handle, `kill(pid, sig)` is a number, and `kill(pid, 0)` is a question.
- * Text cannot separate those without reimplementing the parser.
- *
- * Both call shapes count, and the second is why: an earlier version matched only `something.kill(pid, sig)`
- * and was blind to `kill(-child.pid, signal)` where `kill` is an *injected function* — which is exactly what
- * `runtime/exec-builder.ts` does. The scan reported a complete enumeration while missing a real signal path,
- * which is worse than not scanning, because the empty result was read as proof.
- */
+/** The scan must distinguish handle calls, numeric delivery calls, and signal-zero probes from the AST. */
 function barePidSignalCalls(source: string, fileName: string): readonly ts.CallExpression[] {
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const found: ts.CallExpression[] = [];
@@ -139,22 +84,55 @@ function exactCallKey(call: ts.CallExpression, source: ts.SourceFile): string | 
     ts.isPropertyAccessExpression(call.expression) &&
     call.expression.expression.getText(source) === 'process' &&
     call.expression.name.text === 'kill' &&
-    firstArgument !== undefined &&
-    (firstArgument.getText(source) === 'process.pid' || firstArgument.getText(source) === '-process.pid')
+    firstArgument !== undefined
   ) {
     return `${canonicalSrcPath(source.fileName)}:process.kill(${firstArgument.getText(source)})`;
   }
   return null;
 }
 
-function signalsABarePid(source: string, fileName: string): boolean {
-  return barePidSignalCalls(source, fileName).length > 0;
+function enclosingSignallingFunction(call: ts.CallExpression): ts.FunctionLikeDeclaration | null {
+  let scope: ts.Node | undefined = call;
+  while (scope !== undefined && !isFunctionScope(scope)) scope = scope.parent;
+  return scope !== undefined && isFunctionScope(scope) ? scope : null;
 }
 
-function refusesWithoutSignalAuthority(source: string): boolean {
-  return /if\s*\(\s*!\s*incarnationMayAuthorizeSignal\s*\([^)]*\)\s*\)\s*(?:\{\s*)?return\b/u.test(
-    codeTextOnly(source),
-  );
+function signallingFunctionName(scope: ts.FunctionLikeDeclaration, source: ts.SourceFile): string {
+  if ('name' in scope && scope.name !== undefined) return scope.name.getText(source);
+  const parent = scope.parent;
+  if (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent)) return parent.name.getText(source);
+  return '<anonymous-signalling-function>';
+}
+
+function establishesSignalAuthority(source: string): boolean {
+  const text = codeTextOnly(source);
+  // A branded capability the wrong evidence cannot construct carries the same authority as an inline
+  // guard: `verifySignalTarget` refuses unless it refreshed the exact identity, and nothing else mints one.
+  if (/verifySignalTarget\s*\(/u.test(text) || /\bHandoffSignalCapability\b/u.test(text)) return true;
+  // The refusal must end the `if` it opens: a tail that could run past `{`, `}` or `;` would be satisfied
+  // by any later brace in the scanned text, which is how a module-wide scan read a guard that was not there.
+  const refusesInsufficientPlatformAuthority =
+    /if\s*\([\s\S]*?!\s*(?:incarnationMayAuthorizeSignal|identityMayAuthorizeSignal)\s*\([^)]*\)[^{};]*?\)\s*(?:\{|return\b)/u.test(
+      text,
+    );
+  const refreshesExactIdentity =
+    /readProcessIncarnation\s*\(/u.test(text) ||
+    /readIncarnation\s*\(/u.test(text) ||
+    /observeRecordedTarget\s*\(/u.test(text);
+  return refusesInsufficientPlatformAuthority && refreshesExactIdentity;
+}
+
+function unguardedSignallingFunctions(source: string, fileName: string): readonly string[] {
+  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const violations = new Set<string>();
+  for (const call of barePidSignalCalls(source, fileName)) {
+    if (EXACT_CALL_ALLOWLIST.has(exactCallKey(call, parsed) ?? '')) continue;
+    const scope = enclosingSignallingFunction(call);
+    if (scope === null || !establishesSignalAuthority(scope.getText(parsed))) {
+      violations.add(scope === null ? '<module-scope>' : signallingFunctionName(scope, parsed));
+    }
+  }
+  return [...violations];
 }
 
 describe('a signal aimed at a pid establishes that the pid is still its recorded process', () => {
@@ -162,13 +140,9 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     const violations: string[] = [];
     for (const filePath of listSourceFiles(SRC_ROOT)) {
       const canonical = canonicalSrcPath(filePath);
-      if (canonical === AUTHORITY_OWNER_FILE || ALLOWLIST.has(canonical)) continue;
+      if (canonical === AUTHORITY_OWNER_FILE) continue;
       const source = readFileSync(filePath, 'utf-8');
-      const parsed = ts.createSourceFile(canonical, source, ts.ScriptTarget.Latest, true);
-      const recordedPidCalls = barePidSignalCalls(source, canonical).filter(
-        (call) => !EXACT_CALL_ALLOWLIST.has(exactCallKey(call, parsed) ?? ''),
-      );
-      if (recordedPidCalls.length > 0 && !refusesWithoutSignalAuthority(source)) violations.push(canonical);
+      for (const scope of unguardedSignallingFunctions(source, canonical)) violations.push(`${canonical}::${scope}`);
     }
     // To resolve: refuse when `incarnationMayAuthorizeSignal(platform)` is false and compare the recorded
     // incarnation against a fresh probe — or add an ALLOWLIST entry stating what else proves the pid.
@@ -176,13 +150,6 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
   });
 
   it('every exemption still signals a bare pid (stale entries are removed)', () => {
-    const stale: string[] = [];
-    for (const canonical of ALLOWLIST.keys()) {
-      const source = readFileSync(join(REPO_ROOT, canonical), 'utf-8');
-      if (!signalsABarePid(source, canonical)) stale.push(canonical);
-    }
-    expect(stale.sort()).toEqual([]);
-
     const staleCalls: string[] = [];
     for (const key of EXACT_CALL_ALLOWLIST.keys()) {
       const separator = key.indexOf(':');
@@ -193,6 +160,32 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       if (!keys.includes(key)) staleCalls.push(key);
     }
     expect(staleCalls.sort()).toEqual([]);
+  });
+
+  it('does not let a guarded sibling hide an unguarded signalling function', () => {
+    const fixture = `
+      function guarded(runtime: Runtime, pid: number, incarnation: ProcessIncarnation, platform: NodeJS.Platform) {
+        if (!incarnationMayAuthorizeSignal(platform)) return;
+        if (runtime.process.readProcessIncarnation(pid, platform) !== incarnation) return;
+        runtime.process.kill(pid, 'SIGTERM');
+      }
+      function unguarded(runtime: Runtime, pid: number) {
+        runtime.process.kill(pid, 'SIGKILL');
+      }
+    `;
+
+    expect(unguardedSignallingFunctions(fixture, 'negative-control.ts')).toEqual(['unguarded']);
+  });
+
+  it('rejects a platform guard that never refreshes the recorded identity', () => {
+    const fixture = `
+      function staleAuthority(runtime: Runtime, pid: number, platform: NodeJS.Platform) {
+        if (!incarnationMayAuthorizeSignal(platform)) return;
+        runtime.process.kill(pid, 'SIGTERM');
+      }
+    `;
+
+    expect(unguardedSignallingFunctions(fixture, 'negative-control.ts')).toEqual(['staleAuthority']);
   });
 
   it('the backend recorded-role signal has platform authority and a fresh matching incarnation', () => {

@@ -27,7 +27,7 @@ const REGISTRY = [
 
 const STRUCTURAL_SUBTYPE_REGISTRY = new Set<string>(['src/provider-proxy/control-client.ts#ControlExchange']);
 
-const REGISTRY_SHA256 = 'c87118cf5fb4584e1f4dbf6cca8da309a59542e1727eae48fcf14faa1c7f3cfe';
+const REGISTRY_SHA256 = '7968fa892077e41bb6ef9e2de0fd20bb2e825e0ea087cfcb7338c3b4ebe93aae';
 
 const ALLOWLIST = new Map<string, string>([
   ['src/runtime/ports.ts#ProcessPort.spawn', 'spawn failure is still reported later by the child error event'],

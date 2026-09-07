@@ -993,6 +993,14 @@ export function createCoordinatorCore(
             effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
           };
         }
+        if (abandonment.kind === 'transfer-pending') {
+          return {
+            kind: 'containment-unconfirmed',
+            setIdentity: request.setIdentity,
+            recoveryAction: { kind: 'retry-exact-set-containment' },
+            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+          };
+        }
       }
       return {
         ...authorization,

@@ -81,7 +81,8 @@ describe('provider transport concurrency hardening', () => {
     runtime.time.tick(PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS - 1);
     await flushMicrotasks();
     expect(observed.settled).toBe(false);
-    expect(runtime.spawner.killCalls).toEqual([{ pid: -20_000, signal: 0 }]);
+    // Admitting the spawned group is an observation, never a signal aimed at the group number.
+    expect(runtime.spawner.killCalls).toEqual([]);
 
     runtime.time.tick(1);
     await flushMicrotasks(2_000);

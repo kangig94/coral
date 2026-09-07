@@ -517,6 +517,8 @@ type RecordedSetSignalResult =
   | Readonly<{ kind: 'recorded-group-unattributable' }>
   | Readonly<{ kind: 'signal-authorization-refused' }>;
 
+type RecordedSignalDelivery = 'delivered' | 'not-delivered' | 'authorization-refused';
+
 function knownLiveChildMayAuthorizeSignal<Scope extends symbol>(
   identity: RecordedProcessIdentity,
   environment: ProcessContainmentEnvironment<Scope>,
@@ -535,19 +537,28 @@ function identityMayAuthorizeSignal<Scope extends symbol>(
 }
 
 function deliverSignal<Scope extends symbol>(
+  identity: RecordedProcessIdentity,
   pid: number,
   signal: NodeJS.Signals,
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
-): boolean {
+): RecordedSignalDelivery {
   const callStartedAt = environment.clock.now();
   assertContainmentAuthorized(environment.signal);
   assertSignalCallWithinBounds(callStartedAt, exitDeadline, environment);
+  if (!identityMayAuthorizeSignal(identity, environment)) return 'authorization-refused';
+  if (
+    incarnationMayAuthorizeSignal(environment.platform) &&
+    readIncarnation(identity, environment) !== identity.incarnation
+  ) {
+    return 'authorization-refused';
+  }
+  if (environment.process.observeLiveness(pid) !== 'alive') return 'not-delivered';
   environment.assertSignalAuthorized?.();
   const delivered = environment.process.kill(pid, signal);
   if (delivered) environment.onSignal?.({ pid, signal });
   assertSignalCallWithinBounds(callStartedAt, exitDeadline, environment);
-  return delivered;
+  return delivered ? 'delivered' : 'not-delivered';
 }
 
 async function signalRecordedSet<Scope extends symbol>(
@@ -573,8 +584,9 @@ async function signalRecordedSet<Scope extends symbol>(
       if (refreshed.kind === 'unobservable') throwObservationFailure(refreshed.reason, 'exit deadline');
       if (refreshed.observation === 'recorded-group-unattributable') return { kind: refreshed.observation };
       if (refreshed.observation === 'present') {
-        if (!identityMayAuthorizeSignal(containment, environment)) authorizationRefused = true;
-        else if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
+        const delivery = deliverSignal(containment, -containment.processGroupId, signal, exitDeadline, environment);
+        if (delivery === 'authorization-refused') authorizationRefused = true;
+        else if (delivery === 'delivered') delivered += 1;
       }
     }
     for (const [index, root] of recordedRoots.entries()) {
@@ -582,11 +594,9 @@ async function signalRecordedSet<Scope extends symbol>(
       const refreshed = await observeProcessIdentityAsync(root, exitDeadline, environment);
       if (refreshed.kind === 'unobservable') throwObservationFailure(refreshed.reason, 'exit deadline');
       if (refreshed.observation !== 'present') continue;
-      if (!identityMayAuthorizeSignal(root, environment)) {
-        authorizationRefused = true;
-        continue;
-      }
-      if (deliverSignal(root.pid, signal, exitDeadline, environment)) delivered += 1;
+      const delivery = deliverSignal(root, root.pid, signal, exitDeadline, environment);
+      if (delivery === 'authorization-refused') authorizationRefused = true;
+      else if (delivery === 'delivered') delivered += 1;
     }
   } catch (error: unknown) {
     if (error instanceof ProcessContainmentError) throw error;
@@ -607,16 +617,15 @@ function signalRecordedSetSynchronously<Scope extends symbol>(
   let authorizationRefused = false;
   try {
     if (observation.containment === 'present' && observeContainment(containment, environment) === 'present') {
-      if (!identityMayAuthorizeSignal(containment, environment)) authorizationRefused = true;
-      else if (deliverSignal(-containment.processGroupId, signal, exitDeadline, environment)) delivered += 1;
+      const delivery = deliverSignal(containment, -containment.processGroupId, signal, exitDeadline, environment);
+      if (delivery === 'authorization-refused') authorizationRefused = true;
+      else if (delivery === 'delivered') delivered += 1;
     }
     for (const [index, root] of recordedRoots.entries()) {
       if (observation.recordedRoots[index] === 'present' && observeProcessIdentity(root, environment) === 'present') {
-        if (!identityMayAuthorizeSignal(root, environment)) {
-          authorizationRefused = true;
-          continue;
-        }
-        if (deliverSignal(root.pid, signal, exitDeadline, environment)) delivered += 1;
+        const delivery = deliverSignal(root, root.pid, signal, exitDeadline, environment);
+        if (delivery === 'authorization-refused') authorizationRefused = true;
+        else if (delivery === 'delivered') delivered += 1;
       }
     }
   } catch (error: unknown) {

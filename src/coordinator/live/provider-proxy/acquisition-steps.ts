@@ -311,18 +311,17 @@ export function createProviderProxyAcquisitionSteps(
           throw new Error('A detached guardian spawn cannot retain a leader-only cleanup subject.');
         }
         const recoverySubject: PreIdentityRoleSpawnRecoverySubject =
-          spawned.subject.kind === 'process-group'
-            ? { kind: 'spawned-process-group', processGroupId: spawned.subject.processGroupId }
-            : { kind: 'unattributable-process-group' };
+          spawned.subject.processGroupId === null
+            ? { kind: 'unattributable-process-group' }
+            : { kind: 'spawned-process-group', processGroupId: spawned.subject.processGroupId };
         const operatorExit = {
           kind: 'abandon-provider-proxy-acquisition' as const,
           abandon: () => {
             const abandonment = spawned.operatorExit.abandon();
             const subjectMatches =
-              recoverySubject.kind === 'spawned-process-group'
-                ? abandonment.subject.kind === 'process-group' &&
-                  abandonment.subject.processGroupId === recoverySubject.processGroupId
-                : abandonment.subject.kind === 'unattributable-process-group';
+              abandonment.subject.kind === 'unattributable-process-group' &&
+              abandonment.subject.processGroupId ===
+                (recoverySubject.kind === 'spawned-process-group' ? recoverySubject.processGroupId : null);
             if (
               !subjectMatches ||
               abandonment.processAbsenceProven ||
@@ -347,8 +346,8 @@ export function createProviderProxyAcquisitionSteps(
           recoverySubject,
           operatorExit,
           recoveryCapability: {
-            retry: async () => {
-              const cleanup = await retry();
+            retry: async (signal) => {
+              const cleanup = await retry(signal);
               if (cleanup.kind !== 'observed-absent') {
                 retry = cleanup.retry;
                 return { kind: 'held', reason: `${cleanup.subject.kind}:${cleanup.observation}` };

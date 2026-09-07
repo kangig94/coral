@@ -62,7 +62,9 @@ function createProviderProcessRuntime(
   spawn: ReturnType<typeof vi.fn<ProcessPort['spawn']>>;
   childKill: ReturnType<typeof vi.fn<(signal?: NodeJS.Signals) => boolean>>;
   processKill: ReturnType<typeof vi.fn<ProcessPort['kill']>>;
+  observeLiveness: ReturnType<typeof vi.fn<ProcessPort['observeLiveness']>>;
   platform: ReturnType<typeof vi.fn<() => string>>;
+  releaseProcessGroup: () => void;
 } {
   const events = new EventEmitter();
   let processAlive = true;
@@ -131,7 +133,11 @@ function createProviderProcessRuntime(
     spawn,
     childKill,
     processKill,
+    observeLiveness,
     platform: readPlatform,
+    releaseProcessGroup: () => {
+      groupAlive = false;
+    },
   };
 }
 
@@ -173,7 +179,8 @@ describe('launch admission', () => {
       incarnation: TEST_PROVIDER_INCARNATION,
       processGroupId: TEST_PROVIDER_PID,
     });
-    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 0);
+    expect(fake.observeLiveness).toHaveBeenCalledWith(-TEST_PROVIDER_PID);
+    expect(fake.processKill).not.toHaveBeenCalled();
     expect(fake.platform).toHaveBeenCalled();
     expect(handle.containmentIdentity.processGroupId).toBe(handle.containmentIdentity.pid);
 
@@ -217,7 +224,7 @@ describe('launch admission', () => {
     },
   );
 
-  it('kills a coordinator-local provider group whose incarnation cannot be read', async () => {
+  it('holds a coordinator-local provider group whose incarnation cannot be read instead of signalling it', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux', null);
     const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
     const manager = new DefaultProviderHostManager({
@@ -226,21 +233,29 @@ describe('launch admission', () => {
       carrierBlocksRetirement: () => false,
     });
 
-    await expect(
-      manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), { jobId: 'job-a' }),
-    ).rejects.toMatchObject({
+    const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
+      jobId: 'job-a',
+    });
+    await vi.waitFor(() =>
+      expect(manager.listProviderHosts().some((entry) => entry.status === 'reclamation-failed')).toBe(true),
+    );
+    expect(fake.processKill).not.toHaveBeenCalled();
+    expect(fake.childKill).not.toHaveBeenCalled();
+
+    fake.releaseProcessGroup();
+    await expect(admission).rejects.toMatchObject({
       code: 'process_identity_unverified',
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(fake.processKill).not.toHaveBeenCalled();
     expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
     expect(manager.listProviderHosts().some((entry) => entry.status === 'live')).toBe(false);
     await manager.shutdown();
-  });
+  }, 30_000);
 
-  it('kills a coordinator-local provider group when reading its incarnation throws', async () => {
+  it('holds a coordinator-local provider group when reading its incarnation throws', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID);
     const runtime: Runtime = {
       ...fake.runtime,
@@ -258,19 +273,27 @@ describe('launch admission', () => {
       carrierBlocksRetirement: () => false,
     });
 
-    await expect(
-      manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), { jobId: 'job-a' }),
-    ).rejects.toMatchObject({
+    const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
+      jobId: 'job-a',
+    });
+    await vi.waitFor(() =>
+      expect(manager.listProviderHosts().some((entry) => entry.status === 'reclamation-failed')).toBe(true),
+    );
+    expect(fake.processKill).not.toHaveBeenCalled();
+    expect(fake.childKill).not.toHaveBeenCalled();
+
+    fake.releaseProcessGroup();
+    await expect(admission).rejects.toMatchObject({
       code: 'process_identity_unverified',
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(fake.processKill).not.toHaveBeenCalled();
     expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
     expect(manager.listProviderHosts().some((entry) => entry.status === 'live')).toBe(false);
     await manager.shutdown();
-  });
+  }, 30_000);
 
   it('accepts observed group absence when a coordinator-local provider process-group probe fails', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, false);
@@ -285,11 +308,11 @@ describe('launch admission', () => {
       manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), { jobId: 'job-a' }),
     ).rejects.toMatchObject({
       code: 'process_identity_unverified',
-      message: expect.stringContaining('is not a process-group leader'),
+      message: expect.stringContaining('has no attributable live process group'),
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 0);
-    expect(fake.processKill).not.toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(fake.observeLiveness).toHaveBeenCalledWith(-TEST_PROVIDER_PID);
+    expect(fake.processKill).not.toHaveBeenCalled();
     expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
@@ -1150,7 +1173,8 @@ describe('launch admission', () => {
     abort.abort();
     const holdControl = holdControls.at(-1);
     if (holdControl === undefined) throw new Error('Expected durable containment abandonment control');
-    holdControl.abandon();
+    // Abandonment refuses while a cleanup attempt is settling; its named exit is repeating the abort.
+    await vi.waitFor(() => expect(holdControl.abandon()).toMatchObject({ kind: 'abandoned' }));
 
     await expect(spawn).resolves.toMatchObject({ code: 0, aborted: true });
     expect(
@@ -1270,6 +1294,12 @@ describe('launch admission', () => {
     await retainedCleanup();
     processAbsent = true;
     retryCleanup();
+    expect(holdControl?.abandon()).toEqual({
+      kind: 'retained',
+      reason: 'the active durable containment cleanup attempt is still settling',
+      nextStep: 'Retry the abort after the active cleanup attempt settles.',
+    });
+    expect(cleanupOwnership.cleanupHandles.size).toBe(1);
     await retainedCleanup();
 
     expect(absencePublicationAttempts).toBe(1);

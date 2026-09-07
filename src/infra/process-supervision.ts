@@ -14,7 +14,8 @@ const spawnedProcessGroupAbsenceEvidenceBrand: unique symbol = Symbol(
 
 export type SpawnedProcessGroupCleanup<ProcessGroupId extends number = number> = Readonly<{
   processGroupId: ProcessGroupId;
-  cleanup(runtime: Runtime): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
+  leaderIncarnation: ProcessIncarnation;
+  cleanup(runtime: Runtime, signal?: AbortSignal): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
   [spawnedProcessGroupCleanupBrand]: true;
 }>;
 
@@ -33,6 +34,19 @@ export type SpawnedProcessGroupObservedAbsent<ProcessGroupId extends number = nu
   evidence: SpawnedProcessGroupAbsenceEvidence<ProcessGroupId>;
 }>;
 
+export type UnattributableSpawnedProcessGroupObservation<ProcessGroupId extends number = number> =
+  | SpawnedProcessGroupObservedAbsent<ProcessGroupId>
+  | Readonly<{
+      kind: 'held-unattributable';
+      subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId>;
+      observation: 'unattributable';
+    }>
+  | Readonly<{
+      kind: 'held-unobservable';
+      subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId>;
+      observation: 'unobservable';
+    }>;
+
 export type SpawnedProcessGroupCleanupDisposition<ProcessGroupId extends number = number> =
   | SpawnedProcessGroupObservedAbsent<ProcessGroupId>
   | Readonly<{
@@ -40,25 +54,27 @@ export type SpawnedProcessGroupCleanupDisposition<ProcessGroupId extends number 
       subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId>;
       observation: 'alive';
       exit: 'process-group-absence';
-      retry(): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
+      retry(signal?: AbortSignal): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
     }>
   | Readonly<{
       kind: 'held-unobservable';
       subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId>;
       observation: 'unobservable';
       exit: 'process-group-absence';
-      retry(): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
+      retry(signal?: AbortSignal): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
     }>;
 
 export function retainSpawnedProcessGroupCleanup<ProcessGroupId extends number>(
   processGroupId: ProcessGroupId,
+  leaderIncarnation: ProcessIncarnation,
 ): SpawnedProcessGroupCleanup<ProcessGroupId> {
   if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
     throw new RangeError(`Spawned process-group id must be a positive safe integer; received ${processGroupId}.`);
   }
   const capability = Object.freeze({
     processGroupId,
-    cleanup: (runtime: Runtime) => cleanupSpawnedProcessGroup(capability, runtime),
+    leaderIncarnation,
+    cleanup: (runtime: Runtime, signal?: AbortSignal) => cleanupSpawnedProcessGroup(capability, runtime, signal),
   }) as SpawnedProcessGroupCleanup<ProcessGroupId>;
   return capability;
 }
@@ -67,20 +83,25 @@ function observeSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
   runtime: Runtime,
 ): 'alive' | 'absent' | 'unobservable' {
+  const platform = runtime.env.platform() as NodeJS.Platform;
   try {
-    const liveness = runtime.process.observeLiveness(-cleanup.processGroupId);
-    return liveness === 'unknown' ? 'unobservable' : liveness;
+    const observedIncarnation = runtime.process.readProcessIncarnation(cleanup.processGroupId, platform);
+    const groupLiveness = runtime.process.observeLiveness(-cleanup.processGroupId);
+    if (groupLiveness === 'absent') return 'absent';
+    if (groupLiveness === 'unknown') return 'unobservable';
+    if (!incarnationMayAuthorizeSignal(platform)) return 'unobservable';
+    return observedIncarnation === cleanup.leaderIncarnation ? 'alive' : 'unobservable';
   } catch {
     return 'unobservable';
   }
 }
 
 function observedSpawnedProcessGroupAbsent<ProcessGroupId extends number>(
-  cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
+  processGroupId: ProcessGroupId,
 ): SpawnedProcessGroupObservedAbsent<ProcessGroupId> {
   const subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId> = {
     kind: 'process-group',
-    processGroupId: cleanup.processGroupId,
+    processGroupId,
   };
   return {
     kind: 'observed-absent',
@@ -97,7 +118,7 @@ function heldSpawnedProcessGroupCleanup<ProcessGroupId extends number>(
     kind: 'process-group',
     processGroupId: cleanup.processGroupId,
   };
-  const retry = () => cleanupSpawnedProcessGroup(cleanup, runtime);
+  const retry = (signal?: AbortSignal) => cleanupSpawnedProcessGroup(cleanup, runtime, signal);
   return observation === 'alive'
     ? { kind: 'held-alive', subject, observation, exit: 'process-group-absence', retry }
     : { kind: 'held-unobservable', subject, observation, exit: 'process-group-absence', retry };
@@ -109,51 +130,103 @@ export function observeRetainedSpawnedProcessGroup<ProcessGroupId extends number
 ): SpawnedProcessGroupCleanupDisposition<ProcessGroupId> {
   const observation = observeSpawnedProcessGroup(cleanup, runtime);
   return observation === 'absent'
-    ? observedSpawnedProcessGroupAbsent(cleanup)
+    ? observedSpawnedProcessGroupAbsent(cleanup.processGroupId)
     : heldSpawnedProcessGroupCleanup(cleanup, runtime, observation);
+}
+
+/**
+ * The kernel may recycle a process-group id, so a present group under that number is not evidence that the
+ * spawned group is alive; only its absence is decisive for whatever once held the number.
+ */
+export function observeUnattributableSpawnedProcessGroup<ProcessGroupId extends number>(
+  processGroupId: ProcessGroupId,
+  runtime: Runtime,
+): UnattributableSpawnedProcessGroupObservation<ProcessGroupId> {
+  const subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId> = { kind: 'process-group', processGroupId };
+  let liveness: ProcessLiveness;
+  try {
+    liveness = runtime.process.observeLiveness(-processGroupId);
+  } catch {
+    return { kind: 'held-unobservable', subject, observation: 'unobservable' };
+  }
+  if (liveness === 'absent') return observedSpawnedProcessGroupAbsent(processGroupId);
+  if (liveness === 'alive') return { kind: 'held-unattributable', subject, observation: 'unattributable' };
+  return { kind: 'held-unobservable', subject, observation: 'unobservable' };
+}
+
+function signalSpawnedProcessGroup<ProcessGroupId extends number>(
+  cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
+  runtime: Runtime,
+  signal: NodeJS.Signals,
+  abortSignal?: AbortSignal,
+): 'delivered' | 'alive' | 'absent' | 'unobservable' {
+  if (abortSignal?.aborted) return observeSpawnedProcessGroup(cleanup, runtime);
+  const platform = runtime.env.platform() as NodeJS.Platform;
+  if (!incarnationMayAuthorizeSignal(platform)) return observeSpawnedProcessGroup(cleanup, runtime);
+  try {
+    const observedIncarnation = runtime.process.readProcessIncarnation(cleanup.processGroupId, platform);
+    if (observedIncarnation !== cleanup.leaderIncarnation) return observeSpawnedProcessGroup(cleanup, runtime);
+    const groupLiveness = runtime.process.observeLiveness(-cleanup.processGroupId);
+    if (groupLiveness !== 'alive') return groupLiveness === 'absent' ? 'absent' : 'unobservable';
+    if (abortSignal?.aborted) return 'alive';
+    runtime.process.kill(-cleanup.processGroupId, signal);
+    return 'delivered';
+  } catch {
+    return observeSpawnedProcessGroup(cleanup, runtime);
+  }
+}
+
+function dispositionForSpawnedProcessGroupObservation<ProcessGroupId extends number>(
+  cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
+  runtime: Runtime,
+  observation: 'alive' | 'absent' | 'unobservable',
+): SpawnedProcessGroupCleanupDisposition<ProcessGroupId> {
+  return observation === 'absent'
+    ? observedSpawnedProcessGroupAbsent(cleanup.processGroupId)
+    : heldSpawnedProcessGroupCleanup(cleanup, runtime, observation);
+}
+
+async function waitForSpawnedProcessGroupGrace(
+  runtime: Runtime,
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    await runtime.time.sleep(milliseconds, signal === undefined ? undefined : { signal });
+  } catch (error: unknown) {
+    if (!signal?.aborted) throw error;
+  }
 }
 
 export async function cleanupSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
   runtime: Runtime,
+  signal?: AbortSignal,
 ): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>> {
   const initialObservation = observeSpawnedProcessGroup(cleanup, runtime);
-  if (initialObservation === 'absent') return observedSpawnedProcessGroupAbsent(cleanup);
-  if (initialObservation === 'unobservable') {
-    return heldSpawnedProcessGroupCleanup(cleanup, runtime, initialObservation);
-  }
+  if (initialObservation !== 'alive' || signal?.aborted)
+    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, initialObservation);
 
-  try {
-    runtime.process.kill(-cleanup.processGroupId, 'SIGTERM');
-  } catch {
-    // Signal delivery does not prove whether the process group remains alive.
-  }
+  const sigterm = signalSpawnedProcessGroup(cleanup, runtime, 'SIGTERM', signal);
+  if (sigterm !== 'delivered') return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, sigterm);
   const immediatelyAfterSigterm = observeSpawnedProcessGroup(cleanup, runtime);
-  if (immediatelyAfterSigterm === 'absent') return observedSpawnedProcessGroupAbsent(cleanup);
-  if (immediatelyAfterSigterm === 'unobservable') {
-    return heldSpawnedProcessGroupCleanup(cleanup, runtime, immediatelyAfterSigterm);
-  }
-  await runtime.time.sleep(SIGTERM_GRACE_MS);
+  if (immediatelyAfterSigterm !== 'alive')
+    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, immediatelyAfterSigterm);
+  await waitForSpawnedProcessGroupGrace(runtime, SIGTERM_GRACE_MS, signal);
 
   const afterSigterm = observeSpawnedProcessGroup(cleanup, runtime);
-  if (afterSigterm === 'absent') return observedSpawnedProcessGroupAbsent(cleanup);
-  if (afterSigterm === 'unobservable') return heldSpawnedProcessGroupCleanup(cleanup, runtime, afterSigterm);
+  if (afterSigterm !== 'alive' || signal?.aborted)
+    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, afterSigterm);
 
-  try {
-    runtime.process.kill(-cleanup.processGroupId, 'SIGKILL');
-  } catch {
-    // Signal delivery does not prove whether the process group remains alive.
-  }
+  const sigkill = signalSpawnedProcessGroup(cleanup, runtime, 'SIGKILL', signal);
+  if (sigkill !== 'delivered') return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, sigkill);
   const immediatelyAfterSigkill = observeSpawnedProcessGroup(cleanup, runtime);
-  if (immediatelyAfterSigkill === 'absent') return observedSpawnedProcessGroupAbsent(cleanup);
-  if (immediatelyAfterSigkill === 'unobservable') {
-    return heldSpawnedProcessGroupCleanup(cleanup, runtime, immediatelyAfterSigkill);
-  }
-  await runtime.time.sleep(SIGKILL_GRACE_MS);
+  if (immediatelyAfterSigkill !== 'alive')
+    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, immediatelyAfterSigkill);
+  await waitForSpawnedProcessGroupGrace(runtime, SIGKILL_GRACE_MS, signal);
 
   const afterSigkill = observeSpawnedProcessGroup(cleanup, runtime);
-  if (afterSigkill === 'absent') return observedSpawnedProcessGroupAbsent(cleanup);
-  return heldSpawnedProcessGroupCleanup(cleanup, runtime, afterSigkill);
+  return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, afterSigkill);
 }
 
 type GracefulKillByPidSignalRefusal = Readonly<{
@@ -273,6 +346,10 @@ function settleGracefulKillByPid(
   return new Promise<GracefulKillByPidOutcome>((resolve, reject) => {
     const escalation = runtime.time.setTimeout(() => {
       try {
+        if (!incarnationMayAuthorizeSignal(platform)) {
+          resolve({ kind: 'signal-refused', pid, reason: 'platform-incarnation-cannot-authorize-signal' });
+          return;
+        }
         const observation = observeRecordedTarget(runtime, pid, platform, expectedIncarnation);
         if (observation === 'absent') {
           resolve({ kind: 'observed-absent', pid });

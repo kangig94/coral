@@ -212,6 +212,7 @@ export type ProviderProxySetOperatorExitCapability = Readonly<{
   notBeforeMonotonicMs: bigint;
   operatorExitGeneration: number;
   attemptToken: number;
+  priorDestructiveAttemptsSettled: Promise<void>;
   [operatorExitCapabilityBrand]: ProviderProxySetLifecycle;
 }>;
 
@@ -299,6 +300,9 @@ type PendingReleaseSlot = {
   | { kind: 'abandonment-delivery-pending'; releaseEvidence: OperatorAbandonmentEvidence }
 );
 
+/** Abandonment must be able to abort a destructive attempt and wait for it, not merely ignore its result. */
+type ProviderProxySetCleanupAttempt = Readonly<{ abort: AbortController; settlement: Promise<void> }>;
+
 type ProviderProxySetSlot =
   | {
       kind: 'acquiring';
@@ -309,6 +313,7 @@ type ProviderProxySetSlot =
       cleanupHold: ProviderProxySetAcquisitionCleanupHold | null;
       cleanupRetryTimer: TimerHandle | null;
       cleanupAttemptToken: number;
+      cleanupAttempt: ProviderProxySetCleanupAttempt | null;
     }
   | {
       kind: 'capsule-recovering';
@@ -522,6 +527,12 @@ export type ProviderProxySetDurableAcquisitionAbandonment =
       kind: 'live-exit-unavailable';
       reason: string;
       exit: 'acquisition-cleanup-retry';
+    }>
+  | Readonly<{
+      kind: 'transfer-pending';
+      reason: string;
+      waitingFor: 'cleanup-attempt-settlement';
+      exit: 'provider-proxy-set-operator-abandonment-retry';
     }>
   | Readonly<{
       kind: 'held';
@@ -953,6 +964,7 @@ export class ProviderProxySetLifecycle {
   readonly #deps: ProviderProxySetLifecycleDeps;
   readonly #identityIndex = new ProviderProxySetIdentityIndex();
   readonly #slots = new Map<string, ProviderProxySetSlot>();
+  readonly #destructiveAttemptSettlements = new WeakMap<object, Set<Promise<void>>>();
   readonly #routeIndex = new Map<string, ProviderProxySetKey>();
   readonly #capsuleAddresses = new Map<string, string>();
   readonly #capsuleGrants = new Map<string, string>();
@@ -976,6 +988,29 @@ export class ProviderProxySetLifecycle {
   >();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
+
+  #trackDestructiveAttempt<Outcome>(slot: object, operation: Promise<Outcome>): Promise<Outcome> {
+    const settlement = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    const active = this.#destructiveAttemptSettlements.get(slot) ?? new Set<Promise<void>>();
+    active.add(settlement);
+    this.#destructiveAttemptSettlements.set(slot, active);
+    void settlement.finally(() => {
+      active.delete(settlement);
+      if (active.size === 0) this.#destructiveAttemptSettlements.delete(slot);
+    });
+    return operation;
+  }
+
+  #destructiveAttemptsSettled(slot: object): Promise<void> {
+    let joined = Promise.resolve();
+    for (const settlement of this.#destructiveAttemptSettlements.get(slot) ?? []) {
+      joined = joined.then(() => settlement);
+    }
+    return joined;
+  }
 
   constructor(deps: ProviderProxySetLifecycleDeps) {
     this.#deps = deps;
@@ -1599,6 +1634,7 @@ export class ProviderProxySetLifecycle {
       cleanupHold: null,
       cleanupRetryTimer: null,
       cleanupAttemptToken: 0,
+      cleanupAttempt: null,
     });
     return { kind: 'accepted', slotId };
   }
@@ -1702,94 +1738,122 @@ export class ProviderProxySetLifecycle {
 
   #runAcquisitionCleanupRetry(slot: Extract<ProviderProxySetSlot, { kind: 'acquiring' }>): void {
     const hold = slot.cleanupHold;
-    if (hold === null) return;
+    if (hold === null || slot.cleanupAttempt !== null) return;
     const token = ++slot.cleanupAttemptToken;
-    void hold.recoveryCapability.retry(AbortSignal.timeout(CONTAINMENT_ATTEMPT_MS)).then((outcome) => {
-      const current = this.#slots.get(slot.slotId);
-      if (current !== slot || slot.cleanupAttemptToken !== token) return;
-      if (outcome.kind === 'absence-confirmed') {
-        if (hold.kind === 'provider_proxy_acquisition_held') {
-          if (outcome.evidence === undefined) {
-            this.#deps.onError?.('Provider proxy acquisition absence was reported without decisive evidence');
-            return;
-          }
-          try {
-            const record = this.#durableAcquisitionRecordForHold(hold);
-            const recording = this.#retireDurableAcquisitionDisposition(record, outcome.evidence);
-            if (recording.kind !== 'held') {
-              this.#slots.delete(slot.slotId);
-              if (outcome.strandedArtifacts.length > 0) {
-                this.#report(
-                  'warn',
-                  `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
-                );
+    const abort = new AbortController();
+    const timeout = this.#deps.time.setTimeout(
+      () => abort.abort(new Error('provider_proxy_acquisition_cleanup_attempt_deadline')),
+      CONTAINMENT_ATTEMPT_MS,
+    );
+    timeout.unref?.();
+    let markSettled!: () => void;
+    const attempt: ProviderProxySetCleanupAttempt = {
+      abort,
+      settlement: new Promise<void>((resolve) => {
+        markSettled = resolve;
+      }),
+    };
+    slot.cleanupAttempt = attempt;
+    void (async () => {
+      try {
+        const outcome = await hold.recoveryCapability.retry(abort.signal);
+        const current = this.#slots.get(slot.slotId);
+        if (current !== slot || slot.cleanupAttemptToken !== token || slot.cleanupAttempt !== attempt) return;
+        if (outcome.kind === 'absence-confirmed') {
+          if (hold.kind === 'provider_proxy_acquisition_held') {
+            if (outcome.evidence === undefined) {
+              this.#deps.onError?.('Provider proxy acquisition absence was reported without decisive evidence');
+              return;
+            }
+            try {
+              const record = this.#durableAcquisitionRecordForHold(hold);
+              const recording = this.#retireDurableAcquisitionDisposition(record, outcome.evidence);
+              if (recording.kind !== 'held') {
+                this.#slots.delete(slot.slotId);
+                if (outcome.strandedArtifacts.length > 0) {
+                  this.#report(
+                    'warn',
+                    `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
+                  );
+                }
+                this.#deps.onSlotReleased?.(slot.routeKey);
+                return;
               }
-              this.#deps.onSlotReleased?.(slot.routeKey);
+              this.#report(
+                'warn',
+                `Provider proxy acquisition absence remains held because durable retirement failed key=${record.key} error=${recording.reason}`,
+              );
+              this.#scheduleAcquisitionCleanupRetry(slot);
+              return;
+            } catch (error) {
+              this.#report(
+                'warn',
+                `Provider proxy acquisition absence remains held because durable retirement failed error=${singleLineErrorSummary(error)}`,
+              );
+              this.#scheduleAcquisitionCleanupRetry(slot);
+              return;
+            }
+          }
+          this.#slots.delete(slot.slotId);
+          if (outcome.strandedArtifacts.length > 0) {
+            this.#report(
+              'warn',
+              `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
+            );
+          }
+          this.#deps.onSlotReleased?.(slot.routeKey);
+          return;
+        }
+        const target =
+          hold.kind === 'provider_proxy_acquisition_held' ? acquisitionHoldTarget(hold) : `target=${hold.target}`;
+        const reason =
+          outcome.kind === 'delegated'
+            ? 'delegation returned before the lifecycle slot accepted ownership'
+            : outcome.reason;
+        if (hold.kind === 'provider_proxy_acquisition_held') {
+          try {
+            const recording = this.#recordDurableAcquisitionDisposition(slot.routeKey, hold, {
+              disposition: 'held',
+              incidentReason: singleLineErrorSummary(reason),
+              waitingFor: acquisitionHoldWaitingFor(hold),
+            });
+            if (recording.kind !== 'held') {
+              this.#report(
+                'warn',
+                `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(reason)}`,
+              );
+              this.#scheduleAcquisitionCleanupRetry(slot);
               return;
             }
             this.#report(
               'warn',
-              `Provider proxy acquisition absence remains held because durable retirement failed key=${record.key} error=${recording.reason}`,
+              `Provider proxy acquisition cleanup remains held because durable reporting failed ${acquisitionHoldTarget(hold)} error=${recording.reason}`,
             );
-            this.#scheduleAcquisitionCleanupRetry(slot);
-            return;
           } catch (error) {
             this.#report(
               'warn',
-              `Provider proxy acquisition absence remains held because durable retirement failed error=${singleLineErrorSummary(error)}`,
+              `Provider proxy acquisition cleanup remains held ${target} error=${singleLineErrorSummary(error)}`,
             );
-            this.#scheduleAcquisitionCleanupRetry(slot);
-            return;
           }
         }
-        this.#slots.delete(slot.slotId);
-        if (outcome.strandedArtifacts.length > 0) {
-          this.#report(
-            'warn',
-            `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
-          );
-        }
-        this.#deps.onSlotReleased?.(slot.routeKey);
-        return;
+        this.#report(
+          'warn',
+          `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(reason)}`,
+        );
+        this.#scheduleAcquisitionCleanupRetry(slot);
+      } catch (error: unknown) {
+        if (this.#slots.get(slot.slotId) !== slot || slot.cleanupAttemptToken !== token) return;
+        this.#report(
+          'warn',
+          `Provider proxy set acquisition cleanup remains held error=${singleLineErrorSummary(error)}`,
+        );
+        this.#scheduleAcquisitionCleanupRetry(slot);
+      } finally {
+        this.#deps.time.clearTimeout(timeout);
+        if (slot.cleanupAttempt === attempt) slot.cleanupAttempt = null;
+        markSettled();
       }
-      const target =
-        hold.kind === 'provider_proxy_acquisition_held' ? acquisitionHoldTarget(hold) : `target=${hold.target}`;
-      const reason =
-        outcome.kind === 'delegated'
-          ? 'delegation returned before the lifecycle slot accepted ownership'
-          : outcome.reason;
-      if (hold.kind === 'provider_proxy_acquisition_held') {
-        try {
-          const recording = this.#recordDurableAcquisitionDisposition(slot.routeKey, hold, {
-            disposition: 'held',
-            incidentReason: singleLineErrorSummary(reason),
-            waitingFor: acquisitionHoldWaitingFor(hold),
-          });
-          if (recording.kind !== 'held') {
-            this.#report(
-              'warn',
-              `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(reason)}`,
-            );
-            this.#scheduleAcquisitionCleanupRetry(slot);
-            return;
-          }
-          this.#report(
-            'warn',
-            `Provider proxy acquisition cleanup remains held because durable reporting failed ${acquisitionHoldTarget(hold)} error=${recording.reason}`,
-          );
-        } catch (error) {
-          this.#report(
-            'warn',
-            `Provider proxy acquisition cleanup remains held ${target} error=${singleLineErrorSummary(error)}`,
-          );
-        }
-      }
-      this.#report(
-        'warn',
-        `Provider proxy set acquisition cleanup remains held ${target} error=${singleLineErrorSummary(reason)}`,
-      );
-      this.#scheduleAcquisitionCleanupRetry(slot);
-    });
+    })();
   }
 
   #scheduleAcquisitionCleanupRetry(slot: Extract<ProviderProxySetSlot, { kind: 'acquiring' }>): void {
@@ -2041,6 +2105,21 @@ export class ProviderProxySetLifecycle {
         exit: 'acquisition-cleanup-retry',
       };
     }
+    const activeAttempts = liveSlots.flatMap(({ slot }) => (slot.cleanupAttempt === null ? [] : [slot.cleanupAttempt]));
+    if (activeAttempts.length > 0) {
+      for (const { slot } of liveSlots) {
+        slot.cleanupAttemptToken += 1;
+        slot.cleanupAttempt?.abort.abort(new Error('provider_proxy_acquisition_operator_abandonment_requested'));
+        if (slot.cleanupRetryTimer !== null) this.#deps.time.clearTimeout(slot.cleanupRetryTimer);
+        slot.cleanupRetryTimer = null;
+      }
+      return {
+        kind: 'transfer-pending',
+        reason: 'an acquisition cleanup attempt is still settling',
+        waitingFor: 'cleanup-attempt-settlement',
+        exit: 'provider-proxy-set-operator-abandonment-retry',
+      };
+    }
     const recording = this.#replaceOperatorDispositionRecords(
       [],
       records.map((record) => record.key),
@@ -2064,7 +2143,6 @@ export class ProviderProxySetLifecycle {
       ) {
         throw new Error('provider_proxy_acquisition_operator_exit_not_accepted');
       }
-      slot.cleanupAttemptToken += 1;
       if (slot.cleanupRetryTimer !== null) this.#deps.time.clearTimeout(slot.cleanupRetryTimer);
       slot.cleanupRetryTimer = null;
       slot.cleanupHold = null;
@@ -2398,6 +2476,7 @@ export class ProviderProxySetLifecycle {
         holdProviderProxyOperationControl(authorizedSlot.authority, 'operator-exit-fenced');
       }
     }
+    const priorDestructiveAttemptsSettled = this.#destructiveAttemptsSettled(authorizedSlot);
     const mutationFence = fenceProviderOperationMutations(authorizedSlot.identity);
     const operatorExitGeneration = authorizedSlot.operatorExitGeneration;
     const attemptToken = authorizedSlot.attemptToken;
@@ -2442,6 +2521,7 @@ export class ProviderProxySetLifecycle {
         notBeforeMonotonicMs,
         operatorExitGeneration,
         attemptToken,
+        priorDestructiveAttemptsSettled,
         [operatorExitCapabilityBrand]: this,
       }) as ProviderProxySetOperatorExitCapability,
     };
@@ -2497,6 +2577,7 @@ export class ProviderProxySetLifecycle {
     if (capability[operatorExitCapabilityBrand] !== this) {
       throw new Error('provider_proxy_operator_exit_capability_invalid');
     }
+    await capability.priorDestructiveAttemptsSettled;
     const evidence = providerProxySetContainmentEvidenceFor(
       proof,
       capability.setIdentity,
@@ -3804,7 +3885,10 @@ export class ProviderProxySetLifecycle {
           }
           const reapAbort = new AbortController();
           slot.attemptAbort = reapAbort;
-          void this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then(
+          void this.#trackDestructiveAttempt(
+            slot,
+            this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined),
+          ).then(
             (outcome) => {
               if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) {
                 if (outcome.kind === 'containment-absent') releaseProviderProxySetContainmentProofFence(proof);
@@ -4087,7 +4171,10 @@ export class ProviderProxySetLifecycle {
             }
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
-            void this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then(
+            void this.#trackDestructiveAttempt(
+              slot,
+              this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined),
+            ).then(
               (outcome) => {
                 if (!this.#isCurrentControlReattachment(slot, window, token)) {
                   if (outcome.kind === 'containment-absent') releaseProviderProxySetContainmentProofFence(proof);
@@ -4416,7 +4503,10 @@ export class ProviderProxySetLifecycle {
             }
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
-            void this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then(
+            void this.#trackDestructiveAttempt(
+              slot,
+              this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined),
+            ).then(
               (outcome) => {
                 if (!this.#isCurrentControlReattachment(slot, window, token)) {
                   if (outcome.kind === 'containment-absent') releaseProviderProxySetContainmentProofFence(proof);
@@ -5299,7 +5389,10 @@ export class ProviderProxySetLifecycle {
           const proof = value as ProviderProxySetFencedContainmentProof;
           const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
           if (evidence.kind === 'reap-required') {
-            void this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined).then(
+            void this.#trackDestructiveAttempt(
+              slot,
+              this.#reapRecordedContainment(slot.identity, proof, abort.signal, () => undefined),
+            ).then(
               (outcome) =>
                 this.#finishContainmentAttempt(
                   slot,
@@ -5351,7 +5444,11 @@ export class ProviderProxySetLifecycle {
         producerId: 'role-control',
         input: {
           signal: abort.signal,
-          run: (signal) => (slot.containmentAuthority ?? slot.authority).commitContainment(signal),
+          run: (signal) =>
+            this.#trackDestructiveAttempt(
+              slot,
+              (slot.containmentAuthority ?? slot.authority).commitContainment(signal),
+            ),
         },
         abort: (reason) => abort.abort(reason),
       });
