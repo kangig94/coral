@@ -295,6 +295,53 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 
     await expect(controls.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
   });
+
+  it('falls back to the legacy inventory address only when the current method is absent', async () => {
+    const methods: string[] = [];
+    const failure = {
+      kind: 'json-rpc-error' as const,
+      jsonRpcCode: -32_601,
+      protocolCode: 'method_not_found' as const,
+      admissionReason: null,
+      heartbeatRefusal: null,
+    };
+    const proxyClient: ControlClient = {
+      exchange: (method) => {
+        methods.push(method);
+        if (method.endsWith('.v2')) {
+          const error = new ControlClientError('control_call_failed', 'method not found', 'remote-response', failure);
+          return Promise.resolve(
+            controlExchangeForTest({ kind: 'response', response: { kind: 'refusal', failure, error } }),
+          );
+        }
+        return Promise.resolve(
+          controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: method.includes('.list.') ? { hosts: [] } : { state: 'stale' },
+            },
+          }),
+        );
+      },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const controls = authorityWithProxyClient(proxyClient).providerHosts;
+    if (controls === undefined) throw new Error('provider-host controls were not composed');
+
+    await expect(controls.list()).resolves.toEqual([]);
+    await expect(
+      controls.inspect({ provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'host', leaseMode: 'shared' }),
+    ).resolves.toBeNull();
+    expect(methods).toEqual([
+      'provider-host.list.v2',
+      'provider-host.list.v1',
+      'provider-host.inspect.v2',
+      'provider-host.inspect.v1',
+    ]);
+  });
 });
 
 describe('createProviderProxySetAuthority: commitContainment', () => {

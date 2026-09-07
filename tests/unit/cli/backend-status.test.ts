@@ -1812,10 +1812,12 @@ describe('backend status provider proxy dispositions', () => {
     expect(rendered).toContain(
       '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
     );
-    expect(rendered).not.toContain('buildSetId=55555555-5555-4555-8555-555555555555');
-    expect(rendered).not.toContain('buildSetId=77777777-7777-4777-8777-777777777777');
-    expect(rendered).toContain(`skipped set=${tokens.third}`);
-    expect(rendered).toContain(`skipped set=${tokens.fourth}`);
+    expect(rendered).toContain(
+      `skipped candidate reason=unsupported-row rawSetToken=${JSON.stringify(tokens.third)} rawSetIdentity buildSetId="55555555-5555-4555-8555-555555555555"`,
+    );
+    expect(rendered).toContain(
+      `skipped candidate reason=unsupported-row rawSetToken=${JSON.stringify(tokens.fourth)} rawSetIdentity buildSetId="77777777-7777-4777-8777-777777777777"`,
+    );
 
     const operations: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),

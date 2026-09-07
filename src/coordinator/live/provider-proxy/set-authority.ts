@@ -24,9 +24,11 @@ import {
   providerHostEvictParamsSchema,
   providerHostEvictResultSchema,
   providerHostInspectParamsSchema,
-  providerHostInspectResultSchema,
+  providerHostInspectResultV1Schema,
+  providerHostInspectResultV2Schema,
   providerHostListParamsSchema,
-  providerHostListResultSchema,
+  providerHostListResultV1Schema,
+  providerHostListResultV2Schema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -142,6 +144,21 @@ function requireControlResult(method: string, exchange: ControlExchange): unknow
   }
   if (exchange.error instanceof Error) throw exchange.error;
   throw new Error(`${method} could not be sent.`, { cause: exchange.error });
+}
+
+/** A peer that does not know a method is answering about its own generation, not about the request; every
+ *  other exchange still owes the caller the ordinary result-or-refusal decision, so it is handed back whole. */
+type ControlMethodAvailability =
+  | Readonly<{ kind: 'answered'; exchange: ControlExchange }>
+  | Readonly<{ kind: 'method-absent' }>;
+
+function controlMethodAvailability(exchange: ControlExchange): ControlMethodAvailability {
+  return exchange.kind === 'response' &&
+    exchange.response.kind === 'refusal' &&
+    exchange.response.failure.kind === 'json-rpc-error' &&
+    exchange.response.failure.protocolCode === 'method_not_found'
+    ? { kind: 'method-absent' }
+    : { kind: 'answered', exchange };
 }
 
 type ProviderProxySetAuthorityCommonDependencies = Readonly<{
@@ -460,19 +477,31 @@ export function createProviderProxySetAuthority(
     providerHosts: Object.freeze({
       list: async () => {
         const params = providerHostListParamsSchema.parse({});
-        const raw = requireControlResult(
-          'provider-host.list.v1',
-          await proxyClient.exchange('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+        const current = controlMethodAvailability(
+          await proxyClient.exchange('provider-host.list.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
         );
-        return providerHostListResultSchema.parse(raw).hosts;
+        if (current.kind === 'answered') {
+          return providerHostListResultV2Schema.parse(requireControlResult('provider-host.list.v2', current.exchange))
+            .hosts;
+        }
+        const legacy = await proxyClient.exchange('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+        return providerHostListResultV1Schema.parse(requireControlResult('provider-host.list.v1', legacy)).hosts;
       },
       inspect: async (hostRef) => {
         const params = providerHostInspectParamsSchema.parse({ hostRef });
-        const raw = requireControlResult(
-          'provider-host.inspect.v1',
-          await proxyClient.exchange('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+        const current = controlMethodAvailability(
+          await proxyClient.exchange('provider-host.inspect.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
         );
-        const result = providerHostInspectResultSchema.parse(raw);
+        if (current.kind === 'answered') {
+          const result = providerHostInspectResultV2Schema.parse(
+            requireControlResult('provider-host.inspect.v2', current.exchange),
+          );
+          return result.state === 'matched' ? result.host : null;
+        }
+        const legacy = await proxyClient.exchange('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+        const result = providerHostInspectResultV1Schema.parse(
+          requireControlResult('provider-host.inspect.v1', legacy),
+        );
         return result.state === 'matched' ? result.host : null;
       },
       evict: async (hostRef) => {

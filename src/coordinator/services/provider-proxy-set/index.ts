@@ -5,7 +5,6 @@ import { assertNever, errorMessage } from '../../../infra/error-format.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
   applyAnswer,
-  applyLocalFailure,
   applyNoResponse,
   type HeartbeatEvidenceWindow,
 } from '../../../provider-proxy/heartbeat-observation.js';
@@ -5088,7 +5087,6 @@ export class ProviderProxySetLifecycle {
       );
       return;
     }
-    applyLocalFailure(observation);
   }
 
   /** This decision requires the complete observed hold bound and cannot settle disappearance alone. */

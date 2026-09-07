@@ -502,6 +502,8 @@ describe('cli main routing', () => {
                   },
                 ],
               },
+              skippedProviderProxySetRows: 0,
+              skippedProviderProxySetTokens: [],
             },
           }) as never,
       } as unknown as BackendStatusCommandOperations,
@@ -546,6 +548,8 @@ describe('cli main routing', () => {
                   },
                 ],
               },
+              skippedProviderProxySetRows: 0,
+              skippedProviderProxySetTokens: [],
             },
           }) as never,
       } as unknown as BackendStatusCommandOperations,
@@ -580,7 +584,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(stdout).toContain(`skipped set=${token}`);
+    expect(stdout).toContain(`skipped candidate rawSetToken=${JSON.stringify(token)}`);
     expect(stdout).not.toContain(`provider-proxy-set contain ${token}`);
     expect(stdout).not.toContain(`provider-proxy-set abandon ${token}`);
     expect(stdout).toContain('could not interpret 1 provider proxy set row(s)');

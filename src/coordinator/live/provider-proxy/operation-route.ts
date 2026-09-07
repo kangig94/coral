@@ -159,6 +159,7 @@ export function isProviderProxyOperationAuthority(
     typeof deadline.orphanTimeoutMs === 'number' &&
     typeof deadline.adoptionWindowMs === 'number' &&
     typeof deadline.heartbeatHoldBound?.spanMs === 'number' &&
+    typeof deadline.heartbeatHoldBound.materialSchedulerLatenessMs === 'number' &&
     candidate.setIdentity !== undefined &&
     candidate.faulted instanceof Promise &&
     typeof candidate.onFault === 'function' &&

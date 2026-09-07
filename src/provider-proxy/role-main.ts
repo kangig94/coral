@@ -5,10 +5,12 @@ import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
 import {
+  snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
   type ProcessIncarnationProbeHold,
+  type ProcessIncarnationProbeSubject,
 } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
@@ -341,6 +343,31 @@ export type GuardianConstructionCleanupDisposition =
       retry(): Promise<GuardianConstructionCleanupDisposition>;
     }>;
 
+function guardianConstructionCleanupHoldDetail(
+  disposition: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>,
+): string {
+  return disposition.pending
+    .map((obligation) => {
+      switch (obligation.kind) {
+        case 'proxy-process-group':
+          return (
+            `proxy-process-group pgid=${obligation.identity.processGroupId} pid=${obligation.identity.pid} ` +
+            `incarnation=${obligation.identity.incarnation} reason=${obligation.reason}`
+          );
+        case 'reaper-process':
+          return (
+            `reaper-process pid=${obligation.identity.pid} incarnation=${obligation.identity.incarnation} ` +
+            `reason=${obligation.reason}`
+          );
+        case 'failed-role-spawn':
+          return obligation.subject.kind === 'process'
+            ? `failed-role-spawn process pid=${obligation.subject.pid ?? 'unavailable'} reason=${obligation.reason}`
+            : `failed-role-spawn process-group pgid=${obligation.subject.processGroupId ?? 'unavailable'} reason=${obligation.reason}`;
+      }
+    })
+    .join('; ');
+}
+
 function combineGuardianConstructionCleanup(
   dispositions: readonly GuardianConstructionCleanupDisposition[],
 ): GuardianConstructionCleanupDisposition {
@@ -499,7 +526,10 @@ export class GuardianConstructionCleanupHeldError extends Error {
   readonly hold: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>;
 
   constructor(originalFailure: unknown, hold: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>) {
-    super('Guardian construction failed while spawned process cleanup remains held.', { cause: originalFailure });
+    super(
+      `Guardian construction failed while spawned process cleanup remains held: ${guardianConstructionCleanupHoldDetail(hold)}`,
+      { cause: originalFailure },
+    );
     this.name = 'GuardianConstructionCleanupHeldError';
     this.hold = hold;
     Object.setPrototypeOf(this, GuardianConstructionCleanupHeldError.prototype);
@@ -738,8 +768,9 @@ async function unwindGuardianConstruction(
       environment,
     );
     if (proxyCleanup.kind === 'holding') {
-      stranded.push('reap the proxy process group');
-      backendLog.error(`guardian construction cleanup could not reap the proxy process group: ${proxyCleanup.reason}`);
+      const detail = guardianConstructionCleanupHoldDetail(proxyCleanup);
+      stranded.push(`reap the proxy process group (${detail})`);
+      backendLog.error(`guardian construction cleanup could not reap the proxy process group: ${detail}`);
     }
   }
   if (partial.reaperSpawn !== null) {
@@ -749,8 +780,9 @@ async function unwindGuardianConstruction(
       ports,
     );
     if (reaperCleanup.kind === 'holding') {
-      stranded.push('reap the reaper process');
-      backendLog.error(`guardian construction cleanup could not reap the reaper process: ${reaperCleanup.reason}`);
+      const detail = guardianConstructionCleanupHoldDetail(reaperCleanup);
+      stranded.push(`reap the reaper process (${detail})`);
+      backendLog.error(`guardian construction cleanup could not reap the reaper process: ${detail}`);
     }
   }
 
@@ -1332,24 +1364,36 @@ function createRoleShutdownProbeGate(
   let exited = false;
   let disposed = false;
 
-  const cleanupFailed = (error: unknown): void => {
+  const cleanupFailed = (error: unknown, cleanupSubjects: readonly ProcessIncarnationProbeSubject[]): void => {
+    const subjects = cleanupSubjects
+      .map((subject) => ('key' in subject ? `key=${subject.key}` : `pid=${subject.pid}`))
+      .join('; ');
     if (disposed) return;
     cleanupInFlight = false;
-    backendLog.error(`${role}: process-incarnation probe cleanup failed; shutdown remains held`, error);
+    backendLog.error(
+      `${role}: process-incarnation probe cleanup failed; shutdown remains held; registered subjects: ${subjects || 'none'}`,
+      error,
+    );
   };
 
   const acceptDisposition = (disposition: RoleProbeSettlementDisposition): void => {
     if (disposed) return;
     if (disposition.disposition === 'held') {
-      backendLog.error(
-        `${role}: shutdown remains held by unsettled process-incarnation probes`,
-        disposition.retainedAuthority.map((hold) =>
+      const holds = disposition.retainedAuthority
+        .map((hold) =>
           'key' in hold
-            ? { key: hold.key, reason: hold.reason, exit: hold.exit }
-            : { pid: hold.pid, reason: hold.reason, exit: hold.exit },
-        ),
+            ? `key=${hold.key} reason=${hold.reason} exit=${hold.exit}`
+            : `pid=${hold.pid ?? 'unavailable'} reason=${hold.reason} exit=${hold.exit}`,
+        )
+        .join('; ');
+      backendLog.error(`${role}: shutdown remains held by unsettled process-incarnation probes: ${holds}`);
+      void disposition.retryAfter.then(
+        () => {
+          const cleanupSubjects = snapshotProcessIncarnationProbeSubjects();
+          void disposition.retry().then(acceptDisposition, (error: unknown) => cleanupFailed(error, cleanupSubjects));
+        },
+        (error: unknown) => cleanupFailed(error, snapshotProcessIncarnationProbeSubjects()),
       );
-      void disposition.retryAfter.then(disposition.retry).then(acceptDisposition, cleanupFailed);
       return;
     }
     cleanupInFlight = false;
@@ -1362,7 +1406,8 @@ function createRoleShutdownProbeGate(
   const requestCleanup = (): void => {
     if (cleanupInFlight || exited || disposed) return;
     cleanupInFlight = true;
-    void settleRoleShutdownProbes().then(acceptDisposition, cleanupFailed);
+    const cleanupSubjects = snapshotProcessIncarnationProbeSubjects();
+    void settleRoleShutdownProbes().then(acceptDisposition, (error: unknown) => cleanupFailed(error, cleanupSubjects));
   };
 
   return {
@@ -1448,10 +1493,19 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
           while (disposition.kind === 'holding' && !operatorExitAccepted) {
             await Promise.race([runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS), operatorSignal]);
             if (operatorExitAccepted) break;
+            const heldBeforeRetry: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> = disposition;
             try {
-              disposition = await disposition.retry();
+              disposition = await heldBeforeRetry.retry();
+              if (disposition.kind === 'holding') {
+                backendLog.error(
+                  `guardian: construction cleanup retry remains held: ${guardianConstructionCleanupHoldDetail(disposition)}`,
+                );
+              }
             } catch (retryError: unknown) {
-              backendLog.error('guardian: construction cleanup retry failed; shutdown remains held', retryError);
+              backendLog.error(
+                `guardian: construction cleanup retry failed; shutdown remains held: ${guardianConstructionCleanupHoldDetail(heldBeforeRetry)}`,
+                retryError,
+              );
             }
           }
         } finally {

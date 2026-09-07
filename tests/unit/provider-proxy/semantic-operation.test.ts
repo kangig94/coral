@@ -75,6 +75,8 @@ import {
   decodeProxyControlFrame,
   encodeProxyControlFrame,
   providerEventRequestSchema,
+  providerHostListResultV1Schema,
+  providerHostListResultV2Schema,
   proxyOperationPreparePendingResultSchema,
   type OperationIdentity,
   type ProxyPreparedAppServerOperation,
@@ -2281,7 +2283,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(authority.admissionSnapshot().state.size).toBe(0);
   });
 
-  it('keeps a broker alive while its shutdown capability retains unresolved child cleanup', async () => {
+  it('releases proxy ownership after the broker shutdown successor accepts unresolved child cleanup', async () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce({
@@ -2321,18 +2323,9 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
       retry: expect.any(Function),
     });
     expect(server.closeMock).not.toHaveBeenCalled();
-    expect(authority.admissionSnapshot().state.size).toBe(1);
-    if (
-      held === undefined ||
-      (held.kind !== 'provider-shutdown-held-alive' && held.kind !== 'provider-shutdown-held-unobservable')
-    ) {
-      throw new Error('Expected the broker shutdown hold to remain retryable.');
-    }
-
-    await expect(held.retry()).resolves.toMatchObject({ kind: 'observed-absent' });
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(server.closeMock).toHaveBeenCalledOnce();
     expect(authority.admissionSnapshot().state.size).toBe(0);
+    expect(authority.listProviderHosts()).toEqual([]);
+    expect(request).toHaveBeenCalledOnce();
   });
 
   it('retains the broker when its shutdown hold names a different successor', async () => {
@@ -2375,6 +2368,18 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     });
     expect(server.closeMock).not.toHaveBeenCalled();
     expect(authority.admissionSnapshot().state.size).toBe(1);
+    expect(authority.listProviderHosts()).toMatchObject([
+      {
+        status: 'shutdown-held',
+        host: {
+          owner: 'provider-proxy',
+          pid: 1_000,
+          observation: 'unobservable',
+          successorOwner: null,
+          operatorExit: 'retry-provider-shutdown',
+        },
+      },
+    ]);
     if (
       held === undefined ||
       (held.kind !== 'provider-shutdown-held-alive' && held.kind !== 'provider-shutdown-held-unobservable')
@@ -2385,6 +2390,62 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     await expect(held.retry()).resolves.toMatchObject({ kind: 'observed-absent' });
     expect(server.closeMock).toHaveBeenCalledOnce();
     expect(authority.admissionSnapshot().state.size).toBe(0);
+  });
+
+  it('retains a last-session shutdown hold until a later close observes absence', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        disposition: 'held-alive',
+        observation: 'alive',
+        subjects: [{ kind: 'claude-child', controller: 'tui', generation: 2 }],
+        successor: { kind: 'accepted', owner: 'different-owner' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      })
+      .mockResolvedValueOnce({ ok: true, disposition: 'observed-absent' });
+    const server = fakeProviderServerHandle({ request });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(
+      exclusiveSpec({
+        shutdownCapability: {
+          method: 'broker/shutdown',
+          timeoutMs: 1_000,
+          resultDisposition: {
+            kind: 'provider-server-shutdown-v1',
+            successorOwner: 'broker-session-pool',
+            operatorExit: 'retry-broker-shutdown',
+          },
+        },
+      }),
+      { jobId: 'job-1' },
+    );
+
+    opened.close();
+
+    await vi.waitFor(() =>
+      expect(authority.listProviderHosts()).toMatchObject([
+        {
+          ref: opened.hostRef,
+          status: 'shutdown-held',
+          host: {
+            owner: 'provider-proxy',
+            hostKey: expect.any(String),
+            ownerJobId: 'job-1',
+            pid: 1_000,
+            observation: 'unobservable',
+            successorOwner: null,
+            operatorExit: 'retry-provider-shutdown',
+          },
+        },
+      ]),
+    );
+    const heldInventory = { hosts: authority.listProviderHosts() };
+    expect(providerHostListResultV2Schema.safeParse(heldInventory).success).toBe(true);
+    expect(providerHostListResultV1Schema.safeParse(heldInventory).success).toBe(false);
+    await expect(authority.forceClose(opened.hostRef)).resolves.toMatchObject({ kind: 'observed-absent' });
+    expect(authority.listProviderHosts()).toEqual([]);
   });
 
   it('retains a close hold when its operator exit returns a mismatched subject', async () => {

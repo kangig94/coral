@@ -1211,8 +1211,8 @@ export class LifecycleReactor {
   }
 
   listLifecycleSessionEntries(db: Database = this.options.db()): ProviderSession[] {
-    return listProjectionSessionEntries(db, undefined, undefined, (sessionId, error) => {
-      const subject = sessionId === null ? 'with no decodable session id' : `for ${sessionId}`;
+    return listProjectionSessionEntries(db, undefined, undefined, (sessionId, error, sessionIdKey) => {
+      const subject = sessionId === null ? `at projection_sessions.session_id=${sessionIdKey}` : `for ${sessionId}`;
       this.log(`Skipped malformed session projection ${subject} during lifecycle processing: ${errorMessage(error)}`);
     });
   }

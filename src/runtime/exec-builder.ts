@@ -64,6 +64,11 @@ function appendOutput(
 }
 
 export function buildExecPromise(options: BuildExecPromiseOptions): Promise<ExecResult> {
+  // Group containment requires an uncollected leader; after collection, its process-group id must
+  // not be treated as attributable or signalled. An exec settlement never claims descendant absence,
+  // only the command's answer or its absence. A caller requiring an owned tree must retain cleanup
+  // authority (see retainSpawnedProcessGroupCleanup in src/infra/process-supervision.ts) or use the
+  // durable wrapper.
   const {
     args,
     clearTimeout,
@@ -90,7 +95,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     let timeoutHandle: TimerHandle | null = null;
     let escalationTimer: TimerHandle | null = null;
     let settlementDeadlineTimer: TimerHandle | null = null;
-    let exitSettlementTimer: TimerHandle | null = null;
     let wrapperKilled: ExecKillReason | null = null;
 
     const child = spawn({
@@ -111,8 +115,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       escalationTimer = null;
       clearTimeout(settlementDeadlineTimer);
       settlementDeadlineTimer = null;
-      clearTimeout(exitSettlementTimer);
-      exitSettlementTimer = null;
     };
 
     const finish = (result: ExecResult): void => {
@@ -125,9 +127,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     };
 
     const signalChild = (signal: NodeJS.Signals): void => {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        return;
-      }
       if (killProcessGroup) {
         signalOwnedProcessGroup(child, kill, signal);
         return;
@@ -147,16 +146,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       };
     };
 
-    const scheduleExitSettlement = (): void => {
-      if (resolved || wrapperKilled === null || exitSettlementTimer !== null) {
-        return;
-      }
-      exitSettlementTimer = setTimeout(() => {
-        finish(killedResult('inherited stdio remains held after child exit'));
-      }, SIGKILL_GRACE_MS);
-      exitSettlementTimer.unref?.();
-    };
-
     const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
       if (resolved || wrapperKilled !== null) {
         return;
@@ -170,14 +159,31 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
         signalChild('SIGKILL');
       }, SIGTERM_GRACE_MS);
       escalationTimer.unref?.();
-      // `exec` must settle a no-answer within its requested bound because it owns no durable process tree.
       settlementDeadlineTimer = setTimeout(() => {
-        finish(killedResult('child collection remains held after process-tree termination signals'));
+        const childCollected = child.exitCode !== null || child.signalCode !== null;
+        if (child.pid === undefined) {
+          const signalAttempts = killProcessGroup
+            ? 'SIGTERM and SIGKILL delivery were not attempted because no pid or pgid could be attributed'
+            : 'SIGTERM and SIGKILL were attempted through the child handle without an identified pid';
+          const unobserved = childCollected
+            ? 'descendant absence remains unobserved'
+            : 'child collection and descendant absence remain unobserved';
+          finish(
+            killedResult(
+              `the command has no identified signal target; ${signalAttempts}; ${unobserved}; exec will not attempt further signals`,
+            ),
+          );
+          return;
+        }
+        const processId = String(child.pid);
+        const leaderIdentity = killProcessGroup ? `leader pid ${processId}` : `child pid ${processId}`;
+        const signalSubject = killProcessGroup ? `pgid ${processId}` : `pid ${processId}`;
+        const detail = childCollected
+          ? `${leaderIdentity} was collected; a process holding this exec's inherited stdio remains running and can no longer be attributed to ${signalSubject}; ${signalSubject} will not be signalled`
+          : `collection of ${leaderIdentity} remains unobserved within the escalation grace after SIGTERM and SIGKILL were attempted for ${signalSubject}; exec will not attempt further signals`;
+        finish(killedResult(detail));
       }, SIGTERM_GRACE_MS + SIGKILL_GRACE_MS);
       settlementDeadlineTimer.unref?.();
-      if (child.exitCode !== null || child.signalCode !== null) {
-        scheduleExitSettlement();
-      }
     };
 
     if (child.stdout) {
@@ -206,10 +212,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
 
     child.on('close', (status) => {
       finish(wrapperKilled === null ? { stdout, stderr, status } : killedResult());
-    });
-
-    child.on('exit', () => {
-      scheduleExitSettlement();
     });
 
     child.on('error', (error) => {

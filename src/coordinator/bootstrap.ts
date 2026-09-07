@@ -25,7 +25,11 @@ import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
-import { processIncarnationProbeRegistrySize, terminateProcessIncarnationProbes } from '../infra/node-process.js';
+import {
+  processIncarnationProbeRegistrySize,
+  snapshotProcessIncarnationProbeSubjects,
+  terminateProcessIncarnationProbes,
+} from '../infra/node-process.js';
 
 /**
  * Exit codes for a guardian/reaper/proxy role that failed to start, distinct from `0` (success), `1` (a
@@ -59,17 +63,18 @@ function createBootstrapProbeExitGate(): Readonly<{
   const requestCleanup = (): void => {
     if (cleanupInFlight || exited) return;
     cleanupInFlight = true;
+    const cleanupSubjects = snapshotProcessIncarnationProbeSubjects();
     void terminateProcessIncarnationProbes().then(
       (disposition) => {
         if (disposition.disposition === 'hold') {
-          backendLog.error(
-            'Coordinator exit remains held by unsettled process-incarnation probes',
-            disposition.unsettled.map((hold) =>
+          const holds = disposition.unsettled
+            .map((hold) =>
               'key' in hold
-                ? { key: hold.key, reason: hold.reason, exit: hold.exit }
-                : { pid: hold.pid, reason: hold.reason, exit: hold.exit },
-            ),
-          );
+                ? `key=${hold.key} reason=${hold.reason} exit=${hold.exit}`
+                : `pid=${hold.pid ?? 'unavailable'} reason=${hold.reason} exit=${hold.exit}`,
+            )
+            .join('; ');
+          backendLog.error(`Coordinator exit remains held by unsettled process-incarnation probes: ${holds}`);
           void disposition.untilSettled.then(() => {
             cleanupInFlight = false;
             requestCleanup();
@@ -84,7 +89,13 @@ function createBootstrapProbeExitGate(): Readonly<{
       },
       (error: unknown) => {
         cleanupInFlight = false;
-        backendLog.error('Coordinator process-incarnation probe cleanup failed; exit remains held', error);
+        const subjects = cleanupSubjects
+          .map((subject) => ('key' in subject ? `key=${subject.key}` : `pid=${subject.pid}`))
+          .join('; ');
+        backendLog.error(
+          `Coordinator process-incarnation probe cleanup failed; exit remains held; registered subjects: ${subjects || 'none'}`,
+          error,
+        );
       },
     );
   };

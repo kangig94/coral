@@ -629,6 +629,7 @@ function fakeAuthority(
       adoptionWindowMs: options.adoptionWindowMs ?? Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: options.heartbeatHoldBound ?? {
         spanMs: Number.MAX_SAFE_INTEGER,
+        materialSchedulerLatenessMs: Math.floor(Number.MAX_SAFE_INTEGER / 4),
       },
     },
     setIdentity: providerProxySetIdentityFromRecord(record),
@@ -2140,7 +2141,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 1 },
+      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: 0 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2182,7 +2183,7 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority({
       record,
       faults,
-      heartbeatHoldBound: { spanMs: 1 },
+      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: 1 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2316,7 +2317,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 2_000 },
+      heartbeatHoldBound: { spanMs: 2_000, materialSchedulerLatenessMs: 500 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2434,7 +2435,7 @@ describe('ProviderProxySetLifecycle', () => {
       stopAndReap,
       stopHeartbeats,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 1_000 },
+      heartbeatHoldBound: { spanMs: 1_000, materialSchedulerLatenessMs: 250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2515,7 +2516,7 @@ describe('ProviderProxySetLifecycle', () => {
       stopAndReap,
       stopHeartbeats,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 5_000 },
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2619,7 +2620,7 @@ describe('ProviderProxySetLifecycle', () => {
       stopAndReap,
       stopHeartbeats,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 1_000 },
+      heartbeatHoldBound: { spanMs: 1_000, materialSchedulerLatenessMs: 250 },
     });
     const absence = deferred<ProviderProxySetContainmentEvidence>();
     const reportLifecycle = vi.fn();
@@ -2662,7 +2663,7 @@ describe('ProviderProxySetLifecycle', () => {
       faults,
       stopAndReap,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 23_000 },
+      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2704,7 +2705,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000 },
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2752,7 +2753,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000 },
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2795,7 +2796,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 1_000 },
+      heartbeatHoldBound: { spanMs: 1_000, materialSchedulerLatenessMs: 250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2842,7 +2843,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000 },
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2883,7 +2884,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 23_000 },
+      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2934,7 +2935,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 2_000 },
+      heartbeatHoldBound: { spanMs: 2_000, materialSchedulerLatenessMs: 500 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2980,7 +2981,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000 },
+      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -3406,7 +3407,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 1_000 },
+      heartbeatHoldBound: { spanMs: 1_000, materialSchedulerLatenessMs: 250 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -7205,7 +7206,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 1 },
+      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: 0 },
     });
     const lifecycle = lifecycleFor({
       claims,

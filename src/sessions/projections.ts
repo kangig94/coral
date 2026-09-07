@@ -54,6 +54,10 @@ export const projectionSessionDecoderContract = {
 
 type ProjectionSessionStoredRow = z.infer<typeof projectionSessionStoredRowSchema>;
 
+type ProjectionSessionListRow = Record<string, unknown> & {
+  readonly projection_session_id_key: string;
+};
+
 export type ProjectionSessionRow = {
   controller: string;
   provider: string;
@@ -464,17 +468,18 @@ export function listProjectionSessionEntries(
   db: ReadonlyDatabase,
   provider?: string,
   scopeKey?: string,
-  onInvalidRow?: (sessionId: string | null, error: unknown) => void,
+  onInvalidRow?: (sessionId: string | null, error: unknown, sessionIdKey: string) => void,
 ): ProviderSession[] {
   const rows = db
-    .prepare(
-      `SELECT session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+    .prepare<[], ProjectionSessionListRow>(
+      `SELECT quote(session_id) AS projection_session_id_key,
+              session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
          FROM projection_sessions
         ORDER BY session_id ASC`,
     )
     .all();
 
-  const decoded = rows.flatMap((raw) => {
+  const decoded = rows.flatMap(({ projection_session_id_key: sessionIdKey, ...raw }) => {
     try {
       return [decodeProjectionSessionAuthorityRow(raw)];
     } catch (error: unknown) {
@@ -485,7 +490,7 @@ export function listProjectionSessionEntries(
         typeof raw === 'object' && raw !== null && 'session_id' in raw && typeof raw.session_id === 'string'
           ? raw.session_id
           : null;
-      onInvalidRow(sessionId, error);
+      onInvalidRow(sessionId, error, sessionIdKey);
       return [];
     }
   });

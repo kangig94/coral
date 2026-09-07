@@ -198,7 +198,46 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
-  it('names all three inventory statuses when no provider host matches', async () => {
+  it('carries a proxy-owned shutdown hold through the operator inventory response', async () => {
+    const record = {
+      ref: { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'held-host', leaseMode: 'shared' as const },
+      status: 'shutdown-held' as const,
+      spec: {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+        cwd: null,
+        leaseMode: 'shared' as const,
+        idleRetirement: 'never' as const,
+      },
+      host: {
+        owner: 'provider-proxy' as const,
+        hostKey: 'held-host-key',
+        ownerJobId: null,
+        pid: 123,
+        observation: 'unobservable' as const,
+        successorOwner: null,
+        operatorExit: 'retry-provider-shutdown',
+      },
+      diagnostics: {
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [],
+        factsTruncatedBeforeSeq: 0,
+      },
+      diagnosticsRetention: { ownerBudgetTruncated: false },
+      ownerId: 'proxy-a',
+    };
+    const ports = {
+      providerHosts: { list: vi.fn(async () => ({ hosts: [record] })), inspect: vi.fn(), evict: vi.fn() },
+    } as unknown as HttpHandlerPorts;
+
+    await expect(executeCatalogRequest(providerHostListRpcSpec, {}, ports, operator)).resolves.toMatchObject({
+      kind: 'unary',
+      body: { hosts: [record] },
+    });
+  });
+
+  it('names every inventory status when no provider host matches', async () => {
     const inspect = vi.fn(async () => {
       throw Object.assign(new Error('provider_host_not_found'), { code: 'provider_host_not_found' });
     });
@@ -208,7 +247,9 @@ describe('provider-host RPC authorization', () => {
       executeCatalogRequest(providerHostInspectRpcSpec, { workDir: '.', projectRoot: process.cwd() }, ports, operator),
     ).resolves.toMatchObject({
       kind: 'unary',
-      body: { message: 'No live, retained-blocked, or reclamation-failed provider host matches the selector.' },
+      body: {
+        message: 'No live, retained-blocked, shutdown-held, or reclamation-failed provider host matches the selector.',
+      },
     });
   });
 

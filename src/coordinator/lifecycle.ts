@@ -1282,20 +1282,23 @@ async function runLifecycleStartup({
 
     return serverInfo;
   } catch (error: unknown) {
-    state.providerOperationMutationAdmission?.close();
-    if (error instanceof IncumbentMatchesError) {
-      // Translate to the existing bootstrap-recognized "redundant contender"
-      // signal (info log + exit 0). The socket has not been bound by us, so
-      // there is nothing to clean up.
-      runtimeState.setLifecycle('stopped');
-      throw new BackendAlreadyRunningError();
-    }
+    const mutationAdmissionDisposition = state.providerOperationMutationAdmission?.close();
     if (
       (error as { name?: string } | null)?.name === 'AbortError' &&
       (state.shutdownPromise !== null || state.shutdownRetry !== null)
     ) {
       // Startup failure must not release authority owned by a shutdown attempt or its retained continuation.
       throw error;
+    }
+    if (mutationAdmissionDisposition?.kind === 'holding') {
+      await mutationAdmissionDisposition.retryAfter;
+    }
+    if (error instanceof IncumbentMatchesError) {
+      // Translate to the existing bootstrap-recognized "redundant contender"
+      // signal (info log + exit 0). The socket has not been bound by us, so
+      // there is nothing to clean up.
+      runtimeState.setLifecycle('stopped');
+      throw new BackendAlreadyRunningError();
     }
     runtimeState.setLifecycle('stopped');
     idleTimer.stopWatching();

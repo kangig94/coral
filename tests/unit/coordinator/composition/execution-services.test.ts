@@ -203,7 +203,7 @@ describe('provider proxy operation routing', () => {
     const changed = {
       orphanTimeoutMs: 45_000,
       adoptionWindowMs: 31_000,
-      heartbeatHoldBound: { spanMs: 31_000 },
+      heartbeatHoldBound: { spanMs: 31_000, materialSchedulerLatenessMs: 7_750 },
     };
 
     deadline = changed;
@@ -1359,7 +1359,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
 
   it("uses a redeemed set's capsule deadline instead of the successor coordinator's environment", async () => {
     const { time, faults, stopAndReap, redeemedDeadline, services, lifecycle } = await createHeartbeatHoldHarness();
-    expect(redeemedDeadline.heartbeatHoldBound).toEqual({ spanMs: 5_001 });
+    expect(redeemedDeadline.heartbeatHoldBound).toEqual({ spanMs: 5_001, materialSchedulerLatenessMs: 1_250 });
 
     const incident = (error: string): void =>
       faults.reportIncident({

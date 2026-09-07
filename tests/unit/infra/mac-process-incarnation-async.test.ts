@@ -35,6 +35,7 @@ import {
   type ProcessIncarnation,
   processIncarnationProbeRegistrySize,
   type ProcessIncarnationProbeTerminator,
+  snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
 } from '#src/infra/node-process.js';
 import { createControlHolderAuthority, observeControlHolder } from '#src/provider-proxy/holder-lifecycle.js';
@@ -139,6 +140,7 @@ describe('darwin process incarnation (async)', () => {
       },
       'darwin',
     );
+    expect(snapshotProcessIncarnationProbeSubjects()).toEqual([{ pid: 4_242 }, { key: 'darwin:4242' }]);
 
     const cleanup = await terminateProcessIncarnationProbes();
     expect(cleanup).toMatchObject({

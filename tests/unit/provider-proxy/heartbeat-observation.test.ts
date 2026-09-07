@@ -16,7 +16,7 @@ import {
 } from '#src/provider-proxy/heartbeat-observation.js';
 import { MAX_HEARTBEAT_CHALLENGE_CHARACTERS, MAX_PROXY_CONTROL_FRAME_BYTES } from '#src/provider-proxy/protocol.js';
 
-const BOUND = { spanMs: 5_000 } as const;
+const BOUND = { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 } as const;
 const TIMING = { nowMonotonicMs: 10_000n, schedulerLatenessMs: 100, bound: BOUND } as const;
 const WINDOWS = [
   { kind: 'clear' },
@@ -258,7 +258,7 @@ describe('heartbeat evidence-window reducer', () => {
     },
   );
 
-  it('does not charge repeated sub-cadence scheduler lateness to the peer', () => {
+  it('rebases repeated sub-cadence scheduler lateness instead of charging it to the peer', () => {
     let progress = applyNoResponse({ kind: 'clear' }, NO_RESPONSE, {
       nowMonotonicMs: 0n,
       schedulerLatenessMs: 0,
@@ -289,8 +289,13 @@ describe('heartbeat evidence-window reducer', () => {
       bound: BOUND,
     });
     expect(exhausted).toMatchObject({
-      effect: 'silence-bound-exhausted',
-      window: { observedDurationMs: 5_000, attempts: 6 },
+      effect: 'silence-holding',
+      window: {
+        lastObservedAtMonotonicMs: 6_250n,
+        observedDurationMs: 0,
+        attempts: 1,
+        schedulerLatenessAfterFirstObservationMs: 0,
+      },
     });
   });
 

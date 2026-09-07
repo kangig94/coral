@@ -144,7 +144,11 @@ describe('backend routing-status resolve grammar', () => {
       exitCode: 75,
     },
     {
-      result: { kind: 'status-unavailable', status: { kind: 'unreadable', reason: 'invalid-shape' } },
+      result: {
+        kind: 'status-unavailable',
+        invocationId: INVOCATION_ID,
+        status: { kind: 'unreadable', reason: 'invalid-shape' },
+      },
       exitCode: 75,
     },
     {
@@ -226,10 +230,28 @@ describe('backend routing-status resolve grammar', () => {
       { kind: 'unauthorized-unobservable', invocationId: INVOCATION_ID, cause: 'deadline-expired' },
       'cannot override an expired observation budget',
     ],
-    [{ kind: 'status-unavailable', status: { kind: 'unreadable', reason: 'invalid-json' } }, 'discard command'],
-    [{ kind: 'status-unavailable', status: { kind: 'foreign-generation', generation: 2 } }, 'discard command'],
     [
-      { kind: 'status-unavailable', status: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 } },
+      {
+        kind: 'status-unavailable',
+        invocationId: INVOCATION_ID,
+        status: { kind: 'unreadable', reason: 'invalid-json' },
+      },
+      'discard command',
+    ],
+    [
+      {
+        kind: 'status-unavailable',
+        invocationId: INVOCATION_ID,
+        status: { kind: 'foreign-generation', generation: 2 },
+      },
+      'discard command',
+    ],
+    [
+      {
+        kind: 'status-unavailable',
+        invocationId: INVOCATION_ID,
+        status: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+      },
       'without discarding',
     ],
     [
@@ -344,6 +366,9 @@ describe('backend routing-status resolve grammar', () => {
   ])('renders an outcome-specific successor for $0.kind', (result, expected) => {
     const rendered = formatHandoffRoutingResolveResult(result);
     expect(rendered).toContain(expected);
+    if (result.kind === 'status-unavailable') {
+      expect(rendered).toContain(`routing invocation ${result.invocationId}`);
+    }
     if (result.kind === 'commit-outcome-unknown') expect(rendered).not.toContain('was not published');
   });
 

@@ -20,6 +20,7 @@ import { hostRefSchema } from '../providers/host-ref-schema.js';
 import { providerHostRemediationSchema } from '../providers/host-admission.js';
 import {
   providerHostInventoryRecordSchema as sharedProviderHostInventoryRecordSchema,
+  providerHostInventoryRecordV1Schema as sharedProviderHostInventoryRecordV1Schema,
   type ProviderHostInventoryRecordWire as SharedProviderHostInventoryRecordWire,
 } from '../providers/host-inventory-schema.js';
 import {
@@ -43,15 +44,15 @@ export function providerProxyDisappearanceReceipt(
 }
 
 /**
- * Every control method carries a `.vN` suffix, and every one of them is `.v1`.
+ * Every control method carries a `.vN` suffix.
  *
  * The suffix exists because this protocol is spoken between *processes*, not between code paths: a coordinator
  * can inherit a proxy set that an entirely different build spawned, and an already-running responder cannot be
- * retrofitted. So when a shape has to change incompatibly while an older set may still be answering, a second
- * number is the honest way to say so — the two versions coexist in different processes, never in one build.
+ * retrofitted. When a shape changes incompatibly while an older set may still be answering, the new form must
+ * use a new suffix and the versions must coexist at distinct method addresses.
  *
- * That is the only thing the suffix means. Nothing parses it; a peer that does not implement a method answers
- * `method_not_found` (`control-endpoint.ts`), which is what callers actually branch on. So a number may only be
+ * That is the only thing the suffix means. Nothing parses it; peers signal an unsupported method with
+ * `method_not_found`, which is what callers branch on. So a number may only be
  * raised once a build carrying the lower one has shipped.
  */
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
@@ -174,9 +175,16 @@ export const providerHostInventoryRecordSchema = sharedProviderHostInventoryReco
 export type ProviderHostInventoryRecordWire = SharedProviderHostInventoryRecordWire;
 
 export const providerHostListParamsSchema = z.object({}).strict();
-export const providerHostListResultSchema = z.object({ hosts: z.array(providerHostInventoryRecordSchema) }).strict();
+export const providerHostListResultV1Schema = z
+  .object({ hosts: z.array(sharedProviderHostInventoryRecordV1Schema) })
+  .strict();
+export const providerHostListResultV2Schema = z.object({ hosts: z.array(providerHostInventoryRecordSchema) }).strict();
 export const providerHostInspectParamsSchema = z.object({ hostRef: hostRefSchema }).strict();
-export const providerHostInspectResultSchema = z.discriminatedUnion('state', [
+export const providerHostInspectResultV1Schema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('matched'), host: sharedProviderHostInventoryRecordV1Schema }).strict(),
+  z.object({ state: z.literal('stale') }).strict(),
+]);
+export const providerHostInspectResultV2Schema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('matched'), host: providerHostInventoryRecordSchema }).strict(),
   z.object({ state: z.literal('stale') }).strict(),
 ]);

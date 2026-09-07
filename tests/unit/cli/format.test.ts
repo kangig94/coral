@@ -918,23 +918,45 @@ describe('cli format', () => {
       );
     });
 
-    it('renders a skipped provider-proxy-set token without offering an unauthorized operator command', () => {
-      const skippedToken = 'pps1.future-row';
+    it('renders skipped provider-proxy-set candidate identities without offering an unauthorized command', () => {
+      const invalidToken = 'pps1.future-row';
+      const disagreementToken = 'pps2.other-identity';
+      const setIdentity = {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      };
       const status = {
         status: 'ok',
         health: {
           ...baseHealth,
           components: [],
-          skippedProviderProxySetRows: 1,
-          skippedProviderProxySetTokens: [skippedToken],
+          diagnostics: {
+            providerProxySetRowSkips: [
+              { reason: 'invalid-token' as const, setToken: invalidToken, setIdentity },
+              { reason: 'token-identity-disagreement' as const, setToken: disagreementToken, setIdentity },
+              { reason: 'malformed-row' as const, setToken: null, setIdentity },
+              { reason: 'malformed-row' as const, setToken: null, setIdentity: null },
+            ],
+          },
+          skippedProviderProxySetRows: 4,
+          skippedProviderProxySetTokens: [invalidToken, disagreementToken],
         },
       } satisfies BackendStatusFull;
 
       const output = formatBackendStatus(status);
-      expect(output).toContain(`skipped set=${skippedToken}`);
+      expect(output).toContain(`skipped candidate reason=invalid-token rawSetToken=${JSON.stringify(invalidToken)}`);
+      expect(output).toContain(
+        `skipped candidate reason=token-identity-disagreement rawSetToken=${JSON.stringify(disagreementToken)}`,
+      );
+      expect(output).toContain(
+        `skipped candidate reason=malformed-row rawSetIdentity buildSetId=${JSON.stringify(setIdentity.buildSetId)}`,
+      );
+      expect(output).toContain(`rawSetIdentity buildSetId=${JSON.stringify(setIdentity.buildSetId)}`);
+      expect(output).toContain('skipped row is structurally unidentifiable reason=malformed-row');
       expect(output).toContain('No containment or abandonment command is available');
-      expect(output).not.toContain(`provider-proxy-set contain ${skippedToken}`);
-      expect(output).not.toContain(`provider-proxy-set abandon ${skippedToken}`);
+      expect(output).not.toContain('provider-proxy-set contain');
+      expect(output).not.toContain('provider-proxy-set abandon');
     });
 
     it('renders the exact durable disposition key and unavailable action', () => {

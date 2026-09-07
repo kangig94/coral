@@ -16,7 +16,7 @@ import {
   type LiveHandoffResult,
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
-import type { BackendHealth } from '../../transport/http/backend/health.js';
+import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
@@ -737,7 +737,7 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
         ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then retry without --force-unobservable; the flag cannot override an expired observation budget.`
         : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).\nNext step: verify the owner externally, then rerun this command with --force-unobservable only if abandoning it is safe.`;
     case 'status-unavailable':
-      return `Refusing to resolve routing status because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
+      return `Refusing to resolve routing invocation ${result.invocationId} because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
     case 'not-published':
       return (
         `Routing resolution was not published (${result.kind}:${result.cause}).\n` +
@@ -1207,6 +1207,42 @@ export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus):
   }
 }
 
+function formatProviderProxySetRowSkip(skip: ProviderProxySetRowSkip): string {
+  const token = skip.setToken === null ? '' : ` rawSetToken=${JSON.stringify(skip.setToken)}`;
+  const identity =
+    skip.setIdentity === null
+      ? ''
+      : ` rawSetIdentity buildSetId=${JSON.stringify(skip.setIdentity.buildSetId)} hostFingerprint=${JSON.stringify(skip.setIdentity.hostFingerprint)} proxyInstanceId=${JSON.stringify(skip.setIdentity.proxyInstanceId)}`;
+  if (token.length === 0 && identity.length === 0) {
+    return `skipped row is structurally unidentifiable reason=${skip.reason}; the wire row contains neither a raw set token nor a complete set identity`;
+  }
+  return `skipped candidate reason=${skip.reason}${token}${identity}`;
+}
+
+export function formatProviderProxySetRowSkips(
+  skippedRows: number,
+  skippedTokens: readonly string[],
+  rowSkips: readonly ProviderProxySetRowSkip[] | undefined,
+): string[] {
+  if (rowSkips !== undefined) {
+    const lines = rowSkips.map(formatProviderProxySetRowSkip);
+    if (rowSkips.length < skippedRows) {
+      lines.push(
+        `structurally unidentifiable skipped rows=${skippedRows - rowSkips.length}; no raw set token or complete set identity was preserved`,
+      );
+    }
+    return lines;
+  }
+
+  const lines = skippedTokens.map((token) => `skipped candidate rawSetToken=${JSON.stringify(token)}`);
+  if (skippedTokens.length < skippedRows) {
+    lines.push(
+      `structurally unidentifiable skipped rows=${skippedRows - skippedTokens.length}; no raw set token or complete set identity was preserved`,
+    );
+  }
+  return lines;
+}
+
 function formatRunningStatus(health: RunningHealth): string {
   const componentLines: string[] = [];
   for (const component of health.components) {
@@ -1262,7 +1298,13 @@ function formatRunningStatus(health: RunningHealth): string {
       lines.push(
         `  Provider proxy set rows this build could not read: ${skippedProviderProxySetRows}; backend status is not showing ${skippedProviderProxySetRows === 1 ? 'its disposition, cause, or waiting condition' : 'their dispositions, causes, or waiting conditions'}.`,
       );
-      lines.push(...health.skippedProviderProxySetTokens.map((token) => `    skipped set=${token}`));
+      lines.push(
+        ...formatProviderProxySetRowSkips(
+          skippedProviderProxySetRows,
+          health.skippedProviderProxySetTokens,
+          health.diagnostics?.providerProxySetRowSkips,
+        ).map((skip) => `    ${skip}`),
+      );
       lines.push(
         '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
       );

@@ -289,6 +289,7 @@ type HostPoolEntry = {
   rootTokenReleased: boolean;
   closePromise: Promise<ProxyProviderRootCloseDisposition> | null;
   cleanupHold: ProviderServerFailedSpawnCleanupHold | null;
+  shutdownHold: ProviderServerShutdownHold | null;
   cleanupAttempts: number;
 };
 
@@ -486,8 +487,20 @@ class ProxyProviderRootPool {
     ).then((disposition): ProxyProviderRootCloseDisposition => {
       if (isProviderServerShutdownHold(disposition)) {
         const retry = (): Promise<ProxyProviderRootCloseDisposition> => this.close(entry);
-        return { ...disposition, retry, operatorExit: { ...disposition.operatorExit, retry } };
+        const hold = { ...disposition, retry, operatorExit: { ...disposition.operatorExit, retry } };
+        if (hold.successor !== null) {
+          entry.shutdownHold = null;
+          if (!entry.rootTokenReleased) {
+            this.releaseLiveRoot(entry);
+            this.closingEntries.delete(entry);
+            this.admission.abandon(hostRefFor(entry, this.runtime));
+          }
+          return hold;
+        }
+        entry.shutdownHold = hold;
+        return hold;
       }
+      entry.shutdownHold = null;
       if (disposition.kind === 'held-alive' || disposition.kind === 'held-unobservable') {
         return disposition;
       }
@@ -594,6 +607,7 @@ class ProxyProviderRootPool {
       rootTokenReleased: false,
       closePromise: null,
       cleanupHold: null,
+      shutdownHold: null,
       cleanupAttempts: 0,
     };
     this.installRetirement(entry, handle);
@@ -607,6 +621,7 @@ class ProxyProviderRootPool {
       this.remove(entry);
       if (entry.rootTokenReleased) return;
       entry.cleanupHold = null;
+      entry.shutdownHold = null;
       this.releaseLiveRoot(entry);
       this.closingEntries.delete(entry);
       this.admission.observeRetired(hostRefFor(entry, this.runtime), 'closed');
@@ -916,6 +931,28 @@ class ProxyProviderHostAdministration {
         throw new Error('provider_host_inventory_unavailable: live proxy host could not be revalidated');
       }
       const entry = matches[0];
+      const shutdownHold = entry.shutdownHold;
+      if (shutdownHold !== null) {
+        records.push(
+          Object.freeze({
+            ref: admissionEntry.ref,
+            status: 'shutdown-held',
+            spec: canonicalProviderHostSpecMetadata(entry.spec),
+            host: Object.freeze({
+              owner: 'provider-proxy',
+              hostKey: entry.hostKey,
+              ownerJobId: entry.jobId ?? null,
+              pid: shutdownHold.subject.pid,
+              observation: shutdownHold.observation,
+              successorOwner: shutdownHold.successor?.owner ?? null,
+              operatorExit: shutdownHold.operatorExit.kind,
+            }),
+            diagnostics: entry.handle.inspectDiagnostics(),
+            diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+          }),
+        );
+        continue;
+      }
       const cleanupHold = entry.cleanupHold;
       if (cleanupHold !== null) {
         const process =

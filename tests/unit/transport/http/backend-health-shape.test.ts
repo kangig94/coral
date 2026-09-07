@@ -60,6 +60,12 @@ const PROVIDER_PROXY_SET = {
   holds: [PROVIDER_PROXY_SET_HOLD],
 } as const;
 
+const UNSUPPORTED_PROVIDER_PROXY_SET_ROW = {
+  reason: 'unsupported-row',
+  setToken: PROVIDER_PROXY_SET.setToken,
+  setIdentity: PROVIDER_PROXY_SET.setIdentity,
+} as const;
+
 function isBackendHealth(value: unknown): boolean {
   return parseBackendHealth(value) !== null;
 }
@@ -191,24 +197,31 @@ describe('/health typed shape (AC10a)', () => {
   });
 
   it.each([
-    ['a malformed token', 'pps2.future'],
-    [
-      'a token for a different identity',
-      encodeProviderProxySetAddress({
+    { label: 'a malformed token', setToken: 'pps2.future', reason: 'invalid-token' as const },
+    {
+      label: 'a token for a different identity',
+      setToken: encodeProviderProxySetAddress({
         ...PROVIDER_PROXY_SET.setIdentity,
         proxyInstanceId: '33333333-3333-4333-8333-333333333333',
       }),
-    ],
-  ])('skips %s without publishing it as an actionable command token', (_label, setToken) => {
+      reason: 'token-identity-disagreement' as const,
+    },
+  ])('preserves raw candidate identity when it skips $label', ({ setToken, reason }) => {
     const parsed = parseBackendHealth({
       ...HEALTHY_BASE,
       diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, setToken }] },
     });
 
     expect(parsed).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: {
+          providerProxySets: [],
+          providerProxySetRowSkips: [{ reason, setToken, setIdentity: PROVIDER_PROXY_SET.setIdentity }],
+        },
+      },
       skippedProviderProxySetRows: 1,
-      skippedProviderProxySetTokens: [],
+      skippedProviderProxySetTokens: [setToken],
     });
   });
 
@@ -453,7 +466,13 @@ describe('/health typed shape (AC10a)', () => {
     });
 
     expect(parsed).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [PROVIDER_PROXY_SET] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: {
+          providerProxySets: [PROVIDER_PROXY_SET],
+          providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW],
+        },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
@@ -533,7 +552,10 @@ describe('/health typed shape (AC10a)', () => {
     });
 
     expect(parsed).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [], providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW] },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
@@ -546,7 +568,10 @@ describe('/health typed shape (AC10a)', () => {
     });
 
     expect(parsed).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [], providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW] },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
@@ -560,7 +585,10 @@ describe('/health typed shape (AC10a)', () => {
     });
 
     expect(parsed).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [], providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW] },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
@@ -588,7 +616,10 @@ describe('/health typed shape (AC10a)', () => {
     });
 
     expect(parsed).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [], providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW] },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
@@ -600,12 +631,47 @@ describe('/health typed shape (AC10a)', () => {
 
     expect(parseWith('not-an-array')).toBeNull();
     expect(parseWith([{ ...PROVIDER_PROXY_SET, setIdentity: undefined }])).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: {
+          providerProxySets: [],
+          providerProxySetRowSkips: [
+            { reason: 'malformed-row', setToken: PROVIDER_PROXY_SET.setToken, setIdentity: null },
+          ],
+        },
+      },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
+    });
+    expect(parseWith([{ ...PROVIDER_PROXY_SET, setToken: undefined }])).toEqual({
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: {
+          providerProxySets: [],
+          providerProxySetRowSkips: [
+            { reason: 'malformed-row', setToken: null, setIdentity: PROVIDER_PROXY_SET.setIdentity },
+          ],
+        },
+      },
+      skippedProviderProxySetRows: 1,
+      skippedProviderProxySetTokens: [],
+    });
+    expect(parseWith([null])).toEqual({
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: {
+          providerProxySets: [],
+          providerProxySetRowSkips: [{ reason: 'malformed-row', setToken: null, setIdentity: null }],
+        },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [],
     });
     expect(parseWith([{ ...PROVIDER_PROXY_SET, holds: [{ ...PROVIDER_PROXY_SET_HOLD, attempts: '2' }] }])).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [], providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW] },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
@@ -617,7 +683,10 @@ describe('/health typed shape (AC10a)', () => {
         },
       ]),
     ).toEqual({
-      health: { ...HEALTHY_BASE, diagnostics: { providerProxySets: [] } },
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [], providerProxySetRowSkips: [UNSUPPORTED_PROVIDER_PROXY_SET_ROW] },
+      },
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });

@@ -57,6 +57,8 @@ import { workflowRequestSchema } from './workflow.js';
 import { hostRefSchema } from '../../providers/host-ref-schema.js';
 import {
   liveProviderHostInventoryRecordSchema,
+  coordinatorShutdownHeldProviderHostInventoryRecordSchema,
+  proxyShutdownHeldProviderHostInventoryRecordSchema,
   reclamationFailedProviderHostInventoryRecordSchema,
   retiredBlockedProviderHostInventoryRecordSchema,
 } from '../../providers/host-inventory-schema.js';
@@ -130,10 +132,12 @@ export const unreadableProviderOperationDiscardResultSchema: ZodType<UnreadableP
   ]);
 
 const providerHostOwnerShape = { ownerId: z.string().min(1) };
-export const providerHostInventoryRowSchema = z.discriminatedUnion('status', [
+export const providerHostInventoryRowSchema = z.union([
   liveProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
   retiredBlockedProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
   reclamationFailedProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
+  coordinatorShutdownHeldProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
+  proxyShutdownHeldProviderHostInventoryRecordSchema.extend(providerHostOwnerShape).strict(),
 ]);
 
 export const providerHostListRequestSchema = z.object({}).strict();

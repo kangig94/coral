@@ -405,6 +405,17 @@ export function processIncarnationProbeRegistrySize(): number {
   return processIncarnationProbeLeases.size;
 }
 
+export type ProcessIncarnationProbeSubject = Readonly<{ pid: number }> | Readonly<{ key: string }>;
+
+/** A cleanup caller must retain the actionable subjects before an asynchronous cleanup attempt can reject. */
+export function snapshotProcessIncarnationProbeSubjects(): readonly ProcessIncarnationProbeSubject[] {
+  const pids = new Set<number>();
+  for (const child of processIncarnationProbeChildren.keys()) {
+    if (child.pid !== undefined) pids.add(child.pid);
+  }
+  return [...[...pids].map((pid) => ({ pid })), ...[...processIncarnationProbeLeases.keys()].map((key) => ({ key }))];
+}
+
 /** Cleanup retains enrolled leases until their probes and every current or future child have settled. */
 export async function terminateProcessIncarnationProbes(
   signal?: AbortSignal,

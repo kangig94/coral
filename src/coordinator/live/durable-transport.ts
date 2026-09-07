@@ -388,6 +388,13 @@ export async function spawnDurableJobTransport(params: {
     }
   };
 
+  const publishProcessIdentity = (subject: DurableCliProcessSubject | DurableProvisionalProcessSubject): void => {
+    const disposition = options.onDurableProcessIdentity?.(subject) ?? { kind: 'published' as const };
+    if (disposition.kind === 'retained') {
+      throw new Error(`durable process identity publication retained: ${disposition.reason}`);
+    }
+  };
+
   const abandonCleanupOwnership = (): AbortHoldDisposition => {
     if (!providerResultHeld || cleanupKey === null) {
       return {
@@ -585,7 +592,7 @@ export async function spawnDurableJobTransport(params: {
     cleanupHandles.set(cleanupKey, cleanup);
     cleanupRetentions.set(cleanup, retainedProcess);
     options.onRuntimeRecord?.(launch.runtimeRecord, provisionalSubject);
-    options.onDurableProcessIdentity?.(provisionalSubject);
+    publishProcessIdentity(provisionalSubject);
     releasePendingLaunch();
     if (abortedBySignal) {
       enterContainmentHold('termination requested; process absence is not yet proven');
@@ -640,7 +647,7 @@ export async function spawnDurableJobTransport(params: {
         });
       }
     }
-    if (publishedSubject !== null) options.onDurableProcessIdentity?.(publishedSubject);
+    if (publishedSubject !== null) publishProcessIdentity(publishedSubject);
   };
 
   try {

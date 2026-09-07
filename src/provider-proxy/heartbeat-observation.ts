@@ -193,9 +193,20 @@ function advanceWindow<TKind extends SilenceWindow['kind'] | AnsweredUnusableWin
     attempts: current.attempts + 1,
     schedulerLatenessAfterFirstObservationMs: accumulatedLatenessMs,
   } as Window;
-  return observedDurationMs < timing.bound.spanMs
-    ? { effect: 'holding', window: advanced }
-    : { effect: 'bound-exhausted', window: advanced };
+  if (observedDurationMs < timing.bound.spanMs) return { effect: 'holding', window: advanced };
+  if (accumulatedLatenessMs < timing.bound.materialSchedulerLatenessMs) {
+    return { effect: 'bound-exhausted', window: advanced };
+  }
+  return {
+    effect: 'holding',
+    window: {
+      kind,
+      lastObservedAtMonotonicMs: timing.nowMonotonicMs,
+      observedDurationMs: 0,
+      attempts: 1,
+      schedulerLatenessAfterFirstObservationMs: 0,
+    } as Window,
+  };
 }
 
 export type HeartbeatAnswerTransition =

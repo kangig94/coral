@@ -136,9 +136,20 @@ export interface BackendHealth {
       metadataSeq?: number;
     }>;
     providerProxySets?: ProviderProxySetOperatorStatus[];
+    providerProxySetRowSkips?: ProviderProxySetRowSkip[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
   };
 }
+
+export type ProviderProxySetRowSkip = Readonly<{
+  reason: 'malformed-row' | 'invalid-token' | 'token-identity-disagreement' | 'unsupported-row';
+  setToken: string | null;
+  setIdentity: Readonly<{
+    buildSetId: string;
+    hostFingerprint: string;
+    proxyInstanceId: string;
+  }> | null;
+}>;
 
 /** A decoded health payload plus any provider-proxy rows omitted because this build cannot interpret them. */
 export type BackendHealthParseResult = Readonly<{
@@ -199,7 +210,7 @@ type ProviderProxySet = NonNullable<NonNullable<BackendHealth['diagnostics']>['p
 
 type ProviderProxySetsParseResult = Readonly<{
   understoodRows: ProviderProxySet[];
-  skippedRows: number;
+  skippedRows: ProviderProxySetRowSkip[];
   skippedSetTokens: string[];
 }>;
 
@@ -343,56 +354,61 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
   }
 
   const understoodRows: ProviderProxySet[] = [];
-  let skippedRows = 0;
+  const skippedRows: ProviderProxySetRowSkip[] = [];
   const skippedSetTokens: string[] = [];
   for (const entry of value) {
-    if (
-      !isRecord(entry) ||
-      !isRecord(entry.setIdentity) ||
-      typeof entry.setIdentity.buildSetId !== 'string' ||
-      typeof entry.setIdentity.hostFingerprint !== 'string' ||
-      typeof entry.setIdentity.proxyInstanceId !== 'string' ||
-      typeof entry.setToken !== 'string'
-    ) {
-      skippedRows += 1;
+    const setToken = isRecord(entry) && typeof entry.setToken === 'string' ? entry.setToken : null;
+    const setIdentity =
+      isRecord(entry) &&
+      isRecord(entry.setIdentity) &&
+      typeof entry.setIdentity.buildSetId === 'string' &&
+      typeof entry.setIdentity.hostFingerprint === 'string' &&
+      typeof entry.setIdentity.proxyInstanceId === 'string'
+        ? {
+            buildSetId: entry.setIdentity.buildSetId,
+            hostFingerprint: entry.setIdentity.hostFingerprint,
+            proxyInstanceId: entry.setIdentity.proxyInstanceId,
+          }
+        : null;
+    if (!isRecord(entry) || setIdentity === null || setToken === null) {
+      skippedRows.push({ reason: 'malformed-row', setToken, setIdentity });
+      if (setToken !== null) skippedSetTokens.push(setToken);
       continue;
     }
 
     let tokenAddress: ReturnType<typeof decodeProviderProxySetAddress>;
     try {
-      tokenAddress = decodeProviderProxySetAddress(entry.setToken);
+      tokenAddress = decodeProviderProxySetAddress(setToken);
     } catch {
-      skippedRows += 1;
+      skippedRows.push({ reason: 'invalid-token', setToken, setIdentity });
+      skippedSetTokens.push(setToken);
       continue;
     }
     if (
-      tokenAddress.buildSetId !== entry.setIdentity.buildSetId ||
-      tokenAddress.hostFingerprint !== entry.setIdentity.hostFingerprint ||
-      tokenAddress.proxyInstanceId !== entry.setIdentity.proxyInstanceId
+      tokenAddress.buildSetId !== setIdentity.buildSetId ||
+      tokenAddress.hostFingerprint !== setIdentity.hostFingerprint ||
+      tokenAddress.proxyInstanceId !== setIdentity.proxyInstanceId
     ) {
-      skippedRows += 1;
+      skippedRows.push({ reason: 'token-identity-disagreement', setToken, setIdentity });
+      skippedSetTokens.push(setToken);
       continue;
     }
 
     if (!isNonNegativeInteger(entry.liveClaims) || !Array.isArray(entry.holds)) {
-      skippedRows += 1;
-      skippedSetTokens.push(entry.setToken);
+      skippedRows.push({ reason: 'unsupported-row', setToken, setIdentity });
+      skippedSetTokens.push(setToken);
       continue;
     }
     const operatorExit = parseProviderProxySetOperatorExit(entry.operatorExit);
     const holds = entry.holds.map(parseProviderProxySetHold);
     if (operatorExit === null || holds.some((hold) => hold === null)) {
-      skippedRows += 1;
-      skippedSetTokens.push(entry.setToken);
+      skippedRows.push({ reason: 'unsupported-row', setToken, setIdentity });
+      skippedSetTokens.push(setToken);
       continue;
     }
     understoodRows.push({
-      setIdentity: {
-        buildSetId: entry.setIdentity.buildSetId,
-        hostFingerprint: entry.setIdentity.hostFingerprint,
-        proxyInstanceId: entry.setIdentity.proxyInstanceId,
-      },
-      setToken: entry.setToken,
+      setIdentity,
+      setToken,
       liveClaims: entry.liveClaims,
       operatorExit,
       holds: holds as ProviderProxySet['holds'],
@@ -590,13 +606,22 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   ) {
     return null;
   }
+  const diagnostics = { ...value };
+  delete diagnostics.providerProxySetRowSkips;
   return {
     diagnostics: {
-      ...value,
-      ...(providerProxySets === null ? {} : { providerProxySets: providerProxySets.understoodRows }),
+      ...diagnostics,
+      ...(providerProxySets === null
+        ? {}
+        : {
+            providerProxySets: providerProxySets.understoodRows,
+            ...(providerProxySets.skippedRows.length === 0
+              ? {}
+              : { providerProxySetRowSkips: providerProxySets.skippedRows }),
+          }),
       ...(providerProxyDispositionSkips === null ? {} : { providerProxyDispositionSkips }),
     },
-    skippedProviderProxySetRows: providerProxySets?.skippedRows ?? 0,
+    skippedProviderProxySetRows: providerProxySets?.skippedRows.length ?? 0,
     skippedProviderProxySetTokens: providerProxySets?.skippedSetTokens ?? [],
   } as DiagnosticsParseResult;
 }

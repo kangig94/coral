@@ -134,7 +134,7 @@ export const reclamationFailedProviderHostInventoryRecordSchema = z
     host: reclamationFailureMetadataSchema,
   })
   .strict();
-export const shutdownHeldProviderHostInventoryRecordSchema = z
+export const coordinatorShutdownHeldProviderHostInventoryRecordSchema = z
   .object({
     ...providerHostInventoryCommonShape,
     status: z.literal('shutdown-held'),
@@ -158,11 +158,37 @@ export const shutdownHeldProviderHostInventoryRecordSchema = z
   })
   .strict();
 
-export const providerHostInventoryRecordSchema = z.discriminatedUnion('status', [
+export const proxyShutdownHeldProviderHostInventoryRecordSchema = z
+  .object({
+    ...providerHostInventoryCommonShape,
+    status: z.literal('shutdown-held'),
+    host: z
+      .object({
+        owner: z.literal('provider-proxy'),
+        hostKey: z.string(),
+        ownerJobId: z.string().nullable(),
+        pid: positiveSafeIntegerSchema,
+        observation: z.enum(['alive', 'unobservable']),
+        successorOwner: z.string().min(1).nullable(),
+        operatorExit: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const providerHostInventoryRecordV1Schema = z.discriminatedUnion('status', [
   liveProviderHostInventoryRecordSchema,
   retiredBlockedProviderHostInventoryRecordSchema,
   reclamationFailedProviderHostInventoryRecordSchema,
-  shutdownHeldProviderHostInventoryRecordSchema,
+  coordinatorShutdownHeldProviderHostInventoryRecordSchema,
+]);
+
+export const providerHostInventoryRecordSchema = z.union([
+  liveProviderHostInventoryRecordSchema,
+  retiredBlockedProviderHostInventoryRecordSchema,
+  reclamationFailedProviderHostInventoryRecordSchema,
+  coordinatorShutdownHeldProviderHostInventoryRecordSchema,
+  proxyShutdownHeldProviderHostInventoryRecordSchema,
 ]);
 
 export const providerHostInventorySchema = z.array(providerHostInventoryRecordSchema);

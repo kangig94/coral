@@ -1800,6 +1800,7 @@ export type HandoffRoutingResolveResult =
     }>
   | Readonly<{
       kind: 'status-unavailable';
+      invocationId: string;
       status: PublicationArtifactRefusal;
     }>
   | HandoffRoutingResolvePublicationFailure;
@@ -2246,7 +2247,11 @@ export async function resolveHandoffRoutingStatus(
   if (statusRead.kind !== 'current') {
     const policy = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[statusRead.kind];
     if (policy.resolve === 'stale') return { kind: 'stale', invocationId: request.invocationId };
-    return { kind: 'status-unavailable', status: statusRead as PublicationArtifactRefusal };
+    return {
+      kind: 'status-unavailable',
+      invocationId: request.invocationId,
+      status: statusRead as PublicationArtifactRefusal,
+    };
   }
 
   const status = statusRead.statuses.find((candidate) => statusInvocationId(candidate) === request.invocationId);

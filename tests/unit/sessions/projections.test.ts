@@ -478,4 +478,27 @@ describe('sessions projections', () => {
       h.close();
     }
   });
+
+  it('should report the exact primary-key literal when skipping a row with a non-string session id', () => {
+    const h = newHarness();
+    try {
+      h.db
+        .prepare(
+          `INSERT INTO projection_sessions (
+             session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(Buffer.from([0xde, 0xad]), 'default', 0, null, 'scope', '{}', 1);
+      const invalidRows: Array<{ sessionId: string | null; sessionIdKey: string }> = [];
+
+      expect(
+        listProjectionSessionEntries(h.db, undefined, undefined, (sessionId, _error, sessionIdKey) => {
+          invalidRows.push({ sessionId, sessionIdKey });
+        }),
+      ).toEqual([]);
+      expect(invalidRows).toEqual([{ sessionId: null, sessionIdKey: "X'DEAD'" }]);
+    } finally {
+      h.close();
+    }
+  });
 });

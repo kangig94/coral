@@ -62,9 +62,11 @@ import {
   providerHostEvictParamsSchema,
   providerHostEvictResultSchema,
   providerHostInspectParamsSchema,
-  providerHostInspectResultSchema,
+  providerHostInspectResultV1Schema,
+  providerHostInspectResultV2Schema,
   providerHostListParamsSchema,
-  providerHostListResultSchema,
+  providerHostListResultV1Schema,
+  providerHostListResultV2Schema,
   type CoordinatorIdentity,
   type OperationIdentity,
   type ProxyIdentity,
@@ -364,6 +366,20 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
+      'provider-host.list.v2',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          providerHostListParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          return providerHostListResultV2Schema.parse({ hosts: options.providerHosts.listProviderHosts() });
+        },
+      },
+    ],
+    [
       'provider-host.list.v1',
       {
         authority: 'observation',
@@ -373,7 +389,33 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (options.providerHosts === undefined) {
             throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
           }
-          return providerHostListResultSchema.parse({ hosts: options.providerHosts.listProviderHosts() });
+          const result = providerHostListResultV1Schema.safeParse({
+            hosts: options.providerHosts.listProviderHosts(),
+          });
+          if (!result.success) {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'Provider-host inventory requires provider-host.list.v2.',
+            );
+          }
+          return result.data;
+        },
+      },
+    ],
+    [
+      'provider-host.inspect.v2',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          const request = providerHostInspectParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          const host = options.providerHosts.inspectProviderHost(request.hostRef);
+          return providerHostInspectResultV2Schema.parse(
+            host === null ? { state: 'stale' } : { state: 'matched', host },
+          );
         },
       },
     ],
@@ -388,7 +430,16 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
           }
           const host = options.providerHosts.inspectProviderHost(request.hostRef);
-          return providerHostInspectResultSchema.parse(host === null ? { state: 'stale' } : { state: 'matched', host });
+          const result = providerHostInspectResultV1Schema.safeParse(
+            host === null ? { state: 'stale' } : { state: 'matched', host },
+          );
+          if (!result.success) {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'Provider-host inventory requires provider-host.inspect.v2.',
+            );
+          }
+          return result.data;
         },
       },
     ],

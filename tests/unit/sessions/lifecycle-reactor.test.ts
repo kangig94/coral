@@ -1476,6 +1476,24 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
   });
 
+  it('names the exact primary key when lifecycle processing skips a projection with a non-string session id', () => {
+    const harness = createHarness();
+    harness.db
+      .prepare(
+        `INSERT INTO projection_sessions (
+           session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(Buffer.from([0xde, 0xad]), 'default', 0, null, 'scope', '{}', 1);
+
+    expect(harness.reactor.listLifecycleSessionEntries()).toEqual([]);
+    expect(harness.logs).toEqual([
+      expect.stringContaining(
+        "Skipped malformed session projection at projection_sessions.session_id=X'DEAD' during lifecycle processing:",
+      ),
+    ]);
+  });
+
   it('expires a pending continuation lease by timer and discards without later terminal or release events', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-lease-timer';

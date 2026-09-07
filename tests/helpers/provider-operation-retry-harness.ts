@@ -184,7 +184,7 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
       autonomousDeadline: {
         orphanTimeoutMs: 37_000,
         adoptionWindowMs: 23_000,
-        heartbeatHoldBound: { spanMs: 23_000 },
+        heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
       },
       stopAndReap,
       commitContainment: async (signal: AbortSignal) => {

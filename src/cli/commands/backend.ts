@@ -160,6 +160,7 @@ import {
   formatUnreadableProviderOperationDiscard,
   formatProviderProxySetContainResult,
   formatProviderProxySetOperatorExit,
+  formatProviderProxySetRowSkips,
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
@@ -1684,7 +1685,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       let preservedSetRead: Readonly<{
         operatorExits: readonly string[];
         skippedRows: number;
-        skippedTokens: readonly string[];
+        skippedIdentities: readonly string[];
       }> | null = null;
       try {
         const statusBeforeShutdown = await backendStatus.getStatus();
@@ -1693,7 +1694,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           preservedSetRead = {
             operatorExits: providerProxySets.map(formatProviderProxySetOperatorExit),
             skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
-            skippedTokens: statusBeforeShutdown.health.skippedProviderProxySetTokens,
+            skippedIdentities: formatProviderProxySetRowSkips(
+              statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
+              statusBeforeShutdown.health.skippedProviderProxySetTokens,
+              statusBeforeShutdown.health.diagnostics?.providerProxySetRowSkips,
+            ),
           };
         }
       } catch {
@@ -1720,7 +1725,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
             lines.push(
               `The pre-shutdown status read could not interpret ${preservedSetRead.skippedRows} provider proxy set row(s), so it could not confirm that every preserved set was named.`,
             );
-            lines.push(...preservedSetRead.skippedTokens.map((token) => `  skipped set=${token}`));
+            lines.push(...preservedSetRead.skippedIdentities.map((identity) => `  ${identity}`));
             lines.push(
               '  No containment or abandonment command is offered for a skipped set because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
             );
