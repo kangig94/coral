@@ -198,6 +198,51 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
+  it('renders a shutdown hold with its observation, successor, exit, and exact retry command', async () => {
+    const ref: HostRef = {
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'held-host',
+      leaseMode: 'shared',
+    };
+    const evict = vi.fn(async () => {
+      throw Object.assign(new Error('provider host remains held'), {
+        code: 'provider_host_shutdown_held',
+        ownerIds: ['proxy-a'],
+        matches: [ref],
+        hold: {
+          kind: 'held',
+          observation: 'alive',
+          successorOwner: 'broker-session-pool',
+          operatorExit: 'retry-broker-shutdown',
+        },
+      });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect: vi.fn(), evict } } as unknown as HttpHandlerPorts;
+    const encodedRef = encodeHostRef(ref);
+
+    await expect(
+      executeCatalogRequest(providerHostEvictRpcSpec, { hostRef: ref }, ports, operator),
+    ).resolves.toMatchObject({
+      kind: 'unary',
+      statusCode: 409,
+      body: {
+        code: 'provider_host_shutdown_held',
+        message: expect.stringContaining(
+          `observation=alive; successorOwner=broker-session-pool; operatorExit=retry-broker-shutdown`,
+        ),
+        remediation: expect.stringContaining(`coral-cli backend provider-host evict ${encodedRef}`),
+        detail: {
+          ownerIds: ['proxy-a'],
+          hostRefs: [encodedRef],
+          observation: 'alive',
+          successorOwner: 'broker-session-pool',
+          operatorExit: 'retry-broker-shutdown',
+        },
+      },
+    });
+  });
+
   it('carries a proxy-owned shutdown hold through the operator inventory response', async () => {
     const record = {
       ref: { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'held-host', leaseMode: 'shared' as const },

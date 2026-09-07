@@ -34,6 +34,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   registerBackendCommands,
   type BackendStatusCommandOperations,
+  type ProviderHostCommandOperations,
   type ProviderProxySetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import type { ProviderProxyRoleTerminationCommandOperations } from '#src/cli/commands/provider-proxy-role-termination.js';
@@ -468,6 +469,49 @@ describe('cli main routing', () => {
     expect(stderr).toMatch(/cannot shut down its parent coordinator/u);
     expect(stderr, 'the remedy is the point of this refusal').toMatch(/top-level Coral session/u);
     // 1, not 75: this run established the refusal. The undetermined reasons are the ones that exit 75.
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('renders a provider-host shutdown hold with its exact retry exit', async () => {
+    const ref: HostRef = {
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'held-host',
+      leaseMode: 'shared',
+    };
+    const encodedRef = encodeHostRef(ref);
+    const remediation =
+      `Run \`coral-cli backend provider-host evict ${encodedRef}\` to execute the reported ` +
+      'retry-broker-shutdown exit; Coral will report eviction only after no hold remains.';
+    const providerHosts: ProviderHostCommandOperations = {
+      list: vi.fn(),
+      inspect: vi.fn(),
+      evict: vi.fn(async () => {
+        throw new IpcRpcError({
+          code: -32_000,
+          message: 'The provider host remains shutdown-held.',
+          data: {
+            code: 'provider_host_shutdown_held',
+            message:
+              `The provider host remains shutdown-held: ${encodedRef}; observation=alive; ` +
+              'successorOwner=broker-session-pool; operatorExit=retry-broker-shutdown.',
+            remediation,
+          },
+        });
+      }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { providerHosts });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'provider-host', 'evict', encodedRef]);
+
+    expect(stdout).toBe('');
+    expect(stderr).toContain('provider_host_shutdown_held');
+    expect(stderr).toContain('observation=alive');
+    expect(stderr).toContain('successorOwner=broker-session-pool');
+    expect(stderr).toContain('operatorExit=retry-broker-shutdown');
+    expect(stderr).toContain(remediation);
     expect(process.exitCode).toBe(1);
   });
 

@@ -198,6 +198,16 @@ export type HostRef =
       ownerJobId: string;
     }>;
 
+export type ProviderHostEvictionDisposition =
+  | Readonly<{ kind: 'evicted' }>
+  | Readonly<{ kind: 'stale' }>
+  | Readonly<{
+      kind: 'held';
+      observation: 'alive' | 'unobservable';
+      successorOwner: string | null;
+      operatorExit: string;
+    }>;
+
 /** Provider-facing session. Process ownership and release remain capability-private. */
 export interface AppServerTransport {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;

@@ -516,7 +516,7 @@ async function createHarness(
     rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<never>(() => undefined),
     forceClose: async () => undefined,
-    evictHost: async () => false,
+    evictHost: async () => ({ kind: 'stale' as const }),
   };
 
   const timer = new ControlledTimer();

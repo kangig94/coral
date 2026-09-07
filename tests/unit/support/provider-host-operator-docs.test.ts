@@ -23,6 +23,10 @@ describe('provider-host operator documentation', () => {
     expect(catalogEntry('provider_host_ambiguous')).toContain('provider-host evict <ref>');
     expect(catalogEntry('provider_host_identity_integrity')).toContain('Do **not** evict');
     expect(catalogEntry('provider_host_identity_integrity')).toContain('coral-cli backend status');
+    expect(catalogEntry('provider_host_shutdown_held')).toContain('observation');
+    expect(catalogEntry('provider_host_shutdown_held')).toContain('successorOwner');
+    expect(catalogEntry('provider_host_shutdown_held')).toContain('operatorExit');
+    expect(catalogEntry('provider_host_shutdown_held')).toContain('provider-host evict <ref>');
     expect(catalogEntry('provider_host_stale')).toContain('coral-cli backend provider-host list');
   });
 

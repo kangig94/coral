@@ -424,6 +424,28 @@ describe('provider-host proxy controls', () => {
     }
   });
 
+  it('preserves a held eviction in v2 and refuses to fold it through v1', async () => {
+    const eviction = vi.spyOn(providerHosts, 'evictHost').mockResolvedValue({
+      kind: 'held',
+      observation: 'alive',
+      successorOwner: 'broker-session-pool',
+      operatorExit: 'retry-broker-shutdown',
+    });
+    try {
+      await expect(strictTestExchange(control, 'provider-host.evict.v2', { hostRef }, 5_000)).resolves.toEqual({
+        kind: 'held',
+        observation: 'alive',
+        successorOwner: 'broker-session-pool',
+        operatorExit: 'retry-broker-shutdown',
+      });
+      await expect(strictTestExchange(control, 'provider-host.evict.v1', { hostRef }, 5_000)).rejects.toThrow(
+        'Provider-host eviction requires provider-host.evict.v2.',
+      );
+    } finally {
+      eviction.mockRestore();
+    }
+  });
+
   it('passes actual live and retained-tombstone records through the real strict list and inspect handlers', async () => {
     const controls = authority.providerHosts;
     if (controls === undefined) throw new Error('provider-host controls were not composed');
@@ -451,7 +473,7 @@ describe('provider-host proxy controls', () => {
     const controls = authority.providerHosts;
     if (controls === undefined) throw new Error('provider-host controls were not composed');
 
-    await expect(controls.evict(hostRef)).resolves.toBe(true);
+    await expect(controls.evict(hostRef)).resolves.toEqual({ kind: 'evicted' });
     expect(providerServer.closeMock).toHaveBeenCalledOnce();
     expect(providerHosts.listProviderHosts()).toEqual([]);
   });

@@ -207,14 +207,24 @@ describe('provider host reclamation', () => {
     expect(evictionSettled).toBe(false);
     expect(manager.cleanupObligations().closingHosts).toHaveLength(1);
     operatorAcceptance.resolve();
-    await expect(eviction).resolves.toBe(false);
+    await expect(eviction).resolves.toEqual({
+      kind: 'held',
+      observation: 'unobservable',
+      successorOwner: null,
+      operatorExit: 'abandon-provider-host-acquisition',
+    });
     expect(manager.listProviderHosts()).toMatchObject([{ status: 'reclamation-failed' }]);
     expect(manager.admissionSnapshot().state.size).toBe(1);
     expect(manager.admissionSnapshot().tombstones).toEqual([]);
 
     const acceptedEviction = manager.evictHost(record.ref);
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(acceptedEviction).resolves.toBe(true);
+    await expect(acceptedEviction).resolves.toEqual({
+      kind: 'held',
+      observation: 'unobservable',
+      successorOwner: 'operator-command',
+      operatorExit: 'abandon-provider-host-acquisition',
+    });
     await expect(opening).resolves.toBe(failure);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(manager.listProviderHosts()).toEqual([]);
@@ -268,7 +278,7 @@ describe('provider host reclamation', () => {
     ]);
     await vi.advanceTimersByTimeAsync(1);
 
-    await expect(eviction).resolves.toBe(true);
+    await expect(eviction).resolves.toEqual({ kind: 'evicted' });
     await vi.waitFor(() => expect(manager.listProviderHosts()).toEqual([]));
     expect(reapContainment).toHaveBeenCalledTimes(2);
     expect(entry.containment).toBeNull();

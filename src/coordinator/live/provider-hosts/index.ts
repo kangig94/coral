@@ -1,4 +1,9 @@
-import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
+import type {
+  AppServerTransport,
+  HostRef,
+  ProviderHostEvictionDisposition,
+  ProviderServerSpec,
+} from '../../../providers/contract.js';
 import {
   PROVIDER_CONTAINMENT_ACCEPTED,
   isAcceptedProviderServerOperatorAbandonment,
@@ -156,7 +161,7 @@ export interface ProviderHostAdministrationAuthority {
   admissionSnapshot(): HostAdmissionSnapshot;
   listProviderHosts(): readonly ProviderHostInventoryRecord[];
   inspectProviderHost(hostRef: HostRef): ProviderHostInventoryRecord | null;
-  evictHost(hostRef: HostRef): Promise<boolean>;
+  evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition>;
 }
 
 /**
@@ -1111,8 +1116,8 @@ export class DefaultProviderHostManager
     return matches[0] ?? null;
   }
 
-  async evictHost(hostRef: HostRef): Promise<boolean> {
-    if (!isExactHostRef(hostRef)) return false;
+  async evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition> {
+    if (!isExactHostRef(hostRef)) return { kind: 'stale' };
     const liveMatches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, hostRef));
     const closingMatches = [...this.closingEntries.entries()].filter(([, closing]) =>
       exactHostRefsMatch(closing.ref, hostRef),
@@ -1127,16 +1132,30 @@ export class DefaultProviderHostManager
       if (spawnCleanup !== null) {
         const settlement = matched.spawnPromise;
         const abandonment = await spawnCleanup.operatorExit.abandon();
-        if (!isAcceptedProviderServerOperatorAbandonment(spawnCleanup, abandonment)) return false;
-        matched.spawnCleanupDisposition = abandonment;
-        this.spawnCleanupRetryRequests.get(matched)?.();
-        if (settlement !== null) await settlement.catch(() => undefined);
-        return true;
+        const accepted = isAcceptedProviderServerOperatorAbandonment(spawnCleanup, abandonment);
+        if (accepted) {
+          matched.spawnCleanupDisposition = abandonment;
+          this.spawnCleanupRetryRequests.get(matched)?.();
+          if (settlement !== null) await settlement.catch(() => undefined);
+        }
+        return {
+          kind: 'held',
+          observation: spawnCleanup.observation,
+          successorOwner: accepted ? 'operator-command' : null,
+          operatorExit: spawnCleanup.operatorExit.kind,
+        };
       }
       const shutdown = await this.closeProviderServerEntry(matched, 'evicted by operator', { confirmAbsence: true });
-      if (shutdown.kind !== 'observed-absent') return false;
+      if (shutdown.kind !== 'observed-absent') {
+        return {
+          kind: 'held',
+          observation: shutdown.observation,
+          successorOwner: shutdown.successor?.owner ?? null,
+          operatorExit: shutdown.operatorExit.kind,
+        };
+      }
       this.admission.confirmEvicted(hostRef);
-      return true;
+      return { kind: 'evicted' };
     }
 
     const tombstones = this.admission
@@ -1144,8 +1163,8 @@ export class DefaultProviderHostManager
       .tombstones.filter(
         (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
       );
-    if (tombstones.length !== 1) return false;
-    return this.admission.confirmEvicted(hostRef);
+    if (tombstones.length !== 1) return { kind: 'stale' };
+    return this.admission.confirmEvicted(hostRef) ? { kind: 'evicted' } : { kind: 'stale' };
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt> {

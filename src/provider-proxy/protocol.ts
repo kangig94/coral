@@ -185,6 +185,18 @@ export const providerHostEvictResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('evicted') }).strict(),
   z.object({ state: z.literal('stale') }).strict(),
 ]);
+export const providerHostEvictResultV2Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('evicted') }).strict(),
+  z.object({ kind: z.literal('stale') }).strict(),
+  z
+    .object({
+      kind: z.literal('held'),
+      observation: z.enum(['alive', 'unobservable']),
+      successorOwner: z.string().min(1).nullable(),
+      operatorExit: z.string().min(1),
+    })
+    .strict(),
+]);
 export const generationSchema = z.literal('gen2');
 export const flavorSchema = z.enum(['prod', 'dev']);
 export const canonicalEndpointSchema = z

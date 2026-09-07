@@ -83,7 +83,7 @@ function owner(
     ownerId,
     listProviderHosts: vi.fn(async () => records),
     inspectProviderHost: vi.fn(async (ref: HostRef) => records.find((entry) => entry.ref === ref) ?? null),
-    evictProviderHost: vi.fn(async () => true),
+    evictProviderHost: vi.fn(async () => ({ kind: 'evicted' as const })),
     ...overrides,
   } as never;
 }
@@ -242,7 +242,7 @@ describe('provider host administration', () => {
     const selectedRecord = record(selectedRef);
     const selected = owner('coordinator', [selectedRecord], {
       inspectProviderHost: vi.fn(async () => selectedRecord),
-      evictProviderHost: vi.fn(async () => true),
+      evictProviderHost: vi.fn(async () => ({ kind: 'evicted' as const })),
     });
     const untouched = owner('proxy-a', [record(hostRef('untouched'))]);
     const service = new ProviderHostAdministrationService({ owners: () => [selected, untouched] });
@@ -259,6 +259,31 @@ describe('provider host administration', () => {
     expect(selected.evictProviderHost).toHaveBeenCalledExactlyOnceWith(selectedRef);
     expect(untouched.inspectProviderHost).not.toHaveBeenCalled();
     expect(untouched.evictProviderHost).not.toHaveBeenCalled();
+  });
+
+  it('reports a shutdown hold without calling it stale or evicted', async () => {
+    const selectedRef = hostRef('held');
+    const selected = owner('proxy-a', [record(selectedRef)], {
+      evictProviderHost: vi.fn(async () => ({
+        kind: 'held' as const,
+        observation: 'alive' as const,
+        successorOwner: 'provider-proxy-root-pool',
+        operatorExit: 'retry-provider-shutdown',
+      })),
+    });
+    const service = new ProviderHostAdministrationService({ owners: () => [selected] });
+
+    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
+      code: 'provider_host_shutdown_held',
+      ownerIds: ['proxy-a'],
+      matches: [selectedRef],
+      hold: {
+        kind: 'held',
+        observation: 'alive',
+        successorOwner: 'provider-proxy-root-pool',
+        operatorExit: 'retry-provider-shutdown',
+      },
+    });
   });
 
   it('accepts an exact live-to-tombstone transition during selected-owner revalidation', async () => {
@@ -407,7 +432,7 @@ describe('provider host administration', () => {
     const replacementRef = hostRef('replacement');
     const selected = owner('proxy-a', [record(selectedRef)], {
       inspectProviderHost: vi.fn(async () => null),
-      evictProviderHost: vi.fn(async () => false),
+      evictProviderHost: vi.fn(async () => ({ kind: 'stale' as const })),
     });
     const replacement = owner('proxy-b', [record(replacementRef)]);
     const service = new ProviderHostAdministrationService({ owners: () => [selected, replacement] });

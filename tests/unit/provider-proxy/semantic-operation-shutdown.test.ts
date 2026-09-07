@@ -123,7 +123,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => undefined,
-    evictHost: async () => false,
+    evictHost: async () => ({ kind: 'stale' as const }),
   };
 }
 
@@ -310,7 +310,7 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
       rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
       closed: () => new Promise<Error | void>(() => {}),
       forceClose: () => new Promise<never>(() => {}),
-      evictHost: async () => false,
+      evictHost: async () => ({ kind: 'stale' as const }),
     } as ProxyAppServerHostAuthority;
     const host = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
     await host.ensureProviderRoot(key, prepared);

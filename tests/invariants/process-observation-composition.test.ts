@@ -91,10 +91,6 @@ const ALLOWLIST = new Map<string, string>([
     'provider-host reaping reports unresolved containment through rejection instead of returning the reap disposition',
   ],
   [
-    'src/coordinator/live/provider-proxy/set-authority.ts#createProviderProxySetAuthority.evict',
-    'provider-host eviction collapses the control exchange and decoded result to boolean',
-  ],
-  [
     'src/coordinator/live/provider-proxy/spawn-undo.ts#buildGuardianSpawnUndo.perform',
     'guardian spawn undo converts control and reap holds to rejected completion',
   ],

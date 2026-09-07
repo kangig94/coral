@@ -392,6 +392,7 @@ type ProviderHostAdministrationErrorCode =
   | 'provider_host_not_found'
   | 'provider_host_ambiguous'
   | 'provider_host_identity_integrity'
+  | 'provider_host_shutdown_held'
   | 'provider_host_stale';
 
 const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set<ProviderHostAdministrationErrorCode>([
@@ -399,6 +400,7 @@ const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set<ProviderHostAdministrat
   'provider_host_not_found',
   'provider_host_ambiguous',
   'provider_host_identity_integrity',
+  'provider_host_shutdown_held',
   'provider_host_stale',
 ]);
 
@@ -412,6 +414,9 @@ function isProviderHostAdministrationErrorCode(code: unknown): code is ProviderH
 function providerHostAdministrationDetail(error: Record<string, unknown>): {
   ownerIds: string[];
   hostRefs: string[];
+  observation: 'alive' | 'unobservable' | null;
+  successorOwner: string | null;
+  operatorExit: string | null;
 } {
   const ownerIds = Array.isArray(error.ownerIds)
     ? error.ownerIds.filter((value): value is string => typeof value === 'string')
@@ -425,13 +430,22 @@ function providerHostAdministrationDetail(error: Record<string, unknown>): {
         }
       })
     : [];
-  return { ownerIds, hostRefs };
+  const hold = isRecord(error.hold) ? error.hold : null;
+  const observation = hold?.observation === 'alive' || hold?.observation === 'unobservable' ? hold.observation : null;
+  const successorOwner = typeof hold?.successorOwner === 'string' ? hold.successorOwner : null;
+  const operatorExit = typeof hold?.operatorExit === 'string' ? hold.operatorExit : null;
+  return { ownerIds, hostRefs, observation, successorOwner, operatorExit };
 }
 
 function providerHostAdministrationCopy(
   code: ProviderHostAdministrationErrorCode,
   ownerIds: readonly string[],
   hostRefs: readonly string[],
+  hold: Readonly<{
+    observation: 'alive' | 'unobservable' | null;
+    successorOwner: string | null;
+    operatorExit: string | null;
+  }>,
 ): { message: string; remediation: string } {
   switch (code) {
     case 'provider_host_inventory_unavailable':
@@ -457,6 +471,16 @@ function providerHostAdministrationCopy(
         remediation:
           'Do not evict: preserve the complete error output, then run `coral-cli backend status` to capture coordinator state before escalating the integrity failure.',
       };
+    case 'provider_host_shutdown_held': {
+      const hostRef = hostRefs[0] ?? '<ref>';
+      const observation = hold.observation ?? 'unobservable';
+      const successorOwner = hold.successorOwner ?? 'none';
+      const operatorExit = hold.operatorExit ?? 'retry-provider-shutdown';
+      return {
+        message: `The provider host remains shutdown-held: ${hostRef}; observation=${observation}; successorOwner=${successorOwner}; operatorExit=${operatorExit}.`,
+        remediation: `Run \`coral-cli backend provider-host evict ${hostRef}\` to execute the reported ${operatorExit} exit; Coral will report eviction only after no hold remains.`,
+      };
+    }
     case 'provider_host_stale':
       return {
         message: `The selected provider host changed before the owner could revalidate it: ${hostRefs.join(', ')}.`,
@@ -468,8 +492,12 @@ function providerHostAdministrationCopy(
 function providerHostAdministrationFailure(error: unknown): CatalogRequestExecution | null {
   if (!isRecord(error) || !isProviderHostAdministrationErrorCode(error.code)) return null;
 
-  const { ownerIds, hostRefs } = providerHostAdministrationDetail(error);
-  const { message, remediation } = providerHostAdministrationCopy(error.code, ownerIds, hostRefs);
+  const { ownerIds, hostRefs, observation, successorOwner, operatorExit } = providerHostAdministrationDetail(error);
+  const { message, remediation } = providerHostAdministrationCopy(error.code, ownerIds, hostRefs, {
+    observation,
+    successorOwner,
+    operatorExit,
+  });
   const statusCode =
     error.code === 'provider_host_not_found' ? 404 : error.code === 'provider_host_inventory_unavailable' ? 503 : 409;
   return unary(
@@ -477,7 +505,11 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
       code: error.code,
       message,
       remediation,
-      detail: { ownerIds, hostRefs },
+      detail: {
+        ownerIds,
+        hostRefs,
+        ...(error.code === 'provider_host_shutdown_held' ? { observation, successorOwner, operatorExit } : {}),
+      },
     },
     statusCode,
   );

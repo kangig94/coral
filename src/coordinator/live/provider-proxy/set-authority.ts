@@ -22,7 +22,7 @@ import {
   PROXY_STATUS_RPC_TIMEOUT_MS,
   canonicalUuidSchema,
   providerHostEvictParamsSchema,
-  providerHostEvictResultSchema,
+  providerHostEvictResultV2Schema,
   providerHostInspectParamsSchema,
   providerHostInspectResultV1Schema,
   providerHostInspectResultV2Schema,
@@ -506,11 +506,12 @@ export function createProviderProxySetAuthority(
       },
       evict: async (hostRef) => {
         const params = providerHostEvictParamsSchema.parse({ hostRef });
-        const raw = requireControlResult(
-          'provider-host.evict.v1',
-          await proxyClient.exchange('provider-host.evict.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        return providerHostEvictResultV2Schema.parse(
+          requireControlResult(
+            'provider-host.evict.v2',
+            await proxyClient.exchange('provider-host.evict.v2', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+          ),
         );
-        return providerHostEvictResultSchema.parse(raw).state === 'evicted';
       },
     }),
     installRecoveryCredential,

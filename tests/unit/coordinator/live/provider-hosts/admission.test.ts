@@ -113,8 +113,8 @@ describe('coordinator provider-host admission', () => {
     });
     await expect(manager.openSession(hostSpec)).rejects.toMatchObject({ code: 'provider_host_unserviceable' });
 
-    expect(await manager.evictHost({ ...opened.hostRef, instanceId: 'stale-instance' })).toBe(false);
-    expect(await manager.evictHost(opened.hostRef)).toBe(true);
+    expect(await manager.evictHost({ ...opened.hostRef, instanceId: 'stale-instance' })).toEqual({ kind: 'stale' });
+    expect(await manager.evictHost(opened.hostRef)).toEqual({ kind: 'evicted' });
     expect(first.closeMock, 'retired-blocked eviction attempted a second physical close').not.toHaveBeenCalled();
     const replacement = await manager.openSession(hostSpec);
     expect(replacement.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);
@@ -165,7 +165,7 @@ describe('coordinator provider-host admission', () => {
     await expect(manager.openSession(hostSpec)).rejects.toThrow(/^provider_host_draining:/u);
 
     finishReap.resolve();
-    await expect(eviction).resolves.toBe(true);
+    await expect(eviction).resolves.toEqual({ kind: 'evicted' });
     opened.close();
     await manager.shutdown();
   });
@@ -312,7 +312,7 @@ describe('coordinator provider-host admission', () => {
     expect(untouched.closeMock, 'ref B was closed while evicting ref A').not.toHaveBeenCalled();
 
     evictedClose.resolve();
-    await expect(eviction).resolves.toBe(true);
+    await expect(eviction).resolves.toEqual({ kind: 'evicted' });
     const reopened = await manager.openSession(hostSpec, { jobId: 'job-a' });
     expect(reopened.hostRef.instanceId).not.toBe(first.hostRef.instanceId);
     expect(untouched.closeMock, 'ref B was closed while evicting ref A').not.toHaveBeenCalled();

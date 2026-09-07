@@ -1262,7 +1262,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
       forceClose: async () => {
         throw new Error('shared unconfirmed cancellation force-closed one operation');
       },
-      evictHost: async () => false,
+      evictHost: async () => ({ kind: 'stale' as const }),
     };
     const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
     const proxy = {

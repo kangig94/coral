@@ -1,4 +1,4 @@
-import type { HostRef } from '../../providers/contract.js';
+import type { HostRef, ProviderHostEvictionDisposition } from '../../providers/contract.js';
 import { exactHostRefsMatch } from '../../providers/host-admission.js';
 import {
   providerHostInventoryRecordSchema,
@@ -17,7 +17,7 @@ export type ProviderHostAdministrationOwner = Readonly<{
   ownerId: string;
   listProviderHosts(): Promise<readonly ProviderHostInventoryRecord[]> | readonly ProviderHostInventoryRecord[];
   inspectProviderHost(ref: HostRef): Promise<ProviderHostInventoryRecord | null> | ProviderHostInventoryRecord | null;
-  evictProviderHost(ref: HostRef): Promise<boolean>;
+  evictProviderHost(ref: HostRef): Promise<ProviderHostEvictionDisposition>;
 }>;
 
 export type ProviderHostAdministrationErrorCode =
@@ -25,16 +25,22 @@ export type ProviderHostAdministrationErrorCode =
   | 'provider_host_not_found'
   | 'provider_host_ambiguous'
   | 'provider_host_identity_integrity'
+  | 'provider_host_shutdown_held'
   | 'provider_host_stale';
 
 export class ProviderHostAdministrationError extends Error {
   readonly code: ProviderHostAdministrationErrorCode;
   readonly ownerIds: readonly string[];
   readonly matches: readonly HostRef[];
+  readonly hold: Extract<ProviderHostEvictionDisposition, { kind: 'held' }> | null;
 
   constructor(
     code: ProviderHostAdministrationErrorCode,
-    options: Readonly<{ ownerIds?: readonly string[]; matches?: readonly HostRef[] }> = {},
+    options: Readonly<{
+      ownerIds?: readonly string[];
+      matches?: readonly HostRef[];
+      hold?: Extract<ProviderHostEvictionDisposition, { kind: 'held' }>;
+    }> = {},
   ) {
     const ownerIds = Object.freeze([...(options.ownerIds ?? [])]);
     const matches = Object.freeze([...(options.matches ?? [])]);
@@ -44,6 +50,7 @@ export class ProviderHostAdministrationError extends Error {
     this.code = code;
     this.ownerIds = ownerIds;
     this.matches = matches;
+    this.hold = options.hold ?? null;
     Object.setPrototypeOf(this, ProviderHostAdministrationError.prototype);
   }
 }
@@ -84,18 +91,25 @@ export class ProviderHostAdministrationService {
   async evict(selector: ProviderHostSelector): Promise<Readonly<{ ownerId: string; hostRef: HostRef }>> {
     const inventory = await this.captureInventory();
     const selected = resolveOne(inventory.owners, inventory.rows, selector);
-    let evicted: boolean;
+    let disposition: ProviderHostEvictionDisposition;
     try {
-      evicted = await selected.owner.evictProviderHost(selected.row.ref);
+      disposition = await selected.owner.evictProviderHost(selected.row.ref);
     } catch {
       throw new ProviderHostAdministrationError('provider_host_inventory_unavailable', {
         ownerIds: [selected.owner.ownerId],
       });
     }
-    if (!evicted) {
+    if (disposition.kind === 'stale') {
       throw new ProviderHostAdministrationError('provider_host_stale', {
         ownerIds: [selected.owner.ownerId],
         matches: [selected.row.ref],
+      });
+    }
+    if (disposition.kind === 'held') {
+      throw new ProviderHostAdministrationError('provider_host_shutdown_held', {
+        ownerIds: [selected.owner.ownerId],
+        matches: [selected.row.ref],
+        hold: disposition,
       });
     }
     return Object.freeze({ ownerId: selected.owner.ownerId, hostRef: selected.row.ref });

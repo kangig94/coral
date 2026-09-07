@@ -61,6 +61,7 @@ import {
   proxyOperationStopParamsSchema as stopParamsSchema,
   providerHostEvictParamsSchema,
   providerHostEvictResultSchema,
+  providerHostEvictResultV2Schema,
   providerHostInspectParamsSchema,
   providerHostInspectResultV1Schema,
   providerHostInspectResultV2Schema,
@@ -444,6 +445,20 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
+      'provider-host.evict.v2',
+      {
+        authority: 'active',
+        budgetMs: 'caller-deadline',
+        handle: async (params) => {
+          const request = providerHostEvictParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          return providerHostEvictResultV2Schema.parse(await options.providerHosts.evictHost(request.hostRef));
+        },
+      },
+    ],
+    [
       'provider-host.evict.v1',
       {
         authority: 'active',
@@ -453,9 +468,14 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (options.providerHosts === undefined) {
             throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
           }
-          return providerHostEvictResultSchema.parse(
-            (await options.providerHosts.evictHost(request.hostRef)) ? { state: 'evicted' } : { state: 'stale' },
-          );
+          const result = await options.providerHosts.evictHost(request.hostRef);
+          if (result.kind === 'held') {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'Provider-host eviction requires provider-host.evict.v2.',
+            );
+          }
+          return providerHostEvictResultSchema.parse({ state: result.kind });
         },
       },
     ],
