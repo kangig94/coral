@@ -2590,6 +2590,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     await expect(authority.evictHost(opened.hostRef)).resolves.toBe(abandonment);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     await expect(authority.evictHost(opened.hostRef)).resolves.toBe(abandonment);
+    expect(authority.terminalEviction(opened.hostRef)).toBe(abandonment);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(authority.listProviderHosts()).toEqual([]);
     expect(authority.admissionSnapshot().state.size).toBe(0);

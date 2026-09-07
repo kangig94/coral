@@ -116,6 +116,7 @@ function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) 
     admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
     listProviderHosts: vi.fn(() => [record]),
     inspectProviderHost: vi.fn(() => record),
+    terminalEviction: vi.fn(() => null),
     evictHost: vi.fn(async () => ({ kind: 'evicted' as const })),
   };
   const providerHostManager = {

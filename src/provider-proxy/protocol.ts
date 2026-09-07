@@ -185,8 +185,34 @@ export const providerHostEvictResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('evicted') }).strict(),
   z.object({ state: z.literal('stale') }).strict(),
 ]);
+const providerHostEvictedDispositionSchema = z.object({ kind: z.literal('evicted') }).strict();
+const providerHostOperatorAbandonedDispositionSchema = z
+  .object({
+    kind: z.literal('operator-abandoned'),
+    subject: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('process'), pid: z.number().int().positive().safe().nullable() }).strict(),
+      z.object({ kind: z.literal('process-group'), processGroupId: z.number().int().positive().safe() }).strict(),
+      z
+        .object({
+          kind: z.literal('unattributable-process-group'),
+          processGroupId: z.number().int().positive().safe().nullable(),
+        })
+        .strict(),
+    ]),
+    processAbsenceProven: z.literal(false),
+    successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
+  })
+  .strict();
+export const providerHostTerminalEvictionDispositionSchema = z.discriminatedUnion('kind', [
+  providerHostEvictedDispositionSchema,
+  providerHostOperatorAbandonedDispositionSchema,
+]);
+export const providerHostTerminalEvictionResultV2Schema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('matched'), disposition: providerHostTerminalEvictionDispositionSchema }).strict(),
+  z.object({ state: z.literal('stale') }).strict(),
+]);
 export const providerHostEvictResultV2Schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('evicted') }).strict(),
+  providerHostEvictedDispositionSchema,
   z.object({ kind: z.literal('stale') }).strict(),
   z
     .object({
@@ -196,23 +222,7 @@ export const providerHostEvictResultV2Schema = z.discriminatedUnion('kind', [
       operatorExit: z.string().min(1),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal('operator-abandoned'),
-      subject: z.discriminatedUnion('kind', [
-        z.object({ kind: z.literal('process'), pid: z.number().int().positive().safe().nullable() }).strict(),
-        z.object({ kind: z.literal('process-group'), processGroupId: z.number().int().positive().safe() }).strict(),
-        z
-          .object({
-            kind: z.literal('unattributable-process-group'),
-            processGroupId: z.number().int().positive().safe().nullable(),
-          })
-          .strict(),
-      ]),
-      processAbsenceProven: z.literal(false),
-      successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
-    })
-    .strict(),
+  providerHostOperatorAbandonedDispositionSchema,
 ]);
 export const generationSchema = z.literal('gen2');
 export const flavorSchema = z.enum(['prod', 'dev']);

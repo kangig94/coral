@@ -1,4 +1,8 @@
-import type { HostRef, ProviderHostEvictionDisposition } from '../../providers/contract.js';
+import type {
+  HostRef,
+  ProviderHostEvictionDisposition,
+  ProviderHostTerminalEvictionDisposition,
+} from '../../providers/contract.js';
 import { exactHostRefIdentityKey, exactHostRefsMatch } from '../../providers/host-admission.js';
 import {
   providerHostInventoryRecordSchema,
@@ -17,6 +21,9 @@ export type ProviderHostAdministrationOwner = Readonly<{
   ownerId: string;
   listProviderHosts(): Promise<readonly ProviderHostInventoryRecord[]> | readonly ProviderHostInventoryRecord[];
   inspectProviderHost(ref: HostRef): Promise<ProviderHostInventoryRecord | null> | ProviderHostInventoryRecord | null;
+  terminalEviction(
+    ref: HostRef,
+  ): Promise<ProviderHostTerminalEvictionDisposition | null> | ProviderHostTerminalEvictionDisposition | null;
   evictProviderHost(ref: HostRef): Promise<ProviderHostEvictionDisposition>;
 }>;
 
@@ -140,9 +147,47 @@ export class ProviderHostAdministrationService {
   private async selectInitialEvictionOwner(
     hostRef: HostRef,
   ): Promise<Readonly<{ owner: ProviderHostAdministrationOwner; hostRef: HostRef }>> {
+    const owners = this.captureOwners();
+    // A terminal outcome outlives the inventory row it was about, so a coordinator that never saw this
+    // reference must ask the owners for it before concluding from an inventory that no longer lists it.
+    const retained = await this.discoverRetainedEvictionOwner(owners, hostRef);
+    if (retained !== null) return retained;
     const inventory = await this.captureInventory();
     const resolved = resolveOne(inventory.owners, inventory.rows, { hostRef });
     return { owner: resolved.owner, hostRef: resolved.row.ref };
+  }
+
+  private async discoverRetainedEvictionOwner(
+    owners: readonly ProviderHostAdministrationOwner[],
+    hostRef: HostRef,
+  ): Promise<Readonly<{ owner: ProviderHostAdministrationOwner; hostRef: HostRef }> | null> {
+    const responses = await Promise.allSettled(owners.map(async (owner) => owner.terminalEviction(hostRef)));
+    const unavailableOwnerIds: string[] = [];
+    const matches: ProviderHostAdministrationOwner[] = [];
+    for (const [index, response] of responses.entries()) {
+      const owner = owners[index];
+      if (owner === undefined) continue;
+      if (response.status === 'rejected') {
+        unavailableOwnerIds.push(owner.ownerId);
+      } else if (response.value !== null) {
+        matches.push(owner);
+      }
+    }
+    if (unavailableOwnerIds.length > 0) {
+      throw new ProviderHostAdministrationError('provider_host_inventory_unavailable', {
+        ownerIds: unavailableOwnerIds,
+      });
+    }
+    if (matches.length > 1) {
+      throw new ProviderHostAdministrationError('provider_host_identity_integrity', {
+        ownerIds: matches.map((owner) => owner.ownerId),
+        matches: matches.map(() => hostRef),
+      });
+    }
+    const owner = matches[0];
+    if (owner === undefined) return null;
+    this.retainEvictionOwner(owner.ownerId, hostRef);
+    return { owner, hostRef };
   }
 
   private retainedEvictionOwner(

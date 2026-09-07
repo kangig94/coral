@@ -29,6 +29,7 @@ import {
   providerHostListParamsSchema,
   providerHostListResultV1Schema,
   providerHostListResultV2Schema,
+  providerHostTerminalEvictionResultV2Schema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -503,6 +504,17 @@ export function createProviderProxySetAuthority(
           requireControlResult('provider-host.inspect.v1', legacy),
         );
         return result.state === 'matched' ? result.host : null;
+      },
+      terminalEviction: async (hostRef) => {
+        const params = providerHostEvictParamsSchema.parse({ hostRef });
+        const current = controlMethodAvailability(
+          await proxyClient.exchange('provider-host.terminal-eviction.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
+        );
+        if (current.kind === 'method-absent') return null;
+        const result = providerHostTerminalEvictionResultV2Schema.parse(
+          requireControlResult('provider-host.terminal-eviction.v2', current.exchange),
+        );
+        return result.state === 'matched' ? result.disposition : null;
       },
       evict: async (hostRef) => {
         const params = providerHostEvictParamsSchema.parse({ hostRef });

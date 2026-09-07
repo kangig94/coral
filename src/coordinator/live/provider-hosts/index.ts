@@ -163,6 +163,7 @@ export interface ProviderHostAdministrationAuthority {
   admissionSnapshot(): HostAdmissionSnapshot;
   listProviderHosts(): readonly ProviderHostInventoryRecord[];
   inspectProviderHost(hostRef: HostRef): ProviderHostInventoryRecord | null;
+  terminalEviction(hostRef: HostRef): ProviderHostTerminalEvictionDisposition | null;
   evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition>;
 }
 
@@ -1119,6 +1120,11 @@ export class DefaultProviderHostManager
       throw new Error('provider_host_identity_integrity: exact host ref matched multiple coordinator records');
     }
     return matches[0] ?? null;
+  }
+
+  terminalEviction(hostRef: HostRef): ProviderHostTerminalEvictionDisposition | null {
+    if (!isExactHostRef(hostRef)) return null;
+    return this.terminalEvictions.get(exactHostRefIdentityKey(hostRef)) ?? null;
   }
 
   async evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition> {

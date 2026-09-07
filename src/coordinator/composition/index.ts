@@ -919,6 +919,12 @@ export function createCoordinatorCore(
       }
       return localProviderHosts.inspectProviderHost(hostRef);
     },
+    terminalEviction: (hostRef) => {
+      if (localProviderHosts.terminalEviction === undefined) {
+        throw new Error('provider_host_inventory_unavailable: local manager has no administration authority');
+      }
+      return localProviderHosts.terminalEviction(hostRef);
+    },
     evictProviderHost: async (hostRef) => {
       if (localProviderHosts.evictHost === undefined) {
         throw new Error('provider_host_inventory_unavailable: local manager has no administration authority');
@@ -945,6 +951,12 @@ export function createCoordinatorCore(
                 throw new Error('provider_host_inventory_unavailable: proxy set has no administration control');
               }
               return set.providerHosts.inspect(hostRef);
+            },
+            terminalEviction: async (hostRef) => {
+              if (set.providerHosts === undefined) {
+                throw new Error('provider_host_inventory_unavailable: proxy set has no administration control');
+              }
+              return set.providerHosts.terminalEviction(hostRef);
             },
             evictProviderHost: async (hostRef) => {
               if (set.providerHosts === undefined) {

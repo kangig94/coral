@@ -23,10 +23,18 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 });
 
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import {
+  ProviderHostAdministrationService,
+  type ProviderHostAdministrationOwner,
+} from '#src/coordinator/services/provider-host-administration.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
+import {
+  spawnProviderServerTransport,
+  type ProviderServerFailedSpawnCleanupDisposition,
+  type ProviderServerHandle,
+} from '#src/providers/app-server-transport.js';
 import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
 import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
@@ -456,7 +464,11 @@ describe('provider-host proxy controls', () => {
       successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
     };
     const eviction = vi.spyOn(providerHosts, 'evictHost').mockResolvedValue(abandonment);
+    const terminal = vi.spyOn(providerHosts, 'terminalEviction').mockReturnValue(abandonment);
     try {
+      await expect(
+        strictTestExchange(control, 'provider-host.terminal-eviction.v2', { hostRef }, 5_000),
+      ).resolves.toEqual({ state: 'matched', disposition: abandonment });
       await expect(strictTestExchange(control, 'provider-host.evict.v2', { hostRef }, 5_000)).resolves.toEqual(
         abandonment,
       );
@@ -467,6 +479,7 @@ describe('provider-host proxy controls', () => {
       expect(providerServer.closeMock).not.toHaveBeenCalled();
     } finally {
       eviction.mockRestore();
+      terminal.mockRestore();
     }
   });
 
@@ -513,9 +526,88 @@ describe('provider-host proxy controls', () => {
     const controls = authority.providerHosts;
     if (controls === undefined) throw new Error('provider-host controls were not composed');
 
+    await expect(controls.terminalEviction(hostRef)).resolves.toBeNull();
     await expect(controls.evict(hostRef)).resolves.toEqual({ kind: 'evicted' });
+    await expect(controls.terminalEviction(hostRef)).resolves.toEqual({ kind: 'evicted' });
     await expect(controls.evict(hostRef)).resolves.toEqual({ kind: 'evicted' });
     expect(providerServer.closeMock).toHaveBeenCalledOnce();
+    expect(providerHosts.listProviderHosts()).toEqual([]);
+  });
+
+  it('recovers a lost terminal reply through a second administration service and the surviving proxy', async () => {
+    const controls = authority.providerHosts;
+    if (controls === undefined) throw new Error('provider-host controls were not composed');
+    const subject = { kind: 'process' as const, pid: process.pid };
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject,
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const settled = new Promise<void>(() => undefined);
+    const operatorExit = {
+      kind: 'abandon-provider-host-acquisition' as const,
+      abandon: vi.fn(async () => abandonment),
+    };
+    const retry = vi.fn<() => Promise<ProviderServerFailedSpawnCleanupDisposition>>();
+    retry.mockImplementation(async () => ({
+      kind: 'held-alive',
+      subject,
+      observation: 'alive',
+      operatorExit,
+      settled,
+      retry,
+    }));
+    providerServer.closeMock.mockImplementationOnce(
+      async (acceptCleanupHold: Parameters<ProviderServerHandle['close']>[0]) => {
+        const hold = {
+          kind: 'held-alive' as const,
+          subject,
+          observation: 'alive' as const,
+          operatorExit,
+          settled,
+          retry,
+        };
+        return { ...hold, successor: acceptCleanupHold(hold) };
+      },
+    );
+    let loseReply = true;
+    const proxyOwner: ProviderHostAdministrationOwner = {
+      ownerId: `provider-proxy:${proxyInstanceId}`,
+      listProviderHosts: () => controls.list(),
+      inspectProviderHost: (ref) => controls.inspect(ref),
+      terminalEviction: (ref) => controls.terminalEviction(ref),
+      evictProviderHost: async (ref) => {
+        const disposition = await controls.evict(ref);
+        if (disposition.kind === 'operator-abandoned' && loseReply) {
+          loseReply = false;
+          throw new Error('terminal reply was lost');
+        }
+        return disposition;
+      },
+    };
+    // The abandonment this fixture arms is accepted, so the first eviction is already terminal; what the
+    // caller loses is the reply carrying it, which is indistinguishable from an owner that could not answer.
+    const firstService = new ProviderHostAdministrationService({ owners: () => [proxyOwner] });
+    await expect(firstService.evict({ hostRef })).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: [`provider-proxy:${proxyInstanceId}`],
+    });
+
+    const secondService = new ProviderHostAdministrationService({ owners: () => [proxyOwner] });
+    const recovered = await secondService.evict({ hostRef }).catch((error: unknown) => error);
+    expect(recovered).toMatchObject({
+      code: 'provider_host_operator_abandoned',
+      ownerIds: [`provider-proxy:${proxyInstanceId}`],
+      matches: [hostRef],
+      abandonment: {
+        kind: 'operator-abandoned',
+        subject,
+        processAbsenceProven: false,
+        successor: { owner: 'operator-command', acceptance: 'accepted' },
+      },
+    });
+    expect((recovered as { abandonment: unknown }).abandonment).toEqual(abandonment);
     expect(providerHosts.listProviderHosts()).toEqual([]);
   });
 
@@ -540,7 +632,7 @@ describe('provider-host proxy controls', () => {
 
 function fakeProviderServerHandle(): {
   handle: ProviderServerHandle;
-  closeMock: ReturnType<typeof vi.fn>;
+  closeMock: ReturnType<typeof vi.fn<ProviderServerHandle['close']>>;
   resolveClosed(): void;
 } {
   let resolveClosed!: () => void;

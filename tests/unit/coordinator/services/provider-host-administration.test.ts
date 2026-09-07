@@ -77,12 +77,14 @@ function owner(
 ): ProviderHostAdministrationOwner & {
   listProviderHosts: ReturnType<typeof vi.fn>;
   inspectProviderHost: ReturnType<typeof vi.fn>;
+  terminalEviction: ReturnType<typeof vi.fn>;
   evictProviderHost: ReturnType<typeof vi.fn>;
 } {
   return {
     ownerId,
     listProviderHosts: vi.fn(async () => records),
     inspectProviderHost: vi.fn(async (ref: HostRef) => records.find((entry) => entry.ref === ref) ?? null),
+    terminalEviction: vi.fn(async () => null),
     evictProviderHost: vi.fn(async () => ({ kind: 'evicted' as const })),
     ...overrides,
   } as never;
@@ -116,6 +118,7 @@ describe('provider host administration', () => {
       ownerId: 'coordinator:test',
       listProviderHosts: () => manager.listProviderHosts(),
       inspectProviderHost: (ref) => manager.inspectProviderHost(ref),
+      terminalEviction: (ref) => manager.terminalEviction(ref),
       evictProviderHost: (ref) => manager.evictHost(ref),
     };
     const service = new ProviderHostAdministrationService({ owners: () => [local] });
@@ -193,6 +196,7 @@ describe('provider host administration', () => {
       ownerId: 'coordinator:test',
       listProviderHosts: () => manager.listProviderHosts(),
       inspectProviderHost: (ref) => manager.inspectProviderHost(ref),
+      terminalEviction: (ref) => manager.terminalEviction(ref),
       evictProviderHost: (ref) => {
         evictionStarted.resolve();
         return manager.evictHost(ref);
@@ -315,7 +319,7 @@ describe('provider host administration', () => {
     expect((result as { abandonment: unknown }).abandonment).toBe(abandonment);
   });
 
-  it('routes an exact-ref retry to the admitted owner despite an unavailable sibling inventory', async () => {
+  it('reconstructs an exact-ref route from a surviving owner after the first service loses the reply', async () => {
     const selectedRef = hostRef('lost-abandonment-reply');
     const abandonment = {
       kind: 'operator-abandoned' as const,
@@ -324,33 +328,76 @@ describe('provider host administration', () => {
       successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
     };
     let visible = true;
+    let retained: typeof abandonment | null = null;
     const evictProviderHost = vi.fn(async () => {
       visible = false;
+      retained = abandonment;
       if (evictProviderHost.mock.calls.length === 1) throw new Error('terminal reply was lost');
       return abandonment;
     });
     const selected = owner('proxy-a', [], {
       listProviderHosts: vi.fn(async () => (visible ? [record(selectedRef)] : [])),
+      terminalEviction: vi.fn(async () => retained),
       evictProviderHost,
     });
     const untouched = owner('proxy-b', []);
-    const service = new ProviderHostAdministrationService({ owners: () => [selected, untouched] });
+    const firstService = new ProviderHostAdministrationService({ owners: () => [selected, untouched] });
 
-    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
+    await expect(firstService.evict({ hostRef: selectedRef })).rejects.toMatchObject({
       code: 'provider_host_inventory_unavailable',
       ownerIds: ['proxy-a'],
     });
     untouched.listProviderHosts.mockRejectedValue(new Error('sibling inventory unavailable'));
-    const retry = await service.evict({ hostRef: selectedRef }).catch((error: unknown) => error);
+    const secondService = new ProviderHostAdministrationService({ owners: () => [selected, untouched] });
+    const retry = await secondService.evict({ hostRef: selectedRef }).catch((error: unknown) => error);
     expect(retry).toMatchObject({
       code: 'provider_host_operator_abandoned',
       ownerIds: ['proxy-a'],
       matches: [selectedRef],
+      abandonment: {
+        kind: 'operator-abandoned',
+        subject: { kind: 'unattributable-process-group', processGroupId: 4_242 },
+        processAbsenceProven: false,
+        successor: { owner: 'operator-command', acceptance: 'accepted' },
+      },
     });
     expect((retry as { abandonment: unknown }).abandonment).toBe(abandonment);
     expect(evictProviderHost).toHaveBeenCalledTimes(2);
     expect(untouched.listProviderHosts).toHaveBeenCalledOnce();
     expect(untouched.evictProviderHost).not.toHaveBeenCalled();
+  });
+
+  it('treats an unavailable terminal owner lookup as unavailable before inventory selection', async () => {
+    const selectedRef = hostRef('selected');
+    const selected = owner('coordinator', [record(selectedRef)]);
+    const unavailable = owner('proxy-a', [], {
+      terminalEviction: vi.fn(async () => Promise.reject(new Error('control lost'))),
+    });
+    const service = new ProviderHostAdministrationService({ owners: () => [selected, unavailable] });
+
+    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['proxy-a'],
+    });
+    expect(selected.listProviderHosts).not.toHaveBeenCalled();
+    expect(selected.evictProviderHost).not.toHaveBeenCalled();
+  });
+
+  it('rejects retained terminal matches from multiple owners as identity corruption', async () => {
+    const selectedRef = hostRef('duplicate-terminal');
+    const terminal = { kind: 'evicted' as const };
+    const first = owner('coordinator', [], { terminalEviction: vi.fn(async () => terminal) });
+    const duplicate = owner('proxy-a', [], { terminalEviction: vi.fn(async () => terminal) });
+    const service = new ProviderHostAdministrationService({ owners: () => [first, duplicate] });
+
+    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
+      code: 'provider_host_identity_integrity',
+      ownerIds: ['coordinator', 'proxy-a'],
+      matches: [selectedRef, selectedRef],
+    });
+    expect(first.listProviderHosts).not.toHaveBeenCalled();
+    expect(first.evictProviderHost).not.toHaveBeenCalled();
+    expect(duplicate.evictProviderHost).not.toHaveBeenCalled();
   });
 
   it('accepts an exact live-to-tombstone transition during selected-owner revalidation', async () => {

@@ -150,6 +150,7 @@ vi.mock('#src/provider-proxy/provider-root-authority.js', async (importOriginal)
             admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
             listProviderHosts: () => [],
             inspectProviderHost: () => null,
+            terminalEviction: () => null,
           } satisfies ReturnType<typeof actual.createProxyAppServerHostAuthority>)
         : actual.createProxyAppServerHostAuthority(...args),
   };

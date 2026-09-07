@@ -68,6 +68,7 @@ import {
   providerHostListParamsSchema,
   providerHostListResultV1Schema,
   providerHostListResultV2Schema,
+  providerHostTerminalEvictionResultV2Schema,
   type CoordinatorIdentity,
   type OperationIdentity,
   type ProxyIdentity,
@@ -441,6 +442,23 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             );
           }
           return result.data;
+        },
+      },
+    ],
+    [
+      'provider-host.terminal-eviction.v2',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          const request = providerHostEvictParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          const disposition = options.providerHosts.terminalEviction(request.hostRef);
+          return providerHostTerminalEvictionResultV2Schema.parse(
+            disposition === null ? { state: 'stale' } : { state: 'matched', disposition },
+          );
         },
       },
     ],

@@ -10,7 +10,11 @@ import {
   type ReaperIdentity,
 } from '../../../provider-proxy/protocol.js';
 import type { ProviderProxyHeartbeatHoldBound } from '../../../provider-proxy/orphan-deadline.js';
-import type { HostRef, ProviderHostEvictionDisposition } from '../../../providers/contract.js';
+import type {
+  HostRef,
+  ProviderHostEvictionDisposition,
+  ProviderHostTerminalEvictionDisposition,
+} from '../../../providers/contract.js';
 
 /**
  * What coordinated shutdown needs from the live guardian/reaper/proxy sets.
@@ -116,6 +120,7 @@ export interface ProviderProxySetAuthority extends ProviderProxyContainmentAutho
   readonly providerHosts?: Readonly<{
     list(): Promise<readonly ProviderHostInventoryRecordWire[]>;
     inspect(hostRef: HostRef): Promise<ProviderHostInventoryRecordWire | null>;
+    terminalEviction(hostRef: HostRef): Promise<ProviderHostTerminalEvictionDisposition | null>;
     evict(hostRef: HostRef): Promise<ProviderHostEvictionDisposition>;
   }>;
 }

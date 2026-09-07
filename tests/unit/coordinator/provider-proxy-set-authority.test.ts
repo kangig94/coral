@@ -336,6 +336,14 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
       controls.inspect({ provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'host', leaseMode: 'shared' }),
     ).resolves.toBeNull();
     await expect(
+      controls.terminalEviction({
+        provider: 'codex',
+        fingerprint: 'a'.repeat(64),
+        instanceId: 'host',
+        leaseMode: 'shared',
+      }),
+    ).resolves.toBeNull();
+    await expect(
       controls.evict({ provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'host', leaseMode: 'shared' }),
     ).rejects.toThrow('method not found');
     expect(methods).toEqual([
@@ -343,6 +351,7 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
       'provider-host.list.v1',
       'provider-host.inspect.v2',
       'provider-host.inspect.v1',
+      'provider-host.terminal-eviction.v2',
       'provider-host.evict.v2',
     ]);
   });
