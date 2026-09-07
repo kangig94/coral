@@ -2328,6 +2328,41 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(request).toHaveBeenCalledOnce();
   });
 
+  it('reports successful eviction after the broker shutdown successor accepts unresolved child cleanup', async () => {
+    const request = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      disposition: 'held-unobservable',
+      observation: 'unobservable',
+      subjects: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
+      successor: { kind: 'accepted', owner: 'broker-session-pool' },
+      operatorExit: { kind: 'retry-broker-shutdown' },
+    });
+    const server = fakeProviderServerHandle({ request });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(
+      exclusiveSpec({
+        shutdownCapability: {
+          method: 'broker/shutdown',
+          timeoutMs: 1_000,
+          resultDisposition: {
+            kind: 'provider-server-shutdown-v1',
+            successorOwner: 'broker-session-pool',
+            operatorExit: 'retry-broker-shutdown',
+          },
+        },
+      }),
+      { jobId: 'job-1' },
+    );
+
+    await expect(authority.evictHost(opened.hostRef)).resolves.toBe(true);
+    expect(authority.admissionSnapshot().state.size).toBe(0);
+    expect(authority.listProviderHosts()).toEqual([]);
+    expect(request).toHaveBeenCalledOnce();
+    expect(server.closeMock).not.toHaveBeenCalled();
+    opened.close();
+  });
+
   it('retains the broker when its shutdown hold names a different successor', async () => {
     const request = vi
       .fn()

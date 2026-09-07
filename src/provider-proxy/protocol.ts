@@ -44,16 +44,8 @@ export function providerProxyDisappearanceReceipt(
 }
 
 /**
- * Every control method carries a `.vN` suffix.
- *
- * The suffix exists because this protocol is spoken between *processes*, not between code paths: a coordinator
- * can inherit a proxy set that an entirely different build spawned, and an already-running responder cannot be
- * retrofitted. When a shape changes incompatibly while an older set may still be answering, the new form must
- * use a new suffix and the versions must coexist at distinct method addresses.
- *
- * That is the only thing the suffix means. Nothing parses it; peers signal an unsupported method with
- * `method_not_found`, which is what callers branch on. So a number may only be
- * raised once a build carrying the lower one has shipped.
+ * An incompatible cross-process shape must use its own versioned method address. Callers may fall back to an
+ * older address only when the peer reports `method_not_found`.
  */
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 // Reflecting a peer-supplied challenge in the larger outbound params frame must stay far below the frame cap.

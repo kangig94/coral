@@ -1041,7 +1041,7 @@ class ProxyProviderHostAdministration {
     if (matched !== undefined) {
       this.pool.remove(matched);
       const cleanup = await this.pool.close(matched);
-      if (isProviderServerShutdownHold(cleanup)) return false;
+      if (isProviderServerShutdownHold(cleanup)) return cleanup.successor !== null;
       if (cleanup.kind === 'held-alive' || cleanup.kind === 'held-unobservable') {
         const accepted = await this.pool.abandonClose(matched);
         if (!accepted) return false;
