@@ -10,6 +10,7 @@ import type {
   TimePort,
 } from '../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
+import type { LiveChildAuthority } from '../infra/process-supervision.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimePaths {
@@ -109,11 +110,10 @@ export type DurableProvisionalLaunch = Readonly<{
   signalAuthority?: DurableLaunchSignalAuthority;
 }>;
 
-export type DurableLaunchSignalAuthority = Readonly<{
-  pid: number;
-  hasExited(): boolean;
-  requestTermination?(): void;
-}>;
+export type DurableLaunchSignalAuthority = LiveChildAuthority &
+  Readonly<{
+    requestTermination?(): void;
+  }>;
 
 export type DurableContainmentStatus =
   | Readonly<{

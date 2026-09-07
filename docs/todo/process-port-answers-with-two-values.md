@@ -41,6 +41,14 @@ it had no raw imports to lose.
 **The ledger is the migration list.** It holds the boundaries this entry is about, each with a written reason,
 and an entry that would now pass fails the test — so the list can only shrink.
 
+The collection-state question no longer has two spellings. Runtime launch cleanup used
+`exitCode !== null || signalCode !== null`, while provider-host draining supplied transport `isClosed` as
+`hasExited`; `isClosed` can lag collection while an inherited pipe remains open and can also be set by
+detachment. `LiveChildAuthority` is now minted only from `ChildProcessLike`, and its `hasExited()` reads the
+child's collection fields. Numeric own-child signalling consumes that brand, so transport closure can no
+longer type-check as collection evidence. `isClosed` remains the transport-state answer where that is the
+question being asked.
+
 ## What remains
 
 Fix the four members. The move is compiler-driven: the call sites break and are converted mechanically, the
@@ -58,14 +66,14 @@ signal-sequence half, which is a different invariant. Also the `'kill-port-retur
 `observeRecordedTarget`'s private spelling of `unknown` as `unobservable` — one concept, two spellings, in one
 module.
 
-## Why it did not happen with the gate
+## Why the four-member reshape remains deferred
 
-It touches `runtime/ports.ts`, `runtime/real.ts`, `app-server-transport.ts`, `kb-daemon-supervisor.ts`,
-`durable-transport.ts` and `handoff.ts` — the files carrying uncommitted work and the heaviest churn on the
-branch. A behaviour-changing migration across them while the branch is under active review makes a reviewer
-unable to tell whether a new outcome came from the conversion or from the work already in flight. The gate is
-additive and changes no runtime behaviour, so it lands first and stops the next instance; the conversion
-belongs after the branch does.
+A tri-state `ProcessPort.kill()` would classify the result of signalling a number; it would not make the
+number's identity stable between observation and delivery. Recovered durable identities still require an
+incarnation check immediately before signalling, while own-child delivery can use the stronger uncollected
+handle authority. The identity-atomicity finding therefore closes without reshaping these four members. The
+reshape remains useful for making uncertain outcomes explicit, but it is a separate answer-semantics task,
+not a prerequisite for closing the signal-authority defect.
 
 ## What this will not fix
 

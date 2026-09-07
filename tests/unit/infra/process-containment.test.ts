@@ -1,4 +1,8 @@
+import { EventEmitter } from 'node:events';
+
 import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
+import { liveChildAuthority, type LiveChildAuthority } from '#src/infra/process-supervision.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -26,6 +30,38 @@ type FakeState = {
   leaderAlive: boolean;
   providerRootAlive: boolean;
 };
+
+class FakeKnownChild extends EventEmitter implements ChildProcessLike {
+  readonly pid: number;
+  readonly stdin = null;
+  readonly stdout = null;
+  readonly stderr = null;
+  private readonly collected: () => boolean;
+
+  constructor(pid: number, collected: () => boolean) {
+    super();
+    this.pid = pid;
+    this.collected = collected;
+  }
+
+  get exitCode(): number | null {
+    return this.collected() ? 0 : null;
+  }
+
+  get signalCode(): NodeJS.Signals | null {
+    return null;
+  }
+
+  kill(): boolean {
+    return true;
+  }
+}
+
+function knownChildAuthority(pid: number, collected: () => boolean): LiveChildAuthority {
+  const authority = liveChildAuthority(new FakeKnownChild(pid, collected));
+  if (authority === undefined) throw new Error('fake child must have a pid');
+  return authority;
+}
 
 function createFakeEnvironment(
   state: FakeState,
@@ -115,13 +151,13 @@ function createFakeEnvironment(
       readProcessIncarnation,
       knownLiveChildFor: (pid) =>
         options.knownLivePids?.has(pid) === true
-          ? {
+          ? knownChildAuthority(
               pid,
-              hasExited: () =>
+              () =>
                 options.exitedPids?.has(pid) === true ||
                 (pid === containment.pid && !state.leaderAlive) ||
                 (pid === providerRoot.pid && !state.providerRootAlive),
-            }
+            )
           : undefined,
     },
   };
@@ -240,6 +276,18 @@ describe('recorded process containment', () => {
     expect(fake.signals.map(({ signal }) => signal)).toEqual(['SIGTERM', 'SIGTERM', 'SIGKILL', 'SIGKILL']);
   });
 
+  it('uses live child authority without reading a Linux incarnation', async () => {
+    const fake = createFakeEnvironment(
+      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+      { knownLivePids: new Set([containment.pid]), unreadablePids: new Set([containment.pid]) },
+    );
+
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 6_500), fake.environment),
+    ).resolves.toEqual({ kind: 'containment-absent' });
+    expect(fake.signals.map(({ signal }) => signal)).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
   it('uses a live group leader authority without authorizing an unowned root signal', async () => {
     const fake = createFakeEnvironment(
       { groupAlive: true, leaderAlive: true, providerRootAlive: true },
@@ -252,21 +300,24 @@ describe('recorded process containment', () => {
     expect(fake.signals).toEqual([{ pid: -containment.processGroupId, signal: 'SIGTERM', at: 0 }]);
   });
 
-  it('refuses Darwin signals after a retained child handle has observed exit', async () => {
-    const fake = createFakeEnvironment(
-      { groupAlive: true, leaderAlive: true, providerRootAlive: false },
-      {
-        platform: 'darwin',
-        knownLivePids: new Set([containment.pid]),
-        exitedPids: new Set([containment.pid]),
-      },
-    );
+  it.each(['darwin', 'linux'] as const)(
+    'refuses %s signals after a retained child handle has observed exit',
+    async (platform) => {
+      const fake = createFakeEnvironment(
+        { groupAlive: true, leaderAlive: true, providerRootAlive: false },
+        {
+          platform,
+          knownLivePids: new Set([containment.pid]),
+          exitedPids: new Set([containment.pid]),
+        },
+      );
 
-    await expect(
-      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 6_500), fake.environment),
-    ).resolves.toEqual({ kind: 'signal-authorization-refused' });
-    expect(fake.signals).toEqual([]);
-  });
+      await expect(
+        reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 6_500), fake.environment),
+      ).resolves.toEqual({ kind: 'signal-authorization-refused' });
+      expect(fake.signals).toEqual([]);
+    },
+  );
 
   it('reserves an unattributable result for a mismatched recorded leader identity', async () => {
     const fake = createFakeEnvironment(

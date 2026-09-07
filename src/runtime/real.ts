@@ -81,7 +81,7 @@ import {
   type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
 import { observeRecordedContainment, type RecordedProcessIdentity } from '../infra/process-containment.js';
-import { gracefulKill } from '../infra/process-supervision.js';
+import { gracefulKill, liveChildAuthority } from '../infra/process-supervision.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
 
@@ -521,12 +521,12 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         return resolveLaunchFailure(`Durable wrapper ownership was refused: ${errorMessage(error)}`);
       }
 
+      const wrapperAuthority = liveChildAuthority(wrapper as unknown as ChildProcessLike);
       const signalAuthority: DurableLaunchSignalAuthority | undefined =
-        wrapper.pid === undefined
+        wrapperAuthority === undefined
           ? undefined
           : Object.freeze({
-              pid: wrapper.pid,
-              hasExited: () => wrapper.exitCode !== null || wrapper.signalCode !== null,
+              ...wrapperAuthority,
               requestTermination: () =>
                 gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
             });
@@ -714,8 +714,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       maxBuffer: execOptions.maxBuffer,
       encoding: execOptions.encoding ?? 'utf-8',
       killProcessGroup: capturedEnv.platform !== 'win32',
-      platform: capturedEnv.platform,
-      readProcessIncarnation: runtimeProcess.readProcessIncarnation,
       spawn: runtimeProcess.spawn,
       kill: runtimeProcess.kill,
       setTimeout: time.setTimeout,

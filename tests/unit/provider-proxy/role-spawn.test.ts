@@ -28,8 +28,16 @@ function createFakeChild(pid: number | undefined): {
   const killSignals: NodeJS.Signals[] = [];
   const emitter = new EventEmitter();
   const unref = vi.fn();
+  const exitCode: number | null = null;
+  let signalCode: NodeJS.Signals | null = null;
   const child = Object.assign(emitter, {
     pid,
+    get exitCode() {
+      return exitCode;
+    },
+    get signalCode() {
+      return signalCode;
+    },
     stdin: null,
     stdout: null,
     stderr: null,
@@ -43,7 +51,11 @@ function createFakeChild(pid: number | undefined): {
     child,
     killSignals,
     unref,
-    emitClose: () => emitter.emit('close', null, 'SIGTERM'),
+    emitClose: () => {
+      signalCode = 'SIGTERM';
+      emitter.emit('exit', exitCode, signalCode);
+      emitter.emit('close', exitCode, signalCode);
+    },
     emitError: (error) => emitter.emit('error', error),
   };
 }

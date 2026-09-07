@@ -1,6 +1,7 @@
 import { createProviderProxySetContainmentProver } from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -316,6 +317,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
   const livePids = new Set<number>();
   const pidHandles = new Map<number, ProviderRoleHandle>();
   const incarnationByPid = new Map<number, ProcessIncarnation | null>();
+  const childrenByPid = new Map<number, { collect(code: number | null, signal: NodeJS.Signals | null): void }>();
 
   const readProcessIncarnation = (pid: number, platform: NodeJS.Platform): ProcessIncarnation | null => {
     if (incarnationByPid.has(pid)) {
@@ -389,14 +391,37 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     if (selfPid !== pid) incarnationByPid.set(selfPid, incarnation);
     spawnLog.push({ role, capsulePath, detached: spawnOptions.detached === true, pid });
 
+    const events = new EventEmitter();
+    let exitCode: number | null = null;
+    let signalCode: NodeJS.Signals | null = null;
+    let collected = false;
     const child: ChildProcessLike = {
       pid,
+      get exitCode() {
+        return exitCode;
+      },
+      get signalCode() {
+        return signalCode;
+      },
       stdin: null,
       stdout: null,
       stderr: null,
-      on: () => child,
-      kill: () => true,
+      on(event, listener) {
+        events.on(event, listener);
+        return this;
+      },
+      kill: (signal = 'SIGTERM') => fakeKill(pid, signal),
     };
+    childrenByPid.set(pid, {
+      collect(code, signal) {
+        if (collected) return;
+        collected = true;
+        exitCode = code;
+        signalCode = signal;
+        events.emit('exit', code, signal);
+        events.emit('close', code, signal);
+      },
+    });
 
     // Fire-and-forget, exactly as a real `child_process.spawn` returns before the child has done anything —
     // the caller learns readiness only by reaching the endpoint, never from the spawn call itself.
@@ -435,6 +460,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
 
   function fakeKill(pid: number, signal: NodeJS.Signals | 0): boolean {
     killLog.push({ pid, signal: String(signal) });
+    if (signal === 0) return fakeObserveLiveness(pid) === 'alive';
     // A negative pid is the group-signal convention: every registered handle whose group leader is `-pid`
     // receives it, exactly as a real OS `kill(-pid, …)` reaches every process in that group.
     const observablePids = options.observeSpawnedProcessBeforeRoleReady ? livePids : new Set(pidHandles.keys());
@@ -445,12 +471,16 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
       if (signal === 'SIGTERM' && role !== undefined) {
         const replacement = options.incarnationAfterSigterm?.(role, target);
         if (replacement !== undefined) {
+          childrenByPid.get(target)?.collect(null, signal);
+          childrenByPid.delete(target);
           incarnationByPid.set(target, replacement);
           continue;
         }
       }
       livePids.delete(target);
       pidHandles.delete(target);
+      childrenByPid.get(target)?.collect(null, signal);
+      childrenByPid.delete(target);
       if (handle === undefined) continue;
       if (signal !== 'SIGTERM') continue; // SIGKILL is not catchable; nothing left to run.
       // Mirrors `runProviderRoleMain`'s own shutdown dispatch: a guardian or reaper must reap what it holds
@@ -1532,11 +1562,27 @@ describe('provider-proxy process topology: acquisition', () => {
     return { runtime: { ...base, process: { ...base.process, kill, observeLiveness } }, kill };
   }
 
+  // `kind: 'spawned'` means this process still holds the child, so the fixture must carry one: the undo path
+  // mints its signal authority from the handle rather than from the recorded pid.
+  const uncollectedChild = (pid: number): ChildProcessLike => ({
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    on() {
+      return this;
+    },
+    kill: () => true,
+  });
+
   it('does not signal a guardian process group already observed absent', async () => {
     const spawned = {
       kind: 'spawned',
       pid: 900_101,
       incarnation: testIncarnation('base-900101'),
+      child: uncollectedChild(900_101),
     } as SpawnedRoleProcess;
     const { runtime, kill } = undoRuntimeWithLiveness(() => 'absent');
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
@@ -1550,12 +1596,13 @@ describe('provider-proxy process topology: acquisition', () => {
       kind: 'spawned',
       pid: 900_102,
       incarnation: testIncarnation('base-900102'),
+      child: uncollectedChild(900_102),
     } as SpawnedRoleProcess;
     const { runtime, kill } = undoRuntimeWithLiveness(() => 'unknown');
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.incarnation);
 
     await expect(undo()).rejects.toThrow(
-      'guardian process-group cleanup is holding because the recorded group became unattributable',
+      'guardian process-group cleanup is holding because identity observation did not authorize a signal',
     );
     expect(kill).not.toHaveBeenCalled();
   });

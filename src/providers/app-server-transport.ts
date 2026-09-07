@@ -4,6 +4,7 @@ import { buildJsonRpcError } from '../infra/json-rpc.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
 import { AbortError } from '../runtime/abort.js';
 import {
@@ -552,15 +553,8 @@ async function spawnProviderServerProcess(
     ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
     ...(params.detached === undefined ? {} : { detached: params.detached }),
   });
-  let processGroupCleanup: SpawnedProcessGroupCleanup | null = null;
-  if (params.detached === true && typeof child.pid === 'number') {
-    try {
-      const incarnation = runtime.process.readProcessIncarnation(child.pid, runtime.env.platform() as NodeJS.Platform);
-      if (incarnation !== null) processGroupCleanup = retainSpawnedProcessGroupCleanup(child.pid, incarnation);
-    } catch {
-      processGroupCleanup = null;
-    }
-  }
+  const processGroupCleanup =
+    params.detached === true && typeof child.pid === 'number' ? retainSpawnedProcessGroupCleanup(child) : null;
   const processSettlement = createProviderProcessSettlement(
     child,
     params.detached === true,
@@ -710,7 +704,7 @@ async function establishDetachedProviderServerIdentity(
   if (cleanup === null) {
     const error = new ProcessContainmentError(
       'process_identity_unverified',
-      `Could not read the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
+      `The spawned ${entry.provider} provider server (pid ${entry.pid}) has no retained process-group cleanup authority.`,
       { provider: entry.provider, pid: entry.pid },
     );
     return settleFailedProviderServerSpawn(entry.processSettlement, runtime, error);
@@ -726,11 +720,22 @@ async function establishDetachedProviderServerIdentity(
     return settleFailedProviderServerSpawn(entry.processSettlement, runtime, error);
   }
 
-  const containmentIdentity = Object.freeze({
-    pid: entry.pid,
-    incarnation: cleanup.leaderIncarnation,
-    processGroupId: entry.pid,
-  });
+  let incarnation: ProcessIncarnation | null;
+  try {
+    incarnation = runtime.process.readProcessIncarnation(entry.pid, runtime.env.platform() as NodeJS.Platform);
+  } catch {
+    incarnation = null;
+  }
+  if (incarnation === null) {
+    const error = new ProcessContainmentError(
+      'process_identity_unverified',
+      `Could not record the incarnation of the spawned ${entry.provider} provider server (pid ${entry.pid}).`,
+      { provider: entry.provider, pid: entry.pid },
+    );
+    return settleFailedProviderServerSpawn(entry.processSettlement, runtime, error);
+  }
+
+  const containmentIdentity = Object.freeze({ pid: entry.pid, incarnation, processGroupId: entry.pid });
   try {
     assertRecordedContainmentIdentity(containmentIdentity);
   } catch (error: unknown) {

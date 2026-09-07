@@ -23,6 +23,7 @@ import {
 import { buildEnforcementOutcomeHandlers } from '#src/provider-proxy/role-main.js';
 import type { SpawnedRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const immediateRetryTime = { sleep: async () => undefined };
@@ -65,15 +66,36 @@ const proxy: ProxyIdentity = {
   canonicalEndpoint: '/tmp/proxy.sock',
 };
 
-function guardianSpawnWithEvents(): Readonly<{ child: EventEmitter; spawned: SpawnedRoleProcess }> {
-  const child = new EventEmitter();
+type GuardianTestChild = EventEmitter & {
+  pid: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  stdin: null;
+  stdout: null;
+  stderr: null;
+  kill(signal?: NodeJS.Signals): boolean;
+};
+
+function guardianSpawnWithEvents(): Readonly<{ child: GuardianTestChild; spawned: SpawnedRoleProcess }> {
+  const child: GuardianTestChild = Object.assign(new EventEmitter(), {
+    pid: guardian.pid,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    kill: () => true,
+  });
+  const childProcess: ChildProcessLike = child;
   return {
     child,
     spawned: {
-      child,
+      kind: 'spawned',
+      child: childProcess,
       pid: guardian.pid,
       incarnation: guardian.incarnation,
-    } as unknown as SpawnedRoleProcess,
+      spawnFailed: new Promise<never>(() => {}),
+    },
   };
 }
 
@@ -175,7 +197,9 @@ describe('guardian spawn undo', () => {
     const holderAuthority = createControlHolderAuthority();
     const scheduledCallbacks: Array<() => void> = [];
     const exitProcess = vi.fn((code: number) => {
-      child.emit('close', code, null);
+      child.exitCode = code;
+      child.emit('exit', child.exitCode, child.signalCode);
+      child.emit('close', child.exitCode, child.signalCode);
     });
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'guardian',
@@ -207,7 +231,9 @@ describe('guardian spawn undo', () => {
     const { child, spawned } = guardianSpawnWithEvents();
     const undo = buildGuardianSpawnUndo({} as Runtime, spawned, 'linux', () => guardian.incarnation);
     undo.retainPossibleProxy();
-    child.emit('close', null, 'SIGKILL');
+    child.signalCode = 'SIGKILL';
+    child.emit('exit', child.exitCode, child.signalCode);
+    child.emit('close', child.exitCode, child.signalCode);
     const result = await failAcquisitionAfterGuardianSpawn(undo, 'coordinator resumed after guardian death');
 
     expect(result).toMatchObject({

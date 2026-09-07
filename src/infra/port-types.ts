@@ -152,10 +152,13 @@ export interface ChildReadableLike {
 
 export interface ChildProcessLike {
   readonly pid: number | undefined;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
   readonly stdin: ChildStdinLike | null;
   readonly stdout: ChildReadableLike | null;
   readonly stderr: ChildReadableLike | null;
   on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
   kill(signal?: NodeJS.Signals): boolean;
   unref?(): void;

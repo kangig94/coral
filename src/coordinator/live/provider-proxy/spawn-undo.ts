@@ -12,6 +12,7 @@ import {
   type RecordedContainmentIdentity,
 } from '../../../infra/process-containment.js';
 import {
+  liveChildAuthority,
   observeUnattributableSpawnedProcessGroup,
   type SpawnedProcessGroupAbsenceEvidence,
 } from '../../../infra/process-supervision.js';
@@ -381,6 +382,7 @@ export function buildGuardianSpawnUndo(
     incarnation: spawned.incarnation,
     processGroupId: spawned.pid,
   };
+  const guardianAuthority = liveChildAuthority(spawned.child);
 
   const perform = async (): Promise<void> => {
     if (absenceConfirmed) return;
@@ -412,18 +414,17 @@ export function buildGuardianSpawnUndo(
     }
     const retainedProxyIdentity = proxyIdentity;
 
-    if (!incarnationMayAuthorizeSignal(platform))
-      return Promise.reject(
-        new Error(
-          'guardian process-group cleanup is holding because this platform cannot bind a signal to its recorded incarnation',
-        ),
-      );
     const clock = createMonotonicClock(guardianSpawnUndoClockScope, {
       readMilliseconds: () => runtime.time.monotonicNow(),
       sleep: (milliseconds) => runtime.time.sleep(milliseconds),
     });
     try {
       if (retainedProxyIdentity !== null) {
+        if (!incarnationMayAuthorizeSignal(platform)) {
+          throw new Error(
+            'proxy process-group cleanup is holding because this platform cannot bind a signal to its recorded incarnation',
+          );
+        }
         const proxyResult = await reapRecordedContainment(
           retainedProxyIdentity,
           [],
@@ -460,6 +461,7 @@ export function buildGuardianSpawnUndo(
           process: runtime.process,
           platform,
           readProcessIncarnation,
+          knownLiveChildFor: (pid) => (pid === guardianIdentity.pid ? guardianAuthority : undefined),
         },
       );
       if (guardianGroupResult.kind === 'recorded-group-unattributable') {

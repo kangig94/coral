@@ -114,6 +114,8 @@ export class MockStdin extends EventEmitter implements ChildStdinLike {
 }
 
 export class MockChildProcess extends EventEmitter implements ChildProcessLike {
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
   readonly stdin: ChildStdinLike | null;
   readonly stdout: ChildReadableLike | null;
   readonly stderr: ChildReadableLike | null;
@@ -146,6 +148,9 @@ export class MockChildProcess extends EventEmitter implements ChildProcessLike {
   }
 
   emitClose(code: number | null, signal: string | null): void {
+    this.exitCode = code;
+    this.signalCode = signal as NodeJS.Signals | null;
+    this.emit('exit', this.exitCode, this.signalCode);
     (this.stdout as unknown as PassThrough | null)?.end();
     (this.stderr as unknown as PassThrough | null)?.end();
     if (this.stdin instanceof MockStdin) {

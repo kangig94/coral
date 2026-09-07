@@ -11,6 +11,7 @@ import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
 
 class FakeStdin extends EventEmitter {
   destroyed = false;
@@ -29,7 +30,9 @@ class FakeStdin extends EventEmitter {
   }
 }
 
-class FakeDaemonProcess extends EventEmitter {
+class FakeDaemonProcess extends EventEmitter implements ChildProcessLike {
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
   readonly stdin = new FakeStdin();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
@@ -47,6 +50,9 @@ class FakeDaemonProcess extends EventEmitter {
   }
 
   emitClose(code: number | null, signal: NodeJS.Signals | null): void {
+    this.exitCode = code;
+    this.signalCode = signal;
+    this.emit('exit', code, signal);
     this.emit('close', code, signal);
   }
 }

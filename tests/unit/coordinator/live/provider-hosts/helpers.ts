@@ -107,10 +107,20 @@ export function createFakeProviderServerHandle(options?: {
   );
   const markExpectedCloseMock = vi.fn();
   const pid = options?.generation ?? 1;
-  const child = Object.assign(new EventEmitter(), { pid });
+  const child = Object.assign(new EventEmitter(), {
+    pid,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    kill: () => true,
+  });
   const observeClosed = (): void => {
     if (isClosed) return;
     isClosed = true;
+    child.exitCode = 0;
+    child.emit('exit', child.exitCode, child.signalCode);
     child.emit('close', 0, null);
     closed.resolve();
   };
@@ -127,7 +137,7 @@ export function createFakeProviderServerHandle(options?: {
   return {
     handle: {
       pid,
-      child: child as never,
+      child,
       generation: options?.generation ?? 1,
       containmentIdentity:
         options?.containmentIdentity ??

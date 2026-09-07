@@ -4,11 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import {
+  PROVIDER_CONTAINMENT_ACCEPTED,
   spawnProviderServerTransport,
   type ProviderContainmentAcceptance,
   type ProviderServerFailedSpawnCleanupAcceptor,
   type ProviderServerHandle,
 } from '#src/providers/app-server-transport.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -74,13 +76,18 @@ function delayedClose(onSpawned?: (child: unknown) => void): Readonly<{
 }
 
 describe('provider app-server spawn ownership', () => {
-  it('never signals an unreadable detached spawn and holds it until independent group absence', async () => {
+  it('uses retained child authority to clean an unreadable detached spawn on Darwin', async () => {
     const runtime = new SimulationRuntime();
-    vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
+    vi.spyOn(runtime.env, 'platform').mockReturnValue('darwin');
+    const readProcessIncarnation = vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
     let processGroupAlive = true;
     vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((pid) =>
       pid < 0 && processGroupAlive ? 'alive' : 'absent',
     );
+    const kill = vi.spyOn(runtime.process, 'kill').mockImplementation((pid) => {
+      if (pid === -20_000) processGroupAlive = false;
+      return true;
+    });
     const child = delayedClose();
     runtime.spawner.enqueueSpawn(child.script);
 
@@ -92,44 +99,34 @@ describe('provider app-server spawn ownership', () => {
       detached: true,
       acceptFailedSpawnCleanup: acceptCleanupHold,
     });
-    const observation = observePromise(launch);
-    await flushMicrotasks();
-
-    const held = await launch;
-    expect(observation.settled).toBe(true);
-    expect(held).toMatchObject({
-      kind: 'held-unobservable',
-      subject: { kind: 'unattributable-process-group', processGroupId: 20_000 },
-      observation: 'unobservable',
-      operatorExit: { kind: 'abandon-provider-host-acquisition' },
-    });
-    expect(runtime.spawner.killCalls).toEqual([]);
-    if (!('kind' in held) || held.kind !== 'held-unobservable') {
-      throw new Error('Expected an unattributable process-group hold.');
-    }
-    const groupSettlement = observePromise(held.settled);
+    await expect(launch).rejects.toMatchObject({ code: 'process_identity_unverified' });
+    expect(readProcessIncarnation).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledWith(-20_000, 'SIGTERM');
     child.close();
-    await flushMicrotasks();
-    expect(groupSettlement.settled).toBe(false);
-    const stillHeld = held.retry();
-    runtime.time.tick(SIGTERM_GRACE_MS);
-    await flushMicrotasks();
-    await expect(stillHeld).resolves.toMatchObject({
-      kind: 'held-unobservable',
-      subject: { kind: 'unattributable-process-group', processGroupId: 20_000 },
-    });
-    expect(runtime.spawner.killCalls).toEqual([]);
+  });
 
-    processGroupAlive = false;
-    const absence = held.retry();
-    runtime.time.tick(SIGTERM_GRACE_MS);
-    await expect(absence).resolves.toMatchObject({
-      kind: 'observed-absent',
-      evidence: {
-        processGroupEvidence: { subject: { kind: 'process-group', processGroupId: 20_000 } },
-      },
+  it('publishes a durable incarnation without storing it in own-child cleanup authority', async () => {
+    const runtime = new SimulationRuntime();
+    const incarnation = testIncarnation('durable-provider-record');
+    const readProcessIncarnation = vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(incarnation);
+    const recordContainment = vi.fn<() => ProviderContainmentAcceptance>(() => PROVIDER_CONTAINMENT_ACCEPTED);
+    const child = delayedClose();
+    runtime.spawner.enqueueSpawn(child.script);
+
+    const handle = await spawnProviderServerTransport({
+      runtime,
+      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      generation: 1,
+      observeProviderResponse: () => {},
+      detached: true,
+      recordContainment,
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
-    await expect(held.settled).resolves.toBeUndefined();
+
+    expect(readProcessIncarnation).toHaveBeenCalledOnce();
+    expect(recordContainment).toHaveBeenCalledWith({ pid: 20_000, incarnation, processGroupId: 20_000 });
+    expect(handle).not.toHaveProperty('kind');
+    child.close();
   });
 
   it('returns an attached live-process hold without waiting for close', async () => {

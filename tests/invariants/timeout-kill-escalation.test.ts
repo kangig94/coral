@@ -122,6 +122,8 @@ function gracefulKillSignals(observeLiveness: (pid: number) => ProcessLiveness):
   const signals: NodeJS.Signals[] = [];
   const child = {
     pid: 4_242,
+    exitCode: null,
+    signalCode: null,
     stdin: null,
     stdout: null,
     stderr: null,

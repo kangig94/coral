@@ -342,6 +342,8 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const groupCloseListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
   const groupHandle: ChildProcessLike = {
     pid: process.pid,
+    exitCode: null,
+    signalCode: null,
     stdin: null,
     stdout: null,
     stderr: null,

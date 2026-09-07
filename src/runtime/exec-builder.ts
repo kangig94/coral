@@ -1,6 +1,11 @@
-import { EXEC_MAXBUFFER_CODE, EXEC_TIMEOUT_CODE, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../infra/node-process.js';
+import {
+  EXEC_MAXBUFFER_CODE,
+  EXEC_TIMEOUT_CODE,
+  SIGKILL_GRACE_MS,
+  SIGTERM_GRACE_MS,
+} from '../infra/process-constants.js';
 import type { ChildProcessLike, ExecResult, TimerHandle } from '../infra/port-types.js';
+import { signalOwnedProcessGroup } from '../infra/process-supervision.js';
 import type { RuntimeSpawnOptions } from './ports.js';
 
 export interface BuildExecPromiseOptions {
@@ -14,8 +19,6 @@ export interface BuildExecPromiseOptions {
   maxBuffer: number;
   encoding: 'utf-8';
   killProcessGroup?: boolean;
-  platform?: NodeJS.Platform;
-  readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
   spawn: (options: RuntimeSpawnOptions) => ChildProcessLike;
   kill: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   setTimeout: (fn: () => void, ms: number) => TimerHandle;
@@ -73,8 +76,6 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     kill,
     killProcessGroup = false,
     maxBuffer,
-    platform,
-    readProcessIncarnation,
     setTimeout,
     spawn,
     timeoutMs,
@@ -87,7 +88,9 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     let stderrBytes = 0;
     let resolved = false;
     let timeoutHandle: TimerHandle | null = null;
-    let killTimer: TimerHandle | null = null;
+    let escalationTimer: TimerHandle | null = null;
+    let settlementDeadlineTimer: TimerHandle | null = null;
+    let exitSettlementTimer: TimerHandle | null = null;
     let wrapperKilled: ExecKillReason | null = null;
 
     const child = spawn({
@@ -99,28 +102,17 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       ...(shell === undefined ? {} : { shell }),
       ...(killProcessGroup ? { detached: true } : {}),
     });
-    let processGroupLeaderIncarnation: ProcessIncarnation | null = null;
-    if (
-      killProcessGroup &&
-      child.pid !== undefined &&
-      platform !== undefined &&
-      readProcessIncarnation !== undefined &&
-      incarnationMayAuthorizeSignal(platform)
-    ) {
-      try {
-        processGroupLeaderIncarnation = readProcessIncarnation(child.pid, platform);
-      } catch {
-        processGroupLeaderIncarnation = null;
-      }
-    }
-
     child.stdin?.end();
 
     const clearTimers = (): void => {
       clearTimeout(timeoutHandle);
       timeoutHandle = null;
-      clearTimeout(killTimer);
-      killTimer = null;
+      clearTimeout(escalationTimer);
+      escalationTimer = null;
+      clearTimeout(settlementDeadlineTimer);
+      settlementDeadlineTimer = null;
+      clearTimeout(exitSettlementTimer);
+      exitSettlementTimer = null;
     };
 
     const finish = (result: ExecResult): void => {
@@ -133,45 +125,59 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     };
 
     const signalChild = (signal: NodeJS.Signals): void => {
-      if (child.pid === undefined) {
+      if (child.exitCode !== null || child.signalCode !== null) {
         return;
       }
-      if (
-        !killProcessGroup ||
-        processGroupLeaderIncarnation === null ||
-        platform === undefined ||
-        readProcessIncarnation === undefined ||
-        !incarnationMayAuthorizeSignal(platform)
-      ) {
-        child.kill(signal);
+      if (killProcessGroup) {
+        signalOwnedProcessGroup(child, kill, signal);
         return;
       }
-      let groupSignaled = false;
-      try {
-        // The leader's incarnation is what proves this process-group id was not recycled; a live leader
-        // is a member of its own group, so no separate group probe adds authority here.
-        if (readProcessIncarnation(child.pid, platform) === processGroupLeaderIncarnation) {
-          groupSignaled = kill(-child.pid, signal);
-        }
-      } catch {
-        groupSignaled = false;
+      child.kill(signal);
+    };
+
+    const killedResult = (heldDetail?: string): ExecResult => {
+      const prefix = wrapperKilled === 'maxBuffer' ? 'maxBuffer exceeded' : 'timeout';
+      const code = wrapperKilled === 'maxBuffer' ? EXEC_MAXBUFFER_CODE : EXEC_TIMEOUT_CODE;
+      const detail = heldDetail === undefined ? '' : `; ${heldDetail}`;
+      return {
+        stdout,
+        stderr,
+        status: null,
+        error: Object.assign(new Error(`${prefix}: ${command}${detail}`), { code }),
+      };
+    };
+
+    const scheduleExitSettlement = (): void => {
+      if (resolved || wrapperKilled === null || exitSettlementTimer !== null) {
+        return;
       }
-      if (!groupSignaled) child.kill(signal);
+      exitSettlementTimer = setTimeout(() => {
+        finish(killedResult('inherited stdio remains held after child exit'));
+      }, SIGKILL_GRACE_MS);
+      exitSettlementTimer.unref?.();
     };
 
     const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
-      if (resolved || wrapperKilled !== null || child.pid === undefined) {
+      if (resolved || wrapperKilled !== null) {
         return;
       }
       wrapperKilled = reason;
       signalChild('SIGTERM');
-      killTimer = setTimeout(() => {
-        if (resolved || child.pid === undefined) {
+      escalationTimer = setTimeout(() => {
+        if (resolved) {
           return;
         }
         signalChild('SIGKILL');
       }, SIGTERM_GRACE_MS);
-      killTimer.unref?.();
+      escalationTimer.unref?.();
+      // `exec` must settle a no-answer within its requested bound because it owns no durable process tree.
+      settlementDeadlineTimer = setTimeout(() => {
+        finish(killedResult('child collection remains held after process-tree termination signals'));
+      }, SIGTERM_GRACE_MS + SIGKILL_GRACE_MS);
+      settlementDeadlineTimer.unref?.();
+      if (child.exitCode !== null || child.signalCode !== null) {
+        scheduleExitSettlement();
+      }
     };
 
     if (child.stdout) {
@@ -199,18 +205,11 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     }
 
     child.on('close', (status) => {
-      let error: Error | undefined;
-      if (wrapperKilled === 'timeout') {
-        error = Object.assign(new Error(`timeout: ${command}`), { code: EXEC_TIMEOUT_CODE });
-      } else if (wrapperKilled === 'maxBuffer') {
-        error = Object.assign(new Error(`maxBuffer exceeded: ${command}`), { code: EXEC_MAXBUFFER_CODE });
-      }
-      finish({
-        stdout,
-        stderr,
-        status: error ? null : status,
-        ...(error ? { error } : {}),
-      });
+      finish(wrapperKilled === null ? { stdout, stderr, status } : killedResult());
+    });
+
+    child.on('exit', () => {
+      scheduleExitSettlement();
     });
 
     child.on('error', (error) => {

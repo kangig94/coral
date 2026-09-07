@@ -30,6 +30,7 @@ import { type AgentRef } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
@@ -457,11 +458,23 @@ function createFakeProviderServerHandle(options?: {
     evidence: { subject: { kind: 'process' as const, pid: 43210 } },
   }));
   const closePromise = new Promise<Error | void>(() => {});
+  const child: ChildProcessLike = {
+    pid: 43210,
+    exitCode: null,
+    signalCode: null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    on() {
+      return this;
+    },
+    kill: () => true,
+  };
 
   return {
     handle: {
       pid: 43210,
-      child: {} as never,
+      child,
       generation: options?.generation ?? 7,
       rpc: {
         request: requestMock as unknown as ProviderServerHandle['rpc']['request'],

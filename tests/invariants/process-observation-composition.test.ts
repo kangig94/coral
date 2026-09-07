@@ -50,6 +50,10 @@ const ALLOWLIST = new Map<string, string>([
     'child escalation has no returned settlement or unobservable disposition yet',
   ],
   [
+    'src/infra/process-supervision.ts#liveChildAuthority',
+    'authority is minted from an uncollected child handle this process owns, so it reports no external observation and has no third answer to name',
+  ],
+  [
     'src/infra/process-supervision.ts#requirePipedHandles',
     'stdio validation either returns all handles or throws before process ownership is admitted',
   ],

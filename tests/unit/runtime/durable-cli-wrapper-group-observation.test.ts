@@ -22,8 +22,16 @@ describe('durable wrapper group observation', () => {
   it('returns an unobservable timed-out observer as a joinable hold', async () => {
     const events = new EventEmitter();
     const kill = vi.fn(() => true);
+    const exitCode: number | null = null;
+    let signalCode: NodeJS.Signals | null = null;
     const child = {
       pid: 4_242,
+      get exitCode() {
+        return exitCode;
+      },
+      get signalCode() {
+        return signalCode;
+      },
       stdin: null,
       stdout: new PassThrough(),
       stderr: null,
@@ -68,7 +76,9 @@ describe('durable wrapper group observation', () => {
       successor: { owner: 'group-member-observation-retention', acceptance: 'accepted' },
     });
 
-    events.emit('close', null, 'SIGTERM');
+    signalCode = 'SIGTERM';
+    events.emit('exit', exitCode, signalCode);
+    events.emit('close', exitCode, signalCode);
     await disposition.settled;
     await flushMicrotasks();
     expect(ownership.owns(disposition)).toBe(false);
@@ -84,6 +94,8 @@ describe('durable wrapper group observation', () => {
     const kill = vi.fn(() => true);
     const child = {
       pid: 4_243,
+      exitCode: null,
+      signalCode: null,
       stdin: null,
       stdout: new PassThrough(),
       stderr: null,
@@ -110,6 +122,8 @@ describe('durable wrapper group observation', () => {
     const events = new EventEmitter();
     const child = {
       pid: 4_244,
+      exitCode: null,
+      signalCode: null,
       stdin: null,
       stdout: new PassThrough(),
       stderr: null,
@@ -135,8 +149,16 @@ describe('durable wrapper group observation', () => {
   it('returns parsed members only after a successful observer close', async () => {
     const events = new EventEmitter();
     const stdout = new PassThrough();
+    let exitCode: number | null = null;
+    const signalCode: NodeJS.Signals | null = null;
     const child = {
       pid: 4_245,
+      get exitCode() {
+        return exitCode;
+      },
+      get signalCode() {
+        return signalCode;
+      },
       stdin: null,
       stdout,
       stderr: null,
@@ -150,7 +172,9 @@ describe('durable wrapper group observation', () => {
 
     stdout.write('101 9999\n4245 9999\n202 8888\n');
     await flushMicrotasks();
-    events.emit('close', 0, null);
+    exitCode = 0;
+    events.emit('exit', exitCode, signalCode);
+    events.emit('close', exitCode, signalCode);
 
     await expect(observation).resolves.toEqual({ kind: 'observed', members: [101] });
   });

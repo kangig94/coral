@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildGuardianSpawnUndo } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
 import {
@@ -933,9 +933,19 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 });
 
 function fakeSpawnedGuardian(pid: number, seed: number): SpawnedRoleProcess {
+  const child: ChildProcessLike = {
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    on: () => child,
+    kill: () => true,
+  };
   return {
     kind: 'spawned',
-    child: {} as unknown as ChildProcessLike,
+    child,
     pid,
     incarnation: testIncarnation(seed),
     // Never settles — these tests exercise the undo path, not the spawn-error race `spawnFailed` exists for.
@@ -1060,29 +1070,69 @@ describe('buildGuardianSpawnUndo', () => {
     expect(killCalls).toEqual([]);
   });
 
-  it('declines to signal on a platform whose incarnation cannot authorize one', async () => {
+  it("signals the owned guardian's process group on Darwin without an incarnation capability gate", async () => {
+    const killCalls: SignalCall[] = [];
+    let alive = true;
+    const runtime = guardianUndoRuntime(
+      () => alive,
+      killCalls,
+      undefined,
+      (signal) => {
+        if (signal === 'SIGTERM') alive = false;
+      },
+    );
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    await expect(buildGuardianSpawnUndo(runtime, spawned, 'darwin', () => null)()).resolves.toBeUndefined();
+
+    expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
+  });
+
+  it("ignores a changed incarnation re-read for the owned guardian's process group", async () => {
+    const killCalls: SignalCall[] = [];
+    let alive = true;
+    const runtime = guardianUndoRuntime(
+      () => alive,
+      killCalls,
+      undefined,
+      (signal) => {
+        if (signal === 'SIGTERM') alive = false;
+      },
+      false,
+    );
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+    const readProcessIncarnation = vi.fn<() => ProcessIncarnation>(() => testIncarnation(9_999));
+
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', readProcessIncarnation);
+    await expect(undo()).resolves.toBeUndefined();
+
+    expect(readProcessIncarnation).not.toHaveBeenCalled();
+    expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
+  });
+
+  it("refuses the recovered proxy's process group on Darwin", async () => {
     const killCalls: SignalCall[] = [];
     const runtime = guardianUndoRuntime(() => true, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'darwin', () => spawned.incarnation);
+    undo.bindProxyIdentity({ pid: 5_252, incarnation: testIncarnation(2_000), processGroupId: 5_252 });
 
-    await expect(buildGuardianSpawnUndo(runtime, spawned, 'darwin', () => spawned.incarnation)()).rejects.toThrow(
-      'this platform cannot bind a signal to its recorded incarnation',
+    await expect(undo()).rejects.toThrow(
+      'proxy process-group cleanup is holding because this platform cannot bind a signal to its recorded incarnation',
     );
-
     expect(killCalls).toEqual([]);
   });
 
-  it('refuses to signal once the recorded incarnation no longer matches (recycled pid)', async () => {
+  it("refuses the recovered proxy's process group after an incarnation mismatch", async () => {
     const killCalls: SignalCall[] = [];
     const runtime = guardianUndoRuntime(() => true, killCalls, undefined, undefined, false);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
-    // A different incarnation than what this acquisition recorded at spawn time: pid 4242 now names some
-    // other process, and signalling it would kill a stranger.
-    const readProcessIncarnation = (): ProcessIncarnation => testIncarnation(9_999);
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => testIncarnation(9_999));
+    undo.bindProxyIdentity({ pid: 5_252, incarnation: testIncarnation(2_000), processGroupId: 5_252 });
 
-    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', readProcessIncarnation);
-    await expect(undo()).rejects.toThrow('recorded group became unattributable');
-
+    await expect(undo()).rejects.toThrow(
+      'proxy process-group cleanup is holding because the recorded group became unattributable',
+    );
     expect(killCalls).toEqual([]);
   });
 });

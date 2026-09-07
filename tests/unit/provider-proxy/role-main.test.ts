@@ -35,6 +35,7 @@ import {
   type connectRoleControlWithRetry as connectRoleControlWithRetryType,
   type spawnRoleProcess as spawnRoleProcessType,
 } from '#src/provider-proxy/role-spawn.js';
+import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type * as ProxyMod from '#src/provider-proxy/proxy.js';
 import type * as ReaperMod from '#src/provider-proxy/reaper.js';
 import type * as GuardianMod from '#src/provider-proxy/guardian.js';
@@ -332,10 +333,26 @@ function roleSenderPorts(directory: string, orphanTimeoutMs?: string): ProviderR
   };
 }
 
+function fakeChild(pid: number): ChildProcessLike {
+  const child: ChildProcessLike = {
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    on() {
+      return this;
+    },
+    kill: () => true,
+  };
+  return child;
+}
+
 function fakeSpawnedRole(): unknown {
   return {
     kind: 'spawned',
-    child: {},
+    child: fakeChild(2_000_000_000),
     pid: 2_000_000_000,
     incarnation: testIncarnation(1),
     spawnFailed: new Promise<never>(() => {}),
@@ -404,7 +421,7 @@ describe('role pairing sender schemas', () => {
     }));
     const spawnRoleProcess = vi.fn(() => ({
       kind: 'held' as const,
-      child: {},
+      child: fakeChild(subject.pid),
       error: new RoleSpawnError(
         'role_spawn_incarnation_unavailable',
         'reaper',
@@ -576,7 +593,7 @@ describe('runProviderRoleMain', () => {
       { exchange: vi.fn(), close: vi.fn() },
       vi.fn(() => ({
         kind: 'held' as const,
-        child: {},
+        child: fakeChild(subject.pid),
         error: new RoleSpawnError(
           'role_spawn_incarnation_unavailable',
           'reaper',

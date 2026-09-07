@@ -6,7 +6,7 @@ import {
   type ProviderServerShutdownResult,
   type ProviderServerSpec,
 } from '../../../providers/contract.js';
-import type { ChildProcessLike, TimePort } from '../../../infra/port-types.js';
+import type { TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { createMonotonicClock, type MonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
@@ -20,6 +20,7 @@ import {
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from '../../../infra/process-constants.js';
+import { liveChildAuthority, type LiveChildAuthority } from '../../../infra/process-supervision.js';
 import { clearIdleTimer } from './idle.js';
 import type { ProviderHostEntry, ProviderHostShutdownDisposition, ProviderHostShutdownHold } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
@@ -36,7 +37,7 @@ const PROVIDER_HOST_REAP_DEADLINE_MS =
 export type ProviderHostContainmentReaper = (
   containment: RecordedContainmentIdentity,
   signal?: AbortSignal,
-  liveChild?: Readonly<{ child: ChildProcessLike; hasExited(): boolean }>,
+  authority?: LiveChildAuthority,
 ) => Promise<void>;
 
 type ProviderHostContainmentRuntime = Pick<Runtime, 'env' | 'process'>;
@@ -47,12 +48,7 @@ function containmentReaperWithClock<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   readProcessIncarnation: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null,
 ): ProviderHostContainmentReaper {
-  return async (containment, signal, liveChild) => {
-    const childPid = liveChild?.child.pid;
-    const liveChildAuthority =
-      childPid === undefined || childPid !== containment.pid || liveChild === undefined
-        ? undefined
-        : { pid: childPid, hasExited: () => liveChild.hasExited() };
+  return async (containment, signal, authority) => {
     const outcome = await reapRecordedContainment(
       containment,
       [],
@@ -63,10 +59,10 @@ function containmentReaperWithClock<Scope extends symbol>(
         process: runtime.process,
         platform: runtime.env.platform() as NodeJS.Platform,
         readProcessIncarnation,
-        ...(liveChildAuthority === undefined
+        ...(authority === undefined
           ? {}
           : {
-              knownLiveChildFor: (pid: number) => (pid === liveChildAuthority.pid ? liveChildAuthority : undefined),
+              knownLiveChildFor: (pid: number) => (pid === authority.pid ? authority : undefined),
             }),
         ...(signal === undefined ? {} : { signal }),
       },
@@ -245,7 +241,7 @@ export async function shutdownHandle(
     handle.markExpectedClose();
   }
 
-  await reapContainment(containment, signal, { child: handle.child, hasExited: handle.isClosed });
+  await reapContainment(containment, signal, liveChildAuthority(handle.child));
   if (signal !== undefined) throwIfAborted(signal, 'provider_host_finish_close');
   await handle.finishCloseAfterReap();
   return { kind: 'observed-absent' };

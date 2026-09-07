@@ -10,6 +10,7 @@ import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
+import { liveChildAuthority } from '#src/infra/process-supervision.js';
 import type {
   DurableCliProcessSubject,
   DurableContainmentStatus,
@@ -48,6 +49,26 @@ function restoreEnv(name: 'CORAL_MAX_WORKERS' | 'CORAL_DISCUSS_MAX_WORKERS', val
   else process.env[name] = value;
 }
 
+function testSignalAuthority(pid: number, hasExited: () => boolean, requestTermination?: () => void) {
+  const child: ChildProcessLike = {
+    pid,
+    get exitCode() {
+      return hasExited() ? 0 : null;
+    },
+    signalCode: null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    on() {
+      return this;
+    },
+    kill: () => true,
+  };
+  const authority = liveChildAuthority(child);
+  if (authority === undefined) throw new Error('Expected test child authority.');
+  return requestTermination === undefined ? authority : Object.freeze({ ...authority, requestTermination });
+}
+
 function createCoordinator(): LaunchCoordinator {
   return new LaunchCoordinator({ runtime: createRealRuntime('prod') });
 }
@@ -64,19 +85,32 @@ function createProviderProcessRuntime(
   processKill: ReturnType<typeof vi.fn<ProcessPort['kill']>>;
   observeLiveness: ReturnType<typeof vi.fn<ProcessPort['observeLiveness']>>;
   platform: ReturnType<typeof vi.fn<() => string>>;
-  releaseProcessGroup: () => void;
 } {
   const events = new EventEmitter();
   let processAlive = true;
   let groupAlive = groupProbeResult;
+  let exitCode: number | null = null;
+  let signalCode: NodeJS.Signals | null = null;
+  const collectChild = (signal: NodeJS.Signals): void => {
+    exitCode = null;
+    signalCode = signal;
+    events.emit('exit', exitCode, signalCode);
+    events.emit('close', exitCode, signalCode);
+  };
   const childKill = vi.fn<(signal?: NodeJS.Signals) => boolean>((signal) => {
     processAlive = false;
     groupAlive = false;
-    queueMicrotask(() => events.emit('close', 0, signal ?? null));
+    queueMicrotask(() => collectChild(signal ?? 'SIGTERM'));
     return true;
   });
   const child = {
     pid,
+    get exitCode() {
+      return exitCode;
+    },
+    get signalCode() {
+      return signalCode;
+    },
     stdin: new PassThrough(),
     stdout: new PassThrough(),
     stderr: new PassThrough(),
@@ -89,7 +123,7 @@ function createProviderProcessRuntime(
     if (signal === 0) return _pid < 0 ? groupAlive : processAlive;
     processAlive = false;
     groupAlive = false;
-    queueMicrotask(() => events.emit('close', 0, signal));
+    queueMicrotask(() => collectChild(signal));
     return true;
   });
   const observeLiveness = vi.fn<ProcessPort['observeLiveness']>((targetPid) => {
@@ -135,9 +169,6 @@ function createProviderProcessRuntime(
     processKill,
     observeLiveness,
     platform: readPlatform,
-    releaseProcessGroup: () => {
-      groupAlive = false;
-    },
   };
 }
 
@@ -234,7 +265,7 @@ describe('launch admission', () => {
     },
   );
 
-  it('holds a coordinator-local provider group whose incarnation cannot be read instead of signalling it', async () => {
+  it('signals an owned coordinator-local provider group when its durable incarnation cannot be read', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux', null);
     const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
     const manager = new DefaultProviderHostManager({
@@ -243,21 +274,15 @@ describe('launch admission', () => {
       carrierBlocksRetirement: () => false,
     });
 
-    const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
-      jobId: 'job-a',
-    });
-    await vi.waitFor(() =>
-      expect(manager.listProviderHosts().some((entry) => entry.status === 'reclamation-failed')).toBe(true),
-    );
-    expect(fake.processKill).not.toHaveBeenCalled();
-    expect(fake.childKill).not.toHaveBeenCalled();
+    const admission = manager
+      .openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), { jobId: 'job-a' })
+      .catch((error: unknown) => error);
 
-    fake.releaseProcessGroup();
-    await expect(admission).rejects.toMatchObject({
+    await expect(admission).resolves.toMatchObject({
       code: 'process_identity_unverified',
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).not.toHaveBeenCalled();
+    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
     expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
@@ -265,7 +290,7 @@ describe('launch admission', () => {
     await manager.shutdown();
   }, 30_000);
 
-  it('holds a coordinator-local provider group when reading its incarnation throws', async () => {
+  it('signals an owned coordinator-local provider group when reading its durable incarnation throws', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID);
     const runtime: Runtime = {
       ...fake.runtime,
@@ -283,21 +308,15 @@ describe('launch admission', () => {
       carrierBlocksRetirement: () => false,
     });
 
-    const admission = manager.openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), {
-      jobId: 'job-a',
-    });
-    await vi.waitFor(() =>
-      expect(manager.listProviderHosts().some((entry) => entry.status === 'reclamation-failed')).toBe(true),
-    );
-    expect(fake.processKill).not.toHaveBeenCalled();
-    expect(fake.childKill).not.toHaveBeenCalled();
+    const admission = manager
+      .openSession(createExclusiveSpec({ command: 'fake-codex', args: ['app-server'] }), { jobId: 'job-a' })
+      .catch((error: unknown) => error);
 
-    fake.releaseProcessGroup();
-    await expect(admission).rejects.toMatchObject({
+    await expect(admission).resolves.toMatchObject({
       code: 'process_identity_unverified',
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).not.toHaveBeenCalled();
+    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
     expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
@@ -809,7 +828,7 @@ describe('launch admission', () => {
         },
         pid: TEST_PROVIDER_PID,
         leaderIncarnation: incarnation,
-        signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => exited },
+        signalAuthority: testSignalAuthority(TEST_PROVIDER_PID, () => exited),
       });
       throw new Error('synthetic readiness rejection');
     });
@@ -880,7 +899,7 @@ describe('launch admission', () => {
         },
         pid: TEST_PROVIDER_PID,
         leaderIncarnation: incarnation,
-        signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => false, requestTermination },
+        signalAuthority: testSignalAuthority(TEST_PROVIDER_PID, () => false, requestTermination),
       });
       throw new Error('synthetic provisional readiness rejection');
     });
@@ -1142,7 +1161,7 @@ describe('launch admission', () => {
                 processGroupId: TEST_PROVIDER_PID,
                 childRoot,
               },
-              signalAuthority: { pid: TEST_PROVIDER_PID, hasExited: () => true },
+              signalAuthority: testSignalAuthority(TEST_PROVIDER_PID, () => true),
             };
           },
           waitForExit: async () => ({ exitCode: 0, signal: null, endTime: new Date(1).toISOString() }),

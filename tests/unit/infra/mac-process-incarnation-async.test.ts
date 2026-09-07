@@ -59,6 +59,8 @@ const terminateProbeChild: ProcessIncarnationProbeTerminator = (child) => {
 type Callback = (error: Error | null, stdout: string, stderr: string) => void;
 
 class ProbeChild extends EventEmitter {
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
   readonly pid: number | undefined;
   readonly stdin = null;
   readonly stdout = null;
@@ -73,14 +75,20 @@ class ProbeChild extends EventEmitter {
 
   kill(signal?: NodeJS.Signals): boolean {
     if (signal !== undefined) this.signals.push(signal);
-    if (signal === 'SIGKILL') queueMicrotask(() => this.close());
+    if (signal === 'SIGKILL') queueMicrotask(() => this.close(null, signal));
     return true;
   }
 
-  close(): void {
+  close(
+    code: number | null = this.signals.length === 0 ? 0 : null,
+    signal: NodeJS.Signals | null = this.signals.at(-1) ?? null,
+  ): void {
     if (this.closed) return;
     this.closed = true;
-    this.emit('close', null, null);
+    this.exitCode = code;
+    this.signalCode = signal;
+    this.emit('exit', code, signal);
+    this.emit('close', code, signal);
   }
 }
 

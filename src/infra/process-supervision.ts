@@ -1,12 +1,39 @@
 import { MAX_BUFFER, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from './process-constants.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation, type ProcessLiveness } from './node-process.js';
 import type { ChildProcessLike, TimePort } from './port-types.js';
-import type { Runtime } from '../runtime/ports.js';
+
+type ProcessSignal = (pid: number, signal: NodeJS.Signals | 0) => boolean;
+
+type ProcessGroupObservationRuntime = Readonly<{
+  process: Readonly<{
+    observeLiveness(pid: number): ProcessLiveness;
+  }>;
+}>;
+
+type SpawnedProcessGroupCleanupRuntime = ProcessGroupObservationRuntime &
+  Readonly<{
+    time: Pick<TimePort, 'sleep'>;
+    process: Readonly<{
+      kill: ProcessSignal;
+      observeLiveness(pid: number): ProcessLiveness;
+    }>;
+  }>;
+
+type GracefulKillByPidRuntime = Readonly<{
+  time: Pick<TimePort, 'setTimeout'>;
+  env: Readonly<{ platform(): string }>;
+  process: Readonly<{
+    kill: ProcessSignal;
+    observeLiveness(pid: number): ProcessLiveness;
+    readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
+  }>;
+}>;
 
 type GracefulKillRuntime = Readonly<{
   time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
 }>;
 
+declare const liveChildAuthorityBrand: unique symbol;
 declare const spawnedProcessGroupCleanupBrand: unique symbol;
 const spawnedProcessGroupAbsenceEvidenceBrand: unique symbol = Symbol(
   'coral.process-supervision.spawned-process-group-absence',
@@ -14,10 +41,39 @@ const spawnedProcessGroupAbsenceEvidenceBrand: unique symbol = Symbol(
 
 export type SpawnedProcessGroupCleanup<ProcessGroupId extends number = number> = Readonly<{
   processGroupId: ProcessGroupId;
-  leaderIncarnation: ProcessIncarnation;
-  cleanup(runtime: Runtime, signal?: AbortSignal): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
+  child: ChildProcessLike;
+  cleanup(
+    runtime: SpawnedProcessGroupCleanupRuntime,
+    signal?: AbortSignal,
+  ): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
   [spawnedProcessGroupCleanupBrand]: true;
 }>;
+
+export type LiveChildAuthority = Readonly<{
+  pid: number;
+  hasExited(): boolean;
+  [liveChildAuthorityBrand]: true;
+}>;
+
+export function liveChildAuthority(child: ChildProcessLike): LiveChildAuthority | undefined {
+  if (child.pid === undefined) return undefined;
+  return Object.freeze({
+    pid: child.pid,
+    hasExited: () => child.exitCode !== null || child.signalCode !== null,
+  }) as LiveChildAuthority;
+}
+
+export type OwnedGroupSignalDelivery = 'delivered' | 'not-delivered' | 'leader-collected';
+
+export function signalOwnedProcessGroup(
+  child: ChildProcessLike,
+  kill: ProcessSignal,
+  signal: NodeJS.Signals,
+): OwnedGroupSignalDelivery {
+  const authority = liveChildAuthority(child);
+  if (authority === undefined || authority.hasExited()) return 'leader-collected';
+  return kill(-authority.pid, signal) ? 'delivered' : 'not-delivered';
+}
 
 export type SpawnedProcessGroupCleanupSubject<ProcessGroupId extends number = number> = Readonly<{
   kind: 'process-group';
@@ -64,33 +120,33 @@ export type SpawnedProcessGroupCleanupDisposition<ProcessGroupId extends number 
       retry(signal?: AbortSignal): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>;
     }>;
 
-export function retainSpawnedProcessGroupCleanup<ProcessGroupId extends number>(
-  processGroupId: ProcessGroupId,
-  leaderIncarnation: ProcessIncarnation,
-): SpawnedProcessGroupCleanup<ProcessGroupId> {
+export function retainSpawnedProcessGroupCleanup(child: ChildProcessLike): SpawnedProcessGroupCleanup {
+  const authority = liveChildAuthority(child);
+  if (authority === undefined) {
+    throw new RangeError('Cannot retain spawned process-group cleanup before the child has a pid.');
+  }
+  const processGroupId = authority.pid;
   if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
     throw new RangeError(`Spawned process-group id must be a positive safe integer; received ${processGroupId}.`);
   }
   const capability = Object.freeze({
     processGroupId,
-    leaderIncarnation,
-    cleanup: (runtime: Runtime, signal?: AbortSignal) => cleanupSpawnedProcessGroup(capability, runtime, signal),
-  }) as SpawnedProcessGroupCleanup<ProcessGroupId>;
+    child,
+    cleanup: (runtime: SpawnedProcessGroupCleanupRuntime, signal?: AbortSignal) =>
+      cleanupSpawnedProcessGroup(capability, runtime, signal),
+  }) as SpawnedProcessGroupCleanup;
   return capability;
 }
 
 function observeSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
-  runtime: Runtime,
+  runtime: ProcessGroupObservationRuntime,
 ): 'alive' | 'absent' | 'unobservable' {
-  const platform = runtime.env.platform() as NodeJS.Platform;
   try {
-    const observedIncarnation = runtime.process.readProcessIncarnation(cleanup.processGroupId, platform);
     const groupLiveness = runtime.process.observeLiveness(-cleanup.processGroupId);
     if (groupLiveness === 'absent') return 'absent';
     if (groupLiveness === 'unknown') return 'unobservable';
-    if (!incarnationMayAuthorizeSignal(platform)) return 'unobservable';
-    return observedIncarnation === cleanup.leaderIncarnation ? 'alive' : 'unobservable';
+    return liveChildAuthority(cleanup.child)?.hasExited() === false ? 'alive' : 'unobservable';
   } catch {
     return 'unobservable';
   }
@@ -111,7 +167,7 @@ function observedSpawnedProcessGroupAbsent<ProcessGroupId extends number>(
 
 function heldSpawnedProcessGroupCleanup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
-  runtime: Runtime,
+  runtime: SpawnedProcessGroupCleanupRuntime,
   observation: 'alive' | 'unobservable',
 ): SpawnedProcessGroupCleanupDisposition<ProcessGroupId> {
   const subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId> = {
@@ -126,7 +182,7 @@ function heldSpawnedProcessGroupCleanup<ProcessGroupId extends number>(
 
 export function observeRetainedSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
-  runtime: Runtime,
+  runtime: SpawnedProcessGroupCleanupRuntime,
 ): SpawnedProcessGroupCleanupDisposition<ProcessGroupId> {
   const observation = observeSpawnedProcessGroup(cleanup, runtime);
   return observation === 'absent'
@@ -140,7 +196,7 @@ export function observeRetainedSpawnedProcessGroup<ProcessGroupId extends number
  */
 export function observeUnattributableSpawnedProcessGroup<ProcessGroupId extends number>(
   processGroupId: ProcessGroupId,
-  runtime: Runtime,
+  runtime: ProcessGroupObservationRuntime,
 ): UnattributableSpawnedProcessGroupObservation<ProcessGroupId> {
   const subject: SpawnedProcessGroupCleanupSubject<ProcessGroupId> = { kind: 'process-group', processGroupId };
   let liveness: ProcessLiveness;
@@ -156,29 +212,18 @@ export function observeUnattributableSpawnedProcessGroup<ProcessGroupId extends 
 
 function signalSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
-  runtime: Runtime,
+  runtime: SpawnedProcessGroupCleanupRuntime,
   signal: NodeJS.Signals,
   abortSignal?: AbortSignal,
 ): 'delivered' | 'alive' | 'absent' | 'unobservable' {
   if (abortSignal?.aborted) return observeSpawnedProcessGroup(cleanup, runtime);
-  const platform = runtime.env.platform() as NodeJS.Platform;
-  if (!incarnationMayAuthorizeSignal(platform)) return observeSpawnedProcessGroup(cleanup, runtime);
-  try {
-    const observedIncarnation = runtime.process.readProcessIncarnation(cleanup.processGroupId, platform);
-    if (observedIncarnation !== cleanup.leaderIncarnation) return observeSpawnedProcessGroup(cleanup, runtime);
-    const groupLiveness = runtime.process.observeLiveness(-cleanup.processGroupId);
-    if (groupLiveness !== 'alive') return groupLiveness === 'absent' ? 'absent' : 'unobservable';
-    if (abortSignal?.aborted) return 'alive';
-    runtime.process.kill(-cleanup.processGroupId, signal);
-    return 'delivered';
-  } catch {
-    return observeSpawnedProcessGroup(cleanup, runtime);
-  }
+  const delivery = signalOwnedProcessGroup(cleanup.child, runtime.process.kill, signal);
+  return delivery === 'delivered' ? delivery : observeSpawnedProcessGroup(cleanup, runtime);
 }
 
 function dispositionForSpawnedProcessGroupObservation<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
-  runtime: Runtime,
+  runtime: SpawnedProcessGroupCleanupRuntime,
   observation: 'alive' | 'absent' | 'unobservable',
 ): SpawnedProcessGroupCleanupDisposition<ProcessGroupId> {
   return observation === 'absent'
@@ -187,7 +232,7 @@ function dispositionForSpawnedProcessGroupObservation<ProcessGroupId extends num
 }
 
 async function waitForSpawnedProcessGroupGrace(
-  runtime: Runtime,
+  runtime: SpawnedProcessGroupCleanupRuntime,
   milliseconds: number,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -200,7 +245,7 @@ async function waitForSpawnedProcessGroupGrace(
 
 export async function cleanupSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
-  runtime: Runtime,
+  runtime: SpawnedProcessGroupCleanupRuntime,
   signal?: AbortSignal,
 ): Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>> {
   const initialObservation = observeSpawnedProcessGroup(cleanup, runtime);
@@ -286,7 +331,7 @@ export function gracefulKill(
 }
 
 function observeRecordedTarget(
-  runtime: Runtime,
+  runtime: GracefulKillByPidRuntime,
   pid: number,
   platform: NodeJS.Platform,
   expectedIncarnation: ProcessIncarnation,
@@ -305,7 +350,7 @@ function observeRecordedTarget(
 }
 
 function settleAfterSigkill(
-  runtime: Runtime,
+  runtime: GracefulKillByPidRuntime,
   pid: number,
   platform: NodeJS.Platform,
   expectedIncarnation: ProcessIncarnation,
@@ -328,7 +373,7 @@ function settleAfterSigkill(
 }
 
 function settleGracefulKillByPid(
-  runtime: Runtime,
+  runtime: GracefulKillByPidRuntime,
   pid: number,
   platform: NodeJS.Platform,
   expectedIncarnation: ProcessIncarnation,
@@ -373,7 +418,7 @@ function settleGracefulKillByPid(
 }
 
 export function gracefulKillByPid(
-  runtime: Runtime,
+  runtime: GracefulKillByPidRuntime,
   pid: number,
   expectedIncarnation: ProcessIncarnation | null,
 ): GracefulKillByPidDisposition {

@@ -9,6 +9,7 @@ import {
   type ProcessIncarnation,
   type ProcessLiveness,
 } from './node-process.js';
+import type { LiveChildAuthority } from './process-supervision.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
@@ -77,12 +78,7 @@ export type ProcessContainmentEnvironment<Scope extends symbol> = ProcessContain
   };
   readonly platform: NodeJS.Platform;
   readonly readProcessIncarnation?: (pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null;
-  readonly knownLiveChildFor?: (pid: number) =>
-    | Readonly<{
-        pid: number;
-        hasExited(): boolean;
-      }>
-    | undefined;
+  readonly knownLiveChildFor?: (pid: number) => LiveChildAuthority | undefined;
   /** Revalidates the caller's authority immediately before each process-control signal. */
   readonly assertSignalAuthorized?: () => void;
   /** Reports only signals whose process-control call returned success. */
@@ -356,7 +352,8 @@ async function observeProcessIdentityAsync<Scope extends symbol>(
   if (!observationMayStart(deadline, environment, allowAtDeadline)) {
     return { kind: 'unobservable', reason: 'deadline' };
   }
-  if (knownLiveChildMayAuthorizeSignal(identity, environment)) {
+  const child = environment.knownLiveChildFor?.(identity.pid);
+  if (child !== undefined && knownLiveChildMayAuthorizeSignal(identity, child)) {
     return { kind: 'observed', observation: 'present' };
   }
   const observe = environment.process.observeRecordedProcessAsync;
@@ -519,21 +516,8 @@ type RecordedSetSignalResult =
 
 type RecordedSignalDelivery = 'delivered' | 'not-delivered' | 'authorization-refused';
 
-function knownLiveChildMayAuthorizeSignal<Scope extends symbol>(
-  identity: RecordedProcessIdentity,
-  environment: ProcessContainmentEnvironment<Scope>,
-): boolean {
-  const child = environment.knownLiveChildFor?.(identity.pid);
-  return child?.pid === identity.pid && child.hasExited() === false;
-}
-
-function identityMayAuthorizeSignal<Scope extends symbol>(
-  identity: RecordedProcessIdentity,
-  environment: ProcessContainmentEnvironment<Scope>,
-): boolean {
-  if (!incarnationMayAuthorizeSignal(environment.platform))
-    return knownLiveChildMayAuthorizeSignal(identity, environment);
-  return true;
+function knownLiveChildMayAuthorizeSignal(identity: RecordedProcessIdentity, child: LiveChildAuthority): boolean {
+  return child.pid === identity.pid && child.hasExited() === false;
 }
 
 function deliverSignal<Scope extends symbol>(
@@ -546,16 +530,24 @@ function deliverSignal<Scope extends symbol>(
   const callStartedAt = environment.clock.now();
   assertContainmentAuthorized(environment.signal);
   assertSignalCallWithinBounds(callStartedAt, exitDeadline, environment);
-  if (!identityMayAuthorizeSignal(identity, environment)) return 'authorization-refused';
-  if (
-    incarnationMayAuthorizeSignal(environment.platform) &&
-    readIncarnation(identity, environment) !== identity.incarnation
-  ) {
-    return 'authorization-refused';
-  }
+  const child = environment.knownLiveChildFor?.(identity.pid);
+  if (child === undefined && !incarnationMayAuthorizeSignal(environment.platform)) return 'authorization-refused';
   if (environment.process.observeLiveness(pid) !== 'alive') return 'not-delivered';
   environment.assertSignalAuthorized?.();
-  const delivered = environment.process.kill(pid, signal);
+  let delivered: boolean;
+  if (child !== undefined) {
+    if (!knownLiveChildMayAuthorizeSignal(identity, child)) return 'authorization-refused';
+    delivered = environment.process.kill(pid, signal);
+  } else {
+    // Recovered records have no reap handle, so Node-only check-then-kill cannot be atomic. Measured on Ubuntu
+    // 24.04.4 under WSL2 Linux 6.18.33.2, kernel.pid_max is 4194304 and Linux pid allocation is cyclic:
+    // misdelivery requires collection by the target's own parent, pid wrap and reuse, and, for a group, a new
+    // holder calling setsid or setpgid, all within the read/kill adjacent-syscall gap with no await, bounded by
+    // scheduler latency. Own children never reach this recovered-identity branch; see liveChildAuthority in
+    // src/infra/process-supervision.ts.
+    if (readIncarnation(identity, environment) !== identity.incarnation) return 'authorization-refused';
+    delivered = environment.process.kill(pid, signal);
+  }
   if (delivered) environment.onSignal?.({ pid, signal });
   assertSignalCallWithinBounds(callStartedAt, exitDeadline, environment);
   return delivered ? 'delivered' : 'not-delivered';

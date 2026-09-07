@@ -99,7 +99,7 @@ describe('provider host idle close/acquire race', () => {
     expect(reapContainment).toHaveBeenCalledWith(
       closingContainment,
       undefined,
-      expect.objectContaining({ child: closingServer.handle.child }),
+      expect.objectContaining({ pid: closingServer.handle.pid, hasExited: expect.any(Function) }),
     );
     expect(closingEntry.closePromise).not.toBeNull();
     await expect(manager.openSession(spec)).rejects.toThrow(/^provider_host_draining:/u);

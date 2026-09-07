@@ -76,8 +76,6 @@ export class SimulationRuntime implements Runtime {
         maxBuffer: execOptions.maxBuffer,
         encoding: execOptions.encoding ?? 'utf-8',
         killProcessGroup: this.env.platform() !== 'win32',
-        platform: this.env.platform() as NodeJS.Platform,
-        readProcessIncarnation: simulationProcess.readProcessIncarnation,
         spawn: simulationProcess.spawn,
         kill: simulationProcess.kill,
         setTimeout: (fn, ms) => this.time.setTimeout(fn, ms),

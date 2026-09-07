@@ -1582,12 +1582,22 @@ function fakeProviderServerHandle(options?: {
   resolveClosed(): void;
 } {
   const closed = deferred<Error | void>();
-  const child = new EventEmitter();
+  const child = Object.assign(new EventEmitter(), {
+    pid: options?.pid ?? 1_000,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    kill: () => true,
+  });
   let isClosed = false;
   const resolveClosed = (): void => {
     if (isClosed) return;
     isClosed = true;
-    child.emit('close', 0, null);
+    child.exitCode = 0;
+    child.emit('exit', child.exitCode, child.signalCode);
+    child.emit('close', child.exitCode, child.signalCode);
     closed.resolve();
   };
   const closeMock = vi.fn(async (...args: Parameters<ProviderServerHandle['close']>) => {
@@ -1601,7 +1611,7 @@ function fakeProviderServerHandle(options?: {
   });
   const handle: ProviderServerHandle = {
     pid: options?.pid ?? 1_000,
-    child: child as never,
+    child,
     generation: 1,
     rpc: {
       request: vi.fn(options?.request ?? (async () => ({}))) as unknown as ProviderServerHandle['rpc']['request'],
