@@ -27,7 +27,7 @@ const REGISTRY = [
 
 const STRUCTURAL_SUBTYPE_REGISTRY = new Set<string>(['src/provider-proxy/control-client.ts#ControlExchange']);
 
-const REGISTRY_SHA256 = '7968fa892077e41bb6ef9e2de0fd20bb2e825e0ea087cfcb7338c3b4ebe93aae';
+const REGISTRY_SHA256 = '589043d328edf8efd870e7ccfd662cc1dbed31ef2255e137457481b8b647ecf7';
 
 const ALLOWLIST = new Map<string, string>([
   ['src/runtime/ports.ts#ProcessPort.spawn', 'spawn failure is still reported later by the child error event'],
@@ -69,10 +69,6 @@ const ALLOWLIST = new Map<string, string>([
   [
     'src/coordinator/live/durable-transport.ts#enterContainmentHold.<setInterval:0:0>',
     'periodic containment retry reports through retained cleanup state while the timer callback returns void',
-  ],
-  [
-    'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.<anonymous-34>',
-    'the abort listener initiates cleanup through side effects instead of returning its disposition',
   ],
   [
     'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.publishSpawned',
@@ -221,10 +217,6 @@ const ALLOWLIST = new Map<string, string>([
   [
     'src/provider-proxy/role-main.ts#stageProviderRoot.abortAndRelease',
     'guardian release converts ControlExchange failure into rejection while guardian-side ownership remains idempotent',
-  ],
-  [
-    'src/runtime/durable-cli-wrapper.ts#groupMembers.<anonymous-8>',
-    'timed-out observer cleanup completes through Promise<void> after a liveness observation',
   ],
   [
     'src/runtime/durable-cli-wrapper.ts#runGroupFinalizer.<setInterval:0:0>',
@@ -1169,10 +1161,7 @@ describe('process observation vocabulary composes without collapsing its third a
       ]),
     );
     expect(diagnosticsFor(program, path)).toEqual([]);
-    expect(diagnosticsFor(program, leaderNegativePath)).toEqual([
-      expect.stringMatching(/TS2741:/u),
-      expect.stringMatching(/TS2741:/u),
-    ]);
+    expect(diagnosticsFor(program, leaderNegativePath)).toEqual([expect.stringMatching(/TS2741:/u)]);
     expect(diagnosticsFor(program, mismatchNegativePath)).toEqual([
       expect.stringMatching(/TS2322:/u),
       expect.stringMatching(/TS2322:/u),

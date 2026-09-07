@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = 'tests/invariants/fixtures/durable-schema-independence';
-const SCHEMA_CATALOG_SHA256 = '04977abf2680b228ec9f2e813309f6581d80f9389cb8395b72462861e935542d';
+const SCHEMA_CATALOG_SHA256 = 'b76de0a14677bdfd21d4bbf51aba96bd75145f8a8ec744b18c1e14c515c68ad3';
 
 type SchemaKey = `${string}#${string}`;
 
@@ -39,6 +39,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/expansion/manifest/schema.ts#persistedDeclarativeEngineManifestSchema',
   'src/infra/backend-discovery.ts#coordinatorDiscoveryRecordSchema',
   'src/infra/plugin-registry.ts#installedPluginsFileSchema',
+  'src/infra/persisted-scalar-contracts.ts#persistedNonEmptyStringSchema',
   'src/infra/process-containment.ts#recordedProcessIdentitySchema',
   'src/infra/provider-binding-envelope.ts#providerBindingEnvelopeSchema',
   'src/infra/provider-scope.ts#providerScopeSchema',

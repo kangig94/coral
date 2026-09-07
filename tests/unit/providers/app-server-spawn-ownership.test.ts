@@ -6,6 +6,8 @@ import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants
 import {
   spawnProviderServerTransport,
   type ProviderContainmentAcceptance,
+  type ProviderServerFailedSpawnCleanupAcceptor,
+  type ProviderServerHandle,
 } from '#src/providers/app-server-transport.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -26,6 +28,17 @@ function observePromise<T>(promise: Promise<T>): PromiseObservation<T> {
   );
   return observation;
 }
+
+const acceptCleanupHold: ProviderServerFailedSpawnCleanupAcceptor = (hold) => ({
+  kind: 'accepted',
+  owner: 'provider-proxy-root-pool',
+  settlement: hold.settled,
+});
+const acceptCloseHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => ({
+  kind: 'accepted',
+  owner: 'provider-proxy-root-pool',
+  settlement: hold.settled,
+});
 
 function delayedClose(onSpawned?: (child: unknown) => void): Readonly<{
   script: {
@@ -77,6 +90,7 @@ describe('provider app-server spawn ownership', () => {
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
     const observation = observePromise(launch);
     await flushMicrotasks();
@@ -90,12 +104,13 @@ describe('provider app-server spawn ownership', () => {
       operatorExit: { kind: 'abandon-provider-host-acquisition' },
     });
     expect(runtime.spawner.killCalls).toEqual([]);
-
-    child.close();
-    await flushMicrotasks();
     if (!('kind' in held) || held.kind !== 'held-unobservable') {
       throw new Error('Expected an unattributable process-group hold.');
     }
+    const groupSettlement = observePromise(held.settled);
+    child.close();
+    await flushMicrotasks();
+    expect(groupSettlement.settled).toBe(false);
     const stillHeld = held.retry();
     runtime.time.tick(SIGTERM_GRACE_MS);
     await flushMicrotasks();
@@ -114,6 +129,32 @@ describe('provider app-server spawn ownership', () => {
         processGroupEvidence: { subject: { kind: 'process-group', processGroupId: 20_000 } },
       },
     });
+    await expect(held.settled).resolves.toBeUndefined();
+  });
+
+  it('returns an attached live-process hold without waiting for close', async () => {
+    const runtime = new SimulationRuntime();
+    vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
+    const child = delayedClose((spawned) => {
+      (spawned as { stdout: null }).stdout = null;
+    });
+    runtime.spawner.enqueueSpawn(child.script);
+
+    const held = await spawnProviderServerTransport({
+      runtime,
+      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      generation: 1,
+      observeProviderResponse: () => {},
+      acceptFailedSpawnCleanup: acceptCleanupHold,
+    });
+
+    expect(held).toMatchObject({
+      kind: 'held-alive',
+      subject: { kind: 'process', pid: 20_000 },
+      observation: 'alive',
+      successor: { kind: 'accepted', owner: 'provider-proxy-root-pool' },
+    });
+    child.close();
   });
 
   it('joins an active failed-spawn retry before operator abandonment settles', async () => {
@@ -128,6 +169,7 @@ describe('provider app-server spawn ownership', () => {
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
+      acceptFailedSpawnCleanup: acceptCleanupHold,
       recordContainment: (() => Symbol('refused')) as unknown as () => ProviderContainmentAcceptance,
     });
     await flushMicrotasks();
@@ -153,7 +195,7 @@ describe('provider app-server spawn ownership', () => {
     child.close();
   });
 
-  it('keeps an uncontained failed initialization joined until its close is observed', async () => {
+  it('returns an accepted attached initialization hold without waiting for child close', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('unknown');
     const child = delayedClose();
@@ -171,24 +213,32 @@ describe('provider app-server spawn ownership', () => {
       },
       generation: 1,
       observeProviderResponse: () => {},
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
     const observation = observePromise(launch);
     await flushMicrotasks();
     abort.abort(new Error('cancelled'));
     await flushMicrotasks();
 
-    expect(observation.settled).toBe(false);
+    const held = await launch;
+    expect(observation.settled).toBe(true);
     expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
-
-    runtime.time.tick(SIGTERM_GRACE_MS);
-    await flushMicrotasks();
-    expect(observation.settled).toBe(false);
+    expect(held).toMatchObject({
+      kind: 'held-unobservable',
+      subject: { kind: 'process', pid: 20_000 },
+      successor: { kind: 'accepted', owner: 'provider-proxy-root-pool' },
+    });
+    if (!('kind' in held) || held.kind !== 'held-unobservable') {
+      throw new Error('Expected an attached process cleanup hold.');
+    }
+    const settlement = observePromise(held.settled);
+    expect(settlement.settled).toBe(false);
 
     child.close();
-    await expect(launch).rejects.toMatchObject({ stage: 'provider codex initialize' });
+    await held.settled;
   });
 
-  it('keeps failed piped-handle setup joined until its close is observed', async () => {
+  it('returns an accepted attached piped-handle hold without waiting for child close', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('unknown');
     const child = delayedClose((spawned) => {
@@ -201,13 +251,23 @@ describe('provider app-server spawn ownership', () => {
       options: { provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
     const observation = observePromise(launch);
     await flushMicrotasks();
 
-    expect(observation.settled).toBe(false);
+    const held = await launch;
+    expect(observation.settled).toBe(true);
+    expect(held).toMatchObject({
+      kind: 'held-unobservable',
+      subject: { kind: 'process', pid: 20_000 },
+      error: expect.objectContaining({ message: expect.stringMatching(/piped stdio handles/u) }),
+    });
+    if (!('kind' in held) || held.kind !== 'held-unobservable') {
+      throw new Error('Expected an attached process cleanup hold.');
+    }
     child.close();
-    await expect(launch).rejects.toThrow(/piped stdio handles/u);
+    await held.settled;
   });
 
   it('returns an operator-actionable hold for an unattributable detached spawn', async () => {
@@ -223,6 +283,7 @@ describe('provider app-server spawn ownership', () => {
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
     const held = await launch;
     expect(held).toMatchObject({
@@ -238,6 +299,7 @@ describe('provider app-server spawn ownership', () => {
       kind: 'operator-abandoned',
       subject: { kind: 'unattributable-process-group', processGroupId: null },
       processAbsenceProven: false,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
     });
   });
 
@@ -256,18 +318,29 @@ describe('provider app-server spawn ownership', () => {
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
+      acceptFailedSpawnCleanup: acceptCleanupHold,
       recordContainment: (() => Symbol('refused')) as unknown as () => ProviderContainmentAcceptance,
     });
     const observation = observePromise(launch);
     await flushMicrotasks();
 
-    expect(observation.settled).toBe(false);
+    runtime.time.tick(SIGTERM_GRACE_MS);
+    await flushMicrotasks();
+    runtime.time.tick(SIGKILL_GRACE_MS);
+    const held = await launch;
+    expect(observation.settled).toBe(true);
+    if (!('kind' in held) || (held.kind !== 'held-alive' && held.kind !== 'held-unobservable')) {
+      throw new Error('Expected the refused containment publication to return an accepted cleanup hold.');
+    }
+    const groupSettlement = observePromise(held.settled);
     child.close();
     await flushMicrotasks();
-    expect(observation.settled).toBe(false);
+    expect(groupSettlement.settled).toBe(false);
     processGroupAlive = false;
+    const absence = held.retry();
     runtime.time.tick(SIGTERM_GRACE_MS);
-    await expect(launch).rejects.toThrow(/did not accept/u);
+    await expect(absence).resolves.toMatchObject({ kind: 'observed-absent' });
+    await expect(held.settled).resolves.toBeUndefined();
   });
 
   it('does not let a logical child error discharge handle close', async () => {
@@ -280,16 +353,28 @@ describe('provider app-server spawn ownership', () => {
       options: { provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
+      acceptFailedSpawnCleanup: acceptCleanupHold,
     });
+    if ('kind' in handle) throw new Error('Expected a provider server handle.');
 
     child.error(new Error('synthetic child error'));
     await expect(handle.closePromise).resolves.toBeInstanceOf(Error);
-    const close = handle.close();
+    const close = handle.close(acceptCloseHold);
     const observation = observePromise(close);
     await flushMicrotasks();
-    expect(observation.settled).toBe(false);
+    expect(observation.settled).toBe(true);
+
+    const held = await close;
+    expect(held).toMatchObject({
+      kind: 'held-unobservable',
+      subject: { kind: 'process', pid: 20_000 },
+      successor: { kind: 'accepted', owner: 'provider-proxy-root-pool' },
+    });
+    if (held.kind !== 'held-unobservable') throw new Error('Expected an attached process close hold.');
+    const settlement = observePromise(held.settled);
+    expect(settlement.settled).toBe(false);
 
     child.close();
-    await expect(close).resolves.toBeUndefined();
+    await held.settled;
   });
 });

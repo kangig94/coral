@@ -29,6 +29,33 @@ export type MonotonicClock<Scope extends symbol> = Readonly<{
 /** Instant arithmetic with no reading. Only the shell samples; the model computes. */
 export type MonotonicArithmetic<Scope extends symbol> = Omit<MonotonicClock<Scope>, 'now' | 'sleep'>;
 
+export type ObservedDuration = Readonly<{
+  elapsedMs(): number;
+  advance(observedAtMs: bigint): void;
+  reset(observedAtMs: bigint): void;
+}>;
+
+/** Scheduler lateness is evidence about the observer and cannot consume the observed subject's budget. */
+export function createObservedDuration(initialObservedAtMs: bigint, cadenceMs: number): ObservedDuration {
+  assertSafeInteger(cadenceMs, 'Observed duration cadence');
+  if (cadenceMs <= 0) throw new Error('Observed duration cadence must be positive.');
+  let lastObservedAtMs = initialObservedAtMs;
+  let accumulatedMs = 0;
+  return {
+    elapsedMs: () => accumulatedMs,
+    advance: (observedAtMs): void => {
+      const observedGapMs = observedAtMs - lastObservedAtMs;
+      lastObservedAtMs = observedAtMs;
+      if (observedGapMs <= 0n) return;
+      accumulatedMs += Math.min(Number(observedGapMs), cadenceMs);
+    },
+    reset: (observedAtMs): void => {
+      lastObservedAtMs = observedAtMs;
+      accumulatedMs = 0;
+    },
+  };
+}
+
 function defaultReadMilliseconds(): bigint {
   return process.hrtime.bigint() / 1_000_000n;
 }

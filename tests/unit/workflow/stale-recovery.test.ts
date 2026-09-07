@@ -38,6 +38,9 @@ function stateFor(staleAtom: LaunchedAtom): AwaitStepState {
     lastActivityAt: new Map([[staleAtom.atomKey, 1_000]]),
     staleRetries: new Map(),
     expectedStaleAborts: new Set(),
+    observedIdleMs: new Map([[staleAtom.atomKey, 100_000]]),
+    lastObservedAtMonotonicMs: 0n,
+    observedDrainMs: 0,
     failureDrain: null,
   };
 }

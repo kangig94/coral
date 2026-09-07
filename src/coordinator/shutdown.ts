@@ -261,9 +261,13 @@ function retainedChildActions(disposition: TerminateAllDisposition | null): read
 
 function closingHostDetail(closing: ProviderHostCleanupObligations['closingHosts'][number]): string {
   const containment = closing.containment;
+  const exit =
+    'kind' in closing && closing.kind === 'provider-server-shutdown-held'
+      ? closing.operatorExit.kind
+      : 'closing settlement';
   return containment === null
-    ? `${closing.label} containment unconfirmed; exit=closing settlement`
-    : `${closing.label} pid ${containment.pid} pgid ${containment.processGroupId}; exit=closing settlement`;
+    ? `${closing.label} containment unconfirmed; exit=${exit}`
+    : `${closing.label} pid ${containment.pid} pgid ${containment.processGroupId}; exit=${exit}`;
 }
 
 function providerCleanupConfirmation(

@@ -31,6 +31,81 @@ type PendingExit = Readonly<{
 
 type RuntimeStartPublicationDisposition = Readonly<{ kind: 'published' }> | Readonly<{ kind: 'terminated' }>;
 
+export type GroupMemberObservationSubject = Readonly<{
+  kind: 'process';
+  pid: number | null;
+}>;
+
+export type GroupMemberObservationOwnershipAcceptance = Readonly<{
+  kind: 'accepted';
+  successor: Readonly<{ owner: 'group-member-observation-retention'; acceptance: 'accepted' }>;
+}>;
+
+export type GroupMemberObservationTransferred = Readonly<{
+  kind: 'transferred';
+  subject: GroupMemberObservationSubject;
+  successor: Readonly<{ owner: 'group-member-observation-retention'; acceptance: 'accepted' }>;
+}>;
+
+export type SettledGroupMemberObservationDisposition =
+  | Readonly<{ kind: 'observed'; members: readonly number[] }>
+  | Readonly<{
+      kind: 'unobservable';
+      observation: 'unobservable';
+      exit: 'retry-group-observation';
+    }>;
+
+export type GroupMemberObservationHold =
+  | Readonly<{
+      kind: 'held-alive';
+      subject: GroupMemberObservationSubject;
+      observation: 'alive';
+      settled: Promise<void>;
+      exit: 'observer-settlement-or-accepted-handoff';
+      handoff(): GroupMemberObservationTransferred;
+      retry(): Promise<GroupMemberObservationDisposition>;
+    }>
+  | Readonly<{
+      kind: 'held-unobservable';
+      subject: GroupMemberObservationSubject;
+      observation: 'unobservable';
+      settled: Promise<void>;
+      exit: 'observer-settlement-or-accepted-handoff';
+      handoff(): GroupMemberObservationTransferred;
+      retry(): Promise<GroupMemberObservationDisposition>;
+    }>;
+
+export type GroupMemberObservationDisposition =
+  | SettledGroupMemberObservationDisposition
+  | GroupMemberObservationTransferred
+  | GroupMemberObservationHold;
+
+const groupMemberObservationOwnershipBrand: unique symbol = Symbol('coral.group-member-observation-ownership');
+
+export type GroupMemberObservationOwnership = Readonly<{
+  accept(hold: GroupMemberObservationHold): GroupMemberObservationOwnershipAcceptance;
+  owns(hold: GroupMemberObservationHold): boolean;
+  [groupMemberObservationOwnershipBrand]: true;
+}>;
+
+/** A handoff succeeds only after this owner retains the exact unsettled observation. */
+export function createGroupMemberObservationOwnership(): GroupMemberObservationOwnership {
+  const held = new Set<GroupMemberObservationHold>();
+  return {
+    accept: (hold) => {
+      held.add(hold);
+      void hold.settled.then(() => held.delete(hold));
+      if (!held.has(hold)) throw new Error('Group-member observation ownership handoff was not accepted.');
+      return {
+        kind: 'accepted',
+        successor: { owner: 'group-member-observation-retention', acceptance: 'accepted' },
+      };
+    },
+    owns: (hold) => held.has(hold),
+    [groupMemberObservationOwnershipBrand]: true,
+  };
+}
+
 function parseLaunchPayload(payloadPath: string): LaunchPayload {
   let raw: string;
   try {
@@ -57,35 +132,90 @@ function parseLaunchPayload(payloadPath: string): LaunchPayload {
 export function groupMembers(
   processGroupId: number,
   time: ReturnType<typeof createRealTimePort>,
-): Promise<readonly number[] | null> {
+  ownership: GroupMemberObservationOwnership,
+): Promise<GroupMemberObservationDisposition> {
   return new Promise((resolve) => {
     const observed = spawn('ps', ['-axo', 'pid=,pgid='], { stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
-    let settled = false;
-    const closed = new Promise<void>((resolve) => {
-      observed.once('close', () => resolve());
+    let initialDispositionReturned = false;
+    let settledDisposition: SettledGroupMemberObservationDisposition | null = null;
+    let transferredDisposition: GroupMemberObservationTransferred | null = null;
+    let resolveSettled: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+      observed.once('close', resolve);
     });
-    const finish = (members: readonly number[] | null): void => {
-      if (settled) return;
-      settled = true;
+    const subject: GroupMemberObservationSubject = { kind: 'process', pid: observed.pid ?? null };
+    const returnInitialDisposition = (disposition: GroupMemberObservationDisposition): void => {
+      if (initialDispositionReturned) return;
+      initialDispositionReturned = true;
       time.clearTimeout(timeout);
-      resolve(members);
+      resolve(disposition);
+    };
+    const settle = (disposition: SettledGroupMemberObservationDisposition): void => {
+      if (settledDisposition !== null) return;
+      settledDisposition = disposition;
+      resolveSettled();
+      returnInitialDisposition(disposition);
+    };
+    const retry = async (): Promise<GroupMemberObservationDisposition> => {
+      if (transferredDisposition !== null) return transferredDisposition;
+      if (settledDisposition !== null) return settledDisposition;
+      const held = (observation: 'alive' | 'unobservable'): GroupMemberObservationHold => {
+        if (observation === 'alive') {
+          return {
+            kind: 'held-alive',
+            subject,
+            observation,
+            settled: settled,
+            exit: 'observer-settlement-or-accepted-handoff',
+            handoff() {
+              const acceptance = ownership.accept(this);
+              transferredDisposition = { kind: 'transferred', subject, successor: acceptance.successor };
+              return transferredDisposition;
+            },
+            retry,
+          };
+        }
+        return {
+          kind: 'held-unobservable',
+          subject,
+          observation,
+          settled: settled,
+          exit: 'observer-settlement-or-accepted-handoff',
+          handoff() {
+            const acceptance = ownership.accept(this);
+            transferredDisposition = { kind: 'transferred', subject, successor: acceptance.successor };
+            return transferredDisposition;
+          },
+          retry,
+        };
+      };
+      if (observed.pid === undefined) {
+        return held('unobservable');
+      }
+      gracefulKill(observed as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+      try {
+        const observation = observeProcessLiveness(observed.pid);
+        if (observation === 'absent') {
+          const disposition = {
+            kind: 'unobservable',
+            observation: 'unobservable',
+            exit: 'retry-group-observation',
+          } as const;
+          settle(disposition);
+          return disposition;
+        }
+        if (observation === 'alive') {
+          return held(observation);
+        }
+      } catch {
+        // Unknown cannot discharge the observer process obligation.
+      }
+      return held('unobservable');
     };
     const timeout = time.setTimeout(() => {
-      void (async () => {
-        if (observed.pid !== undefined) {
-          try {
-            if (observeProcessLiveness(observed.pid) === 'absent') {
-              finish(null);
-              return;
-            }
-          } catch {
-            // An unobservable process cannot discharge the observation boundary's ownership.
-          }
-        }
-        gracefulKill(observed as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-        await closed;
-      })();
+      void retry().then(returnInitialDisposition);
     }, GROUP_OBSERVATION_TIMEOUT_MS);
     observed.stdout?.setEncoding('utf8');
     observed.stdout?.on('data', (chunk: string | Buffer) => {
@@ -94,7 +224,7 @@ export function groupMembers(
     observed.once('error', () => undefined);
     observed.once('close', (code) => {
       if (code !== 0 || output.length > 1024 * 1024) {
-        finish(null);
+        settle({ kind: 'unobservable', observation: 'unobservable', exit: 'retry-group-observation' });
         return;
       }
       const members: number[] = [];
@@ -104,7 +234,7 @@ export function groupMembers(
         const pid = Number(match[1]);
         if (Number(match[2]) === processGroupId && pid !== observed.pid) members.push(pid);
       }
-      finish(members);
+      settle({ kind: 'observed', members });
     });
   });
 }
@@ -189,6 +319,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const stdoutFd = openSync(stdoutPath, 'w', 0o600);
   const stderrFd = openSync(stderrPath, 'w', 0o600);
   const time = createRealTimePort();
+  const groupMemberObservationOwnership = createGroupMemberObservationOwnership();
 
   let child: ReturnType<typeof spawn> | null = null;
   let terminationRequested = false;
@@ -198,6 +329,10 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   let pendingExit: PendingExit | null = null;
   let groupPoll: NodeJS.Timeout | null = null;
   let groupObservationInFlight = false;
+  let groupMemberObservationHold: Extract<
+    GroupMemberObservationDisposition,
+    { kind: 'held-alive' | 'held-unobservable' }
+  > | null = null;
   let groupFinalizer: ReturnType<typeof spawn> | null = null;
   let groupFinalizerReady = false;
   let groupFinalizerSettled = true;
@@ -247,9 +382,18 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     writeControlExit(exit);
   };
 
-  const containedChildrenAreAbsent = async (): Promise<boolean> => {
-    const members = await groupMembers(process.pid, time);
-    return members !== null && members.every((pid) => pid === process.pid);
+  const observeContainedChildren = async (): Promise<GroupMemberObservationDisposition> => {
+    const disposition =
+      groupMemberObservationHold === null
+        ? await groupMembers(process.pid, time, groupMemberObservationOwnership)
+        : await groupMemberObservationHold.retry();
+    groupMemberObservationHold =
+      disposition.kind === 'held-alive' || disposition.kind === 'held-unobservable' ? disposition : null;
+    return disposition;
+  };
+
+  const observationProvesContainedChildrenAbsent = (observation: GroupMemberObservationDisposition): boolean => {
+    return observation.kind === 'observed' && observation.members.every((pid) => pid === process.pid);
   };
 
   function exerciseRetainedGroupTermination(exit: PendingExit): void {
@@ -336,16 +480,16 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     if (groupObservationInFlight || exitWritten) return;
     groupObservationInFlight = true;
     try {
-      if (await containedChildrenAreAbsent()) writeExit(exit);
+      if (observationProvesContainedChildrenAbsent(await observeContainedChildren())) writeExit(exit);
     } finally {
       groupObservationInFlight = false;
     }
   };
 
-  const settleContainedGroup = async (exit: PendingExit): Promise<void> => {
+  const beginContainedGroupSettlement = async (exit: PendingExit): Promise<void> => {
     if (pendingExit !== null) return;
     pendingExit = exit;
-    if (await containedChildrenAreAbsent()) {
+    if (observationProvesContainedChildrenAbsent(await observeContainedChildren())) {
       writeExit(exit);
       return;
     }
@@ -415,7 +559,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const settleChildCompletion = (exit: PendingExit): void => {
     if (childCompletionSettled) return;
     childCompletionSettled = true;
-    void settleContainedGroup(exit);
+    void beginContainedGroupSettlement(exit);
   };
   child.once('close', (code, signal) => {
     settleChildCompletion({ code, signal, wrapperExitCode: 0 });

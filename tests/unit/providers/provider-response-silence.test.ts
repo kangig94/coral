@@ -12,11 +12,17 @@ import type {
 } from '#src/providers/host-diagnostics.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
+const acceptCleanupHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => ({
+  kind: 'accepted',
+  owner: 'provider-proxy-root-pool',
+  settlement: hold.settled,
+});
+
 describe('provider response silence', () => {
   const handles: ProviderServerHandle[] = [];
 
   afterEach(async () => {
-    await Promise.all(handles.splice(0).map((handle) => handle.close()));
+    await Promise.all(handles.splice(0).map((handle) => handle.close(acceptCleanupHold)));
   });
 
   it('publishes no observation or classifier finding while a request remains unsettled', async () => {
@@ -30,7 +36,7 @@ describe('provider response silence', () => {
     expect(recorder.findings).toHaveLength(0);
     expect(handle.inspectDiagnostics().completedObservations).toHaveLength(0);
 
-    await handle.close();
+    await handle.close(acceptCleanupHold);
     expect(await requestOutcome).toBeInstanceOf(ProviderHostFault);
   });
 
@@ -61,7 +67,13 @@ describe('provider response silence', () => {
       },
       generation: 17,
       observeProviderResponse,
+      acceptFailedSpawnCleanup: (hold) => ({
+        kind: 'accepted',
+        owner: 'provider-proxy-root-pool',
+        settlement: hold.settled,
+      }),
     });
+    if ('kind' in handle) throw handle.error;
     handles.push(handle);
     return handle;
   }

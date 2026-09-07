@@ -525,7 +525,6 @@ function createHarness(
       adoptionWindowMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
-        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
       },
     },
     faulted: new Promise<never>(() => {}),

@@ -148,7 +148,7 @@ describe('provider host drain properties', () => {
       await closeProviderServerEntry(entry, 'drained', {
         runtime,
         entries,
-        shutdownHandle: async () => {},
+        shutdownHandle: async () => ({ kind: 'observed-absent' }),
         reapContainment: async () => {},
       });
 
@@ -206,6 +206,49 @@ describe('provider host drain properties', () => {
     await shutdownHandle(server.handle, createSharedSpec(), containment, runtime.time, reaper);
 
     expect(signals).toEqual([[-containment.processGroupId, 'SIGTERM']]);
+    expect(server.finishCloseAfterReapMock).toHaveBeenCalledOnce();
+  });
+
+  it('retains a broker shutdown hold until its retry reports child cleanup absent', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        disposition: 'held-unobservable',
+        observation: 'unobservable',
+        subjects: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
+        successor: { kind: 'accepted', owner: 'broker-session-pool' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      })
+      .mockResolvedValueOnce({ ok: true, disposition: 'observed-absent' });
+    const server = createFakeProviderServerHandle({ containmentIdentity: containment, request });
+    const reaper = vi.fn(async () => undefined);
+    const spec = createSharedSpec({
+      shutdownCapability: {
+        method: 'broker/shutdown',
+        timeoutMs: 1_000,
+        resultDisposition: {
+          kind: 'provider-server-shutdown-v1',
+          successorOwner: 'broker-session-pool',
+          operatorExit: 'retry-broker-shutdown',
+        },
+      },
+    });
+
+    const held = await shutdownHandle(server.handle, spec, containment, runtime.time, reaper);
+    expect(held).toMatchObject({
+      kind: 'provider-shutdown-held-unobservable',
+      obligations: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
+      successor: { kind: 'accepted', owner: 'broker-session-pool' },
+      operatorExit: { kind: 'retry-broker-shutdown', retry: expect.any(Function) },
+    });
+    expect(reaper).not.toHaveBeenCalled();
+    expect(server.finishCloseAfterReapMock).not.toHaveBeenCalled();
+    if (held.kind === 'observed-absent') throw new Error('Expected a retained broker shutdown hold.');
+
+    await expect(held.operatorExit.retry()).resolves.toEqual({ kind: 'observed-absent' });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(reaper).toHaveBeenCalledOnce();
     expect(server.finishCloseAfterReapMock).toHaveBeenCalledOnce();
   });
 

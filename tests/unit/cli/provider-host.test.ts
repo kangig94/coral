@@ -89,6 +89,7 @@ describe('provider-host CLI contracts', () => {
       const help = findCommand(program, 'backend', 'provider-host', operation).helpInformation();
       expect(help).toContain('live');
       expect(help).toContain('retained-blocked');
+      expect(help).toContain('shutdown-held');
       expect(help).toContain('reclamation-failed');
     }
   });

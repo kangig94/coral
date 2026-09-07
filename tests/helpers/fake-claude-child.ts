@@ -4,6 +4,7 @@ export class FakeClaudeChild implements ClaudeBrokerChild {
   readonly writes: string[] = [];
   readonly killSignals: Array<NodeJS.Signals | undefined> = [];
   exitOnKill = true;
+  exitOnProtocolShutdown = true;
   dataUnsubscribes = 0;
   exitUnsubscribes = 0;
   private readonly dataHandlers = new Set<(chunk: string) => void>();
@@ -21,7 +22,7 @@ export class FakeClaudeChild implements ClaudeBrokerChild {
 
   write(data: string): void {
     this.writes.push(data);
-    if (data === '/exit\r') {
+    if (data === '/exit\r' && this.exitOnProtocolShutdown) {
       this.emitExit({ code: 0, signal: null });
     }
   }

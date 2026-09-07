@@ -18,7 +18,7 @@ import type {
   Runtime,
 } from '../../runtime/ports.js';
 import { type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
-import { createMonotonicClock } from '../../infra/monotonic-clock.js';
+import { createMonotonicClock, createObservedDuration } from '../../infra/monotonic-clock.js';
 import {
   observeRecordedContainment,
   ProcessContainmentError,
@@ -38,7 +38,6 @@ import type {
 } from '../../providers/cli-runner.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
-const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
 const durableProcessCleanupClockScope = Symbol('durable-process-cleanup');
 declare const durableContainmentAbsenceBrand: unique symbol;
@@ -275,6 +274,7 @@ export async function spawnDurableJobTransport(params: {
   let abortedBySignal = false;
   let cleanupKey: symbol | null = null;
   let cleanupInFlight: Promise<DurableProcessCleanupOutcome> | null = null;
+  const unsettledCleanupAttempts = new Set<Promise<DurableProcessTerminationOutcome>>();
   let cleanupAbortController: AbortController | null = null;
   let cleanupGeneration = 0;
   let cleanupRetryInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
@@ -331,6 +331,8 @@ export async function spawnDurableJobTransport(params: {
     absence: DurableContainmentAbsenceCapability,
   ): CleanupOwnershipReleaseDisposition => {
     if (cleanupKey === null) return { kind: 'released' };
+    // Release is reached only with proven absence, so an attempt still settling cannot contradict it and a
+    // signal it may yet deliver has no process to reach. Abandonment is the opposite case and does refuse.
     if (absence.retention !== retainedProcess) {
       return { kind: 'retained', reason: 'durable containment identity changed after absence observation' };
     }
@@ -396,7 +398,7 @@ export async function spawnDurableJobTransport(params: {
     }
     // A refusal must not destroy the attempt it declines to join: this abandonment cannot await, so the
     // attempt keeps its own ownership until it settles and the operator repeats the abort.
-    if (cleanupInFlight !== null) {
+    if (unsettledCleanupAttempts.size > 0) {
       return {
         kind: 'retained',
         reason: 'the active durable containment cleanup attempt is still settling',
@@ -457,27 +459,36 @@ export async function spawnDurableJobTransport(params: {
     const generation = ++cleanupGeneration;
     const abortController = new AbortController();
     cleanupAbortController = abortController;
-    const cleanupPromise = resolveDurableProcessContainment(runtime, cleanupRetention, {
+    const cleanupAttempt = resolveDurableProcessContainment(runtime, cleanupRetention, {
       kind: 'terminate',
       signalAuthority,
       signal: abortController.signal,
-    }).then((outcome) => {
-      if (generation !== cleanupGeneration || cleanupRetention !== retainedProcess) {
-        return { kind: 'ownership-retained', pid, reason: 'durable containment cleanup was superseded' } as const;
-      }
-      if (outcome.kind === 'observed-absent') {
-        const release = releaseCleanupOwnership(outcome);
-        if (release.kind === 'retained') return { kind: 'ownership-retained', pid, reason: release.reason } as const;
-      } else {
-        const detail = terminationOutcomeDetail(outcome);
-        enterContainmentHold(detail);
-        if (detail !== lastUnsettledDetail) {
-          backendLog.warn(`[durable-process:${pid}] Termination remains unsettled (${detail}).`);
-          lastUnsettledDetail = detail;
-        }
-      }
-      return outcome;
     });
+    unsettledCleanupAttempts.add(cleanupAttempt);
+    const cleanupPromise = cleanupAttempt.then(
+      (outcome) => {
+        unsettledCleanupAttempts.delete(cleanupAttempt);
+        if (generation !== cleanupGeneration || cleanupRetention !== retainedProcess) {
+          return { kind: 'ownership-retained', pid, reason: 'durable containment cleanup was superseded' } as const;
+        }
+        if (outcome.kind === 'observed-absent') {
+          const release = releaseCleanupOwnership(outcome);
+          if (release.kind === 'retained') return { kind: 'ownership-retained', pid, reason: release.reason } as const;
+        } else {
+          const detail = terminationOutcomeDetail(outcome);
+          enterContainmentHold(detail);
+          if (detail !== lastUnsettledDetail) {
+            backendLog.warn(`[durable-process:${pid}] Termination remains unsettled (${detail}).`);
+            lastUnsettledDetail = detail;
+          }
+        }
+        return outcome;
+      },
+      (error: unknown) => {
+        unsettledCleanupAttempts.delete(cleanupAttempt);
+        throw error;
+      },
+    );
     cleanupInFlight = cleanupPromise;
     void cleanupPromise.then(
       () => {
@@ -618,6 +629,9 @@ export async function spawnDurableJobTransport(params: {
       cleanupRetentions.set(cleanup, retainedProcess);
       provisionalSubject = null;
       if (cleanupNeedsRetargeting) {
+        // Clearing this slot retargets the next attempt; it does not forget the superseded one. Ownership
+        // reads `unsettledCleanupAttempts`, which the superseded attempt leaves only when it settles, so an
+        // abandonment still cannot release an identity a live attempt is signalling.
         cleanupAbortController?.abort();
         cleanupInFlight = null;
         void cleanup().catch((error: unknown) => {
@@ -656,15 +670,7 @@ export async function spawnDurableJobTransport(params: {
           return;
         }
         enterContainmentHold('termination requested; process absence is not yet proven');
-        void cleanup().then(
-          () => undefined,
-          (error: unknown) => {
-            backendLog.warn(
-              `[durable-process:${publishedPid ?? 'unknown'}] Termination failed: ${errorMessage(error)}`,
-            );
-            enterContainmentHold(errorMessage(error));
-          },
-        );
+        operatorControl.retry();
       };
 
       if (options.signal.aborted) abortHandler();
@@ -716,8 +722,7 @@ export async function spawnDurableJobTransport(params: {
       exitRecord: null,
       exitError: null,
     };
-    let lastOutputAt = runtime.time.now();
-    let lastTickAt = runtime.time.now();
+    const observedIdle = createObservedDuration(runtime.time.monotonicNow(), DURABLE_RUNTIME_POLL_INTERVAL_MS);
 
     void runtime.process.durable
       .waitForExit(durable)
@@ -735,7 +740,7 @@ export async function spawnDurableJobTransport(params: {
       }
 
       tailOffset = newOffset;
-      lastOutputAt = runtime.time.now();
+      observedIdle.reset(runtime.time.monotonicNow());
       runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
       options.onRuntimeRecord?.(runtimeRecord);
 
@@ -785,19 +790,15 @@ export async function spawnDurableJobTransport(params: {
           : new Error(errorMessage(durableState.exitError));
       }
 
-      const now = runtime.time.now();
-      const tickGap = now - lastTickAt;
-      lastTickAt = now;
-      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
-        lastOutputAt = now;
-      } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
+      observedIdle.advance(runtime.time.monotonicNow());
+      if (observedIdle.elapsedMs() >= IDLE_TIMEOUT) {
         const disposition = await cleanup();
         if (disposition.kind === 'observed-absent') {
           throw new Error(
             `Durable process ${durable.pid} terminated after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
           );
         }
-        lastOutputAt = runtime.time.now();
+        observedIdle.reset(runtime.time.monotonicNow());
       }
 
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);

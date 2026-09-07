@@ -1,17 +1,37 @@
 import { createHash } from 'node:crypto';
 
 import type { HostRef, ProviderServerSpec } from '../../../providers/contract.js';
+import type { JsonValue } from '../../../infra/json-value.js';
 import type { TimePort } from '../../../infra/port-types.js';
 import type {
   ContainedProviderServerHandle,
-  HeldProviderServerSpawn,
+  ProviderServerFailedSpawnCleanupTerminalDisposition,
+  ProviderServerFailedSpawnCleanupHold,
 } from '../../../providers/app-server-transport.js';
 import type { RecordedContainmentIdentity } from '../../../infra/process-containment.js';
 
 export type HostStatsState = {
   liveControllers: number;
   activeTurns: number;
+  heldControllers?: number;
 };
+
+export type ProviderHostShutdownObservedAbsent = Readonly<{ kind: 'observed-absent' }>;
+
+export type ProviderHostShutdownHold = Readonly<{
+  kind: 'provider-shutdown-held-alive' | 'provider-shutdown-held-unobservable';
+  observation: 'alive' | 'unobservable';
+  subject: Readonly<{ kind: 'provider-server'; pid: number }>;
+  obligations: readonly JsonValue[];
+  successor: Readonly<{ kind: 'accepted'; owner: string }> | null;
+  retry(): Promise<ProviderHostShutdownDisposition>;
+  operatorExit: Readonly<{
+    kind: string;
+    retry(): Promise<ProviderHostShutdownDisposition>;
+  }>;
+}>;
+
+export type ProviderHostShutdownDisposition = ProviderHostShutdownObservedAbsent | ProviderHostShutdownHold;
 
 /** Opaque identity for one live provider-host pin. */
 export type PinToken = symbol;
@@ -35,12 +55,13 @@ export type ProviderHostEntry = {
   /** Opaque identity minted for the currently installed concrete process. */
   instanceId: string | null;
   spawnPromise: Promise<ContainedProviderServerHandle> | null;
-  spawnCleanupHold: HeldProviderServerSpawn | null;
+  spawnCleanupHold: ProviderServerFailedSpawnCleanupHold | null;
+  spawnCleanupDisposition: ProviderServerFailedSpawnCleanupTerminalDisposition | null;
   spawnCleanupAttempts: number;
   /** Open and attached sessions pin the concrete process until idempotent close. */
   pins: Map<PinToken, ProviderHostPin>;
   closingError: Error | null;
-  closePromise: Promise<void> | null;
+  closePromise: Promise<ProviderHostShutdownDisposition> | null;
   hostStats: HostStatsState | null;
   /** Either the idle-retirement deadline or the recurring outstanding-pin diagnostic deadline. */
   idleTimer: ReturnType<TimePort['setTimeout']> | null;

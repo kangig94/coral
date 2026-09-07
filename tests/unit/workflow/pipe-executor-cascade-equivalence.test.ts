@@ -28,10 +28,15 @@ const ctx: InvocationContext = {
 // wall-clock dependence.
 function makeMonotonicTime() {
   let clock = new Date('2026-04-27T00:00:00.000Z').getTime();
+  let monotonicClock = 0n;
   return {
     now: () => {
       clock += 100;
       return clock;
+    },
+    monotonicNow: () => {
+      monotonicClock += 100n;
+      return monotonicClock;
     },
   };
 }

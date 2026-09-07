@@ -1,8 +1,16 @@
 import { backendLog } from '../infra/backend-log.js';
+import type { JsonValue } from '../infra/json-value.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
+  isAcceptedProviderServerOperatorAbandonment,
   spawnProviderServerTransport,
+  type HeldProviderServerSpawn,
+  type ProviderServerFailedSpawnCleanupAcceptance,
+  type ProviderServerFailedSpawnCleanupDisposition,
+  type ProviderServerFailedSpawnCleanupHold,
+  type ProviderServerCleanupHold,
+  type ProviderServerCloseDisposition,
   type ProviderServerHandle,
   type SpawnProviderServerOptions,
 } from '../providers/app-server-transport.js';
@@ -16,7 +24,13 @@ import {
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
 } from '../providers/host-admission.js';
-import type { AppServerTransport, HostRef, ProviderServerSpec } from '../providers/contract.js';
+import {
+  providerServerShutdownResultSchema,
+  type AppServerTransport,
+  type HostRef,
+  type ProviderServerShutdownResult,
+  type ProviderServerSpec,
+} from '../providers/contract.js';
 import type { AppServerHostAuthority, ManagedHostSession } from '../providers/internal/app-server-host.js';
 import type { ProviderOperationKey } from './ledger.js';
 import type { ProviderHostInventoryRecordWire, ProxyPrepareCapacityCode } from './protocol.js';
@@ -95,25 +109,110 @@ function transportFor(handle: ProviderServerHandle): AppServerTransport {
   };
 }
 
-/** Best-effort graceful shutdown through the spec's own `shutdownCapability` RPC, if any, then the shared
- *  transport's own SIGTERM/SIGKILL escalation regardless of how the graceful attempt went. `handle.close()` is
- *  idempotent (`entry.closed` is checked before signalling), so running it after an already-graceful exit
- *  costs nothing but one no-op signal to a process that is already gone. */
+function isHeldProviderServerSpawn(
+  disposition: ProviderServerHandle | HeldProviderServerSpawn,
+): disposition is HeldProviderServerSpawn {
+  return 'kind' in disposition && (disposition.kind === 'held-alive' || disposition.kind === 'held-unobservable');
+}
+
 async function closeSpawnedHandle(
   handle: ProviderServerHandle,
   spec: ProviderServerSpec,
   runtime: Runtime,
-): Promise<void> {
+  acceptCleanupHold: (hold: ProviderServerCleanupHold) => ProviderServerFailedSpawnCleanupAcceptance,
+): Promise<ProviderServerCloseDisposition | ProviderServerShutdownHoldWithoutRetry> {
   const capability = spec.shutdownCapability;
   if (capability !== undefined) {
     handle.markExpectedClose();
+    const resultDisposition = capability.resultDisposition;
+    if (resultDisposition?.kind === 'provider-server-shutdown-v1') {
+      let result: ProviderServerShutdownResult | null = null;
+      try {
+        const response = await Promise.race([
+          handle.rpc.request(capability.method, {}).then((value) => ({ kind: 'response' as const, value })),
+          runtime.time.sleep(capability.timeoutMs).then(() => ({ kind: 'timeout' as const })),
+        ]);
+        if (response.kind === 'response') result = providerServerShutdownResultSchema.parse(response.value);
+      } catch {
+        result = null;
+      }
+      if (result === null) {
+        return {
+          kind: 'provider-shutdown-held-unobservable',
+          observation: 'unobservable',
+          subject: { kind: 'provider-server', pid: handle.pid },
+          obligations: [],
+          successor: null,
+          operatorExit: { kind: 'retry-provider-shutdown' },
+        };
+      }
+      if (
+        result.disposition !== 'observed-absent' &&
+        (result.successor.owner !== resultDisposition.successorOwner ||
+          result.operatorExit.kind !== resultDisposition.operatorExit)
+      ) {
+        result = null;
+      }
+      if (result === null) {
+        return {
+          kind: 'provider-shutdown-held-unobservable',
+          observation: 'unobservable',
+          subject: { kind: 'provider-server', pid: handle.pid },
+          obligations: [],
+          successor: null,
+          operatorExit: { kind: 'retry-provider-shutdown' },
+        };
+      }
+      if (result.disposition !== 'observed-absent') {
+        return {
+          kind:
+            result.disposition === 'held-alive'
+              ? 'provider-shutdown-held-alive'
+              : 'provider-shutdown-held-unobservable',
+          observation: result.observation,
+          subject: { kind: 'provider-server', pid: handle.pid },
+          obligations: result.subjects,
+          successor: result.successor,
+          operatorExit: result.operatorExit,
+        };
+      }
+      return handle.close(acceptCleanupHold);
+    }
     try {
       await Promise.race([handle.rpc.request(capability.method, {}), runtime.time.sleep(capability.timeoutMs)]);
     } catch {
       /* best effort; the escalation below still runs */
     }
   }
-  await handle.close();
+  return handle.close(acceptCleanupHold);
+}
+
+type ProviderServerShutdownHoldWithoutRetry = Readonly<{
+  kind: 'provider-shutdown-held-alive' | 'provider-shutdown-held-unobservable';
+  observation: 'alive' | 'unobservable';
+  subject: Readonly<{ kind: 'provider-server'; pid: number }>;
+  obligations: readonly JsonValue[];
+  successor: Readonly<{ kind: 'accepted'; owner: string }> | null;
+  operatorExit: Readonly<{ kind: string }>;
+}>;
+
+export type ProviderServerShutdownHold = Omit<ProviderServerShutdownHoldWithoutRetry, 'operatorExit'> &
+  Readonly<{
+    retry(): Promise<ProxyProviderRootCloseDisposition>;
+    operatorExit: Readonly<{
+      kind: string;
+      retry(): Promise<ProxyProviderRootCloseDisposition>;
+    }>;
+  }>;
+
+export type ProxyProviderRootCloseDisposition = ProviderServerCloseDisposition | ProviderServerShutdownHold;
+
+function isProviderServerShutdownHold(
+  disposition: ProviderServerCloseDisposition | ProviderServerShutdownHoldWithoutRetry,
+): disposition is ProviderServerShutdownHoldWithoutRetry {
+  return (
+    disposition.kind === 'provider-shutdown-held-alive' || disposition.kind === 'provider-shutdown-held-unobservable'
+  );
 }
 
 /** Recursively re-keys every plain object in `value` (at every nesting depth) into ascending key order,
@@ -188,7 +287,9 @@ type HostPoolEntry = {
   readonly cancellationMode: ProxyHostCancellationMode;
   refCount: number;
   rootTokenReleased: boolean;
-  closePromise: Promise<void> | null;
+  closePromise: Promise<ProxyProviderRootCloseDisposition> | null;
+  cleanupHold: ProviderServerFailedSpawnCleanupHold | null;
+  cleanupAttempts: number;
 };
 
 function hostKeyFor(
@@ -247,7 +348,7 @@ export interface ProxyAppServerHostAuthority {
    *  when the reference no longer names a live entry this authority holds. */
   rootIdentity(hostRef: HostRef): Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
   closed(hostRef: HostRef): Promise<Error | void> | null;
-  forceClose(hostRef: HostRef): Promise<void>;
+  forceClose(hostRef: HostRef): Promise<ProxyProviderRootCloseDisposition | undefined>;
   evictHost(hostRef: HostRef): Promise<boolean>;
 }
 
@@ -280,12 +381,8 @@ type RootSpawnTransaction = {
   readonly instanceId: string;
   readonly reservedRef: HostRef;
   handle: ProviderServerHandle | null;
+  cleanupHold: ProviderServerFailedSpawnCleanupHold | null;
   liveRootCommitted: boolean;
-};
-
-type RootRetirement = {
-  entry: HostPoolEntry | null;
-  releasedBeforeEntry: boolean;
 };
 
 class ProxyProviderRootPool {
@@ -293,6 +390,7 @@ class ProxyProviderRootPool {
   private readonly admission: HostAdmissionCollection;
   private readonly entries = new Map<string, HostPoolEntry>();
   private readonly closingEntries = new Set<HostPoolEntry>();
+  private readonly failedSpawnCleanups = new Set<RootSpawnTransaction>();
   private nextGeneration = 0;
   private liveRoots = 0;
   private spawningRoots = 0;
@@ -346,9 +444,9 @@ class ProxyProviderRootPool {
     return null;
   }
 
-  async forceClose(hostRef: HostRef): Promise<void> {
+  async forceClose(hostRef: HostRef): Promise<ProxyProviderRootCloseDisposition | undefined> {
     const matched = this.takeForceCloseTarget(hostRef);
-    if (matched !== undefined) await this.close(matched);
+    return matched === undefined ? undefined : this.close(matched);
   }
 
   async spawn(request: RootSpawnRequest): Promise<HostPoolEntry> {
@@ -362,7 +460,9 @@ class ProxyProviderRootPool {
         options: spawnOptionsFor(spec, options?.signal),
         generation: transaction.generation,
         observeProviderResponse: (fact) => admission.observe(placement.slot, reservedRef, fact),
+        acceptFailedSpawnCleanup: (hold) => this.acceptFailedSpawnCleanup(transaction, hold),
       });
+      if (isHeldProviderServerSpawn(handle)) throw handle.error;
       transaction.handle = handle;
       return this.commitSpawnedRoot(transaction, handle);
     } catch (error: unknown) {
@@ -371,16 +471,46 @@ class ProxyProviderRootPool {
     }
   }
 
-  close(entry: HostPoolEntry): Promise<void> {
+  close(entry: HostPoolEntry): Promise<ProxyProviderRootCloseDisposition> {
     if (entry.closePromise !== null) return entry.closePromise;
     this.closingEntries.add(entry);
-    const closePromise = closeSpawnedHandle(entry.handle, entry.spec, this.runtime).then(() =>
-      this.releaseLiveRoot(entry),
-    );
+    const retryHold = entry.cleanupHold;
+    const closePromise = (
+      retryHold === null
+        ? closeSpawnedHandle(entry.handle, entry.spec, this.runtime, (hold) => this.acceptCloseCleanup(entry, hold))
+        : retryHold.retry().then((cleanup): ProviderServerCloseDisposition => {
+            if (cleanup.kind !== 'held-alive' && cleanup.kind !== 'held-unobservable') return cleanup;
+            const successor = this.acceptCloseCleanup(entry, cleanup);
+            return { ...cleanup, successor };
+          })
+    ).then((disposition): ProxyProviderRootCloseDisposition => {
+      if (isProviderServerShutdownHold(disposition)) {
+        const retry = (): Promise<ProxyProviderRootCloseDisposition> => this.close(entry);
+        return { ...disposition, retry, operatorExit: { ...disposition.operatorExit, retry } };
+      }
+      if (disposition.kind === 'held-alive' || disposition.kind === 'held-unobservable') {
+        return disposition;
+      }
+      if (
+        disposition.kind === 'operator-abandoned' &&
+        (retryHold === null || !isAcceptedProviderServerOperatorAbandonment(retryHold, disposition))
+      ) {
+        throw new Error('provider_host_operator_transfer_invalid: cleanup ownership transfer did not match the hold');
+      }
+      entry.cleanupHold = null;
+      if (!entry.rootTokenReleased) {
+        this.releaseLiveRoot(entry);
+        this.closingEntries.delete(entry);
+        const hostRef = hostRefFor(entry, this.runtime);
+        if (disposition.kind === 'observed-absent') this.admission.observeRetired(hostRef, 'closed');
+        else this.admission.abandon(hostRef);
+      }
+      return disposition;
+    });
     entry.closePromise = closePromise;
     void closePromise.then(
       () => {
-        if (entry.closePromise === closePromise) this.closingEntries.delete(entry);
+        if (entry.closePromise === closePromise) entry.closePromise = null;
       },
       () => {
         if (entry.closePromise === closePromise) entry.closePromise = null;
@@ -415,6 +545,7 @@ class ProxyProviderRootPool {
       instanceId,
       reservedRef: hostRefForIdentity(spec, instanceId, options?.jobId, this.runtime),
       handle: null,
+      cleanupHold: null,
       liveRootCommitted: false,
     };
     placement.reservation.reserveCandidate({
@@ -443,7 +574,6 @@ class ProxyProviderRootPool {
     this.generationRootSlotsSpent += 1;
     transaction.liveRootCommitted = true;
 
-    const retirement = this.installRetirement(transaction, handle);
     const incarnation = this.runtime.process.readProcessIncarnation(
       handle.pid,
       this.runtime.env.platform() as NodeJS.Platform,
@@ -461,40 +591,50 @@ class ProxyProviderRootPool {
       jobId: options?.jobId,
       cancellationMode,
       refCount: 0,
-      rootTokenReleased: retirement.releasedBeforeEntry,
+      rootTokenReleased: false,
       closePromise: null,
+      cleanupHold: null,
+      cleanupAttempts: 0,
     };
-    retirement.entry = entry;
+    this.installRetirement(entry, handle);
     this.entries.set(hostKey, entry);
     placement.reservation.markLive(reservedRef, generation);
     return entry;
   }
 
-  private installRetirement(transaction: RootSpawnTransaction, handle: ProviderServerHandle): RootRetirement {
-    const retirement: RootRetirement = { entry: null, releasedBeforeEntry: false };
+  private installRetirement(entry: HostPoolEntry, handle: ProviderServerHandle): void {
     const retire = (): void => {
-      if (retirement.entry !== null) this.remove(retirement.entry);
-      transaction.request.placement.reservation.observeRetired(transaction.reservedRef, 'closed');
-      if (retirement.entry !== null) {
-        this.releaseLiveRoot(retirement.entry);
-      } else if (!retirement.releasedBeforeEntry) {
-        retirement.releasedBeforeEntry = true;
-        this.liveRoots -= 1;
-      }
+      this.remove(entry);
+      if (entry.rootTokenReleased) return;
+      entry.cleanupHold = null;
+      this.releaseLiveRoot(entry);
+      this.closingEntries.delete(entry);
+      this.admission.observeRetired(hostRefFor(entry, this.runtime), 'closed');
     };
-    void handle.closePromise.then(retire, retire);
-    return retirement;
+    handle.child.on('close', retire);
   }
 
   private async compensateFailedSpawn(transaction: RootSpawnTransaction): Promise<void> {
     const { placement } = transaction.request;
+    if (transaction.cleanupHold !== null) return;
     if (!transaction.liveRootCommitted) {
       this.spawningRoots -= 1;
       placement.reservation.observeRetired(transaction.reservedRef, 'closed');
     } else if (transaction.handle !== null) {
       try {
-        await transaction.handle.close();
-        placement.reservation.observeRetired(transaction.reservedRef, 'closed');
+        const cleanup = await transaction.handle.close((hold) =>
+          this.acceptFailedSpawnCleanup(transaction, {
+            ...hold,
+            error: new Error(`Provider server ${transaction.request.spec.provider} failed-spawn cleanup held.`),
+          }),
+        );
+        if (cleanup.kind === 'observed-absent' || cleanup.kind === 'operator-abandoned') {
+          if (cleanup.kind === 'observed-absent')
+            placement.reservation.observeRetired(transaction.reservedRef, 'closed');
+          else this.admission.abandon(transaction.reservedRef);
+          this.liveRoots -= 1;
+          transaction.liveRootCommitted = false;
+        }
       } catch {
         // A failed close retains the live-root token because process absence was not confirmed.
       }
@@ -505,6 +645,113 @@ class ProxyProviderRootPool {
     if (entry.rootTokenReleased) return;
     entry.rootTokenReleased = true;
     this.liveRoots -= 1;
+  }
+
+  private acceptFailedSpawnCleanup(
+    transaction: RootSpawnTransaction,
+    hold: ProviderServerFailedSpawnCleanupHold,
+  ): ProviderServerFailedSpawnCleanupAcceptance {
+    transaction.cleanupHold = hold;
+    this.failedSpawnCleanups.add(transaction);
+    const settlement = this.settleAcceptedFailedSpawnCleanup(transaction, hold).then(() => undefined);
+    return { kind: 'accepted', owner: 'provider-proxy-root-pool', settlement };
+  }
+
+  private async settleAcceptedFailedSpawnCleanup(
+    transaction: RootSpawnTransaction,
+    initialHold: ProviderServerFailedSpawnCleanupHold,
+  ): Promise<ProviderServerFailedSpawnCleanupDisposition> {
+    let hold = initialHold;
+    while (true) {
+      await hold.settled;
+      if (transaction.cleanupHold?.operatorExit !== hold.operatorExit) {
+        return transaction.cleanupHold ?? hold;
+      }
+      let disposition: ProviderServerFailedSpawnCleanupDisposition;
+      try {
+        disposition = await hold.retry();
+      } catch {
+        await this.runtime.time.sleep(1_000);
+        continue;
+      }
+      if (transaction.cleanupHold?.operatorExit !== hold.operatorExit) {
+        return transaction.cleanupHold ?? hold;
+      }
+      if (disposition.kind === 'observed-absent') {
+        this.releaseFailedSpawnCleanup(transaction, 'observed-absent');
+        return disposition;
+      }
+      if (disposition.kind === 'operator-abandoned') {
+        if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) {
+          await this.runtime.time.sleep(1_000);
+          continue;
+        }
+        this.releaseFailedSpawnCleanup(transaction, 'operator-abandoned');
+        return disposition;
+      }
+      hold = { ...disposition, error: hold.error };
+      transaction.cleanupHold = hold;
+      await this.runtime.time.sleep(1_000);
+    }
+  }
+
+  private acceptCloseCleanup(
+    entry: HostPoolEntry,
+    hold: ProviderServerCleanupHold,
+  ): ProviderServerFailedSpawnCleanupAcceptance {
+    entry.cleanupAttempts += 1;
+    entry.cleanupHold = {
+      ...hold,
+      error: new Error(`Provider server ${entry.spec.provider} close held.`),
+    };
+    return { kind: 'accepted', owner: 'provider-proxy-root-pool', settlement: hold.settled };
+  }
+
+  failedSpawnCleanup(hostRef: HostRef): RootSpawnTransaction | undefined {
+    return [...this.failedSpawnCleanups].find((transaction) => this.matchesTransaction(hostRef, transaction));
+  }
+
+  async abandonFailedSpawnCleanup(transaction: RootSpawnTransaction): Promise<boolean> {
+    const hold = transaction.cleanupHold;
+    if (hold === null) return false;
+    const disposition = await hold.operatorExit.abandon();
+    if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) return false;
+    this.releaseFailedSpawnCleanup(transaction, 'operator-abandoned');
+    return true;
+  }
+
+  async abandonClose(entry: HostPoolEntry): Promise<boolean> {
+    const hold = entry.cleanupHold;
+    if (hold === null) return false;
+    const disposition = await hold.operatorExit.abandon();
+    if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) return false;
+    entry.cleanupHold = null;
+    this.releaseLiveRoot(entry);
+    this.closingEntries.delete(entry);
+    return true;
+  }
+
+  private releaseFailedSpawnCleanup(
+    transaction: RootSpawnTransaction,
+    disposition: 'observed-absent' | 'operator-abandoned',
+  ): void {
+    if (!this.failedSpawnCleanups.delete(transaction)) return;
+    transaction.cleanupHold = null;
+    if (transaction.liveRootCommitted) {
+      this.liveRoots -= 1;
+      transaction.liveRootCommitted = false;
+    } else {
+      this.spawningRoots -= 1;
+    }
+    if (disposition === 'observed-absent') {
+      transaction.request.placement.reservation.observeRetired(transaction.reservedRef, 'closed');
+    } else {
+      this.admission.abandon(transaction.reservedRef);
+    }
+  }
+
+  private matchesTransaction(hostRef: HostRef, transaction: RootSpawnTransaction): boolean {
+    return exactHostRefsMatch(hostRef, transaction.reservedRef);
   }
 
   private takeForceCloseTarget(hostRef: HostRef): HostPoolEntry | undefined {
@@ -611,7 +858,7 @@ class ProxyProviderHostSessions {
         if (released) return;
         released = true;
         entry.refCount -= 1;
-        if (entry.refCount > 0) return;
+        if (entry.refCount > 0 || entry.rootTokenReleased) return;
         this.pool.remove(entry);
         void this.pool.close(entry).catch((error: unknown) => {
           backendLog.error(
@@ -638,12 +885,63 @@ class ProxyProviderHostAdministration {
     const processEntries = this.pool.allEntries();
     const records: ProxyProviderHostInventoryRecord[] = [];
     for (const admissionEntry of snapshot.state.values()) {
-      if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
+      if (admissionEntry.phase === 'spawning') {
+        const transaction = this.pool.failedSpawnCleanup(admissionEntry.ref);
+        const hold = transaction?.cleanupHold;
+        if (transaction === undefined || hold === null || hold === undefined) continue;
+        const process = hold.subject.kind === 'process' && hold.subject.pid !== null ? { pid: hold.subject.pid } : {};
+        records.push(
+          Object.freeze({
+            ref: admissionEntry.ref,
+            status: 'reclamation-failed',
+            spec: canonicalProviderHostSpecMetadata(transaction.request.spec),
+            host: Object.freeze({
+              owner: 'provider-proxy',
+              hostKey: transaction.request.hostKey,
+              ownerJobId: transaction.request.options?.jobId ?? null,
+              ...process,
+              reclamationAttempts: 1,
+              reclamationFailure: hold.error.message,
+              reclamationRetryable: true,
+            }),
+            diagnostics: emptyDiagnostics(),
+            diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+          }),
+        );
+        continue;
+      }
+      if (admissionEntry.phase === 'retired-blocked') continue;
       const matches = [...processEntries].filter((entry) => this.pool.matches(admissionEntry.ref, entry));
       if (matches.length !== 1) {
         throw new Error('provider_host_inventory_unavailable: live proxy host could not be revalidated');
       }
       const entry = matches[0];
+      const cleanupHold = entry.cleanupHold;
+      if (cleanupHold !== null) {
+        const process =
+          cleanupHold.subject.kind === 'process' && cleanupHold.subject.pid !== null
+            ? { pid: cleanupHold.subject.pid }
+            : {};
+        records.push(
+          Object.freeze({
+            ref: admissionEntry.ref,
+            status: 'reclamation-failed',
+            spec: canonicalProviderHostSpecMetadata(entry.spec),
+            host: Object.freeze({
+              owner: 'provider-proxy',
+              hostKey: entry.hostKey,
+              ownerJobId: entry.jobId ?? null,
+              ...process,
+              reclamationAttempts: entry.cleanupAttempts,
+              reclamationFailure: cleanupHold.error.message,
+              reclamationRetryable: true,
+            }),
+            diagnostics: entry.handle.inspectDiagnostics(),
+            diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+          }),
+        );
+        continue;
+      }
       if (entry.handle.isClosed()) {
         throw new Error('provider_host_inventory_unavailable: live proxy host process is unavailable');
       }
@@ -693,6 +991,11 @@ class ProxyProviderHostAdministration {
       snapshot.tombstones.some((tombstone) => exactHostRefsMatch(tombstone.ref, hostRef));
     if (!owned) return false;
 
+    const failedSpawn = this.pool.failedSpawnCleanup(hostRef);
+    if (failedSpawn !== undefined) {
+      return this.pool.abandonFailedSpawnCleanup(failedSpawn);
+    }
+
     const matches = this.pool.matchingEntries(hostRef);
     if (matches.size > 1) {
       throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy entries');
@@ -700,8 +1003,17 @@ class ProxyProviderHostAdministration {
     const matched = matches.values().next().value;
     if (matched !== undefined) {
       this.pool.remove(matched);
-      await this.pool.close(matched);
-      this.admission.confirmEvicted(hostRef);
+      const cleanup = await this.pool.close(matched);
+      if (isProviderServerShutdownHold(cleanup)) return false;
+      if (cleanup.kind === 'held-alive' || cleanup.kind === 'held-unobservable') {
+        const accepted = await this.pool.abandonClose(matched);
+        if (!accepted) return false;
+        this.admission.abandon(hostRef);
+      } else if (cleanup.kind === 'observed-absent') {
+        this.admission.confirmEvicted(hostRef);
+      } else {
+        this.admission.abandon(hostRef);
+      }
       return true;
     }
 

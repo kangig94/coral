@@ -137,7 +137,7 @@ export interface KbMutationEffects {
 
 export interface KbEngineRuntimeBase {
   readonly runtimeDir: string;
-  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  readonly time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>;
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly declaredAnalyzers: readonly KbDeclaredAnalyzer[];
   readonly projectionArtifacts: KbProjectionArtifactPort;

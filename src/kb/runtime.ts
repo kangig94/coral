@@ -109,7 +109,7 @@ export interface CreateKbRuntimeOptions {
    * `setTimeout` / `clearTimeout` back the mutation-lock deadline (§16 #50:
    * ports only, no ambient timers).
    */
-  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
   ids: Pick<IdPort, 'uuid'>;
   envPort: EnvPort;
   storage: StoragePort;
@@ -121,7 +121,10 @@ export interface CreateKbRuntimeOptions {
   generatedCommunityProjectionCallbacks?: KbGeneratedCommunityProjectionCallbacks;
 }
 
-type KbRuntimeTimePort = Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'> &
+type KbRuntimeTimePort = Pick<
+  TimePort,
+  'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'
+> &
   Partial<Pick<TimePort, 'sleep'>>;
 
 const KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS = 10 * 60 * 1000;

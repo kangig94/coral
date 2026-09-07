@@ -53,16 +53,16 @@ import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.
 // behavior is added later, the test scaffold already exists. The distinct
 // third branch ("absent" -> relaunch) is the genuine divergence.
 
-// Monotonic deterministic clock for `resumeAll`'s `time.now`. The branch
-// decisions don't assert on elapsed time, but the underlying
-// `waitForAtoms`/drainDeadline checks compare absolute timestamps — fixed
-// time would stall those branches; `Date.now()` would leak wall-clock
-// dependence (Single Runtime World rule).
 let recoverClock = new Date('2026-04-27T00:00:00.000Z').getTime();
+let recoverMonotonicClock = 0n;
 const fixedTime = {
   now: () => {
     recoverClock += 100;
     return recoverClock;
+  },
+  monotonicNow: () => {
+    recoverMonotonicClock += 100n;
+    return recoverMonotonicClock;
   },
 };
 

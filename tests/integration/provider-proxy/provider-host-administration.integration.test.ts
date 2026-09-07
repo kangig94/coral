@@ -1,6 +1,7 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -253,17 +254,27 @@ function fakeProviderServerHandle(): {
 } {
   let resolveClosed!: () => void;
   let closed = false;
+  const child = new EventEmitter();
   const closePromise = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
-  const closeMock = vi.fn(async () => {
+  const observeClosed = (): void => {
+    if (closed) return;
     closed = true;
+    child.emit('close', 0, null);
     resolveClosed();
+  };
+  const closeMock = vi.fn(async () => {
+    observeClosed();
+    return {
+      kind: 'observed-absent' as const,
+      evidence: { subject: { kind: 'process' as const, pid: process.pid } },
+    };
   });
   return {
     handle: {
       pid: process.pid,
-      child: {} as never,
+      child: child as never,
       generation: 0,
       rpc: {
         request: vi.fn(async () => ({})) as unknown as ProviderServerHandle['rpc']['request'],
@@ -297,10 +308,7 @@ function fakeProviderServerHandle(): {
       close: closeMock,
     },
     closeMock,
-    resolveClosed: () => {
-      closed = true;
-      resolveClosed();
-    },
+    resolveClosed: observeClosed,
   };
 }
 

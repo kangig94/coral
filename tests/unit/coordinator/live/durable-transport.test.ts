@@ -134,11 +134,17 @@ describe('durable transport', () => {
   });
 
   it('spawns a provider server with JSON-RPC transport and stable generation ids', async () => {
-    const handle = await coordinator.spawnProviderServer({
-      provider: 'codex',
-      command: process.execPath,
-      args: ['-e', createProviderServerScript()],
-    });
+    const handle = await coordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: process.execPath,
+        args: ['-e', createProviderServerScript()],
+      },
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     expect(handle.pid).toBeGreaterThan(0);
@@ -158,15 +164,25 @@ describe('durable transport', () => {
     });
 
     unsubscribe();
-    await handle.close();
+    await handle.close((hold) => ({
+      kind: 'accepted',
+      owner: 'provider-host-manager',
+      settlement: hold.settled,
+    }));
   });
 
   it('closes provider servers that emit an oversized JSONL line', async () => {
-    const handle = await coordinator.spawnProviderServer({
-      provider: 'codex',
-      command: process.execPath,
-      args: ['-e', createOversizedProviderServerScript()],
-    });
+    const handle = await coordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: process.execPath,
+        args: ['-e', createOversizedProviderServerScript()],
+      },
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     const outcome = await handle.closePromise;
@@ -185,11 +201,17 @@ describe('durable transport', () => {
   });
 
   it('terminateAll drains queued launches but does not kill provider servers', async () => {
-    const handle = await coordinator.spawnProviderServer({
-      provider: 'codex',
-      command: process.execPath,
-      args: ['-e', createProviderServerScript()],
-    });
+    const handle = await coordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: process.execPath,
+        args: ['-e', createProviderServerScript()],
+      },
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     await coordinator.terminateAll();
@@ -197,6 +219,10 @@ describe('durable transport', () => {
     await expect(handle.rpc.request('ping', { value: 'still-live' })).resolves.toEqual({
       pong: 'still-live',
     });
-    await handle.close();
+    await handle.close((hold) => ({
+      kind: 'accepted',
+      owner: 'provider-host-manager',
+      settlement: hold.settled,
+    }));
   });
 });

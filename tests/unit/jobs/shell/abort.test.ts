@@ -231,7 +231,10 @@ function _createFakeProviderServerHandle(options?: {
     },
   );
   const markExpectedCloseMock = vi.fn();
-  const closeMock = vi.fn(async () => {});
+  const closeMock = vi.fn(async () => ({
+    kind: 'observed-absent' as const,
+    evidence: { subject: { kind: 'process' as const, pid: 43210 } },
+  }));
   const closePromise = new Promise<Error | void>(() => {});
 
   return {

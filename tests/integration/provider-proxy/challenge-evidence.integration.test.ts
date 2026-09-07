@@ -165,7 +165,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
     connectTimeoutMs: 2_000,
     retryIntervalMs: 20,
     overallDeadlineMs: 10_000,
-    now: () => clientTime.now(),
+    monotonicNow: () => BigInt(clientTime.now()),
     sleep: (ms: number) => clientTime.sleep(ms),
   };
   const clients: Parameters<typeof establishRoleControl>[0] = [];

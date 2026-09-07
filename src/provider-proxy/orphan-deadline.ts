@@ -64,17 +64,12 @@ export function providerProxyAdoptionWindowMs(
 
 export type ProviderProxyHeartbeatHoldBound = Readonly<{
   spanMs: number;
-  materialSchedulerLatenessMs: number;
 }>;
 
 export function providerProxyHeartbeatHoldBound(
   configuration: Pick<ProviderProxyDeadlineTiming, 'orphanTimeoutMs' | 'teardownReserveMs'>,
 ): ProviderProxyHeartbeatHoldBound {
-  const spanMs = providerProxyAdoptionWindowMs(configuration);
-  return {
-    spanMs,
-    materialSchedulerLatenessMs: Math.floor(spanMs / 4),
-  };
+  return { spanMs: providerProxyAdoptionWindowMs(configuration) };
 }
 
 export function providerProxyDeadlineTimingIsValid(timing: ProviderProxyDeadlineTiming): boolean {

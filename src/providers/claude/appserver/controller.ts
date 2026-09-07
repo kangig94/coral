@@ -6,10 +6,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { raceTimeout } from '../../../infra/async.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import { isRecord, readString } from '../../../infra/json.js';
+import { createObservedDuration, type ObservedDuration } from '../../../infra/monotonic-clock.js';
 import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import { formatToolProgress } from '../progress.js';
 import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
 import { buildClaudeChildEnv } from './child-env.js';
+import { combineChildShutdownDispositions, heldChildShutdown, observedChildShutdown } from './child-shutdown.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -34,6 +36,9 @@ import {
 import type {
   ChildExit,
   ClaudeBrokerChild,
+  ClaudeChildShutdownSubject,
+  ControllerShutdownDisposition,
+  ControllerShutdownHold,
   ControllerNotification,
   ControllerNotificationMap,
   SingleSessionControllerOptions,
@@ -118,6 +123,10 @@ type ActiveTurnState = {
   replacementAttempts: number;
   continuationSentAt: number | null;
   continuationPhase: 'registered' | 'responding' | null;
+  observedPromptIdle: ObservedDuration;
+  observedPhaseIdle: ObservedDuration;
+  observedSemanticIdle: ObservedDuration;
+  observedContinuationIdle: ObservedDuration;
 };
 
 type ReservedTurnState = {
@@ -138,8 +147,10 @@ type TranscriptCursor = {
 
 type ChildBinding = {
   generation: number;
+  subject: ClaudeChildShutdownSubject;
   child: ClaudeBrokerChild;
   closed: Promise<ChildExit>;
+  closedObserved: boolean;
   ready: Promise<void>;
   expectedExit: boolean;
   dispose: () => void;
@@ -150,12 +161,14 @@ export class SingleSessionController {
   private readonly onTurnStarted: SingleSessionControllerOptions['onTurnStarted'];
   private readonly outputLimit: number;
   private readonly ids: SingleSessionControllerOptions['ids'];
+  private readonly monotonicNow: SingleSessionControllerOptions['monotonicNow'];
   private readonly onUnexpectedExit: (() => void) | undefined;
   private readonly readySettleMs: number;
   private readonly promptAckTimeoutMs: number;
   private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
 
   private childBinding: ChildBinding | null = null;
+  private readonly unsettledChildBindings = new Set<ChildBinding>();
   private bootstrapSignature: ClaudeBootstrapSignature | null = null;
   private bootstrapConfig: Omit<SessionEnsureParams, 'brokerSessionKey'> | null = null;
   private controllerEnvHash: string | null = null;
@@ -170,12 +183,14 @@ export class SingleSessionController {
   private outputRing = '';
   private shuttingDown = false;
   private childGeneration = 0;
+  private recoveryContinuation: Promise<void> | null = null;
 
   constructor(options: SingleSessionControllerOptions) {
     this.spawnChild = options.spawnChild;
     this.onTurnStarted = options.onTurnStarted;
     this.outputLimit = options.stderrLimit ?? DEFAULT_OUTPUT_RING_LIMIT;
     this.ids = options.ids;
+    this.monotonicNow = options.monotonicNow;
     this.onUnexpectedExit = options.onUnexpectedExit;
     this.readySettleMs = options.readySettleMs ?? CHILD_READY_QUIET_MS;
     this.promptAckTimeoutMs = options.promptAckTimeoutMs ?? DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs;
@@ -279,6 +294,7 @@ export class SingleSessionController {
       };
     }
 
+    const observedAtMs = this.monotonicNow();
     const turn: ActiveTurnState = {
       brokerTurnId: params.brokerTurnId,
       startedAt: now,
@@ -309,6 +325,10 @@ export class SingleSessionController {
       replacementAttempts: 0,
       continuationSentAt: null,
       continuationPhase: null,
+      observedPromptIdle: createObservedDuration(observedAtMs, TRANSCRIPT_POLL_MS),
+      observedPhaseIdle: createObservedDuration(observedAtMs, TRANSCRIPT_POLL_MS),
+      observedSemanticIdle: createObservedDuration(observedAtMs, TRANSCRIPT_POLL_MS),
+      observedContinuationIdle: createObservedDuration(observedAtMs, TRANSCRIPT_POLL_MS),
     };
     this.reservedTurn = null;
     this.activeTurn = turn;
@@ -318,6 +338,7 @@ export class SingleSessionController {
       turn.userMessageSent = true;
       turn.promptSendAttempts = 1;
       turn.lastPromptSentAt = Date.now();
+      turn.observedPromptIdle.reset(this.monotonicNow());
 
       if (turn.interruptRequested) {
         this.issueInterrupt(turn);
@@ -406,33 +427,23 @@ export class SingleSessionController {
     return this.activeTurn === null && this.currentConversationRef() !== null;
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(): Promise<ControllerShutdownDisposition> {
     this.shuttingDown = true;
-    if (!this.childBinding) {
-      return;
+    const childBindings = [...this.unsettledChildBindings];
+    if (childBindings.length === 0) {
+      return observedChildShutdown([]);
     }
 
-    const childBinding = this.childBinding;
     this.initialized = false;
-    try {
-      this.writeToChild('/exit\r');
-    } catch {
-      // The child may already be gone; shutdown still proceeds through signals.
+    if (this.childBinding !== null) {
+      try {
+        this.writeToChild('/exit\r');
+      } catch {
+        // Shutdown authority does not depend on the protocol write succeeding.
+      }
     }
-    if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_GRACE_MS)) {
-      return;
-    }
-
-    childBinding.child.kill('SIGTERM');
-    if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_TIMEOUT_MS - CHILD_SHUTDOWN_GRACE_MS)) {
-      return;
-    }
-
-    childBinding.child.kill('SIGKILL');
-    childBinding.dispose();
-    if (this.childBinding === childBinding) {
-      this.childBinding = null;
-    }
+    const dispositions = await Promise.all(childBindings.map((binding) => this.terminateChildBinding(binding)));
+    return combineChildShutdownDispositions(dispositions, () => this.shutdown());
   }
 
   private async ensureInitializedSession(
@@ -550,8 +561,10 @@ export class SingleSessionController {
 
     binding = {
       generation,
+      subject: { kind: 'claude-child', controller: 'tui', generation },
       child,
       closed,
+      closedObserved: false,
       ready,
       expectedExit: false,
       dispose: () => {
@@ -560,6 +573,7 @@ export class SingleSessionController {
         offExit();
       },
     };
+    this.unsettledChildBindings.add(binding);
     this.childBinding = binding;
   }
 
@@ -598,38 +612,41 @@ export class SingleSessionController {
       if (this.activeTurn !== turn) {
         return;
       }
-      const now = Date.now();
-      if (await this.recoverStalledTurn(turn, now)) {
+      if (await this.recoverStalledTurn(turn, this.monotonicNow())) {
         return;
       }
       await delay(TRANSCRIPT_POLL_MS);
     }
   }
 
-  private async recoverStalledTurn(turn: ActiveTurnState, now: number): Promise<boolean> {
+  private async recoverStalledTurn(turn: ActiveTurnState, observedAtMs: bigint): Promise<boolean> {
     if (this.activeTurn !== turn) {
       return true;
     }
+    if (this.recoveryContinuation !== null) {
+      return false;
+    }
+    this.advanceTurnObservation(turn, observedAtMs);
 
     if (turn.phase === 'ending') {
-      return this.recoverEndingTurn(turn, now);
+      return this.recoverEndingTurn(turn);
     }
 
-    if (now - turn.lastSemanticProgressAt >= DEFAULT_TURN_RECOVERY_BUDGET['hard-cap'].hardCapMs) {
+    if (turn.observedSemanticIdle.elapsedMs() >= DEFAULT_TURN_RECOVERY_BUDGET['hard-cap'].hardCapMs) {
       this.failActiveTurn(turn, 'Claude turn exceeded the no-semantic-progress recovery budget.');
       return true;
     }
 
     switch (turn.phase) {
       case 'sent':
-        return this.recoverSentTurn(turn, now);
+        return this.recoverSentTurn(turn);
       case 'registered':
-        if (!this.isContinuationBudgetBreached(turn, now, 'registered')) {
+        if (!this.isContinuationBudgetBreached(turn, 'registered')) {
           return false;
         }
         return this.recoverByRespawningChild(turn, 'registered');
       case 'responding':
-        if (!this.isContinuationBudgetBreached(turn, now, 'responding')) {
+        if (!this.isContinuationBudgetBreached(turn, 'responding')) {
           return false;
         }
         return this.recoverByRespawningChild(turn, 'responding');
@@ -638,8 +655,8 @@ export class SingleSessionController {
     }
   }
 
-  private recoverSentTurn(turn: ActiveTurnState, now: number): boolean {
-    if (now - turn.lastPromptSentAt < this.promptAckTimeoutMs) {
+  private recoverSentTurn(turn: ActiveTurnState): boolean {
+    if (turn.observedPromptIdle.elapsedMs() < this.promptAckTimeoutMs) {
       return false;
     }
     if (turn.promptSendAttempts > DEFAULT_TURN_RECOVERY_BUDGET.registration.promptResends) {
@@ -651,7 +668,8 @@ export class SingleSessionController {
     }
     this.sendTuiPrompt(turn.promptText);
     turn.promptSendAttempts += 1;
-    turn.lastPromptSentAt = now;
+    turn.lastPromptSentAt = Date.now();
+    turn.observedPromptIdle.reset(this.monotonicNow());
     this.emitTurnProgress(
       turn.brokerTurnId,
       `Claude did not register the prompt; re-sending (attempt ${turn.promptSendAttempts}).`,
@@ -659,10 +677,10 @@ export class SingleSessionController {
     return false;
   }
 
-  private recoverEndingTurn(turn: ActiveTurnState, now: number): boolean {
+  private recoverEndingTurn(turn: ActiveTurnState): boolean {
     if (
       turn.durationMs === null &&
-      now - turn.phaseEnteredAt < DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs
+      turn.observedPhaseIdle.elapsedMs() < DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs
     ) {
       return false;
     }
@@ -670,24 +688,31 @@ export class SingleSessionController {
     return true;
   }
 
-  private isContinuationBudgetBreached(
-    turn: ActiveTurnState,
-    now: number,
-    phase: 'registered' | 'responding',
-  ): boolean {
+  private isContinuationBudgetBreached(turn: ActiveTurnState, phase: 'registered' | 'responding'): boolean {
     if (turn.continuationPhase === phase && turn.continuationSentAt !== null) {
-      return now - turn.continuationSentAt >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.continuationAckMs;
+      return turn.observedContinuationIdle.elapsedMs() >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.continuationAckMs;
     }
 
     if (phase === 'registered') {
-      return now - turn.phaseEnteredAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
+      return turn.observedPhaseIdle.elapsedMs() >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
     }
     return (
-      now - turn.lastSemanticProgressAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs
+      turn.observedSemanticIdle.elapsedMs() >=
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs
     );
   }
 
+  private advanceTurnObservation(turn: ActiveTurnState, observedAtMs: bigint): void {
+    turn.observedPromptIdle.advance(observedAtMs);
+    turn.observedPhaseIdle.advance(observedAtMs);
+    turn.observedSemanticIdle.advance(observedAtMs);
+    turn.observedContinuationIdle.advance(observedAtMs);
+  }
+
   private async recoverByRespawningChild(turn: ActiveTurnState, phase: 'registered' | 'responding'): Promise<boolean> {
+    if (this.recoveryContinuation !== null) {
+      return false;
+    }
     if (turn.replacementAttempts >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts) {
       this.failActiveTurn(
         turn,
@@ -715,13 +740,20 @@ export class SingleSessionController {
     );
 
     try {
-      await this.replaceChildForRecovery(conversationRef);
+      const replacement = await this.replaceChildForRecovery(conversationRef);
+      if (replacement !== null) {
+        this.deferRecoveryUntilChildSettles(turn, phase, conversationRef, replacement);
+        this.emitTurnProgress(
+          turn.brokerTurnId,
+          'Claude child replacement is held until the prior child is observed absent.',
+        );
+        return false;
+      }
       if (this.activeTurn !== turn) {
         return true;
       }
       this.sendTuiPrompt(this.continuationPromptForPhase(phase));
-      turn.continuationSentAt = Date.now();
-      turn.continuationPhase = phase;
+      this.markContinuationSent(turn, phase);
       this.emitTurnProgress(
         turn.brokerTurnId,
         phase === 'registered'
@@ -741,14 +773,13 @@ export class SingleSessionController {
         );
         return true;
       }
-      turn.continuationSentAt = Date.now();
-      turn.continuationPhase = phase;
+      this.markContinuationSent(turn, phase);
       this.emitTurnProgress(turn.brokerTurnId, `Claude child respawn recovery attempt ${attempt} failed: ${message}`);
       return false;
     }
   }
 
-  private async replaceChildForRecovery(conversationRef: string): Promise<void> {
+  private async replaceChildForRecovery(conversationRef: string): Promise<ControllerShutdownHold | null> {
     if (this.bootstrapSignature === null || this.bootstrapConfig === null) {
       throw new ClaudeBrokerRpcError(
         CLAUDE_BROKER_STATE_RPC_CODE,
@@ -759,7 +790,10 @@ export class SingleSessionController {
 
     const oldBinding = this.childBinding;
     if (oldBinding !== null) {
-      this.beginExpectedChildShutdown(oldBinding);
+      const disposition = await this.beginExpectedChildShutdown(oldBinding);
+      if (disposition.kind !== 'observed-absent') {
+        return disposition;
+      }
     }
     this.initialized = false;
     this.resumeExistingConversation = true;
@@ -780,33 +814,95 @@ export class SingleSessionController {
     }
     this.initialized = true;
     this.emitSessionUpdated(conversationRef);
+    return null;
   }
 
-  private beginExpectedChildShutdown(binding: ChildBinding): void {
+  private async beginExpectedChildShutdown(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
     binding.expectedExit = true;
     try {
       binding.child.kill('SIGTERM');
     } catch {
-      // The replacement path still proceeds; the background wait below will
-      // detach this binding if the child never reports an exit.
+      // Only the close observation decides whether replacement may proceed.
     }
-    void this.finishExpectedChildShutdown(binding).catch(() => {
-      binding.dispose();
-    });
+    return this.finishExpectedChildShutdown(binding);
   }
 
-  private async finishExpectedChildShutdown(binding: ChildBinding): Promise<void> {
+  private async finishExpectedChildShutdown(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
     if (await this.waitForChildExit(binding.closed, DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs)) {
-      return;
+      return observedChildShutdown([binding.subject]);
     }
 
     try {
       binding.child.kill('SIGKILL');
     } catch {
-      // The child is already considered replaced; disposal below removes our
-      // stale listeners either way.
+      // Only the close observation decides whether replacement may proceed.
     }
-    binding.dispose();
+    if (binding.closedObserved) {
+      return observedChildShutdown([binding.subject]);
+    }
+    return heldChildShutdown({
+      kind: 'held-unobservable',
+      subjects: [binding.subject],
+      settled: binding.closed.then(() => observedChildShutdown([binding.subject])),
+      retry: () => this.finishExpectedChildShutdown(binding),
+    });
+  }
+
+  private deferRecoveryUntilChildSettles(
+    turn: ActiveTurnState,
+    phase: 'registered' | 'responding',
+    conversationRef: string,
+    hold: ControllerShutdownHold,
+  ): void {
+    if (this.recoveryContinuation !== null) return;
+    const continuation: Promise<void> = hold.settled
+      .then(async () => {
+        if (this.shuttingDown || this.activeTurn !== turn) return;
+        const nextHold = await this.replaceChildForRecovery(conversationRef);
+        if (nextHold !== null) {
+          if (this.recoveryContinuation === continuation) this.recoveryContinuation = null;
+          this.deferRecoveryUntilChildSettles(turn, phase, conversationRef, nextHold);
+          return;
+        }
+        if (this.activeTurn !== turn) return;
+        this.sendTuiPrompt(this.continuationPromptForPhase(phase));
+        this.markContinuationSent(turn, phase);
+        this.emitTurnProgress(turn.brokerTurnId, 'Claude child resumed after the prior child was observed absent.');
+      })
+      .catch((error: unknown) => {
+        if (this.activeTurn !== turn) return;
+        this.failActiveTurn(turn, `Claude child respawn recovery failed: ${this.errorMessage(error)}`);
+      })
+      .finally(() => {
+        if (this.recoveryContinuation === continuation) this.recoveryContinuation = null;
+      });
+    this.recoveryContinuation = continuation;
+  }
+
+  private async terminateChildBinding(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+    if (binding.closedObserved) return observedChildShutdown([binding.subject]);
+    try {
+      binding.child.kill('SIGTERM');
+    } catch {
+      // Only the close observation authorizes settlement.
+    }
+    if (await this.waitForChildExit(binding.closed, CHILD_SHUTDOWN_GRACE_MS)) {
+      return observedChildShutdown([binding.subject]);
+    }
+    try {
+      binding.child.kill('SIGKILL');
+    } catch {
+      // Only the close observation authorizes settlement.
+    }
+    if (await this.waitForChildExit(binding.closed, CHILD_SHUTDOWN_TIMEOUT_MS - CHILD_SHUTDOWN_GRACE_MS)) {
+      return observedChildShutdown([binding.subject]);
+    }
+    return heldChildShutdown({
+      kind: 'held-unobservable',
+      subjects: [binding.subject],
+      settled: binding.closed.then(() => observedChildShutdown([binding.subject])),
+      retry: () => this.terminateChildBinding(binding),
+    });
   }
 
   private continuationPromptForPhase(phase: 'registered' | 'responding'): string {
@@ -919,6 +1015,7 @@ export class SingleSessionController {
     const now = Date.now();
     turn.phase = advanced;
     turn.phaseEnteredAt = now;
+    turn.observedPhaseIdle.reset(this.monotonicNow());
     if (advanced !== 'terminal') {
       this.recordSemanticProgressAt(turn, now);
     }
@@ -930,9 +1027,18 @@ export class SingleSessionController {
 
   private recordSemanticProgressAt(turn: ActiveTurnState, now: number): void {
     turn.lastSemanticProgressAt = now;
+    const observedAtMs = this.monotonicNow();
+    turn.observedSemanticIdle.reset(observedAtMs);
+    turn.observedContinuationIdle.reset(observedAtMs);
     turn.replacementAttempts = 0;
     turn.continuationSentAt = null;
     turn.continuationPhase = null;
+  }
+
+  private markContinuationSent(turn: ActiveTurnState, phase: 'registered' | 'responding'): void {
+    turn.continuationSentAt = Date.now();
+    turn.continuationPhase = phase;
+    turn.observedContinuationIdle.reset(this.monotonicNow());
   }
 
   private processTranscriptLine(turn: ActiveTurnState, line: string, lineStartOffset: number): void {
@@ -1167,6 +1273,8 @@ export class SingleSessionController {
   }
 
   private handleChildExit(binding: ChildBinding, event: ChildExit): void {
+    binding.closedObserved = true;
+    this.unsettledChildBindings.delete(binding);
     binding.dispose();
     if (this.childBinding === binding) {
       this.childBinding = null;

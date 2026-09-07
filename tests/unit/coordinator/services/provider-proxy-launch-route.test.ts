@@ -70,7 +70,6 @@ function authority(): DurableProviderProxyOperationAuthority {
       adoptionWindowMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
-        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
       },
     },
     onFault: () => () => undefined,
@@ -241,7 +240,7 @@ describe('createAppServerProxyRoute', () => {
       executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
         workflowJobId,
         ids: { uuid: () => atomJobId },
-        time: { now: () => 10 },
+        time: { now: () => 10, monotonicNow: () => 10n },
       }),
     ).resolves.toMatchObject({ finalOutput: 'done' });
 

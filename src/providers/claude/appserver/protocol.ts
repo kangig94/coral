@@ -73,10 +73,25 @@ export interface SessionCloseParams {
   brokerSessionKey: string;
 }
 
-export interface SessionCloseResult {
-  brokerSessionKey: string;
-  closed: boolean;
-}
+export type SessionCloseResult =
+  | Readonly<{
+      brokerSessionKey: string;
+      disposition: 'observed-absent';
+    }>
+  | Readonly<{
+      brokerSessionKey: string;
+      disposition: 'held-alive';
+      observation: 'alive';
+      successor: Readonly<{ kind: 'accepted'; owner: 'broker-session-pool' }>;
+      operatorExit: Readonly<{ kind: 'retry-session-close' }>;
+    }>
+  | Readonly<{
+      brokerSessionKey: string;
+      disposition: 'held-unobservable';
+      observation: 'unobservable';
+      successor: Readonly<{ kind: 'accepted'; owner: 'broker-session-pool' }>;
+      operatorExit: Readonly<{ kind: 'retry-session-close' }>;
+    }>;
 
 /** @wire anthropic:claude — turn/start request body. */
 export interface TurnStartParams {
@@ -100,10 +115,6 @@ export interface TurnInterruptParams {
 export interface TurnInterruptResult {
   brokerTurnId: string | null;
   interrupted: boolean;
-}
-
-export interface BrokerShutdownResult {
-  ok: true;
 }
 
 export interface SessionUpdatedParams {
@@ -157,6 +168,7 @@ export interface TurnFailedParams {
 export interface HostStatsParams {
   liveControllers: number;
   activeTurns: number;
+  heldControllers: number;
 }
 
 export interface ClaudeBrokerNotificationMap {

@@ -39,6 +39,67 @@ export type ControllerNotification = {
   };
 }[keyof ControllerNotificationMap];
 
+export type ClaudeChildShutdownSubject = Readonly<{
+  kind: 'claude-child';
+  controller: 'tui' | 'print';
+  generation: number;
+}>;
+
+export type ControllerShutdownObservedAbsent = Readonly<{
+  kind: 'observed-absent';
+  observation: 'absent';
+  subjects: readonly ClaudeChildShutdownSubject[];
+}>;
+
+export type ControllerShutdownSuccessorAcceptance = Readonly<{
+  kind: 'accepted';
+  owner: 'broker-session-pool';
+}>;
+
+export interface ControllerShutdownSuccessor {
+  readonly owner: 'broker-session-pool';
+  accept(hold: ControllerShutdownHold): ControllerShutdownSuccessorAcceptance;
+}
+
+type ControllerShutdownHoldContinuation = Readonly<{
+  subjects: readonly ClaudeChildShutdownSubject[];
+  settled: Promise<ControllerShutdownObservedAbsent>;
+  retry(): Promise<ControllerShutdownDisposition>;
+  operatorExit: Readonly<{
+    kind: 'transfer-to-broker-session-pool';
+    transfer(successor: ControllerShutdownSuccessor): ControllerShutdownSuccessorAcceptance;
+  }>;
+}>;
+
+export type ControllerShutdownHold = ControllerShutdownHoldContinuation &
+  (
+    | Readonly<{ kind: 'held-alive'; observation: 'alive' }>
+    | Readonly<{ kind: 'held-unobservable'; observation: 'unobservable' }>
+  );
+
+export type ControllerShutdownDisposition = ControllerShutdownObservedAbsent | ControllerShutdownHold;
+
+export type BrokerShutdownObservedAbsent = Readonly<{
+  kind: 'observed-absent';
+  observation: 'absent';
+}>;
+
+type BrokerShutdownHoldContinuation = Readonly<{
+  subjects: readonly ClaudeChildShutdownSubject[];
+  successor: ControllerShutdownSuccessorAcceptance;
+  settled: Promise<BrokerShutdownObservedAbsent>;
+  retry(): Promise<BrokerShutdownDisposition>;
+  operatorExit: Readonly<{ kind: 'retry-broker-shutdown' }>;
+}>;
+
+export type BrokerShutdownHold = BrokerShutdownHoldContinuation &
+  (
+    | Readonly<{ kind: 'held-alive'; observation: 'alive' }>
+    | Readonly<{ kind: 'held-unobservable'; observation: 'unobservable' }>
+  );
+
+export type BrokerShutdownDisposition = BrokerShutdownObservedAbsent | BrokerShutdownHold;
+
 export interface BrokerSessionController {
   sessionEnsure(
     params: Omit<SessionEnsureParams, 'brokerSessionKey'>,
@@ -48,7 +109,7 @@ export interface BrokerSessionController {
   ): Promise<Omit<SessionProbeResult, 'brokerSessionKey'>>;
   turnStart(params: Omit<TurnStartParams, 'brokerSessionKey'>): Promise<Omit<TurnStartResult, 'brokerSessionKey'>>;
   turnInterrupt(params: Omit<TurnInterruptParams, 'brokerSessionKey'>): Promise<TurnInterruptResult>;
-  shutdown(): Promise<void>;
+  shutdown(): Promise<ControllerShutdownDisposition>;
   subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void;
   hasActiveTurn(): boolean;
   hasLiveController(): boolean;
@@ -95,6 +156,7 @@ export interface SpawnClaudePrintChildOptions {
 export interface BrokerSessionControllerOptions<TSpawnChild> {
   spawnChild: TSpawnChild;
   ids: Pick<IdPort, 'uuid'>;
+  monotonicNow: () => bigint;
   onTurnStarted?: (turn: { brokerTurnId: string }) => Promise<void> | void;
   stderrLimit?: number;
 }
@@ -117,7 +179,7 @@ export interface ClaudeBrokerSession {
   sessionClose(params: SessionCloseParams): Promise<SessionCloseResult>;
   turnStart(params: TurnStartParams): Promise<TurnStartResult>;
   turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResult>;
-  shutdown(): Promise<void>;
+  shutdown(): Promise<BrokerShutdownDisposition>;
   subscribeNotifications(handler: (notification: ClaudeBrokerNotification) => void): () => void;
 }
 
@@ -134,7 +196,7 @@ export type SingleSessionControllerOptions = BrokerSessionControllerOptions<TuiS
   promptAckTimeoutMs?: number;
 };
 
-export type PrintSessionControllerOptions = BrokerSessionControllerOptions<PrintSpawnChild> & {
+export type PrintSessionControllerOptions = Omit<BrokerSessionControllerOptions<PrintSpawnChild>, 'monotonicNow'> & {
   onUnexpectedExit?: () => void;
   now: () => number;
   controlRequestTimer: ControlRequestTimer;

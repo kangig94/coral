@@ -164,11 +164,17 @@ describe('launch admission', () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID);
     const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
 
-    const handle = await localCoordinator.spawnProviderServer({
-      provider: 'codex',
-      command: 'fake-codex',
-      args: ['app-server'],
-    });
+    const handle = await localCoordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: 'fake-codex',
+        args: ['app-server'],
+      },
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     expect(fake.spawn).toHaveBeenCalledWith(
@@ -184,7 +190,11 @@ describe('launch admission', () => {
     expect(fake.platform).toHaveBeenCalled();
     expect(handle.containmentIdentity.processGroupId).toBe(handle.containmentIdentity.pid);
 
-    await handle.close();
+    await handle.close((hold) => ({
+      kind: 'accepted',
+      owner: 'provider-host-manager',
+      settlement: hold.settled,
+    }));
   });
 
   it.each(Object.entries(PLATFORM_CAPABILITIES))(

@@ -686,7 +686,7 @@ async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number
         connectTimeoutMs: 2_000,
         retryIntervalMs: 20,
         overallDeadlineMs: 10_000,
-        now: () => outerTime.now(),
+        monotonicNow: () => BigInt(outerTime.now()),
         sleep: (ms) => outerTime.sleep(ms),
       },
       {

@@ -271,23 +271,66 @@ export type ProxyRoleHandle = Readonly<{
 
 export type ProviderRoleHandle = GuardianRoleHandle | ReaperRoleHandle | ProxyRoleHandle;
 
+type GuardianConstructionProxyProcessGroupSubject = Readonly<{
+  kind: 'proxy-process-group';
+  identity: RecordedContainmentIdentity;
+}>;
+
+type GuardianConstructionReaperProcessSubject = Readonly<{
+  kind: 'reaper-process';
+  identity: RecordedProcessIdentity;
+}>;
+
+type GuardianConstructionOperatorSubject =
+  | GuardianConstructionProxyProcessGroupSubject
+  | GuardianConstructionReaperProcessSubject;
+
+type GuardianConstructionOperatorExit<Subject extends GuardianConstructionOperatorSubject> = Readonly<{
+  kind: 'abandon-guardian-construction-cleanup';
+  subject: Subject;
+  abandon(): Readonly<{
+    kind: 'operator-abandoned';
+    subject: Subject;
+    processAbsenceProven: false;
+    successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
+  }>;
+}>;
+
 type GuardianConstructionCleanupObligation =
   | Readonly<{
       kind: 'proxy-process-group';
       identity: RecordedContainmentIdentity;
+      operatorExit: GuardianConstructionOperatorExit<GuardianConstructionProxyProcessGroupSubject>;
       reason: string;
     }>
   | Readonly<{
       kind: 'reaper-process';
       identity: RecordedProcessIdentity;
+      operatorExit: GuardianConstructionOperatorExit<GuardianConstructionReaperProcessSubject>;
       reason: string;
     }>
   | Readonly<{
       kind: 'failed-role-spawn';
       subject: RoleSpawnCleanupSubject;
       operatorExit: HeldRoleSpawn['operatorExit'];
+      settled: Promise<void>;
       reason: string;
     }>;
+
+function guardianConstructionOperatorExit<Subject extends GuardianConstructionOperatorSubject>(
+  subject: Subject,
+): GuardianConstructionOperatorExit<Subject> {
+  return {
+    kind: 'abandon-guardian-construction-cleanup',
+    subject,
+    abandon: () => ({
+      kind: 'operator-abandoned',
+      subject,
+      processAbsenceProven: false,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+    }),
+  };
+}
 
 export type GuardianConstructionCleanupDisposition =
   | Readonly<{ kind: 'settled' }>
@@ -327,6 +370,7 @@ function holdFailedRoleSpawn(spawn: HeldRoleSpawn): GuardianConstructionCleanupD
         kind: 'failed-role-spawn',
         subject: spawn.subject,
         operatorExit: spawn.operatorExit,
+        settled: spawn.settled,
         reason,
       },
     ],
@@ -340,7 +384,8 @@ function holdFailedRoleSpawn(spawn: HeldRoleSpawn): GuardianConstructionCleanupD
           {
             kind: 'failed-role-spawn',
             subject: cleanup.subject,
-            operatorExit: spawn.operatorExit,
+            operatorExit: cleanup.operatorExit,
+            settled: spawn.settled,
             reason: `${cleanup.subject.kind}:${cleanup.observation}`,
           },
         ],
@@ -361,9 +406,11 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
       `Recorded containment pid=${containment.pid} is not its own process-group leader (processGroupId=${containment.processGroupId}).`,
     );
   }
+  const subject = { kind: 'proxy-process-group', identity: containment } as const;
+  const operatorExit = guardianConstructionOperatorExit(subject);
   const holding = (reason: string): GuardianConstructionCleanupDisposition => ({
     kind: 'holding',
-    pending: [{ kind: 'proxy-process-group', identity: containment, reason }],
+    pending: [{ ...subject, operatorExit, reason }],
     reason,
     retry,
   });
@@ -411,9 +458,11 @@ async function reapUnheldOrdinaryProcess(
   identity: RecordedProcessIdentity,
   ports: ProviderRoleMainPorts,
 ): Promise<GuardianConstructionCleanupDisposition> {
+  const subject = { kind: 'reaper-process', identity } as const;
+  const operatorExit = guardianConstructionOperatorExit(subject);
   const holding = (reason: string): GuardianConstructionCleanupDisposition => ({
     kind: 'holding',
-    pending: [{ kind: 'reaper-process', identity, reason }],
+    pending: [{ ...subject, operatorExit, reason }],
     reason,
     retry,
   });
@@ -473,6 +522,48 @@ function isGuardianConstructionCleanupSettled(error: unknown): boolean {
     ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
     settledGuardianConstructionFailures.has(error)
   );
+}
+
+function acceptGuardianConstructionOperatorExit(
+  disposition: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>,
+): boolean {
+  const subjectMatches = (obligation: GuardianConstructionCleanupObligation, subject: unknown): boolean => {
+    if (typeof subject !== 'object' || subject === null || !('kind' in subject)) return false;
+    if (obligation.kind === 'failed-role-spawn') {
+      if (obligation.subject.kind !== subject.kind) return false;
+      return obligation.subject.kind === 'process'
+        ? 'pid' in subject && obligation.subject.pid === subject.pid
+        : 'processGroupId' in subject && obligation.subject.processGroupId === subject.processGroupId;
+    }
+    if (obligation.kind !== subject.kind || !('identity' in subject)) return false;
+    const identity = subject.identity;
+    if (typeof identity !== 'object' || identity === null || !('pid' in identity) || !('incarnation' in identity)) {
+      return false;
+    }
+    if (obligation.identity.pid !== identity.pid || obligation.identity.incarnation !== identity.incarnation) {
+      return false;
+    }
+    return obligation.kind === 'reaper-process'
+      ? true
+      : 'processGroupId' in identity && obligation.identity.processGroupId === identity.processGroupId;
+  };
+  if (!disposition.pending.every((obligation) => subjectMatches(obligation, obligation.operatorExit.subject))) {
+    return false;
+  }
+  const abandonments = disposition.pending.map(({ operatorExit }) => operatorExit.abandon());
+  return disposition.pending.every((obligation, index) => {
+    const abandonment = abandonments[index];
+    if (
+      abandonment === undefined ||
+      abandonment.kind !== 'operator-abandoned' ||
+      abandonment.processAbsenceProven !== false ||
+      abandonment.successor.owner !== 'operator-command' ||
+      abandonment.successor.acceptance !== 'accepted'
+    ) {
+      return false;
+    }
+    return subjectMatches(obligation, abandonment.subject);
+  });
 }
 
 export type RoleEnforcementOutcomeHandlers = Readonly<{
@@ -740,7 +831,7 @@ export async function startProviderGuardianRole(
       connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
       retryIntervalMs: ROLE_SPAWN_READY_RETRY_INTERVAL_MS,
       overallDeadlineMs: ROLE_SPAWN_READY_DEADLINE_MS,
-      now: () => ports.runtime.time.now(),
+      monotonicNow: () => ports.runtime.time.monotonicNow(),
       sleep: (ms) => ports.runtime.time.sleep(ms),
     });
     reaperChannel = await raceReadinessAgainstSpawnFailure(reaperConnected, reaperSpawn.spawnFailed);
@@ -1086,7 +1177,7 @@ export async function startProviderProxyRole(
     connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
     retryIntervalMs: ROLE_SPAWN_READY_RETRY_INTERVAL_MS,
     overallDeadlineMs: ROLE_SPAWN_READY_DEADLINE_MS,
-    now: () => ports.runtime.time.now(),
+    monotonicNow: () => ports.runtime.time.monotonicNow(),
     sleep: (ms) => ports.runtime.time.sleep(ms),
   });
   const pairingResult = requireRolePeerResult(
@@ -1195,7 +1286,7 @@ export async function startProviderProxyRole(
   };
 }
 
-export type ProviderRoleMainOptions = Readonly<{ pluginRoot: string }>;
+export type ProviderRoleMainOptions = Readonly<{ pluginRoot: string; runtime?: Runtime }>;
 
 type RoleProbeSettlementDisposition = SettledSettlementDisposition | RoleProbeHeldSettlementDisposition;
 
@@ -1235,17 +1326,20 @@ async function settleRoleShutdownProbes(): Promise<RoleProbeSettlementDispositio
 function createRoleShutdownProbeGate(
   role: 'guardian' | 'reaper' | 'proxy',
   exitProcess: (code: number) => void,
-): Readonly<{ requestCleanup(): void; requestExit(code: number): void }> {
+): Readonly<{ requestCleanup(): void; requestExit(code: number): void; dispose(): void }> {
   let requestedExitCode: number | null = null;
   let cleanupInFlight = false;
   let exited = false;
+  let disposed = false;
 
   const cleanupFailed = (error: unknown): void => {
+    if (disposed) return;
     cleanupInFlight = false;
     backendLog.error(`${role}: process-incarnation probe cleanup failed; shutdown remains held`, error);
   };
 
   const acceptDisposition = (disposition: RoleProbeSettlementDisposition): void => {
+    if (disposed) return;
     if (disposition.disposition === 'held') {
       backendLog.error(
         `${role}: shutdown remains held by unsettled process-incarnation probes`,
@@ -1266,7 +1360,7 @@ function createRoleShutdownProbeGate(
   };
 
   const requestCleanup = (): void => {
-    if (cleanupInFlight || exited) return;
+    if (cleanupInFlight || exited || disposed) return;
     cleanupInFlight = true;
     void settleRoleShutdownProbes().then(acceptDisposition, cleanupFailed);
   };
@@ -1277,8 +1371,14 @@ function createRoleShutdownProbeGate(
       requestedExitCode ??= code;
       requestCleanup();
     },
+    dispose: (): void => {
+      disposed = true;
+      requestedExitCode = null;
+    },
   };
 }
+
+let activeRoleShutdownDispose: (() => void) | null = null;
 
 /**
  * The `bootstrap.ts` dispatch target: composes the real runtime and runs whichever role `argv` named,
@@ -1299,8 +1399,23 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
   process.stdout.on('error', () => {});
   process.stderr.on('error', () => {});
 
-  const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-  const probeGate = createRoleShutdownProbeGate(mode.role, (code) => process.exit(code));
+  const runtime = options.runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
+  activeRoleShutdownDispose?.();
+  let removeRoleSignalHandlers = (): void => undefined;
+  let disposeRoleLifecycle = (): void => undefined;
+  let processExitRequested = false;
+  const probeGate = createRoleShutdownProbeGate(mode.role, (code) => {
+    if (processExitRequested) return;
+    processExitRequested = true;
+    disposeRoleLifecycle();
+    process.exit(code);
+  });
+  disposeRoleLifecycle = () => {
+    probeGate.dispose();
+    removeRoleSignalHandlers();
+    if (activeRoleShutdownDispose === disposeRoleLifecycle) activeRoleShutdownDispose = null;
+  };
+  activeRoleShutdownDispose = disposeRoleLifecycle;
   const ports: ProviderRoleMainPorts = {
     runtime,
     pluginRoot: options.pluginRoot,
@@ -1312,27 +1427,65 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     try {
       handle = await startProviderGuardianRole(mode.capsulePath, ports);
     } catch (error: unknown) {
+      let constructionExitCode = GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
       if (error instanceof GuardianConstructionCleanupHeldError) {
         backendLog.error('guardian: construction failed and spawned process cleanup remains held', error);
         let disposition: GuardianConstructionCleanupDisposition = error.hold;
-        while (disposition.kind === 'holding') {
-          await runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS);
-          try {
-            disposition = await disposition.retry();
-          } catch (retryError: unknown) {
-            backendLog.error('guardian: construction cleanup retry failed; shutdown remains held', retryError);
+        let operatorExitAccepted = false;
+        let releaseOperatorSignal!: () => void;
+        const operatorSignal = new Promise<void>((resolve) => {
+          releaseOperatorSignal = resolve;
+        });
+        const abandonConstruction = (): void => {
+          if (operatorExitAccepted) return;
+          if (disposition.kind !== 'holding' || !acceptGuardianConstructionOperatorExit(disposition)) return;
+          operatorExitAccepted = true;
+          releaseOperatorSignal();
+        };
+        process.on('SIGTERM', abandonConstruction);
+        process.on('SIGINT', abandonConstruction);
+        try {
+          while (disposition.kind === 'holding' && !operatorExitAccepted) {
+            await Promise.race([runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS), operatorSignal]);
+            if (operatorExitAccepted) break;
+            try {
+              disposition = await disposition.retry();
+            } catch (retryError: unknown) {
+              backendLog.error('guardian: construction cleanup retry failed; shutdown remains held', retryError);
+            }
           }
+        } finally {
+          process.removeListener('SIGTERM', abandonConstruction);
+          process.removeListener('SIGINT', abandonConstruction);
+        }
+        if (operatorExitAccepted) {
+          constructionExitCode = 0;
+          probeGate.requestExit(0);
         }
       } else {
-        if (!isGuardianConstructionCleanupSettled(error)) throw error;
+        if (!isGuardianConstructionCleanupSettled(error)) {
+          disposeRoleLifecycle();
+          throw error;
+        }
         backendLog.error('guardian: construction failed after spawned process cleanup settled', error);
       }
-      return GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
+      if (constructionExitCode !== 0) disposeRoleLifecycle();
+      return constructionExitCode;
     }
   } else if (mode.role === 'reaper') {
-    handle = await startProviderReaperRole(mode.capsulePath, ports);
+    try {
+      handle = await startProviderReaperRole(mode.capsulePath, ports);
+    } catch (error: unknown) {
+      disposeRoleLifecycle();
+      throw error;
+    }
   } else {
-    handle = await startProviderProxyRole(mode.capsulePath, ports);
+    try {
+      handle = await startProviderProxyRole(mode.capsulePath, ports);
+    } catch (error: unknown) {
+      disposeRoleLifecycle();
+      throw error;
+    }
   }
 
   let proxyShutdownStarted = false;
@@ -1355,6 +1508,10 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  removeRoleSignalHandlers = () => {
+    process.removeListener('SIGTERM', shutdown);
+    process.removeListener('SIGINT', shutdown);
+  };
 
   return 0;
 }

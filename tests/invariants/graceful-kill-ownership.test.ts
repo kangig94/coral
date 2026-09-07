@@ -274,7 +274,7 @@ function objectIsJoinableHold(expression: ts.ObjectLiteralExpression, subject: s
   const discriminant = properties.get('kind') ?? properties.get('disposition');
   if (!discriminant || !ts.isPropertyAssignment(discriminant)) return false;
   const value = unwrapExpression(discriminant.initializer);
-  const retryAfter = properties.get('retryAfter');
+  const retryAfter = properties.get('retryAfter') ?? properties.get('settled');
   const retry = properties.get('retry');
   const retryIsCallable =
     retry !== undefined &&
@@ -293,7 +293,10 @@ function objectIsJoinableHold(expression: ts.ObjectLiteralExpression, subject: s
         })()));
   return (
     ts.isStringLiteral(value) &&
-    (value.text === 'held' || value.text === 'holding') &&
+    (value.text === 'held' ||
+      value.text === 'holding' ||
+      value.text === 'held-alive' ||
+      value.text === 'held-unobservable') &&
     retryAfter !== undefined &&
     ts.isPropertyAssignment(retryAfter) &&
     expressionJoinsSubjectClose(retryAfter.initializer, subject, context) &&
@@ -335,6 +338,10 @@ function returnHasDecisiveExit(
   };
   const observesSubject = (expression: ts.Expression): boolean => {
     const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      const initializer = variableInitializer(current.text, statement);
+      return initializer !== null && observesSubject(initializer);
+    }
     if (!ts.isCallExpression(current)) return false;
     const observer = unwrapExpression(current.expression);
     const isLivenessObserver =

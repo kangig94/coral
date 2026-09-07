@@ -80,8 +80,7 @@ export async function recoverStaleAtom(
   const now = options.time.now();
 
   for (const atom of state.pending.values()) {
-    const lastActive = state.lastActivityAt.get(atom.atomKey) ?? now;
-    if (now - lastActive < options.staleTimeoutMs) continue;
+    if ((state.observedIdleMs.get(atom.atomKey) ?? 0) < options.staleTimeoutMs) continue;
 
     const retries = state.staleRetries.get(atom.atomKey) ?? 0;
     if (retries >= INVARIANT.MAX_STALE_RECOVERY_RETRIES) {
@@ -197,6 +196,7 @@ export async function recoverStaleAtom(
     const resumedAt = options.time.now();
     for (const sibling of state.pending.values()) {
       state.lastActivityAt.set(sibling.atomKey, resumedAt);
+      state.observedIdleMs.set(sibling.atomKey, 0);
     }
 
     options.onProgress(formatAtomProgress(atom, 'resumed'));

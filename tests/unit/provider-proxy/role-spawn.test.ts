@@ -72,7 +72,7 @@ function baseOptions(overrides: Partial<RoleSpawnOptions> = {}): RoleSpawnOption
 }
 
 describe('spawnRoleProcess', () => {
-  it('retains a pid-less child until its joinable retry observes close', async () => {
+  it('returns a pid-less child hold without hiding its close-backed settlement', async () => {
     const { child, killSignals, unref, emitClose } = createFakeChild(undefined);
     const ports = fakePorts({ spawn: () => child });
 
@@ -88,23 +88,46 @@ describe('spawnRoleProcess', () => {
     expect(disposition.error).toBeInstanceOf(RoleSpawnError);
     expect(killSignals).toEqual([]);
 
-    const retry = disposition.retry();
+    await expect(disposition.retry()).resolves.toMatchObject({
+      kind: 'held-unobservable',
+      subject: { kind: 'process', pid: null },
+      observation: 'unobservable',
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      settled: disposition.settled,
+      retry: expect.any(Function),
+    });
     expect(killSignals).toContain('SIGTERM');
-    let retrySettled = false;
-    void retry.then(() => {
-      retrySettled = true;
+    let closeSettled = false;
+    void disposition.settled.then(() => {
+      closeSettled = true;
     });
     await Promise.resolve();
-    expect(retrySettled).toBe(false);
+    expect(closeSettled).toBe(false);
 
     emitClose();
-    await expect(retry).resolves.toMatchObject({
+    await disposition.settled;
+    await expect(disposition.retry()).resolves.toMatchObject({
       kind: 'observed-absent',
       evidence: { subject: { kind: 'process', pid: null } },
     });
   });
 
-  it('retains a live child with an unreadable incarnation until its joinable retry observes close', async () => {
+  it('preserves observed close when a later retry is already aborted', async () => {
+    const { child, killSignals, emitClose } = createFakeChild(undefined);
+    const disposition = spawnRoleProcess('proxy', '/capsule.json', fakePorts({ spawn: () => child }), baseOptions());
+    if (disposition.kind !== 'held') throw new Error('Expected pid-less role spawn to be held');
+    emitClose();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(disposition.retry(controller.signal)).resolves.toMatchObject({
+      kind: 'observed-absent',
+      evidence: { subject: { kind: 'process', pid: null } },
+    });
+    expect(killSignals).toEqual([]);
+  });
+
+  it('returns an alive hold without blocking role-spawn classification', async () => {
     const { child, killSignals, unref, emitClose } = createFakeChild(6_000);
     const runtime = {
       ...realRuntime,
@@ -125,27 +148,32 @@ describe('spawnRoleProcess', () => {
     expect(disposition.error).toBeInstanceOf(RoleSpawnError);
     expect(killSignals).toEqual([]);
 
-    const retry = disposition.retry();
-    expect(killSignals).toContain('SIGTERM');
-    let retrySettled = false;
-    void retry.then(() => {
-      retrySettled = true;
+    await expect(disposition.retry()).resolves.toMatchObject({
+      kind: 'held-alive',
+      subject: { kind: 'process', pid: 6_000 },
+      observation: 'alive',
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      settled: disposition.settled,
+      retry: expect.any(Function),
     });
-    await Promise.resolve();
-    expect(retrySettled).toBe(false);
+    expect(killSignals).toContain('SIGTERM');
+    await expect(requireSpawnedRole(disposition)).resolves.toBe(disposition);
 
     emitClose();
-    await expect(retry).resolves.toMatchObject({
+    await expect(disposition.retry()).resolves.toMatchObject({
       kind: 'observed-absent',
       evidence: { subject: { kind: 'process', pid: 6_000 } },
     });
   });
 
-  it('retains a live child when the incarnation probe throws until its joinable retry observes close', async () => {
+  it('returns an unobservable hold when the process probe cannot answer', async () => {
     const { child, killSignals, unref, emitClose } = createFakeChild(6_001);
     const runtime = {
       ...realRuntime,
-      process: { ...realRuntime.process, observeLiveness: () => 'alive' as const },
+      process: {
+        ...realRuntime.process,
+        observeLiveness: () => 'unknown' as const,
+      },
     };
     const ports = fakePorts({
       spawn: () => child,
@@ -168,17 +196,18 @@ describe('spawnRoleProcess', () => {
     expect(disposition.error).toBeInstanceOf(RoleSpawnError);
     expect(killSignals).toEqual([]);
 
-    const retry = disposition.retry();
-    expect(killSignals).toContain('SIGTERM');
-    let retrySettled = false;
-    void retry.then(() => {
-      retrySettled = true;
+    await expect(disposition.retry()).resolves.toMatchObject({
+      kind: 'held-unobservable',
+      subject: { kind: 'process', pid: 6_001 },
+      observation: 'unobservable',
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      settled: disposition.settled,
+      retry: expect.any(Function),
     });
-    await Promise.resolve();
-    expect(retrySettled).toBe(false);
+    expect(killSignals).toContain('SIGTERM');
 
     emitClose();
-    await expect(retry).resolves.toMatchObject({
+    await expect(disposition.retry()).resolves.toMatchObject({
       kind: 'observed-absent',
       evidence: { subject: { kind: 'process', pid: 6_001 } },
     });
@@ -198,7 +227,13 @@ describe('spawnRoleProcess', () => {
 
     const disposition = spawnRoleProcess('guardian', '/capsule.json', ports, baseOptions({ detached: true }));
     if (disposition.kind !== 'held') throw new Error('Expected unreadable detached role spawn to be held');
+    let settled = false;
+    void disposition.settled.then(() => {
+      settled = true;
+    });
     emitClose();
+    await Promise.resolve();
+    expect(settled).toBe(false);
 
     const firstCleanup = await disposition.retry();
     expect(firstCleanup).toMatchObject({
@@ -223,6 +258,7 @@ describe('spawnRoleProcess', () => {
         },
       },
     });
+    await expect(disposition.settled).resolves.toBeUndefined();
   });
 
   it('surfaces an unattributable detached spawn hold and its acquisition-abandonment exit', async () => {
@@ -250,6 +286,7 @@ describe('spawnRoleProcess', () => {
       processAbsenceProven: false,
       successor: { owner: 'operator-command', acceptance: 'accepted' },
     });
+    await expect(disposition.settled).resolves.toBeUndefined();
     await expect(requireSpawnedRole(disposition)).resolves.toMatchObject({
       kind: 'held',
       operatorExit: { kind: 'abandon-provider-proxy-acquisition' },

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { ControlClientError, ControlExchange } from './control-client.js';
 import { heartbeatChallengeSchema } from './protocol.js';
-import type { ProviderProxyHeartbeatHoldBound } from './orphan-deadline.js';
+import { PROXY_CONTROL_HEARTBEAT_MS, type ProviderProxyHeartbeatHoldBound } from './orphan-deadline.js';
 
 const JSON_RPC_INVALID_REQUEST = -32_600;
 
@@ -134,13 +134,15 @@ export type HeartbeatEvidenceWindow =
   | Readonly<{ kind: 'clear' }>
   | Readonly<{
       kind: 'silence';
-      firstObservedAtMonotonicMs: bigint;
+      lastObservedAtMonotonicMs: bigint;
+      observedDurationMs: number;
       attempts: number;
       schedulerLatenessAfterFirstObservationMs: number;
     }>
   | Readonly<{
       kind: 'answered-unusable';
-      firstObservedAtMonotonicMs: bigint;
+      lastObservedAtMonotonicMs: bigint;
+      observedDurationMs: number;
       attempts: number;
       schedulerLatenessAfterFirstObservationMs: number;
     }>;
@@ -169,7 +171,8 @@ function advanceWindow<TKind extends SilenceWindow['kind'] | AnsweredUnusableWin
       effect: 'holding',
       window: {
         kind,
-        firstObservedAtMonotonicMs: timing.nowMonotonicMs,
+        lastObservedAtMonotonicMs: timing.nowMonotonicMs,
+        observedDurationMs: 0,
         attempts: 1,
         schedulerLatenessAfterFirstObservationMs: 0,
       } as Window,
@@ -177,26 +180,22 @@ function advanceWindow<TKind extends SilenceWindow['kind'] | AnsweredUnusableWin
   }
 
   const accumulatedLatenessMs = current.schedulerLatenessAfterFirstObservationMs + timing.schedulerLatenessMs;
+  const observedGapMs = timing.nowMonotonicMs - current.lastObservedAtMonotonicMs;
+  const observedIncrementMs =
+    observedGapMs <= 0n
+      ? 0
+      : Number(observedGapMs < BigInt(PROXY_CONTROL_HEARTBEAT_MS) ? observedGapMs : BigInt(PROXY_CONTROL_HEARTBEAT_MS));
+  const observedDurationMs = current.observedDurationMs + observedIncrementMs;
   const advanced = {
     ...current,
+    lastObservedAtMonotonicMs: timing.nowMonotonicMs,
+    observedDurationMs,
     attempts: current.attempts + 1,
     schedulerLatenessAfterFirstObservationMs: accumulatedLatenessMs,
   } as Window;
-  if (timing.nowMonotonicMs - current.firstObservedAtMonotonicMs < BigInt(timing.bound.spanMs)) {
-    return { effect: 'holding', window: advanced };
-  }
-  if (accumulatedLatenessMs >= timing.bound.materialSchedulerLatenessMs) {
-    return {
-      effect: 'holding',
-      window: {
-        kind,
-        firstObservedAtMonotonicMs: timing.nowMonotonicMs,
-        attempts: 1,
-        schedulerLatenessAfterFirstObservationMs: 0,
-      } as Window,
-    };
-  }
-  return { effect: 'bound-exhausted', window: advanced };
+  return observedDurationMs < timing.bound.spanMs
+    ? { effect: 'holding', window: advanced }
+    : { effect: 'bound-exhausted', window: advanced };
 }
 
 export type HeartbeatAnswerTransition =

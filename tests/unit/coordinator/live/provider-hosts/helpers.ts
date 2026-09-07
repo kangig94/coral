@@ -14,6 +14,7 @@ import type {
 } from '#src/providers/app-server-transport.js';
 import type { RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { EventEmitter } from 'node:events';
 
 export const runtime = createRealRuntime('prod');
 
@@ -68,6 +69,7 @@ export function createEntry(overrides: Partial<ProviderHostEntry> = {}): Provide
     instanceId: null,
     spawnPromise: null,
     spawnCleanupHold: null,
+    spawnCleanupDisposition: null,
     spawnCleanupAttempts: 0,
     pins: new Map(),
     closingError: null,
@@ -104,21 +106,28 @@ export function createFakeProviderServerHandle(options?: {
     },
   );
   const markExpectedCloseMock = vi.fn();
-  const finalizeClose = async (): Promise<void> => {
-    await options?.close?.();
+  const pid = options?.generation ?? 1;
+  const child = Object.assign(new EventEmitter(), { pid });
+  const observeClosed = (): void => {
+    if (isClosed) return;
     isClosed = true;
+    child.emit('close', 0, null);
     closed.resolve();
+  };
+  const finalizeClose = async (): ReturnType<ContainedProviderServerHandle['close']> => {
+    await options?.close?.();
+    observeClosed();
+    return { kind: 'observed-absent', evidence: { subject: { kind: 'process', pid } } };
   };
   const closeMock = vi.fn(finalizeClose);
   const finishCloseAfterReapMock = vi.fn(async () => {
     if (!isClosed) await closeMock();
   });
 
-  const pid = options?.generation ?? 1;
   return {
     handle: {
       pid,
-      child: { pid } as never,
+      child: child as never,
       generation: options?.generation ?? 1,
       containmentIdentity:
         options?.containmentIdentity ??
@@ -149,8 +158,7 @@ export function createFakeProviderServerHandle(options?: {
       }
     },
     resolveClosed: () => {
-      isClosed = true;
-      closed.resolve();
+      observeClosed();
     },
   };
 }

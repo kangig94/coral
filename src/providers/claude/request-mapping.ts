@@ -95,6 +95,11 @@ export function buildClaudeProviderServerSpec(host: ClaudeBrokerHostPlan): Provi
     shutdownCapability: {
       method: 'broker/shutdown',
       timeoutMs: 3_000,
+      resultDisposition: {
+        kind: 'provider-server-shutdown-v1',
+        successorOwner: 'broker-session-pool',
+        operatorExit: 'retry-broker-shutdown',
+      },
     },
   };
 }

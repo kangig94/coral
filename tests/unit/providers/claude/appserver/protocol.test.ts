@@ -54,6 +54,7 @@ describe('claude appserver protocol helpers', () => {
           params: {
             liveControllers: 1,
             activeTurns: 0,
+            heldControllers: 0,
           },
         }),
       ),
@@ -62,6 +63,7 @@ describe('claude appserver protocol helpers', () => {
       params: {
         liveControllers: 1,
         activeTurns: 0,
+        heldControllers: 0,
       },
     });
   });

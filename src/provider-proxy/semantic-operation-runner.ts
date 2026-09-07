@@ -484,6 +484,16 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     );
     entry.abortController.abort(reason.cause);
 
+    const forceClose = async (hostRef: HostRef): Promise<void> => {
+      const cleanup = await hostAuthority.forceClose(hostRef);
+      if (cleanup?.kind === 'held-alive' || cleanup?.kind === 'held-unobservable') {
+        throw requireSetRelinquishment(entry, `${cleanup.subject.kind}:${cleanup.observation}`);
+      }
+      if (cleanup?.kind === 'provider-shutdown-held-alive' || cleanup?.kind === 'provider-shutdown-held-unobservable') {
+        throw requireSetRelinquishment(entry, `${cleanup.subject.kind}:${cleanup.observation}`);
+      }
+    };
+
     const completion: Promise<void> =
       entry.done ??
       entry.stageHandle?.result.then(
@@ -494,7 +504,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     if (!entry.startCommitted) {
       const release = completion.then(async () => {
         if (entry.cancellationMode === 'operation-isolated' && entry.hostRef !== null) {
-          await hostAuthority.forceClose(entry.hostRef);
+          await forceClose(entry.hostRef);
         }
       });
       await withinCancellationDeadline(release).catch((error: unknown) => {
@@ -525,9 +535,9 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       throw new Error(`Provider operation ${operationKeyString(entry.key)} has no cancellation mode.`);
     }
     const initialHostRef = entry.hostRef;
-    const initialForceClose = initialHostRef === null ? Promise.resolve() : hostAuthority.forceClose(initialHostRef);
+    const initialForceClose = initialHostRef === null ? Promise.resolve() : forceClose(initialHostRef);
     const isolatedCancellation = Promise.all([completion, initialForceClose]).then(async () => {
-      if (initialHostRef === null && entry.hostRef !== null) await hostAuthority.forceClose(entry.hostRef);
+      if (initialHostRef === null && entry.hostRef !== null) await forceClose(entry.hostRef);
     });
     await withinCancellationDeadline(isolatedCancellation).catch((error: unknown) => {
       throw requireSetRelinquishment(entry, errorMessage(error));

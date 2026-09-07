@@ -29,12 +29,15 @@ import {
   type ProviderRoleMainPorts,
 } from '#src/provider-proxy/role-main.js';
 import type { ProviderRole } from '#src/provider-proxy/role-argv.js';
-import type {
-  connectRoleControlWithRetry as connectRoleControlWithRetryType,
-  spawnRoleProcess as spawnRoleProcessType,
+import {
+  RoleSpawnError,
+  type RoleSpawnCleanupDisposition,
+  type connectRoleControlWithRetry as connectRoleControlWithRetryType,
+  type spawnRoleProcess as spawnRoleProcessType,
 } from '#src/provider-proxy/role-spawn.js';
 import type * as ProxyMod from '#src/provider-proxy/proxy.js';
 import type * as ReaperMod from '#src/provider-proxy/reaper.js';
+import type * as GuardianMod from '#src/provider-proxy/guardian.js';
 import type * as ProviderRootAuthorityMod from '#src/provider-proxy/provider-root-authority.js';
 import type * as SemanticOperationRunnerMod from '#src/provider-proxy/semantic-operation-runner.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -67,6 +70,13 @@ const reaperRoleCloseHarness = vi.hoisted(() => ({
 const processIncarnationProbeCleanupHarness = vi.hoisted(() => ({
   enabled: false,
   cleanup: vi.fn<() => ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>(),
+}));
+
+const guardianConstructionHarness = vi.hoisted(() => ({
+  enabled: false,
+  listen: vi.fn<() => Promise<void>>(),
+  close: vi.fn<() => Promise<void>>(),
+  recordContainment: vi.fn<() => Promise<void>>(),
 }));
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => {
@@ -127,7 +137,7 @@ vi.mock('#src/provider-proxy/provider-root-authority.js', async (importOriginal)
             }),
             rootIdentity: () => null,
             closed: () => null,
-            forceClose: async () => {},
+            forceClose: async () => undefined,
             evictHost: async () => false,
             admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
             listProviderHosts: () => [],
@@ -203,6 +213,22 @@ vi.mock('#src/provider-proxy/reaper.js', async (importOriginal) => {
   };
 });
 
+vi.mock('#src/provider-proxy/guardian.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GuardianMod>();
+  return {
+    ...actual,
+    createGuardian: (...args: Parameters<typeof actual.createGuardian>) =>
+      guardianConstructionHarness.enabled
+        ? ({
+            listen: guardianConstructionHarness.listen,
+            close: guardianConstructionHarness.close,
+            recordContainment: guardianConstructionHarness.recordContainment,
+            enforcer: () => null,
+          } as unknown as ReturnType<typeof actual.createGuardian>)
+        : actual.createGuardian(...args),
+  };
+});
+
 /**
  * `runProviderRoleMain`'s dispatch has no test anywhere: `process-topology.integration.test.ts` drives
  * `startProviderGuardianRole`/`startProviderReaperRole`/`startProviderProxyRole` directly, never through this
@@ -232,6 +258,11 @@ afterEach(() => {
   reaperRoleCloseHarness.markContainmentAbsent = undefined;
   processIncarnationProbeCleanupHarness.enabled = false;
   processIncarnationProbeCleanupHarness.cleanup.mockReset();
+  guardianConstructionHarness.enabled = false;
+  guardianConstructionHarness.listen.mockReset();
+  guardianConstructionHarness.close.mockReset();
+  guardianConstructionHarness.recordContainment.mockReset();
+  vi.restoreAllMocks();
 });
 
 function scopedTempDir(prefix: string): string {
@@ -326,7 +357,96 @@ function enableRoleSender(
   roleSenderHarness.spawnRoleProcess = spawnRoleProcess;
 }
 
+function constructionHoldRuntime(readProcessIncarnation: (pid: number) => NodeProcessMod.ProcessIncarnation | null): {
+  runtime: ReturnType<typeof createRealRuntime>;
+  kill: ReturnType<typeof vi.fn>;
+} {
+  const base = createRealRuntime('prod');
+  const kill = vi.fn();
+  return {
+    runtime: {
+      ...base,
+      process: {
+        ...base.process,
+        kill,
+        observeLiveness: () => 'unknown' as const,
+        observeRecordedProcessAsync: async () => 'unknown' as const,
+        readProcessIncarnation,
+      },
+    },
+    kill,
+  };
+}
+
 describe('role pairing sender schemas', () => {
+  it('publishes an attached spawn hold without waiting for child close', async () => {
+    const directory = scopedTempDir('coral-guardian-reaper-spawn-hold-');
+    const subject = { kind: 'process', pid: 2_000_000_000 } as const;
+    const operatorExit = {
+      kind: 'abandon-provider-proxy-acquisition' as const,
+      subject,
+      abandon: () => ({
+        kind: 'operator-abandoned' as const,
+        subject,
+        processAbsenceProven: false as const,
+        successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+      }),
+    };
+    const settled = new Promise<void>(() => undefined);
+    const retry = vi.fn<(signal?: AbortSignal) => Promise<RoleSpawnCleanupDisposition<typeof subject>>>();
+    retry.mockImplementation(async () => ({
+      kind: 'held-alive',
+      subject,
+      observation: 'alive',
+      operatorExit,
+      settled,
+      retry,
+    }));
+    const spawnRoleProcess = vi.fn(() => ({
+      kind: 'held' as const,
+      child: {},
+      error: new RoleSpawnError(
+        'role_spawn_incarnation_unavailable',
+        'reaper',
+        'Could not identify the attached reaper.',
+      ),
+      subject,
+      settled,
+      operatorExit,
+      retry,
+    }));
+    const exchange = vi.fn();
+    enableRoleSender(
+      pairingCapsule('guardian', directory, randomBytes(32).toString('hex')),
+      { exchange, close: vi.fn() },
+      spawnRoleProcess,
+    );
+
+    const failure = await startProviderGuardianRole('/unused', roleSenderPorts(directory)).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(GuardianConstructionCleanupHeldError);
+    const hold = (failure as GuardianConstructionCleanupHeldError).hold;
+    expect(hold.pending).toMatchObject([
+      {
+        kind: 'failed-role-spawn',
+        subject,
+        operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+        settled,
+      },
+    ]);
+    expect(retry).toHaveBeenCalledOnce();
+    const retried = await hold.retry();
+    expect(retried).toMatchObject({
+      kind: 'holding',
+      pending: [{ kind: 'failed-role-spawn', subject, reason: 'process:alive' }],
+    });
+    if (retried.kind !== 'holding') throw new Error('Expected construction cleanup to remain held.');
+    expect(retried.pending).toMatchObject([{ settled }]);
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
   it('refuses malformed guardian-to-reaper pairing params before consulting the reaper', async () => {
     const directory = scopedTempDir('coral-guardian-pair-sender-');
     const exchange = vi.fn(async (): Promise<never> => {
@@ -419,6 +539,152 @@ describe('runProviderRoleMain', () => {
     // No capsule path is even given — reaching a non-zero result, or a throw, would prove this fell through
     // to a role branch rather than staying the documented no-op.
     await expect(runProviderRoleMain({ role: 'none' }, { pluginRoot: '/unused' })).resolves.toBe(0);
+  });
+
+  it('rejects a mismatched construction abandonment before accepting the exact guardian signal exit', async () => {
+    const directory = scopedTempDir('coral-guardian-construction-operator-exit-');
+    const subject = { kind: 'process', pid: 2_000_000_000 } as const;
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject,
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const operatorExit = {
+      kind: 'abandon-provider-proxy-acquisition' as const,
+      subject,
+      abandon: vi
+        .fn<() => typeof abandonment>()
+        .mockReturnValueOnce({
+          ...abandonment,
+          subject: { kind: 'process' as const, pid: subject.pid + 1 },
+        } as unknown as typeof abandonment)
+        .mockReturnValue(abandonment),
+    };
+    const settled = new Promise<void>(() => undefined);
+    const retry = vi.fn<(signal?: AbortSignal) => Promise<RoleSpawnCleanupDisposition<typeof subject>>>();
+    retry.mockImplementation(async () => ({
+      kind: 'held-alive',
+      subject,
+      observation: 'alive',
+      operatorExit,
+      settled,
+      retry,
+    }));
+    enableRoleSender(
+      pairingCapsule('guardian', directory, randomBytes(32).toString('hex')),
+      { exchange: vi.fn(), close: vi.fn() },
+      vi.fn(() => ({
+        kind: 'held' as const,
+        child: {},
+        error: new RoleSpawnError(
+          'role_spawn_incarnation_unavailable',
+          'reaper',
+          'Could not identify the attached reaper.',
+        ),
+        subject,
+        settled,
+        operatorExit,
+        retry,
+      })),
+    );
+    processIncarnationProbeCleanupHarness.enabled = true;
+    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValue({ disposition: 'settled' });
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    const running = runProviderRoleMain({ role: 'guardian', capsulePath: '/unused' }, { pluginRoot: directory });
+    await vi.waitFor(() => expect(shutdown).not.toBeNull());
+    (shutdown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(exitProcess).not.toHaveBeenCalled();
+    (shutdown as (() => void) | null)?.();
+
+    await expect(running).resolves.toBe(0);
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
+  });
+
+  it('publishes a guardian signal exit for an unobservable construction reaper without claiming absence', async () => {
+    const directory = scopedTempDir('coral-guardian-construction-reaper-exit-');
+    enableRoleSender(pairingCapsule('guardian', directory, { unexpected: true }), {
+      exchange: vi.fn(),
+      close: vi.fn(),
+    });
+    const { runtime, kill } = constructionHoldRuntime((pid) => {
+      if (pid === process.pid) return testIncarnation(1);
+      throw new Error('reaper identity is unobservable');
+    });
+    processIncarnationProbeCleanupHarness.enabled = true;
+    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValue({ disposition: 'settled' });
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    const running = runProviderRoleMain(
+      { role: 'guardian', capsulePath: '/unused' },
+      { pluginRoot: directory, runtime },
+    );
+    await vi.waitFor(() => expect(shutdown).not.toBeNull());
+    (shutdown as (() => void) | null)?.();
+
+    await expect(running).resolves.toBe(0);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
+  });
+
+  it('publishes a guardian signal exit for an unobservable construction proxy group without claiming absence', async () => {
+    const directory = scopedTempDir('coral-guardian-construction-proxy-exit-');
+    const reaperPid = 2_000_000_000;
+    const proxyPid = 2_000_000_001;
+    const exchange = vi.fn(
+      async (): Promise<ControlExchange> =>
+        controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: { state: 'paired' } } }),
+    );
+    const spawnRoleProcess = vi
+      .fn()
+      .mockReturnValueOnce({ ...(fakeSpawnedRole() as object), pid: reaperPid })
+      .mockReturnValueOnce({ ...(fakeSpawnedRole() as object), pid: proxyPid });
+    enableRoleSender(
+      pairingCapsule('guardian', directory, randomBytes(32).toString('hex')),
+      { exchange, close: vi.fn() },
+      spawnRoleProcess,
+    );
+    guardianConstructionHarness.enabled = true;
+    guardianConstructionHarness.listen.mockResolvedValue();
+    guardianConstructionHarness.close.mockResolvedValue();
+    guardianConstructionHarness.recordContainment.mockRejectedValue(new Error('containment publication failed'));
+    const { runtime, kill } = constructionHoldRuntime((pid) => {
+      if (pid === process.pid) return testIncarnation(1);
+      if (pid === reaperPid) return testIncarnation(2);
+      throw new Error('proxy identity is unobservable');
+    });
+    processIncarnationProbeCleanupHarness.enabled = true;
+    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValue({ disposition: 'settled' });
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    const running = runProviderRoleMain(
+      { role: 'guardian', capsulePath: '/unused' },
+      { pluginRoot: directory, runtime },
+    );
+    await vi.waitFor(() => expect(shutdown).not.toBeNull());
+    (shutdown as (() => void) | null)?.();
+
+    await expect(running).resolves.toBe(0);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
   });
 
   it.each<[ProviderRole, ProviderRole]>([

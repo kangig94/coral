@@ -25,16 +25,16 @@ const ctx: InvocationContext = {
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-workflow-project'),
 };
-// Monotonic deterministic clock — internal workflow logic compares
-// `time.now()` against absolute deadlines (e.g. `drainDeadline`), so fixed
-// time would stall those branches; `Date.now()` would leak wall-clock
-// dependence. A counter that advances 100ms per call is enough to walk
-// every deadline forward without coupling to wall time.
 let workflowClock = new Date('2026-04-27T00:00:00.000Z').getTime();
+let workflowMonotonicClock = 0n;
 const workflowTime = {
   now: () => {
     workflowClock += 100;
     return workflowClock;
+  },
+  monotonicNow: () => {
+    workflowMonotonicClock += 100n;
+    return workflowMonotonicClock;
   },
 };
 const workflowIds = { uuid: () => randomUUID() };
@@ -308,9 +308,6 @@ describe('workflow pipe executor', () => {
   });
 
   it('keeps same-agent different-provider outputs separate across stale recovery', async () => {
-    // Mock Date.now to guarantee time advances between lastActivityAt set and stale check.
-    // Without this, real Date.now() may not advance 1ms between sync mock calls → stale
-    // detection never triggers → infinite loop → OOM.
     let mockNow = 10_000;
     vi.spyOn(Date, 'now').mockImplementation(() => {
       mockNow += 10;
@@ -408,6 +405,39 @@ describe('workflow pipe executor', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it('does not charge a late wait tick as unobserved atom inactivity', async () => {
+    const monotonicReadings = [0n, 60_000n, 60_000n, 60_500n, 60_500n];
+    const time = {
+      ...workflowTime,
+      monotonicNow: () => monotonicReadings.shift() ?? 60_500n,
+    };
+    let firstCycle = true;
+    const executionSvc = createExecutionService({
+      waitStream: vi.fn((req: WaitRequest) => {
+        if (firstCycle) {
+          firstCycle = false;
+          return emit([stillWaiting([...req.jobIds])]);
+        }
+        return emit([terminal('job-1', 'session-1', { content: 'DONE' })]);
+      }),
+    });
+
+    const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
+      staleTimeoutMs: 2_000,
+      staleCheckIntervalMs: 1_000,
+      staleAbortTimeoutMs: 30_000,
+      drainDeadlineMs: 15_000,
+      workflowJobId: 'workflow-1',
+      onProgress: vi.fn(),
+      recoverStaleAtom,
+      time,
+    });
+
+    expect([...results.values()]).toEqual(['DONE']);
+    expect(executionSvc.abort).not.toHaveBeenCalled();
+    expect(executionSvc.resume).not.toHaveBeenCalled();
   });
 
   it('fails stale recovery when the aborted job never releases its session claim', async () => {
@@ -635,7 +665,6 @@ describe('workflow pipe executor', () => {
   });
 
   it('preserves launched atom identity after stale recovery', async () => {
-    // Mock Date.now to guarantee time advances between lastActivityAt set and stale check.
     let mockNow = 10_000;
     vi.spyOn(Date, 'now').mockImplementation(() => {
       mockNow += 10;

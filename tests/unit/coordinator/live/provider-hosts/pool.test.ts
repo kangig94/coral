@@ -39,6 +39,7 @@ import type {
   ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderServerCloseDisposition } from '#src/providers/app-server-transport.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -65,6 +66,11 @@ import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const PUBLICATION_RECEIPT = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
+
+function observedServerClose(pid: number): ProviderServerCloseDisposition {
+  return { kind: 'observed-absent', evidence: { subject: { kind: 'process', pid } } };
+}
+
 const containmentProofDb = newRawDatabase(':memory:');
 applyBundledStoreSchema(containmentProofDb, currentCoralStoreFormat());
 afterAll(() => containmentProofDb.close());
@@ -107,7 +113,6 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
       adoptionWindowMs: Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: {
         spanMs: Number.MAX_SAFE_INTEGER,
-        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
       },
     },
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),
@@ -973,6 +978,7 @@ describe('provider host pool', () => {
     server.closeMock.mockImplementation(async () => {
       await close.promise;
       server.resolveClosed();
+      return observedServerClose(server.handle.pid);
     });
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1004,6 +1010,7 @@ describe('provider host pool', () => {
     server.closeMock.mockImplementation(async () => {
       await close.promise;
       server.resolveClosed();
+      return observedServerClose(server.handle.pid);
     });
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1046,6 +1053,7 @@ describe('provider host pool', () => {
     server.closeMock.mockImplementation(async () => {
       await close.promise;
       server.resolveClosed();
+      return observedServerClose(server.handle.pid);
     });
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1076,6 +1084,7 @@ describe('provider host pool', () => {
     server.closeMock.mockImplementation(async () => {
       await close.promise;
       server.resolveClosed();
+      return observedServerClose(server.handle.pid);
     });
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1099,6 +1108,7 @@ describe('provider host pool', () => {
     server.closeMock.mockImplementation(async () => {
       await close.promise;
       server.resolveClosed();
+      return observedServerClose(server.handle.pid);
     });
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
@@ -1131,6 +1141,7 @@ describe('provider host pool', () => {
     server.closeMock.mockImplementation(async () => {
       await close.promise;
       server.resolveClosed();
+      return observedServerClose(server.handle.pid);
     });
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,

@@ -100,6 +100,17 @@ const reclamationFailureMetadataSchema = z.union([
       message: 'processGroupId must equal pid for a coordinator-owned provider host',
       path: ['processGroupId'],
     }),
+  z
+    .object({
+      owner: z.literal('provider-proxy'),
+      hostKey: z.string(),
+      ownerJobId: z.string().nullable(),
+      pid: positiveSafeIntegerSchema.optional(),
+      reclamationAttempts: positiveSafeIntegerSchema,
+      reclamationFailure: z.string(),
+      reclamationRetryable: z.boolean(),
+    })
+    .strict(),
 ]);
 
 export const liveProviderHostInventoryRecordSchema = z
@@ -123,11 +134,35 @@ export const reclamationFailedProviderHostInventoryRecordSchema = z
     host: reclamationFailureMetadataSchema,
   })
   .strict();
+export const shutdownHeldProviderHostInventoryRecordSchema = z
+  .object({
+    ...providerHostInventoryCommonShape,
+    status: z.literal('shutdown-held'),
+    host: z
+      .object({
+        owner: z.literal('coordinator'),
+        hostKey: z.string(),
+        identityKey: z.string(),
+        ownerJobId: z.string().nullable(),
+        pid: positiveSafeIntegerSchema,
+        processGroupId: positiveSafeIntegerSchema,
+        observation: z.enum(['alive', 'unobservable']),
+        successorOwner: z.string().min(1).nullable(),
+        operatorExit: z.string().min(1),
+      })
+      .strict()
+      .refine(({ pid, processGroupId }) => processGroupId === pid, {
+        message: 'processGroupId must equal pid for a coordinator-owned provider host',
+        path: ['processGroupId'],
+      }),
+  })
+  .strict();
 
 export const providerHostInventoryRecordSchema = z.discriminatedUnion('status', [
   liveProviderHostInventoryRecordSchema,
   retiredBlockedProviderHostInventoryRecordSchema,
   reclamationFailedProviderHostInventoryRecordSchema,
+  shutdownHeldProviderHostInventoryRecordSchema,
 ]);
 
 export const providerHostInventorySchema = z.array(providerHostInventoryRecordSchema);

@@ -4,6 +4,12 @@ import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } 
 import { extractClaudeProgressMessage, formatToolProgress } from '../progress.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import {
+  ClaudeControllerCleanupHeldError,
+  combineChildShutdownDispositions,
+  heldChildShutdown,
+  observedChildShutdown,
+} from './child-shutdown.js';
+import {
   claudeControlRequestSubtypes,
   ndjsonSafeStringify,
   parseClaudePrintStdoutLine,
@@ -41,8 +47,11 @@ import {
 import type {
   BrokerSessionController,
   ChildExit,
+  ClaudeChildShutdownSubject,
   ControllerNotification,
   ControllerNotificationMap,
+  ControllerShutdownDisposition,
+  ControllerShutdownHold,
   PrintSessionControllerOptions,
 } from './session-contract.js';
 
@@ -82,8 +91,11 @@ type ControllerTurnStartParams = Omit<TurnStartParams, 'brokerSessionKey'>;
 type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey'>;
 
 type ChildBinding = {
+  subject: ClaudeChildShutdownSubject;
   child: Awaited<ReturnType<PrintSessionControllerOptions['spawnChild']>>;
   closed: Promise<ChildExit>;
+  closedObserved: boolean;
+  expectedExit: boolean;
   dispose: () => void;
 };
 
@@ -100,6 +112,7 @@ export class PrintSessionController implements BrokerSessionController {
   private readonly pendingControlRequests = new Map<string, PendingControlRequest>();
 
   private childBinding: ChildBinding | null = null;
+  private readonly unsettledChildBindings = new Set<ChildBinding>();
   private bootstrapSignature: ClaudeBootstrapSignature | null = null;
   private bootstrapConfig: Omit<SessionEnsureParams, 'brokerSessionKey'> | null = null;
   private controllerEnvHash: string | null = null;
@@ -112,6 +125,8 @@ export class PrintSessionController implements BrokerSessionController {
   private stderrRing = '';
   private shuttingDown = false;
   private defaultModel: string | null = null;
+  private childGeneration = 0;
+  private failedBootstrapCleanup: ControllerShutdownHold | null = null;
 
   constructor(options: PrintSessionControllerOptions) {
     this.spawnChild = options.spawnChild;
@@ -282,32 +297,19 @@ export class PrintSessionController implements BrokerSessionController {
     return this.activeTurn === null && this.currentConversationRef() !== null;
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(): Promise<ControllerShutdownDisposition> {
     this.shuttingDown = true;
-
-    if (!this.childBinding) {
-      return;
+    const childBindings = [...this.unsettledChildBindings];
+    if (childBindings.length === 0) {
+      return observedChildShutdown([]);
     }
 
-    const childBinding = this.childBinding;
     this.initialized = false;
     this.rejectPendingControlRequests(
       new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude broker is shutting down.', this.errorData()),
     );
-    childBinding.child.kill('SIGTERM');
-    if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_GRACE_MS)) {
-      return;
-    }
-
-    childBinding.child.kill('SIGKILL');
-    if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_TIMEOUT_MS - CHILD_SHUTDOWN_GRACE_MS)) {
-      return;
-    }
-
-    childBinding.dispose();
-    if (this.childBinding === childBinding) {
-      this.childBinding = null;
-    }
+    const dispositions = await Promise.all(childBindings.map((binding) => this.terminateChildBinding(binding)));
+    return combineChildShutdownDispositions(dispositions, () => this.shutdown());
   }
 
   private async ensureInitializedSession(
@@ -315,6 +317,23 @@ export class PrintSessionController implements BrokerSessionController {
     signature: ClaudeBootstrapSignature,
     controllerEnvHash: string,
   ): Promise<ControllerSessionEnsureResult> {
+    if (this.failedBootstrapCleanup !== null) {
+      const cleanup = await this.failedBootstrapCleanup.retry();
+      if (cleanup.kind !== 'observed-absent') {
+        this.failedBootstrapCleanup = cleanup;
+        throw new ClaudeBrokerRpcError(
+          CLAUDE_BROKER_STATE_RPC_CODE,
+          'Claude session bootstrap cleanup is held until the prior child is observed absent.',
+          this.errorData({
+            cleanupDisposition: cleanup.kind,
+            observation: cleanup.observation,
+            operatorExit: { kind: 'retry-session-ensure' },
+          }),
+        );
+      }
+      this.failedBootstrapCleanup = null;
+    }
+
     if (!this.childBinding) {
       this.latestSessionId = params.conversationRef ?? this.latestSessionId;
       this.bootstrapSignature = signature;
@@ -334,8 +353,13 @@ export class PrintSessionController implements BrokerSessionController {
         this.initialized = true;
         this.bootstrapEstablished = true;
       } catch (error) {
-        this.resetFailedBootstrap();
-        throw this.asRpcError(error, 'Claude session bootstrap failed.');
+        const cleanup = await this.resetFailedBootstrap();
+        const rpcError = this.asRpcError(error, 'Claude session bootstrap failed.');
+        if (cleanup.kind !== 'observed-absent') {
+          this.failedBootstrapCleanup = cleanup;
+          throw new ClaudeControllerCleanupHeldError(rpcError, cleanup);
+        }
+        throw rpcError;
       }
     }
 
@@ -366,23 +390,31 @@ export class PrintSessionController implements BrokerSessionController {
     const closed = new Promise<ChildExit>((resolve) => {
       resolveClosed = resolve;
     });
+    const generation = ++this.childGeneration;
+    // eslint-disable-next-line prefer-const
+    let binding!: ChildBinding;
     const offExit = child.onExit((event) => {
       resolveClosed(event);
-      this.handleChildExit(event);
+      this.handleChildExit(binding, event);
     });
     const offStderr = child.onStderrChunk?.((chunk) => {
       this.captureStderr(chunk);
     });
 
-    this.childBinding = {
+    binding = {
+      subject: { kind: 'claude-child', controller: 'print', generation },
       child,
       closed,
+      closedObserved: false,
+      expectedExit: false,
       dispose: () => {
         offStdout();
         offExit();
         offStderr?.();
       },
     };
+    this.unsettledChildBindings.add(binding);
+    this.childBinding = binding;
     this.initialized = false;
   }
 
@@ -575,15 +607,16 @@ export class PrintSessionController implements BrokerSessionController {
     });
   }
 
-  private handleChildExit(event: ChildExit): void {
-    const childBinding = this.childBinding;
-    if (childBinding) {
-      childBinding.dispose();
+  private handleChildExit(binding: ChildBinding, event: ChildExit): void {
+    binding.closedObserved = true;
+    this.unsettledChildBindings.delete(binding);
+    binding.dispose();
+    if (this.childBinding === binding) {
+      this.childBinding = null;
+      this.initialized = false;
     }
-    this.childBinding = null;
-    this.initialized = false;
 
-    if (this.shuttingDown) {
+    if (this.shuttingDown || binding.expectedExit) {
       this.clearPendingControlRequests();
       return;
     }
@@ -845,23 +878,18 @@ export class PrintSessionController implements BrokerSessionController {
     return new ClaudeBrokerRpcError(CLAUDE_BROKER_CHILD_EXIT_RPC_CODE, detail, this.errorData());
   }
 
-  private resetFailedBootstrap(): void {
+  private async resetFailedBootstrap(): Promise<ControllerShutdownDisposition> {
+    let cleanup: ControllerShutdownDisposition = observedChildShutdown([]);
     if (this.childBinding) {
       const binding = this.childBinding;
-      this.childBinding = null;
-      binding.dispose();
-      try {
-        binding.child.kill('SIGTERM');
-      } catch {
-        // Bootstrap failure remains the caller-visible error.
-      }
+      cleanup = await this.terminateChildBinding(binding);
     }
 
     this.initialized = false;
     this.clearPendingControlRequests();
 
     if (this.bootstrapEstablished) {
-      return;
+      return cleanup;
     }
 
     this.bootstrapSignature = null;
@@ -869,6 +897,34 @@ export class PrintSessionController implements BrokerSessionController {
     this.controllerEnvHash = null;
     this.latestSessionId = null;
     this.defaultModel = null;
+    return cleanup;
+  }
+
+  private async terminateChildBinding(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+    if (binding.closedObserved) return observedChildShutdown([binding.subject]);
+    binding.expectedExit = true;
+    try {
+      binding.child.kill('SIGTERM');
+    } catch {
+      // Only the close observation authorizes settlement.
+    }
+    if (await this.waitForChildExit(binding.closed, CHILD_SHUTDOWN_GRACE_MS)) {
+      return observedChildShutdown([binding.subject]);
+    }
+    try {
+      binding.child.kill('SIGKILL');
+    } catch {
+      // Only the close observation authorizes settlement.
+    }
+    if (await this.waitForChildExit(binding.closed, CHILD_SHUTDOWN_TIMEOUT_MS - CHILD_SHUTDOWN_GRACE_MS)) {
+      return observedChildShutdown([binding.subject]);
+    }
+    return heldChildShutdown({
+      kind: 'held-unobservable',
+      subjects: [binding.subject],
+      settled: binding.closed.then(() => observedChildShutdown([binding.subject])),
+      retry: () => this.terminateChildBinding(binding),
+    });
   }
 
   private asRpcError(error: unknown, fallbackMessage: string): ClaudeBrokerRpcError {

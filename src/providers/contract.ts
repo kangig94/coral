@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
-import { nonEmptyStringSchema } from '../infra/identifiers.js';
+import { persistedNonEmptyStringSchema } from '../infra/persisted-scalar-contracts.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { ExecResult } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
-import type { JsonValue } from '../infra/json-value.js';
+import { jsonValueSchema, type JsonValue } from '../infra/json-value.js';
 import type { ProviderExecutionPlan } from './execution-plan.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
@@ -28,6 +28,32 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';
 /** Provider-private account authority represented as canonical snapshot-safe data. */
 export type ProviderAccess = JsonValue;
+
+export const providerServerShutdownResultSchema = z.discriminatedUnion('disposition', [
+  z.object({ ok: z.literal(true), disposition: z.literal('observed-absent') }).strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      disposition: z.literal('held-alive'),
+      observation: z.literal('alive'),
+      subjects: z.array(jsonValueSchema),
+      successor: z.object({ kind: z.literal('accepted'), owner: z.string().min(1) }).strict(),
+      operatorExit: z.object({ kind: z.string().min(1) }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ok: z.literal(false),
+      disposition: z.literal('held-unobservable'),
+      observation: z.literal('unobservable'),
+      subjects: z.array(jsonValueSchema),
+      successor: z.object({ kind: z.literal('accepted'), owner: z.string().min(1) }).strict(),
+      operatorExit: z.object({ kind: z.string().min(1) }).strict(),
+    })
+    .strict(),
+]);
+
+export type ProviderServerShutdownResult = z.infer<typeof providerServerShutdownResultSchema>;
 
 export const providerInstructionSchema = z
   .object({
@@ -90,9 +116,9 @@ export interface ProviderRequest {
 export const providerRequestSchema = z
   .object({
     action: z.enum(['exec', 'resume']),
-    sessionId: nonEmptyStringSchema,
+    sessionId: persistedNonEmptyStringSchema,
     name: z.string().optional(),
-    conversationRef: nonEmptyStringSchema.optional(),
+    conversationRef: persistedNonEmptyStringSchema.optional(),
     prompt: z.string(),
     model: z.string().optional(),
     cwd: canonicalWorkDirWireSchema,
@@ -131,6 +157,11 @@ interface ProviderServerSpecBase {
   shutdownCapability?: {
     method: string;
     timeoutMs: number;
+    resultDisposition?: Readonly<{
+      kind: 'provider-server-shutdown-v1';
+      successorOwner: string;
+      operatorExit: string;
+    }>;
   };
 }
 
@@ -402,7 +433,7 @@ const providerTerminalDiagnosticsSchema = z
 export const providerContinuityEventBodySchema = z
   .object({
     kind: z.literal('continuity'),
-    conversationRef: nonEmptyStringSchema.nullable(),
+    conversationRef: persistedNonEmptyStringSchema.nullable(),
     resumable: z.boolean(),
     providerContinuity: z.record(z.string(), z.unknown()).nullable(),
   })

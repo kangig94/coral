@@ -1,7 +1,11 @@
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { raceTimeout } from '../../../infra/async.js';
 import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
-import type { ProviderServerSpec } from '../../../providers/contract.js';
+import {
+  providerServerShutdownResultSchema,
+  type ProviderServerShutdownResult,
+  type ProviderServerSpec,
+} from '../../../providers/contract.js';
 import type { ChildProcessLike, TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { createMonotonicClock, type MonotonicClock } from '../../../infra/monotonic-clock.js';
@@ -17,7 +21,7 @@ import {
   SIGTERM_GRACE_MS,
 } from '../../../infra/process-constants.js';
 import { clearIdleTimer } from './idle.js';
-import type { ProviderHostEntry } from './state.js';
+import type { ProviderHostEntry, ProviderHostShutdownDisposition, ProviderHostShutdownHold } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
@@ -178,11 +182,11 @@ export async function closeProviderServerEntry(
       spec: ProviderServerSpec,
       containment: RecordedContainmentIdentity,
       signal?: AbortSignal,
-    ) => Promise<void>;
+    ) => Promise<ProviderHostShutdownDisposition>;
     reapContainment: ProviderHostContainmentReaper;
     signal?: AbortSignal;
   },
-): Promise<void> {
+): Promise<ProviderHostShutdownDisposition> {
   clearIdleTimer(entry, options.runtime.time);
   entry.disposeHostNotifications?.();
   entry.disposeHostNotifications = null;
@@ -214,10 +218,12 @@ export async function closeProviderServerEntry(
   } else if (handle === null) {
     await options.reapContainment(containment, options.signal);
   } else {
-    await options.shutdownHandle(handle, entry.spec, containment, options.signal);
+    const disposition = await options.shutdownHandle(handle, entry.spec, containment, options.signal);
+    if (disposition.kind !== 'observed-absent') return disposition;
   }
 
   if (entry.containment === containment) entry.containment = null;
+  return { kind: 'observed-absent' };
 }
 
 export async function shutdownHandle(
@@ -227,10 +233,13 @@ export async function shutdownHandle(
   time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,
   reapContainment: ProviderHostContainmentReaper,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<ProviderHostShutdownDisposition> {
   if (signal !== undefined) throwIfAborted(signal, 'provider_host_shutdown');
   const capability = spec.shutdownCapability;
-  if (capability) {
+  if (capability?.resultDisposition?.kind === 'provider-server-shutdown-v1') {
+    const shutdown = await requestDispositionShutdown(handle, spec, time, reapContainment, containment, signal);
+    if (shutdown.kind !== 'observed-absent') return shutdown;
+  } else if (capability) {
     await tryGracefulShutdown(handle, capability, time, signal);
   } else {
     handle.markExpectedClose();
@@ -239,6 +248,64 @@ export async function shutdownHandle(
   await reapContainment(containment, signal, { child: handle.child, hasExited: handle.isClosed });
   if (signal !== undefined) throwIfAborted(signal, 'provider_host_finish_close');
   await handle.finishCloseAfterReap();
+  return { kind: 'observed-absent' };
+}
+
+async function requestDispositionShutdown(
+  handle: ContainedProviderServerHandle,
+  spec: ProviderServerSpec,
+  time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,
+  reapContainment: ProviderHostContainmentReaper,
+  containment: RecordedContainmentIdentity,
+  signal?: AbortSignal,
+): Promise<ProviderHostShutdownDisposition> {
+  const capability = spec.shutdownCapability;
+  if (capability?.resultDisposition?.kind !== 'provider-server-shutdown-v1') {
+    throw new Error('provider_host_shutdown_disposition_missing');
+  }
+  handle.markExpectedClose();
+  let result: ProviderServerShutdownResult | null = null;
+  try {
+    const outcome = await waitWhileAuthorized(
+      Promise.race([
+        handle.rpc.request(capability.method, {}).then((value) => ({ kind: 'response' as const, value })),
+        handle.closePromise.then(() => ({ kind: 'closed' as const })),
+        waitForTimeout(capability.timeoutMs, { kind: 'timeout' as const }, time),
+      ]),
+      signal,
+      'provider_host_disposition_shutdown',
+    );
+    if (outcome.kind === 'closed') return { kind: 'observed-absent' };
+    if (outcome.kind === 'response') result = providerServerShutdownResultSchema.parse(outcome.value);
+  } catch (error: unknown) {
+    if (signal?.aborted) throw error;
+  }
+
+  const expected = capability.resultDisposition;
+  if (
+    result !== null &&
+    result.disposition !== 'observed-absent' &&
+    (result.successor.owner !== expected?.successorOwner || result.operatorExit.kind !== expected.operatorExit)
+  ) {
+    result = null;
+  }
+  if (result?.disposition === 'observed-absent') return { kind: 'observed-absent' };
+
+  const retry = (): Promise<ProviderHostShutdownDisposition> =>
+    shutdownHandle(handle, spec, containment, time, reapContainment);
+  const kind =
+    result?.disposition === 'held-alive' ? 'provider-shutdown-held-alive' : 'provider-shutdown-held-unobservable';
+  const observation = result?.disposition === 'held-alive' ? 'alive' : 'unobservable';
+  const operatorExitKind = result?.operatorExit.kind ?? 'retry-provider-shutdown';
+  return {
+    kind,
+    observation,
+    subject: { kind: 'provider-server', pid: handle.pid },
+    obligations: result?.subjects ?? [],
+    successor: result?.successor ?? null,
+    retry,
+    operatorExit: { kind: operatorExitKind, retry },
+  } satisfies ProviderHostShutdownHold;
 }
 
 async function tryGracefulShutdown(

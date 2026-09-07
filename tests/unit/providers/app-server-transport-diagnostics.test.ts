@@ -12,12 +12,17 @@ import {
 } from '#src/providers/host-diagnostics.js';
 
 const TEST_TIMEOUT_MS = 20_000;
+const acceptCleanupHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => ({
+  kind: 'accepted',
+  owner: 'provider-proxy-root-pool',
+  settlement: hold.settled,
+});
 
 describe('provider app-server transport diagnostics', () => {
   const handles: ProviderServerHandle[] = [];
 
   afterEach(async () => {
-    await Promise.all(handles.splice(0).map((handle) => handle.close()));
+    await Promise.all(handles.splice(0).map((handle) => handle.close(acceptCleanupHold)));
   });
 
   it('keeps pre-request history separate from the exact completed request span', async () => {
@@ -187,7 +192,13 @@ describe('provider app-server transport diagnostics', () => {
       },
       generation: 17,
       observeProviderResponse,
+      acceptFailedSpawnCleanup: (hold) => ({
+        kind: 'accepted',
+        owner: 'provider-proxy-root-pool',
+        settlement: hold.settled,
+      }),
     });
+    if ('kind' in handle) throw handle.error;
     handles.push(handle);
     return handle;
   }

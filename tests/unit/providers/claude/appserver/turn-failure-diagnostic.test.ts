@@ -88,6 +88,7 @@ describe('Claude turn failure diagnostics', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       readySettleMs: 1,
       promptAckTimeoutMs: 10,
       stderrLimit: 512,
@@ -140,6 +141,7 @@ describe('Claude turn failure diagnostics', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       readySettleMs: 1,
       promptAckTimeoutMs: 10_000,
     });
@@ -175,6 +177,7 @@ describe('Claude turn failure diagnostics', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       readySettleMs: 1,
       promptAckTimeoutMs: 10_000,
     });

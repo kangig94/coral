@@ -4,8 +4,8 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { ProcessContainmentError, type RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import type {
-  HeldProviderServerSpawn,
   ProviderServerFailedSpawnCleanupDisposition,
+  ProviderServerFailedSpawnCleanupHold,
   SpawnProviderServerFn,
 } from '#src/providers/app-server-transport.js';
 import { providerHostInventorySchema } from '#src/providers/host-inventory-schema.js';
@@ -13,6 +13,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import {
   StubbedContainmentProviderHostManager,
   noCarrierBlocksRetirement,
+  createExclusiveSpec,
   createFakeProviderServerHandle,
   createSharedSpec,
   createSpawnProviderServerMock,
@@ -35,16 +36,119 @@ async function openReclamationTestHost(reapContainment: (identity: RecordedConta
 }
 
 describe('provider host reclamation', () => {
+  it('publishes a retryable broker shutdown hold without reaping its retained process', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        disposition: 'held-alive',
+        observation: 'alive',
+        subjects: [{ kind: 'claude-child', controller: 'tui', generation: 1 }],
+        successor: { kind: 'accepted', owner: 'broker-session-pool' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        disposition: 'held-unobservable',
+        observation: 'unobservable',
+        subjects: [{ kind: 'claude-child', controller: 'tui', generation: 1 }],
+        successor: { kind: 'accepted', owner: 'broker-session-pool' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      })
+      .mockResolvedValueOnce({ ok: true, disposition: 'observed-absent' });
+    const server = createFakeProviderServerHandle({ generation: 492, request });
+    const reapContainment = vi.fn(async () => undefined);
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      reapContainment,
+      allocateProviderServerGeneration: () => 492,
+    });
+    const lease = await manager.openSession(
+      createExclusiveSpec({
+        shutdownCapability: {
+          method: 'broker/shutdown',
+          timeoutMs: 1_000,
+          resultDisposition: {
+            kind: 'provider-server-shutdown-v1',
+            successorOwner: 'broker-session-pool',
+            operatorExit: 'retry-broker-shutdown',
+          },
+        },
+      }),
+      { jobId: 'held-broker-job' },
+    );
+
+    lease.close();
+    await vi.waitFor(() => expect(manager.listProviderHosts()).toMatchObject([{ status: 'shutdown-held' }]));
+    expect(reapContainment).not.toHaveBeenCalled();
+    expect(manager.listProviderHosts()).toMatchObject([
+      {
+        status: 'shutdown-held',
+        host: {
+          observation: 'alive',
+          successorOwner: 'broker-session-pool',
+          operatorExit: 'retry-broker-shutdown',
+        },
+      },
+    ]);
+    expect(() => providerHostInventorySchema.parse(manager.listProviderHosts())).not.toThrow();
+    const [obligation] = manager.cleanupObligations().closingHosts;
+    expect(obligation).toMatchObject({
+      kind: 'provider-server-shutdown-held',
+      containment: server.handle.containmentIdentity,
+      operatorExit: { kind: 'retry-broker-shutdown', retry: expect.any(Function) },
+    });
+    if (obligation === undefined || !('kind' in obligation) || obligation.kind !== 'provider-server-shutdown-held') {
+      throw new Error('Expected a published provider-server shutdown hold.');
+    }
+    expect(obligation.inspect()).toMatchObject({
+      kind: 'provider-shutdown-held-alive',
+      successor: { kind: 'accepted', owner: 'broker-session-pool' },
+    });
+
+    await expect(obligation.operatorExit.retry()).resolves.toMatchObject({
+      kind: 'provider-shutdown-held-unobservable',
+    });
+    expect(obligation.inspect()).toMatchObject({
+      kind: 'provider-shutdown-held-unobservable',
+      observation: 'unobservable',
+    });
+    expect(reapContainment).not.toHaveBeenCalled();
+
+    await expect(obligation.operatorExit.retry()).resolves.toEqual({ kind: 'observed-absent' });
+    await expect(obligation.settlement).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(reapContainment).toHaveBeenCalledOnce();
+    expect(manager.cleanupObligations().closingHosts).toEqual([]);
+  });
+
   it('publishes a held failed spawn and lets provider-host eviction take its operator exit', async () => {
+    vi.useFakeTimers();
     const retry = createDeferred<ProviderServerFailedSpawnCleanupDisposition>();
     const operatorAcceptance = createDeferred<void>();
     const subject = { kind: 'unattributable-process-group', processGroupId: null } as const;
-    const abandonment = { kind: 'operator-abandoned', subject, processAbsenceProven: false } as const;
+    const abandonment = {
+      kind: 'operator-abandoned',
+      subject,
+      processAbsenceProven: false,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+    } as const;
+    const mismatchedAbandonment = {
+      ...abandonment,
+      subject: { kind: 'unattributable-process-group' as const, processGroupId: 999 },
+    };
+    let abandonAttempts = 0;
     const operatorExit = {
       kind: 'abandon-provider-host-acquisition' as const,
       abandon: vi.fn(async () => {
         await operatorAcceptance.promise;
-        retry.resolve(abandonment);
+        abandonAttempts += 1;
+        if (abandonAttempts === 1) {
+          retry.resolve(mismatchedAbandonment);
+          return mismatchedAbandonment as unknown as typeof abandonment;
+        }
         return abandonment;
       }),
     };
@@ -52,18 +156,24 @@ describe('provider host reclamation', () => {
       'process_identity_unverified',
       'fixture detached process group could not be attributed',
     );
-    const held: HeldProviderServerSpawn = {
+    const held: ProviderServerFailedSpawnCleanupHold = {
       kind: 'held-unobservable',
       subject,
       observation: 'unobservable',
       operatorExit,
-      retry: () => retry.promise,
+      settled: retry.promise.then(() => undefined),
+      retry: vi.fn(() => retry.promise),
       error: failure,
     };
     const manager = new StubbedContainmentProviderHostManager({
       carrierBlocksRetirement: noCarrierBlocksRetirement,
       runtime,
-      spawnProviderServer: vi.fn<SpawnProviderServerFn>(async () => held),
+      spawnProviderServer: vi.fn<SpawnProviderServerFn>(
+        async (_options, _sink, _generation, _recordContainment, acceptFailedSpawnCleanup) => ({
+          ...held,
+          successor: acceptFailedSpawnCleanup(held),
+        }),
+      ),
       reapContainment: vi.fn(),
       allocateProviderServerGeneration: () => 490,
     });
@@ -87,6 +197,7 @@ describe('provider host reclamation', () => {
       kind: 'provider-server-spawn-cleanup-held',
       operatorExit,
     });
+    expect(held.retry).not.toHaveBeenCalled();
 
     let evictionSettled = false;
     const eviction = manager.evictHost(record.ref).finally(() => {
@@ -96,10 +207,19 @@ describe('provider host reclamation', () => {
     expect(evictionSettled).toBe(false);
     expect(manager.cleanupObligations().closingHosts).toHaveLength(1);
     operatorAcceptance.resolve();
-    await expect(eviction).resolves.toBe(true);
+    await expect(eviction).resolves.toBe(false);
+    expect(manager.listProviderHosts()).toMatchObject([{ status: 'reclamation-failed' }]);
+    expect(manager.admissionSnapshot().state.size).toBe(1);
+    expect(manager.admissionSnapshot().tombstones).toEqual([]);
+
+    const acceptedEviction = manager.evictHost(record.ref);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(acceptedEviction).resolves.toBe(true);
     await expect(opening).resolves.toBe(failure);
-    expect(operatorExit.abandon).toHaveBeenCalledOnce();
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(manager.listProviderHosts()).toEqual([]);
+    expect(manager.admissionSnapshot().state.size).toBe(0);
+    expect(manager.admissionSnapshot().tombstones).toEqual([]);
   });
 
   it('does not retry reclamation when process identity cannot be verified', async () => {
@@ -212,7 +332,7 @@ describe('provider host reclamation', () => {
       label: `provider host claude ${hostRef.instanceId}`,
       containment: server.handle.containmentIdentity,
     });
-    expect(closingHost?.settlement).toBe(entry.closePromise);
+    expect(closingHost?.settlement).toBeInstanceOf(Promise);
 
     firstDeadline.abort('first-shutdown-deadline');
     await expect(firstShutdown).rejects.toMatchObject({

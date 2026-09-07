@@ -1755,7 +1755,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const providerHostCommand = backend.command('provider-host').description('Inspect and evict provider hosts');
   providerHostCommand
     .command('list')
-    .description('List live, retained-blocked, and reclamation-failed provider hosts')
+    .description('List live, retained-blocked, shutdown-held, and reclamation-failed provider hosts')
     .action(async () => {
       try {
         process.stdout.write(`${formatProviderHostList(await providerHosts.list())}\n`);
@@ -1765,7 +1765,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   providerHostCommand
     .command('inspect')
-    .description('Inspect one exact live, retained-blocked, or reclamation-failed provider host')
+    .description('Inspect one exact live, retained-blocked, shutdown-held, or reclamation-failed provider host')
     .argument('[host-ref]', 'Canonical ph1 provider-host reference')
     .option('--work-dir <path>', 'Resolve exactly one provider host by work directory')
     .action(async (hostRef: string | undefined, options: { workDir?: string }) => {

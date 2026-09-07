@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { JsonValue } from './json-value.js';
+import { persistedNonEmptyStringSchema } from './persisted-scalar-contracts.js';
 
 const durableJsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -14,7 +15,7 @@ const durableJsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 
 export const providerProfileEnvelopeSchema = z
-  .object({ provider: z.string().min(1), profile: durableJsonValueSchema })
+  .object({ provider: persistedNonEmptyStringSchema, profile: durableJsonValueSchema })
   .strict();
 export type ProviderProfileEnvelope = z.infer<typeof providerProfileEnvelopeSchema>;
 
@@ -25,7 +26,7 @@ export const callerProviderScopeSchema = z
   .object({ origin: z.literal('caller'), profiles: providerProfileSetSchema })
   .strict();
 export const systemProviderScopeSchema = z
-  .object({ origin: z.literal('system'), name: z.string().min(1), profiles: providerProfileSetSchema })
+  .object({ origin: z.literal('system'), name: persistedNonEmptyStringSchema, profiles: providerProfileSetSchema })
   .strict();
 export const providerScopeSchema = z.discriminatedUnion('origin', [
   callerProviderScopeSchema,

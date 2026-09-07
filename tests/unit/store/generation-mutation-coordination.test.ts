@@ -73,17 +73,26 @@ describe('generation mutation writer identity', () => {
       .find((entry) => entry.startsWith('owner-') && entry.endsWith('.lock'));
     if (ownerMarker === undefined) throw new Error('Expected a maintenance owner marker');
     now = runtime.storage.statSync(join(maintenanceLock, ownerMarker)).mtimeMs + 10 * 60 * 1_000 + 1;
+    let monotonicNow = 0n;
     const contenderRuntime: Runtime = {
       ...runtime,
       time: {
         ...runtime.time,
         now: () => now,
+        monotonicNow: () => monotonicNow,
       },
     };
-    const attempt = tryAcquireGenerationWriterLease(contenderRuntime, {
+    let attempt = tryAcquireGenerationWriterLease(contenderRuntime, {
       kind: 'routing-status',
       name: 'handoff-routing-status',
     });
+    for (let observedMs = 50; attempt.kind !== 'acquired' && observedMs <= 10 * 60 * 1_000; observedMs += 50) {
+      monotonicNow = BigInt(observedMs);
+      attempt = tryAcquireGenerationWriterLease(contenderRuntime, {
+        kind: 'routing-status',
+        name: 'handoff-routing-status',
+      });
+    }
 
     expect(attempt.kind).toBe('acquired');
     if (attempt.kind === 'acquired') attempt.lease.release();

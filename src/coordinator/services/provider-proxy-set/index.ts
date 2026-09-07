@@ -156,6 +156,7 @@ import {
 
 export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
+const OPERATOR_EXIT_OBSERVATION_MS = 1_000;
 const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
 /** The post-bound reattachment hold's own retry cadence: deliberately slower than the active window's
  *  exponential backoff (capped at 30 s by `retryDelayMs`) because the bound already expired without proof of
@@ -228,7 +229,8 @@ type PreserveReportState = {
 
 type ControlReattachmentWindow = {
   returnKind: 'available' | 'draining';
-  firstObservedAtMonotonicMs: bigint;
+  lastObservedAtMonotonicMs: bigint;
+  observedElapsedMs: number;
   trigger: Readonly<{
     role: ProviderProxyRole;
     cause: ProviderProxyControlChannelCause | 'heartbeat-local-failure';
@@ -236,10 +238,15 @@ type ControlReattachmentWindow = {
   }>;
   attempts: number;
   boundMs: number;
-  deadlineMonotonicMs: bigint;
   attemptToken: number;
   attemptAbort: AbortController | null;
   deadlineTimer: TimerHandle | null;
+};
+
+type OperatorExitObservedGate = {
+  boundMs: number;
+  observedElapsedMs: number;
+  lastObservedAtMonotonicMs: bigint;
 };
 
 type EstablishedSlot = {
@@ -264,6 +271,7 @@ type EstablishedSlot = {
   controlReattachmentBoundMs: number;
   controlReattachmentWindow: ControlReattachmentWindow | null;
   operatorExitNotBeforeMonotonicMs: bigint | null;
+  operatorExitObservedGate: OperatorExitObservedGate | null;
   operatorExitGeneration: number;
   protection: ProviderProxySetProtection;
   /** Set only while this slot is `containing`/`containment-wait` for a `stop-and-reap` decision, and cleared
@@ -330,7 +338,8 @@ type ProviderProxySetSlot =
       recoveryPhase: 'redemption' | 'containment-wait';
       routeKey: string | null;
       acquisitionCleanupHold: ProviderProxySetAcquisitionCleanupHold | null;
-      operatorExitNotBeforeMonotonicMs: bigint;
+      operatorExitNotBeforeMonotonicMs: bigint | null;
+      operatorExitObservedGate: OperatorExitObservedGate | null;
       operatorExitGeneration: number;
     }
   /**
@@ -2340,6 +2349,37 @@ export class ProviderProxySetLifecycle {
     return false;
   }
 
+  #armObservedOperatorExitGate(slot: EstablishedSlot | CapsuleRecoveringSlot): void {
+    if (slot.operatorExitNotBeforeMonotonicMs !== null) return;
+    const observedAtMonotonicMs = this.#deps.time.monotonicNow();
+    const gate: OperatorExitObservedGate = {
+      boundMs: CONTAINMENT_ATTEMPT_MS,
+      observedElapsedMs: 0,
+      lastObservedAtMonotonicMs: observedAtMonotonicMs,
+    };
+    slot.operatorExitNotBeforeMonotonicMs = observedAtMonotonicMs + BigInt(gate.boundMs);
+    slot.operatorExitObservedGate = gate;
+  }
+
+  #observeOperatorExitGate(slot: EstablishedSlot | CapsuleRecoveringSlot, gate: OperatorExitObservedGate): number {
+    const observedAtMonotonicMs = this.#deps.time.monotonicNow();
+    const gapMs = observedAtMonotonicMs - gate.lastObservedAtMonotonicMs;
+    gate.lastObservedAtMonotonicMs = observedAtMonotonicMs;
+    if (gapMs > 0n) {
+      gate.observedElapsedMs = Math.min(
+        gate.boundMs,
+        gate.observedElapsedMs + Math.min(Number(gapMs), OPERATOR_EXIT_OBSERVATION_MS),
+      );
+    }
+    const remainingMs = Math.max(0, gate.boundMs - gate.observedElapsedMs);
+    slot.operatorExitNotBeforeMonotonicMs = observedAtMonotonicMs + BigInt(remainingMs);
+    return remainingMs;
+  }
+
+  #clearObservedOperatorExitGate(slot: EstablishedSlot | CapsuleRecoveringSlot): void {
+    slot.operatorExitObservedGate = null;
+  }
+
   #operatorExitAvailability(slot: ProviderProxySetSlot):
     | Readonly<{ kind: 'authorized'; slot: EstablishedSlot | CapsuleRecoveringSlot | ReleaseDeliveryPendingSlot }>
     | Readonly<{ kind: 'not-held'; state: ProviderProxySetLifecycleState }>
@@ -2363,9 +2403,19 @@ export class ProviderProxySetLifecycle {
     ) {
       return { kind: 'not-held', state: slot.kind };
     }
-    const notBeforeMonotonicMs = slot.operatorExitNotBeforeMonotonicMs;
-    if (notBeforeMonotonicMs === null) return { kind: 'not-held', state: slot.kind };
-    const remainingMs = Number(notBeforeMonotonicMs - this.#deps.time.monotonicNow());
+    if (slot.operatorExitNotBeforeMonotonicMs === null) return { kind: 'not-held', state: slot.kind };
+    if ('operatorExitObservedGate' in slot && slot.operatorExitObservedGate !== null) {
+      const remainingObservedMs = this.#observeOperatorExitGate(slot, slot.operatorExitObservedGate);
+      if (remainingObservedMs > 0) return { kind: 'deadline-pending', remainingMs: remainingObservedMs, slot };
+    }
+    if ((slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') && slot.controlReattachmentWindow !== null) {
+      const remainingObservedMs = Math.max(
+        0,
+        slot.controlReattachmentWindow.boundMs - slot.controlReattachmentWindow.observedElapsedMs,
+      );
+      if (remainingObservedMs > 0) return { kind: 'deadline-pending', remainingMs: remainingObservedMs, slot };
+    }
+    const remainingMs = Number(slot.operatorExitNotBeforeMonotonicMs - this.#deps.time.monotonicNow());
     return remainingMs > 0 ? { kind: 'deadline-pending', remainingMs, slot } : { kind: 'authorized', slot };
   }
 
@@ -2448,6 +2498,7 @@ export class ProviderProxySetLifecycle {
     if (fenceProviderOperationMutations === undefined) {
       throw new Error('provider_proxy_operator_exit_mutation_fence_unavailable');
     }
+    if ('operatorExitObservedGate' in authorizedSlot) this.#clearObservedOperatorExitGate(authorizedSlot);
     authorizedSlot.operatorExitGeneration += 1;
     authorizedSlot.attemptToken += 1;
     if (authorizedSlot.kind === 'capsule-recovering') {
@@ -3528,7 +3579,7 @@ export class ProviderProxySetLifecycle {
     const identity = providerProxySetIdentityFromCapsule(inheritable);
     const key = this.#identityIndex.add(identity);
     if (this.#slots.has(key)) throw new Error('provider_proxy_capsule_exact_identity_alias');
-    this.#slots.set(key, {
+    const recovering: CapsuleRecoveringSlot = {
       kind: 'capsule-recovering',
       key,
       identity,
@@ -3543,9 +3594,12 @@ export class ProviderProxySetLifecycle {
       recoveryPhase: 'redemption',
       routeKey: null,
       acquisitionCleanupHold: null,
-      operatorExitNotBeforeMonotonicMs: this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
+      operatorExitNotBeforeMonotonicMs: null,
+      operatorExitObservedGate: null,
       operatorExitGeneration: 0,
-    });
+    };
+    this.#slots.set(key, recovering);
+    this.#armObservedOperatorExitGate(recovering);
   }
 
   /**
@@ -3780,7 +3834,6 @@ export class ProviderProxySetLifecycle {
       this.#releaseAcquisitionPublicationSession(
         slot,
         `provider_proxy_acquisition_publication_retry_exhausted:${incident}`,
-        this.#deps.time.monotonicNow(),
       );
       return;
     }
@@ -3797,7 +3850,6 @@ export class ProviderProxySetLifecycle {
   #releaseAcquisitionPublicationSession(
     slot: Extract<ProviderProxySetSlot, { kind: 'recovering'; recoveryKind: 'acquisition-publication' }>,
     reason: unknown,
-    operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS),
   ): void {
     if (this.#slots.get(slot.key) !== slot) return;
     slot.attemptToken += 1;
@@ -3820,10 +3872,12 @@ export class ProviderProxySetLifecycle {
       recoveryPhase: 'redemption',
       routeKey: slot.routeKey,
       acquisitionCleanupHold: slot.acquisitionCleanupHold,
-      operatorExitNotBeforeMonotonicMs,
+      operatorExitNotBeforeMonotonicMs: null,
+      operatorExitObservedGate: null,
       operatorExitGeneration: 0,
     };
     this.#slots.set(slot.key, recovering);
+    this.#armObservedOperatorExitGate(recovering);
     this.#setOperatorDispositions(
       slot.identity,
       new Map([
@@ -4011,6 +4065,7 @@ export class ProviderProxySetLifecycle {
       controlReattachmentBoundMs: authority.autonomousDeadline.adoptionWindowMs,
       controlReattachmentWindow: null,
       operatorExitNotBeforeMonotonicMs: null,
+      operatorExitObservedGate: null,
       operatorExitGeneration: 0,
       protection,
       containmentCommitStatus: null,
@@ -4092,22 +4147,22 @@ export class ProviderProxySetLifecycle {
   #beginControlReattachment(slot: EstablishedSlot, incident: ProviderProxyControlChannelIncident): void {
     if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
     const returnKind = slot.kind;
-    const firstObservedAtMonotonicMs = this.#deps.time.monotonicNow();
+    const observedAtMonotonicMs = this.#deps.time.monotonicNow();
     slot.attemptToken += 1;
     const window: ControlReattachmentWindow = {
       returnKind,
-      firstObservedAtMonotonicMs,
+      lastObservedAtMonotonicMs: observedAtMonotonicMs,
+      observedElapsedMs: 0,
       trigger: { role: incident.role, cause: incident.cause, error: incident.error },
       attempts: 0,
       boundMs: slot.controlReattachmentBoundMs,
-      deadlineMonotonicMs: firstObservedAtMonotonicMs + BigInt(slot.controlReattachmentBoundMs),
       attemptToken: slot.attemptToken,
       attemptAbort: null,
       deadlineTimer: null,
     };
     slot.kind = 'reattaching';
     slot.controlReattachmentWindow = window;
-    slot.operatorExitNotBeforeMonotonicMs = window.deadlineMonotonicMs;
+    slot.operatorExitNotBeforeMonotonicMs = observedAtMonotonicMs + BigInt(window.boundMs);
     this.#removeRoute(slot);
     slot.authority.stopHeartbeats();
     this.#scheduleControlReattachmentDeadline(slot, window);
@@ -4115,20 +4170,22 @@ export class ProviderProxySetLifecycle {
   }
 
   #scheduleControlReattachmentDeadline(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
-    const remainingMs = Number(window.deadlineMonotonicMs - this.#deps.time.monotonicNow());
+    const remainingMs = window.boundMs - window.observedElapsedMs;
     if (remainingMs <= 0) {
       this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_bound_expired');
       return;
     }
+    const observationCadenceMs = Math.min(retryDelayMs(Math.max(window.attempts, 1)), remainingMs);
     window.deadlineTimer = this.#deps.time.setTimeout(() => {
       window.deadlineTimer = null;
       if (this.#slots.get(slot.key) !== slot || slot.controlReattachmentWindow !== window) return;
-      if (this.#deps.time.monotonicNow() < window.deadlineMonotonicMs) {
+      if (this.#observeControlReattachmentWindow(slot, window, observationCadenceMs) > 0) {
         this.#scheduleControlReattachmentDeadline(slot, window);
         return;
       }
+      if (slot.kind === 'reattachment-hold') return;
       this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_bound_expired');
-    }, remainingMs);
+    }, observationCadenceMs);
     window.deadlineTimer.unref?.();
   }
 
@@ -4140,7 +4197,7 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
-    if (this.#deps.time.monotonicNow() >= window.deadlineMonotonicMs) {
+    if (window.observedElapsedMs >= window.boundMs) {
       this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_bound_expired');
       return;
     }
@@ -4249,7 +4306,7 @@ export class ProviderProxySetLifecycle {
   }
 
   #scheduleControlReattachmentRetry(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
-    const remainingMs = Number(window.deadlineMonotonicMs - this.#deps.time.monotonicNow());
+    const remainingMs = window.boundMs - window.observedElapsedMs;
     if (remainingMs <= 0) {
       this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_bound_expired');
       return;
@@ -4257,9 +4314,33 @@ export class ProviderProxySetLifecycle {
     const delayMs = Math.min(retryDelayMs(window.attempts), remainingMs);
     slot.retryTimer = this.#deps.time.setTimeout(() => {
       slot.retryTimer = null;
+      if (
+        this.#slots.get(slot.key) !== slot ||
+        slot.kind !== 'reattaching' ||
+        slot.controlReattachmentWindow !== window
+      ) {
+        return;
+      }
+      this.#observeControlReattachmentWindow(slot, window, delayMs);
       this.#runControlReattachmentAttempt(slot, window);
     }, delayMs);
     slot.retryTimer.unref?.();
+  }
+
+  #observeControlReattachmentWindow(
+    slot: EstablishedSlot,
+    window: ControlReattachmentWindow,
+    scheduledCadenceMs: number,
+  ): number {
+    const observedAtMonotonicMs = this.#deps.time.monotonicNow();
+    const gapMs = observedAtMonotonicMs - window.lastObservedAtMonotonicMs;
+    window.lastObservedAtMonotonicMs = observedAtMonotonicMs;
+    if (gapMs > 0n) {
+      window.observedElapsedMs += Math.min(Number(gapMs), scheduledCadenceMs);
+    }
+    const remainingMs = Math.max(0, window.boundMs - window.observedElapsedMs);
+    slot.operatorExitNotBeforeMonotonicMs = observedAtMonotonicMs + BigInt(remainingMs);
+    return remainingMs;
   }
 
   async #promoteControlReattachment(
@@ -4302,6 +4383,7 @@ export class ProviderProxySetLifecycle {
     slot.heartbeatEvidenceWindows.clear();
     slot.heartbeatHoldBound = promoted.autonomousDeadline.heartbeatHoldBound;
     slot.controlReattachmentBoundMs = promoted.autonomousDeadline.adoptionWindowMs;
+    this.#clearObservedOperatorExitGate(slot);
     slot.operatorExitNotBeforeMonotonicMs = null;
     this.#flushPreserveReports(slot);
     this.#deleteOperatorDispositions(slot.identity);
@@ -4331,7 +4413,7 @@ export class ProviderProxySetLifecycle {
       role: window.trigger.role,
       cause: controlChannelCause(window.trigger.cause),
       attempts: window.attempts,
-      elapsedMs: Number(this.#deps.time.monotonicNow() - window.firstObservedAtMonotonicMs),
+      elapsedMs: window.observedElapsedMs,
       boundMs: window.boundMs,
       error: singleLineErrorSummary(window.trigger.error),
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
@@ -4367,14 +4449,16 @@ export class ProviderProxySetLifecycle {
         role: window.trigger.role,
         cause: controlChannelCause(window.trigger.cause),
         attempts: window.attempts,
-        elapsedMs: Number(this.#deps.time.monotonicNow() - window.firstObservedAtMonotonicMs),
+        elapsedMs: window.observedElapsedMs,
         boundMs: window.boundMs,
         error,
       });
       return;
     }
     slot.attemptToken += 1;
+    const reattachmentBoundObserved = window.observedElapsedMs >= window.boundMs;
     this.#clearControlReattachment(slot, window);
+    if (!reattachmentBoundObserved) slot.operatorExitNotBeforeMonotonicMs = null;
     this.#clearLocalOperatorDispositions(slot.identity);
     this.#beginContainment(slot, {
       action: 'await-containment-absence',
@@ -4383,7 +4467,7 @@ export class ProviderProxySetLifecycle {
       role: window.trigger.role,
       cause: controlChannelCause(window.trigger.cause),
       attempts: window.attempts,
-      elapsedMs: Number(this.#deps.time.monotonicNow() - window.firstObservedAtMonotonicMs),
+      elapsedMs: window.observedElapsedMs,
       boundMs: window.boundMs,
       error,
       liveClaims,
@@ -4408,6 +4492,7 @@ export class ProviderProxySetLifecycle {
   ): void {
     slot.attemptToken += 1;
     this.#clearControlReattachment(slot, window);
+    slot.operatorExitNotBeforeMonotonicMs = null;
     this.#clearLocalOperatorDispositions(slot.identity);
     slot.containmentAuthority = decisive.authority;
     this.#beginFaultContainment(slot, {
@@ -4440,15 +4525,13 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot || slot.controlReattachmentWindow !== window) return;
     window.attemptAbort?.abort(new Error('provider_proxy_control_reattachment_hold_entered'));
     window.attemptAbort = null;
-    if (window.deadlineTimer !== null) this.#deps.time.clearTimeout(window.deadlineTimer);
-    window.deadlineTimer = null;
     if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     slot.retryTimer = null;
     slot.kind = 'reattachment-hold';
     // Already in the past when this hold followed an expired active window's own deadline — that lets the
     // operator override apply immediately rather than waiting a second grace period. A window opened directly
     // from a heartbeat local-failure fault has no prior deadline, so this is the one that arms it.
-    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+    this.#armObservedOperatorExitGate(slot);
     const decision: ProviderProxySetContainmentRefusedDecision = {
       action: 'preserve',
       reason: 'containment_refused_live_claims',
@@ -4620,7 +4703,7 @@ export class ProviderProxySetLifecycle {
       return;
     }
     this.#recordDecision(slot, decision);
-    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+    this.#armObservedOperatorExitGate(slot);
     slot.retirementDecision = null;
     this.#removeRoute(slot);
     slot.kind = 'containing';
@@ -4907,7 +4990,7 @@ export class ProviderProxySetLifecycle {
 
   #holdHeartbeatDisposition(slot: EstablishedSlot, disposition: ProviderProxySetHeartbeatAwaitAbsenceDecision): void {
     if (slot.operatorExitNotBeforeMonotonicMs === null) {
-      slot.operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+      this.#armObservedOperatorExitGate(slot);
       slot.operatorExitGeneration += 1;
     }
     const refusedDecision: ProviderProxySetNonAuthorizingContainmentDecision =
@@ -4928,7 +5011,7 @@ export class ProviderProxySetLifecycle {
               method: disposition.method,
               lastIncidentReason: disposition.lastIncidentReason,
               attempts: disposition.attempts,
-              elapsedMs: disposition.elapsedMs,
+              observedDurationMs: disposition.observedDurationMs,
               schedulerLatenessMs: disposition.schedulerLatenessMs,
               error: disposition.error,
             }
@@ -4939,7 +5022,7 @@ export class ProviderProxySetLifecycle {
               method: disposition.method,
               lastIncidentReason: disposition.lastIncidentReason,
               attempts: disposition.attempts,
-              elapsedMs: disposition.elapsedMs,
+              observedDurationMs: disposition.observedDurationMs,
               schedulerLatenessMs: disposition.schedulerLatenessMs,
               error: disposition.error,
             };
@@ -4987,13 +5070,7 @@ export class ProviderProxySetLifecycle {
       }
       this.#applyHeartbeatDisposition(
         slot,
-        this.#answeredHeartbeatHoldExhaustedDecision(
-          slot,
-          incident,
-          transition.window,
-          transition.error,
-          timing.nowMonotonicMs,
-        ),
+        this.#answeredHeartbeatHoldExhaustedDecision(slot, incident, transition.window, transition.error),
       );
       return;
     }
@@ -5007,23 +5084,19 @@ export class ProviderProxySetLifecycle {
       }
       this.#applyHeartbeatDisposition(
         slot,
-        this.#silenceHoldExhaustedDecision(slot, incident, transition.window, transition.error, timing.nowMonotonicMs),
+        this.#silenceHoldExhaustedDecision(slot, incident, transition.window, transition.error),
       );
       return;
     }
     applyLocalFailure(observation);
   }
 
-  /**
-   * This decision requires a continuous answer-free window for the exact role and method, below the material
-   * scheduler-lateness share. It may start dual-evidence containment but must not settle disappearance alone.
-   */
+  /** This decision requires the complete observed hold bound and cannot settle disappearance alone. */
   #silenceHoldExhaustedDecision(
     slot: EstablishedSlot,
     incident: ProviderProxyHeartbeatObservation,
     hold: Extract<HeartbeatEvidenceWindow, { kind: 'silence' }>,
     error: unknown,
-    nowMonotonicMs: bigint,
   ): ProviderProxySetHeartbeatAwaitAbsenceDecision {
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
     return {
@@ -5036,9 +5109,7 @@ export class ProviderProxySetLifecycle {
       lastIncidentReason: 'unanswered',
       attempts: hold.attempts,
       schedulerLatenessMs: hold.schedulerLatenessAfterFirstObservationMs,
-      // The decision's `elapsedMs` is log text, not authority, so this is the one place the monotonic span
-      // leaves bigint for a plain millisecond count.
-      elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
+      observedDurationMs: hold.observedDurationMs,
       error: singleLineErrorSummary(error),
       setIdentity: slot.identity,
     };
@@ -5049,7 +5120,6 @@ export class ProviderProxySetLifecycle {
     incident: ProviderProxyHeartbeatObservation,
     hold: Extract<HeartbeatEvidenceWindow, { kind: 'answered-unusable' }>,
     error: unknown,
-    nowMonotonicMs: bigint,
   ): ProviderProxySetHeartbeatAwaitAbsenceDecision {
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
     return {
@@ -5062,7 +5132,7 @@ export class ProviderProxySetLifecycle {
       lastIncidentReason: 'unclassified',
       attempts: hold.attempts,
       schedulerLatenessMs: hold.schedulerLatenessAfterFirstObservationMs,
-      elapsedMs: Number(nowMonotonicMs - hold.firstObservedAtMonotonicMs),
+      observedDurationMs: hold.observedDurationMs,
       error: singleLineErrorSummary(error),
       setIdentity: slot.identity,
     };
@@ -5106,6 +5176,7 @@ export class ProviderProxySetLifecycle {
       this.#setOperatorDispositions(slot.identity, dispositions ?? new Map(), undefined, new Set([subjectKey]));
     }
     if (recoveredLiveClaimsHold && !this.#hasLiveClaimsHold(slot)) {
+      this.#clearObservedOperatorExitGate(slot);
       slot.operatorExitNotBeforeMonotonicMs = null;
       slot.operatorExitGeneration += 1;
     }
@@ -5237,15 +5308,15 @@ export class ProviderProxySetLifecycle {
   ): void {
     if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
     const returnKind = slot.kind;
-    const firstObservedAtMonotonicMs = this.#deps.time.monotonicNow();
+    const observedAtMonotonicMs = this.#deps.time.monotonicNow();
     slot.attemptToken += 1;
     const window: ControlReattachmentWindow = {
       returnKind,
-      firstObservedAtMonotonicMs,
+      lastObservedAtMonotonicMs: observedAtMonotonicMs,
+      observedElapsedMs: 0,
       trigger: { role: fault.role, cause: 'heartbeat-local-failure', error: fault.error },
       attempts: 0,
       boundMs: 0,
-      deadlineMonotonicMs: firstObservedAtMonotonicMs,
       attemptToken: slot.attemptToken,
       attemptAbort: null,
       deadlineTimer: null,
@@ -5276,7 +5347,7 @@ export class ProviderProxySetLifecycle {
     slot.operationControlState = 'outcome-unknown';
     holdProviderProxyOperationControl(slot.authority);
     this.#removeRoute(slot);
-    slot.operatorExitNotBeforeMonotonicMs ??= this.#deps.time.monotonicNow() + BigInt(CONTAINMENT_ATTEMPT_MS);
+    this.#armObservedOperatorExitGate(slot);
     const decision: ProviderProxySetContainmentRefusedDecision = {
       action: 'preserve',
       reason: 'containment_refused_live_claims',

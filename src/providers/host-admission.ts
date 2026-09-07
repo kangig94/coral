@@ -185,6 +185,7 @@ type AdmissionEvent =
   | Readonly<{ kind: 'mark-live'; slot: AdmissionSlotKey; ref: HostRef; generation: number }>
   | Readonly<{ kind: 'block'; slot: AdmissionSlotKey; ref: HostRef; generation: number }>
   | Readonly<{ kind: 'retired'; ref: HostRef }>
+  | Readonly<{ kind: 'abandoned'; ref: HostRef }>
   | Readonly<{ kind: 'confirm-evicted'; ref: HostRef }>;
 
 export function admissionSlotKey(value: string): AdmissionSlotKey {
@@ -214,6 +215,8 @@ export function reduceHostAdmission(state: HostAdmissionState, event: AdmissionE
       return blockAdmissionCandidate(state, event.slot, event.ref, event.generation);
     case 'retired':
       return retireAdmissionCandidate(state, event.ref);
+    case 'abandoned':
+      return abandonAdmissionCandidate(state, event.ref);
     case 'confirm-evicted':
       return confirmAdmissionCandidateEvicted(state, event.ref);
   }
@@ -260,6 +263,11 @@ function confirmAdmissionCandidateEvicted(state: HostAdmissionState, ref: HostRe
   return withoutEntry(state, match.slot);
 }
 
+function abandonAdmissionCandidate(state: HostAdmissionState, ref: HostRef): HostAdmissionState {
+  const match = findExactRef(state, ref);
+  return match === null ? state : withoutEntry(state, match.slot);
+}
+
 type Placement = Readonly<{
   slot: AdmissionSlotKey;
   ref: HostRef;
@@ -283,6 +291,7 @@ export type HostAdmissionCollection = Readonly<{
   observe(slot: AdmissionSlotKey, ref: HostRef, fact: ProviderResponseDiagnosticFact): void;
   correlateTerminalFailure<Result>(ref: HostRef, operation: () => Promise<Result>): Promise<Result>;
   observeRetired(ref: HostRef, processState: HostProcessState): void;
+  abandon(ref: HostRef): boolean;
   confirmEvicted(ref: HostRef): boolean;
   snapshot(): HostAdmissionSnapshot;
 }>;
@@ -339,6 +348,16 @@ export function createHostAdmissionCollection(options: {
       }
     },
     observeRetired,
+    abandon(ref) {
+      const before = data.state;
+      const match = findExactRef(before, ref);
+      data.state = reduceHostAdmission(before, { kind: 'abandoned', ref });
+      if (data.state === before || match === null) return false;
+      data.placements.delete(match.slot);
+      data.serviceability.delete(match.slot);
+      tombstones.delete(match.slot);
+      return true;
+    },
     confirmEvicted(ref) {
       return confirmHostEvicted(data, tombstones, ref);
     },

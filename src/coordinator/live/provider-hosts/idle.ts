@@ -37,19 +37,24 @@ function readHostStats(params: Record<string, unknown> | undefined): HostStatsSt
   }
   const liveControllers = params.liveControllers;
   const activeTurns = params.activeTurns;
+  const heldControllers = params.heldControllers ?? 0;
   if (
     typeof liveControllers !== 'number' ||
     !Number.isFinite(liveControllers) ||
     liveControllers < 0 ||
     typeof activeTurns !== 'number' ||
     !Number.isFinite(activeTurns) ||
-    activeTurns < 0
+    activeTurns < 0 ||
+    typeof heldControllers !== 'number' ||
+    !Number.isFinite(heldControllers) ||
+    heldControllers < 0
   ) {
     return null;
   }
   return {
     liveControllers,
     activeTurns,
+    heldControllers,
   };
 }
 
@@ -71,7 +76,12 @@ function neverRetiresWhenIdle(entry: ProviderHostEntry): boolean {
 
 function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
   const hostStats = entry.hostStats;
-  return hostStats !== null && hostStats.liveControllers === 0 && hostStats.activeTurns === 0;
+  return (
+    hostStats !== null &&
+    hostStats.liveControllers === 0 &&
+    hostStats.activeTurns === 0 &&
+    (hostStats.heldControllers ?? 0) === 0
+  );
 }
 
 function describePinOrigin(pin: ProviderHostPin): string {
@@ -153,7 +163,7 @@ export function maybeArmIdleTimer(
     idleTimeoutMs: number;
     entries: Map<string, ProviderHostEntry>;
     carrierBlocksRetirement: (hostRef: HostRef) => boolean;
-    closeProviderServerEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
+    closeProviderServerEntry: (entry: ProviderHostEntry, detail: string) => Promise<unknown>;
   },
 ): void {
   if (!entry.handle || entry.closingError) {
@@ -195,7 +205,7 @@ export function attachHostNotificationListener(
     idleTimeoutMs: number;
     entries: Map<string, ProviderHostEntry>;
     carrierBlocksRetirement: (hostRef: HostRef) => boolean;
-    closeProviderServerEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
+    closeProviderServerEntry: (entry: ProviderHostEntry, detail: string) => Promise<unknown>;
   },
 ): void {
   entry.disposeHostNotifications?.();

@@ -1,6 +1,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { createMonotonicClock, type MonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
+import {
+  createMonotonicClock,
+  createObservedDuration,
+  type MonotonicClock,
+  type MonotonicInstant,
+} from '#src/infra/monotonic-clock.js';
 import type { TimePort } from '#src/infra/port-types.js';
 
 describe('monotonic clock', () => {
@@ -46,5 +51,18 @@ describe('monotonic clock', () => {
 
   it('cannot be substituted with the wall-clock TimePort shape', () => {
     expectTypeOf<Pick<TimePort, 'now'>>().not.toMatchTypeOf<MonotonicClock<symbol>>();
+  });
+
+  it('does not charge scheduler lateness to the observed subject', () => {
+    const observed = createObservedDuration(1_000n, 500);
+
+    observed.advance(61_000n);
+    expect(observed.elapsedMs()).toBe(500);
+
+    observed.advance(61_500n);
+    expect(observed.elapsedMs()).toBe(1_000);
+
+    observed.reset(70_000n);
+    expect(observed.elapsedMs()).toBe(0);
   });
 });

@@ -75,21 +75,27 @@ describe('simulation app-server and recording', () => {
     );
 
     const coordinator = new LaunchCoordinator({ runtime });
-    const handlePromise = coordinator.spawnProviderServer({
-      provider: 'codex',
-      command: 'codex',
-      args: ['app-server'],
-      cwd: '/tmp/sim/project',
-      initializeRequest: {
-        method: 'initialize',
-        params: {
-          clientInfo: {
-            name: 'test',
-            version: '0.0.1',
+    const handlePromise = coordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+        cwd: '/tmp/sim/project',
+        initializeRequest: {
+          method: 'initialize',
+          params: {
+            clientInfo: {
+              name: 'test',
+              version: '0.0.1',
+            },
           },
         },
       },
-    });
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
 
     await advance(runtime, 0);
     const handle = await handlePromise;

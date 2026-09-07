@@ -287,6 +287,7 @@ describe('provider proxy control redemption', () => {
       Array.from({ length: 3 }, () => ESTABLISH_CONTROL_READY_DEADLINE_MS),
     );
     expect(wallClock).not.toHaveBeenCalled();
+    expect(calls.map((call) => call[2].monotonicNow())).toEqual([1_000n, 1_000n, 1_000n]);
     expect(monotonicNow).toHaveBeenCalledTimes(3);
     expect(startRole.mock.calls.map((call) => call[0])).toEqual(['guardian', 'reaper', 'proxy']);
     expect(phases).toEqual({ guardian: 'published', reaper: 'published', proxy: 'published' });

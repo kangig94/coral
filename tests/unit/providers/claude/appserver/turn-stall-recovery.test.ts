@@ -20,6 +20,12 @@ const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000101';
 const TEST_MODEL = 'claude-sonnet-test';
 const BRACKETED_PASTE_START = '\x1b[200~';
 const BRACKETED_PASTE_END = '\x1b[201~\r';
+const OBSERVATION_CADENCE_MS = 100;
+
+type TestMonotonicClock = {
+  now(): bigint;
+  advance(milliseconds: number): bigint;
+};
 
 type ActiveTurnForTest = {
   brokerTurnId: string;
@@ -37,7 +43,8 @@ type ControllerInternals = {
   activeTurn: ActiveTurnForTest | null;
   processTranscriptLine(turn: ActiveTurnForTest, line: string, lineStartOffset: number): void;
   readTranscriptAppend(turn: ActiveTurnForTest): void;
-  recoverStalledTurn(turn: ActiveTurnForTest, now: number): Promise<boolean>;
+  advanceTurnObservation(turn: ActiveTurnForTest, observedAtMs: bigint): void;
+  recoverStalledTurn(turn: ActiveTurnForTest, observedAtMs: bigint): Promise<boolean>;
 };
 
 type ControllerHarness = {
@@ -48,6 +55,7 @@ type ControllerHarness = {
   spawnTimes: number[];
   notifications: ControllerNotification[];
   startedTurns: string[];
+  clock: TestMonotonicClock;
 };
 
 const controllers: SingleSessionController[] = [];
@@ -70,6 +78,7 @@ function createControllerHarness(): ControllerHarness {
   const spawnTimes: number[] = [];
   const notifications: ControllerNotification[] = [];
   const startedTurns: string[] = [];
+  const clock = createTestMonotonicClock();
   const controller = new SingleSessionController({
     spawnChild: (options) => {
       spawnOptions.push(options);
@@ -79,6 +88,7 @@ function createControllerHarness(): ControllerHarness {
       return child;
     },
     ids: { uuid: () => TEST_SESSION_ID },
+    monotonicNow: clock.now,
     onTurnStarted: ({ brokerTurnId }) => {
       startedTurns.push(brokerTurnId);
     },
@@ -98,7 +108,42 @@ function createControllerHarness(): ControllerHarness {
     spawnTimes,
     notifications,
     startedTurns,
+    clock,
   };
+}
+
+function createTestMonotonicClock(): TestMonotonicClock {
+  let current = 0n;
+  return {
+    now: () => current,
+    advance: (milliseconds): bigint => {
+      current += BigInt(milliseconds);
+      return current;
+    },
+  };
+}
+
+function accumulateObservedTime(
+  internals: ControllerInternals,
+  turn: ActiveTurnForTest,
+  clock: TestMonotonicClock,
+  milliseconds: number,
+): void {
+  let remainingMs = milliseconds;
+  while (remainingMs > 0) {
+    const stepMs = Math.min(remainingMs, OBSERVATION_CADENCE_MS);
+    internals.advanceTurnObservation(turn, clock.advance(stepMs));
+    remainingMs -= stepMs;
+  }
+}
+
+async function recoverAfterObservedTime(
+  harness: Pick<ControllerHarness, 'internals' | 'clock'>,
+  turn: ActiveTurnForTest,
+  milliseconds: number,
+): Promise<boolean> {
+  accumulateObservedTime(harness.internals, turn, harness.clock, milliseconds);
+  return harness.internals.recoverStalledTurn(turn, harness.clock.now());
 }
 
 async function ensureController(
@@ -276,15 +321,54 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const harness = await startController('original sent prompt');
     const turn = activeTurn(harness.internals);
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.lastPromptSentAt + DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
+      DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
     );
 
     expect(terminated).toBe(false);
     expect(harness.children).toHaveLength(1);
     expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['original sent prompt', 'original sent prompt']);
     expect(harness.startedTurns).toEqual(['turn-1']);
+  });
+
+  it('does not charge a late monitor tick to prompt silence', async () => {
+    const harness = await startController('late observer prompt');
+    const turn = activeTurn(harness.internals);
+
+    const terminatedAfterLateTick = await harness.internals.recoverStalledTurn(turn, harness.clock.advance(60_000));
+
+    expect(terminatedAfterLateTick).toBe(false);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['late observer prompt']);
+
+    const terminatedAfterObservedBudget = await recoverAfterObservedTime(
+      harness,
+      turn,
+      DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs - OBSERVATION_CADENCE_MS,
+    );
+
+    expect(terminatedAfterObservedBudget).toBe(false);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['late observer prompt', 'late observer prompt']);
+  });
+
+  it('does not let forward or backward wall-clock steps consume a recovery budget', async () => {
+    const harness = await startController('wall clock prompt');
+    const turn = activeTurn(harness.internals);
+    vi.useFakeTimers();
+    const wallNow = Date.now();
+
+    vi.setSystemTime(wallNow + 86_400_000);
+    await expect(harness.internals.recoverStalledTurn(turn, harness.clock.now())).resolves.toBe(false);
+    vi.setSystemTime(wallNow - 86_400_000);
+    await expect(harness.internals.recoverStalledTurn(turn, harness.clock.now())).resolves.toBe(false);
+
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['wall clock prompt']);
+
+    await expect(
+      recoverAfterObservedTime(harness, turn, DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs),
+    ).resolves.toBe(false);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['wall clock prompt', 'wall clock prompt']);
   });
 
   it('treats Claude queue-operation enqueue as registration so sent recovery does not duplicate queued prompts', async () => {
@@ -294,9 +378,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('registered');
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.lastPromptSentAt + DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
+      DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
     );
 
     expect(terminated).toBe(false);
@@ -311,9 +396,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('registered');
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
     );
 
     expect(terminated).toBe(false);
@@ -331,7 +417,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
 
     processLine(harness.internals, assistantLine('recovered answer', 'end_turn'));
     processLine(harness.internals, durationLine(25));
-    await harness.internals.recoverStalledTurn(activeTurn(harness.internals), Date.now());
+    await harness.internals.recoverStalledTurn(activeTurn(harness.internals), harness.clock.now());
 
     const completed = harness.notifications.find(isControllerTurnCompleted);
     expect(completed?.params.brokerTurnId).toBe('turn-1');
@@ -359,15 +445,14 @@ describe('Claude phase-specific turn-stall recovery', () => {
       harness.internals.readTranscriptAppend(activeTurn(harness.internals));
       const registeredTurn = activeTurn(harness.internals);
       expect(registeredTurn.phase).toBe('registered');
-      const registeredAt = registeredTurn.phaseEnteredAt;
+      const registeredAt = Date.now();
 
-      vi.setSystemTime(registeredAt + assistantStartBudgetMs - 1);
-      await expect(harness.internals.recoverStalledTurn(registeredTurn, Date.now())).resolves.toBe(false);
+      await expect(recoverAfterObservedTime(harness, registeredTurn, assistantStartBudgetMs - 1)).resolves.toBe(false);
       expect(harness.spawnOptions).toHaveLength(1);
       expect(activeTurn(harness.internals).phase).toBe('registered');
 
       vi.setSystemTime(registeredAt + assistantStartBudgetMs);
-      const recovery = harness.internals.recoverStalledTurn(registeredTurn, Date.now());
+      const recovery = recoverAfterObservedTime(harness, registeredTurn, 1);
       await vi.advanceTimersByTimeAsync(1);
       await expect(recovery).resolves.toBe(false);
       expect(harness.spawnOptions).toHaveLength(2);
@@ -394,9 +479,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('responding');
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.lastSemanticProgressAt + DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs,
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs,
     );
 
     expect(terminated).toBe(false);
@@ -425,9 +511,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('ending');
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
     );
 
     expect(terminated).toBe(true);
@@ -453,9 +540,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('ending');
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
     );
 
     expect(terminated).toBe(true);
@@ -481,9 +569,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('ending');
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
     );
 
     expect(terminated).toBe(true);
@@ -507,9 +596,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const turn = activeTurn(harness.internals);
     turn.replacementAttempts = DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts;
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
     );
 
     expect(terminated).toBe(true);
@@ -548,9 +638,10 @@ describe('Claude phase-specific turn-stall recovery', () => {
     expect(Date.now()).toBeGreaterThan(hardCapMs);
     expect(Date.now() - turn.lastSemanticProgressAt).toBe(0);
 
-    const terminated = await harness.internals.recoverStalledTurn(
+    const terminated = await recoverAfterObservedTime(
+      harness,
       turn,
-      Date.now() + DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs - 1,
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs - 1,
     );
 
     expect(terminated).toBe(false);
@@ -558,10 +649,11 @@ describe('Claude phase-specific turn-stall recovery', () => {
     expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
   });
 
-  it('suppresses a late expected old-child exit after replacement attaches without pool eviction', async () => {
+  it('defers replacement and preserves the turn while the old child remains unsettled past repeated recovery polls', async () => {
     const children: FakeClaudeChild[] = [];
     const notifications: ClaudeBrokerNotification[] = [];
     const ids = ['broker-1', TEST_SESSION_ID];
+    const clock = createTestMonotonicClock();
     const pool = new BrokerSessionPool({
       spawnChild: () => {
         const child = new FakeClaudeChild();
@@ -571,6 +663,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
       ids: {
         uuid: () => ids.shift() ?? TEST_SESSION_ID,
       },
+      monotonicNow: clock.now,
       onTurnStarted: () => {},
       stderrLimit: 1_024,
     });
@@ -603,18 +696,31 @@ describe('Claude phase-specific turn-stall recovery', () => {
     processLine(internals, userPromptLine('pool prompt'));
     const turn = activeTurn(internals);
     children[0].exitOnKill = false;
+    vi.useFakeTimers();
 
-    const terminated = await internals.recoverStalledTurn(
+    accumulateObservedTime(
+      internals,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
+      clock,
+      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs,
     );
+    const recovery = internals.recoverStalledTurn(turn, clock.now());
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs);
+    const terminated = await recovery;
 
     expect(terminated).toBe(false);
-    expect(children).toHaveLength(2);
-    expect(children[1]?.disposed).toBe(false);
-    children[0].emitExit({ code: null, signal: 'SIGTERM' });
-    await waitImmediate();
+    expect(children).toHaveLength(1);
+    for (let poll = 0; poll < DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts + 2; poll += 1) {
+      accumulateObservedTime(internals, turn, clock, OBSERVATION_CADENCE_MS);
+      await expect(internals.recoverStalledTurn(turn, clock.now())).resolves.toBe(false);
+    }
+    expect(turn.replacementAttempts).toBe(1);
+    expect(notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
 
+    children[0].emitExit({ code: null, signal: 'SIGTERM' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(children).toHaveLength(2);
     expect(notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
     expect(children[1]?.disposed).toBe(false);
     await expect(pool.sessionProbe({ brokerSessionKey: ensured.brokerSessionKey })).resolves.toMatchObject({
@@ -626,6 +732,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
   it('evicts a generated controller after a terminal turn queued during initial notification hold', async () => {
     const children: FakeClaudeChild[] = [];
     const ids = ['broker-queued-terminal', TEST_SESSION_ID];
+    const clock = createTestMonotonicClock();
     const pool = new BrokerSessionPool({
       spawnChild: () => {
         const child = new FakeClaudeChild();
@@ -635,6 +742,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
       ids: {
         uuid: () => ids.shift() ?? TEST_SESSION_ID,
       },
+      monotonicNow: clock.now,
       onTurnStarted: () => {},
       stderrLimit: 1_024,
     });
@@ -665,10 +773,13 @@ describe('Claude phase-specific turn-stall recovery', () => {
     processLine(internals, durationLine(25));
     const turn = activeTurn(internals);
 
-    await internals.recoverStalledTurn(
+    accumulateObservedTime(
+      internals,
       turn,
-      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+      clock,
+      DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
     );
+    await internals.recoverStalledTurn(turn, clock.now());
     await waitImmediate();
     await waitImmediate();
 

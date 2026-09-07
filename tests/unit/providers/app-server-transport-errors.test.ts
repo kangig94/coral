@@ -8,12 +8,17 @@ import {
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const FOREIGN_HOST_LINE = 'bubblewrap: warning emitted before config/read\n';
+const acceptCleanupHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => ({
+  kind: 'accepted',
+  owner: 'provider-proxy-root-pool',
+  settlement: hold.settled,
+});
 
 describe('provider app-server transport errors', () => {
   const handles: ProviderServerHandle[] = [];
 
   afterEach(async () => {
-    await Promise.all(handles.splice(0).map((handle) => handle.close()));
+    await Promise.all(handles.splice(0).map((handle) => handle.close(acceptCleanupHold)));
   });
 
   it('reports the provider RPC cause without an unrelated earlier bubblewrap warning', async () => {
@@ -76,7 +81,13 @@ describe('provider app-server transport errors', () => {
       },
       generation: 17,
       observeProviderResponse: () => {},
+      acceptFailedSpawnCleanup: (hold) => ({
+        kind: 'accepted',
+        owner: 'provider-proxy-root-pool',
+        settlement: hold.settled,
+      }),
     });
+    if ('kind' in handle) throw handle.error;
     handles.push(handle);
     return handle;
   }

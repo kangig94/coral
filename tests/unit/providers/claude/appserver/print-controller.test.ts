@@ -28,6 +28,7 @@ class FakeClaudePrintChild implements ClaudePrintChild {
   readonly writes: string[] = [];
   readonly killedSignals: Array<NodeJS.Signals | undefined> = [];
   readonly failOnWriteIndexes = new Set<number>();
+  exitOnKill = true;
   private readonly stdoutHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(chunk: string) => void>();
   private readonly exitHandlers = new Set<
@@ -43,7 +44,7 @@ class FakeClaudePrintChild implements ClaudePrintChild {
 
   kill(signal?: NodeJS.Signals): void {
     this.killedSignals.push(signal);
-    this.emitExit({ code: null, signal: signal ?? null });
+    if (this.exitOnKill) this.emitExit({ code: null, signal: signal ?? null });
   }
 
   emitExit(event: { code: number | null; signal: NodeJS.Signals | string | number | null; error?: Error }): void {
@@ -197,6 +198,33 @@ async function ensureController(
 }
 
 describe('PrintSessionController', () => {
+  it('returns an observable hold and retains listeners when TERM and KILL do not produce close', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new FakeClaudePrintChild();
+      child.exitOnKill = false;
+      const controller = createController(child);
+      await ensureController(controller, child);
+
+      const shutdown = controller.shutdown();
+      await vi.advanceTimersByTimeAsync(2_500);
+      const held = await shutdown;
+
+      expect(held).toMatchObject({
+        kind: 'held-unobservable',
+        observation: 'unobservable',
+        operatorExit: { kind: 'transfer-to-broker-session-pool' },
+      });
+      expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+      child.emitExit({ code: null, signal: 'SIGKILL' });
+      if (held.kind === 'observed-absent') throw new Error('Expected a held shutdown.');
+      await expect(held.settled).resolves.toMatchObject({ kind: 'observed-absent' });
+      await expect(controller.shutdown()).resolves.toMatchObject({ kind: 'observed-absent' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['new', false],
     ['resumed', true],
@@ -606,6 +634,38 @@ describe('PrintSessionController', () => {
         status: 'missing',
         sessionId: null,
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains a failed bootstrap child until a close event settles cooperative cleanup', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new FakeClaudePrintChild();
+      child.exitOnKill = false;
+      const controller = createController(child, [], { controlRequestTimeoutMs: 5 });
+
+      const ensure = controller.sessionEnsure({
+        cwd: '/workspace',
+        projectsRoot: '/tmp/coral-test-home/.claude/projects',
+        systemPromptHash: 'sha256:test',
+        bootstrapConfigHash: 'sha256:test-bootstrap',
+        permissionMode: 'default',
+      });
+      const rejected = expect(ensure).rejects.toThrow(/timed out after 5ms/);
+      await waitForWrite(child, 0);
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.advanceTimersByTimeAsync(2_500);
+
+      await rejected;
+      expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(controller.hasLiveController()).toBe(true);
+
+      child.emitExit({ code: null, signal: 'SIGKILL' });
+      await Promise.resolve();
+      expect(controller.hasLiveController()).toBe(false);
+      await expect(controller.sessionProbe()).resolves.toMatchObject({ status: 'missing' });
     } finally {
       vi.useRealTimers();
     }

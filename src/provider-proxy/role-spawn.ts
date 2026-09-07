@@ -105,6 +105,7 @@ export type RoleSpawnOperatorAbandonment<Subject extends RoleSpawnCleanupSubject
 
 export type RoleSpawnOperatorExit<Subject extends RoleSpawnCleanupSubject> = Readonly<{
   kind: 'abandon-provider-proxy-acquisition';
+  subject: Subject;
   abandon(): RoleSpawnOperatorAbandonment<Subject>;
 }>;
 
@@ -150,14 +151,16 @@ export type RoleSpawnCleanupDisposition<Subject extends RoleSpawnCleanupSubject 
       kind: 'held-alive';
       subject: Subject;
       observation: 'alive';
-      operatorExit: Readonly<{ kind: 'abandon-provider-proxy-acquisition' }>;
+      operatorExit: RoleSpawnOperatorExit<Subject>;
+      settled: Promise<void>;
       retry(signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<Subject>>;
     }>
   | Readonly<{
       kind: 'held-unobservable';
       subject: Subject;
       observation: 'unobservable';
-      operatorExit: Readonly<{ kind: 'abandon-provider-proxy-acquisition' }>;
+      operatorExit: RoleSpawnOperatorExit<Subject>;
+      settled: Promise<void>;
       retry(signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<Subject>>;
     }>;
 
@@ -170,7 +173,7 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
   return join(pluginRoot, 'bridge', 'coral-backend.cjs');
 }
 
-/** Never releases a spawned role whose incarnation cannot be proven until its close-backed retry settles. */
+/** A failed role spawn remains owned until exact absence or accepted operator abandonment. */
 export function spawnRoleProcess(
   role: ProviderRole,
   capsulePath: string,
@@ -197,8 +200,12 @@ export function spawnRoleProcess(
   });
   spawnFailed.catch(() => {});
 
-  const settled = new Promise<void>((resolve) => {
-    child.on('close', () => resolve());
+  let childClosed = false;
+  const childSettled = new Promise<void>((resolve) => {
+    child.on('close', () => {
+      childClosed = true;
+      resolve();
+    });
   });
   // Nothing in this process reads the role's stdout/stderr. Draining keeps the OS pipe buffer from filling
   // and backpressuring the role's own writes, and the `'error'` listeners keep a later stream error from
@@ -210,14 +217,19 @@ export function spawnRoleProcess(
   child.stderr?.on('error', () => {});
   const operatorExitFor = <Subject extends RoleSpawnCleanupSubject>(
     subject: Subject,
+    acceptTransfer: () => void = () => undefined,
   ): RoleSpawnOperatorExit<Subject> => ({
     kind: 'abandon-provider-proxy-acquisition',
-    abandon: () => ({
-      kind: 'operator-abandoned',
-      subject,
-      processAbsenceProven: false,
-      successor: { owner: 'operator-command', acceptance: 'accepted' },
-    }),
+    subject,
+    abandon: () => {
+      acceptTransfer();
+      return {
+        kind: 'operator-abandoned',
+        subject,
+        processAbsenceProven: false,
+        successor: { owner: 'operator-command', acceptance: 'accepted' },
+      };
+    },
   });
   const observedProcessAbsent = (
     subject: RoleSpawnProcessSubject,
@@ -228,11 +240,16 @@ export function spawnRoleProcess(
   const holdFailedSpawn = (error: RoleSpawnError): HeldRoleSpawn => {
     if (options.detached) {
       const subject = { kind: 'unattributable-process-group', processGroupId: child.pid ?? null } as const;
-      const operatorExit = operatorExitFor(subject);
+      let resolveSettled!: () => void;
+      const settled = new Promise<void>((resolve) => {
+        resolveSettled = resolve;
+      });
+      const operatorExit = operatorExitFor(subject, resolveSettled);
       const retry = async (_signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
         if (subject.processGroupId !== null) {
           const observation = observeUnattributableSpawnedProcessGroup(subject.processGroupId, ports.runtime);
           if (observation.kind === 'observed-absent') {
+            resolveSettled();
             return {
               kind: 'observed-absent',
               evidence: Object.freeze({
@@ -248,6 +265,7 @@ export function spawnRoleProcess(
           subject,
           observation: 'unobservable',
           operatorExit,
+          settled,
           retry,
         };
       };
@@ -257,23 +275,42 @@ export function spawnRoleProcess(
     const subject = { kind: 'process', pid: child.pid ?? null } as const;
     const operatorExit = operatorExitFor(subject);
     const retry = async (signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
+      if (childClosed) return observedProcessAbsent(subject);
       if (signal?.aborted) {
-        return { kind: 'held-unobservable', subject, observation: 'unobservable', operatorExit, retry };
+        return {
+          kind: 'held-unobservable',
+          subject,
+          observation: 'unobservable',
+          operatorExit,
+          settled: childSettled,
+          retry,
+        };
       }
       gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
+      if (childClosed) return observedProcessAbsent(subject);
       if (typeof child.pid === 'number') {
         try {
-          if (ports.runtime.process.observeLiveness(child.pid) === 'absent') {
-            return observedProcessAbsent(subject);
+          const observation = ports.runtime.process.observeLiveness(child.pid);
+          if (childClosed) return observedProcessAbsent(subject);
+          if (observation === 'absent') return observedProcessAbsent(subject);
+          if (observation === 'alive') {
+            return { kind: 'held-alive', subject, observation, operatorExit, settled: childSettled, retry };
           }
         } catch {
           // A close observation remains required when leader liveness cannot answer.
         }
       }
-      await settled;
-      return observedProcessAbsent(subject);
+      if (childClosed) return observedProcessAbsent(subject);
+      return {
+        kind: 'held-unobservable',
+        subject,
+        observation: 'unobservable',
+        operatorExit,
+        settled: childSettled,
+        retry,
+      };
     };
-    return { kind: 'held', child, error, subject, settled, operatorExit, retry };
+    return { kind: 'held', child, error, subject, settled: childSettled, operatorExit, retry };
   };
 
   if (typeof child.pid !== 'number') {
@@ -326,7 +363,7 @@ export type RoleConnectRetryOptions = Readonly<{
   connectTimeoutMs: number;
   retryIntervalMs: number;
   overallDeadlineMs: number;
-  now(): number;
+  monotonicNow(): bigint;
   sleep(ms: number): Promise<void>;
 }>;
 
@@ -346,12 +383,15 @@ export async function connectRoleControlWithRetry(
   options: RoleConnectRetryOptions,
   onProviderEvent?: ProviderEventHandler,
 ): Promise<ControlClient> {
-  const deadline = options.now() + options.overallDeadlineMs;
+  // This budget bounds our own retrying, so it spends real elapsed time: charging only a poll cadence per
+  // attempt would let a slow connect attempt stretch the deadline without limit, and a retry that cannot
+  // exhaust is not an exit.
+  const deadlineMonotonicMs = options.monotonicNow() + BigInt(options.overallDeadlineMs);
   while (true) {
     try {
       return await connectControlClient(socketPath, timer, options.connectTimeoutMs, onProviderEvent);
     } catch (error: unknown) {
-      if (options.now() >= deadline) throw error;
+      if (options.monotonicNow() >= deadlineMonotonicMs) throw error;
       await options.sleep(options.retryIntervalMs);
     }
   }

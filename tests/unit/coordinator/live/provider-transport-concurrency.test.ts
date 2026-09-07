@@ -193,11 +193,17 @@ describe('provider transport concurrency hardening', () => {
       },
     });
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    const handle = await launchCoordinator.spawnProviderServer({
-      provider: 'codex',
-      command: 'codex',
-      args: ['app-server'],
-    });
+    const handle = await launchCoordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+      },
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     handle.onNotification(() => {

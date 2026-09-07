@@ -463,6 +463,27 @@ describe('provider host idle properties', () => {
     },
   );
 
+  it('does not retire a host that accepted an unsettled child shutdown obligation', async () => {
+    vi.useFakeTimers();
+    const server = createFakeProviderServerHandle();
+    const entry = createEntry({
+      handle: server.handle,
+      hostStats: { liveControllers: 0, activeTurns: 0, heldControllers: 1 },
+    });
+    const closeProviderServerEntry = vi.fn(async () => undefined);
+
+    maybeArmIdleTimer(entry, {
+      runtime,
+      idleTimeoutMs: 5,
+      entries: new Map([[entry.hostKey, entry]]),
+      carrierBlocksRetirement: () => false,
+      closeProviderServerEntry,
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(closeProviderServerEntry).not.toHaveBeenCalled();
+  });
+
   it('never evicts a currently-acquired lease across 100 random idle sequences', async () => {
     vi.useFakeTimers();
 

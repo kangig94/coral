@@ -9,7 +9,6 @@ import { resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../../infra/windows-shell.js';
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
-  type BrokerShutdownResult,
   buildJsonRpcFailure,
   buildJsonRpcFailureFromError,
   buildJsonRpcSuccess,
@@ -21,6 +20,7 @@ import {
   requireTurnInterruptParams,
   requireTurnStartParams,
 } from './protocol.js';
+import type { ProviderServerShutdownResult } from '../../contract.js';
 import type { JsonRpcRequest } from '../../../infra/json-rpc.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import { createBrokerSession } from './broker-pool.js';
@@ -118,9 +118,40 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
           return;
         case 'broker/shutdown': {
           shutdownRequested = true;
-          await session.shutdown();
-          send(buildJsonRpcSuccess(message.id, { ok: true } satisfies BrokerShutdownResult));
-          exit(0);
+          const disposition = await session.shutdown();
+          if (disposition.kind === 'observed-absent') {
+            send(
+              buildJsonRpcSuccess(message.id, {
+                ok: true,
+                disposition: 'observed-absent',
+              } satisfies ProviderServerShutdownResult),
+            );
+            exit(0);
+            return;
+          }
+          if (disposition.kind === 'held-alive') {
+            send(
+              buildJsonRpcSuccess(message.id, {
+                ok: false,
+                disposition: 'held-alive',
+                observation: 'alive',
+                subjects: [...disposition.subjects],
+                successor: disposition.successor,
+                operatorExit: disposition.operatorExit,
+              } satisfies ProviderServerShutdownResult),
+            );
+            return;
+          }
+          send(
+            buildJsonRpcSuccess(message.id, {
+              ok: false,
+              disposition: 'held-unobservable',
+              observation: 'unobservable',
+              subjects: [...disposition.subjects],
+              successor: disposition.successor,
+              operatorExit: disposition.operatorExit,
+            } satisfies ProviderServerShutdownResult),
+          );
           return;
         }
         default:
@@ -170,12 +201,14 @@ function createDefaultBrokerSession(
     return createBrokerSession({
       spawnChild: createNodeClaudeChildFactory(errorOutput),
       ids: { uuid: () => randomUUID() },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
     });
   }
 
   return createBrokerSession<PrintSpawnChild>({
     spawnChild: createNodeClaudePrintChildFactory(errorOutput),
     ids: { uuid: () => randomUUID() },
+    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
     createController: (controllerOptions) =>
       new PrintSessionController({ ...controllerOptions, now: Date.now, controlRequestTimer: realControlRequestTimer }),
   });

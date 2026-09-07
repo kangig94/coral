@@ -27,7 +27,7 @@ export function formatAtomProgress(atom: LaunchedAtom, message: string): string 
 }
 
 export type WaitForAtomsOptions = {
-  time: Pick<TimePort, 'now'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow'>;
   signal?: AbortSignal;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
@@ -72,6 +72,9 @@ export type AwaitStepState = {
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
+  observedIdleMs: Map<string, number>;
+  lastObservedAtMonotonicMs: bigint;
+  observedDrainMs: number;
   failureDrain: {
     firstFailure: WaitFailure;
     drainDeadline: number;
@@ -98,7 +101,7 @@ function cloneSet<T>(value?: Set<T>): Set<T> {
 function createAwaitStepState(
   atoms: LaunchedAtom[],
   initialState: Partial<WaitInternalState> = {},
-  time: Pick<TimePort, 'now'>,
+  time: Pick<TimePort, 'now' | 'monotonicNow'>,
 ): AwaitStepState {
   const pending = new Map<string, LaunchedAtom>();
   const results = cloneMap(initialState.completedOutputs);
@@ -124,6 +127,9 @@ function createAwaitStepState(
     lastActivityAt,
     staleRetries,
     expectedStaleAborts: cloneSet(initialState.expectedStaleAborts),
+    observedIdleMs: new Map([...pending.values()].map((atom) => [atom.atomKey, 0])),
+    lastObservedAtMonotonicMs: time.monotonicNow(),
+    observedDrainMs: 0,
     failureDrain:
       initialState.failureDrain === undefined
         ? null
@@ -132,6 +138,17 @@ function createAwaitStepState(
             drainDeadline: initialState.failureDrain.drainDeadline,
           },
   };
+}
+
+function advanceObservedWaitTime(state: AwaitStepState, observedAtMonotonicMs: bigint, cadenceMs: number): void {
+  const observedGapMs = observedAtMonotonicMs - state.lastObservedAtMonotonicMs;
+  state.lastObservedAtMonotonicMs = observedAtMonotonicMs;
+  if (observedGapMs <= 0n) return;
+  const contributionMs = Math.min(Number(observedGapMs), cadenceMs);
+  for (const atom of state.pending.values()) {
+    state.observedIdleMs.set(atom.atomKey, (state.observedIdleMs.get(atom.atomKey) ?? 0) + contributionMs);
+  }
+  if (state.failureDrain !== null) state.observedDrainMs += contributionMs;
 }
 
 function snapshotWaitState(state: AwaitStepState): WaitInternalState {
@@ -164,6 +181,7 @@ function enterFailureDrain(
     firstFailure: failure,
     drainDeadline: options.time.now() + options.drainDeadlineMs,
   };
+  state.observedDrainMs = 0;
   options.onFailureDrain?.(snapshotWaitState(state), failure);
   executionSvc.abort([...state.pending.keys()]);
 }
@@ -179,6 +197,7 @@ function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       state.lastActivityAt.set(atom.atomKey, options.time.now());
+      state.observedIdleMs.set(atom.atomKey, 0);
       options.onProgress(formatAtomProgress(atom, `queued (position ${event.queuePosition})`));
       return 'handled';
     }
@@ -188,6 +207,7 @@ function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       state.lastActivityAt.set(atom.atomKey, options.time.now());
+      state.observedIdleMs.set(atom.atomKey, 0);
       options.onProgress(formatAtomProgress(atom, stripElapsedPrefix(event.message)));
       return 'handled';
     }
@@ -198,6 +218,7 @@ function handleWaitEvent(
 
       state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
       state.pending.delete(event.jobId);
+      state.observedIdleMs.delete(atom.atomKey);
 
       const outcomePhase = phaseForOutcome(event.result.outcome);
       const terminalState = outcomePhase === 'completed' ? 'done' : 'error';
@@ -256,12 +277,14 @@ async function awaitWaitCycle(
   buildPartialStepDetailsForCycle: () => StepDetail[],
 ): Promise<'stream-ended' | 'stale-recovered'> {
   const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs);
+  const observedCadenceMs = timeoutSeconds * 1_000;
 
   for await (const event of executionSvc.waitStream({
     jobIds: [...state.pending.keys()],
     timeoutSeconds,
     cursor: state.cursor,
   })) {
+    advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);
     const eventOutcome = handleWaitEvent(event, state, executionSvc, options);
     if (eventOutcome !== 'check-stale') continue;
     if (state.failureDrain !== null || options.staleTimeoutMs <= 0 || !options.recoverStaleAtom) continue;
@@ -312,11 +335,13 @@ async function awaitStepCompletion(
     }
 
     const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
+    advanceObservedWaitTime(
+      state,
+      options.time.monotonicNow(),
+      waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs) * 1_000,
+    );
 
-    if (
-      state.failureDrain !== null &&
-      (state.pending.size === 0 || options.time.now() >= state.failureDrain.drainDeadline)
-    ) {
+    if (state.failureDrain !== null && (state.pending.size === 0 || state.observedDrainMs >= options.drainDeadlineMs)) {
       throw createWorkflowExecutionError(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,

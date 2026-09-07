@@ -19,8 +19,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator, type ForeignTargetValidator } from '#src/infra/handoff-target.js';
-import { sha256Hex } from '#src/infra/hash.js';
-import { canonicalContractJson } from '#src/infra/persisted-contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -38,7 +36,6 @@ import { coordinateActiveStoreSelection } from '#src/store/active-store-selectio
 import { classifyBackendStoreFailure, createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import * as dbModule from '#src/store/db.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import type { StoreFormatManifest } from '#src/store/format-fingerprint.js';
 import {
   isCanonicalStoreResetIncidentId,
   parseStoreResetIncidentManifest,
@@ -50,10 +47,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
-const priorStoreManifest = JSON.parse(
-  readFileSync(join(process.cwd(), 'tests/fixtures/store-format/approved-prior.manifest.json'), 'utf8'),
-) as StoreFormatManifest;
-const priorStoreFingerprint = `sha256:${sha256Hex(canonicalContractJson(priorStoreManifest))}`;
+const incompatibleStoreFingerprint = `sha256:${'0'.repeat(64)}`;
 const backendBundle = 'selection recovery backend';
 const cliBundle = 'selection recovery cli';
 const claudeAppserverBundle = 'selection recovery claude appserver';
@@ -199,22 +193,25 @@ function createNewerStore(runtime: Runtime): void {
   }
 }
 
-function seedPriorFormatStore(db: DatabaseSync): void {
+function seedIncompatibleFormatStore(db: DatabaseSync): void {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;');
-  db.exec(priorStoreManifest.ddl);
-  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('store_format_fingerprint', priorStoreFingerprint);
+  db.exec(storeFormat.manifest.ddl);
+  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+    'store_format_fingerprint',
+    incompatibleStoreFingerprint,
+  );
   db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('store_product_version', storeFormat.productVersion);
   db.exec(PRIOR_STORE_SEED_SQL);
 }
 
-function createPriorFormatStore(runtime: Runtime): StoreEvidence {
+function createIncompatibleFormatStore(runtime: Runtime): StoreEvidence {
   const path = runtime.paths.coral.store.dbFile;
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   let evidence: StoreEvidence;
   try {
-    seedPriorFormatStore(db);
-    writeFileSync(`${path}.format`, `${priorStoreFingerprint}\n`);
+    seedIncompatibleFormatStore(db);
+    writeFileSync(`${path}.format`, `${incompatibleStoreFingerprint}\n`);
     evidence = {
       'store.db': readFileSync(path),
       'store.db-wal': readFileSync(`${path}-wal`),
@@ -628,9 +625,9 @@ describe('active-store selection recovery', () => {
     });
   });
 
-  it('should quarantine the approved prior format, reset every SQL subsystem, and retain orphaned exports', async () => {
+  it('should quarantine an unsupported same-version format, reset every SQL subsystem, and retain orphaned exports', async () => {
     const { runtime, currentSelection, authority } = harness();
-    const evidence = createPriorFormatStore(runtime);
+    const evidence = createIncompatibleFormatStore(runtime);
     const dbPath = runtime.paths.coral.store.dbFile;
     const originalUnlinkSync = runtime.storage.unlinkSync.bind(runtime.storage);
     let shmAtQuarantine: Buffer | undefined;

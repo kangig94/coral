@@ -140,7 +140,7 @@ type ProviderProxySetHeartbeatHoldExhaustedFields = ProviderProxySetHeartbeatDis
     fault: 'heartbeat-hold-exhausted';
     lastIncidentReason: 'unanswered';
     attempts: number;
-    elapsedMs: number;
+    observedDurationMs: number;
     schedulerLatenessMs: number;
   }>;
 
@@ -150,7 +150,7 @@ type ProviderProxySetHeartbeatAnswerUnusableFields = ProviderProxySetHeartbeatDi
     fault: 'heartbeat-answer-unusable-hold-exhausted';
     lastIncidentReason: 'unclassified';
     attempts: number;
-    elapsedMs: number;
+    observedDurationMs: number;
     schedulerLatenessMs: number;
   }>;
 
@@ -203,7 +203,7 @@ type ProviderProxySetHeartbeatBoundRefusalFields = Readonly<{
   role: ProviderProxyRole;
   method: ProviderProxyHeartbeatMethod;
   attempts: number;
-  elapsedMs: number;
+  observedDurationMs: number;
   schedulerLatenessMs: number;
   error: string;
 }>;
@@ -405,7 +405,7 @@ export function renderProviderProxySetDecision(
   }
   return {
     severity,
-    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'control-redemption-refused' ? ` stage=${decision.stage} method=${decision.method} terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.reason === 'containment_refused_live_claims' ? refusedDecisionDetail(decision.refusedDecision) : ''}${summary === undefined ? '' : ` ${summary}`}`,
+    message: `Provider proxy set action=${decision.action} reason=${decision.reason} fault=${fault} subject=${subject} liveClaims=${decision.liveClaims} set=${providerProxySetReference(decision.setIdentity)} error=${error}${decision.fault === 'control-channel-fault' ? ` cause=${decision.cause} attempts=${decision.attempts} elapsedMs=${decision.elapsedMs} boundMs=${decision.boundMs}` : ''}${decision.fault === 'heartbeat-failed' ? ` terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'control-redemption-refused' ? ` stage=${decision.stage} method=${decision.method} terminalReason=${decision.terminalReason}` : ''}${decision.fault === 'heartbeat-indeterminate' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.fault === 'heartbeat-hold-exhausted' || decision.fault === 'heartbeat-answer-unusable-hold-exhausted' ? ` attempts=${decision.attempts} observedDurationMs=${decision.observedDurationMs} schedulerLatenessMs=${decision.schedulerLatenessMs} lastIncidentReason=${decision.lastIncidentReason}` : ''}${decision.fault === 'heartbeat-method-not-found' ? ` incidentReason=${decision.incidentReason}` : ''}${decision.reason === 'containment_refused_live_claims' ? refusedDecisionDetail(decision.refusedDecision) : ''}${summary === undefined ? '' : ` ${summary}`}`,
   };
 }
 
@@ -418,7 +418,7 @@ function refusedDecisionDetail(refused: ProviderProxySetNonAuthorizingContainmen
       return ` terminalReason=${refused.terminalReason}`;
     case 'heartbeat_hold_exhausted':
     case 'heartbeat_answer_unusable_hold_exhausted':
-      return ` attempts=${refused.attempts} elapsedMs=${refused.elapsedMs} schedulerLatenessMs=${refused.schedulerLatenessMs} lastIncidentReason=${refused.lastIncidentReason}`;
+      return ` attempts=${refused.attempts} observedDurationMs=${refused.observedDurationMs} schedulerLatenessMs=${refused.schedulerLatenessMs} lastIncidentReason=${refused.lastIncidentReason}`;
     case 'heartbeat_protocol_incompatible':
       return ` incidentReason=${refused.incidentReason}`;
     case 'operation_control_indeterminate':

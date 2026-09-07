@@ -46,6 +46,7 @@ async function startController(
   const controller = new SingleSessionController({
     spawnChild: () => new FakeClaudeChild(),
     ids: { uuid: () => TEST_SESSION_ID },
+    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
     readySettleMs: 1,
     promptAckTimeoutMs: 60_000,
   });

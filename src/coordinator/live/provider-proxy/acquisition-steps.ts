@@ -396,7 +396,7 @@ export function createProviderProxyAcquisitionSteps(
         connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
         retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
         overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
-        now: () => runtime.time.now(),
+        monotonicNow: () => runtime.time.monotonicNow(),
         sleep: (ms: number) => runtime.time.sleep(ms),
       };
       const opened: ControlClient[] = [];

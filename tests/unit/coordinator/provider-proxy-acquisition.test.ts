@@ -28,7 +28,6 @@ const SET: ProviderProxyOperationAuthority = {
     adoptionWindowMs: Number.MAX_SAFE_INTEGER,
     heartbeatHoldBound: {
       spanMs: Number.MAX_SAFE_INTEGER,
-      materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
     },
   },
   registerSuccessionOperation: async () => ({ kind: 'registered' as const }),

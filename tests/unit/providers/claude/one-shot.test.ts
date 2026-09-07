@@ -144,7 +144,7 @@ describe('runClaudeOneShotTurn', () => {
       if (method === 'session/close') {
         return {
           brokerSessionKey: params.brokerSessionKey,
-          closed: true,
+          disposition: 'observed-absent',
         };
       }
 
@@ -265,7 +265,7 @@ describe('runClaudeOneShotTurn', () => {
       if (method === 'session/close') {
         return {
           brokerSessionKey: params.brokerSessionKey,
-          closed: true,
+          disposition: 'observed-absent',
         };
       }
 
@@ -389,7 +389,7 @@ describe('runClaudeOneShotTurn', () => {
       if (method === 'session/close') {
         return {
           brokerSessionKey: params.brokerSessionKey,
-          closed: true,
+          disposition: 'observed-absent',
         };
       }
 
@@ -509,7 +509,7 @@ describe('runClaudeOneShotTurn', () => {
       if (method === 'session/close') {
         return {
           brokerSessionKey: params.brokerSessionKey,
-          closed: true,
+          disposition: 'observed-absent',
         };
       }
 
@@ -627,7 +627,7 @@ describe('runClaudeOneShotTurn', () => {
         return await new Promise<never>(() => {});
       }
       if (method === 'session/close') {
-        return { brokerSessionKey: params.brokerSessionKey, closed: true };
+        return { brokerSessionKey: params.brokerSessionKey, disposition: 'observed-absent' };
       }
       throw new Error(`unexpected RPC ${method}`);
     });
@@ -658,9 +658,16 @@ describe('runClaudeOneShotTurn', () => {
 
   it.each([
     {
-      name: 'persistent false responses',
+      name: 'persistent held responses',
       interrupt: () => Promise.resolve({ kind: 'not-accepted' as const, reason: 'test refusal' }),
-      close: (brokerSessionKey: unknown) => Promise.resolve({ brokerSessionKey, closed: false }),
+      close: (brokerSessionKey: unknown) =>
+        Promise.resolve({
+          brokerSessionKey,
+          disposition: 'held-unobservable',
+          observation: 'unobservable',
+          successor: { kind: 'accepted', owner: 'broker-session-pool' },
+          operatorExit: { kind: 'retry-session-close' },
+        }),
     },
     {
       name: 'throwing cancellation operations',

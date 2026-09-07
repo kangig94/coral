@@ -44,6 +44,7 @@ import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  PROXY_CONTROL_HEARTBEAT_MS,
   PROXY_TEARDOWN_RESERVE_MS,
   providerProxyHeartbeatHoldBound,
 } from '#src/provider-proxy/orphan-deadline.js';
@@ -202,7 +203,7 @@ describe('provider proxy operation routing', () => {
     const changed = {
       orphanTimeoutMs: 45_000,
       adoptionWindowMs: 31_000,
-      heartbeatHoldBound: { spanMs: 31_000, materialSchedulerLatenessMs: 7_750 },
+      heartbeatHoldBound: { spanMs: 31_000 },
     };
 
     deadline = changed;
@@ -1358,7 +1359,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
 
   it("uses a redeemed set's capsule deadline instead of the successor coordinator's environment", async () => {
     const { time, faults, stopAndReap, redeemedDeadline, services, lifecycle } = await createHeartbeatHoldHarness();
-    expect(redeemedDeadline.heartbeatHoldBound).toEqual({ spanMs: 5_001, materialSchedulerLatenessMs: 1_250 });
+    expect(redeemedDeadline.heartbeatHoldBound).toEqual({ spanMs: 5_001 });
 
     const incident = (error: string): void =>
       faults.reportIncident({
@@ -1377,8 +1378,15 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
 
     incident('first');
     expect(lifecycle.snapshot().states).toEqual(['available']);
-    time.tick(redeemedDeadline.heartbeatHoldBound.spanMs);
-    incident('second');
+    let observedDurationMs = 0;
+    while (observedDurationMs + PROXY_CONTROL_HEARTBEAT_MS < redeemedDeadline.heartbeatHoldBound.spanMs) {
+      time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+      observedDurationMs += PROXY_CONTROL_HEARTBEAT_MS;
+      incident(`holding-${observedDurationMs}`);
+    }
+    expect(lifecycle.snapshot().states).toEqual(['available']);
+    time.tick(redeemedDeadline.heartbeatHoldBound.spanMs - observedDurationMs);
+    incident('bound-exhausted');
 
     // The reversal joined silence-hold-exhausted to its two siblings' `await-containment-absence` action, so
     // exhaustion no longer sends the destructive guardian commit itself, at any claim count: it releases

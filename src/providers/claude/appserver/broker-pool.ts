@@ -1,4 +1,5 @@
 import { SingleSessionController } from './controller.js';
+import { ClaudeControllerCleanupHeldError } from './child-shutdown.js';
 import {
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
@@ -18,9 +19,16 @@ import {
   type TurnStartResult,
 } from './protocol.js';
 import type {
+  BrokerShutdownDisposition,
+  BrokerShutdownHold,
+  BrokerShutdownObservedAbsent,
   BrokerSessionController,
   BrokerSessionControllerOptions,
   ClaudeBrokerSession,
+  ControllerShutdownDisposition,
+  ControllerShutdownHold,
+  ControllerShutdownSuccessor,
+  ControllerShutdownSuccessorAcceptance,
   ControllerNotification,
   CreateBrokerSessionOptions,
   SingleSessionControllerOptions,
@@ -52,9 +60,11 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
   private readonly stderrLimit: number;
   private readonly ids: CreateBrokerSessionOptions['ids'];
+  private readonly monotonicNow: CreateBrokerSessionOptions['monotonicNow'];
   private readonly notificationHandlers = new Set<(notification: ClaudeBrokerNotification) => void>();
   private readonly controllers = new Map<string, ControllerEntry>();
-  private readonly closingControllers = new Map<string, Promise<boolean>>();
+  private readonly closingControllers = new Map<string, Promise<ControllerShutdownDisposition>>();
+  private readonly heldControllerShutdowns = new Map<string, ControllerShutdownHold>();
 
   private resolveClosed!: (value: Error | void) => void;
   private shuttingDown = false;
@@ -69,6 +79,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     this.onTurnStarted = options.onTurnStarted;
     this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
     this.ids = options.ids;
+    this.monotonicNow = options.monotonicNow;
     this.closed = new Promise<Error | void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -83,6 +94,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
 
   async sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult> {
     const brokerSessionKey = params.brokerSessionKey ?? this.ids.uuid();
+    await this.settlePriorControllerShutdown(brokerSessionKey);
     let entry = this.controllers.get(brokerSessionKey);
     const generatedBrokerSessionKey = params.brokerSessionKey === undefined;
     const createdEntry = entry === undefined;
@@ -111,6 +123,20 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
         brokerSessionKey,
       };
     } catch (error) {
+      if (error instanceof ClaudeControllerCleanupHeldError) {
+        entry.dispose();
+        entry.pendingNotifications = [];
+        this.controllers.delete(brokerSessionKey);
+        const acceptance = this.acceptControllerShutdown(brokerSessionKey, error.hold);
+        this.emitHostStats();
+        throw new ClaudeBrokerRpcError(error.code, error.message, {
+          cause: error.data,
+          cleanupDisposition: error.hold.kind,
+          observation: error.hold.observation,
+          successor: acceptance,
+          operatorExit: { kind: 'retry-session-ensure' },
+        });
+      }
       if (createdEntry) {
         await this.removeController(brokerSessionKey).catch(() => {});
       } else if (entry.holdNotifications) {
@@ -143,9 +169,25 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   }
 
   async sessionClose(params: SessionCloseParams): Promise<SessionCloseResult> {
-    return {
+    const disposition = await this.removeController(params.brokerSessionKey);
+    if (disposition.kind === 'observed-absent') {
+      return {
+        brokerSessionKey: params.brokerSessionKey,
+        disposition: 'observed-absent',
+      };
+    }
+    const hold = {
       brokerSessionKey: params.brokerSessionKey,
-      closed: await this.removeController(params.brokerSessionKey),
+      successor: { kind: 'accepted', owner: 'broker-session-pool' } as const,
+      operatorExit: { kind: 'retry-session-close' } as const,
+    };
+    if (disposition.kind === 'held-alive') {
+      return { ...hold, disposition: 'held-alive', observation: 'alive' };
+    }
+    return {
+      ...hold,
+      disposition: 'held-unobservable',
+      observation: 'unobservable',
     };
   }
 
@@ -183,31 +225,56 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     });
   }
 
-  async shutdown(): Promise<void> {
-    if (this.shuttingDown) {
-      return;
-    }
+  async shutdown(): Promise<BrokerShutdownDisposition> {
     this.shuttingDown = true;
 
-    const entries = [...this.controllers.values()];
-    this.controllers.clear();
-    this.emitHostStats();
-    await Promise.all(
-      entries.map(async (entry) => {
-        entry.dispose();
-        entry.pendingNotifications = [];
-        await entry.controller.shutdown();
-      }),
-    );
+    const priorHolds = [...this.heldControllerShutdowns.entries()];
+    const keys = [...this.controllers.keys()];
+    await Promise.all(keys.map((brokerSessionKey) => this.removeController(brokerSessionKey)));
     await Promise.all(this.closingControllers.values());
-    this.closingControllers.clear();
-    this.resolvePoolClosed();
+
+    for (const [brokerSessionKey, hold] of priorHolds) {
+      if (this.heldControllerShutdowns.get(brokerSessionKey) !== hold) continue;
+      const disposition = await hold.retry();
+      if (disposition.kind === 'observed-absent') {
+        if (this.heldControllerShutdowns.get(brokerSessionKey) === hold) {
+          this.heldControllerShutdowns.delete(brokerSessionKey);
+        }
+      } else {
+        this.acceptControllerShutdown(brokerSessionKey, disposition);
+      }
+    }
+
+    const holds = [...this.heldControllerShutdowns.values()];
+    if (holds.length === 0) {
+      this.resolvePoolClosed();
+      return { kind: 'observed-absent', observation: 'absent' };
+    }
+
+    const successor = { kind: 'accepted', owner: 'broker-session-pool' } as const;
+    const operatorExit: BrokerShutdownHold['operatorExit'] = { kind: 'retry-broker-shutdown' };
+    const continuation = {
+      subjects: holds.flatMap((hold) => hold.subjects),
+      successor,
+      settled: Promise.all(holds.map((hold) => hold.settled)).then(
+        (): BrokerShutdownObservedAbsent => ({
+          kind: 'observed-absent',
+          observation: 'absent',
+        }),
+      ),
+      retry: () => this.shutdown(),
+      operatorExit,
+    };
+    return holds.some((hold) => hold.kind === 'held-alive')
+      ? { ...continuation, kind: 'held-alive', observation: 'alive' }
+      : { ...continuation, kind: 'held-unobservable', observation: 'unobservable' };
   }
 
   private createControllerEntry(brokerSessionKey: string, holdNotifications: boolean): ControllerEntry {
     const controller = this.createController({
       spawnChild: this.spawnChild,
       ids: this.ids,
+      monotonicNow: this.monotonicNow,
       onTurnStarted: this.onTurnStarted,
       stderrLimit: this.stderrLimit,
       onUnexpectedExit: () => {
@@ -292,33 +359,98 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     }
   }
 
-  private async removeController(brokerSessionKey: string): Promise<boolean> {
+  private async removeController(brokerSessionKey: string): Promise<ControllerShutdownDisposition> {
     const existingClose = this.closingControllers.get(brokerSessionKey);
     if (existingClose) {
       return existingClose;
     }
 
-    const entry = this.controllers.get(brokerSessionKey);
-    if (!entry) {
-      return false;
+    const heldShutdown = this.heldControllerShutdowns.get(brokerSessionKey);
+    if (heldShutdown !== undefined) {
+      const disposition = await heldShutdown.retry();
+      if (disposition.kind === 'observed-absent') {
+        if (this.heldControllerShutdowns.get(brokerSessionKey) === heldShutdown) {
+          this.heldControllerShutdowns.delete(brokerSessionKey);
+        }
+      } else {
+        this.acceptControllerShutdown(brokerSessionKey, disposition);
+      }
+      return disposition;
     }
 
-    const closing = (async (): Promise<boolean> => {
-      entry.dispose();
-      entry.pendingNotifications = [];
-      this.controllers.delete(brokerSessionKey);
-      this.emitHostStats();
-      await entry.controller.shutdown();
-      return true;
-    })();
+    const entry = this.controllers.get(brokerSessionKey);
+    if (!entry) {
+      return { kind: 'observed-absent', observation: 'absent', subjects: [] };
+    }
+
+    entry.dispose();
+    entry.pendingNotifications = [];
+    this.controllers.delete(brokerSessionKey);
+    const closing = entry.controller.shutdown().then((disposition) => {
+      if (disposition.kind !== 'observed-absent') {
+        this.acceptControllerShutdown(brokerSessionKey, disposition);
+      }
+      return disposition;
+    });
     this.closingControllers.set(brokerSessionKey, closing);
+    this.emitHostStats();
     try {
       return await closing;
     } finally {
       if (this.closingControllers.get(brokerSessionKey) === closing) {
         this.closingControllers.delete(brokerSessionKey);
+        this.emitHostStats();
       }
     }
+  }
+
+  private async settlePriorControllerShutdown(brokerSessionKey: string): Promise<void> {
+    const inFlight = this.closingControllers.get(brokerSessionKey);
+    const priorHold = this.heldControllerShutdowns.get(brokerSessionKey);
+    const disposition = inFlight !== undefined ? await inFlight : await priorHold?.retry();
+    if (disposition === undefined) return;
+    if (disposition.kind === 'observed-absent') {
+      this.heldControllerShutdowns.delete(brokerSessionKey);
+      return;
+    }
+
+    const acceptance = this.acceptControllerShutdown(brokerSessionKey, disposition);
+    throw new ClaudeBrokerRpcError(
+      CLAUDE_BROKER_STATE_RPC_CODE,
+      'Claude broker session replacement is held until the prior child is observed absent.',
+      {
+        disposition: disposition.kind,
+        observation: disposition.observation,
+        successor: acceptance,
+        operatorExit: { kind: 'retry-session-ensure' },
+      },
+    );
+  }
+
+  private acceptControllerShutdown(
+    brokerSessionKey: string,
+    hold: ControllerShutdownHold,
+  ): ControllerShutdownSuccessorAcceptance {
+    const successor: ControllerShutdownSuccessor = {
+      owner: 'broker-session-pool',
+      accept: (acceptedHold) => {
+        if (acceptedHold !== hold) {
+          throw new Error('Claude child shutdown transfer changed the held obligation.');
+        }
+        this.heldControllerShutdowns.set(brokerSessionKey, acceptedHold);
+        void acceptedHold.settled.then(() => {
+          if (this.heldControllerShutdowns.get(brokerSessionKey) !== acceptedHold) return;
+          this.heldControllerShutdowns.delete(brokerSessionKey);
+          this.emitHostStats();
+        });
+        return { kind: 'accepted', owner: 'broker-session-pool' };
+      },
+    };
+    const acceptance = hold.operatorExit.transfer(successor);
+    if (acceptance.kind !== 'accepted' || acceptance.owner !== 'broker-session-pool') {
+      throw new Error('Claude child shutdown ownership transfer was not accepted by the broker session pool.');
+    }
+    return acceptance;
   }
 
   private emitNotification(notification: ClaudeBrokerNotification): void {
@@ -348,6 +480,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     return {
       liveControllers,
       activeTurns,
+      heldControllers: new Set([...this.closingControllers.keys(), ...this.heldControllerShutdowns.keys()]).size,
     };
   }
 
@@ -367,6 +500,7 @@ export function createBrokerSession<TSpawnChild = TuiSpawnChild>(
   return new BrokerSessionPool({
     spawnChild: options.spawnChild,
     ids: options.ids,
+    monotonicNow: options.monotonicNow,
     onTurnStarted: options.onTurnStarted,
     stderrLimit: options.stderrLimit,
     ...(createController === undefined

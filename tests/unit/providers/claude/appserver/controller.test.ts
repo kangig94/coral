@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { MAX_BUFFER } from '#src/infra/process-constants.js';
+import { BrokerSessionPool } from '#src/providers/claude/appserver/broker-pool.js';
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type { ControllerNotification } from '#src/providers/claude/appserver/session-contract.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
@@ -91,7 +92,7 @@ type ActiveTurnForUsageTest = object;
 type ControllerInternals = {
   activeTurn: ActiveTurnForUsageTest | null;
   processTranscriptLine(turn: ActiveTurnForUsageTest, line: string, lineStartOffset: number): void;
-  recoverStalledTurn(turn: ActiveTurnForUsageTest, now: number): Promise<boolean>;
+  recoverStalledTurn(turn: ActiveTurnForUsageTest, observedAtMs: bigint): Promise<boolean>;
 };
 
 type UsageControllerHarness = {
@@ -117,6 +118,7 @@ async function startUsageController(): Promise<UsageControllerHarness> {
   const controller = new SingleSessionController({
     spawnChild: () => child,
     ids: { uuid: () => TEST_SESSION_ID },
+    monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
     readySettleMs: 1,
     promptAckTimeoutMs: 10_000,
   });
@@ -174,18 +176,101 @@ async function completeFromTranscriptRows(
     harness.internals.processTranscriptLine(harness.turn, row, 0);
   }
 
-  await harness.internals.recoverStalledTurn(harness.turn, Date.now());
+  await harness.internals.recoverStalledTurn(harness.turn, process.hrtime.bigint() / 1_000_000n);
   const completed = completedNotification(harness.notifications);
   expect(completed).toBeDefined();
   return completed as TurnCompletedNotification;
 }
 
 describe('SingleSessionController PTY lifecycle', () => {
+  it('transfers an unsettled child to the broker pool before reporting a retryable shutdown hold', async () => {
+    const child = new FakeClaudeChild();
+    const ids = ['broker-session-1', TEST_SESSION_ID];
+    const pool = new BrokerSessionPool({
+      spawnChild: () => child,
+      ids: { uuid: () => ids.shift() ?? TEST_SESSION_ID },
+      monotonicNow: () => 0n,
+    });
+    await pool.sessionEnsure({
+      cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
+      systemPromptHash: 'sha256:test',
+      bootstrapConfigHash: 'sha256:test-bootstrap',
+      permissionMode: 'default',
+    });
+    child.exitOnProtocolShutdown = false;
+    child.exitOnKill = false;
+    vi.useFakeTimers();
+    try {
+      const shutdown = pool.shutdown();
+      await vi.advanceTimersByTimeAsync(2_500);
+      const held = await shutdown;
+
+      expect(held).toMatchObject({
+        kind: 'held-unobservable',
+        observation: 'unobservable',
+        successor: { kind: 'accepted', owner: 'broker-session-pool' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      });
+      expect(child.disposed).toBe(false);
+
+      child.emitExit({ code: null, signal: 'SIGKILL' });
+      if (held.kind === 'observed-absent') throw new Error('Expected a broker shutdown hold.');
+      await expect(held.settled).resolves.toMatchObject({ kind: 'observed-absent' });
+      await expect(pool.shutdown()).resolves.toMatchObject({ kind: 'observed-absent' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns an observable hold and retains listeners when TERM and KILL do not produce close', async () => {
+    try {
+      const child = new FakeClaudeChild();
+      child.exitOnProtocolShutdown = false;
+      child.exitOnKill = false;
+      const controller = new SingleSessionController({
+        spawnChild: () => child,
+        ids: { uuid: () => TEST_SESSION_ID },
+        monotonicNow: () => 0n,
+        ...FAST_TIMING,
+      });
+      await controller.sessionEnsure({
+        cwd: '/workspace',
+        projectsRoot: '/tmp/coral-test-home/.claude/projects',
+        systemPromptHash: 'sha256:test',
+        bootstrapConfigHash: 'sha256:test-bootstrap',
+        permissionMode: 'default',
+      });
+      vi.useFakeTimers();
+
+      const shutdown = controller.shutdown();
+      await vi.advanceTimersByTimeAsync(2_500);
+      const held = await shutdown;
+
+      expect(held).toMatchObject({
+        kind: 'held-unobservable',
+        observation: 'unobservable',
+        operatorExit: { kind: 'transfer-to-broker-session-pool' },
+      });
+      expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(child.disposed).toBe(false);
+
+      child.emitExit({ code: null, signal: 'SIGKILL' });
+      if (held.kind === 'observed-absent') throw new Error('Expected a held shutdown.');
+      await expect(held.settled).resolves.toMatchObject({ kind: 'observed-absent' });
+      expect(child.disposed).toBe(true);
+      await expect(controller.shutdown()).resolves.toMatchObject({ kind: 'observed-absent' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('waits for Claude terminal readiness before accepting the first turn', async () => {
     const child = new FakeClaudeChild(false);
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       ...FAST_TIMING,
     });
 
@@ -225,6 +310,7 @@ describe('SingleSessionController PTY lifecycle', () => {
       const controller = new SingleSessionController({
         spawnChild: () => child,
         ids: { uuid: () => TEST_SESSION_ID },
+        monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
         readySettleMs: 100,
       });
 
@@ -266,6 +352,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       ...FAST_TIMING,
     });
     await controller.sessionEnsure({
@@ -301,6 +388,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       ...FAST_TIMING,
     });
     controller.subscribeNotifications((notification) => {
@@ -347,6 +435,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       onTurnStarted: () => {
         throw new Error('turn registry unavailable');
       },
@@ -384,6 +473,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       ...FAST_TIMING,
     });
     controller.subscribeNotifications((notification) => {
@@ -430,6 +520,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       readySettleMs: 5,
       promptAckTimeoutMs: 2_000,
     });
@@ -481,6 +572,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       readySettleMs: 5,
       promptAckTimeoutMs: 5_000,
     });

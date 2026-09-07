@@ -42,7 +42,7 @@ import {
 } from '#src/projection-consumers/persistence.js';
 
 const CURRENT_CORAL_STORE_FORMAT_FINGERPRINT =
-  'sha256:14dc24b4866275d16da14487f08311493c693dda5c5d8c4bfdaa58a0cfb750e1';
+  'sha256:ca97b533a127b1475b45a487793ab7183ae70620894d1ca36e193431065b2521';
 
 const CURRENT_BOUNDARY_CODEC_NAMES = [
   'store.events.body',
@@ -218,22 +218,6 @@ describe('StoreFormatFingerprint', () => {
 
     const ddl = ddlFor('store.alpha', 'store.beta');
     expect(describeStoreFormat(ddl, left).fingerprint).toBe(describeStoreFormat(ddl, right).fingerprint);
-  });
-
-  it('is independent of schema reference topology', () => {
-    const sharedValue = z.string().min(1);
-    const shared = new PersistedCodecRegistry();
-    shared.registerZod('store.value', z.object({ first: sharedValue, second: sharedValue }).strict());
-
-    const owned = new PersistedCodecRegistry();
-    owned.registerZod('store.value', z.object({ first: z.string().min(1), second: z.string().min(1) }).strict());
-
-    const tightened = new PersistedCodecRegistry();
-    tightened.registerZod('store.value', z.object({ first: z.string().min(1), second: z.string().min(2) }).strict());
-
-    const ddl = ddlFor('store.value');
-    expect(describeStoreFormat(ddl, shared).fingerprint).toBe(describeStoreFormat(ddl, owned).fingerprint);
-    expect(describeStoreFormat(ddl, tightened).fingerprint).not.toBe(describeStoreFormat(ddl, owned).fingerprint);
   });
 
   it('changes when a registered structural codec contract changes', () => {

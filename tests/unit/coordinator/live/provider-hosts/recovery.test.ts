@@ -26,11 +26,9 @@ describe('provider host recovery', () => {
       spawnProviderServer,
       closeEntry: vi.fn(async () => {}),
       attachHostNotificationListener: vi.fn(),
-      retainSpawnCleanup: vi.fn(async () => {
-        throw new Error('Unexpected failed-spawn cleanup hold.');
-      }),
       createInstanceId: () => 'unused-instance',
       observeRetired: vi.fn(),
+      abandonUninstalled: vi.fn(),
     }).catch((error: unknown) => error);
 
     expect(spawnProviderServer).not.toHaveBeenCalled();
@@ -161,6 +159,7 @@ describe('provider host recovery', () => {
       }),
       expect.any(Function),
       expect.any(Number),
+      expect.any(Function),
       expect.any(Function),
     );
     lease.close();

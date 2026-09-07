@@ -560,6 +560,20 @@ class ManualClock {
   }
 }
 
+function elapseOperatorExitObservations(
+  clock: ManualClock,
+  lifecycle: ProviderProxySetLifecycle,
+  elapsedMs: number,
+): void {
+  let remainingMs = elapsedMs;
+  while (remainingMs > 0) {
+    const stepMs = Math.min(1_000, remainingMs);
+    clock.elapse(stepMs);
+    lifecycle.snapshot();
+    remainingMs -= stepMs;
+  }
+}
+
 /**
  * Runs a manual clock forward one scheduled wake at a time until nothing is waiting, always waking a
  * millisecond after the requested time so that a retry which reported lateness would be caught reporting it.
@@ -615,7 +629,6 @@ function fakeAuthority(
       adoptionWindowMs: options.adoptionWindowMs ?? Number.MAX_SAFE_INTEGER,
       heartbeatHoldBound: options.heartbeatHoldBound ?? {
         spanMs: Number.MAX_SAFE_INTEGER,
-        materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
       },
     },
     setIdentity: providerProxySetIdentityFromRecord(record),
@@ -812,6 +825,7 @@ async function authorizedOperatorExitForProof(
   });
   await drainMicrotasks();
   clock.elapse(100);
+  clock.runDue();
   const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
   if (authorization.kind !== 'authorized') {
     throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -2126,7 +2140,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: 1 },
+      heartbeatHoldBound: { spanMs: 1 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2168,7 +2182,7 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority({
       record,
       faults,
-      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
+      heartbeatHoldBound: { spanMs: 1 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2187,7 +2201,7 @@ describe('ProviderProxySetLifecycle', () => {
     unanswered();
     clock.elapse(2);
     unanswered();
-    clock.elapse(30_000);
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
     const firstAuthorization = lifecycle.authorizeOperatorExit(address);
     if (firstAuthorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${firstAuthorization.kind}`);
@@ -2302,7 +2316,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 2_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2336,7 +2350,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().states).toEqual(['available']);
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
-      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat still unanswered attempts=3 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
+      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat still unanswered attempts=3 observedDurationMs=2000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
     );
     expect(lifecycle.snapshot().operatorDispositions).toEqual([
       expect.objectContaining({
@@ -2420,7 +2434,7 @@ describe('ProviderProxySetLifecycle', () => {
       stopAndReap,
       stopHeartbeats,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 1_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2465,7 +2479,7 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
-      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer still could not be decoded attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
+      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer still could not be decoded attempts=2 observedDurationMs=1000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
     );
 
     // An accepted heartbeat clears the hold, the route stays live, and nothing was ever destroyed.
@@ -2501,7 +2515,7 @@ describe('ProviderProxySetLifecycle', () => {
       stopAndReap,
       stopHeartbeats,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 5_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2605,7 +2619,7 @@ describe('ProviderProxySetLifecycle', () => {
       stopAndReap,
       stopHeartbeats,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 1_000 },
     });
     const absence = deferred<ProviderProxySetContainmentEvidence>();
     const reportLifecycle = vi.fn();
@@ -2629,7 +2643,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().represented).toBe(1);
     expect(reportLifecycle).toHaveBeenLastCalledWith(
       'warn',
-      `Provider proxy set action=await-containment-absence reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=second unusable answer attempts=2 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
+      `Provider proxy set action=await-containment-absence reason=heartbeat_answer_unusable_hold_exhausted fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=0 set=${setReference(authority.setIdentity)} error=second unusable answer attempts=2 observedDurationMs=1000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
     );
     absence.resolve(containmentEvidence('answered-unusable-no-claim-absence'));
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
@@ -2648,7 +2662,7 @@ describe('ProviderProxySetLifecycle', () => {
       faults,
       stopAndReap,
       initiateControlClose,
-      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+      heartbeatHoldBound: { spanMs: 23_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2678,7 +2692,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().states).toEqual(['available']);
   });
 
-  it('does not escalate a heartbeat hold when scheduler lateness materially caused the span', () => {
+  it('does not escalate a heartbeat hold when the observer wakes late', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -2690,7 +2704,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 5_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2718,6 +2732,9 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(reportLifecycle.mock.calls.some(([, message]) => message.includes('stop-and-reap'))).toBe(false);
+    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'heartbeat-evidence-window' }),
+    );
   });
 
   it('does not escalate a heartbeat hold when only the wall clock crosses the span', () => {
@@ -2735,7 +2752,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 5_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2778,7 +2795,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 1_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2806,7 +2823,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.snapshot().states).toEqual(['available']);
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
-      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out attempts=2 elapsedMs=6000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
+      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out attempts=2 observedDurationMs=1000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
     );
   });
 
@@ -2825,7 +2842,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 5_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2866,7 +2883,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+      heartbeatHoldBound: { spanMs: 23_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2906,12 +2923,6 @@ describe('ProviderProxySetLifecycle', () => {
   });
 
   it('does not split a silence hold when consecutive no-response exchanges have different error identities', () => {
-    // The defect this guards against: keying the hold by `[subject, errorIdentity]` (as `preserveReports`
-    // does for its own, unrelated log-coalescing purpose) gives each error shape its own `firstObservedAtMonotonicMs`.
-    // Every incident below carries an error identity `preserveErrorIdentity` has never seen before on this
-    // role/method, so the buggy per-identity keying would find `report === undefined` every single time and
-    // could never satisfy its own `report !== undefined` escalation guard — it would hold this role's
-    // heartbeat open forever no matter how long the run continues. The fix measures the run itself.
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -2923,7 +2934,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 2_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -2952,7 +2963,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(reportLifecycle).toHaveBeenCalledExactlyOnceWith(
       'warn',
-      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out attempts=3 elapsedMs=5000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
+      `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=heartbeat timed out attempts=3 observedDurationMs=2000 schedulerLatenessMs=0 lastIncidentReason=unanswered`,
     );
     expect(stopAndReap).not.toHaveBeenCalled();
   });
@@ -2969,7 +2980,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 5_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -3395,7 +3406,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 5_000, materialSchedulerLatenessMs: 1_250 },
+      heartbeatHoldBound: { spanMs: 1_000 },
     });
     const lifecycle = lifecycleFor({
       claims,
@@ -3635,6 +3646,68 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
+  it.each([60_000, 600_000])(
+    'does not charge a %i ms late wake to a control reattachment before containment',
+    async (lateWakeMs) => {
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const redeemControl = vi.fn<DurableProviderProxyOperationAuthority['redeemControl']>(
+        () => new Promise<never>(() => undefined),
+      );
+      const stopAndReap = vi.fn(async () => ({ unconfirmed: 'must not run' }) as const);
+      const clock = new ManualClock();
+      const authority = fakeAuthority({ faults, redeemControl, stopAndReap, adoptionWindowMs: 2_000 });
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent: noContainmentProof,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+      faults.reportIncident({
+        kind: 'control-channel-fault',
+        role: 'guardian',
+        cause: 'closed',
+        error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+      });
+      await drainMicrotasks();
+
+      clock.elapse(lateWakeMs);
+      clock.runDue();
+      await drainMicrotasks();
+
+      expect(lifecycle.snapshot().states).toEqual(['reattaching']);
+      expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity))).toEqual(
+        expect.objectContaining({ kind: 'deadline-pending', remainingMs: 1_000 }),
+      );
+      expect(stopAndReap).not.toHaveBeenCalled();
+
+      clock.elapse(1_000);
+      clock.runDue();
+      await drainMicrotasks();
+
+      expect(lifecycle.snapshot()).toEqual(
+        expect.objectContaining({
+          states: ['containing'],
+          operatorDispositions: [
+            expect.objectContaining({
+              disposition: 'awaiting-containment-absence',
+              incidentReason: 'control_reattachment_bound_expired',
+              elapsedMs: 2_000,
+              boundMs: 2_000,
+            }),
+          ],
+        }),
+      );
+      expect(stopAndReap).not.toHaveBeenCalled();
+    },
+  );
+
   it('enters a reattachment hold on a claim-bearing heartbeat local-failure fault', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -3696,6 +3769,46 @@ describe('ProviderProxySetLifecycle', () => {
       }),
     );
   });
+
+  it.each([60_000, 600_000])(
+    'keeps zero-bound local-failure operator exit gated after a %i ms observer stall',
+    (observerStallMs) => {
+      const record = providerOperationRecord('executing');
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([record]);
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const clock = new ManualClock();
+      const authority = fakeAuthority({ record, faults });
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent: noContainmentProof,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+      const address = providerProxySetAddress(authority.setIdentity);
+
+      latchAuthorityFault(authority, {
+        kind: 'heartbeat-failed',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: 'cannot encode heartbeat',
+      });
+
+      clock.elapse(observerStallMs);
+      expect(lifecycle.authorizeOperatorExit(address)).toEqual({
+        kind: 'deadline-pending',
+        remainingMs: 29_000,
+      });
+
+      elapseOperatorExitObservations(clock, lifecycle, 29_000);
+      expect(lifecycle.authorizeOperatorExit(address).kind).toBe('authorized');
+    },
+  );
 
   it.each([
     {
@@ -3904,7 +4017,7 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
-  it('gates exact-set operator exit on held state and the monotonic adoption deadline, then names every refusal', async () => {
+  it('gates exact-set operator exit on held state and the observed adoption bound, then names every refusal', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -3948,7 +4061,11 @@ describe('ProviderProxySetLifecycle', () => {
       expect.objectContaining({ setIdentity: address, operatorExit: { kind: 'gated', remainingMs: 2_000 } }),
     );
 
-    clock.elapse(2_000);
+    clock.elapse(1_000);
+    clock.runDue();
+    expect(lifecycle.authorizeOperatorExit(address)).toEqual({ kind: 'deadline-pending', remainingMs: 1_000 });
+    clock.elapse(1_000);
+    clock.runDue();
     const authorization = lifecycle.authorizeOperatorExit(address);
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
     expect(lifecycle.snapshot().operatorSets).toContainEqual(
@@ -4099,7 +4216,7 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
 
     faults.latch(terminalAuthorityFault());
-    clock.elapse(30_000);
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -4378,7 +4495,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
-    clock.elapse(30_000);
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -4431,7 +4548,7 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
     latchAuthorityFault(authority, terminalAuthorityFault());
-    clock.elapse(30_000);
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -4785,6 +4902,40 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 
+  it.each([60_000, 600_000])(
+    'keeps containment operator exit gated after a %i ms observer stall',
+    (observerStallMs) => {
+      const record = providerOperationRecord('executing');
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([record]);
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const clock = new ManualClock();
+      const authority = fakeAuthority({ record, faults });
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent: noContainmentProof,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+      const address = providerProxySetAddress(authority.setIdentity);
+
+      latchAuthorityFault(authority, terminalAuthorityFault());
+      clock.elapse(observerStallMs);
+
+      expect(lifecycle.authorizeOperatorExit(address)).toEqual({
+        kind: 'deadline-pending',
+        remainingMs: 29_000,
+      });
+
+      elapseOperatorExitObservations(clock, lifecycle, 29_000);
+      expect(lifecycle.authorizeOperatorExit(address).kind).toBe('authorized');
+    },
+  );
+
   it('gates fault containment on its first attempt deadline and rejects a capability from the prior attempt', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -4815,7 +4966,7 @@ describe('ProviderProxySetLifecycle', () => {
       remainingMs: 30_000,
     });
 
-    clock.elapse(30_000);
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
     const firstAuthorization = lifecycle.authorizeOperatorExit(address);
     if (firstAuthorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${firstAuthorization.kind}`);
@@ -4873,7 +5024,7 @@ describe('ProviderProxySetLifecycle', () => {
     const address = providerProxySetAddress(authority.setIdentity);
 
     latchAuthorityFault(authority, terminalAuthorityFault());
-    clock.elapse(30_000);
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
     const authorization = lifecycle.authorizeOperatorExit(address);
     if (authorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -4924,6 +5075,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     await drainMicrotasks();
     clock.elapse(100);
+    clock.runDue();
 
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -4996,6 +5148,7 @@ describe('ProviderProxySetLifecycle', () => {
       });
       await drainMicrotasks();
       clock.elapse(100);
+      clock.runDue();
 
       const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
       if (authorization.kind !== 'authorized') {
@@ -5059,7 +5212,7 @@ describe('ProviderProxySetLifecycle', () => {
       lifecycle.completeStartupDiscovery();
       lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/operator-exit.handoff.v3.json');
       latchAuthorityFault(authority, terminalAuthorityFault());
-      clock.elapse(30_000);
+      elapseOperatorExitObservations(clock, lifecycle, 30_000);
       const address = providerProxySetAddress(authority.setIdentity);
       const authorization =
         contract === 'current'
@@ -5183,6 +5336,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     await drainMicrotasks();
     clock.elapse(100);
+    clock.runDue();
 
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
@@ -5450,6 +5604,8 @@ describe('ProviderProxySetLifecycle', () => {
     expect(retained.closed).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
     expect(retained.stopped).toEqual({ guardian: 1, reaper: 1, proxy: 1 });
     expect(redeemCapsule).toHaveBeenCalledOnce();
+
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
 
     const actionableSets = lifecycle
       .snapshot()
@@ -7049,7 +7205,7 @@ describe('ProviderProxySetLifecycle', () => {
       record,
       faults,
       stopAndReap,
-      heartbeatHoldBound: { spanMs: 1, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
+      heartbeatHoldBound: { spanMs: 1 },
     });
     const lifecycle = lifecycleFor({
       claims,

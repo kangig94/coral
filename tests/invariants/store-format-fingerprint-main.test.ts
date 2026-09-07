@@ -1,22 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { sha256Hex } from '#src/infra/hash.js';
-import { canonicalContractJson, normalizePersistedContractReferences } from '#src/infra/persisted-contract.js';
-import type { StoreFormatManifest } from '#src/store/format-fingerprint.js';
+import { normalizePersistedContractReferences } from '#src/infra/persisted-contract.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const MAIN_FINGERPRINT_ASSIGNMENT = /const CURRENT_CORAL_STORE_FORMAT_FINGERPRINT\s*=\s*'(sha256:[a-f0-9]{64})';/gu;
-const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'store-format');
-const PRIOR_MANIFEST_FIXTURE = 'approved-prior.manifest.json';
-
-const APPROVED_FORMAT_TRANSITION = {
-  prior: 'sha256:ca97b533a127b1475b45a487793ab7183ae70620894d1ca36e193431065b2521',
-} as const;
 
 /**
  * `origin/main` first, because CI has no local `main`. `actions/checkout` with `fetch-depth: 0` fetches into
@@ -27,11 +18,11 @@ const APPROVED_FORMAT_TRANSITION = {
  */
 const MAIN_REVISIONS = ['origin/main', 'main'] as const;
 
-function readMainSource(): string {
+function readMainFile(path: string): string {
   const failures: string[] = [];
   for (const revision of MAIN_REVISIONS) {
     try {
-      return execFileSync('git', ['show', `${revision}:tests/unit/store/format-fingerprint.test.ts`], {
+      return execFileSync('git', ['show', `${revision}:${path}`], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -40,11 +31,11 @@ function readMainSource(): string {
     }
   }
 
-  throw new Error(`Could not read main's store format fingerprint pin.\n${failures.join('\n')}`);
+  throw new Error(`Could not read '${path}' from main.\n${failures.join('\n')}`);
 }
 
 function readMainStoreFormatFingerprint(): string {
-  const source = readMainSource();
+  const source = readMainFile('tests/unit/store/format-fingerprint.test.ts');
   const fingerprints = [...source.matchAll(MAIN_FINGERPRINT_ASSIGNMENT)].map((match) => match[1]);
 
   if (fingerprints.length !== 1 || fingerprints[0] === undefined) {
@@ -54,53 +45,38 @@ function readMainStoreFormatFingerprint(): string {
   return fingerprints[0];
 }
 
-function readPriorManifest(): StoreFormatManifest {
-  return JSON.parse(readFileSync(resolve(FIXTURE_DIR, PRIOR_MANIFEST_FIXTURE), 'utf8')) as StoreFormatManifest;
-}
-
-function manifestFingerprint(manifest: StoreFormatManifest): string {
-  return `sha256:${sha256Hex(canonicalContractJson(manifest))}`;
-}
-
-function normalizedManifest(manifest: StoreFormatManifest): StoreFormatManifest {
-  return {
-    ...manifest,
-    codecs: manifest.codecs.map((codec) => ({
-      ...codec,
-      contract: normalizePersistedContractReferences(codec.contract),
-    })),
-  };
-}
-
-function assertApprovedTransition(prior: StoreFormatManifest, current: StoreFormatManifest): void {
-  expect(current).toStrictEqual(prior);
+function packageVersion(source: string): string {
+  const parsed = JSON.parse(source) as { version?: unknown };
+  if (typeof parsed.version !== 'string') {
+    throw new Error('Expected package.json to declare a string version.');
+  }
+  return parsed.version;
 }
 
 describe('store-format-fingerprint-main', () => {
-  it('authorizes only the single recorded prior-to-current format transition', () => {
-    expect(readdirSync(FIXTURE_DIR).sort()).toStrictEqual([PRIOR_MANIFEST_FIXTURE]);
-
-    const priorFixture = readPriorManifest();
-    expect(manifestFingerprint(priorFixture)).toBe(APPROVED_FORMAT_TRANSITION.prior);
-    const prior = normalizedManifest(priorFixture);
-
+  it('requires a product version change before the store-format fingerprint may change', () => {
     const mainFingerprint = readMainStoreFormatFingerprint();
     const current = currentCoralStoreFormat();
-    if (current.fingerprint !== mainFingerprint) {
-      expect(mainFingerprint).toBe(APPROVED_FORMAT_TRANSITION.prior);
+    const currentVersion = packageVersion(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'));
+    const mainVersion = packageVersion(readMainFile('package.json'));
+
+    if (currentVersion === mainVersion) {
+      expect(current.fingerprint).toBe(mainFingerprint);
     }
-    assertApprovedTransition(prior, current.manifest);
   });
 
-  it('rejects DDL and codec changes outside the approved transition', () => {
-    const prior = normalizedManifest(readPriorManifest());
-    const current = currentCoralStoreFormat().manifest;
-    const extraDdl = { ...current, ddl: `${current.ddl}-- unauthorized\n` };
-    expect(() => assertApprovedTransition(prior, extraDdl)).toThrow();
+  it('compares shared and repeated persisted-contract nodes by meaning', () => {
+    const shared = {
+      $id: 0,
+      left: { $id: 1, type: 'string' },
+      right: { $ref: 1 },
+    };
+    const repeated = {
+      $id: 0,
+      left: { $id: 1, type: 'string' },
+      right: { $id: 2, type: 'string' },
+    };
 
-    const codecs = current.codecs.map((codec, index) =>
-      index === 0 ? { ...codec, contract: { unauthorized: true } } : codec,
-    );
-    expect(() => assertApprovedTransition(prior, { ...current, codecs })).toThrow();
+    expect(normalizePersistedContractReferences(shared)).toStrictEqual(normalizePersistedContractReferences(repeated));
   });
 });

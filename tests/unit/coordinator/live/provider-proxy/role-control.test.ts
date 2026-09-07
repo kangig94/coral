@@ -33,7 +33,7 @@ const RETRY = {
   connectTimeoutMs: 1,
   retryIntervalMs: 1,
   overallDeadlineMs: 1,
-  now: () => 0,
+  monotonicNow: () => 0n,
   sleep: async () => undefined,
 };
 const openParamsSchema = z.object({}).strict();

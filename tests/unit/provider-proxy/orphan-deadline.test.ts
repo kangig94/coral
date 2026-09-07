@@ -212,14 +212,11 @@ describe('provider proxy orphan deadline configuration', () => {
     );
   });
 
-  it('derives material scheduler lateness as one quarter of the same span', () => {
-    expect(providerProxyHeartbeatHoldBound(configuration())).toEqual({
-      spanMs: 23_000,
-      materialSchedulerLatenessMs: 5_750,
-    });
+  it('derives the heartbeat hold bound from the same adoption window', () => {
+    expect(providerProxyHeartbeatHoldBound(configuration())).toEqual({ spanMs: 23_000 });
     expect(
       providerProxyHeartbeatHoldBound(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS))),
-    ).toEqual({ spanMs: 22_001, materialSchedulerLatenessMs: 5_500 });
+    ).toEqual({ spanMs: 22_001 });
   });
 
   it('rejects an unvalidated configuration object at the state-machine boundary', () => {

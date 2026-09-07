@@ -171,6 +171,7 @@ function directoryLockDeps(runtime: Runtime) {
     storage: runtime.storage,
     time: {
       now: () => runtime.time.now(),
+      monotonicNow: () => runtime.time.monotonicNow(),
       sleep: (ms: number) => runtime.time.sleep(ms),
       setInterval: runtime.time.setInterval.bind(runtime.time),
       clearInterval: runtime.time.clearInterval.bind(runtime.time),

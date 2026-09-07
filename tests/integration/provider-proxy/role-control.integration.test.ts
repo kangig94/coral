@@ -56,12 +56,13 @@ async function nextRequest(socket: Socket): Promise<{ id: number; method: string
   });
 }
 
-const TIMER: ControlTimer = runtimeControlTimer({ time: createRealTimePort() });
+const TIME = createRealTimePort();
+const TIMER: ControlTimer = runtimeControlTimer({ time: TIME });
 const RETRY: RoleConnectRetryOptions = {
   connectTimeoutMs: 5_000,
   retryIntervalMs: 10,
   overallDeadlineMs: 5_000,
-  now: () => Date.now(),
+  monotonicNow: () => TIME.monotonicNow(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 const openParamsSchema = z.object({}).strict();

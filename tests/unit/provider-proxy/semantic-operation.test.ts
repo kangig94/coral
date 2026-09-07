@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -28,7 +30,11 @@ vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
   return { ...actual, spawnProviderServerTransport: vi.fn() };
 });
 
-import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
+import {
+  spawnProviderServerTransport,
+  type ProviderServerFailedSpawnCleanupDisposition,
+  type ProviderServerHandle,
+} from '#src/providers/app-server-transport.js';
 import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
@@ -232,7 +238,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     }),
     rootIdentity: () => ({ pid: 4242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<Error | void>(() => {}),
-    forceClose: async () => {},
+    forceClose: async () => undefined,
     evictHost: async () => false,
   };
 }
@@ -608,6 +614,7 @@ describe('semantic-operation runtime: bounded cancellation', () => {
     const transportClosed = deferred<Error | void>();
     const forceClose = vi.fn(async () => {
       transportClosed.resolve();
+      return undefined;
     });
     const hostAuthority = {
       beginOperation: () => ({
@@ -647,6 +654,73 @@ describe('semantic-operation runtime: bounded cancellation', () => {
     expect.soft(forceClose).toHaveBeenCalledOnce();
     expect.soft(stopSettled).toBe(true);
     expect(closeStaged).toHaveBeenCalledOnce();
+  });
+
+  it('keeps isolated cancellation held when root cleanup remains alive', async () => {
+    const { proxy, ledger } = createTestProxy();
+    const key = testKey();
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, key, prepared);
+    const closeStaged = vi.fn();
+    const settled = new Promise<void>(() => undefined);
+    const operatorExit = {
+      kind: 'abandon-provider-host-acquisition' as const,
+      abandon: vi.fn(async () => ({
+        kind: 'operator-abandoned' as const,
+        subject: { kind: 'process' as const, pid: 4_242 },
+        processAbsenceProven: false as const,
+        successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+      })),
+    };
+    const retry = vi.fn();
+    const forceClose = vi.fn(async () => ({
+      kind: 'held-alive' as const,
+      subject: { kind: 'process' as const, pid: 4_242 },
+      observation: 'alive' as const,
+      operatorExit,
+      settled,
+      retry,
+      successor: {
+        kind: 'accepted' as const,
+        owner: 'provider-proxy-root-pool' as const,
+        settlement: settled,
+      },
+    }));
+    const hostAuthority = {
+      beginOperation: () => ({
+        selectCancellationMode: () => {},
+        openSession: unreachable('hostAuthority.openSession'),
+        attachSession: async () => null,
+      }),
+      rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
+      closed: () => new Promise<Error | void>(() => undefined),
+      forceClose,
+      evictHost: async () => false,
+    } as ProxyAppServerHostAuthority;
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: () => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<ProviderEventBody>>(() => undefined),
+          }),
+        }),
+        openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
+      }),
+    });
+    const semantic = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
+    await semantic.ensureProviderRoot(key, prepared);
+    const start = semantic.host.start({ key, prepared });
+    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
+
+    await expect(Promise.resolve(semantic.host.stop({ key, cause: 'user_abort' }))).rejects.toMatchObject({
+      name: 'SemanticOperationCancellationUnconfirmedError',
+      code: 'semantic_operation_cancellation_unconfirmed',
+      message: expect.stringContaining('process:alive'),
+    });
+
+    expect(forceClose).toHaveBeenCalledOnce();
+    expect(closeStaged).not.toHaveBeenCalled();
   });
 
   it('times out release when staging ignores abort before exposing a host', async () => {
@@ -712,6 +786,7 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
     const forceClose = vi.fn(async () => {
       rootAlive = false;
       transportClosed.resolve(new Error('shared provider root was force-closed'));
+      return undefined;
     });
     const authority: ProxyAppServerHostAuthority = {
       beginOperation: () => {
@@ -1500,21 +1575,33 @@ function fakeProviderServerHandle(options?: {
   pid?: number;
   request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   close?: () => Promise<void>;
+  closeDisposition?: ProviderServerHandle['close'];
 }): {
   handle: ProviderServerHandle;
   closeMock: ReturnType<typeof vi.fn>;
   resolveClosed(): void;
 } {
   const closed = deferred<Error | void>();
+  const child = new EventEmitter();
   let isClosed = false;
-  const closeMock = vi.fn(async () => {
-    await options?.close?.();
+  const resolveClosed = (): void => {
+    if (isClosed) return;
     isClosed = true;
+    child.emit('close', 0, null);
     closed.resolve();
+  };
+  const closeMock = vi.fn(async (...args: Parameters<ProviderServerHandle['close']>) => {
+    if (options?.closeDisposition !== undefined) return options.closeDisposition(...args);
+    await options?.close?.();
+    resolveClosed();
+    return {
+      kind: 'observed-absent' as const,
+      evidence: { subject: { kind: 'process' as const, pid: options?.pid ?? 1_000 } },
+    };
   });
   const handle: ProviderServerHandle = {
     pid: options?.pid ?? 1_000,
-    child: {} as never,
+    child: child as never,
     generation: 1,
     rpc: {
       request: vi.fn(options?.request ?? (async () => ({}))) as unknown as ProviderServerHandle['rpc']['request'],
@@ -1534,10 +1621,7 @@ function fakeProviderServerHandle(options?: {
   return {
     handle,
     closeMock,
-    resolveClosed: () => {
-      isClosed = true;
-      closed.resolve();
-    },
+    resolveClosed,
   };
 }
 
@@ -1591,6 +1675,82 @@ function selectedHostScope(
 }
 
 describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', () => {
+  it('abandons admission without claiming a detached failed spawn closed when the operator takes ownership', async () => {
+    vi.useFakeTimers();
+    const failure = new Error('provider initialization failed while cleanup remained held');
+    const subject = { kind: 'unattributable-process-group', processGroupId: 1_000 } as const;
+    const settlement = deferred();
+    const settled = settlement.promise;
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject,
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const mismatchedAbandonment = {
+      ...abandonment,
+      subject: { kind: 'unattributable-process-group' as const, processGroupId: 999 },
+    };
+    let abandonAttempts = 0;
+    let transferred: ProviderServerFailedSpawnCleanupDisposition | null = null;
+    const operatorExit = {
+      kind: 'abandon-provider-host-acquisition' as const,
+      abandon: vi.fn(async () => {
+        abandonAttempts += 1;
+        transferred = abandonAttempts === 1 ? mismatchedAbandonment : abandonment;
+        settlement.resolve();
+        return transferred as typeof abandonment;
+      }),
+    };
+    const retry = vi.fn<() => Promise<ProviderServerFailedSpawnCleanupDisposition>>();
+    retry.mockImplementation(
+      async () =>
+        transferred ?? {
+          kind: 'held-unobservable',
+          subject,
+          observation: 'unobservable',
+          operatorExit,
+          settled,
+          retry,
+        },
+    );
+    vi.mocked(spawnProviderServerTransport).mockImplementationOnce(async (params) => {
+      const hold = {
+        kind: 'held-unobservable' as const,
+        subject,
+        observation: 'unobservable' as const,
+        operatorExit,
+        settled,
+        retry,
+        error: failure,
+      };
+      return { ...hold, successor: params.acceptFailedSpawnCleanup(hold) };
+    });
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = selectedHostScope(authority, testKey(), 'operation-isolated');
+
+    await expect(scope.openSession(sharedSpec())).rejects.toBe(failure);
+    const [record] = authority.listProviderHosts();
+    expect(record).toMatchObject({
+      status: 'reclamation-failed',
+      host: { owner: 'provider-proxy', reclamationRetryable: true },
+    });
+    if (record === undefined) throw new Error('Expected a failed-spawn cleanup inventory record.');
+
+    await expect(authority.evictHost(record.ref)).resolves.toBe(false);
+    await Promise.resolve();
+    expect(authority.listProviderHosts()).toMatchObject([{ status: 'reclamation-failed' }]);
+    expect(authority.admissionSnapshot().state.size).toBe(1);
+    expect(authority.admissionSnapshot().tombstones).toEqual([]);
+
+    await expect(authority.evictHost(record.ref)).resolves.toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
+    expect(authority.listProviderHosts()).toEqual([]);
+    expect(authority.admissionSnapshot().state.size).toBe(0);
+    expect(authority.admissionSnapshot().tombstones).toEqual([]);
+  });
+
   it('pools a shared spec by executable identity alone, spawning once and reusing it', async () => {
     const server = fakeProviderServerHandle();
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
@@ -2053,6 +2213,229 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     opened.close();
     attached?.close();
     expect(server.closeMock).toHaveBeenCalledOnce();
+  });
+
+  it('retains an accepted close hold and retries it before releasing the root', async () => {
+    const settled = new Promise<void>(() => undefined);
+    const mismatchedAbandonment = {
+      kind: 'operator-abandoned' as const,
+      subject: { kind: 'process' as const, pid: 999 },
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const observedAbsent = {
+      kind: 'observed-absent' as const,
+      evidence: { subject: { kind: 'process' as const, pid: 1_000 } },
+    };
+    const retry = vi.fn().mockResolvedValueOnce(mismatchedAbandonment).mockResolvedValueOnce(observedAbsent);
+    const server = fakeProviderServerHandle({
+      closeDisposition: async (acceptCleanupHold) => {
+        const hold = {
+          kind: 'held-alive' as const,
+          subject: { kind: 'process' as const, pid: 1_000 },
+          observation: 'alive' as const,
+          operatorExit: {
+            kind: 'abandon-provider-host-acquisition' as const,
+            abandon: vi.fn(async () => ({
+              kind: 'operator-abandoned' as const,
+              subject: { kind: 'process' as const, pid: 1_000 },
+              processAbsenceProven: false as const,
+              successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+            })),
+          },
+          settled,
+          retry,
+        };
+        return { ...hold, successor: acceptCleanupHold(hold) };
+      },
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(sharedSpec());
+
+    await expect(authority.forceClose(opened.hostRef)).resolves.toMatchObject({
+      kind: 'held-alive',
+      successor: { kind: 'accepted', owner: 'provider-proxy-root-pool' },
+    });
+    expect(authority.admissionSnapshot().state.size).toBe(1);
+    expect(authority.listProviderHosts()).toMatchObject([
+      { status: 'reclamation-failed', host: { owner: 'provider-proxy', reclamationAttempts: 1 } },
+    ]);
+
+    await expect(authority.forceClose(opened.hostRef)).rejects.toThrow('provider_host_operator_transfer_invalid');
+    expect(authority.admissionSnapshot().state.size).toBe(1);
+    expect(authority.admissionSnapshot().tombstones).toEqual([]);
+
+    await expect(authority.forceClose(opened.hostRef)).resolves.toMatchObject({ kind: 'observed-absent' });
+    expect(retry).toHaveBeenCalledTimes(2);
+    expect(authority.admissionSnapshot().state.size).toBe(0);
+  });
+
+  it('keeps a broker alive while its shutdown capability retains unresolved child cleanup', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        disposition: 'held-unobservable',
+        observation: 'unobservable',
+        subjects: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
+        successor: { kind: 'accepted', owner: 'broker-session-pool' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      })
+      .mockResolvedValueOnce({ ok: true, disposition: 'observed-absent' });
+    const server = fakeProviderServerHandle({ request });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(
+      exclusiveSpec({
+        shutdownCapability: {
+          method: 'broker/shutdown',
+          timeoutMs: 1_000,
+          resultDisposition: {
+            kind: 'provider-server-shutdown-v1',
+            successorOwner: 'broker-session-pool',
+            operatorExit: 'retry-broker-shutdown',
+          },
+        },
+      }),
+      { jobId: 'job-1' },
+    );
+
+    const held = await authority.forceClose(opened.hostRef);
+    expect(held).toMatchObject({
+      kind: 'provider-shutdown-held-unobservable',
+      subject: { kind: 'provider-server', pid: 1_000 },
+      obligations: [{ kind: 'claude-child', controller: 'print', generation: 1 }],
+      successor: { kind: 'accepted', owner: 'broker-session-pool' },
+      operatorExit: { kind: 'retry-broker-shutdown', retry: expect.any(Function) },
+      retry: expect.any(Function),
+    });
+    expect(server.closeMock).not.toHaveBeenCalled();
+    expect(authority.admissionSnapshot().state.size).toBe(1);
+    if (
+      held === undefined ||
+      (held.kind !== 'provider-shutdown-held-alive' && held.kind !== 'provider-shutdown-held-unobservable')
+    ) {
+      throw new Error('Expected the broker shutdown hold to remain retryable.');
+    }
+
+    await expect(held.retry()).resolves.toMatchObject({ kind: 'observed-absent' });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(server.closeMock).toHaveBeenCalledOnce();
+    expect(authority.admissionSnapshot().state.size).toBe(0);
+  });
+
+  it('retains the broker when its shutdown hold names a different successor', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        disposition: 'held-alive',
+        observation: 'alive',
+        subjects: [{ kind: 'claude-child', controller: 'tui', generation: 2 }],
+        successor: { kind: 'accepted', owner: 'different-owner' },
+        operatorExit: { kind: 'retry-broker-shutdown' },
+      })
+      .mockResolvedValueOnce({ ok: true, disposition: 'observed-absent' });
+    const server = fakeProviderServerHandle({ request });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(
+      exclusiveSpec({
+        shutdownCapability: {
+          method: 'broker/shutdown',
+          timeoutMs: 1_000,
+          resultDisposition: {
+            kind: 'provider-server-shutdown-v1',
+            successorOwner: 'broker-session-pool',
+            operatorExit: 'retry-broker-shutdown',
+          },
+        },
+      }),
+      { jobId: 'job-1' },
+    );
+
+    const held = await authority.forceClose(opened.hostRef);
+    expect(held).toMatchObject({
+      kind: 'provider-shutdown-held-unobservable',
+      subject: { kind: 'provider-server', pid: 1_000 },
+      successor: null,
+      operatorExit: { kind: 'retry-provider-shutdown', retry: expect.any(Function) },
+      retry: expect.any(Function),
+    });
+    expect(server.closeMock).not.toHaveBeenCalled();
+    expect(authority.admissionSnapshot().state.size).toBe(1);
+    if (
+      held === undefined ||
+      (held.kind !== 'provider-shutdown-held-alive' && held.kind !== 'provider-shutdown-held-unobservable')
+    ) {
+      throw new Error('Expected the malformed shutdown transfer to remain retryable.');
+    }
+
+    await expect(held.retry()).resolves.toMatchObject({ kind: 'observed-absent' });
+    expect(server.closeMock).toHaveBeenCalledOnce();
+    expect(authority.admissionSnapshot().state.size).toBe(0);
+  });
+
+  it('retains a close hold when its operator exit returns a mismatched subject', async () => {
+    const subject = { kind: 'process', pid: 1_000 } as const;
+    const settled = new Promise<void>(() => undefined);
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject,
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    let abandonAttempts = 0;
+    const operatorExit = {
+      kind: 'abandon-provider-host-acquisition' as const,
+      abandon: vi.fn(async () => {
+        abandonAttempts += 1;
+        return abandonAttempts === 1
+          ? ({
+              ...abandonment,
+              subject: { kind: 'process' as const, pid: 999 },
+            } as unknown as typeof abandonment)
+          : abandonment;
+      }),
+    };
+    const retry = vi.fn<() => Promise<ProviderServerFailedSpawnCleanupDisposition>>();
+    retry.mockImplementation(async () => ({
+      kind: 'held-alive',
+      subject,
+      observation: 'alive',
+      operatorExit,
+      settled,
+      retry,
+    }));
+    const server = fakeProviderServerHandle({
+      closeDisposition: async (acceptCleanupHold) => {
+        const hold = {
+          kind: 'held-alive' as const,
+          subject,
+          observation: 'alive' as const,
+          operatorExit,
+          settled,
+          retry,
+        };
+        return { ...hold, successor: acceptCleanupHold(hold) };
+      },
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(sharedSpec());
+
+    await expect(authority.forceClose(opened.hostRef)).resolves.toMatchObject({ kind: 'held-alive' });
+    await expect(authority.evictHost(opened.hostRef)).resolves.toBe(false);
+    expect(authority.listProviderHosts()).toMatchObject([{ status: 'reclamation-failed' }]);
+    expect(authority.admissionSnapshot().state.size).toBe(1);
+    expect(authority.admissionSnapshot().tombstones).toEqual([]);
+
+    await expect(authority.evictHost(opened.hostRef)).resolves.toBe(true);
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
+    expect(authority.listProviderHosts()).toEqual([]);
+    expect(authority.admissionSnapshot().state.size).toBe(0);
+    expect(authority.admissionSnapshot().tombstones).toEqual([]);
   });
 
   it('prohibits force-closing a shared operation scope', async () => {

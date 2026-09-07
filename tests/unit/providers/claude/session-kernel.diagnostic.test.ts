@@ -259,7 +259,7 @@ describe('Claude session-kernel turn failure diagnostics', () => {
       if (method === 'session/close') {
         return {
           brokerSessionKey: 'broker-claude-diagnostic',
-          closed: true,
+          disposition: 'observed-absent',
         };
       }
       throw new Error(`Unexpected Claude diagnostic RPC: ${method}`);

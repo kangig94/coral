@@ -608,7 +608,6 @@ describe('createProviderProxyAcquisitionSteps', () => {
         adoptionWindowMs: Number.MAX_SAFE_INTEGER,
         heartbeatHoldBound: {
           spanMs: Number.MAX_SAFE_INTEGER,
-          materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
         },
       },
       stopHeartbeats: () => {
@@ -728,7 +727,6 @@ describe('createProviderProxyAcquisitionSteps', () => {
         adoptionWindowMs: Number.MAX_SAFE_INTEGER,
         heartbeatHoldBound: {
           spanMs: Number.MAX_SAFE_INTEGER,
-          materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER,
         },
       },
       stopHeartbeats: () => {
@@ -873,7 +871,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
       autonomousDeadline: {
         orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
         adoptionWindowMs: Number.MAX_SAFE_INTEGER,
-        heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
+        heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER },
       },
       stopHeartbeats: () => {
         options.heartbeats.proxy.stop();

@@ -259,7 +259,7 @@ async function startProxy(
             }),
             rootIdentity: () => ({ pid: 7_001, incarnation: testIncarnation(800) }),
             closed: () => new Promise<Error | void>(() => {}),
-            forceClose: async () => {},
+            forceClose: async () => undefined,
           } as unknown as ProxyAppServerHostAuthority;
           return createSemanticOperationRuntime({
             runtime: createRealRuntime('prod'),
@@ -579,7 +579,7 @@ async function launchThroughRoute(
     autonomousDeadline: {
       orphanTimeoutMs: 37_000,
       adoptionWindowMs: 23_000,
-      heartbeatHoldBound: { spanMs: 23_000, materialSchedulerLatenessMs: 5_750 },
+      heartbeatHoldBound: { spanMs: 23_000 },
     },
     controlReattachment: {} as never,
     registerSuccessionOperation: async () => ({ kind: 'registered' as const }),

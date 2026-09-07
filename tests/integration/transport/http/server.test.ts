@@ -1803,17 +1803,27 @@ describe('execution backend server', () => {
     }
 
     const launchCoordinator = createLaunchCoordinator();
-    const handle = await launchCoordinator.spawnProviderServer({
-      provider: 'codex',
-      command: process.execPath,
-      args: ['-e', createProviderServerScript()],
-    });
+    const handle = await launchCoordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: process.execPath,
+        args: ['-e', createProviderServerScript()],
+      },
+      undefined,
+      undefined,
+      undefined,
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     try {
       expect(checkIdle()).toBe(true);
     } finally {
-      await handle.close();
+      await handle.close((hold) => ({
+        kind: 'accepted',
+        owner: 'provider-host-manager',
+        settlement: hold.settled,
+      }));
       await backend.controller.shutdown('test');
       await backend.controller.waitForShutdown();
     }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { JsonValue } from './json-value.js';
+import { persistedNonEmptyStringSchema } from './persisted-scalar-contracts.js';
 
 const durableJsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -15,7 +16,7 @@ const durableJsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 
 export const providerBindingEnvelopeSchema = z
   .object({
-    provider: z.string().min(1),
+    provider: persistedNonEmptyStringSchema,
     kind: z.enum(['account', 'profile']),
     binding: durableJsonValueSchema,
   })

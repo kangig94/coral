@@ -2,9 +2,23 @@ import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type {
   ContainedProviderServerHandle,
   HeldProviderServerSpawn,
+  ProviderServerFailedSpawnCleanupTerminalDisposition,
 } from '../../../providers/app-server-transport.js';
 import type { ProviderHostEntry } from './state.js';
 import { AbortError } from '../../../runtime/abort.js';
+
+class ProviderServerSpawnCleanupSettledError extends Error {
+  readonly originalFailure: Error;
+  readonly disposition: ProviderServerFailedSpawnCleanupTerminalDisposition;
+
+  constructor(originalFailure: Error, disposition: ProviderServerFailedSpawnCleanupTerminalDisposition) {
+    super(originalFailure.message, { cause: originalFailure });
+    this.name = 'ProviderServerSpawnCleanupSettledError';
+    this.originalFailure = originalFailure;
+    this.disposition = disposition;
+    Object.setPrototypeOf(this, ProviderServerSpawnCleanupSettledError.prototype);
+  }
+}
 
 function waitForSpawn(
   spawn: Promise<ContainedProviderServerHandle>,
@@ -50,11 +64,11 @@ export async function ensureProviderServerHandle(
   entry: ProviderHostEntry,
   options: {
     spawnProviderServer: (spec: ProviderServerSpec) => Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>;
-    closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
+    closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<unknown>;
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ContainedProviderServerHandle) => void;
-    retainSpawnCleanup: (held: HeldProviderServerSpawn) => Promise<never>;
     createInstanceId: () => string;
     observeRetired: (entry: ProviderHostEntry, instanceId: string) => void;
+    abandonUninstalled: (entry: ProviderHostEntry, instanceId: string) => void;
     signal?: AbortSignal;
   },
 ): Promise<ContainedProviderServerHandle> {
@@ -67,6 +81,7 @@ export async function ensureProviderServerHandle(
   if (entry.spawnPromise === null) {
     const instanceId = options.createInstanceId();
     entry.instanceId = instanceId;
+    entry.spawnCleanupDisposition = null;
     let spawned: Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>;
     try {
       spawned = options.spawnProviderServer(entry.spec);
@@ -82,15 +97,22 @@ export async function ensureProviderServerHandle(
     }
     const initialization = initializeProviderServerHandle(entry, spawned, options);
     const ownedInitialization = initialization.catch(async (error: unknown) => {
+      const cleanup = error instanceof ProviderServerSpawnCleanupSettledError ? error.disposition : null;
       if (entry.spawnPromise === ownedInitialization) entry.spawnPromise = null;
       try {
-        if (entry.containment !== null && entry.closePromise === null) {
+        if (cleanup?.kind !== 'operator-abandoned' && entry.containment !== null && entry.closePromise === null) {
           await options.closeEntry(entry, 'failed during spawn or initialization');
         }
       } finally {
-        if (entry.handle === null) retireUninstalledInstance(entry, instanceId, options.observeRetired);
+        if (entry.handle === null) {
+          if (cleanup?.kind === 'operator-abandoned') {
+            abandonUninstalledInstance(entry, instanceId, options.abandonUninstalled);
+          } else {
+            retireUninstalledInstance(entry, instanceId, options.observeRetired);
+          }
+        }
       }
-      throw error;
+      throw error instanceof ProviderServerSpawnCleanupSettledError ? error.originalFailure : error;
     });
     entry.spawnPromise = ownedInitialization;
     void ownedInitialization.then(
@@ -108,14 +130,16 @@ async function initializeProviderServerHandle(
   spawned: Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>,
   options: {
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ContainedProviderServerHandle) => void;
-    retainSpawnCleanup: (held: HeldProviderServerSpawn) => Promise<never>;
-    closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
+    closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<unknown>;
     observeRetired: (entry: ProviderHostEntry, instanceId: string) => void;
   },
 ): Promise<ContainedProviderServerHandle> {
   const disposition = await spawned;
   if (isHeldProviderServerSpawn(disposition)) {
-    return options.retainSpawnCleanup(disposition);
+    await disposition.successor.settlement;
+    const cleanup = entry.spawnCleanupDisposition;
+    if (cleanup === null) throw disposition.error;
+    throw new ProviderServerSpawnCleanupSettledError(disposition.error, cleanup);
   }
   const handle = disposition;
   entry.containment = handle.containmentIdentity;
@@ -160,5 +184,16 @@ function retireUninstalledInstance(
 ): void {
   if (entry.instanceId !== instanceId) return;
   observeRetired(entry, instanceId);
+  entry.instanceId = null;
+}
+
+function abandonUninstalledInstance(
+  entry: ProviderHostEntry,
+  instanceId: string,
+  abandonUninstalled: (entry: ProviderHostEntry, instanceId: string) => void,
+): void {
+  if (entry.instanceId !== instanceId) return;
+  abandonUninstalled(entry, instanceId);
+  entry.containment = null;
   entry.instanceId = null;
 }

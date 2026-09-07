@@ -365,7 +365,12 @@ async function confirmOneShotCancellation(
       lease.closed.then(() => ({ kind: 'closed_transport' as const })),
     ]);
     if (outcome.kind === 'closed_transport') return;
-    if (outcome.result.closed && outcome.result.brokerSessionKey === exactTurn.brokerSessionKey) return;
+    if (
+      outcome.result.disposition === 'observed-absent' &&
+      outcome.result.brokerSessionKey === exactTurn.brokerSessionKey
+    ) {
+      return;
+    }
   } catch (error) {
     throw new UnconfirmedClaudeOneShotCancellationError(exactTurn.brokerTurnId, error);
   }

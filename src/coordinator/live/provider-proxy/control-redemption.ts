@@ -222,12 +222,11 @@ function returnedIdentitiesMatch(
 }
 
 function roleConnectRetry(runtime: Runtime): RoleConnectRetryOptions {
-  const startedAtMonotonicMs = runtime.time.monotonicNow();
   return {
     connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
     retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
     overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
-    now: () => Number(runtime.time.monotonicNow() - startedAtMonotonicMs),
+    monotonicNow: () => runtime.time.monotonicNow(),
     sleep: (ms: number) => runtime.time.sleep(ms),
   };
 }

@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
-import { nonEmptyStringSchema } from '../../infra/identifiers.js';
 import { jsonValueSchema, type JsonValue } from '../../infra/json-value.js';
+import { persistedNonEmptyStringSchema } from '../../infra/persisted-scalar-contracts.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderPersistedParser, ProviderValueParser } from '../binding-parser-contract.js';
 
 export const providerSelectionEnvelopeSchema = z
-  .object({ provider: nonEmptyStringSchema, selection: jsonValueSchema })
+  .object({ provider: persistedNonEmptyStringSchema, selection: jsonValueSchema })
   .strict();
 export type ProviderSelectionEnvelope = z.infer<typeof providerSelectionEnvelopeSchema>;
 
@@ -22,7 +22,9 @@ export type CredentialProfile<Routing extends JsonValue = JsonValue> = {
   readonly routing: Routing;
 };
 
-export const accountSubjectSchema = z.object({ issuer: z.string().min(1), subject: z.string().min(1) }).strict();
+export const accountSubjectSchema = z
+  .object({ issuer: persistedNonEmptyStringSchema, subject: persistedNonEmptyStringSchema })
+  .strict();
 export type AccountSubject = z.infer<typeof accountSubjectSchema>;
 
 export type ProviderBinding<Profile, Subject = AccountSubject> = {

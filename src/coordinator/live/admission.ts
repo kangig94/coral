@@ -13,6 +13,7 @@ import {
   type ContainedProviderServerHandle,
   type HeldProviderServerSpawn,
   type ProviderContainmentAcceptance,
+  type ProviderServerFailedSpawnCleanupAcceptor,
   type ProviderResponseObservationSink,
   type SpawnProviderServerOptions,
   spawnProviderServerTransport,
@@ -158,9 +159,10 @@ export class LaunchCoordinator {
     options: SpawnProviderServerOptions,
     observeProviderResponse: ProviderResponseObservationSink = () => {},
     generation = this.allocateProviderServerGeneration(),
-    recordContainment?: (
-      containment: ContainedProviderServerHandle['containmentIdentity'],
-    ) => ProviderContainmentAcceptance,
+    recordContainment:
+      | ((containment: ContainedProviderServerHandle['containmentIdentity']) => ProviderContainmentAcceptance)
+      | undefined,
+    acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor,
   ): Promise<ContainedProviderServerHandle | HeldProviderServerSpawn> {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
     assertProviderHostPlatformSupported(this.runtime.env.platform());
@@ -170,6 +172,7 @@ export class LaunchCoordinator {
       generation,
       observeProviderResponse,
       detached: true,
+      acceptFailedSpawnCleanup,
       ...(recordContainment === undefined ? {} : { recordContainment }),
     });
   }
