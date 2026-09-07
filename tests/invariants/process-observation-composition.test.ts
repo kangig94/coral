@@ -17,13 +17,17 @@ const REGISTRY = [
   'src/infra/process-containment.ts#RecordedContainmentReapResult',
   'src/infra/process-supervision.ts#GracefulKillByPidDisposition',
   'src/infra/process-supervision.ts#GracefulKillByPidOutcome',
+  'src/infra/process-supervision.ts#SpawnedProcessGroupCleanupDisposition',
   'src/coordinator/services/provider-proxy-set/recorded-containment-reaper.ts#ProviderProxySetRecordedContainmentReapResult',
   'src/provider-proxy/control-client.ts#ControlExchange',
+  'src/provider-proxy/role-spawn.ts#RoleSpawnCleanupDisposition',
+  'src/providers/app-server-transport.ts#ProviderServerFailedSpawnCleanupDisposition',
+  'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#DurableProviderProxySetOperatorDispositionWriteResult',
 ] as const;
 
 const STRUCTURAL_SUBTYPE_REGISTRY = new Set<string>(['src/provider-proxy/control-client.ts#ControlExchange']);
 
-const REGISTRY_SHA256 = '22a604dc68683e7d7f8cd8d759dc713099f25c25e9b38cbd6d83705717ea734a';
+const REGISTRY_SHA256 = 'c87118cf5fb4584e1f4dbf6cca8da309a59542e1727eae48fcf14faa1c7f3cfe';
 
 const ALLOWLIST = new Map<string, string>([
   ['src/runtime/ports.ts#ProcessPort.spawn', 'spawn failure is still reported later by the child error event'],
@@ -219,14 +223,6 @@ const ALLOWLIST = new Map<string, string>([
     'guardian release converts ControlExchange failure into rejection while guardian-side ownership remains idempotent',
   ],
   [
-    'src/provider-proxy/role-spawn.ts#holdFailedSpawn.retry',
-    'failed-spawn retry returns Promise<void> while alive and unknown retain the close-backed obligation',
-  ],
-  [
-    'src/providers/app-server-transport.ts#terminateProviderServerProcess',
-    'termination observation still completes through Promise<void> instead of a returned process disposition',
-  ],
-  [
     'src/runtime/durable-cli-wrapper.ts#groupMembers.<anonymous-8>',
     'timed-out observer cleanup completes through Promise<void> after a liveness observation',
   ],
@@ -270,7 +266,7 @@ function readTsConfig(root: string): ts.CompilerOptions {
   return { ...parsed.options, composite: false, incremental: false, noEmit: true, tsBuildInfoFile: undefined };
 }
 
-function productionProgram(): ts.Program {
+function productionProgram(overlays: ReadonlyMap<string, string> = new Map()): ts.Program {
   const srcRoot = resolve(REPO_ROOT, 'src');
   const rootNames: string[] = [];
   const visit = (directory: string): void => {
@@ -281,7 +277,21 @@ function productionProgram(): ts.Program {
     }
   };
   visit(srcRoot);
-  return ts.createProgram({ rootNames, options: readTsConfig(REPO_ROOT) });
+  const options = readTsConfig(REPO_ROOT);
+  const overlayFiles = new Map([...overlays].map(([path, source]) => [resolve(REPO_ROOT, path), source]));
+  const defaultHost = ts.createCompilerHost(options, true);
+  const host: ts.CompilerHost = {
+    ...defaultHost,
+    fileExists: (fileName) => overlayFiles.has(fileName) || defaultHost.fileExists(fileName),
+    readFile: (fileName) => overlayFiles.get(fileName) ?? defaultHost.readFile(fileName),
+    getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+      const overlay = overlayFiles.get(fileName);
+      return overlay === undefined
+        ? defaultHost.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+        : ts.createSourceFile(fileName, overlay, languageVersion, true, ts.ScriptKind.TS);
+    },
+  };
+  return ts.createProgram({ rootNames: [...rootNames, ...overlayFiles.keys()], options, host });
 }
 
 function fixtureProgram(source: string): ts.Program {
@@ -948,6 +958,15 @@ function fixtureContext(source: string, registryKeys: readonly string[] = ['subj
   return createContext(fixtureProgram(source), root, registryKeys);
 }
 
+function diagnosticsFor(program: ts.Program, path: string): string[] {
+  const fileName = resolve(REPO_ROOT, path);
+  const source = program.getSourceFile(fileName);
+  if (source === undefined) throw new Error(`Missing process-observation fixture '${path}'.`);
+  return [...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source)].map(
+    (diagnostic) => `TS${diagnostic.code}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`,
+  );
+}
+
 const PRODUCTION_CONTEXT = createContext(productionProgram(), REPO_ROOT, REGISTRY);
 
 describe('process observation vocabulary composes without collapsing its third answer', () => {
@@ -1098,6 +1117,66 @@ describe('process observation vocabulary composes without collapsing its third a
           boundary === 'subject.ts#translate' && reason.startsWith('throws after discriminating'),
       ),
     ).toBe(true);
+  });
+
+  it('rejects a disposition write composed back into the old void-and-throw boundary', () => {
+    const source = `${readFileSync(resolve(FIXTURE_ROOT, 'subject.ts.txt'), 'utf8')}\nexport type DispositionWrite =\n  | { kind: 'recorded'; disposition: 'recorded' }\n  | { kind: 'refused'; disposition: 'held'; reason: string }\n  | { kind: 'unconfirmed'; disposition: 'held'; reason: string };\n\nexport function persistDisposition(result: DispositionWrite): DispositionWrite {\n  return result;\n}\n`;
+    const oldBoundary = source.replace(
+      'export function persistDisposition(result: DispositionWrite): DispositionWrite {\n  return result;\n}',
+      "export function persistDisposition(result: DispositionWrite): void {\n  if (result.kind !== 'recorded') throw new Error(result.reason);\n}",
+    );
+
+    expect(
+      compositionViolations(fixtureContext(oldBoundary, ['subject.ts#DispositionWrite'])).map(
+        ({ boundary }) => boundary,
+      ),
+    ).toContain('subject.ts#persistDisposition');
+    expect(compositionViolations(fixtureContext(source, ['subject.ts#DispositionWrite']))).toEqual([]);
+  });
+
+  it('rejects leader-only and mismatched-group settlement of a retained process-group obligation', () => {
+    const path = 'src/infra/group-absence-evidence-control.ts';
+    const leaderNegativePath = 'src/infra/group-leader-evidence-negative-control.ts';
+    const mismatchNegativePath = 'src/infra/group-identity-mismatch-negative-control.ts';
+    const source = readFileSync(resolve(FIXTURE_ROOT, 'group-absence-evidence.ts.txt'), 'utf8').replaceAll(
+      '../../../../src/',
+      '../',
+    );
+    const leaderOnlySettlement = source
+      .replace(
+        '  evidence: RoleSpawnAbsenceEvidence<RetainedProcessGroupSubject>,',
+        "  evidence: RoleSpawnAbsenceEvidence<Extract<RoleSpawnCleanupSubject, { kind: 'process' }>>,",
+      )
+      .replace(
+        '  evidence: ProviderServerFailedSpawnAbsenceEvidence<4_132>,',
+        "  evidence: RoleSpawnAbsenceEvidence<Extract<RoleSpawnCleanupSubject, { kind: 'process' }>>,",
+      );
+    const mismatchedGroupSettlement = source
+      .replace(
+        '  evidence: RoleSpawnAbsenceEvidence<RetainedProcessGroupSubject>,',
+        '  evidence: RoleSpawnAbsenceEvidence<MismatchedProcessGroupSubject>,',
+      )
+      .replace(
+        '  evidence: ProviderServerFailedSpawnAbsenceEvidence<4_132>,',
+        '  evidence: ProviderServerFailedSpawnAbsenceEvidence<4_133>,',
+      );
+
+    const program = productionProgram(
+      new Map([
+        [path, source],
+        [leaderNegativePath, leaderOnlySettlement],
+        [mismatchNegativePath, mismatchedGroupSettlement],
+      ]),
+    );
+    expect(diagnosticsFor(program, path)).toEqual([]);
+    expect(diagnosticsFor(program, leaderNegativePath)).toEqual([
+      expect.stringMatching(/TS2741:/u),
+      expect.stringMatching(/TS2741:/u),
+    ]);
+    expect(diagnosticsFor(program, mismatchNegativePath)).toEqual([
+      expect.stringMatching(/TS2322:/u),
+      expect.stringMatching(/TS2322:/u),
+    ]);
   });
 
   it('rejects unpinned registry vocabulary drift', () => {

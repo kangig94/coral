@@ -298,6 +298,7 @@ describe('fresh acquisition handoff capsule unwind', () => {
     });
     expect(statSync(acquisition.capsulePath).isFile()).toBe(true);
     if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
+    if (!('guardianIdentity' in result)) throw new Error('expected an identity-bound guardian hold');
     acquisition.confirmGuardianAbsent();
     await expect(result.recoveryCapability.retry(live())).resolves.toMatchObject({
       kind: 'absence-confirmed',

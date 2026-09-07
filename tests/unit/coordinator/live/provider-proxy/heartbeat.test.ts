@@ -605,6 +605,54 @@ describe('provider proxy authority heartbeats', () => {
     stopAll(heartbeats);
   });
 
+  it('settles a throwing incident callback inside the fire-and-forget heartbeat chain', async () => {
+    const time = new VirtualTime();
+    const callbackFailure = new Error('incident listener failed');
+    const proxy = scriptedClient(['proxy-challenge-1']);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const recorded = recordingFaultLatch();
+    const latch: ProviderProxyAuthorityFaultLatch = {
+      ...recorded.latch,
+      reportIncident: () => {
+        throw callbackFailure;
+      },
+    };
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(recorded.faults).toEqual([
+      {
+        kind: 'heartbeat-failed',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: callbackFailure,
+      },
+      {
+        kind: 'heartbeat-failed',
+        role: 'guardian',
+        method: 'guardian.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: callbackFailure,
+      },
+      {
+        kind: 'heartbeat-failed',
+        role: 'reaper',
+        method: 'reaper.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: callbackFailure,
+      },
+    ]);
+    stopAll(heartbeats);
+  });
+
   it('stop() clears the interval on the runtime, not just its own internal flag', async () => {
     const time = new VirtualTime();
     // A spy on `clearInterval` itself, not just an absence of later calls: the loop's own `stopped` flag

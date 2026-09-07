@@ -95,7 +95,7 @@ const durableRecordedContainmentIdentitySchema = z
     processGroupId: durablePositiveSafeIntegerSchema,
   })
   .strict();
-const durableAcquisitionRecoverySubjectSchema = z
+const durableGuardianAcquisitionRecoverySubjectSchema = z
   .object({
     guardianIdentity: durableRecordedContainmentIdentitySchema,
     reaper: z.discriminatedUnion('kind', [
@@ -117,6 +117,11 @@ const durableAcquisitionRecoverySubjectSchema = z
     ]),
   })
   .strict();
+const durableAcquisitionRecoverySubjectSchema = z.union([
+  durableGuardianAcquisitionRecoverySubjectSchema,
+  z.object({ kind: z.literal('spawned-process-group'), processGroupId: durablePositiveSafeIntegerSchema }).strict(),
+  z.object({ kind: z.literal('unattributable-process-group') }).strict(),
+]);
 const durableOperatorDispositionSchema = z
   .object({
     disposition: z.enum(['held', 'awaiting-containment-absence', 'operator-exit-refused']),
@@ -256,21 +261,7 @@ export type DurableProviderProxySetAcquisitionDispositionRecord = Readonly<{
   key: string;
   writerIncarnation: string;
   setAddress: ReturnType<typeof decodeProviderProxySetAddress>;
-  recoverySubject: Readonly<{
-    guardianIdentity: Readonly<{ pid: number; incarnation: string; processGroupId: number }>;
-    reaper:
-      | Readonly<{ kind: 'not-created' }>
-      | Readonly<{ kind: 'recorded'; pid: number; incarnation: string }>
-      | Readonly<{ kind: 'possible-unidentified' }>;
-    constructionContainmentSettled: boolean;
-    proxy:
-      | Readonly<{ kind: 'not-created' }>
-      | Readonly<{
-          kind: 'recorded';
-          identity: Readonly<{ pid: number; incarnation: string; processGroupId: number }>;
-        }>
-      | Readonly<{ kind: 'possible-unidentified' }>;
-  }>;
+  recoverySubject: z.output<typeof durableAcquisitionRecoverySubjectSchema>;
   routeKey: string;
   disposition: ProviderProxySetOperatorDisposition;
   status:
@@ -291,6 +282,23 @@ export type DurableProviderProxySetOperatorDispositionRead = Readonly<{
   acquisitionRecords: readonly DurableProviderProxySetAcquisitionDispositionRecord[];
   skipped: readonly DurableProviderProxySetOperatorDispositionSkip[];
 }>;
+
+export type DurableProviderProxySetOperatorDispositionWriteResult =
+  | Readonly<{ kind: 'recorded'; disposition: 'recorded' }>
+  | Readonly<{
+      kind: 'refused';
+      disposition: 'held';
+      reason: string;
+      waitingFor: 'store-repair';
+      exit: 'provider-proxy-set-operator-disposition-store-retry';
+    }>
+  | Readonly<{
+      kind: 'unconfirmed';
+      disposition: 'held';
+      reason: string;
+      waitingFor: 'store-repair';
+      exit: 'provider-proxy-set-operator-disposition-store-retry';
+    }>;
 
 type DurableDispositionStorage = Pick<
   StoragePort,
@@ -406,35 +414,78 @@ export class ProviderProxySetOperatorDispositionStore {
       | DurableProviderProxySetAcquisitionDispositionRecord
     )[],
     retiredKeys: readonly string[] = [],
-  ): void {
+  ): DurableProviderProxySetOperatorDispositionWriteResult {
     const reading = this.#readEntries();
     if (!reading.writable) {
-      throw new Error('provider_proxy_set_operator_disposition_artifact_unreadable');
+      return {
+        kind: 'refused',
+        disposition: 'held',
+        reason: 'provider_proxy_set_operator_disposition_artifact_unreadable',
+        waitingFor: 'store-repair',
+        exit: 'provider-proxy-set-operator-disposition-store-retry',
+      };
     }
     const entries = reading.entries;
     for (const key of retiredKeys) delete entries[key];
-    for (const record of records) {
-      const parsed =
-        record.scope === 'set'
-          ? durableProviderProxySetOperatorDispositionRecordSchema.parse(record)
-          : durableProviderProxySetAcquisitionDispositionRecordSchema.parse(record);
-      entries[parsed.key] = parsed;
+    try {
+      for (const record of records) {
+        const parsed =
+          record.scope === 'set'
+            ? durableProviderProxySetOperatorDispositionRecordSchema.parse(record)
+            : durableProviderProxySetAcquisitionDispositionRecordSchema.parse(record);
+        entries[parsed.key] = parsed;
+      }
+    } catch (error) {
+      return {
+        kind: 'refused',
+        disposition: 'held',
+        reason: error instanceof Error ? error.message : String(error),
+        waitingFor: 'store-repair',
+        exit: 'provider-proxy-set-operator-disposition-store-retry',
+      };
     }
-    this.#storage.mkdirSync(this.#runDir, { recursive: true, mode: 0o700 });
-    if (
-      !this.#storage.writeAtomicDurableSync(statusPath(this.#runDir), `${JSON.stringify({ entries }, null, 2)}\n`, {
-        encoding: 'utf-8',
-        mode: 0o600,
-      })
-    ) {
-      throw new Error('provider_proxy_set_operator_disposition_durable_write_unconfirmed');
+    try {
+      this.#storage.mkdirSync(this.#runDir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      return {
+        kind: 'refused',
+        disposition: 'held',
+        reason: error instanceof Error ? error.message : String(error),
+        waitingFor: 'store-repair',
+        exit: 'provider-proxy-set-operator-disposition-store-retry',
+      };
     }
+    try {
+      if (
+        !this.#storage.writeAtomicDurableSync(statusPath(this.#runDir), `${JSON.stringify({ entries }, null, 2)}\n`, {
+          encoding: 'utf-8',
+          mode: 0o600,
+        })
+      ) {
+        return {
+          kind: 'unconfirmed',
+          disposition: 'held',
+          reason: 'provider_proxy_set_operator_disposition_durable_write_unconfirmed',
+          waitingFor: 'store-repair',
+          exit: 'provider-proxy-set-operator-disposition-store-retry',
+        };
+      }
+    } catch (error) {
+      return {
+        kind: 'unconfirmed',
+        disposition: 'held',
+        reason: error instanceof Error ? error.message : String(error),
+        waitingFor: 'store-repair',
+        exit: 'provider-proxy-set-operator-disposition-store-retry',
+      };
+    }
+    return { kind: 'recorded', disposition: 'recorded' };
   }
 
   #readEntries(): Readonly<{ entries: Record<string, unknown>; writable: boolean }> {
     const path = statusPath(this.#runDir);
-    if (!this.#storage.existsSync(path)) return { entries: {}, writable: true };
     try {
+      if (!this.#storage.existsSync(path)) return { entries: {}, writable: true };
       const parsed = durableProviderProxySetOperatorDispositionFileSchema.safeParse(
         JSON.parse(this.#storage.readFileSync(path, 'utf-8')),
       );

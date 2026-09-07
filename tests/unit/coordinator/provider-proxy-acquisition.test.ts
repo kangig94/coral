@@ -193,6 +193,56 @@ describe('provider proxy set acquisition', () => {
     expect(cleanupFailures).toEqual(['guardian']);
   });
 
+  it('publishes a pre-identity guardian spawn hold with the acquisition-abandonment exit', async () => {
+    const recorded = steps();
+    const recoverySubject = { kind: 'spawned-process-group' as const, processGroupId: 101 };
+    const recoveryCapability = {
+      retry: vi.fn(async () => ({ kind: 'held' as const, reason: 'spawned_process_group_alive' })),
+    };
+    const operatorExit = {
+      kind: 'abandon-provider-proxy-acquisition' as const,
+      abandon: vi.fn(() => ({
+        kind: 'operator-abandoned' as const,
+        recoverySubject,
+        processAbsenceProven: false as const,
+        successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+      })),
+    };
+    const acquisitionSteps: ProviderProxyAcquisitionSteps = {
+      ...recorded.steps,
+      spawnGuardian: async () => ({
+        kind: 'provider_proxy_role_spawn_held',
+        reason: 'guardian incarnation unavailable',
+        setAddress: {
+          buildSetId: SET.setIdentity.buildSetId,
+          hostFingerprint: SET.setIdentity.hostFingerprint,
+          proxyInstanceId: SET.setIdentity.proxyInstanceId,
+        },
+        recoverySubject,
+        operatorExit,
+        recoveryCapability,
+      }),
+    };
+    const acceptHold = vi.fn(acceptHoldForTest);
+
+    const result = await acquireProviderProxySet({
+      steps: acquisitionSteps,
+      time: immediateRetryTime,
+      acceptHold,
+      deadlineSignal: live(),
+    });
+
+    expect(result).toMatchObject({
+      kind: 'provider_proxy_acquisition_held',
+      cut: 'guardian spawn',
+      recoverySubject,
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      recoveryCapability,
+    });
+    expect(acceptHold).toHaveBeenCalledWith(expect.objectContaining({ recoverySubject, recoveryCapability }));
+    expect(recorded.log).toContain('undo:capsules');
+  });
+
   it('retains recovery capability until a held guardian retry confirms absence', async () => {
     const log: string[] = [];
     let guardianAbsent = false;
@@ -252,7 +302,13 @@ describe('provider proxy set acquisition', () => {
 
     const acceptHold = vi
       .fn()
-      .mockRejectedValueOnce(new Error('durable store temporarily unavailable'))
+      .mockReturnValueOnce({
+        kind: 'held' as const,
+        owner: 'provider-host-acquisition' as const,
+        reason: 'durable store temporarily unavailable',
+        waitingFor: 'store-repair' as const,
+        exit: 'provider-proxy-set-operator-disposition-store-retry' as const,
+      })
       .mockReturnValue({
         kind: 'accepted' as const,
         owner: 'durable-provider-proxy-acquisition-hold-store' as const,
@@ -283,6 +339,7 @@ describe('provider proxy set acquisition', () => {
     );
     expect(cleanupFailures).toContain('durable acquisition hold');
     if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
+    if (!('guardianIdentity' in result)) throw new Error('expected an identity-bound guardian hold');
     guardianAbsent = true;
     await expect(result.recoveryCapability.retry(live())).resolves.toMatchObject({
       kind: 'absence-confirmed',
@@ -341,6 +398,9 @@ describe('provider proxy set acquisition', () => {
     const originalSpawn = recorded.steps.spawnGuardian;
     recorded.steps.spawnGuardian = async () => {
       const undo = await originalSpawn();
+      if (undo.kind === 'provider_proxy_role_spawn_held') {
+        throw new Error('expected an identity-bound guardian undo');
+      }
       // Simulates a control-close RPC that never returns — exactly what would otherwise hold the caller's
       // single-flight slot open forever.
       return { label: undo.label, run: () => new Promise<void>(() => {}) };

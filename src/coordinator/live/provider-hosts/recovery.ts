@@ -1,5 +1,8 @@
 import type { ProviderServerSpec } from '../../../providers/contract.js';
-import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
+import type {
+  ContainedProviderServerHandle,
+  HeldProviderServerSpawn,
+} from '../../../providers/app-server-transport.js';
 import type { ProviderHostEntry } from './state.js';
 import { AbortError } from '../../../runtime/abort.js';
 
@@ -46,9 +49,10 @@ function immutableSnapshot<Value>(value: Value): Value {
 export async function ensureProviderServerHandle(
   entry: ProviderHostEntry,
   options: {
-    spawnProviderServer: (spec: ProviderServerSpec) => Promise<ContainedProviderServerHandle>;
+    spawnProviderServer: (spec: ProviderServerSpec) => Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>;
     closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ContainedProviderServerHandle) => void;
+    retainSpawnCleanup: (held: HeldProviderServerSpawn) => Promise<never>;
     createInstanceId: () => string;
     observeRetired: (entry: ProviderHostEntry, instanceId: string) => void;
     signal?: AbortSignal;
@@ -63,7 +67,7 @@ export async function ensureProviderServerHandle(
   if (entry.spawnPromise === null) {
     const instanceId = options.createInstanceId();
     entry.instanceId = instanceId;
-    let spawned: Promise<ContainedProviderServerHandle>;
+    let spawned: Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>;
     try {
       spawned = options.spawnProviderServer(entry.spec);
     } catch (error: unknown) {
@@ -101,14 +105,19 @@ export async function ensureProviderServerHandle(
 
 async function initializeProviderServerHandle(
   entry: ProviderHostEntry,
-  spawned: Promise<ContainedProviderServerHandle>,
+  spawned: Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>,
   options: {
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ContainedProviderServerHandle) => void;
+    retainSpawnCleanup: (held: HeldProviderServerSpawn) => Promise<never>;
     closeEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
     observeRetired: (entry: ProviderHostEntry, instanceId: string) => void;
   },
 ): Promise<ContainedProviderServerHandle> {
-  const handle = await spawned;
+  const disposition = await spawned;
+  if (isHeldProviderServerSpawn(disposition)) {
+    return options.retainSpawnCleanup(disposition);
+  }
+  const handle = disposition;
   entry.containment = handle.containmentIdentity;
   entry.handle = handle;
   const instanceId = entry.instanceId;
@@ -132,6 +141,12 @@ async function initializeProviderServerHandle(
   }
   options.attachHostNotificationListener(entry, handle);
   return handle;
+}
+
+function isHeldProviderServerSpawn(
+  disposition: ContainedProviderServerHandle | HeldProviderServerSpawn,
+): disposition is HeldProviderServerSpawn {
+  return 'kind' in disposition && (disposition.kind === 'held-alive' || disposition.kind === 'held-unobservable');
 }
 
 function providerHostDrainingError(closingError: Error): Error {

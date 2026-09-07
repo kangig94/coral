@@ -163,6 +163,7 @@ describe('launch admission', () => {
       command: 'fake-codex',
       args: ['app-server'],
     });
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     expect(fake.spawn).toHaveBeenCalledWith(
       expect.objectContaining({ command: 'fake-codex', args: ['app-server'], detached: true }),
@@ -216,7 +217,7 @@ describe('launch admission', () => {
     },
   );
 
-  it('kills a coordinator-local provider spawn whose incarnation cannot be read', async () => {
+  it('kills a coordinator-local provider group whose incarnation cannot be read', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux', null);
     const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
     const manager = new DefaultProviderHostManager({
@@ -231,15 +232,15 @@ describe('launch admission', () => {
       code: 'process_identity_unverified',
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).not.toHaveBeenCalled();
-    expect(fake.childKill).toHaveBeenCalledWith('SIGTERM');
+    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
     expect(manager.listProviderHosts().some((entry) => entry.status === 'live')).toBe(false);
     await manager.shutdown();
   });
 
-  it('kills a coordinator-local provider spawn when reading its incarnation throws', async () => {
+  it('kills a coordinator-local provider group when reading its incarnation throws', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID);
     const runtime: Runtime = {
       ...fake.runtime,
@@ -263,15 +264,15 @@ describe('launch admission', () => {
       code: 'process_identity_unverified',
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
-    expect(fake.processKill).not.toHaveBeenCalled();
-    expect(fake.childKill).toHaveBeenCalledWith('SIGTERM');
+    expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
     expect(manager.listProviderHosts().some((entry) => entry.status === 'live')).toBe(false);
     await manager.shutdown();
   });
 
-  it('kills a coordinator-local provider spawn whose process-group probe fails', async () => {
+  it('accepts observed group absence when a coordinator-local provider process-group probe fails', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, false);
     const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
     const manager = new DefaultProviderHostManager({
@@ -288,7 +289,8 @@ describe('launch admission', () => {
       context: { provider: 'codex', pid: TEST_PROVIDER_PID },
     });
     expect(fake.processKill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 0);
-    expect(fake.childKill).toHaveBeenCalledWith('SIGTERM');
+    expect(fake.processKill).not.toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
+    expect(fake.childKill).not.toHaveBeenCalled();
     expect((manager as unknown as { entries: Map<string, unknown> }).entries.size).toBe(0);
     expect([...manager.admissionSnapshot().state.values()].some((entry) => entry.phase === 'live')).toBe(false);
     expect(manager.listProviderHosts().some((entry) => entry.status === 'live')).toBe(false);

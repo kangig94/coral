@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = 'tests/invariants/fixtures/durable-schema-independence';
-const SCHEMA_CATALOG_SHA256 = '6234ee41b3c78324ff14913bdfd973d8070e2ad2f6a49d4af6998b19d32f65c0';
+const SCHEMA_CATALOG_SHA256 = '04977abf2680b228ec9f2e813309f6581d80f9389cb8395b72462861e935542d';
 
 type SchemaKey = `${string}#${string}`;
 

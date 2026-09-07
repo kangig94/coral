@@ -86,8 +86,8 @@ function startHeartbeatLoop(
     const schedulerLatenessMs = pendingSchedulerLatenessMs;
     pendingSchedulerLatenessMs = 0;
     state = { kind: 'in-flight', challenge, attempt, schedulerLatenessMs };
-    void heartbeatOnce(client, method, controlEpoch, challenge).then(
-      (observation) => {
+    void heartbeatOnce(client, method, controlEpoch, challenge)
+      .then((observation) => {
         if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
         const observedSchedulerLatenessMs = state.schedulerLatenessMs + pendingSchedulerLatenessMs;
         pendingSchedulerLatenessMs = 0;
@@ -127,14 +127,22 @@ function startHeartbeatLoop(
           return;
         }
         onTerminal(localFailure.error, 'local-failure');
-      },
-      (error: unknown) => {
-        if (state.kind !== 'in-flight' || state.attempt !== attempt) return;
-        state = { kind: 'stopped' };
-        runtime.time.clearInterval(handle);
-        onTerminal(error, 'local-failure');
-      },
-    );
+      })
+      .catch((error: unknown) => {
+        if (state.kind !== 'stopped') {
+          state = { kind: 'stopped' };
+          runtime.time.clearInterval(handle);
+        }
+        try {
+          onTerminal(error, 'local-failure');
+        } catch (terminalError) {
+          try {
+            backendLog.warn(`provider-proxy heartbeat callback failed: ${errorMessage(terminalError)}`);
+          } catch {
+            // The fire-and-forget heartbeat chain must not reject.
+          }
+        }
+      });
   };
   const handle = runtime.time.setInterval(tick, PROXY_CONTROL_HEARTBEAT_MS);
   handle.unref?.();

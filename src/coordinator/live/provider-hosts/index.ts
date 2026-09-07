@@ -2,6 +2,8 @@ import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../p
 import {
   PROVIDER_CONTAINMENT_ACCEPTED,
   type ContainedProviderServerHandle,
+  type HeldProviderServerSpawn,
+  type ProviderServerFailedSpawnCleanupDisposition,
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../../../providers/app-server-transport.js';
@@ -88,11 +90,22 @@ export type ProviderHostQuiescenceReceipt = Readonly<{
   closingHosts: readonly ProviderHostClosingObligation[];
 }>;
 
-export type ProviderHostClosingObligation = Readonly<{
+type SettledProviderHostClosingObligation = Readonly<{
   label: string;
   containment: RecordedContainmentIdentity | null;
   settlement: Promise<void>;
 }>;
+
+export type ProviderHostSpawnCleanupObligation = Readonly<{
+  kind: 'provider-server-spawn-cleanup-held';
+  label: string;
+  containment: null;
+  settlement: Promise<void>;
+  inspect(): HeldProviderServerSpawn;
+  operatorExit: HeldProviderServerSpawn['operatorExit'];
+}>;
+
+export type ProviderHostClosingObligation = SettledProviderHostClosingObligation | ProviderHostSpawnCleanupObligation;
 
 export type ProviderRepresentationReleaseObligation = Readonly<{
   label: string;
@@ -327,6 +340,7 @@ export class DefaultProviderHostManager
   private readonly pendingCloses = new Set<Promise<void>>();
   private readonly pendingProxySetAcquisitions = new Set<PendingProviderProxySetAcquisition>();
   private readonly closingEntries = new Map<ProviderHostEntry, ProviderHostClosingRecord>();
+  private readonly spawnCleanupHolds = new Set<ProviderHostSpawnCleanupObligation>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private nextProviderServerGeneration = 1;
   private acceptingAcquisitions = true;
@@ -376,12 +390,47 @@ export class DefaultProviderHostManager
       liveProxySets: lifecycle?.liveSets() ?? [],
       acquisitionCleanupHolds: lifecycle?.acquisitionCleanupHolds() ?? [],
       representationReleaseHolds: lifecycle?.representationReleaseHolds() ?? [],
-      closingHosts: [...this.closingEntries.entries()].map(([entry, closing]) => ({
-        label: `provider host ${entry.spec.provider} ${closing.ref.instanceId}`,
-        containment: entry.containment ?? closing.containment,
-        settlement: closing.operation,
-      })),
+      closingHosts: [
+        ...[...this.closingEntries.entries()].map(([entry, closing]) => ({
+          label: `provider host ${entry.spec.provider} ${closing.ref.instanceId}`,
+          containment: entry.containment ?? closing.containment,
+          settlement: closing.operation,
+        })),
+        ...this.spawnCleanupHolds,
+      ],
     };
+  }
+
+  private retainProviderServerSpawnCleanup(entry: ProviderHostEntry, held: HeldProviderServerSpawn): Promise<never> {
+    let current = held;
+    entry.spawnCleanupHold = current;
+    entry.spawnCleanupAttempts = 1;
+    const settlement = Promise.resolve().then(async (): Promise<never> => {
+      try {
+        let cleanup: ProviderServerFailedSpawnCleanupDisposition = await current.retry();
+        while (cleanup.kind === 'held-alive' || cleanup.kind === 'held-unobservable') {
+          current = { ...cleanup, error: held.error };
+          entry.spawnCleanupHold = current;
+          entry.spawnCleanupAttempts += 1;
+          cleanup = await current.retry();
+        }
+        throw held.error;
+      } finally {
+        if (entry.spawnCleanupHold?.operatorExit === held.operatorExit) entry.spawnCleanupHold = null;
+        const settledObligation = [...this.spawnCleanupHolds].find((candidate) => candidate.settlement === settlement);
+        if (settledObligation !== undefined) this.spawnCleanupHolds.delete(settledObligation);
+      }
+    });
+    const obligation: ProviderHostSpawnCleanupObligation = {
+      kind: 'provider-server-spawn-cleanup-held',
+      label: `provider host ${entry.spec.provider} failed spawn cleanup`,
+      containment: null,
+      settlement,
+      inspect: () => current,
+      operatorExit: held.operatorExit,
+    };
+    this.spawnCleanupHolds.add(obligation);
+    return settlement;
   }
 
   /** See `ProviderProxySetRegistration.registerInheritedSet()`'s interface doc for this seam's full contract. */
@@ -709,8 +758,8 @@ export class DefaultProviderHostManager
             },
           );
           void spawned.then(
-            (handle) => {
-              spawnedHandle = handle;
+            (disposition) => {
+              if (!('kind' in disposition)) spawnedHandle = disposition;
             },
             () => {},
           );
@@ -718,6 +767,7 @@ export class DefaultProviderHostManager
         },
         closeEntry: (nextEntry, detail) => this.closeProviderServerEntry(nextEntry, detail, { confirmAbsence: true }),
         attachHostNotificationListener: (nextEntry, handle) => this.attachHostNotificationListener(nextEntry, handle),
+        retainSpawnCleanup: (held) => this.retainProviderServerSpawnCleanup(entry, held),
         createInstanceId: () => this.runtime.ids.uuid(),
         observeRetired: (nextEntry, instanceId) => {
           if (nextEntry.instanceId !== instanceId) return;
@@ -834,7 +884,37 @@ export class DefaultProviderHostManager
       closingRecords.some(([, closing]) => exactHostRefsMatch(closing.ref, ref));
     const records: ProviderHostInventoryRecord[] = [];
     for (const admissionEntry of snapshot.state.values()) {
-      if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
+      if (admissionEntry.phase === 'spawning') {
+        const matches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, admissionEntry.ref));
+        const entry = matches.length === 1 ? matches[0] : undefined;
+        const hold = entry?.spawnCleanupHold;
+        if (entry === undefined || hold === null || hold === undefined) continue;
+        const processGroup =
+          hold.subject.kind === 'process-group'
+            ? { pid: hold.subject.processGroupId, processGroupId: hold.subject.processGroupId }
+            : {};
+        records.push(
+          Object.freeze({
+            ref: admissionEntry.ref,
+            status: 'reclamation-failed',
+            spec: canonicalProviderHostSpecMetadata(entry.spec),
+            host: Object.freeze({
+              owner: 'coordinator',
+              hostKey: entry.hostKey,
+              identityKey: entry.identityKey,
+              ownerJobId: entry.jobId ?? null,
+              ...processGroup,
+              reclamationAttempts: entry.spawnCleanupAttempts,
+              reclamationFailure: hold.error.message,
+              reclamationRetryable: true,
+            }),
+            diagnostics: emptyDiagnostics(),
+            diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+          }),
+        );
+        continue;
+      }
+      if (admissionEntry.phase === 'retired-blocked') continue;
       if (isClosing(admissionEntry.ref)) continue;
       const matches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, admissionEntry.ref));
       if (matches.length !== 1) {
@@ -923,6 +1003,13 @@ export class DefaultProviderHostManager
     }
     const matched = matchedEntries.values().next().value;
     if (matched !== undefined) {
+      const spawnCleanup = matched.spawnCleanupHold;
+      if (spawnCleanup !== null) {
+        const settlement = matched.spawnPromise;
+        spawnCleanup.operatorExit.abandon();
+        if (settlement !== null) await settlement.catch(() => undefined);
+        return true;
+      }
       await this.closeProviderServerEntry(matched, 'evicted by operator', { confirmAbsence: true });
       this.admission.confirmEvicted(hostRef);
       return true;
@@ -1021,6 +1108,8 @@ export class DefaultProviderHostManager
       containment: null,
       instanceId: null,
       spawnPromise: null,
+      spawnCleanupHold: null,
+      spawnCleanupAttempts: 0,
       pins: new Map(),
       closingError: null,
       closePromise: null,

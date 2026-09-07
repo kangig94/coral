@@ -2,7 +2,14 @@ import { basename, join } from 'node:path';
 
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
-import { gracefulKill } from '../infra/process-supervision.js';
+import {
+  cleanupSpawnedProcessGroup,
+  gracefulKill,
+  retainSpawnedProcessGroupCleanup,
+  type SpawnedProcessGroupAbsenceEvidence,
+  type SpawnedProcessGroupCleanup,
+  type SpawnedProcessGroupCleanupDisposition,
+} from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   connectControlClient,
@@ -78,15 +85,103 @@ export type SpawnedRoleProcess = Readonly<{
   spawnFailed: Promise<never>;
 }>;
 
-export type HeldRoleSpawn = Readonly<{
+type HeldRoleSpawnFor<Subject extends RoleSpawnCleanupSubject> = Readonly<{
   kind: 'held';
   child: ChildProcessLike;
   error: RoleSpawnError;
+  subject: Subject;
   settled: Promise<void>;
-  retry(): Promise<void>;
+  operatorExit: RoleSpawnOperatorExit<Subject>;
+  retry(): Promise<RoleSpawnCleanupDisposition<Subject>>;
 }>;
 
+export type RoleSpawnCleanupSubject =
+  | Readonly<{ kind: 'process'; pid: number | null }>
+  | Readonly<{ kind: 'process-group'; processGroupId: number }>
+  | Readonly<{ kind: 'unattributable-process-group' }>;
+
+export type RoleSpawnOperatorAbandonment<Subject extends RoleSpawnCleanupSubject> = Readonly<{
+  kind: 'operator-abandoned';
+  subject: Subject;
+  processAbsenceProven: false;
+  successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
+}>;
+
+export type RoleSpawnOperatorExit<Subject extends RoleSpawnCleanupSubject> = Readonly<{
+  kind: 'abandon-provider-proxy-acquisition';
+  abandon(): RoleSpawnOperatorAbandonment<Subject>;
+}>;
+
+type HeldRoleSpawnVariants<Subject extends RoleSpawnCleanupSubject> = Subject extends RoleSpawnCleanupSubject
+  ? HeldRoleSpawnFor<Subject>
+  : never;
+
+export type HeldRoleSpawn = HeldRoleSpawnVariants<RoleSpawnCleanupSubject>;
+
 export type RoleSpawnDisposition = SpawnedRoleProcess | HeldRoleSpawn;
+
+const roleSpawnAbsenceEvidenceBrand: unique symbol = Symbol('coral.provider-proxy.role-spawn-absence');
+
+type RoleSpawnProcessGroupAbsenceEvidence<ProcessGroupId extends number> = Readonly<{
+  processGroupEvidence: SpawnedProcessGroupAbsenceEvidence<ProcessGroupId>;
+  [roleSpawnAbsenceEvidenceBrand]: true;
+}>;
+
+type RoleSpawnProcessSubject = Extract<RoleSpawnCleanupSubject, { kind: 'process' }>;
+type RoleSpawnProcessGroupSubject<ProcessGroupId extends number> = Readonly<{
+  kind: 'process-group';
+  processGroupId: ProcessGroupId;
+}>;
+
+export type RoleSpawnAbsenceEvidence<Subject extends RoleSpawnCleanupSubject = RoleSpawnCleanupSubject> =
+  Subject extends Extract<RoleSpawnCleanupSubject, { kind: 'process' }>
+    ? Readonly<{
+        subject: Subject;
+        [roleSpawnAbsenceEvidenceBrand]: true;
+      }>
+    : Subject extends Extract<RoleSpawnCleanupSubject, { kind: 'process-group' }>
+      ? RoleSpawnProcessGroupAbsenceEvidence<Subject['processGroupId']>
+      : never;
+
+export type RoleSpawnCleanupDisposition<Subject extends RoleSpawnCleanupSubject = RoleSpawnCleanupSubject> =
+  | Readonly<{
+      kind: 'observed-absent';
+      evidence: RoleSpawnAbsenceEvidence<Subject>;
+    }>
+  | Readonly<{
+      kind: 'held-alive';
+      subject: Subject;
+      observation: 'alive';
+      operatorExit: Readonly<{ kind: 'abandon-provider-proxy-acquisition' }>;
+      retry(): Promise<RoleSpawnCleanupDisposition<Subject>>;
+    }>
+  | Readonly<{
+      kind: 'held-unobservable';
+      subject: Subject;
+      observation: 'unobservable';
+      operatorExit: Readonly<{ kind: 'abandon-provider-proxy-acquisition' }>;
+      retry(): Promise<RoleSpawnCleanupDisposition<Subject>>;
+    }>;
+
+type RoleSpawnProcessGroupCleanupDisposition<ProcessGroupId extends number> =
+  | Readonly<{
+      kind: 'observed-absent';
+      evidence: RoleSpawnProcessGroupAbsenceEvidence<ProcessGroupId>;
+    }>
+  | Readonly<{
+      kind: 'held-alive';
+      subject: RoleSpawnProcessGroupSubject<ProcessGroupId>;
+      observation: 'alive';
+      operatorExit: Readonly<{ kind: 'abandon-provider-proxy-acquisition' }>;
+      retry(): Promise<RoleSpawnProcessGroupCleanupDisposition<ProcessGroupId>>;
+    }>
+  | Readonly<{
+      kind: 'held-unobservable';
+      subject: RoleSpawnProcessGroupSubject<ProcessGroupId>;
+      observation: 'unobservable';
+      operatorExit: Readonly<{ kind: 'abandon-provider-proxy-acquisition' }>;
+      retry(): Promise<RoleSpawnProcessGroupCleanupDisposition<ProcessGroupId>>;
+    }>;
 
 /** Mirrors `kb-daemon-supervisor.ts`'s own entrypoint resolution: reuse the artifact already running when
  *  its basename matches, otherwise resolve it under the plugin root's bundled bridge. */
@@ -127,6 +222,8 @@ export function spawnRoleProcess(
   const settled = new Promise<void>((resolve) => {
     child.on('close', () => resolve());
   });
+  const processGroupCleanup: SpawnedProcessGroupCleanup | null =
+    options.detached && typeof child.pid === 'number' ? retainSpawnedProcessGroupCleanup(child.pid) : null;
 
   // Nothing in this process reads the role's stdout/stderr. Draining keeps the OS pipe buffer from filling
   // and backpressuring the role's own writes, and the `'error'` listeners keep a later stream error from
@@ -136,23 +233,96 @@ export function spawnRoleProcess(
   child.stdout?.on('error', () => {});
   child.stderr?.on('data', () => {});
   child.stderr?.on('error', () => {});
-  const holdFailedSpawn = (error: RoleSpawnError): HeldRoleSpawn => ({
-    kind: 'held',
-    child,
-    error,
-    settled,
-    retry: async () => {
+  const operatorExitFor = <Subject extends RoleSpawnCleanupSubject>(
+    subject: Subject,
+  ): RoleSpawnOperatorExit<Subject> => ({
+    kind: 'abandon-provider-proxy-acquisition',
+    abandon: () => ({
+      kind: 'operator-abandoned',
+      subject,
+      processAbsenceProven: false,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+    }),
+  });
+  const observedProcessAbsent = (
+    subject: RoleSpawnProcessSubject,
+  ): Extract<RoleSpawnCleanupDisposition<RoleSpawnProcessSubject>, { kind: 'observed-absent' }> => ({
+    kind: 'observed-absent',
+    evidence: Object.freeze({ subject, [roleSpawnAbsenceEvidenceBrand]: true as const }),
+  });
+  const observedProcessGroupAbsent = <ProcessGroupId extends number>(
+    processGroupEvidence: SpawnedProcessGroupAbsenceEvidence<ProcessGroupId>,
+  ): Readonly<{
+    kind: 'observed-absent';
+    evidence: RoleSpawnProcessGroupAbsenceEvidence<ProcessGroupId>;
+  }> => ({
+    kind: 'observed-absent',
+    evidence: Object.freeze({
+      processGroupEvidence,
+      [roleSpawnAbsenceEvidenceBrand]: true as const,
+    }),
+  });
+  const mapGroupCleanup = <ProcessGroupId extends number>(
+    subject: Readonly<{ kind: 'process-group'; processGroupId: ProcessGroupId }>,
+    cleanup: SpawnedProcessGroupCleanupDisposition<ProcessGroupId>,
+    retryCleanup: () => Promise<SpawnedProcessGroupCleanupDisposition<ProcessGroupId>>,
+    operatorExit: RoleSpawnOperatorExit<typeof subject>,
+  ): RoleSpawnProcessGroupCleanupDisposition<ProcessGroupId> =>
+    cleanup.kind === 'observed-absent'
+      ? observedProcessGroupAbsent(cleanup.evidence)
+      : {
+          ...cleanup,
+          operatorExit,
+          retry: async () => mapGroupCleanup(subject, await cleanup.retry(), cleanup.retry, operatorExit),
+        };
+  const holdFailedSpawn = (error: RoleSpawnError): HeldRoleSpawn => {
+    if (processGroupCleanup !== null) {
+      const subject = { kind: 'process-group', processGroupId: processGroupCleanup.processGroupId } as const;
+      const operatorExit = operatorExitFor(subject);
+      return {
+        kind: 'held',
+        child,
+        error,
+        subject,
+        settled,
+        operatorExit,
+        retry: async () => {
+          const retryCleanup = () => cleanupSpawnedProcessGroup(processGroupCleanup, ports.runtime);
+          return mapGroupCleanup(subject, await retryCleanup(), retryCleanup, operatorExit);
+        },
+      };
+    }
+    if (options.detached) {
+      const subject = { kind: 'unattributable-process-group' } as const;
+      const operatorExit = operatorExitFor(subject);
+      const retry = async (): Promise<RoleSpawnCleanupDisposition<typeof subject>> => ({
+        kind: 'held-unobservable',
+        subject,
+        observation: 'unobservable',
+        operatorExit,
+        retry,
+      });
+      return { kind: 'held', child, error, subject, settled, operatorExit, retry };
+    }
+
+    const subject = { kind: 'process', pid: child.pid ?? null } as const;
+    const operatorExit = operatorExitFor(subject);
+    const retry = async (): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
       gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
       if (typeof child.pid === 'number') {
         try {
-          if (ports.runtime.process.observeLiveness(child.pid) === 'absent') return;
+          if (ports.runtime.process.observeLiveness(child.pid) === 'absent') {
+            return observedProcessAbsent(subject);
+          }
         } catch {
-          // Unknown liveness retains the close-backed obligation.
+          // A close observation remains required when leader liveness cannot answer.
         }
       }
       await settled;
-    },
-  });
+      return observedProcessAbsent(subject);
+    };
+    return { kind: 'held', child, error, subject, settled, operatorExit, retry };
+  };
 
   if (typeof child.pid !== 'number') {
     return holdFailedSpawn(
@@ -182,10 +352,11 @@ export function spawnRoleProcess(
   return { kind: 'spawned', child, pid: child.pid, incarnation, spawnFailed };
 }
 
-/** A held role cannot reject until its close-or-absence obligation has settled. */
-export async function requireSpawnedRole(disposition: RoleSpawnDisposition): Promise<SpawnedRoleProcess> {
+/** A held role cannot be translated into spawn success or failure until exact-subject absence is observed. */
+export async function requireSpawnedRole(disposition: RoleSpawnDisposition): Promise<RoleSpawnDisposition> {
   if (disposition.kind === 'spawned') return disposition;
-  await disposition.retry();
+  const cleanup = await disposition.retry();
+  if (cleanup.kind !== 'observed-absent') return disposition;
   throw disposition.error;
 }
 

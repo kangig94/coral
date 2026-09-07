@@ -1,0 +1,28 @@
+import type {
+  RoleSpawnAbsenceEvidence,
+  RoleSpawnCleanupDisposition,
+  RoleSpawnCleanupSubject,
+} from '../../../../src/provider-proxy/role-spawn.js';
+import type {
+  ProviderServerFailedSpawnAbsenceEvidence,
+  ProviderServerFailedSpawnCleanupDisposition,
+} from '../../../../src/providers/app-server-transport.js';
+
+type RetainedProcessGroupSubject = Extract<RoleSpawnCleanupSubject, { kind: 'process-group' }> &
+  Readonly<{ processGroupId: 4_132 }>;
+type OtherProcessGroupSubject = Extract<RoleSpawnCleanupSubject, { kind: 'process-group' }> &
+  Readonly<{ processGroupId: 4_133 }>;
+
+export function settleDetachedGroup(
+  evidence: RoleSpawnAbsenceEvidence<RetainedProcessGroupSubject>,
+): RoleSpawnCleanupDisposition<RetainedProcessGroupSubject> {
+  return { kind: 'observed-absent', evidence };
+}
+
+export function settleDetachedProviderServer(
+  evidence: ProviderServerFailedSpawnAbsenceEvidence<4_132>,
+): ProviderServerFailedSpawnCleanupDisposition<4_132> {
+  return { kind: 'observed-absent', evidence };
+}
+
+export type MismatchedProcessGroupSubject = OtherProcessGroupSubject;

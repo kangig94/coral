@@ -703,7 +703,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
-  'src/coordinator/services/provider-proxy-set/index.ts :: #recordOperatorExitRefusal :: catch#1 :: calls=[this.#operatorDispositions.set, singleLineErrorSummary] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #recordOperatorExitRefusal :: catch#1 :: calls=[singleLineErrorSummary, this.#operatorDispositions.set] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #releasePartialRedemption :: Promise.catch :: refusal.guardianAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #report :: catch#1 :: calls=[] assignments=[]',
@@ -762,10 +762,10 @@ function rejectionJustification(fingerprint: string): string {
     return 'Lifecycle observability failure cannot interrupt an authority transition.';
   }
   if (fingerprint.includes(' :: #recordOperatorExitRefusal :: ')) {
-    return 'Durable refusal-write failure remains a typed in-memory hold with an operator abandonment exit.';
+    return 'Durable refusal-write failure remains a typed in-memory hold with a store-repair exit.';
   }
   if (fingerprint.includes(' :: #runAcquisitionCleanupRetry :: ')) {
-    return 'Durable cleanup reporting failure preserves the acquisition hold and its scheduled retry.';
+    return 'Cleanup settlement failure preserves the acquisition hold and its scheduled retry.';
   }
   if (fingerprint.includes(' :: #recoverExactCapsule :: ')) {
     return 'Lifecycle retains and retries exact-capsule recovery after its sanctioned exact-set reaper rejects.';

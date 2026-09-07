@@ -197,6 +197,7 @@ describe('provider transport concurrency hardening', () => {
       command: 'codex',
       args: ['app-server'],
     });
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     handle.onNotification(() => {
       throw new Error('consumer queue full');

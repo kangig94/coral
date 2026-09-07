@@ -645,6 +645,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
     });
     await steps.createCapsules();
     const guardianUndo = await steps.spawnGuardian();
+    if (guardianUndo.kind === 'provider_proxy_role_spawn_held') {
+      throw new Error('expected an identity-bound guardian undo');
+    }
     expect(vi.mocked(spawnRoleProcess).mock.calls.at(-1)?.[3].envAdditions).toMatchObject({
       [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
     });

@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 
 import type { HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { TimePort } from '../../../infra/port-types.js';
-import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
+import type {
+  ContainedProviderServerHandle,
+  HeldProviderServerSpawn,
+} from '../../../providers/app-server-transport.js';
 import type { RecordedContainmentIdentity } from '../../../infra/process-containment.js';
 
 export type HostStatsState = {
@@ -32,6 +35,8 @@ export type ProviderHostEntry = {
   /** Opaque identity minted for the currently installed concrete process. */
   instanceId: string | null;
   spawnPromise: Promise<ContainedProviderServerHandle> | null;
+  spawnCleanupHold: HeldProviderServerSpawn | null;
+  spawnCleanupAttempts: number;
   /** Open and attached sessions pin the concrete process until idempotent close. */
   pins: Map<PinToken, ProviderHostPin>;
   closingError: Error | null;

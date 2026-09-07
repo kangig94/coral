@@ -76,6 +76,8 @@ import {
   requireSpawnedRole,
   runtimeControlTimer,
   spawnRoleProcess,
+  type HeldRoleSpawn,
+  type RoleSpawnCleanupSubject,
   type RoleSpawnPorts,
   type SpawnedRoleProcess,
 } from './role-spawn.js';
@@ -279,6 +281,12 @@ type GuardianConstructionCleanupObligation =
       kind: 'reaper-process';
       identity: RecordedProcessIdentity;
       reason: string;
+    }>
+  | Readonly<{
+      kind: 'failed-role-spawn';
+      subject: RoleSpawnCleanupSubject;
+      operatorExit: HeldRoleSpawn['operatorExit'];
+      reason: string;
     }>;
 
 export type GuardianConstructionCleanupDisposition =
@@ -309,6 +317,37 @@ function combineGuardianConstructionCleanup(
     reason: pending.map((obligation) => `${obligation.kind}: ${obligation.reason}`).join(', '),
     retry: async () => combineGuardianConstructionCleanup(await Promise.all(holding.map(({ retry }) => retry()))),
   };
+}
+
+function holdFailedRoleSpawn(spawn: HeldRoleSpawn): GuardianConstructionCleanupDisposition {
+  const holding = (retry: HeldRoleSpawn['retry'], reason: string): GuardianConstructionCleanupDisposition => ({
+    kind: 'holding',
+    pending: [
+      {
+        kind: 'failed-role-spawn',
+        subject: spawn.subject,
+        operatorExit: spawn.operatorExit,
+        reason,
+      },
+    ],
+    reason,
+    retry: async () => {
+      const cleanup = await retry();
+      if (cleanup.kind === 'observed-absent') return { kind: 'settled' };
+      return {
+        ...holding(cleanup.retry, `${cleanup.subject.kind}:${cleanup.observation}`),
+        pending: [
+          {
+            kind: 'failed-role-spawn',
+            subject: cleanup.subject,
+            operatorExit: spawn.operatorExit,
+            reason: `${cleanup.subject.kind}:${cleanup.observation}`,
+          },
+        ],
+      };
+    },
+  });
+  return holding(spawn.retry, spawn.error.message);
 }
 
 /** A vanished or reused leader cannot prove that its detached process group is absent. */
@@ -570,6 +609,7 @@ async function unwindGuardianConstruction(
     reaperChannel: Pick<ControlClient, 'close'> | null;
     reaperSpawn: SpawnedRoleProcess | null;
     proxySpawn: SpawnedRoleProcess | null;
+    failedRoleSpawn: HeldRoleSpawn | null;
   }>,
 ): Promise<GuardianConstructionCleanupDisposition> {
   const stranded: string[] = [];
@@ -593,6 +633,8 @@ async function unwindGuardianConstruction(
   const clock = createMonotonicClock(guardianConstructionUnwindClockScope);
   const environment = buildContainmentEnvironment(clock, ports);
   let reaperCleanup: GuardianConstructionCleanupDisposition = { kind: 'settled' };
+  const failedRoleSpawnCleanup =
+    partial.failedRoleSpawn === null ? { kind: 'settled' as const } : holdFailedRoleSpawn(partial.failedRoleSpawn);
   if (partial.proxySpawn !== null) {
     const proxySpawn = partial.proxySpawn;
     proxyCleanup = await reapUnheldProcessGroup(
@@ -624,7 +666,7 @@ async function unwindGuardianConstruction(
   if (stranded.length > 0) {
     backendLog.error(`guardian construction failed and could not clean up: ${stranded.join(', ')}`);
   }
-  return combineGuardianConstructionCleanup([proxyCleanup, reaperCleanup]);
+  return combineGuardianConstructionCleanup([proxyCleanup, reaperCleanup, failedRoleSpawnCleanup]);
 }
 
 /**
@@ -678,15 +720,21 @@ export async function startProviderGuardianRole(
   let reaperChannel: ControlClient | null = null;
   let close: (() => Promise<void>) | null = null;
   let proxySpawn: SpawnedRoleProcess | null = null;
+  let failedRoleSpawn: HeldRoleSpawn | null = null;
 
   try {
-    reaperSpawn = await requireSpawnedRole(
+    const reaperDisposition = await requireSpawnedRole(
       spawnRoleProcess('reaper', reaperCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
         pluginRoot: ports.pluginRoot,
         detached: false,
         envAdditions: roleEnv,
       }),
     );
+    if (reaperDisposition.kind === 'held') {
+      failedRoleSpawn = reaperDisposition;
+      throw reaperDisposition.error;
+    }
+    reaperSpawn = reaperDisposition;
 
     const reaperConnected = connectRoleControlWithRetry(capsule.reaperControlEndpoint, timer, {
       connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
@@ -753,13 +801,18 @@ export async function startProviderGuardianRole(
     await guardian.listen();
     ports.onGuardianListening?.();
 
-    proxySpawn = await requireSpawnedRole(
+    const proxyDisposition = await requireSpawnedRole(
       spawnRoleProcess('proxy', proxyCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
         pluginRoot: ports.pluginRoot,
         detached: true,
         envAdditions: roleEnv,
       }),
     );
+    if (proxyDisposition.kind === 'held') {
+      failedRoleSpawn = proxyDisposition;
+      throw proxyDisposition.error;
+    }
+    proxySpawn = proxyDisposition;
 
     const containmentRecorded = guardian.recordContainment({
       pid: proxySpawn.pid,
@@ -793,7 +846,13 @@ export async function startProviderGuardianRole(
       },
     };
   } catch (error: unknown) {
-    const cleanup = await unwindGuardianConstruction(ports, { close, reaperChannel, reaperSpawn, proxySpawn });
+    const cleanup = await unwindGuardianConstruction(ports, {
+      close,
+      reaperChannel,
+      reaperSpawn,
+      proxySpawn,
+      failedRoleSpawn,
+    });
     if (cleanup.kind === 'holding') throw new GuardianConstructionCleanupHeldError(error, cleanup);
     throw markGuardianConstructionCleanupSettled(error);
   }

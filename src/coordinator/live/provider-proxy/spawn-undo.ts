@@ -11,6 +11,11 @@ import {
   reapRecordedContainment,
   type RecordedContainmentIdentity,
 } from '../../../infra/process-containment.js';
+import {
+  observeRetainedSpawnedProcessGroup,
+  retainSpawnedProcessGroupCleanup,
+  type SpawnedProcessGroupAbsenceEvidence,
+} from '../../../infra/process-supervision.js';
 import type { ControlClient, ControlExchange } from '../../../provider-proxy/control-client.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '../../../provider-proxy/orphan-deadline.js';
 import {
@@ -45,6 +50,14 @@ export type GuardianSpawnUndoRecoverySubject = Readonly<{
     | Readonly<{ kind: 'possible-unidentified' }>;
 }>;
 
+export type PreIdentityRoleSpawnRecoverySubject =
+  | Readonly<{ kind: 'spawned-process-group'; processGroupId: number }>
+  | Readonly<{ kind: 'unattributable-process-group' }>;
+
+export type ProviderProxyAcquisitionRecoverySubject =
+  | GuardianSpawnUndoRecoverySubject
+  | PreIdentityRoleSpawnRecoverySubject;
+
 export type GuardianSpawnUndoRecoverySubjectInput = Readonly<{
   guardianIdentity: Readonly<{ pid: number; incarnation: string; processGroupId: number }>;
   reaper:
@@ -60,6 +73,10 @@ export type GuardianSpawnUndoRecoverySubjectInput = Readonly<{
       }>
     | Readonly<{ kind: 'possible-unidentified' }>;
 }>;
+
+export type ProviderProxyAcquisitionRecoverySubjectInput =
+  | GuardianSpawnUndoRecoverySubjectInput
+  | PreIdentityRoleSpawnRecoverySubject;
 
 function validateRecordedContainmentIdentity(
   identity: GuardianSpawnUndoRecoverySubjectInput['guardianIdentity'],
@@ -115,12 +132,34 @@ function sameRecoverySubject(left: GuardianSpawnUndoRecoverySubject, right: Guar
   );
 }
 
+function isPreIdentityRoleSpawnRecoverySubject(
+  subject: ProviderProxyAcquisitionRecoverySubjectInput,
+): subject is PreIdentityRoleSpawnRecoverySubject {
+  return 'kind' in subject;
+}
+
+function sameAcquisitionRecoverySubject(
+  left: ProviderProxyAcquisitionRecoverySubject,
+  right: ProviderProxyAcquisitionRecoverySubjectInput,
+): boolean {
+  if (isPreIdentityRoleSpawnRecoverySubject(left) || isPreIdentityRoleSpawnRecoverySubject(right)) {
+    return (
+      isPreIdentityRoleSpawnRecoverySubject(left) &&
+      isPreIdentityRoleSpawnRecoverySubject(right) &&
+      left.kind === right.kind &&
+      (left.kind !== 'spawned-process-group' ||
+        (right.kind === 'spawned-process-group' && left.processGroupId === right.processGroupId))
+    );
+  }
+  return sameRecoverySubject(left, validateGuardianSpawnUndoRecoverySubject(right));
+}
+
 const providerProxyAcquisitionAbsenceEvidenceBrand: unique symbol = Symbol(
   'coral.provider-proxy.acquisition-absence-evidence',
 );
 
 export type ProviderProxyAcquisitionAbsenceEvidence = Readonly<{
-  recoverySubject: GuardianSpawnUndoRecoverySubject;
+  recoverySubject: ProviderProxyAcquisitionRecoverySubject;
   disappearanceReceipt: string;
   [providerProxyAcquisitionAbsenceEvidenceBrand]: true;
 }>;
@@ -156,14 +195,28 @@ function acquisitionAbsenceEvidence(
 
 export function isProviderProxyAcquisitionAbsenceEvidenceFor(
   evidence: ProviderProxyAcquisitionAbsenceEvidence,
-  subject: GuardianSpawnUndoRecoverySubjectInput,
+  subject: ProviderProxyAcquisitionRecoverySubjectInput,
 ): boolean {
   if (evidence[providerProxyAcquisitionAbsenceEvidenceBrand] !== true) return false;
   try {
-    return sameRecoverySubject(evidence.recoverySubject, validateGuardianSpawnUndoRecoverySubject(subject));
+    return sameAcquisitionRecoverySubject(evidence.recoverySubject, subject);
   } catch {
     return false;
   }
+}
+
+export function preIdentityRoleSpawnAbsenceEvidence(
+  groupEvidence: SpawnedProcessGroupAbsenceEvidence,
+): ProviderProxyAcquisitionAbsenceEvidence {
+  const subject: Extract<PreIdentityRoleSpawnRecoverySubject, { kind: 'spawned-process-group' }> = {
+    kind: 'spawned-process-group',
+    processGroupId: groupEvidence.subject.processGroupId,
+  };
+  return Object.freeze({
+    recoverySubject: subject,
+    disappearanceReceipt: `spawned-process-group:${subject.processGroupId}:absent`,
+    [providerProxyAcquisitionAbsenceEvidenceBrand]: true as const,
+  });
 }
 
 const guardianSpawnUndoClockScope: unique symbol = Symbol('coral.provider-proxy.guardian-spawn-undo');
@@ -173,12 +226,33 @@ const durableGuardianReobservationClockScope: unique symbol = Symbol(
 
 export async function reobserveDurableProviderProxyAcquisitionContainment(
   runtime: Runtime,
-  subject: GuardianSpawnUndoRecoverySubject,
+  subjectInput: ProviderProxyAcquisitionRecoverySubjectInput,
   signal: AbortSignal,
 ): Promise<
   | Readonly<{ kind: 'containment-absent'; evidence: ProviderProxyAcquisitionAbsenceEvidence }>
   | Readonly<{ kind: 'held'; observation: 'alive' | 'unknown'; reason: string }>
 > {
+  if (isPreIdentityRoleSpawnRecoverySubject(subjectInput)) {
+    if (subjectInput.kind === 'unattributable-process-group') {
+      return {
+        kind: 'held',
+        observation: 'unknown',
+        reason: 'spawned process-group attribution remains unavailable',
+      };
+    }
+    const observation = observeRetainedSpawnedProcessGroup(
+      retainSpawnedProcessGroupCleanup(subjectInput.processGroupId),
+      runtime,
+    );
+    return observation.kind === 'observed-absent'
+      ? { kind: 'containment-absent', evidence: preIdentityRoleSpawnAbsenceEvidence(observation.evidence) }
+      : {
+          kind: 'held',
+          observation: observation.observation === 'alive' ? 'alive' : 'unknown',
+          reason: `spawned_process_group_${observation.observation}`,
+        };
+  }
+  const subject = validateGuardianSpawnUndoRecoverySubject(subjectInput);
   const { guardianIdentity } = subject;
   const observeRecordedReaper = () => {
     if (subject.reaper.kind === 'possible-unidentified') {

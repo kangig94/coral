@@ -5,6 +5,7 @@ import type { TimePort } from '../../../infra/port-types.js';
 import type {
   GuardianSpawnUndoRecoverySubject,
   GuardianSpawnUndoRecoveryProof,
+  PreIdentityRoleSpawnRecoverySubject,
   ProviderProxyAcquisitionAbsenceEvidence,
 } from './spawn-undo.js';
 import {
@@ -61,6 +62,18 @@ export type ProviderProxyAcquisitionFailure = Readonly<{
   strandedArtifacts: readonly string[];
 }>;
 
+export type ProviderProxyAcquisitionOperatorAbandonment = Readonly<{
+  kind: 'operator-abandoned';
+  recoverySubject: PreIdentityRoleSpawnRecoverySubject;
+  processAbsenceProven: false;
+  successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
+}>;
+
+export type ProviderProxyAcquisitionOperatorExit = Readonly<{
+  kind: 'abandon-provider-proxy-acquisition';
+  abandon(): ProviderProxyAcquisitionOperatorAbandonment;
+}>;
+
 export type ProviderProxyAcquisitionHeld<Owner extends string> = Readonly<{
   kind: 'provider_proxy_acquisition_held';
   owner: Owner;
@@ -68,10 +81,37 @@ export type ProviderProxyAcquisitionHeld<Owner extends string> = Readonly<{
   reason: string;
   strandedArtifacts: readonly string[];
   setAddress: ProviderProxyAcquisitionSetAddress;
-  guardianIdentity: RecordedContainmentIdentity;
-  recoverySubject: GuardianSpawnUndoRecoverySubject;
+  recoveryCapability: ProviderProxyAcquisitionRecoveryCapability;
+}> &
+  (
+    | Readonly<{
+        guardianIdentity: RecordedContainmentIdentity;
+        recoverySubject: GuardianSpawnUndoRecoverySubject;
+      }>
+    | Readonly<{
+        recoverySubject: PreIdentityRoleSpawnRecoverySubject;
+        operatorExit: ProviderProxyAcquisitionOperatorExit;
+      }>
+  );
+
+export type ProviderProxyRoleSpawnHeld = Readonly<{
+  kind: 'provider_proxy_role_spawn_held';
+  reason: string;
+  setAddress: ProviderProxyAcquisitionSetAddress;
+  recoverySubject: PreIdentityRoleSpawnRecoverySubject;
+  operatorExit: ProviderProxyAcquisitionOperatorExit;
   recoveryCapability: ProviderProxyAcquisitionRecoveryCapability;
 }>;
+
+export type ProviderProxyAcquisitionHoldAcceptance =
+  | Readonly<{ kind: 'accepted'; owner: 'durable-provider-proxy-acquisition-hold-store' }>
+  | Readonly<{
+      kind: 'held';
+      owner: 'provider-host-acquisition';
+      reason: string;
+      waitingFor: 'store-repair';
+      exit: 'provider-proxy-set-operator-disposition-store-retry';
+    }>;
 
 export type ProviderProxyAcquisitionResult =
   | Readonly<{
@@ -96,7 +136,7 @@ export interface ProviderProxyAcquisitionSteps {
   /** Writes the three one-use capsules. */
   createCapsules(): Promise<AcquisitionUndo>;
   /** Spawns the detached guardian, which in turn spawns the reaper and then the proxy. */
-  spawnGuardian(): Promise<AcquisitionUndo>;
+  spawnGuardian(): Promise<AcquisitionUndo | ProviderProxyRoleSpawnHeld>;
   /**
    * Opens and activates control on all three endpoints, checks the strict backend identities, and confirms
    * the containment the guardian recorded. Returns the authority only once every check has passed.
@@ -110,12 +150,9 @@ export interface ProviderProxyAcquisitionSteps {
 export type ProviderProxyAcquisitionOptions = Readonly<{
   steps: ProviderProxyAcquisitionSteps;
   time: Pick<TimePort, 'sleep'>;
-  acceptHold(hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'>):
-    | Promise<Readonly<{ kind: 'accepted'; owner: 'durable-provider-proxy-acquisition-hold-store' }>>
-    | Readonly<{
-        kind: 'accepted';
-        owner: 'durable-provider-proxy-acquisition-hold-store';
-      }>;
+  acceptHold(
+    hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'>,
+  ): Promise<ProviderProxyAcquisitionHoldAcceptance> | ProviderProxyAcquisitionHoldAcceptance;
   /**
    * The initial acquisition and cleanup attempt share this budget. Expiry cannot discharge an unresolved
    * guardian; it returns a recovery capability to the next owner instead.
@@ -250,6 +287,29 @@ export async function acquireProviderProxySet(
 ): Promise<ProviderProxyAcquisitionResult> {
   const undos: AcquisitionUndo[] = [];
 
+  const acceptHeld = async (
+    hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'>,
+  ): Promise<ProviderProxyAcquisitionHeld<'provider-host-acquisition'>> => {
+    for (;;) {
+      try {
+        const acceptance = await options.acceptHold(hold);
+        if (acceptance.kind !== 'accepted' || acceptance.owner !== 'durable-provider-proxy-acquisition-hold-store') {
+          options.onCleanupFailure?.('durable acquisition hold', new Error(acceptance.reason));
+          await options.time.sleep(1_000);
+          continue;
+        }
+        return hold;
+      } catch (error: unknown) {
+        try {
+          options.onCleanupFailure?.('durable acquisition hold', error);
+        } catch {
+          // A reporting failure cannot release the recovery obligation retained by this loop.
+        }
+        await options.time.sleep(1_000);
+      }
+    }
+  };
+
   const fail = async (
     cut: string,
     reason: string,
@@ -264,23 +324,7 @@ export async function acquireProviderProxySet(
         strandedArtifacts: cleanup.strandedArtifacts,
         ...cleanup.hold,
       };
-      for (;;) {
-        try {
-          const acceptance = await options.acceptHold(hold);
-          if (acceptance.owner !== 'durable-provider-proxy-acquisition-hold-store') {
-            throw new Error('provider_proxy_acquisition_durable_hold_owner_not_accepted');
-          }
-          break;
-        } catch (error: unknown) {
-          try {
-            options.onCleanupFailure?.('durable acquisition hold', error);
-          } catch {
-            // A reporting failure cannot release the recovery obligation retained by this loop.
-          }
-          await options.time.sleep(1_000);
-        }
-      }
-      return hold;
+      return acceptHeld(hold);
     }
     return {
       kind: 'provider_proxy_acquisition_failed',
@@ -319,6 +363,20 @@ export async function acquireProviderProxySet(
 
   const spawned = await runCut('guardian spawn', () => options.steps.spawnGuardian());
   if (isFailedCut(spawned)) return spawned;
+  if (spawned.kind === 'provider_proxy_role_spawn_held') {
+    const cleanup = await unwind(undos, options.deadlineSignal, options.onCleanupFailure);
+    return acceptHeld({
+      kind: 'provider_proxy_acquisition_held',
+      owner: 'provider-host-acquisition',
+      cut: 'guardian spawn',
+      reason: spawned.reason,
+      strandedArtifacts: cleanup.strandedArtifacts,
+      setAddress: spawned.setAddress,
+      recoverySubject: spawned.recoverySubject,
+      operatorExit: spawned.operatorExit,
+      recoveryCapability: spawned.recoveryCapability,
+    });
+  }
   undos.push(spawned);
 
   const control = await runCut('control establishment', () =>

@@ -27,6 +27,7 @@ import {
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 import type { ProviderProxyHeartbeatHoldBound } from '#src/provider-proxy/orphan-deadline.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import type { ProviderProxyAcquisitionOperatorExit } from '#src/coordinator/live/provider-proxy/index.js';
 import {
   createProviderProxyOperationAuthority,
   providerProxyOperationControlIsHeld,
@@ -768,6 +769,7 @@ function operatorContainmentProof(
 async function authorizedOperatorExitForProof(
   record: ReturnType<typeof providerOperationRecord>,
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper,
+  operatorDispositionStore?: ProviderProxySetOperatorDispositionStore,
 ): Promise<
   Readonly<{
     capability: ProviderProxySetOperatorExitCapability;
@@ -790,6 +792,7 @@ async function authorizedOperatorExitForProof(
     time: clock,
     proveContainmentAbsent: noContainmentProof,
     reapRecordedContainment,
+    ...(operatorDispositionStore === undefined ? {} : { operatorDispositionStore }),
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -1155,6 +1158,142 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
   });
 
+  it('retains and retries a heartbeat hold when its durable write is unconfirmed', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: store,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+
+    expect(() =>
+      faults.reportIncident(
+        heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+      ),
+    ).not.toThrow();
+    expect(lifecycle.snapshot().operatorDispositions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ waitingFor: 'heartbeat-evidence-window' }),
+        expect.objectContaining({ waitingFor: 'store-repair' }),
+      ]),
+    );
+
+    clock.elapse(1_000);
+    clock.runDue();
+
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ waitingFor: 'heartbeat-evidence-window' }),
+    ]);
+    expect(store.read().records).toHaveLength(1);
+  });
+
+  it('continues control reattachment and retries its hold after a durable write failure', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const redeemControl = vi.fn<DurableProviderProxyOperationAuthority['redeemControl']>(
+      () => new Promise<never>(() => undefined),
+    );
+    const authority = fakeAuthority({ record, faults, redeemControl });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: store,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+
+    faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'guardian',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+    });
+    await drainMicrotasks();
+
+    expect(redeemControl).toHaveBeenCalledOnce();
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        states: ['reattaching'],
+        operatorDispositions: expect.arrayContaining([
+          expect.objectContaining({ waitingFor: 'control-reattachment' }),
+          expect.objectContaining({ waitingFor: 'store-repair' }),
+        ]),
+      }),
+    );
+
+    clock.elapse(1_000);
+    clock.runDue();
+
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ waitingFor: 'control-reattachment' }),
+    ]);
+    expect(store.read().records).toHaveLength(1);
+  });
+
+  it('retains a repair obligation until accepted-heartbeat retirement is durable', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: store,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    faults.reportIncident(
+      heartbeatAuthorityObservation({ kind: 'no-response-before-deadline', error: 'heartbeat timed out' }),
+    );
+    expect(store.read().records).toHaveLength(1);
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+
+    faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
+
+    expect(lifecycle.snapshot().operatorDispositions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ waitingFor: 'store-repair' })]),
+    );
+    expect(store.read().records).toHaveLength(1);
+
+    clock.elapse(1_000);
+    clock.runDue();
+
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+    expect(store.read().records).toEqual([]);
+  });
+
   it('does not let a constructed contender rewrite predecessor status before ownership activation', () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -1184,7 +1323,7 @@ describe('ProviderProxySetLifecycle', () => {
       'utf-8',
     );
 
-    lifecycleFor({
+    const contender = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -1202,6 +1341,14 @@ describe('ProviderProxySetLifecycle', () => {
       ),
     ).toBe(before);
     expect(store.read().records[0]?.status).toEqual({ kind: 'current-writer', recordedAtMs: clock.nowMs });
+
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+    expect(contender.activateDurableOperatorDispositions()).toEqual(
+      expect.objectContaining({ kind: 'held', waitingFor: 'store-repair' }),
+    );
+    expect(contender.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'store-repair' }),
+    );
   });
 
   it('retires a predecessor hold only after its exact recorded containment is proven absent', async () => {
@@ -1251,7 +1398,17 @@ describe('ProviderProxySetLifecycle', () => {
       collectOperatorDispositionContainmentProof,
     });
 
-    await successor.reconcileDurableOperatorDispositions();
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+    await expect(successor.reconcileDurableOperatorDispositions()).resolves.toEqual(
+      expect.objectContaining({ kind: 'held', waitingFor: 'store-repair' }),
+    );
+
+    expect(successor.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'store-repair' }),
+    );
+    expect(store.read().records).toHaveLength(1);
+
+    await expect(successor.reconcileDurableOperatorDispositions()).resolves.toEqual({ kind: 'completed' });
 
     expect(successor.snapshot().operatorSets).toEqual([]);
     expect(store.read().records).toEqual([]);
@@ -1285,16 +1442,30 @@ describe('ProviderProxySetLifecycle', () => {
     const mutationAdmission = new ProviderOperationMutationAdmission();
     const successorFaults = createProviderProxyAuthorityFaultLatch();
     const successorAuthority = fakeAuthority({ record, faults: successorFaults });
-    const mutationFence = mutationAdmission.closeSet(successorAuthority.setIdentity);
-    const exactProof = await sealedContainmentProof(
-      successorAuthority.setIdentity,
-      authorizeProviderProxySetContainmentProof(successorAuthority.setIdentity, {
-        mutationFence,
-        closeAdmission: async () => undefined,
-      }),
-      containmentEvidence('must-not-be-retired'),
-    );
-    const exactObservation = providerProxySetContainmentEvidenceFor(exactProof, successorAuthority.setIdentity);
+    const createOperatorDispositionContainmentProof = () => {
+      const mutationFence = mutationAdmission.closeSet(successorAuthority.setIdentity);
+      return sealedContainmentProof(
+        successorAuthority.setIdentity,
+        authorizeProviderProxySetContainmentProof(successorAuthority.setIdentity, {
+          mutationFence,
+          closeAdmission: async () => undefined,
+        }),
+        containmentEvidence('must-not-be-retired'),
+      );
+    };
+    const firstProof = await createOperatorDispositionContainmentProof();
+    const exactObservation = providerProxySetContainmentEvidenceFor(firstProof, successorAuthority.setIdentity);
+    const collectedProofs = [firstProof];
+    let firstProofPending = true;
+    const collectOperatorDispositionContainmentProof = async () => {
+      if (firstProofPending) {
+        firstProofPending = false;
+        return firstProof;
+      }
+      const proof = await createOperatorDispositionContainmentProof();
+      collectedProofs.push(proof);
+      return proof;
+    };
     const reapOutcome = { kind: 'identity-unobservable' as const, signalDelivered: true };
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => reapOutcome);
     const successor = lifecycleFor({
@@ -1305,13 +1476,22 @@ describe('ProviderProxySetLifecycle', () => {
       proveContainmentAbsent: noContainmentProof,
       operatorDispositionStore: store,
       writerIncarnation: SUCCESSOR_INCARNATION,
-      collectOperatorDispositionContainmentProof: async () => exactProof,
+      collectOperatorDispositionContainmentProof,
       reapRecordedContainment,
     });
     successor.initializeClaimSlots();
     successor.completeStartupDiscovery();
 
-    await successor.reconcileDurableOperatorDispositions();
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+    await expect(successor.reconcileDurableOperatorDispositions()).resolves.toEqual(
+      expect.objectContaining({ kind: 'held', waitingFor: 'store-repair' }),
+    );
+    expect(successor.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'store-repair' }),
+    );
+    expect(store.read().records[0]?.status).toEqual(expect.objectContaining({ kind: 'stale' }));
+
+    await expect(successor.reconcileDurableOperatorDispositions()).resolves.toEqual({ kind: 'completed' });
     expect(store.read().records[0]).toMatchObject({
       key: predecessorKey,
       writerIncarnation: PREDECESSOR_INCARNATION,
@@ -1334,7 +1514,21 @@ describe('ProviderProxySetLifecycle', () => {
         },
       }),
     ]);
-    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(reapRecordedContainment).toHaveBeenCalledTimes(2);
+    expect(reapRecordedContainment).toHaveBeenNthCalledWith(
+      1,
+      successorAuthority.setIdentity,
+      collectedProofs[0],
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+    expect(reapRecordedContainment).toHaveBeenNthCalledWith(
+      2,
+      successorAuthority.setIdentity,
+      collectedProofs[1],
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
     successor.registerInheritedSet(successorAuthority, TEST_PUBLICATION_RECEIPT);
     expect(store.read().records).toEqual([
       expect.objectContaining({ key: predecessorKey, writerIncarnation: PREDECESSOR_INCARNATION }),
@@ -1501,6 +1695,153 @@ describe('ProviderProxySetLifecycle', () => {
     expect(store.read().acquisitionRecords).toHaveLength(1);
   });
 
+  it('retains acquisition ownership when its durable hold cannot be recorded', () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: store,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('store-repair-route');
+    if (admission.kind !== 'accepted') throw new Error('expected fresh admission');
+    const recoverySubject = { kind: 'spawned-process-group', processGroupId: 4242 } as const;
+    const operatorExit: ProviderProxyAcquisitionOperatorExit = {
+      kind: 'abandon-provider-proxy-acquisition',
+      abandon: (): ReturnType<ProviderProxyAcquisitionOperatorExit['abandon']> => ({
+        kind: 'operator-abandoned',
+        recoverySubject,
+        processAbsenceProven: false,
+        successor: { owner: 'operator-command', acceptance: 'accepted' },
+      }),
+    };
+    const hold = {
+      kind: 'provider_proxy_acquisition_held',
+      owner: 'provider-host-acquisition',
+      cut: 'guardian spawn',
+      reason: 'spawned group cleanup remains held',
+      strandedArtifacts: [],
+      setAddress: {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      },
+      recoverySubject,
+      operatorExit,
+      recoveryCapability: { retry: () => new Promise<never>(() => undefined) },
+    } as const;
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValue(false);
+
+    expect(lifecycle.persistAcquisitionCleanupHold(admission.slotId, hold)).toEqual({
+      kind: 'held',
+      owner: 'provider-host-acquisition',
+      reason: 'provider_proxy_set_operator_disposition_durable_write_unconfirmed',
+      waitingFor: 'store-repair',
+      exit: 'provider-proxy-set-operator-disposition-store-retry',
+    });
+    expect(lifecycle.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'store-repair' }),
+    );
+  });
+
+  it('releases a live pre-identity acquisition only after durable abandonment and cannot recreate it', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: store,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('operator-abandonment-route');
+    if (admission.kind !== 'accepted') throw new Error('expected fresh admission');
+    const setAddress = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'a'.repeat(64),
+      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+    };
+    const recoverySubject = { kind: 'unattributable-process-group' as const };
+    const retry = vi.fn(async () => ({ kind: 'held' as const, reason: 'process group remains unattributable' }));
+    const operatorExit: ProviderProxyAcquisitionOperatorExit = {
+      kind: 'abandon-provider-proxy-acquisition',
+      abandon: vi.fn<ProviderProxyAcquisitionOperatorExit['abandon']>(() => ({
+        kind: 'operator-abandoned',
+        recoverySubject,
+        processAbsenceProven: false,
+        successor: { owner: 'operator-command', acceptance: 'accepted' },
+      })),
+    };
+    const acquiredHold = {
+      kind: 'provider_proxy_acquisition_held',
+      owner: 'provider-host-acquisition',
+      cut: 'guardian spawn',
+      reason: 'spawned group attribution unavailable',
+      strandedArtifacts: [],
+      setAddress,
+      recoverySubject,
+      operatorExit,
+      recoveryCapability: { retry },
+    } as const;
+    expect(lifecycle.persistAcquisitionCleanupHold(admission.slotId, acquiredHold)).toEqual({
+      kind: 'accepted',
+      owner: 'durable-provider-proxy-acquisition-hold-store',
+    });
+    lifecycle.acquisitionCleanupHeld(admission.slotId, { ...acquiredHold, owner: 'provider-host-manager' });
+    await drainMicrotasks();
+    const retriesBeforeAbandonment = retry.mock.calls.length;
+
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+    expect(lifecycle.abandonDurableAcquisition(setAddress)).toEqual(
+      expect.objectContaining({ kind: 'held', waitingFor: 'store-repair' }),
+    );
+    expect(operatorExit.abandon).not.toHaveBeenCalled();
+    expect(lifecycle.acquisitionCleanupHolds()).toHaveLength(1);
+    expect(store.read().acquisitionRecords).toHaveLength(1);
+
+    expect(lifecycle.abandonDurableAcquisition(setAddress)).toEqual({ kind: 'retired' });
+    expect(operatorExit.abandon).toHaveBeenCalledOnce();
+    expect(lifecycle.acquisitionCleanupHolds()).toEqual([]);
+    expect(store.read().acquisitionRecords).toEqual([]);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(retry).toHaveBeenCalledTimes(retriesBeforeAbandonment);
+    expect(store.read().acquisitionRecords).toEqual([]);
+  });
+
+  it('returns a refused write disposition when the durable existence probe throws', () => {
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    vi.spyOn(storage, 'existsSync').mockImplementation(() => {
+      throw new Error('existence probe unavailable');
+    });
+
+    expect(store.replace([])).toEqual({
+      kind: 'refused',
+      disposition: 'held',
+      reason: 'provider_proxy_set_operator_disposition_artifact_unreadable',
+      waitingFor: 'store-repair',
+      exit: 'provider-proxy-set-operator-disposition-store-retry',
+    });
+  });
+
   it('recovers a pre-capsule acquisition hold by its exact set address and guardian evidence', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
@@ -1601,7 +1942,16 @@ describe('ProviderProxySetLifecycle', () => {
     ]);
     await successor.reconcileDurableOperatorDispositions();
     expect(reobserveAcquisitionContainment).toHaveBeenCalledTimes(2);
-    expect(successor.abandonDurableAcquisition(setAddress)).toBe(true);
+
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+    expect(successor.abandonDurableAcquisition(setAddress)).toEqual(
+      expect.objectContaining({ kind: 'held', waitingFor: 'store-repair' }),
+    );
+    expect(successor.snapshot().operatorDispositions).toContainEqual(
+      expect.objectContaining({ waitingFor: 'store-repair' }),
+    );
+
+    expect(successor.abandonDurableAcquisition(setAddress)).toEqual({ kind: 'retired' });
     expect(store.read().acquisitionRecords).toEqual([]);
   });
 
@@ -4085,6 +4435,47 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 
+  it('retains lifecycle ownership when operator-abandonment disposition retirement is not durable', async () => {
+    const record = providerOperationRecord('executing');
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const store = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const harness = await authorizedOperatorExitForProof(
+      record,
+      async () => ({ kind: 'recorded-group-unattributable' }),
+      store,
+    );
+    const setIdentity = providerProxySetAddress(harness.capability.setIdentity);
+    const write = vi.spyOn(storage, 'writeAtomicDurableSync');
+    write.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    const proof = await operatorContainmentProof(harness.capability, {
+      kind: 'enforcers-observed',
+      observations: [
+        { role: 'guardian', observation: 'unknown' },
+        { role: 'reaper', observation: 'unknown' },
+      ],
+    });
+
+    await expect(harness.lifecycle.completeOperatorExit(harness.capability, proof, true)).resolves.toEqual({
+      kind: 'store-unreadable',
+      setIdentity,
+      effect: noOperatorExitEffect,
+    });
+
+    expect(harness.lifecycle.snapshot()).toEqual(
+      expect.objectContaining({
+        represented: 1,
+        states: expect.not.arrayContaining(['abandonment-delivery-pending']),
+        operatorDispositions: expect.arrayContaining([
+          expect.objectContaining({
+            incidentReason: 'operator_exit_disposition_store_write_failed',
+            waitingFor: 'store-repair',
+          }),
+        ]),
+      }),
+    );
+  });
+
   it.each([
     { binding: 'different address', sameAddress: false, mode: 'reap' as const },
     { binding: 'different address', sameAddress: false, mode: 'abandon' as const },
@@ -5825,7 +6216,8 @@ describe('ProviderProxySetLifecycle', () => {
           kind: 'fatal-successor-pending',
           operatorDispositionRecording: expect.objectContaining({
             kind: 'held',
-            exit: 'provider-proxy-set-operator-abandonment',
+            waitingFor: 'store-repair',
+            exit: 'provider-proxy-set-operator-disposition-store-retry',
           }),
         }),
       }),

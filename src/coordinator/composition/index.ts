@@ -972,22 +972,27 @@ export function createCoordinatorCore(
         : lifecycle.authorizeOperatorExit(request.setIdentity);
     if (authorization.kind === 'unsupported-contract') return authorization;
     if (authorization.kind !== 'authorized') {
-      if (
-        contract === 'current' &&
-        authorization.kind === 'set-not-found' &&
-        abandonWithoutAbsence &&
-        lifecycle.abandonDurableAcquisition(request.setIdentity)
-      ) {
-        return {
-          kind: 'representation-release-abandoned',
-          setIdentity: request.setIdentity,
-          successor: { owner: 'operator-command', acceptance: 'accepted' },
-          effect: {
-            signalsSent: [],
-            containmentAbsent: false,
-            representationAction: 'fatal-release-abandoned',
-          },
-        };
+      if (contract === 'current' && authorization.kind === 'set-not-found' && abandonWithoutAbsence) {
+        const abandonment = lifecycle.abandonDurableAcquisition(request.setIdentity);
+        if (abandonment.kind === 'retired') {
+          return {
+            kind: 'representation-release-abandoned',
+            setIdentity: request.setIdentity,
+            successor: { owner: 'operator-command', acceptance: 'accepted' },
+            effect: {
+              signalsSent: [],
+              containmentAbsent: false,
+              representationAction: 'fatal-release-abandoned',
+            },
+          };
+        }
+        if (abandonment.kind === 'held') {
+          return {
+            kind: 'store-unreadable',
+            setIdentity: request.setIdentity,
+            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+          };
+        }
       }
       return {
         ...authorization,

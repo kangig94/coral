@@ -1,8 +1,8 @@
 import { errorMessage } from '../../../infra/error-format.js';
 import type { ProviderProxySetContainmentEvidence } from '../../../provider-proxy/containment-proof-contract.js';
 import type {
-  GuardianSpawnUndoRecoverySubjectInput,
   ProviderProxyAcquisitionAbsenceEvidence,
+  ProviderProxyAcquisitionRecoverySubjectInput,
 } from '../../live/provider-proxy/spawn-undo.js';
 import {
   providerProxySetContainmentEvidenceFor,
@@ -33,6 +33,12 @@ export type DurableProviderProxyAcquisitionReobservation =
 
 export type DurableOperatorDispositionReconciliationSettlement =
   | Readonly<{ kind: 'completed' }>
+  | Readonly<{
+      kind: 'held';
+      reason: string;
+      waitingFor: 'store-repair';
+      exit: 'provider-proxy-set-operator-disposition-store-retry';
+    }>
   | Readonly<{ kind: 'retry'; reason: string }>;
 
 function failureReason(error: unknown): string {
@@ -70,10 +76,10 @@ export async function reobserveDurableProviderProxySetDisposition(
 
 export async function reobserveDurableProviderProxyAcquisitionDisposition(
   options: Readonly<{
-    subject: GuardianSpawnUndoRecoverySubjectInput;
+    subject: ProviderProxyAcquisitionRecoverySubjectInput;
     signal: AbortSignal;
     observe(
-      subject: GuardianSpawnUndoRecoverySubjectInput,
+      subject: ProviderProxyAcquisitionRecoverySubjectInput,
       signal: AbortSignal,
     ): Promise<
       | Readonly<{ kind: 'containment-absent'; evidence: ProviderProxyAcquisitionAbsenceEvidence }>

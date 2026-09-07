@@ -93,6 +93,7 @@ describe('simulation app-server and recording', () => {
 
     await advance(runtime, 0);
     const handle = await handlePromise;
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
     const notifications: Array<{ method: string; params?: Record<string, unknown> }> = [];
     const unsubscribe = handle.onNotification((message) => {
       notifications.push(message);

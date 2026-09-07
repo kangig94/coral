@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import {
+  requireSpawnedRole,
   RoleSpawnError,
   spawnRoleProcess,
   type RoleSpawnOptions,
@@ -97,7 +98,10 @@ describe('spawnRoleProcess', () => {
     expect(retrySettled).toBe(false);
 
     emitClose();
-    await retry;
+    await expect(retry).resolves.toMatchObject({
+      kind: 'observed-absent',
+      evidence: { subject: { kind: 'process', pid: null } },
+    });
   });
 
   it('retains a live child with an unreadable incarnation until its joinable retry observes close', async () => {
@@ -131,7 +135,10 @@ describe('spawnRoleProcess', () => {
     expect(retrySettled).toBe(false);
 
     emitClose();
-    await retry;
+    await expect(retry).resolves.toMatchObject({
+      kind: 'observed-absent',
+      evidence: { subject: { kind: 'process', pid: 6_000 } },
+    });
   });
 
   it('retains a live child when the incarnation probe throws until its joinable retry observes close', async () => {
@@ -171,7 +178,83 @@ describe('spawnRoleProcess', () => {
     expect(retrySettled).toBe(false);
 
     emitClose();
-    await retry;
+    await expect(retry).resolves.toMatchObject({
+      kind: 'observed-absent',
+      evidence: { subject: { kind: 'process', pid: 6_001 } },
+    });
+  });
+
+  it('retains a detached failed spawn while a group descendant survives its leader', async () => {
+    const { child, emitClose, unref } = createFakeChild(6_002);
+    let groupLiveness: 'alive' | 'absent' = 'alive';
+    const observeLiveness = vi.fn((pid: number) => (pid === -6_002 ? groupLiveness : 'absent'));
+    const kill = vi.fn(() => true);
+    const runtime: Runtime = {
+      ...realRuntime,
+      time: { ...realRuntime.time, sleep: vi.fn(async () => {}) },
+      process: { ...realRuntime.process, kill, observeLiveness },
+    };
+    const ports = fakePorts({ spawn: () => child, runtime, readProcessIncarnation: () => null });
+
+    const disposition = spawnRoleProcess('guardian', '/capsule.json', ports, baseOptions({ detached: true }));
+    if (disposition.kind !== 'held') throw new Error('Expected unreadable detached role spawn to be held');
+    emitClose();
+
+    const firstCleanup = await disposition.retry();
+    expect(firstCleanup).toMatchObject({
+      kind: 'held-alive',
+      subject: { kind: 'process-group', processGroupId: 6_002 },
+      observation: 'alive',
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      retry: expect.any(Function),
+    });
+    expect(observeLiveness).toHaveBeenCalledWith(-6_002);
+    expect(kill).toHaveBeenCalledWith(-6_002, 'SIGTERM');
+    expect(kill).toHaveBeenCalledWith(-6_002, 'SIGKILL');
+    expect(unref).not.toHaveBeenCalled();
+
+    if (firstCleanup.kind !== 'held-alive') throw new Error('Expected the surviving group to remain held');
+    groupLiveness = 'absent';
+    await expect(firstCleanup.retry()).resolves.toMatchObject({
+      kind: 'observed-absent',
+      evidence: {
+        processGroupEvidence: {
+          subject: { kind: 'process-group', processGroupId: 6_002 },
+        },
+      },
+    });
+  });
+
+  it('surfaces an unattributable detached spawn hold and its acquisition-abandonment exit', async () => {
+    const { child, emitClose } = createFakeChild(undefined);
+    const disposition = spawnRoleProcess(
+      'guardian',
+      '/capsule.json',
+      fakePorts({ spawn: () => child }),
+      baseOptions({ detached: true }),
+    );
+    if (disposition.kind !== 'held') throw new Error('Expected pid-less detached role spawn to be held');
+    emitClose();
+
+    const cleanup = await disposition.retry();
+    expect(cleanup).toMatchObject({
+      kind: 'held-unobservable',
+      subject: { kind: 'unattributable-process-group' },
+      observation: 'unobservable',
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      retry: expect.any(Function),
+    });
+    expect(disposition.operatorExit.abandon()).toEqual({
+      kind: 'operator-abandoned',
+      subject: { kind: 'unattributable-process-group' },
+      processAbsenceProven: false,
+      successor: { owner: 'operator-command', acceptance: 'accepted' },
+    });
+    await expect(requireSpawnedRole(disposition)).resolves.toMatchObject({
+      kind: 'held',
+      operatorExit: { kind: 'abandon-provider-proxy-acquisition' },
+      retry: expect.any(Function),
+    });
   });
 
   it('reads the spawned identity through the runtime process port by default', () => {

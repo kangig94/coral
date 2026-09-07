@@ -20,10 +20,7 @@ import {
   notifyProviderProxyControlEstablished,
   subscribeProviderProxyControlEstablished,
 } from '../live/provider-proxy/operation-route.js';
-import {
-  reobserveDurableProviderProxyAcquisitionContainment,
-  validateGuardianSpawnUndoRecoverySubject,
-} from '../live/provider-proxy/spawn-undo.js';
+import { reobserveDurableProviderProxyAcquisitionContainment } from '../live/provider-proxy/spawn-undo.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -351,11 +348,7 @@ export function createExecutionServices({
       );
     },
     reobserveAcquisitionContainment: (subject, signal) =>
-      reobserveDurableProviderProxyAcquisitionContainment(
-        runtime,
-        validateGuardianSpawnUndoRecoverySubject(subject),
-        signal,
-      ),
+      reobserveDurableProviderProxyAcquisitionContainment(runtime, subject, signal),
     fenceProviderOperationMutations: (identity) =>
       providerOperationMutationAdmission(getProgressStore().getDb()).closeSet(identity),
     onProgressPremiseViolation: (violation) =>
@@ -419,7 +412,12 @@ export function createExecutionServices({
 
   const initializeProviderProxyLifecycle = async (): Promise<void> => {
     if (providerProxyLifecycleInitialized) return;
-    providerProxyLifecycle.activateDurableOperatorDispositions();
+    const activation = providerProxyLifecycle.activateDurableOperatorDispositions();
+    if (activation.kind === 'held') {
+      backendLog.warn(
+        `Durable provider proxy disposition activation remains held pending store repair: ${activation.reason}`,
+      );
+    }
     providerProxyLifecycle.initializeClaimSlots();
     if (world.providerProxyInheritance === undefined) {
       providerProxyLifecycle.completeStartupDiscovery();
@@ -442,7 +440,7 @@ export function createExecutionServices({
     }
     providerProxyLifecycleInitialized = true;
     const durableReconciliation = await providerProxyLifecycle.reconcileDurableOperatorDispositions();
-    if (durableReconciliation.kind === 'retry') {
+    if (durableReconciliation.kind !== 'completed') {
       backendLog.warn(`Durable provider proxy set disposition reconciliation failed: ${durableReconciliation.reason}`);
     }
   };

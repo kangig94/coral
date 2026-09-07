@@ -1808,6 +1808,7 @@ describe('execution backend server', () => {
       command: process.execPath,
       args: ['-e', createProviderServerScript()],
     });
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     try {
       expect(checkIdle()).toBe(true);

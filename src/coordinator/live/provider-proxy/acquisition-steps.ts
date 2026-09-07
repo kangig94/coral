@@ -57,7 +57,7 @@ import {
   proxyControlOpenParamsSchema,
   reaperOpenParamsSchema,
 } from '../../../provider-proxy/protocol.js';
-import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
+import type { AcquisitionUndo, ProviderProxyAcquisitionSteps, ProviderProxyRoleSpawnHeld } from './index.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from './heartbeat.js';
 import {
   establishRoleControl,
@@ -66,7 +66,12 @@ import {
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
-import { buildGuardianSpawnUndo, type GuardianSpawnUndo } from './spawn-undo.js';
+import {
+  buildGuardianSpawnUndo,
+  preIdentityRoleSpawnAbsenceEvidence,
+  type GuardianSpawnUndo,
+  type PreIdentityRoleSpawnRecoverySubject,
+} from './spawn-undo.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
 import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
 import {
@@ -278,7 +283,7 @@ export function createProviderProxyAcquisitionSteps(
       };
     },
 
-    async spawnGuardian(): Promise<AcquisitionUndo> {
+    async spawnGuardian(): Promise<AcquisitionUndo | ProviderProxyRoleSpawnHeld> {
       if (minted === null) {
         throw new Error('createCapsules must run before spawnGuardian.');
       }
@@ -301,6 +306,68 @@ export function createProviderProxyAcquisitionSteps(
           },
         }),
       );
+      if (spawned.kind === 'held') {
+        if (spawned.subject.kind === 'process') {
+          throw new Error('A detached guardian spawn cannot retain a leader-only cleanup subject.');
+        }
+        const recoverySubject: PreIdentityRoleSpawnRecoverySubject =
+          spawned.subject.kind === 'process-group'
+            ? { kind: 'spawned-process-group', processGroupId: spawned.subject.processGroupId }
+            : { kind: 'unattributable-process-group' };
+        const operatorExit = {
+          kind: 'abandon-provider-proxy-acquisition' as const,
+          abandon: () => {
+            const abandonment = spawned.operatorExit.abandon();
+            const subjectMatches =
+              recoverySubject.kind === 'spawned-process-group'
+                ? abandonment.subject.kind === 'process-group' &&
+                  abandonment.subject.processGroupId === recoverySubject.processGroupId
+                : abandonment.subject.kind === 'unattributable-process-group';
+            if (
+              !subjectMatches ||
+              abandonment.processAbsenceProven ||
+              abandonment.successor.owner !== 'operator-command' ||
+              abandonment.successor.acceptance !== 'accepted'
+            ) {
+              throw new Error('Role spawn operator exit did not accept the exact acquisition cleanup subject.');
+            }
+            return {
+              kind: 'operator-abandoned' as const,
+              recoverySubject,
+              processAbsenceProven: false as const,
+              successor: abandonment.successor,
+            };
+          },
+        };
+        let retry = spawned.retry;
+        return {
+          kind: 'provider_proxy_role_spawn_held',
+          reason: spawned.error.message,
+          setAddress: { buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
+          recoverySubject,
+          operatorExit,
+          recoveryCapability: {
+            retry: async () => {
+              const cleanup = await retry();
+              if (cleanup.kind !== 'observed-absent') {
+                retry = cleanup.retry;
+                return { kind: 'held', reason: `${cleanup.subject.kind}:${cleanup.observation}` };
+              }
+              if (recoverySubject.kind !== 'spawned-process-group') {
+                return { kind: 'held', reason: 'spawned process-group attribution remains unavailable' };
+              }
+              if (!('processGroupEvidence' in cleanup.evidence)) {
+                throw new Error('Detached guardian cleanup returned leader-only absence evidence.');
+              }
+              return {
+                kind: 'absence-confirmed',
+                evidence: preIdentityRoleSpawnAbsenceEvidence(cleanup.evidence.processGroupEvidence),
+                strandedArtifacts: [],
+              };
+            },
+          },
+        };
+      }
       guardianSpawn = spawned;
       guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
       guardianSpawnUndo.retainPossibleProxy();

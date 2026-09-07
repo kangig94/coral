@@ -1720,7 +1720,7 @@ describe('required provider-proxy shutdown steps', () => {
     };
 
     expect(await shutdownFailureDetail(harness.ctx)).toMatch(
-      /provider host shutdown: .*acquisition guardian 4242: guardian is still alive/u,
+      /provider host shutdown: .*acquisition guardian pid 4242: guardian is still alive/u,
     );
     expect(retry).toHaveBeenCalledOnce();
     expect(harness.ctx.markJobsAsErrorFn).not.toHaveBeenCalled();

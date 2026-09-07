@@ -139,6 +139,7 @@ describe('durable transport', () => {
       command: process.execPath,
       args: ['-e', createProviderServerScript()],
     });
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     expect(handle.pid).toBeGreaterThan(0);
     expect(handle.generation).toBe(1);
@@ -166,6 +167,7 @@ describe('durable transport', () => {
       command: process.execPath,
       args: ['-e', createOversizedProviderServerScript()],
     });
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     const outcome = await handle.closePromise;
     expect(outcome).toBeInstanceOf(Error);
@@ -188,6 +190,7 @@ describe('durable transport', () => {
       command: process.execPath,
       args: ['-e', createProviderServerScript()],
     });
+    if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
     await coordinator.terminateAll();
 

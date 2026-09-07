@@ -67,6 +67,8 @@ export function createEntry(overrides: Partial<ProviderHostEntry> = {}): Provide
     containment: null,
     instanceId: null,
     spawnPromise: null,
+    spawnCleanupHold: null,
+    spawnCleanupAttempts: 0,
     pins: new Map(),
     closingError: null,
     closePromise: null,

@@ -142,15 +142,24 @@ async function reapProviderProxySets(
   });
   const unconfirmedHolds = holdOutcomes.flatMap((outcome, index) => {
     const hold = acquisitionHolds[index];
-    const label =
-      hold.kind === 'provider_proxy_acquisition_held'
-        ? 'acquisition guardian ' + hold.guardianIdentity.pid
-        : 'pending acquisition ' + hold.target;
+    const label = acquisitionCleanupHoldLabel(hold);
     if (outcome.status === 'rejected') return [label + ': ' + formatError(outcome.reason)];
     return outcome.value.kind === 'held' ? [label + ': ' + outcome.value.reason] : [];
   });
   const failures = [...unconfirmed, ...unconfirmedHolds];
   return failures.length === 0 ? { confirmed: true } : { confirmed: false, detail: failures.join('; ') };
+}
+
+function acquisitionCleanupHoldLabel(
+  hold: ProviderHostQuiescenceReceipt['acquisitionCleanupHolds'][number],
+  prefix = '',
+): string {
+  if (hold.kind !== 'provider_proxy_acquisition_held') return `${prefix}acquisition ${hold.target}`;
+  if ('guardianIdentity' in hold) return `${prefix}acquisition guardian pid ${hold.guardianIdentity.pid}`;
+  if (hold.recoverySubject.kind === 'spawned-process-group') {
+    return `${prefix}acquisition process group ${hold.recoverySubject.processGroupId}`;
+  }
+  return `${prefix}acquisition unattributable process group (exit: provider-proxy acquisition abandonment)`;
 }
 
 async function releaseIpcSocket(
@@ -443,9 +452,7 @@ export async function runShutdownSequence({
       actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>',
     }));
     const acquisitionLabels = providerCleanup.acquisitionCleanupHolds.map((hold) =>
-      hold.kind === 'provider_proxy_acquisition_held'
-        ? `provider acquisition guardian pid ${hold.guardianIdentity.pid}`
-        : `provider acquisition ${hold.target}`,
+      acquisitionCleanupHoldLabel(hold, 'provider '),
     );
     const representationReleaseLabels = providerCleanup.representationReleaseHolds.flatMap((hold) => [
       hold.label,

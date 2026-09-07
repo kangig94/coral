@@ -383,6 +383,7 @@ describe('guardian spawn undo', () => {
     expect(close).not.toHaveBeenCalled();
     expect(kill).not.toHaveBeenCalled();
     if (result.kind !== 'provider_proxy_acquisition_held') throw new Error(`expected hold, received ${result.kind}`);
+    if (!('guardianIdentity' in result)) throw new Error('expected an identity-bound guardian hold');
     const outcome = await result.recoveryCapability.retry(new AbortController().signal);
     expect(outcome).toMatchObject({
       kind: 'absence-confirmed',
