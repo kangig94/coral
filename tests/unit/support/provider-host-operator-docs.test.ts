@@ -27,6 +27,9 @@ describe('provider-host operator documentation', () => {
     expect(catalogEntry('provider_host_shutdown_held')).toContain('successorOwner');
     expect(catalogEntry('provider_host_shutdown_held')).toContain('operatorExit');
     expect(catalogEntry('provider_host_shutdown_held')).toContain('provider-host evict <ref>');
+    expect(catalogEntry('provider_host_operator_abandoned')).toContain('processAbsenceProven: false');
+    expect(catalogEntry('provider_host_operator_abandoned')).toContain('Inspect the recorded process');
+    expect(catalogEntry('provider_host_operator_abandoned')).not.toContain('provider-host evict <ref>');
     expect(catalogEntry('provider_host_stale')).toContain('coral-cli backend provider-host list');
   });
 

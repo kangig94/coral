@@ -446,6 +446,26 @@ describe('provider-host proxy controls', () => {
     }
   });
 
+  it('preserves operator abandonment in v2 and refuses to fold it through v1', async () => {
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject: { kind: 'unattributable-process-group' as const, processGroupId: 4_242 },
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const eviction = vi.spyOn(providerHosts, 'evictHost').mockResolvedValue(abandonment);
+    try {
+      await expect(strictTestExchange(control, 'provider-host.evict.v2', { hostRef }, 5_000)).resolves.toEqual(
+        abandonment,
+      );
+      await expect(strictTestExchange(control, 'provider-host.evict.v1', { hostRef }, 5_000)).rejects.toThrow(
+        'Provider-host eviction requires provider-host.evict.v2.',
+      );
+    } finally {
+      eviction.mockRestore();
+    }
+  });
+
   it('passes actual live and retained-tombstone records through the real strict list and inspect handlers', async () => {
     const controls = authority.providerHosts;
     if (controls === undefined) throw new Error('provider-host controls were not composed');

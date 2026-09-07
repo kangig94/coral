@@ -392,14 +392,23 @@ type ProviderHostAdministrationErrorCode =
   | 'provider_host_not_found'
   | 'provider_host_ambiguous'
   | 'provider_host_identity_integrity'
+  | 'provider_host_operator_abandoned'
   | 'provider_host_shutdown_held'
   | 'provider_host_stale';
+
+type ProviderHostEvictionAbandonmentView = Readonly<{
+  kind: 'operator-abandoned';
+  subject: Readonly<Record<string, unknown>>;
+  processAbsenceProven: false;
+  successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
+}>;
 
 const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set<ProviderHostAdministrationErrorCode>([
   'provider_host_inventory_unavailable',
   'provider_host_not_found',
   'provider_host_ambiguous',
   'provider_host_identity_integrity',
+  'provider_host_operator_abandoned',
   'provider_host_shutdown_held',
   'provider_host_stale',
 ]);
@@ -411,12 +420,25 @@ function isProviderHostAdministrationErrorCode(code: unknown): code is ProviderH
   );
 }
 
+function isProviderHostEvictionAbandonmentView(value: unknown): value is ProviderHostEvictionAbandonmentView {
+  return (
+    isRecord(value) &&
+    value.kind === 'operator-abandoned' &&
+    isRecord(value.subject) &&
+    value.processAbsenceProven === false &&
+    isRecord(value.successor) &&
+    value.successor.owner === 'operator-command' &&
+    value.successor.acceptance === 'accepted'
+  );
+}
+
 function providerHostAdministrationDetail(error: Record<string, unknown>): {
   ownerIds: string[];
   hostRefs: string[];
   observation: 'alive' | 'unobservable' | null;
   successorOwner: string | null;
   operatorExit: string | null;
+  abandonment: ProviderHostEvictionAbandonmentView | null;
 } {
   const ownerIds = Array.isArray(error.ownerIds)
     ? error.ownerIds.filter((value): value is string => typeof value === 'string')
@@ -434,7 +456,8 @@ function providerHostAdministrationDetail(error: Record<string, unknown>): {
   const observation = hold?.observation === 'alive' || hold?.observation === 'unobservable' ? hold.observation : null;
   const successorOwner = typeof hold?.successorOwner === 'string' ? hold.successorOwner : null;
   const operatorExit = typeof hold?.operatorExit === 'string' ? hold.operatorExit : null;
-  return { ownerIds, hostRefs, observation, successorOwner, operatorExit };
+  const abandonment = isProviderHostEvictionAbandonmentView(error.abandonment) ? error.abandonment : null;
+  return { ownerIds, hostRefs, observation, successorOwner, operatorExit, abandonment };
 }
 
 function providerHostAdministrationCopy(
@@ -445,6 +468,7 @@ function providerHostAdministrationCopy(
     observation: 'alive' | 'unobservable' | null;
     successorOwner: string | null;
     operatorExit: string | null;
+    abandonment: ProviderHostEvictionAbandonmentView | null;
   }>,
 ): { message: string; remediation: string } {
   switch (code) {
@@ -471,6 +495,16 @@ function providerHostAdministrationCopy(
         remediation:
           'Do not evict: preserve the complete error output, then run `coral-cli backend status` to capture coordinator state before escalating the integrity failure.',
       };
+    case 'provider_host_operator_abandoned': {
+      const hostRef = hostRefs[0] ?? '<ref>';
+      const subject = hold.abandonment === null ? 'unknown' : JSON.stringify(hold.abandonment.subject);
+      const successorOwner = hold.abandonment?.successor.owner ?? 'none';
+      return {
+        message: `The provider-host representation was removed without proof that its process exited: ${hostRef}; subject=${subject}; processAbsenceProven=false; successorOwner=${successorOwner}.`,
+        remediation:
+          'Inspect the recorded process because it may still be live. The provider-host representation is gone, so do not retry provider-host eviction with this reference.',
+      };
+    }
     case 'provider_host_shutdown_held': {
       const hostRef = hostRefs[0] ?? '<ref>';
       const observation = hold.observation ?? 'unobservable';
@@ -492,11 +526,13 @@ function providerHostAdministrationCopy(
 function providerHostAdministrationFailure(error: unknown): CatalogRequestExecution | null {
   if (!isRecord(error) || !isProviderHostAdministrationErrorCode(error.code)) return null;
 
-  const { ownerIds, hostRefs, observation, successorOwner, operatorExit } = providerHostAdministrationDetail(error);
+  const { ownerIds, hostRefs, observation, successorOwner, operatorExit, abandonment } =
+    providerHostAdministrationDetail(error);
   const { message, remediation } = providerHostAdministrationCopy(error.code, ownerIds, hostRefs, {
     observation,
     successorOwner,
     operatorExit,
+    abandonment,
   });
   const statusCode =
     error.code === 'provider_host_not_found' ? 404 : error.code === 'provider_host_inventory_unavailable' ? 503 : 409;
@@ -509,6 +545,7 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
         ownerIds,
         hostRefs,
         ...(error.code === 'provider_host_shutdown_held' ? { observation, successorOwner, operatorExit } : {}),
+        ...(error.code === 'provider_host_operator_abandoned' ? { abandonment } : {}),
       },
     },
     statusCode,

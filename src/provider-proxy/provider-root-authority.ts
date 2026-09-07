@@ -29,6 +29,7 @@ import {
   type AppServerTransport,
   type HostRef,
   type ProviderHostEvictionDisposition,
+  type ProviderServerFailedSpawnOperatorAbandonment,
   type ProviderServerShutdownResult,
   type ProviderServerSpec,
 } from '../providers/contract.js';
@@ -219,7 +220,7 @@ function isProviderServerShutdownHold(
 type ProviderServerCleanupAbandonmentResult =
   | Readonly<{ kind: 'no-hold' }>
   | Readonly<{ kind: 'refused'; hold: ProviderServerFailedSpawnCleanupHold }>
-  | Readonly<{ kind: 'accepted'; hold: ProviderServerFailedSpawnCleanupHold }>;
+  | Readonly<{ kind: 'accepted'; disposition: ProviderServerFailedSpawnOperatorAbandonment }>;
 
 function providerHostEvictionHold(
   hold: Readonly<{ observation: 'alive' | 'unobservable'; operatorExit: Readonly<{ kind: string }> }>,
@@ -741,7 +742,7 @@ class ProxyProviderRootPool {
     const disposition = await hold.operatorExit.abandon();
     if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) return { kind: 'refused', hold };
     this.releaseFailedSpawnCleanup(transaction, 'operator-abandoned');
-    return { kind: 'accepted', hold };
+    return { kind: 'accepted', disposition };
   }
 
   async abandonClose(entry: HostPoolEntry): Promise<ProviderServerCleanupAbandonmentResult> {
@@ -752,7 +753,7 @@ class ProxyProviderRootPool {
     entry.cleanupHold = null;
     this.releaseLiveRoot(entry);
     this.closingEntries.delete(entry);
-    return { kind: 'accepted', hold };
+    return { kind: 'accepted', disposition };
   }
 
   private releaseFailedSpawnCleanup(
@@ -1041,7 +1042,8 @@ class ProxyProviderHostAdministration {
     if (failedSpawn !== undefined) {
       const abandonment = await this.pool.abandonFailedSpawnCleanup(failedSpawn);
       if (abandonment.kind === 'no-hold') return { kind: 'stale' };
-      return providerHostEvictionHold(abandonment.hold, abandonment.kind === 'accepted' ? 'operator-command' : null);
+      if (abandonment.kind === 'accepted') return abandonment.disposition;
+      return providerHostEvictionHold(abandonment.hold, null);
     }
 
     const matches = this.pool.matchingEntries(hostRef);
@@ -1057,23 +1059,15 @@ class ProxyProviderHostAdministration {
       }
       if (cleanup.kind === 'held-alive' || cleanup.kind === 'held-unobservable') {
         const abandonment = await this.pool.abandonClose(matched);
-        if (abandonment.kind === 'no-hold') return providerHostEvictionHold(cleanup, cleanup.successor.owner);
+        if (abandonment.kind === 'no-hold') return { kind: 'stale' };
         if (abandonment.kind === 'accepted') this.admission.abandon(hostRef);
-        return providerHostEvictionHold(
-          abandonment.hold,
-          abandonment.kind === 'accepted' ? 'operator-command' : cleanup.successor.owner,
-        );
+        if (abandonment.kind === 'accepted') return abandonment.disposition;
+        return providerHostEvictionHold(abandonment.hold, cleanup.successor.owner);
       } else if (cleanup.kind === 'observed-absent') {
         this.admission.confirmEvicted(hostRef);
       } else {
         this.admission.abandon(hostRef);
-        return providerHostEvictionHold(
-          {
-            observation: 'unobservable',
-            operatorExit: { kind: 'abandon-provider-host-acquisition' },
-          },
-          cleanup.successor.owner,
-        );
+        return cleanup;
       }
       return { kind: 'evicted' };
     }

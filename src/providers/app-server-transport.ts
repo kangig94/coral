@@ -34,6 +34,11 @@ import {
   type ProviderHostLogCursorSpan,
   type ProviderResponseObservationSink as HostResponseObservationSink,
 } from './host-diagnostics.js';
+import type {
+  ProviderServerFailedSpawnOperatorAbandonment,
+  ProviderServerFailedSpawnOperatorExit,
+  ProviderServerFailedSpawnSubject,
+} from './contract.js';
 
 export type ProviderResponseObservationSink = HostResponseObservationSink;
 
@@ -196,26 +201,9 @@ export type SpawnProviderServerFn = (
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor,
 ) => Promise<ContainedProviderServerHandle | HeldProviderServerSpawn>;
 
-export type ProviderServerFailedSpawnSubject<ProcessGroupId extends number = number> =
-  | Readonly<{ kind: 'process'; pid: number | null }>
-  | Readonly<{ kind: 'process-group'; processGroupId: ProcessGroupId }>
-  | Readonly<{ kind: 'unattributable-process-group'; processGroupId: ProcessGroupId | null }>;
-
 export type ProviderServerFailedSpawnAbsenceEvidence<ProcessGroupId extends number = number> =
   | Readonly<{ subject: Extract<ProviderServerFailedSpawnSubject, { kind: 'process' }> }>
   | Readonly<{ processGroupEvidence: SpawnedProcessGroupAbsenceEvidence<ProcessGroupId> }>;
-
-export type ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId extends number = number> = Readonly<{
-  kind: 'operator-abandoned';
-  subject: ProviderServerFailedSpawnSubject<ProcessGroupId>;
-  processAbsenceProven: false;
-  successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
-}>;
-
-export type ProviderServerFailedSpawnOperatorExit<ProcessGroupId extends number = number> = Readonly<{
-  kind: 'abandon-provider-host-acquisition';
-  abandon(): Promise<ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId>>;
-}>;
 
 export type ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId extends number = number> =
   | Readonly<{ kind: 'observed-absent'; evidence: ProviderServerFailedSpawnAbsenceEvidence<ProcessGroupId> }>

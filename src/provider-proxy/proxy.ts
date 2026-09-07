@@ -469,7 +469,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
           }
           const result = await options.providerHosts.evictHost(request.hostRef);
-          if (result.kind === 'held') {
+          if (result.kind !== 'evicted' && result.kind !== 'stale') {
             throw new ProxyControlProtocolError(
               'invalid_state',
               'Provider-host eviction requires provider-host.evict.v2.',

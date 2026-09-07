@@ -286,6 +286,30 @@ describe('provider host administration', () => {
     });
   });
 
+  it('reports accepted operator abandonment without calling it shutdown-held', async () => {
+    const selectedRef = hostRef('operator-abandoned');
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject: { kind: 'unattributable-process-group' as const, processGroupId: 4_242 },
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const selected = owner('proxy-a', [record(selectedRef)], {
+      evictProviderHost: vi.fn(async () => abandonment),
+    });
+    const service = new ProviderHostAdministrationService({ owners: () => [selected] });
+
+    const result = await service.evict({ hostRef: selectedRef }).catch((error: unknown) => error);
+
+    expect(result).toMatchObject({
+      code: 'provider_host_operator_abandoned',
+      ownerIds: ['proxy-a'],
+      matches: [selectedRef],
+      hold: null,
+    });
+    expect((result as { abandonment: unknown }).abandonment).toBe(abandonment);
+  });
+
   it('accepts an exact live-to-tombstone transition during selected-owner revalidation', async () => {
     const selectedRef = hostRef('selected');
     const selected = owner('coordinator', [record(selectedRef)], {

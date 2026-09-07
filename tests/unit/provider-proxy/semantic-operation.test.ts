@@ -1760,12 +1760,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(authority.admissionSnapshot().state.size).toBe(1);
     expect(authority.admissionSnapshot().tombstones).toEqual([]);
 
-    await expect(authority.evictHost(record.ref)).resolves.toEqual({
-      kind: 'held',
-      observation: 'unobservable',
-      successorOwner: 'operator-command',
-      operatorExit: 'abandon-provider-host-acquisition',
-    });
+    await expect(authority.evictHost(record.ref)).resolves.toBe(abandonment);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(authority.listProviderHosts()).toEqual([]);
@@ -2584,12 +2579,7 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(authority.admissionSnapshot().state.size).toBe(1);
     expect(authority.admissionSnapshot().tombstones).toEqual([]);
 
-    await expect(authority.evictHost(opened.hostRef)).resolves.toEqual({
-      kind: 'held',
-      observation: 'alive',
-      successorOwner: 'operator-command',
-      operatorExit: 'abandon-provider-host-acquisition',
-    });
+    await expect(authority.evictHost(opened.hostRef)).resolves.toBe(abandonment);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(authority.listProviderHosts()).toEqual([]);
     expect(authority.admissionSnapshot().state.size).toBe(0);

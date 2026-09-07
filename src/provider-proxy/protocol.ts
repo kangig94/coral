@@ -196,6 +196,23 @@ export const providerHostEvictResultV2Schema = z.discriminatedUnion('kind', [
       operatorExit: z.string().min(1),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('operator-abandoned'),
+      subject: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('process'), pid: z.number().int().positive().safe().nullable() }).strict(),
+        z.object({ kind: z.literal('process-group'), processGroupId: z.number().int().positive().safe() }).strict(),
+        z
+          .object({
+            kind: z.literal('unattributable-process-group'),
+            processGroupId: z.number().int().positive().safe().nullable(),
+          })
+          .strict(),
+      ]),
+      processAbsenceProven: z.literal(false),
+      successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
+    })
+    .strict(),
 ]);
 export const generationSchema = z.literal('gen2');
 export const flavorSchema = z.enum(['prod', 'dev']);

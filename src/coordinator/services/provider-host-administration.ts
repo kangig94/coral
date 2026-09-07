@@ -25,6 +25,7 @@ export type ProviderHostAdministrationErrorCode =
   | 'provider_host_not_found'
   | 'provider_host_ambiguous'
   | 'provider_host_identity_integrity'
+  | 'provider_host_operator_abandoned'
   | 'provider_host_shutdown_held'
   | 'provider_host_stale';
 
@@ -33,6 +34,7 @@ export class ProviderHostAdministrationError extends Error {
   readonly ownerIds: readonly string[];
   readonly matches: readonly HostRef[];
   readonly hold: Extract<ProviderHostEvictionDisposition, { kind: 'held' }> | null;
+  readonly abandonment: Extract<ProviderHostEvictionDisposition, { kind: 'operator-abandoned' }> | null;
 
   constructor(
     code: ProviderHostAdministrationErrorCode,
@@ -40,6 +42,7 @@ export class ProviderHostAdministrationError extends Error {
       ownerIds?: readonly string[];
       matches?: readonly HostRef[];
       hold?: Extract<ProviderHostEvictionDisposition, { kind: 'held' }>;
+      abandonment?: Extract<ProviderHostEvictionDisposition, { kind: 'operator-abandoned' }>;
     }> = {},
   ) {
     const ownerIds = Object.freeze([...(options.ownerIds ?? [])]);
@@ -51,6 +54,7 @@ export class ProviderHostAdministrationError extends Error {
     this.ownerIds = ownerIds;
     this.matches = matches;
     this.hold = options.hold ?? null;
+    this.abandonment = options.abandonment ?? null;
     Object.setPrototypeOf(this, ProviderHostAdministrationError.prototype);
   }
 }
@@ -110,6 +114,13 @@ export class ProviderHostAdministrationService {
         ownerIds: [selected.owner.ownerId],
         matches: [selected.row.ref],
         hold: disposition,
+      });
+    }
+    if (disposition.kind === 'operator-abandoned') {
+      throw new ProviderHostAdministrationError('provider_host_operator_abandoned', {
+        ownerIds: [selected.owner.ownerId],
+        matches: [selected.row.ref],
+        abandonment: disposition,
       });
     }
     return Object.freeze({ ownerId: selected.owner.ownerId, hostRef: selected.row.ref });

@@ -198,6 +198,23 @@ export type HostRef =
       ownerJobId: string;
     }>;
 
+export type ProviderServerFailedSpawnSubject<ProcessGroupId extends number = number> =
+  | Readonly<{ kind: 'process'; pid: number | null }>
+  | Readonly<{ kind: 'process-group'; processGroupId: ProcessGroupId }>
+  | Readonly<{ kind: 'unattributable-process-group'; processGroupId: ProcessGroupId | null }>;
+
+export type ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId extends number = number> = Readonly<{
+  kind: 'operator-abandoned';
+  subject: ProviderServerFailedSpawnSubject<ProcessGroupId>;
+  processAbsenceProven: false;
+  successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
+}>;
+
+export type ProviderServerFailedSpawnOperatorExit<ProcessGroupId extends number = number> = Readonly<{
+  kind: 'abandon-provider-host-acquisition';
+  abandon(): Promise<ProviderServerFailedSpawnOperatorAbandonment<ProcessGroupId>>;
+}>;
+
 export type ProviderHostEvictionDisposition =
   | Readonly<{ kind: 'evicted' }>
   | Readonly<{ kind: 'stale' }>
@@ -206,7 +223,8 @@ export type ProviderHostEvictionDisposition =
       observation: 'alive' | 'unobservable';
       successorOwner: string | null;
       operatorExit: string;
-    }>;
+    }>
+  | ProviderServerFailedSpawnOperatorAbandonment;
 
 /** Provider-facing session. Process ownership and release remain capability-private. */
 export interface AppServerTransport {

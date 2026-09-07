@@ -1137,11 +1137,12 @@ export class DefaultProviderHostManager
           matched.spawnCleanupDisposition = abandonment;
           this.spawnCleanupRetryRequests.get(matched)?.();
           if (settlement !== null) await settlement.catch(() => undefined);
+          return abandonment;
         }
         return {
           kind: 'held',
           observation: spawnCleanup.observation,
-          successorOwner: accepted ? 'operator-command' : null,
+          successorOwner: null,
           operatorExit: spawnCleanup.operatorExit.kind,
         };
       }

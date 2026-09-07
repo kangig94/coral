@@ -219,12 +219,7 @@ describe('provider host reclamation', () => {
 
     const acceptedEviction = manager.evictHost(record.ref);
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(acceptedEviction).resolves.toEqual({
-      kind: 'held',
-      observation: 'unobservable',
-      successorOwner: 'operator-command',
-      operatorExit: 'abandon-provider-host-acquisition',
-    });
+    await expect(acceptedEviction).resolves.toBe(abandonment);
     await expect(opening).resolves.toBe(failure);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(manager.listProviderHosts()).toEqual([]);

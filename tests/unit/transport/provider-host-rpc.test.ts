@@ -243,6 +243,50 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
+  it('renders terminal operator abandonment with the exact subject and no retry command', async () => {
+    const ref: HostRef = {
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'abandoned-host',
+      leaseMode: 'shared',
+    };
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject: { kind: 'unattributable-process-group' as const, processGroupId: 4_242 },
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    const evict = vi.fn(async () => {
+      throw Object.assign(new Error('provider host cleanup ownership was abandoned'), {
+        code: 'provider_host_operator_abandoned',
+        ownerIds: ['proxy-a'],
+        matches: [ref],
+        abandonment,
+      });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect: vi.fn(), evict } } as unknown as HttpHandlerPorts;
+    const encodedRef = encodeHostRef(ref);
+
+    const result = await executeCatalogRequest(providerHostEvictRpcSpec, { hostRef: ref }, ports, operator);
+
+    expect(result).toMatchObject({
+      kind: 'unary',
+      statusCode: 409,
+      body: {
+        code: 'provider_host_operator_abandoned',
+        message: expect.stringContaining(`subject=${JSON.stringify(abandonment.subject)}`),
+        remediation:
+          'Inspect the recorded process because it may still be live. The provider-host representation is gone, so do not retry provider-host eviction with this reference.',
+        detail: {
+          ownerIds: ['proxy-a'],
+          hostRefs: [encodedRef],
+          abandonment,
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(`coral-cli backend provider-host evict ${encodedRef}`);
+  });
+
   it('carries a proxy-owned shutdown hold through the operator inventory response', async () => {
     const record = {
       ref: { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'held-host', leaseMode: 'shared' as const },
