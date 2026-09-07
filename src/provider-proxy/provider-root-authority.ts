@@ -18,6 +18,7 @@ import type { ProviderHostDiagnosticsSnapshot } from '../providers/host-diagnost
 import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
+  exactHostRefIdentityKey,
   exactHostRefsMatch,
   type AdmissionSlotKey,
   type HostAdmissionCollection,
@@ -29,6 +30,7 @@ import {
   type AppServerTransport,
   type HostRef,
   type ProviderHostEvictionDisposition,
+  type ProviderHostTerminalEvictionDisposition,
   type ProviderServerFailedSpawnOperatorAbandonment,
   type ProviderServerShutdownResult,
   type ProviderServerSpec,
@@ -222,6 +224,10 @@ type ProviderServerCleanupAbandonmentResult =
   | Readonly<{ kind: 'refused'; hold: ProviderServerFailedSpawnCleanupHold }>
   | Readonly<{ kind: 'accepted'; disposition: ProviderServerFailedSpawnOperatorAbandonment }>;
 
+export type ProxyProviderHostEvictionV1Disposition =
+  | Extract<ProviderHostEvictionDisposition, { kind: 'evicted' | 'stale' }>
+  | Readonly<{ kind: 'requires-v2' }>;
+
 function providerHostEvictionHold(
   hold: Readonly<{ observation: 'alive' | 'unobservable'; operatorExit: Readonly<{ kind: string }> }>,
   successorOwner: string | null,
@@ -376,6 +382,7 @@ export interface ProxyProviderHostAdministrationAuthority {
   admissionSnapshot(): HostAdmissionSnapshot;
   listProviderHosts(): readonly ProxyProviderHostInventoryRecord[];
   inspectProviderHost(hostRef: HostRef): ProxyProviderHostInventoryRecord | null;
+  evictHostV1(hostRef: HostRef): Promise<ProxyProviderHostEvictionV1Disposition>;
   evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition>;
 }
 
@@ -411,6 +418,9 @@ class ProxyProviderRootPool {
   private readonly entries = new Map<string, HostPoolEntry>();
   private readonly closingEntries = new Set<HostPoolEntry>();
   private readonly failedSpawnCleanups = new Set<RootSpawnTransaction>();
+  /** Terminal eviction outcomes must remain replayable for the owning process's lifetime; earlier removal
+   *  makes a lost reply unrecoverable. */
+  private readonly terminalEvictions = new Map<string, ProviderHostTerminalEvictionDisposition>();
   private nextGeneration = 0;
   private liveRoots = 0;
   private spawningRoots = 0;
@@ -446,6 +456,26 @@ class ProxyProviderRootPool {
       if (this.matches(hostRef, entry)) matches.add(entry);
     }
     return matches;
+  }
+
+  terminalEviction(hostRef: HostRef): ProviderHostTerminalEvictionDisposition | undefined {
+    return this.terminalEvictions.get(exactHostRefIdentityKey(hostRef));
+  }
+
+  retainTerminalEviction<Disposition extends ProviderHostTerminalEvictionDisposition>(
+    hostRef: HostRef,
+    disposition: Disposition,
+  ): Disposition {
+    const key = exactHostRefIdentityKey(hostRef);
+    const retained = this.terminalEvictions.get(key);
+    if (retained !== undefined) {
+      if (retained.kind !== disposition.kind) {
+        throw new Error('provider_host_identity_integrity: exact host ref acquired conflicting terminal outcomes');
+      }
+      return retained as Disposition;
+    }
+    this.terminalEvictions.set(key, disposition);
+    return disposition;
   }
 
   rootIdentity(hostRef: HostRef): Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null {
@@ -522,9 +552,10 @@ class ProxyProviderRootPool {
       }
       entry.cleanupHold = null;
       if (!entry.rootTokenReleased) {
+        const hostRef = hostRefFor(entry, this.runtime);
+        if (disposition.kind === 'operator-abandoned') this.retainTerminalEviction(hostRef, disposition);
         this.releaseLiveRoot(entry);
         this.closingEntries.delete(entry);
-        const hostRef = hostRefFor(entry, this.runtime);
         if (disposition.kind === 'observed-absent') this.admission.observeRetired(hostRef, 'closed');
         else this.admission.abandon(hostRef);
       }
@@ -711,8 +742,9 @@ class ProxyProviderRootPool {
           await this.runtime.time.sleep(1_000);
           continue;
         }
+        const retained = this.retainTerminalEviction(transaction.reservedRef, disposition);
         this.releaseFailedSpawnCleanup(transaction, 'operator-abandoned');
-        return disposition;
+        return retained;
       }
       hold = { ...disposition, error: hold.error };
       transaction.cleanupHold = hold;
@@ -741,8 +773,9 @@ class ProxyProviderRootPool {
     if (hold === null) return { kind: 'no-hold' };
     const disposition = await hold.operatorExit.abandon();
     if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) return { kind: 'refused', hold };
+    const retained = this.retainTerminalEviction(transaction.reservedRef, disposition);
     this.releaseFailedSpawnCleanup(transaction, 'operator-abandoned');
-    return { kind: 'accepted', disposition };
+    return { kind: 'accepted', disposition: retained };
   }
 
   async abandonClose(entry: HostPoolEntry): Promise<ProviderServerCleanupAbandonmentResult> {
@@ -750,10 +783,11 @@ class ProxyProviderRootPool {
     if (hold === null) return { kind: 'no-hold' };
     const disposition = await hold.operatorExit.abandon();
     if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) return { kind: 'refused', hold };
+    const retained = this.retainTerminalEviction(hostRefFor(entry, this.runtime), disposition);
     entry.cleanupHold = null;
     this.releaseLiveRoot(entry);
     this.closingEntries.delete(entry);
-    return { kind: 'accepted', disposition };
+    return { kind: 'accepted', disposition: retained };
   }
 
   private releaseFailedSpawnCleanup(
@@ -1032,6 +1066,9 @@ class ProxyProviderHostAdministration {
   }
 
   async evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition> {
+    const terminal = this.pool.terminalEviction(hostRef);
+    if (terminal !== undefined) return terminal;
+
     const snapshot = this.admission.snapshot();
     const owned =
       [...snapshot.state.values()].some((entry) => exactHostRefsMatch(entry.ref, hostRef)) ||
@@ -1064,21 +1101,44 @@ class ProxyProviderHostAdministration {
         if (abandonment.kind === 'accepted') return abandonment.disposition;
         return providerHostEvictionHold(abandonment.hold, cleanup.successor.owner);
       } else if (cleanup.kind === 'observed-absent') {
+        const disposition = { kind: 'evicted' } as const;
+        const retained = this.pool.retainTerminalEviction(hostRef, disposition);
         this.admission.confirmEvicted(hostRef);
+        return retained;
       } else {
         this.admission.abandon(hostRef);
         return cleanup;
       }
-      return { kind: 'evicted' };
     }
 
+    return this.evictProcessAbsentTombstone(hostRef);
+  }
+
+  async evictHostV1(hostRef: HostRef): Promise<ProxyProviderHostEvictionV1Disposition> {
+    const terminal = this.pool.terminalEviction(hostRef);
+    if (terminal !== undefined) return terminal.kind === 'evicted' ? terminal : { kind: 'requires-v2' };
+    if (this.pool.failedSpawnCleanup(hostRef) !== undefined) return { kind: 'requires-v2' };
+    const matches = this.pool.matchingEntries(hostRef);
+    if (matches.size > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy entries');
+    }
+    if (matches.size === 1) return { kind: 'requires-v2' };
+    return this.evictProcessAbsentTombstone(hostRef);
+  }
+
+  private evictProcessAbsentTombstone(
+    hostRef: HostRef,
+  ): Extract<ProviderHostEvictionDisposition, { kind: 'evicted' | 'stale' }> {
     const tombstones = this.admission
       .snapshot()
       .tombstones.filter(
         (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
       );
     if (tombstones.length !== 1) return { kind: 'stale' };
-    return this.admission.confirmEvicted(hostRef) ? { kind: 'evicted' } : { kind: 'stale' };
+    const disposition = { kind: 'evicted' } as const;
+    const retained = this.pool.retainTerminalEviction(hostRef, disposition);
+    this.admission.confirmEvicted(hostRef);
+    return retained;
   }
 
   admissionSnapshot(): HostAdmissionSnapshot {
@@ -1109,6 +1169,7 @@ export function createProxyAppServerHostAuthority(
     forceClose: (hostRef) => pool.forceClose(hostRef),
     listProviderHosts: () => administration.listProviderHosts(),
     inspectProviderHost: (hostRef) => administration.inspectProviderHost(hostRef),
+    evictHostV1: (hostRef) => administration.evictHostV1(hostRef),
     evictHost: (hostRef) => administration.evictHost(hostRef),
     admissionSnapshot: () => administration.admissionSnapshot(),
   };

@@ -4,6 +4,7 @@ import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
   createHostAdmissionCollection,
+  exactHostRefIdentityKey,
   PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET,
   ProviderHostUnserviceableError,
   type ProviderHostUnserviceableResponseError,
@@ -65,6 +66,22 @@ function collection() {
 }
 
 describe('provider host admission state machine', () => {
+  it('keys every field of exact host identity', () => {
+    const shared = ref('identity');
+    const exclusive: HostRef = { ...shared, leaseMode: 'job-exclusive', ownerJobId: 'job-a' };
+    const identities: HostRef[] = [
+      shared,
+      { ...shared, provider: 'claude' },
+      { ...shared, fingerprint: 'b'.repeat(64) },
+      { ...shared, instanceId: 'other' },
+      exclusive,
+      { ...exclusive, ownerJobId: 'job-b' },
+    ];
+
+    expect(new Set(identities.map(exactHostRefIdentityKey)).size).toBe(identities.length);
+    expect(exactHostRefIdentityKey(shared)).toBe(exactHostRefIdentityKey({ ...shared }));
+  });
+
   it('correlates a rejected operation only after an accepted exact fact blocks its host', async () => {
     const admission = collection();
     const slot = admissionSlotKey('finding-slot');

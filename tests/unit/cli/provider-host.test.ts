@@ -76,8 +76,9 @@ describe('provider-host CLI contracts', () => {
     const help = findCommand(program, 'backend', 'provider-host', 'evict').helpInformation().replace(/\s+/g, ' ');
 
     expect(help).toContain('copied from `coral-cli backend provider-host list`');
-    expect(help).toContain('relative to the current directory');
-    expect(help).toContain('refuses on ambiguity');
+    expect(help).toContain('Refused for eviction');
+    expect(help).toContain('use it with inspect');
+    expect(help).toContain('exact reference');
     expect(help).toContain('may end work already attached to that host');
   });
 

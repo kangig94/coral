@@ -198,6 +198,29 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
+  it('returns exact-reference remediation when work-directory eviction is refused', async () => {
+    const evict = vi.fn(async () => {
+      throw Object.assign(new Error('exact reference required'), {
+        code: 'provider_host_eviction_requires_exact_ref',
+      });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect: vi.fn(), evict } } as unknown as HttpHandlerPorts;
+
+    await expect(
+      executeCatalogRequest(providerHostEvictRpcSpec, { workDir: '.', projectRoot: process.cwd() }, ports, operator),
+    ).resolves.toMatchObject({
+      kind: 'unary',
+      statusCode: 409,
+      body: {
+        code: 'provider_host_eviction_requires_exact_ref',
+        message: 'Provider-host eviction requires an exact host reference.',
+        remediation:
+          'Run `coral-cli backend provider-host list`, inspect the intended host, then run `coral-cli backend provider-host evict <ref>` with its exact reference.',
+      },
+    });
+    expect(evict).toHaveBeenCalledExactlyOnceWith({ workDir: process.cwd() });
+  });
+
   it('renders a shutdown hold with its observation, successor, exit, and exact retry command', async () => {
     const ref: HostRef = {
       provider: 'codex',
@@ -243,7 +266,7 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
-  it('renders terminal operator abandonment with the exact subject and no retry command', async () => {
+  it('renders terminal operator abandonment with the exact subject and retained exact-reference replay', async () => {
     const ref: HostRef = {
       provider: 'codex',
       fingerprint: 'a'.repeat(64),
@@ -275,8 +298,7 @@ describe('provider-host RPC authorization', () => {
       body: {
         code: 'provider_host_operator_abandoned',
         message: expect.stringContaining(`subject=${JSON.stringify(abandonment.subject)}`),
-        remediation:
-          'Inspect the recorded process because it may still be live. The provider-host representation is gone, so do not retry provider-host eviction with this reference.',
+        remediation: `Inspect the recorded process because it may still be live. Retry \`coral-cli backend provider-host evict ${encodedRef}\` to recover this retained terminal disposition for the owner process's lifetime; the retry does not prove that the abandoned process exited.`,
         detail: {
           ownerIds: ['proxy-a'],
           hostRefs: [encodedRef],
@@ -284,7 +306,7 @@ describe('provider-host RPC authorization', () => {
         },
       },
     });
-    expect(JSON.stringify(result)).not.toContain(`coral-cli backend provider-host evict ${encodedRef}`);
+    expect(JSON.stringify(result)).toContain(`coral-cli backend provider-host evict ${encodedRef}`);
   });
 
   it('carries a proxy-owned shutdown hold through the operator inventory response', async () => {

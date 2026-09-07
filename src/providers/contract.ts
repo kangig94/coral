@@ -226,6 +226,11 @@ export type ProviderHostEvictionDisposition =
     }>
   | ProviderServerFailedSpawnOperatorAbandonment;
 
+export type ProviderHostTerminalEvictionDisposition = Extract<
+  ProviderHostEvictionDisposition,
+  { kind: 'evicted' | 'operator-abandoned' }
+>;
+
 /** Provider-facing session. Process ownership and release remain capability-private. */
 export interface AppServerTransport {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;

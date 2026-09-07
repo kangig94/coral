@@ -1,5 +1,5 @@
 import type { HostRef, ProviderHostEvictionDisposition } from '../../providers/contract.js';
-import { exactHostRefsMatch } from '../../providers/host-admission.js';
+import { exactHostRefIdentityKey, exactHostRefsMatch } from '../../providers/host-admission.js';
 import {
   providerHostInventoryRecordSchema,
   providerHostInventorySchema,
@@ -24,6 +24,7 @@ export type ProviderHostAdministrationErrorCode =
   | 'provider_host_inventory_unavailable'
   | 'provider_host_not_found'
   | 'provider_host_ambiguous'
+  | 'provider_host_eviction_requires_exact_ref'
   | 'provider_host_identity_integrity'
   | 'provider_host_operator_abandoned'
   | 'provider_host_shutdown_held'
@@ -61,6 +62,9 @@ export class ProviderHostAdministrationError extends Error {
 
 export class ProviderHostAdministrationService {
   private readonly owners: () => readonly ProviderHostAdministrationOwner[];
+  /** An admitted eviction's owner route must remain available for exact-ref retries for the owning process's
+   *  lifetime; dropping it can make a lost terminal reply unreachable. */
+  private readonly evictionOwners = new Map<string, string>();
 
   constructor(options: { owners: () => readonly ProviderHostAdministrationOwner[] }) {
     this.owners = options.owners;
@@ -93,11 +97,18 @@ export class ProviderHostAdministrationService {
   }
 
   async evict(selector: ProviderHostSelector): Promise<Readonly<{ ownerId: string; hostRef: HostRef }>> {
-    const inventory = await this.captureInventory();
-    const selected = resolveOne(inventory.owners, inventory.rows, selector);
+    if ('workDir' in selector) {
+      throw new ProviderHostAdministrationError('provider_host_eviction_requires_exact_ref');
+    }
+    const retainedOwnerId = this.evictionOwners.get(exactHostRefIdentityKey(selector.hostRef));
+    const selected =
+      retainedOwnerId === undefined
+        ? await this.selectInitialEvictionOwner(selector.hostRef)
+        : this.retainedEvictionOwner(this.captureOwners(), selector.hostRef);
+    this.retainEvictionOwner(selected.owner.ownerId, selected.hostRef);
     let disposition: ProviderHostEvictionDisposition;
     try {
-      disposition = await selected.owner.evictProviderHost(selected.row.ref);
+      disposition = await selected.owner.evictProviderHost(selected.hostRef);
     } catch {
       throw new ProviderHostAdministrationError('provider_host_inventory_unavailable', {
         ownerIds: [selected.owner.ownerId],
@@ -106,24 +117,57 @@ export class ProviderHostAdministrationService {
     if (disposition.kind === 'stale') {
       throw new ProviderHostAdministrationError('provider_host_stale', {
         ownerIds: [selected.owner.ownerId],
-        matches: [selected.row.ref],
+        matches: [selected.hostRef],
       });
     }
     if (disposition.kind === 'held') {
       throw new ProviderHostAdministrationError('provider_host_shutdown_held', {
         ownerIds: [selected.owner.ownerId],
-        matches: [selected.row.ref],
+        matches: [selected.hostRef],
         hold: disposition,
       });
     }
     if (disposition.kind === 'operator-abandoned') {
       throw new ProviderHostAdministrationError('provider_host_operator_abandoned', {
         ownerIds: [selected.owner.ownerId],
-        matches: [selected.row.ref],
+        matches: [selected.hostRef],
         abandonment: disposition,
       });
     }
-    return Object.freeze({ ownerId: selected.owner.ownerId, hostRef: selected.row.ref });
+    return Object.freeze({ ownerId: selected.owner.ownerId, hostRef: selected.hostRef });
+  }
+
+  private async selectInitialEvictionOwner(
+    hostRef: HostRef,
+  ): Promise<Readonly<{ owner: ProviderHostAdministrationOwner; hostRef: HostRef }>> {
+    const inventory = await this.captureInventory();
+    const resolved = resolveOne(inventory.owners, inventory.rows, { hostRef });
+    return { owner: resolved.owner, hostRef: resolved.row.ref };
+  }
+
+  private retainedEvictionOwner(
+    owners: readonly ProviderHostAdministrationOwner[],
+    hostRef: HostRef,
+  ): Readonly<{ owner: ProviderHostAdministrationOwner; hostRef: HostRef }> {
+    const ownerId = this.evictionOwners.get(exactHostRefIdentityKey(hostRef));
+    if (ownerId === undefined) throw new ProviderHostAdministrationError('provider_host_not_found');
+    const owner = owners.find((candidate) => candidate.ownerId === ownerId);
+    if (owner === undefined) {
+      throw new ProviderHostAdministrationError('provider_host_inventory_unavailable', { ownerIds: [ownerId] });
+    }
+    return { owner, hostRef };
+  }
+
+  private retainEvictionOwner(ownerId: string, hostRef: HostRef): void {
+    const key = exactHostRefIdentityKey(hostRef);
+    const retainedOwnerId = this.evictionOwners.get(key);
+    if (retainedOwnerId !== undefined && retainedOwnerId !== ownerId) {
+      throw new ProviderHostAdministrationError('provider_host_identity_integrity', {
+        ownerIds: [retainedOwnerId, ownerId],
+        matches: [hostRef],
+      });
+    }
+    this.evictionOwners.set(key, ownerId);
   }
 
   private async captureInventory(): Promise<
@@ -132,14 +176,7 @@ export class ProviderHostAdministrationService {
       rows: readonly ProviderHostInventoryRow[];
     }>
   > {
-    const owners = Object.freeze([...this.owners()]);
-    const duplicateOwnerIds = duplicateValues(owners.map((owner) => owner.ownerId));
-    if (duplicateOwnerIds.length > 0) {
-      throw new ProviderHostAdministrationError('provider_host_identity_integrity', {
-        ownerIds: duplicateOwnerIds,
-      });
-    }
-
+    const owners = this.captureOwners();
     const responses = await Promise.allSettled(owners.map(async (owner) => owner.listProviderHosts()));
     const unavailableOwnerIds: string[] = [];
     const rows: ProviderHostInventoryRow[] = [];
@@ -164,6 +201,17 @@ export class ProviderHostAdministrationService {
 
     rows.sort(compareRows);
     return Object.freeze({ owners, rows: Object.freeze(rows) });
+  }
+
+  private captureOwners(): readonly ProviderHostAdministrationOwner[] {
+    const owners = Object.freeze([...this.owners()]);
+    const duplicateOwnerIds = duplicateValues(owners.map((owner) => owner.ownerId));
+    if (duplicateOwnerIds.length > 0) {
+      throw new ProviderHostAdministrationError('provider_host_identity_integrity', {
+        ownerIds: duplicateOwnerIds,
+      });
+    }
+    return owners;
   }
 }
 

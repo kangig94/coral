@@ -159,6 +159,11 @@ describe('provider host administration', () => {
     await expect(service.list()).resolves.toEqual([]);
     expect(entry.containment).toBeNull();
     expect(reapContainment).toHaveBeenCalledTimes(4);
+    await expect(service.evict({ hostRef: lease.hostRef })).resolves.toEqual({
+      ownerId: 'coordinator:test',
+      hostRef: lease.hostRef,
+    });
+    expect(reapContainment).toHaveBeenCalledTimes(4);
     lease.close();
   });
 
@@ -310,6 +315,44 @@ describe('provider host administration', () => {
     expect((result as { abandonment: unknown }).abandonment).toBe(abandonment);
   });
 
+  it('routes an exact-ref retry to the admitted owner despite an unavailable sibling inventory', async () => {
+    const selectedRef = hostRef('lost-abandonment-reply');
+    const abandonment = {
+      kind: 'operator-abandoned' as const,
+      subject: { kind: 'unattributable-process-group' as const, processGroupId: 4_242 },
+      processAbsenceProven: false as const,
+      successor: { owner: 'operator-command' as const, acceptance: 'accepted' as const },
+    };
+    let visible = true;
+    const evictProviderHost = vi.fn(async () => {
+      visible = false;
+      if (evictProviderHost.mock.calls.length === 1) throw new Error('terminal reply was lost');
+      return abandonment;
+    });
+    const selected = owner('proxy-a', [], {
+      listProviderHosts: vi.fn(async () => (visible ? [record(selectedRef)] : [])),
+      evictProviderHost,
+    });
+    const untouched = owner('proxy-b', []);
+    const service = new ProviderHostAdministrationService({ owners: () => [selected, untouched] });
+
+    await expect(service.evict({ hostRef: selectedRef })).rejects.toMatchObject({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['proxy-a'],
+    });
+    untouched.listProviderHosts.mockRejectedValue(new Error('sibling inventory unavailable'));
+    const retry = await service.evict({ hostRef: selectedRef }).catch((error: unknown) => error);
+    expect(retry).toMatchObject({
+      code: 'provider_host_operator_abandoned',
+      ownerIds: ['proxy-a'],
+      matches: [selectedRef],
+    });
+    expect((retry as { abandonment: unknown }).abandonment).toBe(abandonment);
+    expect(evictProviderHost).toHaveBeenCalledTimes(2);
+    expect(untouched.listProviderHosts).toHaveBeenCalledOnce();
+    expect(untouched.evictProviderHost).not.toHaveBeenCalled();
+  });
+
   it('accepts an exact live-to-tombstone transition during selected-owner revalidation', async () => {
     const selectedRef = hostRef('selected');
     const selected = owner('coordinator', [record(selectedRef)], {
@@ -324,15 +367,16 @@ describe('provider host administration', () => {
     });
   });
 
-  it('refuses an ambiguous work directory and performs no destructive call', async () => {
+  it('requires an exact reference for eviction and performs no owner call', async () => {
     const first = owner('coordinator', [record(hostRef('first'))]);
     const second = owner('proxy-a', [record(hostRef('second'))]);
     const service = new ProviderHostAdministrationService({ owners: () => [first, second] });
 
     await expect(service.evict({ workDir })).rejects.toMatchObject({
-      code: 'provider_host_ambiguous',
-      matches: [{ instanceId: 'first' }, { instanceId: 'second' }],
+      code: 'provider_host_eviction_requires_exact_ref',
     });
+    expect(first.listProviderHosts).not.toHaveBeenCalled();
+    expect(second.listProviderHosts).not.toHaveBeenCalled();
     expect(first.evictProviderHost).not.toHaveBeenCalled();
     expect(second.evictProviderHost).not.toHaveBeenCalled();
   });

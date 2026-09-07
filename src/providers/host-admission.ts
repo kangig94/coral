@@ -205,6 +205,16 @@ export function exactHostRefsMatch(left: HostRef, right: HostRef): boolean {
   return left.leaseMode === 'shared' || (right.leaseMode === 'job-exclusive' && left.ownerJobId === right.ownerJobId);
 }
 
+export function exactHostRefIdentityKey(ref: HostRef): string {
+  return JSON.stringify([
+    ref.provider,
+    ref.fingerprint,
+    ref.instanceId,
+    ref.leaseMode,
+    ref.leaseMode === 'job-exclusive' ? ref.ownerJobId : null,
+  ]);
+}
+
 export function reduceHostAdmission(state: HostAdmissionState, event: AdmissionEvent): HostAdmissionState {
   switch (event.kind) {
     case 'reserve':

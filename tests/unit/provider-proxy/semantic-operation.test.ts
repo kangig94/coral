@@ -1749,6 +1749,9 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     });
     if (record === undefined) throw new Error('Expected a failed-spawn cleanup inventory record.');
 
+    await expect(authority.evictHostV1(record.ref)).resolves.toEqual({ kind: 'requires-v2' });
+    expect(operatorExit.abandon).not.toHaveBeenCalled();
+
     await expect(authority.evictHost(record.ref)).resolves.toEqual({
       kind: 'held',
       observation: 'unobservable',
@@ -1762,6 +1765,8 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
 
     await expect(authority.evictHost(record.ref)).resolves.toBe(abandonment);
     await vi.advanceTimersByTimeAsync(1_000);
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
+    await expect(authority.evictHost(record.ref)).resolves.toBe(abandonment);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(authority.listProviderHosts()).toEqual([]);
     expect(authority.admissionSnapshot().state.size).toBe(0);
@@ -1856,7 +1861,8 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     await expect(scope.openSession(hostSpec)).rejects.toMatchObject({ code: 'provider_host_unserviceable' });
 
     expect(await authority.evictHost({ ...opened.hostRef, instanceId: 'stale-instance' })).toEqual({ kind: 'stale' });
-    expect(await authority.evictHost(opened.hostRef)).toEqual({ kind: 'evicted' });
+    expect(await authority.evictHostV1(opened.hostRef)).toEqual({ kind: 'evicted' });
+    expect(await authority.evictHostV1(opened.hostRef)).toEqual({ kind: 'evicted' });
     expect(first.closeMock, 'retired-blocked eviction attempted a second physical close').not.toHaveBeenCalled();
     const replacement = await scope.openSession(hostSpec);
     expect(replacement.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);
@@ -2569,6 +2575,8 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     const opened = await selectedHostScope(authority, testKey(), 'operation-isolated').openSession(sharedSpec());
 
     await expect(authority.forceClose(opened.hostRef)).resolves.toMatchObject({ kind: 'held-alive' });
+    await expect(authority.evictHostV1(opened.hostRef)).resolves.toEqual({ kind: 'requires-v2' });
+    expect(operatorExit.abandon).not.toHaveBeenCalled();
     await expect(authority.evictHost(opened.hostRef)).resolves.toEqual({
       kind: 'held',
       observation: 'alive',
@@ -2579,6 +2587,8 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(authority.admissionSnapshot().state.size).toBe(1);
     expect(authority.admissionSnapshot().tombstones).toEqual([]);
 
+    await expect(authority.evictHost(opened.hostRef)).resolves.toBe(abandonment);
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     await expect(authority.evictHost(opened.hostRef)).resolves.toBe(abandonment);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(authority.listProviderHosts()).toEqual([]);

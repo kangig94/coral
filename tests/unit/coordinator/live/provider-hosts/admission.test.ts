@@ -115,6 +115,7 @@ describe('coordinator provider-host admission', () => {
 
     expect(await manager.evictHost({ ...opened.hostRef, instanceId: 'stale-instance' })).toEqual({ kind: 'stale' });
     expect(await manager.evictHost(opened.hostRef)).toEqual({ kind: 'evicted' });
+    expect(await manager.evictHost(opened.hostRef)).toEqual({ kind: 'evicted' });
     expect(first.closeMock, 'retired-blocked eviction attempted a second physical close').not.toHaveBeenCalled();
     const replacement = await manager.openSession(hostSpec);
     expect(replacement.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);

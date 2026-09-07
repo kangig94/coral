@@ -391,6 +391,7 @@ type ProviderHostAdministrationErrorCode =
   | 'provider_host_inventory_unavailable'
   | 'provider_host_not_found'
   | 'provider_host_ambiguous'
+  | 'provider_host_eviction_requires_exact_ref'
   | 'provider_host_identity_integrity'
   | 'provider_host_operator_abandoned'
   | 'provider_host_shutdown_held'
@@ -407,6 +408,7 @@ const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set<ProviderHostAdministrat
   'provider_host_inventory_unavailable',
   'provider_host_not_found',
   'provider_host_ambiguous',
+  'provider_host_eviction_requires_exact_ref',
   'provider_host_identity_integrity',
   'provider_host_operator_abandoned',
   'provider_host_shutdown_held',
@@ -489,6 +491,12 @@ function providerHostAdministrationCopy(
         remediation:
           'For one listed reference, run `coral-cli backend provider-host inspect <ref>` and verify it, then run `coral-cli backend provider-host evict <ref>`; never choose a match by position.',
       };
+    case 'provider_host_eviction_requires_exact_ref':
+      return {
+        message: 'Provider-host eviction requires an exact host reference.',
+        remediation:
+          'Run `coral-cli backend provider-host list`, inspect the intended host, then run `coral-cli backend provider-host evict <ref>` with its exact reference.',
+      };
     case 'provider_host_identity_integrity':
       return {
         message: `The exact provider-host identity matched multiple owners: ${hostRefs.join(', ')}.`,
@@ -500,9 +508,8 @@ function providerHostAdministrationCopy(
       const subject = hold.abandonment === null ? 'unknown' : JSON.stringify(hold.abandonment.subject);
       const successorOwner = hold.abandonment?.successor.owner ?? 'none';
       return {
-        message: `The provider-host representation was removed without proof that its process exited: ${hostRef}; subject=${subject}; processAbsenceProven=false; successorOwner=${successorOwner}.`,
-        remediation:
-          'Inspect the recorded process because it may still be live. The provider-host representation is gone, so do not retry provider-host eviction with this reference.',
+        message: `Provider-host cleanup was terminally abandoned without proof that its process exited: ${hostRef}; subject=${subject}; processAbsenceProven=false; successorOwner=${successorOwner}.`,
+        remediation: `Inspect the recorded process because it may still be live. Retry \`coral-cli backend provider-host evict ${hostRef}\` to recover this retained terminal disposition for the owner process's lifetime; the retry does not prove that the abandoned process exited.`,
       };
     }
     case 'provider_host_shutdown_held': {

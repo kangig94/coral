@@ -222,6 +222,8 @@ describe('provider host reclamation', () => {
     await expect(acceptedEviction).resolves.toBe(abandonment);
     await expect(opening).resolves.toBe(failure);
     expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
+    await expect(manager.evictHost(record.ref)).resolves.toBe(abandonment);
+    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
     expect(manager.listProviderHosts()).toEqual([]);
     expect(manager.admissionSnapshot().state.size).toBe(0);
     expect(manager.admissionSnapshot().tombstones).toEqual([]);

@@ -21,6 +21,8 @@ describe('provider-host operator documentation', () => {
     expect(catalogEntry('provider_host_not_found')).toContain('coral-cli backend provider-host list');
     expect(catalogEntry('provider_host_ambiguous')).toContain('provider-host inspect <ref>');
     expect(catalogEntry('provider_host_ambiguous')).toContain('provider-host evict <ref>');
+    expect(catalogEntry('provider_host_eviction_requires_exact_ref')).toContain('cannot use a work directory');
+    expect(catalogEntry('provider_host_eviction_requires_exact_ref')).toContain('provider-host evict <ref>');
     expect(catalogEntry('provider_host_identity_integrity')).toContain('Do **not** evict');
     expect(catalogEntry('provider_host_identity_integrity')).toContain('coral-cli backend status');
     expect(catalogEntry('provider_host_shutdown_held')).toContain('observation');
@@ -29,7 +31,8 @@ describe('provider-host operator documentation', () => {
     expect(catalogEntry('provider_host_shutdown_held')).toContain('provider-host evict <ref>');
     expect(catalogEntry('provider_host_operator_abandoned')).toContain('processAbsenceProven: false');
     expect(catalogEntry('provider_host_operator_abandoned')).toContain('Inspect the recorded process');
-    expect(catalogEntry('provider_host_operator_abandoned')).not.toContain('provider-host evict <ref>');
+    expect(catalogEntry('provider_host_operator_abandoned')).toContain("owner process's lifetime");
+    expect(catalogEntry('provider_host_operator_abandoned')).toContain('exact reference remains retryable');
     expect(catalogEntry('provider_host_stale')).toContain('coral-cli backend provider-host list');
   });
 

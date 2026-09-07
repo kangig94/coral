@@ -515,7 +515,7 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('renders terminal provider-host operator abandonment without advertising a retry', async () => {
+  it('renders terminal provider-host operator abandonment with its retained exact-reference replay', async () => {
     const ref: HostRef = {
       provider: 'codex',
       fingerprint: 'a'.repeat(64),
@@ -523,19 +523,18 @@ describe('cli main routing', () => {
       leaseMode: 'shared',
     };
     const encodedRef = encodeHostRef(ref);
-    const remediation =
-      'Inspect the recorded process because it may still be live. The provider-host representation is gone, so do not retry provider-host eviction with this reference.';
+    const remediation = `Inspect the recorded process because it may still be live. Retry \`coral-cli backend provider-host evict ${encodedRef}\` to recover this retained terminal disposition for the owner process's lifetime; the retry does not prove that the abandoned process exited.`;
     const providerHosts: ProviderHostCommandOperations = {
       list: vi.fn(),
       inspect: vi.fn(),
       evict: vi.fn(async () => {
         throw new IpcRpcError({
           code: -32_000,
-          message: 'The provider-host representation was removed without proof that its process exited.',
+          message: 'Provider-host cleanup was terminally abandoned without proof that its process exited.',
           data: {
             code: 'provider_host_operator_abandoned',
             message:
-              `The provider-host representation was removed without proof that its process exited: ${encodedRef}; ` +
+              `Provider-host cleanup was terminally abandoned without proof that its process exited: ${encodedRef}; ` +
               'subject={"kind":"unattributable-process-group","processGroupId":4242}; ' +
               'processAbsenceProven=false; successorOwner=operator-command.',
             remediation,
@@ -554,7 +553,7 @@ describe('cli main routing', () => {
     expect(stderr).toContain('processAbsenceProven=false');
     expect(stderr).toContain('successorOwner=operator-command');
     expect(stderr).toContain(remediation);
-    expect(stderr).not.toContain(`coral-cli backend provider-host evict ${encodedRef}`);
+    expect(stderr).toContain(`coral-cli backend provider-host evict ${encodedRef}`);
     expect(process.exitCode).toBe(1);
   });
 

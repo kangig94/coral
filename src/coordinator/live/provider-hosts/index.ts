@@ -2,6 +2,7 @@ import type {
   AppServerTransport,
   HostRef,
   ProviderHostEvictionDisposition,
+  ProviderHostTerminalEvictionDisposition,
   ProviderServerSpec,
 } from '../../../providers/contract.js';
 import {
@@ -21,6 +22,7 @@ import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
   createHostAdmissionCollection,
+  exactHostRefIdentityKey,
   exactHostRefsMatch,
   type AdmissionSlotKey,
   type HostAdmissionCollection,
@@ -372,6 +374,9 @@ export class DefaultProviderHostManager
   private readonly closingEntries = new Map<ProviderHostEntry, ProviderHostClosingRecord>();
   private readonly spawnCleanupHolds = new Set<ProviderHostSpawnCleanupObligation>();
   private readonly spawnCleanupRetryRequests = new Map<ProviderHostEntry, () => void>();
+  /** Terminal eviction outcomes must remain replayable for the owning process's lifetime; earlier removal
+   *  makes a lost reply unrecoverable. */
+  private readonly terminalEvictions = new Map<string, ProviderHostTerminalEvictionDisposition>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private nextProviderServerGeneration = 1;
   private acceptingAcquisitions = true;
@@ -1118,6 +1123,8 @@ export class DefaultProviderHostManager
 
   async evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition> {
     if (!isExactHostRef(hostRef)) return { kind: 'stale' };
+    const terminal = this.terminalEvictions.get(exactHostRefIdentityKey(hostRef));
+    if (terminal !== undefined) return terminal;
     const liveMatches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, hostRef));
     const closingMatches = [...this.closingEntries.entries()].filter(([, closing]) =>
       exactHostRefsMatch(closing.ref, hostRef),
@@ -1134,10 +1141,11 @@ export class DefaultProviderHostManager
         const abandonment = await spawnCleanup.operatorExit.abandon();
         const accepted = isAcceptedProviderServerOperatorAbandonment(spawnCleanup, abandonment);
         if (accepted) {
+          const retained = this.retainTerminalEviction(hostRef, abandonment);
           matched.spawnCleanupDisposition = abandonment;
           this.spawnCleanupRetryRequests.get(matched)?.();
           if (settlement !== null) await settlement.catch(() => undefined);
-          return abandonment;
+          return retained;
         }
         return {
           kind: 'held',
@@ -1155,8 +1163,10 @@ export class DefaultProviderHostManager
           operatorExit: shutdown.operatorExit.kind,
         };
       }
+      const disposition = { kind: 'evicted' } as const;
+      const retained = this.retainTerminalEviction(hostRef, disposition);
       this.admission.confirmEvicted(hostRef);
-      return { kind: 'evicted' };
+      return retained;
     }
 
     const tombstones = this.admission
@@ -1165,7 +1175,26 @@ export class DefaultProviderHostManager
         (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
       );
     if (tombstones.length !== 1) return { kind: 'stale' };
-    return this.admission.confirmEvicted(hostRef) ? { kind: 'evicted' } : { kind: 'stale' };
+    const disposition = { kind: 'evicted' } as const;
+    const retained = this.retainTerminalEviction(hostRef, disposition);
+    this.admission.confirmEvicted(hostRef);
+    return retained;
+  }
+
+  private retainTerminalEviction<Disposition extends ProviderHostTerminalEvictionDisposition>(
+    hostRef: HostRef,
+    disposition: Disposition,
+  ): Disposition {
+    const key = exactHostRefIdentityKey(hostRef);
+    const retained = this.terminalEvictions.get(key);
+    if (retained !== undefined) {
+      if (retained.kind !== disposition.kind) {
+        throw new Error('provider_host_identity_integrity: exact host ref acquired conflicting terminal outcomes');
+      }
+      return retained as Disposition;
+    }
+    this.terminalEvictions.set(key, disposition);
+    return disposition;
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<ProviderHostQuiescenceReceipt> {

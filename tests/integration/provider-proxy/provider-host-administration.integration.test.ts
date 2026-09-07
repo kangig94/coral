@@ -441,6 +441,8 @@ describe('provider-host proxy controls', () => {
       await expect(strictTestExchange(control, 'provider-host.evict.v1', { hostRef }, 5_000)).rejects.toThrow(
         'Provider-host eviction requires provider-host.evict.v2.',
       );
+      expect(eviction).toHaveBeenCalledOnce();
+      expect(providerServer.closeMock).not.toHaveBeenCalled();
     } finally {
       eviction.mockRestore();
     }
@@ -461,6 +463,8 @@ describe('provider-host proxy controls', () => {
       await expect(strictTestExchange(control, 'provider-host.evict.v1', { hostRef }, 5_000)).rejects.toThrow(
         'Provider-host eviction requires provider-host.evict.v2.',
       );
+      expect(eviction).toHaveBeenCalledOnce();
+      expect(providerServer.closeMock).not.toHaveBeenCalled();
     } finally {
       eviction.mockRestore();
     }
@@ -489,10 +493,27 @@ describe('provider-host proxy controls', () => {
     await expect(controls.inspect(hostRef)).resolves.toEqual(tombstoneRecords[0]);
   });
 
+  it('evicts and replays a process-absent tombstone through v1 without another physical close', async () => {
+    const spawnOptions = vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0];
+    if (spawnOptions === undefined) throw new Error('provider-host transport was not spawned');
+    spawnOptions.observeProviderResponse(rejectedConfigRead(0));
+    providerServer.resolveClosed();
+    await vi.waitFor(() => expect(providerHosts.admissionSnapshot().tombstones).toHaveLength(1));
+
+    await expect(strictTestExchange(control, 'provider-host.evict.v1', { hostRef }, 5_000)).resolves.toEqual({
+      state: 'evicted',
+    });
+    await expect(strictTestExchange(control, 'provider-host.evict.v1', { hostRef }, 5_000)).resolves.toEqual({
+      state: 'evicted',
+    });
+    expect(providerServer.closeMock).not.toHaveBeenCalled();
+  });
+
   it('drives the real evict sender through the real strict receiver and handler', async () => {
     const controls = authority.providerHosts;
     if (controls === undefined) throw new Error('provider-host controls were not composed');
 
+    await expect(controls.evict(hostRef)).resolves.toEqual({ kind: 'evicted' });
     await expect(controls.evict(hostRef)).resolves.toEqual({ kind: 'evicted' });
     expect(providerServer.closeMock).toHaveBeenCalledOnce();
     expect(providerHosts.listProviderHosts()).toEqual([]);

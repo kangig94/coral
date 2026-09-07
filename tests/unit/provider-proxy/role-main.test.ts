@@ -146,6 +146,7 @@ vi.mock('#src/provider-proxy/provider-root-authority.js', async (importOriginal)
             closed: () => null,
             forceClose: async () => undefined,
             evictHost: async () => ({ kind: 'stale' as const }),
+            evictHostV1: async () => ({ kind: 'stale' as const }),
             admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
             listProviderHosts: () => [],
             inspectProviderHost: () => null,
