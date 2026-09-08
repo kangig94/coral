@@ -5495,11 +5495,8 @@ describe('ProviderProxySetLifecycle', () => {
     },
   );
 
-  // The rule with no version exceptions: a capsule this build cannot derive a set identity from is represented
-  // so its address cannot be aliased, and dialed by nothing. It also does not deny an overlapping acquisition,
-  // because there is no identity here to deny one against — a `capsule-foreign` slot holds an address, a path
-  // and a reason, and no authority. Before this, a V1 took a third path that redeemed it and rewrote the file
-  // in place at the V1 name, which discovery re-derives and rejects on the very next boot.
+  // A capsule this build cannot derive a set identity from must be represented and dialed by nothing, and it
+  // may not deny an overlapping acquisition: there is no identity here to deny one against.
   it('represents a capsule it cannot inherit without dialing it or denying an overlapping fresh set', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
@@ -7258,12 +7255,8 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopAndReap).not.toHaveBeenCalled();
   });
 
-  // The two capsules this build must represent but never dial. Reaching a role is what makes the difference
-  // fatal rather than merely useless: `handoff.redeem` is build-gated (`assertNamedCoordinatorBuild`), a
-  // foreign set answers `identity_mismatch`, and the recovery policy classifies that as `refused` — which
-  // retires fatally before any seam weighs the absence evidence, taking the coordinator down over a set it
-  // never owned. A shipped V2 is the same problem from the other side: reachable, but its process identity is
-  // seconds this build cannot verify. Revert either branch and `redeemCapsule` runs here.
+  // A capsule whose set identity this build cannot verify must be represented without being dialed: reaching
+  // a role it does not own is what turns an unusable capsule into a fatal retirement.
   it('represents a capsule it cannot inherit and never dials it', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
