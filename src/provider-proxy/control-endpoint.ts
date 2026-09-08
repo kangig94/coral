@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
 import { truncate } from '../infra/text.js';
-import type { ControlHolderAuthority } from './holder-lifecycle.js';
+import type { ControlHolderAuthority, ControlHolderIdentity } from './holder-lifecycle.js';
 import {
   ProxyControlProtocolError,
   PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE,
@@ -249,8 +249,11 @@ export interface ControlEndpoint {
    */
   pushOnTenancy(frame: string, timeoutMs: number): ControlTenancyPush;
   faultControlTenancy(expectedControlEpoch: ControlEpoch): void;
-  /** Irreversible latches must reject authorization superseded by socket, holder, or epoch replacement. */
-  activeControlAuthorizationIsCurrent(authorization: ActiveControlAuthorization): boolean;
+  /** Irreversible latches must bind authorization to the exact holder admission they affect. */
+  activeControlAuthorizationIsCurrent(
+    authorization: ActiveControlAuthorization,
+    subject: ControlHolderIdentity | null,
+  ): boolean;
 }
 
 type Tenancy = {
@@ -921,12 +924,18 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       observer.onControlLost(live.epoch);
       live.socket.destroy();
     },
-    activeControlAuthorizationIsCurrent(authorization: ActiveControlAuthorization): boolean {
+    activeControlAuthorizationIsCurrent(
+      authorization: ActiveControlAuthorization,
+      subject: ControlHolderIdentity | null,
+    ): boolean {
       const record = activeControlAuthorizationRecords.get(authorization);
       if (record === undefined) return false;
       const live = tenancy;
       const admitted = holderAuthority.current();
       return (
+        subject !== null &&
+        subject.controlEpoch === record.controlEpoch &&
+        sameControlTenancyHolder(subject.holder, record.holder) &&
         live !== null &&
         live.socket === record.socket &&
         live.active &&

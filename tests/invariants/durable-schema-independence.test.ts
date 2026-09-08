@@ -130,6 +130,7 @@ const IN_MEMORY_PERSISTENCE_CONTEXT_SCHEMAS = new Set<SchemaKey>([
 
 const DURABLE_SCHEMA_FACTORIES = new Set<SchemaKey>([
   'src/coordinator/handoff-routing/status.ts#createHandoffRoutingRecordSchemaRegistry',
+  'src/obligation/shutdown-abandonment.ts#createShutdownObligationAbandonmentReceiptParser',
   'src/providers/claude/binding.ts#createClaudeBindingSchema',
   'src/providers/claude/binding.ts#createClaudeCredentialProfileSchema',
   'src/providers/codex/binding.ts#createCodexBindingSchema',

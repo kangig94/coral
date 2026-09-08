@@ -8,6 +8,7 @@ import {
   type ProcessLiveness,
 } from '#src/infra/node-process.js';
 import type { RecordedProcessIdentity } from '#src/infra/process-containment.js';
+import type { ActiveControlAuthorization } from '#src/provider-proxy/control-endpoint.js';
 import {
   createArmedEnforcer,
   EnforcementError,
@@ -179,7 +180,12 @@ function createHarness(options: {
     alive,
     holderAuthority,
     mintExplicit(): ExplicitTeardownAuthorization {
-      const authorization = mintExplicitTeardownAuthorization(holderAuthority);
+      const activeControlAuthorization = {} as unknown as ActiveControlAuthorization;
+      const authorization = mintExplicitTeardownAuthorization(
+        holderAuthority,
+        activeControlAuthorization,
+        (candidate, subject) => candidate === activeControlAuthorization && subject === holderAuthority.current(),
+      );
       if (authorization === null) throw new Error('harness holder authority has nothing installed');
       return authorization;
     },

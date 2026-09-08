@@ -5,6 +5,7 @@ import {
   recordShutdownObligationAbandonment,
 } from '#src/coordinator/shutdown-abandonment.js';
 import type { StoragePort } from '#src/infra/port-types.js';
+import { shutdownObligationSubjects } from '#src/obligation/shutdown-abandonment.js';
 
 function storageWith(
   initial: string | null,
@@ -29,6 +30,24 @@ function storageWith(
 }
 
 describe('shutdown abandonment status', () => {
+  it('reads durable receipts for every canonical shutdown-obligation subject', () => {
+    const entries = shutdownObligationSubjects.map((subject) => ({
+      subject,
+      instanceId: `${subject}-instance`,
+      recordedAt: '2026-09-07T00:00:00.000Z',
+      disposition: 'abandoned-unconfirmed',
+      detail: 'completion unconfirmed',
+      statusPath: '/run/shutdown-abandonment-status.v1.json',
+    }));
+    const storage = storageWith(JSON.stringify({ version: 1, entries }));
+
+    expect(readShutdownAbandonmentStatus({ storage, runDir: '/run' })).toEqual({
+      kind: 'available',
+      path: '/run/shutdown-abandonment-status.v1.json',
+      status: { version: 1, entries },
+    });
+  });
+
   it('publishes abandoned-unconfirmed status before returning the receipt', () => {
     const storage = storageWith(null);
     const recorded = recordShutdownObligationAbandonment(

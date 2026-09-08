@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { ReaperBootstrapCapsule } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
+  type ControlEndpoint,
   type ControlEndpointOptions,
   type ControlMethod,
   type createControlEndpoint as createControlEndpointType,
@@ -27,7 +28,9 @@ vi.mock('#src/provider-proxy/control-endpoint.js', async (importOriginal) => {
       return {
         listen: async (): Promise<void> => {},
         close: async (): Promise<void> => {},
-        activeControlAuthorizationIsCurrent: () => true,
+        activeControlAuthorizationIsCurrent: (
+          ..._args: Parameters<ControlEndpoint['activeControlAuthorizationIsCurrent']>
+        ) => true,
         pushOnTenancy: async (): Promise<never> => {
           throw new Error('unused tenancy push');
         },

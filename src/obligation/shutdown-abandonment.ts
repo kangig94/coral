@@ -21,16 +21,33 @@ export const shutdownObligationAbandonMethod = 'coordinator.shutdown_obligation.
 export const shutdownObligationAbandonRequestSchema = z.object({ subject: shutdownObligationSubjectSchema }).strict();
 export type ShutdownObligationAbandonRequest = z.infer<typeof shutdownObligationAbandonRequestSchema>;
 
-export const shutdownObligationAbandonmentReceiptSchema = z
-  .object({
-    subject: shutdownObligationSubjectSchema,
-    instanceId: z.string().min(1),
-    recordedAt: z.string().datetime(),
-    disposition: z.literal('abandoned-unconfirmed'),
-    detail: z.string().min(1),
-    statusPath: z.string().min(1),
-  })
-  .strict();
+type ShutdownObligationAbandonmentReceiptShape<SubjectSchema extends z.ZodType<ShutdownObligationSubject>> = {
+  subject: SubjectSchema;
+  instanceId: z.ZodString;
+  recordedAt: z.ZodString;
+  disposition: z.ZodLiteral<'abandoned-unconfirmed'>;
+  detail: z.ZodString;
+  statusPath: z.ZodString;
+};
+
+export function createShutdownObligationAbandonmentReceiptParser<
+  SubjectSchema extends z.ZodType<ShutdownObligationSubject>,
+>(subject: SubjectSchema): z.ZodObject<ShutdownObligationAbandonmentReceiptShape<SubjectSchema>, 'strict'> {
+  return z
+    .object({
+      subject,
+      instanceId: z.string().min(1),
+      recordedAt: z.string().datetime(),
+      disposition: z.literal('abandoned-unconfirmed'),
+      detail: z.string().min(1),
+      statusPath: z.string().min(1),
+    })
+    .strict();
+}
+
+export const shutdownObligationAbandonmentReceiptSchema = createShutdownObligationAbandonmentReceiptParser(
+  shutdownObligationSubjectSchema,
+);
 export type ShutdownObligationAbandonmentReceipt = z.infer<typeof shutdownObligationAbandonmentReceiptSchema>;
 
 export const shutdownObligationAbandonResultSchema = z.discriminatedUnion('kind', [

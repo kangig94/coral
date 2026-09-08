@@ -1,6 +1,11 @@
 import type { AsyncRecordedProcessObserver } from '../infra/node-process.js';
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
-import { sameControlTenancyHolder, type ControlEpoch, type ControlTenancyHolder } from './control-endpoint.js';
+import {
+  sameControlTenancyHolder,
+  type ActiveControlAuthorization,
+  type ControlEpoch,
+  type ControlTenancyHolder,
+} from './control-endpoint.js';
 
 export type ControlHolderIdentity = Readonly<{ controlEpoch: ControlEpoch; holder: ControlTenancyHolder }>;
 
@@ -174,8 +179,14 @@ export function controlHolderAuthorizationIsCurrent(
 /** Explicit-teardown authorization must be minted only after active-control revalidation. */
 export function mintExplicitTeardownAuthorization(
   authority: ControlHolderAuthority,
+  activeControlAuthorization: ActiveControlAuthorization,
+  activeControlAuthorizationIsCurrent: (
+    authorization: ActiveControlAuthorization,
+    subject: ControlHolderIdentity,
+  ) => boolean,
 ): ExplicitTeardownAuthorization | null {
   const current = authority.current();
   if (current === null) return null;
+  if (!activeControlAuthorizationIsCurrent(activeControlAuthorization, current)) return null;
   return { controlEpoch: current.controlEpoch, holder: current.holder } as unknown as ExplicitTeardownAuthorization;
 }

@@ -12,6 +12,7 @@ import {
 } from '#src/provider-proxy/control-client.js';
 import {
   type ActiveControlAuthorization,
+  type ControlEndpoint,
   type ControlEndpointOptions,
   type ControlMethod,
   type createControlEndpoint as createControlEndpointType,
@@ -41,7 +42,9 @@ vi.mock('#src/provider-proxy/control-endpoint.js', async (importOriginal) => {
       return {
         listen: async (): Promise<void> => {},
         close: async (): Promise<void> => {},
-        activeControlAuthorizationIsCurrent: () => endpointHarness.activeAuthorizationCurrent,
+        activeControlAuthorizationIsCurrent: (
+          ..._args: Parameters<ControlEndpoint['activeControlAuthorizationIsCurrent']>
+        ) => endpointHarness.activeAuthorizationCurrent,
         pushOnTenancy: async (): Promise<never> => {
           throw new Error('unused tenancy push');
         },

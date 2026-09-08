@@ -627,7 +627,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               ),
             );
             reaperConfirmProviderRootResultSchema.parse(reaperResult);
-            if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+            if (!endpoint.activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
               throw new ProxyControlProtocolError(
                 'unauthorized_control',
                 'Active control changed before this activation could latch.',
@@ -711,7 +711,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               );
               // Both registration gates must close and drain before containment snapshots are compared.
               assertExactRecordedSetAgreement('guardian', armed.recordedRoots(), prepared.providerRoots);
-              if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+              if (!endpoint.activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
                 throw new ProxyControlProtocolError(
                   'unauthorized_control',
                   'Active control changed before this commit could latch.',
@@ -724,11 +724,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             }
 
             // Commit authority must bind to the revalidated current holder.
-            const teardown = mintExplicitTeardownAuthorization(holderAuthority);
+            const teardown = mintExplicitTeardownAuthorization(holderAuthority, authorization, (candidate, subject) =>
+              endpoint.activeControlAuthorizationIsCurrent(candidate, subject),
+            );
             if (teardown === null) {
               throw new ProxyControlProtocolError(
-                'invalid_state',
-                'This guardian holds no admitted holder to tear down.',
+                'unauthorized_control',
+                'Active control changed before teardown authorization could be minted.',
               );
             }
             const disposition = await armed.stopAndReap(teardown);
@@ -804,7 +806,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               reason: truncate(reason, 500),
             });
           }
-          if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
+          if (!endpoint.activeControlAuthorizationIsCurrent(authorization, holderAuthority.current())) {
             return guardianAcquisitionPublishResultSchema.parse({
               state: 'acquisition-publication-unknown',
               reason: 'Active control changed after reaper publication was confirmed.',

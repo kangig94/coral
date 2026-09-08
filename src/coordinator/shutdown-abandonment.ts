@@ -6,31 +6,15 @@ import { nowIsoString } from '../infra/time.js';
 import {
   type ShutdownObligationAbandonmentReceipt,
   type ShutdownObligationSubject,
+  createShutdownObligationAbandonmentReceiptParser,
+  shutdownObligationSubjects,
 } from '../obligation/shutdown-abandonment.js';
 
 const SHUTDOWN_ABANDONMENT_STATUS_VERSION = 1;
-const durableShutdownObligationSubjectSchema = z.enum([
-  'recovery-coordinator-teardown',
-  'kb-child-shutdown',
-  'provider-operation-mutation-drain',
-  'provider-host-shutdown',
-  'child-termination',
-  'app-server-handoff-quiesce',
-  'provider-host-drain-for-handoff',
-  'process-incarnation-probe-shutdown',
-  'lifecycle-reactor-dispose',
-  'provider-control-and-ipc-authority-release',
-]);
-const durableShutdownObligationAbandonmentReceiptSchema = z
-  .object({
-    subject: durableShutdownObligationSubjectSchema,
-    instanceId: z.string().min(1),
-    recordedAt: z.string().datetime(),
-    disposition: z.literal('abandoned-unconfirmed'),
-    detail: z.string().min(1),
-    statusPath: z.string().min(1),
-  })
-  .strict();
+const durableShutdownObligationSubjectSchema = z.enum(shutdownObligationSubjects);
+const durableShutdownObligationAbandonmentReceiptSchema = createShutdownObligationAbandonmentReceiptParser(
+  durableShutdownObligationSubjectSchema,
+);
 const shutdownAbandonmentStatusSchema = z
   .object({
     version: z.literal(SHUTDOWN_ABANDONMENT_STATUS_VERSION),

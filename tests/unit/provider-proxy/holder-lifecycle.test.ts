@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
-import type { ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.js';
+import type { ActiveControlAuthorization, ControlTenancyHolder } from '#src/provider-proxy/control-endpoint.js';
 import {
   controlHolderAuthorizationIsCurrent,
   createControlHolderAuthority,
@@ -332,14 +332,24 @@ describe('observeControlHolder', () => {
   it('carries observedAt as the instant the evidence resolved, not a later consumption time', async () => {
     const authority = createControlHolderAuthority();
     authority.install({ controlEpoch: 1, holder: holder('coordinator') });
-    const clock = testClock(500);
+    let now = 500n;
+    const clock = createMonotonicClock(observationClockScope, { readMilliseconds: () => now });
+    let resolveObservation!: (liveness: ProcessLiveness) => void;
+    const pending = observeControlHolder(
+      authority,
+      () =>
+        new Promise((resolve) => {
+          resolveObservation = resolve;
+        }),
+      clock,
+    );
+
+    now = 750n;
     const evidenceResolvedAt = clock.now();
+    resolveObservation('alive');
+    const result = await pending;
 
-    const result = await observeControlHolder(authority, observerAnswering('alive'), clock);
-
-    // Evidence time must remain its resolution instant when consumed later.
-    expect(clock.compare(result.observedAt, evidenceResolvedAt)).toBeGreaterThanOrEqual(0);
-    expect(clock.compare(result.observedAt, clock.now())).toBeLessThan(0);
+    expect(clock.compare(result.observedAt, evidenceResolvedAt)).toBe(0);
   });
 });
 
@@ -373,29 +383,66 @@ describe('controlHolderAuthorizationIsCurrent', () => {
 });
 
 describe('mintExplicitTeardownAuthorization', () => {
-  it('is null when nothing is currently admitted', () => {
-    const authority = createControlHolderAuthority();
+  const activeControlAuthorization = {} as unknown as ActiveControlAuthorization;
 
-    expect(mintExplicitTeardownAuthorization(authority)).toBeNull();
+  it('is null when the active-control authorization is not current', () => {
+    const authority = createControlHolderAuthority();
+    authority.install({ controlEpoch: 1, holder: holder('coordinator') });
+
+    expect(mintExplicitTeardownAuthorization(authority, activeControlAuthorization, () => false)).toBeNull();
   });
 
-  it('mints from the authority’s own current holder, and the result verifies as current', () => {
+  it('mints from the authority’s own current holder only after active-control authorization succeeds', () => {
     const authority = createControlHolderAuthority();
     const incumbent = holder('coordinator');
-    authority.install({ controlEpoch: 1, holder: incumbent });
+    const admission = { controlEpoch: 1, holder: incumbent } as const;
+    authority.install(admission);
+    const activeControlAuthorizationIsCurrent = vi.fn(
+      (candidate: ActiveControlAuthorization, subject: ControlHolderIdentity) =>
+        candidate === activeControlAuthorization && subject === admission,
+    );
 
-    const authorization = mintExplicitTeardownAuthorization(authority);
+    const authorization = mintExplicitTeardownAuthorization(
+      authority,
+      activeControlAuthorization,
+      activeControlAuthorizationIsCurrent,
+    );
 
+    expect(activeControlAuthorizationIsCurrent).toHaveBeenCalledWith(activeControlAuthorization, admission);
     expect(authorization).not.toBeNull();
     expect((authorization as ExplicitTeardownAuthorization).controlEpoch).toBe(1);
     expect((authorization as ExplicitTeardownAuthorization).holder).toEqual(incumbent);
     expect(controlHolderAuthorizationIsCurrent(authority, authorization as ExplicitTeardownAuthorization)).toBe(true);
   });
 
+  it('refuses an active-control authorization bound to a different holder admission', () => {
+    const authority = createControlHolderAuthority();
+    const admitted = identity(2, holder('target', 2));
+    const authorized = identity(1, holder('authorized'));
+    authority.install(admitted);
+    const activeControlAuthorizationIsCurrent = vi.fn(
+      (candidate: ActiveControlAuthorization, subject: ControlHolderIdentity) =>
+        candidate === activeControlAuthorization &&
+        subject.controlEpoch === authorized.controlEpoch &&
+        subject.holder.instanceId === authorized.holder.instanceId &&
+        subject.holder.pid === authorized.holder.pid &&
+        subject.holder.incarnation === authorized.holder.incarnation,
+    );
+
+    expect(
+      mintExplicitTeardownAuthorization(authority, activeControlAuthorization, activeControlAuthorizationIsCurrent),
+    ).toBeNull();
+    expect(activeControlAuthorizationIsCurrent).toHaveBeenCalledWith(activeControlAuthorization, admitted);
+  });
+
   it('is revoked once a successor is installed after minting', () => {
     const authority = createControlHolderAuthority();
     authority.install({ controlEpoch: 1, holder: holder('incumbent') });
-    const authorization = mintExplicitTeardownAuthorization(authority) as ExplicitTeardownAuthorization;
+    const authorization = mintExplicitTeardownAuthorization(
+      authority,
+      activeControlAuthorization,
+      (candidate, subject) => candidate === activeControlAuthorization && subject === authority.current(),
+    ) as ExplicitTeardownAuthorization;
 
     authority.install({ controlEpoch: 2, holder: holder('successor', 2) });
 

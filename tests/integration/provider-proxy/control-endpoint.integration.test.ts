@@ -23,7 +23,7 @@ import {
   type ControlMethod,
   type ControlTenancyHolder,
 } from '#src/provider-proxy/control-endpoint.js';
-import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
+import { createControlHolderAuthority, type ControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
 
@@ -73,6 +73,7 @@ async function startEndpoint(
   } = {},
 ): Promise<{
   endpoint: ControlEndpoint;
+  holderAuthority: ControlHolderAuthority;
   socketPath: string;
   observer: { onControlLost: ReturnType<typeof vi.fn>; onControlActive: ReturnType<typeof vi.fn> };
   challenges: ControlChallenge[];
@@ -232,6 +233,7 @@ async function startEndpoint(
     ]);
   }
 
+  const holderAuthority = createControlHolderAuthority();
   const endpoint = createControlEndpoint({
     socketPath,
     role: {
@@ -242,7 +244,7 @@ async function startEndpoint(
     challenges: challengeAuthority,
     observer,
     timer: realTimer(),
-    holderAuthority: createControlHolderAuthority(),
+    holderAuthority,
     requestTimeoutMs: 5_000,
   });
 
@@ -250,6 +252,7 @@ async function startEndpoint(
   cleanups.push(() => endpoint.close());
   return {
     endpoint,
+    holderAuthority,
     socketPath,
     observer,
     challenges,
@@ -971,7 +974,7 @@ describe('provider-proxy control endpoint', () => {
 
   it('mints an ActiveControlAuthorization current at dispatch time', async () => {
     const authorizations: ActiveControlAuthorization[] = [];
-    const { socketPath, endpoint } = await startEndpoint({
+    const { socketPath, endpoint, holderAuthority } = await startEndpoint({
       onActiveAuthorization: (authorization) => authorizations.push(authorization),
     });
     const incumbent = await connect(socketPath);
@@ -981,15 +984,15 @@ describe('provider-proxy control endpoint', () => {
     await incumbent.call('role.authorized.v1', {});
 
     expect(authorizations).toHaveLength(1);
-    expect(endpoint.activeControlAuthorizationIsCurrent(authorizations[0])).toBe(true);
+    expect(endpoint.activeControlAuthorizationIsCurrent(authorizations[0], holderAuthority.current())).toBe(true);
   });
 
   it(
-    'ActiveControlAuthorization is revoked the instant a successor is admitted, and a value this endpoint ' +
-      'never minted never verifies',
+    'ActiveControlAuthorization verifies only for its exact admission, is revoked by a successor, and a ' +
+      'value this endpoint never minted never verifies',
     async () => {
       const authorizations: ActiveControlAuthorization[] = [];
-      const { socketPath, endpoint, lapseControl } = await startEndpoint({
+      const { socketPath, endpoint, holderAuthority, lapseControl } = await startEndpoint({
         onActiveAuthorization: (authorization) => authorizations.push(authorization),
       });
       const incumbent = await connect(socketPath);
@@ -997,11 +1000,20 @@ describe('provider-proxy control endpoint', () => {
       await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
       await incumbent.call('role.authorized.v1', {});
       const incumbentAuthorization = authorizations.at(-1) as ActiveControlAuthorization;
-      expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization)).toBe(true);
+      const incumbentAdmission = holderAuthority.current();
+      if (incumbentAdmission === null) throw new Error('the incumbent admission was not installed');
+      expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization, incumbentAdmission)).toBe(true);
+
+      expect(
+        endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization, {
+          controlEpoch: incumbentAdmission.controlEpoch,
+          holder: holderFor('different-holder'),
+        }),
+      ).toBe(false);
 
       // A value this endpoint never minted is never current, regardless of its shape.
       const foreign = {} as ActiveControlAuthorization;
-      expect(endpoint.activeControlAuthorizationIsCurrent(foreign)).toBe(false);
+      expect(endpoint.activeControlAuthorizationIsCurrent(foreign, incumbentAdmission)).toBe(false);
 
       // Successor admission must revoke the incumbent's authorization immediately.
       lapseControl();
@@ -1011,7 +1023,7 @@ describe('provider-proxy control endpoint', () => {
         heartbeatChallenge: string;
       };
       await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
-      expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization)).toBe(false);
+      expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization, incumbentAdmission)).toBe(false);
 
       await successor.call('role.heartbeat.v1', {
         controlEpoch: redeemed.controlEpoch,
@@ -1019,7 +1031,9 @@ describe('provider-proxy control endpoint', () => {
       });
       await successor.call('role.authorized.v1', {});
       const successorAuthorization = authorizations.at(-1) as ActiveControlAuthorization;
-      expect(endpoint.activeControlAuthorizationIsCurrent(successorAuthorization)).toBe(true);
+      expect(endpoint.activeControlAuthorizationIsCurrent(successorAuthorization, holderAuthority.current())).toBe(
+        true,
+      );
     },
   );
 
