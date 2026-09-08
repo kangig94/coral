@@ -48,8 +48,9 @@ does), which is the distinction both commands currently tell the operator they c
 **The cost is what has to be weighed.** Both probes are asynchronous, and `observeCoordinator` is
 synchronous — it is called from `shutdownBackend` and `getBackendStatusFull`, both already `async`, so the
 change is reachable, but it moves a filesystem check into a network round trip on a path that runs before
-every mutating CLI command. That is the same trade `containment-observation-deadline.md` is about one layer
-down: an observation that costs a round trip has to fit inside whatever bounds the caller.
+every mutating CLI command. It is the same trade budgeted containment faced one layer down: an observation
+that costs a round trip has to fit inside whatever bounds the caller, and the answer there was to make the
+observation asynchronous and check the deadline around it rather than only after it.
 
 There is also a smaller, cheaper option that is not equivalent and should not be mistaken for one: `lstat`
 the path and require it to be a socket rather than any file. That rules out a stray regular file at the path;

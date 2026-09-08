@@ -74,9 +74,10 @@ which is worse.
 ## Explicitly out of scope
 
 - The bound's value, and whether git is the right source of a project identity at all.
-- `containment-observation-deadline`, which is also about a synchronous probe that cannot be interrupted but
-  asks whether a _deadline_ survives it, not what its answer means. Sharing the observation that a wedged
-  subprocess blocks everything does not make them one entry, and neither fix produces the other.
+- The separate question of whether a _deadline_ survives an uninterruptible synchronous probe, rather than
+  what that probe's answer means. Sharing the observation that a wedged subprocess blocks everything does not
+  make them one problem, and neither fix produces the other. That deadline question was answered by moving
+  budgeted containment onto asynchronous identity-bound observation; this entry is untouched by it.
 - `isGitRepo` in `src/kb/curate/git-sync.ts`, which had the same collapse. It is not part of this entry
   because what a wrong answer costs there is different: it gates behaviour rather than naming anything, so the
   KB stops committing for an interval. Not "persists nothing", which an earlier revision of this line claimed
