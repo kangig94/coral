@@ -104,6 +104,7 @@ import {
   insertProviderOperation,
   providerOperationMutationAdmission,
   ProviderOperationMutationAdmission,
+  type ProviderOperationMutationSetFence,
 } from '#src/store/provider-operation-journal.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -784,6 +785,7 @@ async function authorizedOperatorExitForProof(
   Readonly<{
     capability: ProviderProxySetOperatorExitCapability;
     lifecycle: ProviderProxySetLifecycle;
+    mutationFence: ProviderOperationMutationSetFence;
     stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'];
   }>
 > {
@@ -801,6 +803,8 @@ async function authorizedOperatorExitForProof(
       }),
   );
   const clock = new ManualClock();
+  const mutationAdmission = new ProviderOperationMutationAdmission();
+  let mutationFence: ProviderOperationMutationSetFence | null = null;
   const authority = fakeAuthority({ record, faults, stopAndReap, adoptionWindowMs: 100 });
   const lifecycle = lifecycleFor({
     claims,
@@ -809,6 +813,10 @@ async function authorizedOperatorExitForProof(
     time: clock,
     proveContainmentAbsent: noContainmentProof,
     reapRecordedContainment,
+    fenceProviderOperationMutations: (identity) => {
+      mutationFence = mutationAdmission.closeSet(identity);
+      return mutationFence;
+    },
     ...(operatorDispositionStore === undefined ? {} : { operatorDispositionStore }),
   });
   lifecycle.initializeClaimSlots();
@@ -827,7 +835,8 @@ async function authorizedOperatorExitForProof(
   if (authorization.kind !== 'authorized') {
     throw new Error(`expected authorization, received ${authorization.kind}`);
   }
-  return { capability: authorization.capability, lifecycle, stopAndReap };
+  if (mutationFence === null) throw new Error('operator exit did not acquire a mutation fence');
+  return { capability: authorization.capability, lifecycle, mutationFence, stopAndReap };
 }
 
 function capsuleFor(
@@ -4295,12 +4304,14 @@ describe('ProviderProxySetLifecycle', () => {
         db,
         new AbortController().signal,
       );
+      expect(harness.mutationFence.isHeld()).toBe(true);
       const result = await harness.lifecycle.completeOperatorExit(harness.capability, proof, false);
 
       expect(result).toEqual(expect.objectContaining({ kind: expectedKind, effect: noOperatorExitEffect }));
       expect(process.kill).not.toHaveBeenCalled();
       expect(reapRecordedContainment).not.toHaveBeenCalled();
       expect(harness.stopAndReap).not.toHaveBeenCalled();
+      expect(harness.mutationFence.isHeld()).toBe(false);
     } finally {
       db.close();
     }
@@ -4664,9 +4675,11 @@ describe('ProviderProxySetLifecycle', () => {
           },
     );
 
+    expect(harness.mutationFence.isHeld()).toBe(true);
     await expect(
       harness.lifecycle.completeOperatorExit(harness.capability, foreignProof, mode === 'abandon'),
     ).rejects.toThrow('provider_proxy_set_containment_proof_identity_mismatch');
+    expect(harness.mutationFence.isHeld()).toBe(false);
     expect(reapRecordedContainment).not.toHaveBeenCalled();
     expect(harness.stopAndReap).not.toHaveBeenCalled();
     expect(harness.lifecycle.snapshot().represented).toBe(1);
@@ -5053,6 +5066,8 @@ describe('ProviderProxySetLifecycle', () => {
     const containmentDisappeared = vi.fn<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>(
       () => disappearanceAcceptance.promise,
     );
+    const mutationAdmission = new ProviderOperationMutationAdmission();
+    const mutationFences: ProviderOperationMutationSetFence[] = [];
     const authority = fakeAuthority({ record, faults, adoptionWindowMs: 100 });
     const lifecycle = lifecycleFor({
       claims,
@@ -5060,6 +5075,11 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceConsumer: { containmentDisappeared },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
+      fenceProviderOperationMutations: (identity) => {
+        const mutationFence = mutationAdmission.closeSet(identity);
+        mutationFences.push(mutationFence);
+        return mutationFence;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -5076,6 +5096,8 @@ describe('ProviderProxySetLifecycle', () => {
 
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
+    const operatorExitFence = mutationFences.at(-1);
+    if (operatorExitFence === undefined) throw new Error('operator exit did not acquire a mutation fence');
     await expect(
       lifecycle.completeOperatorExit(
         authorization.capability,
@@ -5089,6 +5111,7 @@ describe('ProviderProxySetLifecycle', () => {
         claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
       }),
     );
+    expect(operatorExitFence.isHeld()).toBe(true);
     expect(lifecycle.snapshot().represented).toBe(1);
 
     disappearanceAcceptance.resolve({
@@ -5100,6 +5123,7 @@ describe('ProviderProxySetLifecycle', () => {
       },
     });
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    expect(operatorExitFence.isHeld()).toBe(false);
   });
 
   it.each([
@@ -5307,6 +5331,8 @@ describe('ProviderProxySetLifecycle', () => {
     const representationAbandoned = vi.fn<ProviderRepresentationAbandonmentConsumer['representationAbandoned']>(
       () => abandonmentAcceptance.promise,
     );
+    const mutationAdmission = new ProviderOperationMutationAdmission();
+    const mutationFences: ProviderOperationMutationSetFence[] = [];
     const authority = fakeAuthority({
       record,
       faults,
@@ -5321,6 +5347,11 @@ describe('ProviderProxySetLifecycle', () => {
       abandonmentConsumer: { representationAbandoned },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
+      fenceProviderOperationMutations: (identity) => {
+        const mutationFence = mutationAdmission.closeSet(identity);
+        mutationFences.push(mutationFence);
+        return mutationFence;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -5337,6 +5368,8 @@ describe('ProviderProxySetLifecycle', () => {
 
     const authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
     if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
+    const operatorExitFence = mutationFences.at(-1);
+    if (operatorExitFence === undefined) throw new Error('operator exit did not acquire a mutation fence');
     const completion = lifecycle.completeOperatorExit(
       authorization.capability,
       await operatorContainmentProof(authorization.capability, {
@@ -5358,6 +5391,7 @@ describe('ProviderProxySetLifecycle', () => {
         claimDischarge: { kind: 'initial-disposition-pending', exit: 'initial-disposition-settlement' },
       }),
     );
+    expect(operatorExitFence.isHeld()).toBe(true);
     expect(lifecycle.snapshot().represented).toBe(1);
 
     abandonmentAcceptance.resolve({
@@ -5369,6 +5403,7 @@ describe('ProviderProxySetLifecycle', () => {
       },
     });
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+    expect(operatorExitFence.isHeld()).toBe(false);
 
     expect(representationAbandoned).toHaveBeenCalledWith({
       operation: record.operation,
