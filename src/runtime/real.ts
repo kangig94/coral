@@ -467,10 +467,25 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           resolve();
         });
       });
+      let wrapperTermination: Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }> | null = null;
+      const requestWrapperTermination = (): GracefulKillDisposition => {
+        if (wrapperTermination !== null) return wrapperTermination;
+        const disposition = gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+        if (disposition.kind === 'escalation-scheduled') {
+          wrapperTermination = disposition;
+          void disposition.settlement.then(() => {
+            if (wrapperTermination === disposition) wrapperTermination = null;
+          });
+        }
+        return disposition;
+      };
 
-      const holdLaunchFailure = (reason: string): DurableLaunchHeld => {
+      const holdLaunchFailure = (
+        reason: string,
+        retryAfter = time.sleep(DURABLE_POLL_INTERVAL_MS),
+      ): DurableLaunchHeld => {
         const retry = async (): Promise<DurableLaunchRetryDisposition> => {
-          gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+          const termination = requestWrapperTermination();
           if (wrapperClosed) return { disposition: 'settled' };
           if (wrapper.pid !== undefined) {
             try {
@@ -479,14 +494,19 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
               // Unknown liveness retains the close-backed launch obligation.
             }
           }
-          return holdLaunchFailure(reason);
+          return holdLaunchFailure(
+            reason,
+            termination.kind === 'escalation-scheduled'
+              ? termination.settlement.then(() => undefined)
+              : time.sleep(DURABLE_POLL_INTERVAL_MS),
+          );
         };
         return {
           disposition: 'held',
           owner: 'launch-caller',
           pid: wrapper.pid ?? null,
           reason,
-          retryAfter: Promise.race([wrapperSettlement, time.sleep(DURABLE_POLL_INTERVAL_MS)]),
+          retryAfter: Promise.race([wrapperSettlement, retryAfter]),
           retry,
         };
       };
@@ -507,8 +527,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         const ownershipAcceptance = options.onWrapperSpawned?.({
           pid: wrapper.pid ?? null,
           settled: wrapperSettlement,
-          requestTermination: (): GracefulKillDisposition =>
-            gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
+          requestTermination: requestWrapperTermination,
         });
         if (options.onWrapperSpawned !== undefined && ownershipAcceptance?.kind !== 'accepted') {
           return resolveLaunchFailure('Durable wrapper ownership was not accepted.');
@@ -527,8 +546,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           ? undefined
           : Object.freeze({
               ...wrapperAuthority,
-              requestTermination: (): GracefulKillDisposition =>
-                gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
+              requestTermination: requestWrapperTermination,
             });
 
       let initiallyObservedLeaderIncarnation: ProcessIncarnation | null = null;

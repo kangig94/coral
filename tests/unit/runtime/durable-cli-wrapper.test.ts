@@ -37,12 +37,13 @@ async function waitForLineCount(path: string, count: number, timeoutMs = 2_000):
   }
 }
 
-type FinalizerOutcome = 'error' | 'close' | 'ready';
+type FinalizerOutcome = 'error' | 'error-then-signal' | 'close' | 'ready';
 
 type WrapperHarness = Readonly<{
   attemptLogPath: string;
   closePromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   descendantSignalPath: string;
+  retryTriggerPath: string;
   stderr: () => string;
   wrapper: ReturnType<typeof spawn>;
   cleanup: () => Promise<void>;
@@ -56,6 +57,7 @@ type ContainedDescendantOptions = Readonly<{
 async function buildWrapperWithFinalizerOutcomes(
   wrapperPath: string,
   attemptLogPath: string,
+  retryTriggerPath: string,
   outcomes: readonly FinalizerOutcome[],
   terminationGraceMs: number,
 ): Promise<void> {
@@ -97,10 +99,14 @@ async function buildWrapperWithFinalizerOutcomes(
                 child.send = () => false;
                 child.unref = () => child;
                 queueMicrotask(() => {
-                  if (outcome === 'error') {
+                  if (outcome === 'error' || outcome === 'error-then-signal') {
                     const error = Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' });
                     child.emit('error', error);
                     child.emit('close', -2, null);
+                    if (outcome === 'error-then-signal') {
+                      process.emit('SIGINT');
+                      appendFileSync(${JSON.stringify(retryTriggerPath)}, String(finalizerAttempt));
+                    }
                     return;
                   }
                   if (outcome === 'close') {
@@ -118,13 +124,47 @@ async function buildWrapperWithFinalizerOutcomes(
             loader: 'js',
             contents: `
               export const gracefulKill = (child, runtime, observeLiveness) => {
-                child.kill('SIGTERM');
-                const timer = runtime.time.setTimeout(() => {
-                  if (child.pid === undefined || observeLiveness(child.pid) !== 'alive') return;
-                  child.kill('SIGKILL');
-                }, ${JSON.stringify(terminationGraceMs)});
-                timer.unref?.();
-                child.on('close', () => runtime.time.clearTimeout(timer));
+                let delivered;
+                try {
+                  delivered = child.kill('SIGTERM');
+                } catch {
+                  return { kind: 'signal-failed', pid: child.pid ?? null, signal: 'SIGTERM', reason: 'kill-port-threw' };
+                }
+                if (delivered === false) {
+                  return {
+                    kind: 'signal-failed',
+                    pid: child.pid ?? null,
+                    signal: 'SIGTERM',
+                    reason: 'kill-port-returned-false',
+                  };
+                }
+                if (child.pid === undefined) return { kind: 'signal-refused', pid: null, reason: 'child-pid-unavailable' };
+
+                const pid = child.pid;
+                const settlement = new Promise((resolve) => {
+                  let settled = false;
+                  const finish = (outcome) => {
+                    if (settled) return;
+                    settled = true;
+                    runtime.time.clearTimeout(timer);
+                    resolve(outcome);
+                  };
+                  const timer = runtime.time.setTimeout(() => {
+                    const observation = observeLiveness(pid);
+                    if (observation === 'absent') {
+                      finish({ kind: 'observed-absent', pid });
+                      return;
+                    }
+                    if (observation !== 'alive') {
+                      finish({ kind: 'target-unobservable', pid, stage: 'after-sigterm' });
+                      return;
+                    }
+                    child.kill('SIGKILL');
+                  }, ${JSON.stringify(terminationGraceMs)});
+                  timer.unref?.();
+                  child.on('close', () => finish({ kind: 'observed-absent', pid }));
+                });
+                return { kind: 'escalation-scheduled', pid, settlement };
               };
             `,
           }));
@@ -142,12 +182,19 @@ async function startWrapperWithContainedDescendant(
   const jobDir = join(rootDir, 'job');
   const wrapperPath = join(rootDir, 'durable-cli-wrapper.mjs');
   const attemptLogPath = join(rootDir, 'finalizer-attempts');
+  const retryTriggerPath = join(rootDir, 'retry-trigger');
   const descendantStartedPath = join(rootDir, 'descendant-started');
   const descendantSignalPath = join(rootDir, 'descendant-signal');
   const launchPayloadPath = join(jobDir, 'launch.v1.json');
   mkdirSync(jobDir);
   writeFileSync(join(jobDir, 'env.json'), '{}');
-  await buildWrapperWithFinalizerOutcomes(wrapperPath, attemptLogPath, outcomes, options.terminationGraceMs ?? 5_000);
+  await buildWrapperWithFinalizerOutcomes(
+    wrapperPath,
+    attemptLogPath,
+    retryTriggerPath,
+    outcomes,
+    options.terminationGraceMs ?? 5_000,
+  );
 
   const descendantScript = [
     `const fs = require('node:fs')`,
@@ -198,6 +245,7 @@ async function startWrapperWithContainedDescendant(
     attemptLogPath,
     closePromise,
     descendantSignalPath,
+    retryTriggerPath,
     stderr: () => stderr,
     wrapper,
     cleanup: async () => {
@@ -243,15 +291,14 @@ describe('durable-cli-wrapper', () => {
   });
 
   it('lets a later signal re-drive a failed finalizer handoff', async () => {
-    const harness = await startWrapperWithContainedDescendant(['error', 'ready']);
+    const harness = await startWrapperWithContainedDescendant(['error-then-signal', 'ready']);
     try {
       expect(harness.wrapper.kill('SIGTERM')).toBe(true);
-      await waitForLineCount(harness.attemptLogPath, 1);
-      expect(harness.wrapper.kill('SIGINT')).toBe(true);
-      await waitForLineCount(harness.attemptLogPath, 2, 150);
+      await waitForFile(harness.retryTriggerPath);
+      expect(readFileSync(harness.retryTriggerPath, 'utf8')).toBe('2');
       await waitForFile(harness.descendantSignalPath, 5_000);
       expect(await harness.closePromise).toEqual({ code: 0, signal: null });
-      expect(finalizerAttempts(harness.attemptLogPath)).toEqual(['error', 'ready']);
+      expect(finalizerAttempts(harness.attemptLogPath)).toEqual(['error-then-signal', 'ready']);
     } finally {
       await harness.cleanup();
     }

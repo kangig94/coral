@@ -11,7 +11,12 @@ import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import { formatToolProgress } from '../progress.js';
 import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
 import { buildClaudeChildEnv } from './child-env.js';
-import { combineChildShutdownDispositions, heldChildShutdown, observedChildShutdown } from './child-shutdown.js';
+import {
+  combineChildShutdownDispositions,
+  heldChildShutdown,
+  joinChildShutdownAttempt,
+  observedChildShutdown,
+} from './child-shutdown.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -151,6 +156,7 @@ type ChildBinding = {
   child: ClaudeBrokerChild;
   closed: Promise<ChildExit>;
   closedObserved: boolean;
+  shutdownAttempt: Promise<ControllerShutdownDisposition> | null;
   ready: Promise<void>;
   expectedExit: boolean;
   dispose: () => void;
@@ -565,6 +571,7 @@ export class SingleSessionController {
       child,
       closed,
       closedObserved: false,
+      shutdownAttempt: null,
       ready,
       expectedExit: false,
       dispose: () => {
@@ -827,7 +834,11 @@ export class SingleSessionController {
     return this.finishExpectedChildShutdown(binding);
   }
 
-  private async finishExpectedChildShutdown(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+  private finishExpectedChildShutdown(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+    return joinChildShutdownAttempt(binding, () => this.attemptExpectedChildShutdown(binding));
+  }
+
+  private async attemptExpectedChildShutdown(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
     if (await this.waitForChildExit(binding.closed, DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs)) {
       return observedChildShutdown([binding.subject]);
     }
@@ -879,7 +890,11 @@ export class SingleSessionController {
     this.recoveryContinuation = continuation;
   }
 
-  private async terminateChildBinding(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+  private terminateChildBinding(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+    return joinChildShutdownAttempt(binding, () => this.attemptChildTermination(binding));
+  }
+
+  private async attemptChildTermination(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
     if (binding.closedObserved) return observedChildShutdown([binding.subject]);
     try {
       binding.child.kill('SIGTERM');

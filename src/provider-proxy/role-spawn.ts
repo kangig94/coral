@@ -5,6 +5,8 @@ import type { ChildProcessLike } from '../infra/port-types.js';
 import {
   gracefulKill,
   observeUnattributableSpawnedProcessGroup,
+  type GracefulKillDisposition,
+  type GracefulKillOutcome,
   type SpawnedProcessGroupAbsenceEvidence,
 } from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -54,10 +56,6 @@ export type RoleSpawnPorts = Readonly<{
   /** Injected so a test can fake a spawned pid's incarnation without a real process existing. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
-
-function scheduleRoleKill(child: ChildProcessLike, ports: RoleSpawnPorts): void {
-  gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
-}
 
 export type RoleSpawnOptions = Readonly<{
   pluginRoot: string;
@@ -211,10 +209,9 @@ export function spawnRoleProcess(
       resolve();
     });
   });
-  // Nothing in this process reads the role's stdout/stderr. Draining keeps the OS pipe buffer from filling
-  // and backpressuring the role's own writes, and the `'error'` listeners keep a later stream error from
-  // reaching this process as an uncaught exception — the same guard `kb-daemon-supervisor.ts` installs on
-  // its own spawned child's stdin.
+  let killInFlight: Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }> | null = null;
+  let killOutcome: GracefulKillOutcome | null = null;
+  // Piped output must be drained so a full OS pipe cannot block the child.
   child.stdout?.on('data', () => {});
   child.stdout?.on('error', () => {});
   child.stderr?.on('data', () => {});
@@ -280,6 +277,7 @@ export function spawnRoleProcess(
     const operatorExit = operatorExitFor(subject);
     const retry = async (signal?: AbortSignal): Promise<RoleSpawnCleanupDisposition<typeof subject>> => {
       if (childClosed) return observedProcessAbsent(subject);
+      if (killOutcome?.kind === 'observed-absent') return observedProcessAbsent(subject);
       if (signal?.aborted) {
         return {
           kind: 'held-unobservable',
@@ -290,7 +288,20 @@ export function spawnRoleProcess(
           retry,
         };
       }
-      scheduleRoleKill(child, ports);
+      if (killInFlight === null) {
+        const disposition = gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
+        if (disposition.kind === 'escalation-scheduled') {
+          killInFlight = disposition;
+          void disposition.settlement.then((outcome) => {
+            if (killInFlight === disposition) {
+              killInFlight = null;
+              killOutcome = outcome;
+            }
+          });
+        } else {
+          killOutcome = disposition;
+        }
+      }
       if (childClosed) return observedProcessAbsent(subject);
       if (typeof child.pid === 'number') {
         try {

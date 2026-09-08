@@ -127,24 +127,33 @@ describe('async recorded process observation', () => {
   });
 
   it('does not block the event loop while a read is in flight', async () => {
-    let ticked = 0;
-    const interval = setInterval(() => {
-      ticked += 1;
-    }, 1);
-    try {
-      const { observe } = observerWith({
-        observeLiveness: () => 'alive',
-        readIncarnation: () => new Promise((resolve) => setTimeout(() => resolve(RECORDED), 30)),
+    let settleRead!: (value: ProcessIncarnation | null) => void;
+    let readSettled = false;
+    const { observe } = observerWith({
+      observeLiveness: () => 'alive',
+      readIncarnation: () =>
+        new Promise((resolve) => {
+          settleRead = (value) => {
+            readSettled = true;
+            resolve(value);
+          };
+        }),
+    });
+
+    const observation = observe({ pid: PID, incarnation: RECORDED });
+    const unrelatedWork = vi.fn();
+    await new Promise<void>((resolve) => {
+      setImmediate(() => {
+        unrelatedWork();
+        resolve();
       });
+    });
 
-      await observe({ pid: PID, incarnation: RECORDED });
+    expect(unrelatedWork).toHaveBeenCalledOnce();
+    expect(readSettled).toBe(false);
 
-      expect(ticked, 'a synchronous probe would have starved every other timer for its whole duration').toBeGreaterThan(
-        0,
-      );
-    } finally {
-      clearInterval(interval);
-    }
+    settleRead(RECORDED);
+    await expect(observation).resolves.toBe('alive');
   });
 
   it('answers unknown immediately when its caller aborts an in-flight read', async () => {

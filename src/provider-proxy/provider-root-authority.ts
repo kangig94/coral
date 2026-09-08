@@ -4,6 +4,7 @@ import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   isAcceptedProviderServerOperatorAbandonment,
+  requestJoinableProviderServerShutdown,
   spawnProviderServerTransport,
   type HeldProviderServerSpawn,
   type ProviderServerFailedSpawnCleanupAcceptance,
@@ -133,7 +134,10 @@ async function closeSpawnedHandle(
       let result: ProviderServerShutdownResult | null = null;
       try {
         const response = await Promise.race([
-          handle.rpc.request(capability.method, {}).then((value) => ({ kind: 'response' as const, value })),
+          requestJoinableProviderServerShutdown(handle, capability.method).then((value) => ({
+            kind: 'response' as const,
+            value,
+          })),
           runtime.time.sleep(capability.timeoutMs).then(() => ({ kind: 'timeout' as const })),
         ]);
         if (response.kind === 'response') result = providerServerShutdownResultSchema.parse(response.value);
@@ -182,11 +186,10 @@ async function closeSpawnedHandle(
       }
       return handle.close(acceptCleanupHold);
     }
-    try {
-      await Promise.race([handle.rpc.request(capability.method, {}), runtime.time.sleep(capability.timeoutMs)]);
-    } catch {
-      /* best effort; the escalation below still runs */
-    }
+    await Promise.race([
+      requestJoinableProviderServerShutdown(handle, capability.method),
+      runtime.time.sleep(capability.timeoutMs),
+    ]).catch(() => undefined);
   }
   return handle.close(acceptCleanupHold);
 }

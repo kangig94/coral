@@ -7,6 +7,7 @@ import {
   ClaudeControllerCleanupHeldError,
   combineChildShutdownDispositions,
   heldChildShutdown,
+  joinChildShutdownAttempt,
   observedChildShutdown,
 } from './child-shutdown.js';
 import {
@@ -95,6 +96,7 @@ type ChildBinding = {
   child: Awaited<ReturnType<PrintSessionControllerOptions['spawnChild']>>;
   closed: Promise<ChildExit>;
   closedObserved: boolean;
+  shutdownAttempt: Promise<ControllerShutdownDisposition> | null;
   expectedExit: boolean;
   dispose: () => void;
 };
@@ -406,6 +408,7 @@ export class PrintSessionController implements BrokerSessionController {
       child,
       closed,
       closedObserved: false,
+      shutdownAttempt: null,
       expectedExit: false,
       dispose: () => {
         offStdout();
@@ -900,7 +903,11 @@ export class PrintSessionController implements BrokerSessionController {
     return cleanup;
   }
 
-  private async terminateChildBinding(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+  private terminateChildBinding(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
+    return joinChildShutdownAttempt(binding, () => this.attemptChildTermination(binding));
+  }
+
+  private async attemptChildTermination(binding: ChildBinding): Promise<ControllerShutdownDisposition> {
     if (binding.closedObserved) return observedChildShutdown([binding.subject]);
     binding.expectedExit = true;
     try {

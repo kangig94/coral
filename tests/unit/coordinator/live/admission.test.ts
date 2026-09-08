@@ -622,6 +622,57 @@ describe('launch admission', () => {
     expect(cleanupHandles.has(cleanupKey)).toBe(true);
   });
 
+  it('joins a cleanup attempt that outlives the caller deadline', async () => {
+    const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
+      .cleanupHandles;
+    let settleCleanup!: (outcome: { kind: 'observed-absent'; pid: number }) => void;
+    const cleanupSettlement = new Promise<{ kind: 'observed-absent'; pid: number }>((resolve) => {
+      settleCleanup = resolve;
+    });
+    const cleanup = vi.fn(() => cleanupSettlement);
+    cleanupHandles.set(Symbol('deferred-child'), cleanup);
+    const controller = new AbortController();
+
+    const initial = coordinator.terminateAll(controller.signal);
+    controller.abort();
+    await expect(initial).resolves.toMatchObject({ kind: 'unresolved-at-deadline' });
+
+    const retry = coordinator.terminateAll();
+    expect(cleanup).toHaveBeenCalledOnce();
+    settleCleanup({ kind: 'observed-absent', pid: TEST_PROVIDER_PID });
+    await expect(retry).resolves.toEqual({ kind: 'all-observed-absent' });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('starts a fresh cleanup immediately when a timed-out attempt later settles without absence', async () => {
+    const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
+      .cleanupHandles;
+    let settleCleanup!: (outcome: { kind: 'target-unobservable'; pid: number; stage: 'after-sigkill' }) => void;
+    const firstSettlement = new Promise<{ kind: 'target-unobservable'; pid: number; stage: 'after-sigkill' }>(
+      (resolve) => {
+        settleCleanup = resolve;
+      },
+    );
+    const cleanup = vi
+      .fn<DurableProcessCleanup>()
+      .mockImplementationOnce(() => firstSettlement)
+      .mockResolvedValueOnce({ kind: 'observed-absent', pid: TEST_PROVIDER_PID });
+    cleanupHandles.set(Symbol('deferred-child'), cleanup);
+    const controller = new AbortController();
+
+    const initial = coordinator.terminateAll(controller.signal);
+    controller.abort();
+    await expect(initial).resolves.toMatchObject({ kind: 'unresolved-at-deadline' });
+    expect(cleanup).toHaveBeenCalledOnce();
+
+    settleCleanup({ kind: 'target-unobservable', pid: TEST_PROVIDER_PID, stage: 'after-sigkill' });
+    await firstSettlement;
+    const retry = coordinator.terminateAll();
+
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    await expect(retry).resolves.toEqual({ kind: 'all-observed-absent' });
+  });
+
   it('returns unresolved ownership when its abort signal bounds an unobservable child', async () => {
     const cleanupHandles = (coordinator as unknown as { readonly cleanupHandles: Map<symbol, DurableProcessCleanup> })
       .cleanupHandles;

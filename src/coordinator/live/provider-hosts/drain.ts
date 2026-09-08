@@ -1,6 +1,9 @@
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import { raceTimeout } from '../../../infra/async.js';
-import type { ContainedProviderServerHandle } from '../../../providers/app-server-transport.js';
+import {
+  requestJoinableProviderServerShutdown,
+  type ContainedProviderServerHandle,
+} from '../../../providers/app-server-transport.js';
 import {
   providerServerShutdownResultSchema,
   type ProviderServerShutdownResult,
@@ -264,7 +267,10 @@ async function requestDispositionShutdown(
   try {
     const outcome = await waitWhileAuthorized(
       Promise.race([
-        handle.rpc.request(capability.method, {}).then((value) => ({ kind: 'response' as const, value })),
+        requestJoinableProviderServerShutdown(handle, capability.method).then((value) => ({
+          kind: 'response' as const,
+          value,
+        })),
         handle.closePromise.then(() => ({ kind: 'closed' as const })),
         waitForTimeout(capability.timeoutMs, { kind: 'timeout' as const }, time),
       ]),
@@ -315,7 +321,7 @@ async function tryGracefulShutdown(
   try {
     const outcome = await waitWhileAuthorized(
       Promise.race([
-        handle.rpc.request(capability.method, {}).then(() => 'rpc' as const),
+        requestJoinableProviderServerShutdown(handle, capability.method).then(() => 'rpc' as const),
         handle.closePromise.then(() => 'closed' as const),
         waitForTimeout(capability.timeoutMs, 'timeout' as const, time),
       ]),

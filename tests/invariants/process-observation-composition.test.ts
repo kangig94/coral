@@ -102,6 +102,41 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     ),
   ],
   [
+    'src/coordinator/live/admission.ts#LaunchCoordinator.terminateAll.startAttempt.then:0',
+    debt(
+      'the fulfillment callback stores the completed cleanup disposition in LaunchCoordinator cleanup-attempt ownership',
+      'LaunchCoordinator.terminateAll consumes the stored cleanup disposition',
+    ),
+  ],
+  [
+    'src/coordinator/live/admission.ts#LaunchCoordinator.terminateAll.startAttempt.then:1',
+    debt(
+      'the rejection callback stores the completed cleanup failure in LaunchCoordinator cleanup-attempt ownership',
+      'LaunchCoordinator.terminateAll consumes the stored cleanup failure',
+    ),
+  ],
+  [
+    'src/coordinator/live/kb-daemon-supervisor.ts#createKbDaemonSupervisor.acceptKbDaemonKill',
+    debt(
+      'daemon lifecycle callbacks retain and observe graceful-kill settlement while their public lifecycle result remains the daemon snapshot',
+      'acceptKbDaemonKill consumes immediate failure and its settlement callback consumes scheduled outcomes',
+    ),
+  ],
+  [
+    'src/coordinator/live/kb-daemon-supervisor.ts#createKbDaemonSupervisor.acceptKbDaemonKill.then',
+    debt(
+      'the settlement callback consumes non-absence into the retained daemon supervisor failure state',
+      'the daemon close observer or a later stopNow retry resolves the retained daemon obligation',
+    ),
+  ],
+  [
+    'src/coordinator/live/kb-daemon-supervisor.ts#requestKbDaemonKill.then',
+    debt(
+      'the settlement callback releases the completed attempt from kbDaemonKills single-flight ownership',
+      'acceptKbDaemonKill consumes the settlement outcome',
+    ),
+  ],
+  [
     'src/coordinator/live/provider-hosts/drain.ts#containmentReaperWithClock.anonymous',
     debt(
       'provider-host reaping reports unresolved containment through rejection instead of returning the reap disposition',
@@ -256,13 +291,6 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     ),
   ],
   [
-    'src/coordinator/live/kb-daemon-supervisor.ts#scheduleKbDaemonKill',
-    debt(
-      'the supervisor retains daemonProcess until its close handler or stop retry observes absence while escalation remains fire-and-forget',
-      'scheduleKbDaemonKill returns the graceful-kill disposition beside the daemon settlement',
-    ),
-  ],
-  [
     'src/kb/curate/frontmatter-merge-driver.ts#mergeBodiesWithGit',
     debt(
       'merge-file no-answer is raised because the current return type admits only numeric merge results',
@@ -340,17 +368,80 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     ),
   ],
   [
-    'src/provider-proxy/role-spawn.ts#scheduleRoleKill',
+    'src/provider-proxy/role-spawn.ts#spawnRoleProcess.holdFailedSpawn.retry.then',
     debt(
-      'childSettled retains failed role-spawn ownership while cleanup retry remains fire-and-forget',
-      'scheduleRoleKill returns the graceful-kill disposition beside childSettled',
+      'the settlement callback stores the graceful-kill outcome in retained role-spawn cleanup state',
+      'the cleanup retry consumes killOutcome or childSettled observes closure',
     ),
   ],
   [
-    'src/providers/app-server-transport.ts#scheduleProviderServerKill',
+    'src/providers/app-server-transport.ts#acceptProviderServerKill',
     debt(
-      'ProviderProcessSettlement retains the close obligation while provider-server callers remain fire-and-forget',
-      'scheduleProviderServerKill returns the graceful-kill disposition beside ProviderProcessSettlement',
+      'provider-server event callbacks retain and observe graceful-kill settlement while their event contracts return void',
+      'ProviderProcessSettlement retains the outcome for terminateProviderServerProcess.retry or processClosePromise',
+    ),
+  ],
+  [
+    'src/providers/app-server-transport.ts#acceptProviderServerKill.then',
+    debt(
+      'the settlement callback stores the graceful-kill outcome in ProviderProcessSettlement ownership',
+      'terminateProviderServerProcess.retry consumes terminationOutcome or processClosePromise observes closure',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#createContainedGroupSettlement.retain',
+    debt(
+      'retained group cleanup consumes graceful-kill settlement through group-finalizer state while its control method returns void',
+      'handoff transfers cleanup or finish observes group absence',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#createContainedGroupSettlement.retain.then',
+    debt(
+      'the settlement callback retains non-absence in active group state and re-drives the finalizer handoff',
+      'handoff transfers cleanup or the group observation settles through finish',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#createContainedGroupSettlement.handoff.once',
+    debt(
+      'the finalizer-ready listener consumes graceful-kill settlement through retained group state while the event contract returns void',
+      'retain continues cleanup or finish observes group absence',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#createContainedGroupSettlement.handoff.then',
+    debt(
+      'the settlement callback retains non-absence in active group state and enters retained cleanup',
+      'retain continues termination and observation until handoff or finish',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#groupMembers.retry.then',
+    debt(
+      'the settlement callback records observer absence through the retained group-member observation promise',
+      'settle resolves the observation or its hold transfers through handoff',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#requestObservedChildKill.then',
+    debt(
+      'the settlement callback releases the completed attempt from observedChildKills single-flight ownership',
+      'groupMembers.retry, retained group cleanup, or runWrapper.terminateChild consumes the settlement outcome',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#runWrapper.terminateChild',
+    debt(
+      'the signal callback consumes graceful-kill settlement through retained group state while the signal contract returns void',
+      'retryTermination re-drives termination or group settlement observes completion',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#runWrapper.terminateChild.then',
+    debt(
+      'the settlement callback retains non-absence in wrapper group-settlement ownership',
+      'retryTermination re-drives termination or group settlement observes completion',
     ),
   ],
   [
@@ -358,13 +449,6 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     debt(
       'the polling callback retains alive and unknown ownership implicitly and returns no timer disposition',
       'runGroupFinalizer.setInterval returns the group observation disposition',
-    ),
-  ],
-  [
-    'src/runtime/durable-cli-wrapper.ts#scheduleObservedChildKill',
-    debt(
-      'the observer-child close promise or ContainedGroupSettlement retains absence ownership for fire-and-forget callers',
-      'scheduleObservedChildKill returns the graceful-kill disposition to its retained settlement owner',
     ),
   ],
   [

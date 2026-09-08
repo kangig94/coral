@@ -148,6 +148,17 @@ export type DeclinedSettlementObligation<Remainder, RetainedAuthorityContributio
 
 type ObligationState = Readonly<{ kind: 'pending' }> | Readonly<{ kind: 'settled'; settlement: Settlement }>;
 
+type SettlementAttempt<T> = Readonly<{
+  abort: AbortController;
+  outcome: Promise<T>;
+}>;
+
+type BoundaryAttemptState =
+  | Readonly<{ kind: 'idle' }>
+  | Readonly<{ kind: 'preparing'; attempt: SettlementAttempt<SettlementAuthorityPreparation> }>
+  | Readonly<{ kind: 'prepared'; token: object }>
+  | Readonly<{ kind: 'committing'; token: object; attempt: SettlementAttempt<SettlementConfirmation> }>;
+
 type BoundaryPreparationAttempt =
   | Readonly<{ kind: 'prepared'; settlement: Extract<Settlement, { kind: 'discharged' }>; token: object }>
   | Readonly<{ kind: 'declined'; settlement: Extract<Settlement, { kind: 'declined' }> }>;
@@ -244,12 +255,29 @@ export function createJoinableSettlementTask<T>(task: () => T | Promise<T>): Joi
   };
 }
 
-async function settleObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>(
-  obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
+function startSettlementAttempt<T>(task: (signal: AbortSignal) => Promise<T>): SettlementAttempt<T> {
+  const abort = new AbortController();
+  return {
+    abort,
+    outcome: Promise.resolve().then(() => task(abort.signal)),
+  };
+}
+
+type AttemptSettlement<T> =
+  | Readonly<{ settlement: Settlement; kind: 'completed'; value?: T }>
+  | Readonly<{
+      settlement: Extract<Settlement, { kind: 'declined' }> & Readonly<{ cause: 'timed-out' }>;
+      kind: 'in-flight';
+    }>;
+
+async function settleAttempt<T>(
+  label: string,
+  attempt: SettlementAttempt<T>,
+  confirmation: (value: T) => SettlementConfirmation,
   remainingBudget: () => number,
   time: Pick<TimePort, 'sleep'>,
   log: (message: string) => void,
-): Promise<Settlement> {
+): Promise<AttemptSettlement<T>> {
   const budget = remainingBudget();
   if (budget <= 0) {
     const settlement = {
@@ -257,34 +285,34 @@ async function settleObligation<Remainder, RetainedAuthorityContribution, Reason
       cause: 'budget-exhausted',
       detail: 'no drain budget remained',
     } as const;
-    log(`${obligation.label}: skipped (drain budget exhausted)\n`);
-    return settlement;
+    log(`${label}: skipped (drain budget exhausted)\n`);
+    return { kind: 'completed', settlement };
   }
 
   const timedOut = Symbol('timedOut');
-  const taskAbort = new AbortController();
   const timeoutAbort = new AbortController();
   try {
-    const result = await Promise.race<SettlementConfirmation | typeof timedOut>([
-      obligation.task(taskAbort.signal),
+    const result = await Promise.race<T | typeof timedOut>([
+      attempt.outcome,
       time.sleep(budget, { signal: timeoutAbort.signal }).then(() => timedOut),
     ]);
     if (result === timedOut) {
-      taskAbort.abort();
+      attempt.abort.abort();
       const settlement = {
         kind: 'declined',
         cause: 'timed-out',
         detail: `exceeded ${budget}ms`,
       } as const;
-      log(`${obligation.label}: exceeded drain budget after ${budget}ms\n`);
-      return settlement;
+      log(`${label}: exceeded drain budget after ${budget}ms\n`);
+      return { kind: 'in-flight', settlement };
     }
-    if (!result.confirmed) {
-      const settlement = { kind: 'declined', cause: 'unconfirmed', detail: result.detail } as const;
-      log(`${obligation.label} settlement unconfirmed: ${result.detail}\n`);
-      return settlement;
+    const confirmed = confirmation(result);
+    if (!confirmed.confirmed) {
+      const settlement = { kind: 'declined', cause: 'unconfirmed', detail: confirmed.detail } as const;
+      log(`${label} settlement unconfirmed: ${confirmed.detail}\n`);
+      return { kind: 'completed', settlement, value: result };
     }
-    return { kind: 'discharged' };
+    return { kind: 'completed', settlement: { kind: 'discharged' }, value: result };
   } catch (error: unknown) {
     const settlement = {
       kind: 'declined',
@@ -292,8 +320,8 @@ async function settleObligation<Remainder, RetainedAuthorityContribution, Reason
       detail: formatError(error),
       error,
     } as const;
-    log(`${obligation.label} settlement failed: ${formatError(error)}\n`);
-    return settlement;
+    log(`${label} settlement failed: ${formatError(error)}\n`);
+    return { kind: 'completed', settlement };
   } finally {
     timeoutAbort.abort();
   }
@@ -314,6 +342,14 @@ export class SettlementLedger<
   private readonly entries = new Map<
     SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
     ObligationState
+  >();
+  private readonly obligationAttempts = new Map<
+    SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
+    SettlementAttempt<SettlementConfirmation>
+  >();
+  private readonly boundaryAttempts = new WeakMap<
+    SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
+    BoundaryAttemptState
   >();
   private readonly options: SettlementLedgerOptions<
     Remainder,
@@ -365,9 +401,61 @@ export class SettlementLedger<
     this.register(obligation);
     const prior = this.entries.get(obligation);
     if (prior?.kind === 'settled' && prior.settlement.kind === 'discharged') return prior.settlement;
-    const settlement = await settleObligation(obligation, this.remainingBudget, this.options.time, this.options.log);
-    this.entries.set(obligation, { kind: 'settled', settlement });
-    return settlement;
+    if (this.remainingBudget() <= 0) {
+      const settlement = {
+        kind: 'declined',
+        cause: 'budget-exhausted',
+        detail: 'no drain budget remained',
+      } as const;
+      this.options.log(`${obligation.label}: skipped (drain budget exhausted)\n`);
+      this.entries.set(obligation, { kind: 'settled', settlement });
+      return settlement;
+    }
+    let attempt = this.obligationAttempts.get(obligation);
+    if (attempt === undefined) {
+      attempt = startSettlementAttempt(obligation.task);
+      this.obligationAttempts.set(obligation, attempt);
+      const trackedAttempt = attempt;
+      void trackedAttempt.outcome.then(
+        (confirmation) => {
+          if (this.obligationAttempts.get(obligation) !== trackedAttempt) return;
+          this.obligationAttempts.delete(obligation);
+          this.entries.set(obligation, {
+            kind: 'settled',
+            settlement: confirmation.confirmed
+              ? { kind: 'discharged' }
+              : { kind: 'declined', cause: 'unconfirmed', detail: confirmation.detail },
+          });
+        },
+        (error: unknown) => {
+          if (this.obligationAttempts.get(obligation) !== trackedAttempt) return;
+          this.obligationAttempts.delete(obligation);
+          this.entries.set(obligation, {
+            kind: 'settled',
+            settlement: {
+              kind: 'declined',
+              cause: isAbortError(error) ? 'aborted' : 'rejected',
+              detail: formatError(error),
+              error,
+            },
+          });
+        },
+      );
+    }
+    const result = await settleAttempt(
+      obligation.label,
+      attempt,
+      (confirmation) => confirmation,
+      this.remainingBudget,
+      this.options.time,
+      this.options.log,
+    );
+    if (result.kind === 'in-flight' && this.obligationAttempts.get(obligation) !== attempt) {
+      const settled = this.entries.get(obligation);
+      if (settled?.kind === 'settled') return settled.settlement;
+    }
+    this.entries.set(obligation, { kind: 'settled', settlement: result.settlement });
+    return result.settlement;
   }
 
   private runWithBudget(
@@ -397,37 +485,48 @@ export class SettlementLedger<
     return this.options.acceptDelegatedRemainder?.(declined) ?? null;
   }
 
-  private boundaryObligation(
-    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    task: (signal: AbortSignal) => Promise<SettlementConfirmation>,
-  ): SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit> {
-    return {
-      label: boundary.label,
-      task,
-      retainedAuthority: boundary.retainedAuthority,
-      remainder: this.options.boundaryRemainder,
-      ...(boundary.hold === undefined ? {} : { hold: boundary.hold }),
-    };
-  }
-
   private async prepareBoundary(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
     budgetMs: number | null,
   ): Promise<BoundaryPreparationAttempt> {
-    let token: object | null = null;
-    const preparation = this.boundaryObligation(boundary, async (signal) => {
-      const result = await boundary.prepare(signal);
-      if (!result.confirmed) return result;
-      token = result.token;
-      return { confirmed: true };
-    });
     if (budgetMs !== null) {
       this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
     }
-    const settlement = await settleObligation(preparation, this.remainingBudget, this.options.time, this.options.log);
-    if (settlement.kind === 'declined') return { kind: 'declined', settlement };
-    if (token === null) throw new Error('authority preparation discharged without a token');
-    return { kind: 'prepared', settlement, token };
+    const state = this.boundaryAttempts.get(boundary) ?? { kind: 'idle' };
+    if (state.kind === 'prepared' || state.kind === 'committing') {
+      return { kind: 'prepared', settlement: { kind: 'discharged' }, token: state.token };
+    }
+    if (this.remainingBudget() <= 0) {
+      const settlement = {
+        kind: 'declined',
+        cause: 'budget-exhausted',
+        detail: 'no drain budget remained',
+      } as const;
+      this.options.log(`${boundary.label}: skipped (drain budget exhausted)\n`);
+      return { kind: 'declined', settlement };
+    }
+    const attempt = state.kind === 'preparing' ? state.attempt : startSettlementAttempt(boundary.prepare);
+    this.boundaryAttempts.set(boundary, { kind: 'preparing', attempt });
+    const result = await settleAttempt(
+      boundary.label,
+      attempt,
+      (preparation) => (preparation.confirmed ? { confirmed: true } : { confirmed: false, detail: preparation.detail }),
+      this.remainingBudget,
+      this.options.time,
+      this.options.log,
+    );
+    if (result.kind === 'in-flight') return { kind: 'declined', settlement: result.settlement };
+    if (result.settlement.kind === 'declined') {
+      if (this.boundaryAttempts.get(boundary)?.kind === 'preparing') {
+        this.boundaryAttempts.set(boundary, { kind: 'idle' });
+      }
+      return { kind: 'declined', settlement: result.settlement };
+    }
+    if (result.value === undefined || !result.value.confirmed) {
+      throw new Error('authority preparation discharged without a token');
+    }
+    this.boundaryAttempts.set(boundary, { kind: 'prepared', token: result.value.token });
+    return { kind: 'prepared', settlement: result.settlement, token: result.value.token };
   }
 
   private async commitBoundary(
@@ -435,11 +534,37 @@ export class SettlementLedger<
     token: object,
     budgetMs: number | null,
   ): Promise<Settlement> {
-    const commit = this.boundaryObligation(boundary, (signal) => boundary.commit(token, signal));
     if (budgetMs !== null) {
       this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
     }
-    return settleObligation(commit, this.remainingBudget, this.options.time, this.options.log);
+    if (this.remainingBudget() <= 0) {
+      const settlement = {
+        kind: 'declined',
+        cause: 'budget-exhausted',
+        detail: 'no drain budget remained',
+      } as const;
+      this.options.log(`${boundary.label}: skipped (drain budget exhausted)\n`);
+      return settlement;
+    }
+    const state = this.boundaryAttempts.get(boundary) ?? { kind: 'idle' };
+    const commitToken = state.kind === 'committing' ? state.token : token;
+    const attempt =
+      state.kind === 'committing'
+        ? state.attempt
+        : startSettlementAttempt((signal) => boundary.commit(commitToken, signal));
+    this.boundaryAttempts.set(boundary, { kind: 'committing', token: commitToken, attempt });
+    const result = await settleAttempt(
+      boundary.label,
+      attempt,
+      (confirmation) => confirmation,
+      this.remainingBudget,
+      this.options.time,
+      this.options.log,
+    );
+    if (result.kind === 'completed' && this.boundaryAttempts.get(boundary)?.kind === 'committing') {
+      this.boundaryAttempts.set(boundary, { kind: 'idle' });
+    }
+    return result.settlement;
   }
 
   private retainedAuthority(

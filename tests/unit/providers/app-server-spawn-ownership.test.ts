@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import {
   PROVIDER_CONTAINMENT_ACCEPTED,
+  requestJoinableProviderServerShutdown,
   spawnProviderServerTransport,
   type ProviderContainmentAcceptance,
   type ProviderServerFailedSpawnCleanupAcceptor,
@@ -40,6 +41,31 @@ const acceptCloseHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => 
   kind: 'accepted',
   owner: 'provider-proxy-root-pool',
   settlement: hold.settled,
+});
+
+describe('requestJoinableProviderServerShutdown', () => {
+  it('joins a pending request and starts a fresh request after settlement', async () => {
+    let settleRequest!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      settleRequest = resolve;
+    });
+    const request = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce({ disposition: 'observed-absent' });
+    const handle = { rpc: { request } } as unknown as ProviderServerHandle;
+
+    const first = requestJoinableProviderServerShutdown(handle, 'shutdown');
+    const concurrent = requestJoinableProviderServerShutdown(handle, 'shutdown');
+
+    expect(concurrent).toBe(first);
+    expect(request).toHaveBeenCalledOnce();
+
+    settleRequest({ disposition: 'held-unobservable' });
+    await first;
+    const fresh = requestJoinableProviderServerShutdown(handle, 'shutdown');
+
+    expect(fresh).not.toBe(first);
+    expect(request).toHaveBeenCalledTimes(2);
+    await fresh;
+  });
 });
 
 function delayedClose(onSpawned?: (child: unknown) => void): Readonly<{

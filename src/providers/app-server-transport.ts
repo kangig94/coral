@@ -14,6 +14,8 @@ import {
   observeUnattributableSpawnedProcessGroup,
   requirePipedHandles,
   retainSpawnedProcessGroupCleanup,
+  type GracefulKillDisposition,
+  type GracefulKillOutcome,
   type SpawnedProcessGroupAbsenceEvidence,
   type SpawnedProcessGroupCleanup,
   type SpawnedProcessGroupCleanupDisposition,
@@ -148,6 +150,30 @@ export type ProviderServerHandle = {
   markExpectedClose: () => void;
   close: (acceptCleanupHold: ProviderServerCleanupHoldAcceptor) => Promise<ProviderServerCloseDisposition>;
 };
+
+const providerServerShutdownRequests = new WeakMap<ProviderServerHandle, Map<string, Promise<unknown>>>();
+
+/** Concurrent shutdown requests for the same handle and method must join until the active request settles. */
+export function requestJoinableProviderServerShutdown(handle: ProviderServerHandle, method: string): Promise<unknown> {
+  const existing = providerServerShutdownRequests.get(handle);
+  const requests = existing ?? new Map<string, Promise<unknown>>();
+  if (existing === undefined) providerServerShutdownRequests.set(handle, requests);
+  const current = requests.get(method);
+  if (current !== undefined) return current;
+  const request = handle.rpc.request(method, {});
+  requests.set(method, request);
+  void request.then(
+    () => {
+      if (requests.get(method) === request) requests.delete(method);
+      if (requests.size === 0) providerServerShutdownRequests.delete(handle);
+    },
+    () => {
+      if (requests.get(method) === request) requests.delete(method);
+      if (requests.size === 0) providerServerShutdownRequests.delete(handle);
+    },
+  );
+  return request;
+}
 
 /** A provider server handle whose detached process-group identity was verified at spawn. */
 export type ContainedProviderServerHandle = ProviderServerHandle &
@@ -363,13 +389,32 @@ type ProviderProcessSettlement = {
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor;
   closed: boolean;
   processClosePromise: Promise<void>;
+  termination: Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }> | null;
+  terminationOutcome: GracefulKillOutcome | null;
   resolve(): void;
 };
 
 type ProviderProcessSettlementEvidence = ProviderServerFailedSpawnCleanupDisposition;
 
-function scheduleProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): void {
-  gracefulKill(settlement.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+function requestProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): GracefulKillDisposition {
+  return (
+    settlement.termination ?? gracefulKill(settlement.child, runtime, (pid) => runtime.process.observeLiveness(pid))
+  );
+}
+
+function acceptProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): void {
+  const disposition = requestProviderServerKill(settlement, runtime);
+  if (disposition.kind !== 'escalation-scheduled') {
+    settlement.terminationOutcome = disposition;
+    return;
+  }
+  if (settlement.termination === disposition) return;
+  settlement.termination = disposition;
+  void disposition.settlement.then((outcome) => {
+    if (settlement.termination !== disposition) return;
+    settlement.termination = null;
+    settlement.terminationOutcome = outcome;
+  });
 }
 
 function createProviderProcessSettlement(
@@ -389,6 +434,8 @@ function createProviderProcessSettlement(
     processClosePromise: new Promise<void>((settle) => {
       resolve = settle;
     }),
+    termination: null,
+    terminationOutcome: null,
     resolve: () => resolve(),
   };
   child.on('close', () => {
@@ -635,6 +682,7 @@ async function terminateProviderServerProcess(
   });
   const retry = async (signal?: AbortSignal): Promise<ProviderProcessSettlementEvidence> => {
     if (settlement.closed) return observedAbsent();
+    if (settlement.terminationOutcome?.kind === 'observed-absent') return observedAbsent();
     if (abandoned) return abandonment;
     if (signal?.aborted) {
       return {
@@ -647,7 +695,7 @@ async function terminateProviderServerProcess(
       };
     }
 
-    scheduleProviderServerKill(settlement, runtime);
+    acceptProviderServerKill(settlement, runtime);
     if (settlement.closed) return observedAbsent();
     if (settlement.pid !== null) {
       try {
@@ -762,7 +810,7 @@ function bindProviderServerEvents(entry: ProviderServerEntry, pipes: ProviderSer
     const stdinError = createProviderHostFault(entry, `stdin error: ${error.message}`);
     backendLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
-    scheduleProviderServerKill(entry.processSettlement, runtime);
+    acceptProviderServerKill(entry.processSettlement, runtime);
   });
   entry.child.on('error', (error: Error) => {
     const closeError = createProviderHostFault(entry, `failed: ${error.message}`);
@@ -812,7 +860,7 @@ function createProviderServerRpc(entry: ProviderServerEntry, runtime: Runtime): 
         const notifyError = error instanceof Error ? error : createProviderHostFault(entry, `failed to send ${method}`);
         backendLog.error(notifyError.message, error);
         detachProviderServer(entry, notifyError);
-        scheduleProviderServerKill(entry.processSettlement, runtime);
+        acceptProviderServerKill(entry.processSettlement, runtime);
       }
     },
   };
@@ -1050,7 +1098,7 @@ function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: 
     entry.stdoutBuffer = '';
     entry.stdoutBufferBytes = 0;
     detachProviderServer(entry, protocolError);
-    scheduleProviderServerKill(entry.processSettlement, runtime);
+    acceptProviderServerKill(entry.processSettlement, runtime);
     return false;
   }
 
@@ -1088,7 +1136,7 @@ function parseProviderServerLine(
     });
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
-    scheduleProviderServerKill(entry.processSettlement, runtime);
+    acceptProviderServerKill(entry.processSettlement, runtime);
     return undefined;
   }
 }
@@ -1109,7 +1157,7 @@ function handleProviderServerRequest(
       error instanceof Error ? error : createProviderHostFault(entry, 'failed to answer server request');
     backendLog.error(protocolError.message, error);
     detachProviderServer(entry, protocolError);
-    scheduleProviderServerKill(entry.processSettlement, runtime);
+    acceptProviderServerKill(entry.processSettlement, runtime);
   }
 }
 
@@ -1165,7 +1213,7 @@ function handleProviderServerNotification(
     const protocolError = createProviderHostFault(entry, 'emitted a malformed JSON-RPC message', message);
     backendLog.error(protocolError.message);
     detachProviderServer(entry, protocolError);
-    scheduleProviderServerKill(entry.processSettlement, runtime);
+    acceptProviderServerKill(entry.processSettlement, runtime);
     return;
   }
 
@@ -1181,7 +1229,7 @@ function handleProviderServerNotification(
       backendLog.error(dispatchError.message, error);
       if (!entry.closed) {
         detachProviderServer(entry, dispatchError);
-        scheduleProviderServerKill(entry.processSettlement, runtime);
+        acceptProviderServerKill(entry.processSettlement, runtime);
       }
       return;
     }
@@ -1196,5 +1244,5 @@ function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string)
 
 function shutdownProviderServer(entry: ProviderServerEntry, detail: string, runtime: Runtime): void {
   beginProviderServerShutdown(entry, detail);
-  scheduleProviderServerKill(entry.processSettlement, runtime);
+  acceptProviderServerKill(entry.processSettlement, runtime);
 }

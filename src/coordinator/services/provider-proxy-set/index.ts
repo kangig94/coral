@@ -157,9 +157,6 @@ export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
 const OPERATOR_EXIT_OBSERVATION_MS = 1_000;
 const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
-/** The post-bound reattachment hold's own retry cadence: deliberately slower than the active window's
- *  exponential backoff (capped at 30 s by `retryDelayMs`) because the bound already expired without proof of
- *  anything decisive — there is no deadline left to race against, only a peer to keep politely asking after. */
 const REATTACHMENT_HOLD_RETRY_MS = 60_000;
 
 declare const processContainmentEvidenceBrand: unique symbol;

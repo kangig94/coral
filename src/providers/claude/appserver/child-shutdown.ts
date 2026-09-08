@@ -18,6 +18,29 @@ export class ClaudeControllerCleanupHeldError extends ClaudeBrokerRpcError {
   }
 }
 
+export type JoinableChildShutdown = {
+  shutdownAttempt: Promise<ControllerShutdownDisposition> | null;
+};
+
+/** Concurrent shutdown attempts for one owner must join until the active attempt settles. */
+export function joinChildShutdownAttempt(
+  owner: JoinableChildShutdown,
+  task: () => Promise<ControllerShutdownDisposition>,
+): Promise<ControllerShutdownDisposition> {
+  if (owner.shutdownAttempt !== null) return owner.shutdownAttempt;
+  const attempt = task();
+  owner.shutdownAttempt = attempt;
+  void attempt.then(
+    () => {
+      if (owner.shutdownAttempt === attempt) owner.shutdownAttempt = null;
+    },
+    () => {
+      if (owner.shutdownAttempt === attempt) owner.shutdownAttempt = null;
+    },
+  );
+  return attempt;
+}
+
 export function observedChildShutdown(
   subjects: readonly ClaudeChildShutdownSubject[],
 ): ControllerShutdownObservedAbsent {

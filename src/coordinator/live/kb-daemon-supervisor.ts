@@ -1,7 +1,14 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
-import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from '../../infra/process-supervision.js';
+import {
+  appendBuffer,
+  gracefulKill,
+  requirePipedHandles,
+  safeKill,
+  type GracefulKillDisposition,
+  type GracefulKillOutcome,
+} from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
@@ -158,8 +165,33 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
 
-function scheduleKbDaemonKill(child: ChildProcessLike, runtime: Runtime): void {
-  gracefulKill(child, runtime, (pid) => runtime.process.observeLiveness(pid));
+const kbDaemonKills = new WeakMap<
+  ChildProcessLike,
+  Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }>
+>();
+
+function requestKbDaemonKill(child: ChildProcessLike, runtime: Runtime): GracefulKillDisposition {
+  const current = kbDaemonKills.get(child);
+  if (current !== undefined) return current;
+  const disposition = gracefulKill(child, runtime, (pid) => runtime.process.observeLiveness(pid));
+  if (disposition.kind === 'escalation-scheduled') {
+    kbDaemonKills.set(child, disposition);
+    void disposition.settlement.then(() => {
+      if (kbDaemonKills.get(child) === disposition) kbDaemonKills.delete(child);
+    });
+  }
+  return disposition;
+}
+
+function kbDaemonKillFailure(outcome: Exclude<GracefulKillOutcome, { kind: 'observed-absent' }>): string {
+  switch (outcome.kind) {
+    case 'target-alive':
+    case 'target-unobservable':
+      return `KB daemon termination ${outcome.kind}: ${outcome.stage}`;
+    case 'signal-failed':
+    case 'signal-refused':
+      return `KB daemon termination ${outcome.kind}: ${outcome.reason}`;
+  }
 }
 
 /**
@@ -412,6 +444,18 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     lastSetupError = setupError;
     phase = 'failed';
     log(`[kb-daemon] ${message}`);
+  };
+  const acceptKbDaemonKill = (child: ChildProcessLike): void => {
+    const disposition = requestKbDaemonKill(child, runtime);
+    if (disposition.kind !== 'escalation-scheduled') {
+      setFailure(kbDaemonKillFailure(disposition));
+      return;
+    }
+    void disposition.settlement.then((outcome) => {
+      if (outcome.kind !== 'observed-absent' && daemonProcess === child) {
+        setFailure(kbDaemonKillFailure(outcome));
+      }
+    });
   };
 
   const notifyExitListeners = (): void => {
@@ -1111,7 +1155,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
     if (result === 'timeout' && daemonProcess === spawned) {
       setFailure(`daemon did not become ready within ${startTimeoutMs}ms`);
-      scheduleKbDaemonKill(spawned, runtime);
+      acceptKbDaemonKill(spawned);
     }
 
     return read();
@@ -1141,7 +1185,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       );
       activeDaemonProcess.stdin?.end();
     } catch {
-      scheduleKbDaemonKill(activeDaemonProcess, runtime);
+      acceptKbDaemonKill(activeDaemonProcess);
     }
 
     const result = await Promise.race([closed, withAbortableTimeout(runtime, stopTimeoutMs, signal)]);
@@ -1151,7 +1195,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           ? 'daemon stop aborted by shutdown budget'
           : `daemon stop timed out after ${stopTimeoutMs}ms`,
       );
-      scheduleKbDaemonKill(activeDaemonProcess, runtime);
+      acceptKbDaemonKill(activeDaemonProcess);
     }
     rejectPendingRequests('KB daemon stopped');
     if (result === 'closed' || daemonProcess !== activeDaemonProcess) {

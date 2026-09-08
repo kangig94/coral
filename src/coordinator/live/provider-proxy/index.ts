@@ -163,6 +163,8 @@ export type ProviderProxyAcquisitionOptions = Readonly<{
 
 class PublicationDeadlineElapsedError extends Error {}
 
+const undoAttempts = new WeakMap<AcquisitionUndo, Promise<void>>();
+
 function failureReason(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown error';
 }
@@ -183,11 +185,22 @@ function deadlineElapsed(deadlineSignal: AbortSignal): Promise<never> {
  * stopped or completed.
  */
 function boundedUndo(undo: AcquisitionUndo, deadlineSignal: AbortSignal): Promise<void> {
-  let attempt: Promise<void>;
-  try {
-    attempt = Promise.resolve(undo.run());
-  } catch (error: unknown) {
-    attempt = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  let attempt = undoAttempts.get(undo);
+  if (attempt === undefined) {
+    try {
+      attempt = Promise.resolve(undo.run());
+    } catch (error: unknown) {
+      attempt = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    undoAttempts.set(undo, attempt);
+    void attempt.then(
+      () => {
+        if (undoAttempts.get(undo) === attempt) undoAttempts.delete(undo);
+      },
+      () => {
+        if (undoAttempts.get(undo) === attempt) undoAttempts.delete(undo);
+      },
+    );
   }
   void attempt.catch(() => {});
   return Promise.race([attempt, deadlineElapsed(deadlineSignal)]);

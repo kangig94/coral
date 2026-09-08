@@ -1374,6 +1374,42 @@ describe('runShutdownSequence drain budget', () => {
 });
 
 describe('settlement ledger exit gate', () => {
+  it('joins a timed-out non-abort-aware obligation before retrying it', async () => {
+    const time = new VirtualTime();
+    let settleTask!: (confirmation: { confirmed: true }) => void;
+    const taskSettlement = new Promise<{ confirmed: true }>((resolve) => {
+      settleTask = resolve;
+    });
+    const task = vi.fn(() => taskSettlement);
+    const obligation: ShutdownObligation = {
+      label: 'deferred finalizer',
+      task,
+      retainedAuthority: () => ({ cleanupObligations: ['deferred finalizer'] }),
+      remainder: { owner: 'none' },
+    };
+    const authorityToken = {};
+    const authorityRelease: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: () => Promise.resolve({ confirmed: true, token: authorityToken }),
+      commit: () => Promise.resolve({ confirmed: true }),
+      retainedAuthority: () => ({ ipcSocket: true, cleanupObligations: ['authority release'] }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 100, time, log: () => {}, pollMs: 10 });
+
+    const initial = ledger.run(obligation);
+    await flush();
+    time.tick(100);
+    await expect(initial).resolves.toMatchObject({ kind: 'declined', cause: 'timed-out' });
+    const held = requireHeld(await ledger.gate(authorityRelease));
+
+    const retry = held.retry();
+    await flush();
+    expect(task).toHaveBeenCalledOnce();
+    settleTask({ confirmed: true });
+    await expect(retry).resolves.toEqual({ disposition: 'settled' });
+    expect(task).toHaveBeenCalledOnce();
+  });
+
   it("refuses authority release while an owner 'none' obligation is declined", async () => {
     const time = new VirtualTime();
     const authorityReleaseTask = vi.fn(async () => ({ confirmed: true as const }));
@@ -1469,9 +1505,9 @@ describe('settlement ledger exit gate', () => {
     await flush();
     expect(blockingTask).toHaveBeenCalledOnce();
     expect(authorityPrepareTask).toHaveBeenCalledOnce();
-    expect(hangingTask).toHaveBeenCalledTimes(2);
+    expect(hangingTask).toHaveBeenCalledOnce();
     expect(authorityReleaseTask).not.toHaveBeenCalled();
-    expect(retryOrder).toEqual(['blocking', 'prepare', 'process-exit']);
+    expect(retryOrder).toEqual(['blocking', 'prepare']);
     time.tick(225);
     const retried = await retry;
 
@@ -1487,7 +1523,7 @@ describe('settlement ledger exit gate', () => {
     expect(retried.deferredFailures[0]?.error).toEqual(
       expect.objectContaining({ message: 'timed-out: exceeded 225ms' }),
     );
-    expect(retryOrder).toEqual(['blocking', 'prepare', 'process-exit', 'accept', 'commit']);
+    expect(retryOrder).toEqual(['blocking', 'prepare', 'accept', 'commit']);
     expect(requestExit).not.toHaveBeenCalled();
   });
 

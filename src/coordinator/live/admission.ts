@@ -74,9 +74,20 @@ export type TerminateAllDisposition =
       owner: 'launch-coordinator';
     }>;
 
+type CleanupAttemptState =
+  | Readonly<{ kind: 'running'; task: Promise<DurableProcessCleanupOutcome> }>
+  | Readonly<{
+      kind: 'settled';
+      task: Promise<DurableProcessCleanupOutcome>;
+      outcome: PromiseSettledResult<DurableProcessCleanupOutcome>;
+    }>;
+
+type CleanupOutcomeConsumption = Readonly<{ kind: 'observed-absent' }> | Readonly<{ kind: 'retained' }>;
+
 export class LaunchCoordinator {
   private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
   private readonly cleanupRetentions = new Map<DurableProcessCleanup, DurableProcessRetention>();
+  private readonly cleanupAttempts = new Map<DurableProcessCleanup, CleanupAttemptState>();
   private readonly pendingDurableLaunches = new Set<PendingDurableLaunch>();
   private nextProviderServerGeneration = 1;
   private readonly pools: Record<LaunchPool, PoolState> = {
@@ -265,6 +276,49 @@ export class LaunchCoordinator {
             cleanupFailures: failures.size,
             owner: 'launch-coordinator',
           };
+    const consumeOutcome = (
+      cleanup: DurableProcessCleanup,
+      task: Promise<DurableProcessCleanupOutcome>,
+      outcome: PromiseSettledResult<DurableProcessCleanupOutcome>,
+    ): CleanupOutcomeConsumption => {
+      const state = this.cleanupAttempts.get(cleanup);
+      if (state?.task === task) this.cleanupAttempts.delete(cleanup);
+      if (outcome.status === 'rejected') {
+        failures.set(cleanup, outcome.reason);
+        return { kind: 'retained' };
+      }
+      if (outcome.value.kind !== 'observed-absent') {
+        unsettled.set(cleanup, outcome.value);
+        return { kind: 'retained' };
+      }
+      failures.delete(cleanup);
+      unsettled.delete(cleanup);
+      for (const [key, registeredCleanup] of this.cleanupHandles) {
+        if (registeredCleanup === cleanup) this.cleanupHandles.delete(key);
+      }
+      this.cleanupRetentions.delete(cleanup);
+      return { kind: 'observed-absent' };
+    };
+    const startAttempt = (
+      cleanup: DurableProcessCleanup,
+      task: Promise<DurableProcessCleanupOutcome>,
+    ): Promise<DurableProcessCleanupOutcome> => {
+      const running = { kind: 'running', task } as const;
+      this.cleanupAttempts.set(cleanup, running);
+      void task.then(
+        (value) => {
+          if (this.cleanupAttempts.get(cleanup) === running) {
+            this.cleanupAttempts.set(cleanup, { kind: 'settled', task, outcome: { status: 'fulfilled', value } });
+          }
+        },
+        (reason: unknown) => {
+          if (this.cleanupAttempts.get(cleanup) === running) {
+            this.cleanupAttempts.set(cleanup, { kind: 'settled', task, outcome: { status: 'rejected', reason } });
+          }
+        },
+      );
+      return task;
+    };
 
     try {
       while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
@@ -276,9 +330,18 @@ export class LaunchCoordinator {
         }
 
         const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<DurableProcessCleanupOutcome> }> = [];
+        const seen = new Set<DurableProcessCleanup>();
         for (const cleanup of this.cleanupHandles.values()) {
+          if (seen.has(cleanup)) continue;
+          seen.add(cleanup);
           try {
-            attempts.push({ cleanup, task: cleanup() });
+            const state = this.cleanupAttempts.get(cleanup);
+            if (state?.kind === 'settled') {
+              if (consumeOutcome(cleanup, state.task, state.outcome).kind === 'observed-absent') continue;
+            }
+            const running = this.cleanupAttempts.get(cleanup);
+            const task = running?.kind === 'running' ? running.task : startAttempt(cleanup, cleanup());
+            attempts.push({ cleanup, task });
           } catch (error: unknown) {
             failures.set(cleanup, error);
           }
@@ -289,20 +352,7 @@ export class LaunchCoordinator {
         for (const [index, outcome] of outcomes.entries()) {
           const attempt = attempts[index];
           if (attempt === undefined) continue;
-          if (outcome.status === 'rejected') {
-            failures.set(attempt.cleanup, outcome.reason);
-            continue;
-          }
-          if (outcome.value.kind !== 'observed-absent') {
-            unsettled.set(attempt.cleanup, outcome.value);
-            continue;
-          }
-          failures.delete(attempt.cleanup);
-          unsettled.delete(attempt.cleanup);
-          for (const [key, registeredCleanup] of this.cleanupHandles) {
-            if (registeredCleanup === attempt.cleanup) this.cleanupHandles.delete(key);
-          }
-          this.cleanupRetentions.delete(attempt.cleanup);
+          consumeOutcome(attempt.cleanup, attempt.task, outcome);
         }
 
         if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {

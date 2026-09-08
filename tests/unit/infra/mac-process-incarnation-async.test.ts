@@ -401,27 +401,39 @@ describe('darwin process incarnation (async)', () => {
   });
 
   it('does not block the event loop while a subprocess is in flight', async () => {
-    let ticked = 0;
-    const interval = setInterval(() => {
-      ticked += 1;
-    }, 1);
-    try {
-      mockedExecFile.mockReset();
-      mockedExecFile.mockImplementation(((file: string, _args: string[], _options: unknown, callback: Callback) => {
-        const child = new ProbeChild();
-        setTimeout(() => {
-          complete(child, callback, file === 'sysctl' ? BOOT_SESSION : LSTART);
-        }, 30);
-        return child as unknown as ChildProcess;
-      }) as unknown as typeof execFile);
+    const pending: Array<{ callback: Callback; child: ProbeChild; value: string }> = [];
+    mockedExecFile.mockReset();
+    mockedExecFile.mockImplementation(((file: string, _args: string[], _options: unknown, callback: Callback) => {
+      const child = new ProbeChild();
+      pending.push({ callback, child, value: file === 'sysctl' ? BOOT_SESSION : LSTART });
+      return child as unknown as ChildProcess;
+    }) as unknown as typeof execFile);
 
-      await probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin');
+    let probeSettled = false;
+    const probe = probeProcessIncarnationAsync(4321, terminateProbeChild, 'darwin').finally(() => {
+      probeSettled = true;
+    });
+    const unrelatedWork = vi.fn();
+    await new Promise<void>((resolve) => {
+      setImmediate(() => {
+        unrelatedWork();
+        resolve();
+      });
+    });
 
-      expect(ticked, 'a synchronous probe would have starved every other timer for its whole duration').toBeGreaterThan(
-        0,
-      );
-    } finally {
-      clearInterval(interval);
-    }
+    expect(unrelatedWork).toHaveBeenCalledOnce();
+    expect(probeSettled).toBe(false);
+    expect(pending).toHaveLength(1);
+
+    const bootSessionRead = pending.shift();
+    if (bootSessionRead === undefined) throw new Error('boot session read did not start');
+    complete(bootSessionRead.child, bootSessionRead.callback, bootSessionRead.value);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+    const processStartRead = pending.shift();
+    if (processStartRead === undefined) throw new Error('process start read did not start');
+    complete(processStartRead.child, processStartRead.callback, processStartRead.value);
+
+    await expect(probe).resolves.toBe(`darwin:${BOOT_SESSION}:${Date.parse(LSTART)}`);
   });
 });

@@ -33,11 +33,41 @@ function scriptLinux(overrides: { bootId?: string | Error; stat?: string | Error
 
 describe('linux process incarnation (async)', () => {
   it('frames the start ticks with the boot id, without blocking the caller', async () => {
-    scriptLinux();
-
-    await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBe(
-      `linux:${BOOT_ID}:${START_TICKS}`,
+    let settleBootId!: () => void;
+    let settleStartTicks!: () => void;
+    mockedRead.mockReset();
+    mockedRead.mockImplementation(
+      ((path: string) =>
+        new Promise<string>((resolve) => {
+          if (path === BOOT_ID_PATH) {
+            settleBootId = () => resolve(BOOT_ID);
+          } else {
+            settleStartTicks = () => resolve(statLine());
+          }
+        })) as unknown as typeof readFile,
     );
+
+    let probeSettled = false;
+    const probe = probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux').finally(() => {
+      probeSettled = true;
+    });
+    const unrelatedWork = vi.fn();
+    await new Promise<void>((resolve) => {
+      setImmediate(() => {
+        unrelatedWork();
+        resolve();
+      });
+    });
+
+    expect(unrelatedWork).toHaveBeenCalledOnce();
+    expect(probeSettled).toBe(false);
+    expect(mockedRead).toHaveBeenCalledTimes(1);
+
+    settleBootId();
+    await vi.waitFor(() => expect(mockedRead).toHaveBeenCalledTimes(2));
+    settleStartTicks();
+
+    await expect(probe).resolves.toBe(`linux:${BOOT_ID}:${START_TICKS}`);
     expect(mockedRead).toHaveBeenCalledWith(BOOT_ID_PATH, expect.objectContaining({ encoding: 'utf-8' }));
     expect(mockedRead).toHaveBeenCalledWith('/proc/4321/stat', expect.objectContaining({ encoding: 'utf-8' }));
   });
