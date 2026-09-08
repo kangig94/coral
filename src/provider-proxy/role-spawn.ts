@@ -5,8 +5,8 @@ import type { ChildProcessLike } from '../infra/port-types.js';
 import {
   gracefulKill,
   observeUnattributableSpawnedProcessGroup,
-  type GracefulKillDisposition,
   type GracefulKillOutcome,
+  type GracefulKillPendingDisposition,
   type SpawnedProcessGroupAbsenceEvidence,
 } from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -209,7 +209,7 @@ export function spawnRoleProcess(
       resolve();
     });
   });
-  let killInFlight: Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }> | null = null;
+  let killInFlight: GracefulKillPendingDisposition | null = null;
   let killOutcome: GracefulKillOutcome | null = null;
   // Piped output must be drained so a full OS pipe cannot block the child.
   child.stdout?.on('data', () => {});
@@ -290,7 +290,7 @@ export function spawnRoleProcess(
       }
       if (killInFlight === null) {
         const disposition = gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
-        if (disposition.kind === 'escalation-scheduled') {
+        if ('settlement' in disposition) {
           killInFlight = disposition;
           void disposition.settlement.then((outcome) => {
             if (killInFlight === disposition) {
@@ -364,9 +364,6 @@ export async function requireSpawnedRole(disposition: RoleSpawnDisposition): Pro
   throw disposition.error;
 }
 
-/** Adapts the `Runtime` time port to the shape every control endpoint and client in this domain expects.
- *  Both role main and the coordinator's own acquisition steps need this exact adapter, so it lives here
- *  rather than being rebuilt at each call site. */
 export function runtimeControlTimer(runtime: Pick<Runtime, 'time'>): ControlEndpointTimer & ControlClientTimer {
   return {
     setTimeout: (callback, ms) => runtime.time.setTimeout(callback, ms),

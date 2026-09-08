@@ -663,6 +663,18 @@ export type ProviderProxySetBooleanOperatorExitResult =
     }> &
       Readonly<{ effect: ProviderProxySetOperatorExitEffect }>);
 
+type ProviderProxySetCurrentOperatorExitRequest =
+  | Readonly<{ contract: 'current'; behavior: 'contain'; signal: AbortSignal }>
+  | Readonly<{ contract: 'current'; behavior: 'abandon'; signal: AbortSignal }>;
+
+type ProviderProxySetBooleanOperatorExitRequest =
+  | Readonly<{ contract: 'boolean'; behavior: 'contain'; signal: AbortSignal }>
+  | Readonly<{ contract: 'boolean'; behavior: 'boolean-abandon'; signal: AbortSignal }>;
+
+type ProviderProxySetOperatorExitRequest =
+  | ProviderProxySetCurrentOperatorExitRequest
+  | ProviderProxySetBooleanOperatorExitRequest;
+
 type InitialDispositionLatch = {
   readonly state: InitialDispositionState;
   settlement:
@@ -2580,17 +2592,11 @@ export class ProviderProxySetLifecycle {
     abandonWithoutAbsence: boolean,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<ProviderProxySetOperatorExitResult> {
-    const result = await this.#completeOperatorExit(
-      capability,
-      proof,
-      abandonWithoutAbsence ? 'abandon' : 'contain',
-      'current',
+    return this.#completeOperatorExit(capability, proof, {
+      contract: 'current',
+      behavior: abandonWithoutAbsence ? 'abandon' : 'contain',
       signal,
-    );
-    if (result.kind === 'unattributable-group-abandoned') {
-      throw new Error('provider_proxy_current_operator_exit_returned_boolean_contract_result');
-    }
-    return result;
+    });
   }
 
   async completeBooleanOperatorExit(
@@ -2599,21 +2605,27 @@ export class ProviderProxySetLifecycle {
     abandonWithoutAbsence: boolean,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<ProviderProxySetBooleanOperatorExitResult> {
-    return this.#completeOperatorExit(
-      capability,
-      proof,
-      abandonWithoutAbsence ? 'boolean-abandon' : 'contain',
-      'boolean',
+    return this.#completeOperatorExit(capability, proof, {
+      contract: 'boolean',
+      behavior: abandonWithoutAbsence ? 'boolean-abandon' : 'contain',
       signal,
-    );
+    });
   }
 
   async #completeOperatorExit(
     capability: ProviderProxySetOperatorExitCapability,
     proof: ProviderProxySetFencedContainmentProof,
-    behavior: 'contain' | 'abandon' | 'boolean-abandon',
-    contract: 'current' | 'boolean',
-    signal: AbortSignal,
+    request: ProviderProxySetCurrentOperatorExitRequest,
+  ): Promise<ProviderProxySetOperatorExitResult>;
+  async #completeOperatorExit(
+    capability: ProviderProxySetOperatorExitCapability,
+    proof: ProviderProxySetFencedContainmentProof,
+    request: ProviderProxySetBooleanOperatorExitRequest,
+  ): Promise<ProviderProxySetBooleanOperatorExitResult>;
+  async #completeOperatorExit(
+    capability: ProviderProxySetOperatorExitCapability,
+    proof: ProviderProxySetFencedContainmentProof,
+    request: ProviderProxySetOperatorExitRequest,
   ): Promise<ProviderProxySetBooleanOperatorExitResult> {
     const address = providerProxySetAddress(capability.setIdentity);
     const noEffect: ProviderProxySetOperatorExitEffect = {
@@ -2675,7 +2687,7 @@ export class ProviderProxySetLifecycle {
         this.#releaseOperatorExitFence(capability);
         return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
       }
-      if (behavior === 'contain') {
+      if (request.behavior === 'contain') {
         this.#releaseOperatorExitFence(capability);
         return { kind: 'representation-release-abandonment-required', setIdentity: address, effect: noEffect };
       }
@@ -2698,7 +2710,7 @@ export class ProviderProxySetLifecycle {
       this.#releaseOperatorExitFence(capability);
       return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
     }
-    if (behavior === 'abandon' && evidence.kind === 'reap-required') {
+    if (request.behavior === 'abandon' && evidence.kind === 'reap-required') {
       const enforcerObservations: ProviderProxySetEnforcerObservations = [
         { role: 'guardian', observation: 'absent' },
         { role: 'reaper', observation: 'absent' },
@@ -2725,8 +2737,7 @@ export class ProviderProxySetLifecycle {
         slot,
         capability,
         proof,
-        behavior,
-        contract,
+        request,
         abandonmentEvidence,
         setIdentity: address,
         signalsSent: [],
@@ -2759,7 +2770,8 @@ export class ProviderProxySetLifecycle {
           : slot.kind === 'reattaching' || slot.kind === 'reattachment-hold'
             ? slot.controlReattachmentWindow?.attemptAbort?.signal
             : slot.containmentAttemptAbort?.signal;
-      const reapingSignal = attemptSignal === undefined ? signal : AbortSignal.any([signal, attemptSignal]);
+      const reapingSignal =
+        attemptSignal === undefined ? request.signal : AbortSignal.any([request.signal, attemptSignal]);
       let reapResult: ProviderProxySetRecordedContainmentReapResult;
       try {
         reapResult = await this.#reapRecordedContainment(
@@ -2813,7 +2825,7 @@ export class ProviderProxySetLifecycle {
         };
       }
       if (reapResult.kind === 'recorded-group-unattributable') {
-        if (behavior === 'boolean-abandon') {
+        if (request.behavior === 'boolean-abandon') {
           const decision: ProviderProxySetOperatorAbandonmentDecision = {
             action: 'abandon',
             reason: 'operator_exact_set_abandonment',
@@ -2835,8 +2847,7 @@ export class ProviderProxySetLifecycle {
             slot,
             capability,
             proof,
-            behavior,
-            contract,
+            request,
             abandonmentEvidence,
             setIdentity: address,
             signalsSent,
@@ -2934,7 +2945,10 @@ export class ProviderProxySetLifecycle {
       } = { pending: null, predecessorClaimDischarge: null };
       const accepted = this.#containmentAbsent(slot.identity, disappearanceReceipt, proof, (pending) => {
         releaseObservation.pending = pending;
-        releaseObservation.predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(contract, pending);
+        releaseObservation.predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(
+          request.contract,
+          pending,
+        );
       });
       this.#detachOperatorExitFence(capability);
       const pendingRelease = releaseObservation.pending;
@@ -2945,13 +2959,13 @@ export class ProviderProxySetLifecycle {
         representationAction: 'absence-release-started',
       };
       const claimDischarge = await operatorExitClaimDischargeAfterRelease(
-        contract,
+        request.contract,
         releaseObservation.predecessorClaimDischarge,
         accepted,
         pendingRelease,
       );
       if (claimDischarge.kind === 'fatal-successor-pending') {
-        return this.#completeFatalOperatorExit(pendingRelease, behavior, effect);
+        return this.#completeFatalOperatorExit(pendingRelease, request, effect);
       }
       return {
         kind: 'contained',
@@ -2962,7 +2976,7 @@ export class ProviderProxySetLifecycle {
       };
     }
     const enforcerVerdict = providerProxySetEnforcerVerdict(evidence.observations);
-    if (behavior === 'contain') {
+    if (request.behavior === 'contain') {
       this.#recordOperatorExitRefusal(
         slot,
         `operator_exit_${enforcerVerdict}`,
@@ -3000,8 +3014,7 @@ export class ProviderProxySetLifecycle {
       slot,
       capability,
       proof,
-      behavior,
-      contract,
+      request,
       abandonmentEvidence,
       setIdentity: address,
       signalsSent: [],
@@ -3019,8 +3032,7 @@ export class ProviderProxySetLifecycle {
     slot,
     capability,
     proof,
-    behavior,
-    contract,
+    request,
     abandonmentEvidence,
     setIdentity,
     signalsSent,
@@ -3029,8 +3041,7 @@ export class ProviderProxySetLifecycle {
     slot: EstablishedSlot | CapsuleRecoveringSlot;
     capability: ProviderProxySetOperatorExitCapability;
     proof: ProviderProxySetFencedContainmentProof;
-    behavior: 'abandon' | 'boolean-abandon';
-    contract: 'current' | 'boolean';
+    request: Extract<ProviderProxySetOperatorExitRequest, { behavior: 'abandon' | 'boolean-abandon' }>;
     abandonmentEvidence: OperatorAbandonmentEvidence;
     setIdentity: ProviderProxySetAddress;
     signalsSent: readonly ProviderProxySetContainmentSignal[];
@@ -3051,7 +3062,7 @@ export class ProviderProxySetLifecycle {
     }
     const { pending } = commitment;
     this.#detachOperatorExitFence(capability);
-    const predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(contract, pending);
+    const predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(request.contract, pending);
     this.#beginRepresentationRelease(pending);
     const releaseEffect: ProviderProxySetOperatorExitEffect = {
       signalsSent,
@@ -3059,13 +3070,13 @@ export class ProviderProxySetLifecycle {
       representationAction: 'abandonment-release-started',
     };
     const claimDischarge = await operatorExitClaimDischargeAfterRelease(
-      contract,
+      request.contract,
       predecessorClaimDischarge,
       pending.initialDisposition,
       pending,
     );
     if (claimDischarge.kind === 'fatal-successor-pending') {
-      return this.#completeFatalOperatorExit(pending, behavior, releaseEffect);
+      return this.#completeFatalOperatorExit(pending, request, releaseEffect);
     }
     return resultForClaimDischarge(claimDischarge, releaseEffect);
   }
@@ -3080,10 +3091,10 @@ export class ProviderProxySetLifecycle {
 
   #completeFatalOperatorExit(
     slot: ReleaseDeliveryPendingSlot,
-    behavior: 'contain' | 'abandon' | 'boolean-abandon',
+    request: ProviderProxySetOperatorExitRequest,
     effect: ProviderProxySetOperatorExitEffect,
   ): ProviderProxySetBooleanOperatorExitResult {
-    if (behavior !== 'abandon') {
+    if (request.behavior !== 'abandon') {
       return { kind: 'representation-release-abandonment-required', setIdentity: slot.address, effect };
     }
     this.#acceptFatalRepresentationReleaseSuccessor(slot);
@@ -4432,13 +4443,6 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  /**
-   * With zero live claims, bound expiry or a non-decisive refusal remains the decisive
-   * `await-containment-absence` path it always was — nothing is destroyed by releasing routing, heartbeats,
-   * and control and waiting for independent proof. With live claims present, the same evidence enters the
-   * unbounded reattachment hold instead: `#enterReattachmentHold` never destroys anything on its own. An
-   * exact structured `teardown-latched` refusal is decisive regardless of live claims and commits directly.
-   */
   #awaitControlReattachmentAbsence(
     slot: EstablishedSlot,
     window: ControlReattachmentWindow,
@@ -5101,7 +5105,6 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  /** This decision requires the complete observed hold bound and cannot settle disappearance alone. */
   #silenceHoldExhaustedDecision(
     slot: EstablishedSlot,
     incident: ProviderProxyHeartbeatObservation,

@@ -278,10 +278,6 @@ export interface Guardian {
   recordContainment(containment: GuardianContainmentIdentity): Promise<void>;
 }
 
-/**
- * The guardian owns recovery-credential redemption admission. It mirrors the reaper's recorded set so
- * it can enforce the same disappearance condition, but it can neither move nor extend the reaper's deadline.
- */
 export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian {
   const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self, holderAuthority, observeHolder } = options;
 

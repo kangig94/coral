@@ -95,6 +95,8 @@ function unresolvedChildProcessDetail(process: UnresolvedChildProcess): string {
       return `pid ${process.pid}: ${process.reason}`;
     case 'signal-refused':
       return `pid ${process.pid}: ${process.reason}`;
+    case 'signal-delivered-escalation-unavailable':
+      return `pid ${process.pid}: ${process.signal} delivered, escalation ${process.reason}`;
     case 'signal-failed':
       return `pid ${process.pid}: ${process.signal} ${process.reason}`;
     case 'target-unobservable':

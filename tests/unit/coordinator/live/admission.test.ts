@@ -868,9 +868,10 @@ describe('launch admission', () => {
         pid: TEST_PROVIDER_PID,
         settled: wrapperSettlement,
         requestTermination: () => ({
-          kind: 'signal-refused',
+          kind: 'signal-failed',
           pid: null,
-          reason: 'child-pid-unavailable',
+          signal: 'SIGTERM',
+          reason: 'kill-port-returned-false',
         }),
       });
       options.onWrapperIdentified?.({

@@ -108,7 +108,8 @@ describe('spawnRoleProcess', () => {
       settled: disposition.settled,
       retry: expect.any(Function),
     });
-    expect(killSignals).toContain('SIGTERM');
+    await expect(disposition.retry()).resolves.toMatchObject({ kind: 'held-unobservable' });
+    expect(killSignals).toEqual(['SIGTERM']);
     let closeSettled = false;
     void disposition.settled.then(() => {
       closeSettled = true;

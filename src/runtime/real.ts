@@ -81,7 +81,12 @@ import {
   type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
 import { observeRecordedContainment, type RecordedProcessIdentity } from '../infra/process-containment.js';
-import { gracefulKill, liveChildAuthority, type GracefulKillDisposition } from '../infra/process-supervision.js';
+import {
+  gracefulKill,
+  liveChildAuthority,
+  type GracefulKillDisposition,
+  type GracefulKillPendingDisposition,
+} from '../infra/process-supervision.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
 
@@ -467,11 +472,11 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           resolve();
         });
       });
-      let wrapperTermination: Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }> | null = null;
+      let wrapperTermination: GracefulKillPendingDisposition | null = null;
       const requestWrapperTermination = (): GracefulKillDisposition => {
         if (wrapperTermination !== null) return wrapperTermination;
         const disposition = gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness);
-        if (disposition.kind === 'escalation-scheduled') {
+        if ('settlement' in disposition) {
           wrapperTermination = disposition;
           void disposition.settlement.then(() => {
             if (wrapperTermination === disposition) wrapperTermination = null;
@@ -496,7 +501,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           }
           return holdLaunchFailure(
             reason,
-            termination.kind === 'escalation-scheduled'
+            'settlement' in termination
               ? termination.settlement.then(() => undefined)
               : time.sleep(DURABLE_POLL_INTERVAL_MS),
           );

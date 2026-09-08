@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 
 import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
-import { gracefulKill, type GracefulKillDisposition } from '../infra/process-supervision.js';
+import {
+  gracefulKill,
+  type GracefulKillDisposition,
+  type GracefulKillPendingDisposition,
+} from '../infra/process-supervision.js';
 import { createRealTimePort } from '../infra/time.js';
 
 const GROUP_FINALIZER_MODE = '--finalize-group';
@@ -14,10 +18,7 @@ const GROUP_OBSERVATION_TIMEOUT_MS = 1_000;
 const GROUP_FINALIZER_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 const RETAINED_GROUP_TERMINATION_INTERVAL_MS = 1_000;
 
-const observedChildKills = new WeakMap<
-  ChildProcessLike,
-  Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }>
->();
+const observedChildKills = new WeakMap<ChildProcessLike, GracefulKillPendingDisposition>();
 
 function requestObservedChildKill(
   child: ChildProcessLike,
@@ -26,7 +27,7 @@ function requestObservedChildKill(
   const current = observedChildKills.get(child);
   if (current !== undefined) return current;
   const disposition = gracefulKill(child, { time }, observeProcessLiveness);
-  if (disposition.kind === 'escalation-scheduled') {
+  if ('settlement' in disposition) {
     observedChildKills.set(child, disposition);
     void disposition.settlement.then(() => {
       if (observedChildKills.get(child) === disposition) observedChildKills.delete(child);
@@ -251,7 +252,7 @@ export function groupMembers(
         return held('unobservable');
       }
       const termination = requestObservedChildKill(observed as unknown as ChildProcessLike, time);
-      if (termination.kind !== 'escalation-scheduled') return held('unobservable');
+      if (!('settlement' in termination)) return held('unobservable');
       void termination.settlement.then((outcome) => {
         if (outcome.kind === 'observed-absent' && settledDisposition === null) {
           settle({ kind: 'unobservable', observation: 'unobservable', exit: 'retry-group-observation' });
@@ -455,7 +456,7 @@ function createContainedGroupSettlement(
       if (active.finalizer.kind === 'available') handoff();
     }, RETAINED_GROUP_TERMINATION_INTERVAL_MS);
     const termination = requestObservedChildKill(groupHandle, time);
-    if (termination.kind === 'escalation-scheduled') {
+    if ('settlement' in termination) {
       void termination.settlement.then((outcome) => {
         if (outcome.kind !== 'observed-absent' && state === active) handoff();
       });
@@ -529,7 +530,7 @@ function createContainedGroupSettlement(
         retainedTermination = null;
       }
       const termination = requestObservedChildKill(groupHandle, time);
-      if (termination.kind === 'escalation-scheduled') {
+      if ('settlement' in termination) {
         void termination.settlement.then((outcome) => {
           if (outcome.kind !== 'observed-absent' && state === active) retain();
         });
@@ -623,7 +624,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
       const retry = time.setTimeout(terminateChild, RETAINED_GROUP_TERMINATION_INTERVAL_MS);
       retry.unref?.();
     };
-    if (termination.kind === 'escalation-scheduled') {
+    if ('settlement' in termination) {
       void termination.settlement.then((outcome) => {
         if (outcome.kind !== 'observed-absent') retryTermination();
       });

@@ -16,6 +16,7 @@ import {
   retainSpawnedProcessGroupCleanup,
   type GracefulKillDisposition,
   type GracefulKillOutcome,
+  type GracefulKillPendingDisposition,
   type SpawnedProcessGroupAbsenceEvidence,
   type SpawnedProcessGroupCleanup,
   type SpawnedProcessGroupCleanupDisposition,
@@ -386,7 +387,7 @@ type ProviderProcessSettlement = {
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor;
   closed: boolean;
   processClosePromise: Promise<void>;
-  termination: Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }> | null;
+  termination: GracefulKillPendingDisposition | null;
   terminationOutcome: GracefulKillOutcome | null;
   resolve(): void;
 };
@@ -401,7 +402,7 @@ function requestProviderServerKill(settlement: ProviderProcessSettlement, runtim
 
 function acceptProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): void {
   const disposition = requestProviderServerKill(settlement, runtime);
-  if (disposition.kind !== 'escalation-scheduled') {
+  if (!('settlement' in disposition)) {
     settlement.terminationOutcome = disposition;
     return;
   }

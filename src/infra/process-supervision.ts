@@ -320,6 +320,12 @@ type GracefulKillByPidSignalFailure = Readonly<{
 export type GracefulKillByPidOutcome =
   | GracefulKillByPidSignalRefusal
   | GracefulKillByPidSignalFailure
+  | Readonly<{
+      kind: 'signal-delivered-escalation-unavailable';
+      pid: number;
+      signal: 'SIGTERM';
+      reason: 'platform-incarnation-cannot-authorize-signal';
+    }>
   | Readonly<{ kind: 'observed-absent'; pid: number }>
   | Readonly<{ kind: 'target-unobservable'; pid: number; stage: 'after-sigterm' | 'after-sigkill' }>
   | Readonly<{ kind: 'target-alive'; pid: number; stage: 'after-sigkill' }>;
@@ -329,12 +335,6 @@ export type GracefulKillByPidDisposition =
   | GracefulKillByPidSignalRefusal
   | GracefulKillByPidSignalFailure;
 
-type GracefulKillSignalRefusal = Readonly<{
-  kind: 'signal-refused';
-  pid: null;
-  reason: 'child-pid-unavailable';
-}>;
-
 type GracefulKillSignalFailure = Readonly<{
   kind: 'signal-failed';
   pid: number | null;
@@ -343,16 +343,22 @@ type GracefulKillSignalFailure = Readonly<{
 }>;
 
 export type GracefulKillOutcome =
-  | GracefulKillSignalRefusal
   | GracefulKillSignalFailure
-  | Readonly<{ kind: 'observed-absent'; pid: number }>
+  | Readonly<{ kind: 'observed-absent'; pid: number | null }>
   | Readonly<{ kind: 'target-unobservable'; pid: number; stage: 'after-sigterm' | 'after-sigkill' }>
   | Readonly<{ kind: 'target-alive'; pid: number; stage: 'after-sigkill' }>;
 
-export type GracefulKillDisposition =
+export type GracefulKillPendingDisposition =
   | Readonly<{ kind: 'escalation-scheduled'; pid: number; settlement: Promise<GracefulKillOutcome> }>
-  | GracefulKillSignalRefusal
-  | GracefulKillSignalFailure;
+  | Readonly<{
+      kind: 'signal-delivered-escalation-unavailable';
+      pid: null;
+      signal: 'SIGTERM';
+      reason: 'child-pid-unavailable';
+      settlement: Promise<GracefulKillOutcome>;
+    }>;
+
+export type GracefulKillDisposition = GracefulKillPendingDisposition | GracefulKillSignalFailure;
 
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {
@@ -442,7 +448,17 @@ export function gracefulKill(
       reason: delivery === 'returned-false' ? 'kill-port-returned-false' : 'kill-port-threw',
     };
   }
-  if (pid === undefined) return { kind: 'signal-refused', pid: null, reason: 'child-pid-unavailable' };
+  if (pid === undefined) {
+    return {
+      kind: 'signal-delivered-escalation-unavailable',
+      pid: null,
+      signal: 'SIGTERM',
+      reason: 'child-pid-unavailable',
+      settlement: new Promise((resolve) => {
+        child.on('close', () => resolve({ kind: 'observed-absent', pid: null }));
+      }),
+    };
+  }
   return { kind: 'escalation-scheduled', pid, settlement: settleGracefulKill(child, runtime, observeLiveness, pid) };
 }
 
@@ -508,7 +524,12 @@ function settleGracefulKillByPid(
     const escalation = runtime.time.setTimeout(() => {
       try {
         if (!incarnationMayAuthorizeSignal(platform)) {
-          resolve({ kind: 'signal-refused', pid, reason: 'platform-incarnation-cannot-authorize-signal' });
+          resolve({
+            kind: 'signal-delivered-escalation-unavailable',
+            pid,
+            signal: 'SIGTERM',
+            reason: 'platform-incarnation-cannot-authorize-signal',
+          });
           return;
         }
         const observation = observeRecordedTarget(runtime, pid, platform, expectedIncarnation);

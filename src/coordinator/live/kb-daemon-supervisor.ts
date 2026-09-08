@@ -8,6 +8,7 @@ import {
   safeKill,
   type GracefulKillDisposition,
   type GracefulKillOutcome,
+  type GracefulKillPendingDisposition,
 } from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
@@ -165,16 +166,13 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
 
-const kbDaemonKills = new WeakMap<
-  ChildProcessLike,
-  Extract<GracefulKillDisposition, { kind: 'escalation-scheduled' }>
->();
+const kbDaemonKills = new WeakMap<ChildProcessLike, GracefulKillPendingDisposition>();
 
 function requestKbDaemonKill(child: ChildProcessLike, runtime: Runtime): GracefulKillDisposition {
   const current = kbDaemonKills.get(child);
   if (current !== undefined) return current;
   const disposition = gracefulKill(child, runtime, (pid) => runtime.process.observeLiveness(pid));
-  if (disposition.kind === 'escalation-scheduled') {
+  if ('settlement' in disposition) {
     kbDaemonKills.set(child, disposition);
     void disposition.settlement.then(() => {
       if (kbDaemonKills.get(child) === disposition) kbDaemonKills.delete(child);
@@ -189,7 +187,6 @@ function kbDaemonKillFailure(outcome: Exclude<GracefulKillOutcome, { kind: 'obse
     case 'target-unobservable':
       return `KB daemon termination ${outcome.kind}: ${outcome.stage}`;
     case 'signal-failed':
-    case 'signal-refused':
       return `KB daemon termination ${outcome.kind}: ${outcome.reason}`;
   }
 }
@@ -447,7 +444,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   };
   const acceptKbDaemonKill = (child: ChildProcessLike): void => {
     const disposition = requestKbDaemonKill(child, runtime);
-    if (disposition.kind !== 'escalation-scheduled') {
+    if (!('settlement' in disposition)) {
       setFailure(kbDaemonKillFailure(disposition));
       return;
     }

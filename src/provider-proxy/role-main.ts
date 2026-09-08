@@ -474,6 +474,8 @@ function gracefulKillFailureDetail(outcome: Exclude<GracefulKillByPidOutcome, { 
   switch (outcome.kind) {
     case 'signal-refused':
       return outcome.reason;
+    case 'signal-delivered-escalation-unavailable':
+      return `${outcome.signal}:${outcome.reason}`;
     case 'signal-failed':
       return `${outcome.signal}:${outcome.reason}`;
     case 'target-unobservable':

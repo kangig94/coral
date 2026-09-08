@@ -295,16 +295,24 @@ describe('gracefulKill', () => {
     expect(child.killedSignals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
-  it('sends SIGTERM but refuses escalation when the child has no pid to observe', () => {
+  it('retains a delivered SIGTERM on child close when no pid is available for escalation', async () => {
     const time = new VirtualTime();
     const child = new FakeChild(undefined);
 
-    expect(gracefulKill(child, fakeRuntime(time), () => 'alive')).toEqual({
-      kind: 'signal-refused',
+    const disposition = gracefulKill(child, fakeRuntime(time), () => 'alive');
+    expect(disposition).toMatchObject({
+      kind: 'signal-delivered-escalation-unavailable',
       pid: null,
+      signal: 'SIGTERM',
       reason: 'child-pid-unavailable',
+      settlement: expect.any(Promise),
     });
     expect(child.killedSignals).toEqual(['SIGTERM']);
+    time.tick(SIGTERM_GRACE_MS);
+    expect(child.killedSignals).toEqual(['SIGTERM']);
+    if (!('settlement' in disposition)) throw new Error('expected close-backed SIGTERM ownership');
+    child.emitClose();
+    await expect(disposition.settlement).resolves.toEqual({ kind: 'observed-absent', pid: null });
   });
 });
 
