@@ -97,8 +97,8 @@ enough that a provider control lease lapsed and the reaper terminated healthy jo
 neither half of that entry was designed against, so what it now asks for is which half the observed cause
 argues for, not another reproduction. `proxy-set-acquisition`'s clock-drift symptom
 closed with #324, the same fix that closed the coordinator's own paths; what is left is a narrower
-comparison-shape decision, not a reproduction. `store-format-routing`
-is dormant. `cli-terminal-width-layout` and `export-lifetime` wait on product decisions, not on code.
+comparison-shape decision, not a reproduction. `cli-terminal-width-layout` and `export-lifetime` wait on
+product decisions, not on code.
 `legacy-v1-capsule-retirement` is absent for a reason the table cannot express: its remaining members are
 capsules no observation this build can take will decide, so its first step is a decision about what may end a
 hold when no evidence will — not a step in code.
@@ -263,14 +263,6 @@ guard stayed where it was.
 | [`source-import-converter-cohesion.md`](./source-import-converter-cohesion.md) | **Startable now.** Five concerns at one layer in a 1058-line file; four converter classes are the documented subdivision trigger. A local fix improved its functions and grew the file — that is the datum.  |
 | [`invariant-path-literals-go-stale-silently.md`](./invariant-path-literals-go-stale-silently.md) | **Startable now; reproduced.** An equality-matched store path survived the store's move, matched no import edge, and left the layering invariant green; an injected forbidden import proved the guard was a no-op. The open choice is shared path-existence checks, local component-prefix rules, or graph-derived targets. This is about a literal inside a scan, not the scan-root gap in the next row. |
 | [`invariant-scans-stop-at-src.md`](./invariant-scans-stop-at-src.md)           | **Startable now.** One of two scans extended to `clients/hooks/` and found nothing; the other needs its detector taught a second idiom first. Measurement already done: three files, one alternate spelling. |
-
----
-
-## Design record, not open work
-
-|                                                                                              |                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`store-format-routing.md`](./store-format-routing.md)                                       | **Dormant.** Its one live defect was extracted to its own entry and has since been fixed. Read it as a design record.                                                                                                                                                                                                  |
 
 ---
 

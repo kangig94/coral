@@ -1225,10 +1225,14 @@ function diagnosticsFor(program: ts.Program, path: string): string[] {
 const PRODUCTION_CONTEXT = createContext(productionProgram(), REPO_ROOT, REGISTRY);
 
 describe('process observation vocabulary composes without collapsing its third answer', () => {
+  // This case resolves types across every `src/` file rather than reading text, so it is CPU-bound where the
+  // suite's 15s default was calibrated for I/O-bound cases (see `vitest/default.ts`). Measured 3.8-4.1s on a
+  // 24-core host and over 15s on a GitHub 2-core runner, which this suite deliberately oversubscribes to four
+  // workers; the budget below carries that contention factor and still fails a hung walk promptly.
   it('keeps process-owned vocabulary and its composition explicit', () => {
     expect(enforceAllowlist(sourceVocabularyViolations(PRODUCTION_CONTEXT), SOURCE_VOCABULARY_EXEMPTIONS)).toEqual([]);
     expect(enforceDebts(compositionViolations(PRODUCTION_CONTEXT), COMPOSITION_DEBTS)).toEqual([]);
-  });
+  }, 60_000);
 
   it('rejects primitive and null-bearing members added to ProcessPort', () => {
     const source = readFileSync(resolve(FIXTURE_ROOT, 'subject.ts.txt'), 'utf8');
