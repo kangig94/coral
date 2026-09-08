@@ -144,9 +144,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   let enforcer: ArmedEnforcer | null = null;
   let pairingLost = false;
 
-  /** Every field a grant is bound to except the orphan timeout, mirroring `guardian.ts`'s own `setIdentity`:
-   *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
-   *  belong to. */
+  /** Grant binding must derive from this role's capsule. */
   const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
   const grants = createGrantRegistry(mintReceipt, {
     mayReplaceRedemption: () => !deadlines.controlIsLive(),

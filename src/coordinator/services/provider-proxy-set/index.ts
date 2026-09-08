@@ -879,7 +879,12 @@ function decisiveTeardownLatchedRefusal(refusal: ProviderProxyControlRedemptionR
 const PRESERVE_REPORT_INTERVAL_MS = 60_000;
 const MAX_PRESERVE_REPORTS_PER_SET = 32;
 const OPERATOR_DISPOSITION_STORE_RETRY_MS = 1_000;
-const OPERATOR_DISPOSITION_STORE_REPAIR_SUBJECT = JSON.stringify(['operator-disposition-store', null]);
+
+function operatorDispositionSubjectKey(subject?: string, method?: string): string {
+  return JSON.stringify([subject ?? null, method ?? null]);
+}
+
+const OPERATOR_DISPOSITION_STORE_REPAIR_SUBJECT = operatorDispositionSubjectKey('operator-disposition-store');
 
 type DurableOperatorDispositionWriteStatus =
   | Readonly<{ kind: 'current-writer'; recordedAtMs: number }>
@@ -1979,7 +1984,7 @@ export class ProviderProxySetLifecycle {
       identity,
       new Map([
         [
-          JSON.stringify(['acquisition-publication', null]),
+          operatorDispositionSubjectKey('acquisition-publication'),
           {
             disposition: 'held',
             incidentReason: incident,
@@ -3842,7 +3847,7 @@ export class ProviderProxySetLifecycle {
       slot.identity,
       new Map([
         [
-          JSON.stringify(['acquisition-publication', null]),
+          operatorDispositionSubjectKey('acquisition-publication'),
           {
             disposition: 'held',
             attempts: slot.completedAttempts,
@@ -3904,7 +3909,7 @@ export class ProviderProxySetLifecycle {
       slot.identity,
       new Map([
         [
-          JSON.stringify(['acquisition-publication', null]),
+          operatorDispositionSubjectKey('acquisition-publication'),
           {
             disposition: 'held',
             incidentReason: closed.reason,
@@ -4752,12 +4757,7 @@ export class ProviderProxySetLifecycle {
     void this.#runContainmentAttempt(slot, decision);
   }
 
-  /**
-   * Narrows the same `awaiting-containment-absence` disposition `#recordOperatorDisposition` already recorded
-   * for this `stop-and-reap` decision from the generic `independent-containment-absence` to the specific AC3
-   * hold this commit attempt actually observed. The subject key mirrors `#recordOperatorDisposition`'s own so
-   * both update the identical map entry rather than creating a second one for the same subject.
-   */
+  /** A containment-commit outcome must amend, not add, a disposition. */
   #recordContainmentCommitOutcome(
     slot: EstablishedSlot,
     decision: ProviderProxySetAuthorityStopDecision | ProviderProxySetRetirementStopDecision,
@@ -4769,7 +4769,7 @@ export class ProviderProxySetLifecycle {
     const dispositions = new Map(existing);
     const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
     const method = 'method' in decision && typeof decision.method === 'string' ? decision.method : undefined;
-    const subjectKey = JSON.stringify([role ?? null, method ?? null]);
+    const subjectKey = operatorDispositionSubjectKey(role, method);
     const current = dispositions.get(subjectKey);
     if (current === undefined || current.disposition !== 'awaiting-containment-absence') return;
     dispositions.set(subjectKey, {
@@ -4812,7 +4812,7 @@ export class ProviderProxySetLifecycle {
     }
     const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
     const method = 'method' in decision && typeof decision.method === 'string' ? decision.method : undefined;
-    const subjectKey = JSON.stringify([role ?? null, method ?? null]);
+    const subjectKey = operatorDispositionSubjectKey(role, method);
     const dispositions = new Map(this.#operatorDispositions.get(setKey) ?? []);
     const incidentReason =
       'incidentReason' in decision && typeof decision.incidentReason === 'string'
@@ -4851,17 +4851,13 @@ export class ProviderProxySetLifecycle {
     return this.#setOperatorDispositions(decision.setIdentity, dispositions);
   }
 
-  /**
-   * Branches on `refusedDecision.reason` rather than a wrapper-level field: the five sources keep their own
-   * shape, so `role`/`method`/`cause` are read from the nested decision instead of the (absent) wrapper ones.
-   */
   #recordNonAuthorizingDisposition(
     decision: ProviderProxySetContainmentRefusedDecision,
   ): ProviderProxySetOperatorDispositionRecording {
     const refused = decision.refusedDecision;
     const role = 'role' in refused ? refused.role : undefined;
     const method = 'method' in refused ? refused.method : 'policy' in refused ? refused.policy.method : undefined;
-    const subjectKey = JSON.stringify([role ?? null, method ?? null]);
+    const subjectKey = operatorDispositionSubjectKey(role, method);
     const dispositions = new Map(this.#operatorDispositions.get(providerProxySetKey(decision.setIdentity)) ?? []);
     const incidentReason =
       'incidentReason' in refused
@@ -4902,7 +4898,7 @@ export class ProviderProxySetLifecycle {
   ): ProviderProxySetOperatorDispositionRecording {
     const setKey = providerProxySetKey(slot.identity);
     const dispositions = new Map(this.#operatorDispositions.get(setKey) ?? []);
-    dispositions.set(JSON.stringify(['operator-exit', null]), {
+    dispositions.set(operatorDispositionSubjectKey('operator-exit'), {
       disposition: 'operator-exit-refused',
       ...(enforcerObservations === undefined ? {} : { enforcerObservations }),
       incidentReason,
@@ -5175,7 +5171,7 @@ export class ProviderProxySetLifecycle {
     const setKey = providerProxySetKey(slot.identity);
     const existingDispositions = this.#operatorDispositions.get(setKey);
     const dispositions = existingDispositions === undefined ? undefined : new Map(existingDispositions);
-    const subjectKey = JSON.stringify([role, method]);
+    const subjectKey = operatorDispositionSubjectKey(role, method);
     const operatorDisposition = dispositions?.get(subjectKey);
     const hasDurableDisposition = [...this.#durableOperatorDispositions.values()].some(
       (record) => providerProxySetKey(record.setIdentity) === setKey && record.subjectKey === subjectKey,

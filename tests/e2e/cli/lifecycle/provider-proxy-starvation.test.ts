@@ -116,8 +116,8 @@ const secondOperation = fs.existsSync(path.join(stateDir, 'second-operation-arme
 const threadId = 'starved-codex-session';
 const turnId = 'starved-codex-turn';
 
-function signal(name) {
-  fs.writeFileSync(path.join(stateDir, name), 'ready');
+function signal(name, value = 'ready') {
+  fs.writeFileSync(path.join(stateDir, name), value);
 }
 
 function afterGate(name, action) {
@@ -171,7 +171,7 @@ rl.on('line', (line) => {
         send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
       };
       if (secondOperation) {
-        signal('turn-start-pending');
+        signal('turn-start-pending', String(process.pid));
         afterGate('turn-complete-gate', answerTurn);
       } else {
         answerTurn();
@@ -387,6 +387,13 @@ describe('provider-proxy starvation (AC8)', () => {
           'turn/start gate',
         );
         mark('held parked at turn/start');
+        const appServerPid = Number.parseInt(
+          readFileSync(join(fixture.fakeStateDir, 'turn-start-pending'), 'utf8'),
+          10,
+        );
+        if (!Number.isSafeInteger(appServerPid) || appServerPid <= 0) {
+          throw new Error(`fake app-server published invalid pid ${String(appServerPid)}`);
+        }
         // The later CLI must not inherit the held turn's parking behavior.
         rmSync(join(fixture.fakeStateDir, 'second-operation-armed'), { force: true });
 
@@ -420,11 +427,12 @@ describe('provider-proxy starvation (AC8)', () => {
 
         const targetPids = {
           coordinator: coordinatorPid,
+          appServer: appServerPid,
           guardian: guardian.pid,
           reaper: reaper.pid,
           proxy: proxy.pid,
         };
-        expect(new Set(Object.values(targetPids)).size).toBe(4);
+        expect(new Set(Object.values(targetPids)).size).toBe(5);
         expect(Object.values(targetPids).every((pid) => observeProcessLiveness(pid) === 'alive')).toBe(true);
 
         const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
@@ -483,6 +491,7 @@ describe('provider-proxy starvation (AC8)', () => {
           const remainingHoldMs = STARVATION_HOLD_MS - (Date.now() - holdStart);
           if (remainingHoldMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingHoldMs));
           expect(Date.now() - holdStart).toBeGreaterThanOrEqual(STARVATION_HOLD_MS);
+          expect(Object.values(targetPids).every((pid) => observeProcessLiveness(pid) === 'alive')).toBe(true);
           mark('hold complete');
         } finally {
           // A failed assertion must not leave the coordinator stopped.
@@ -538,6 +547,18 @@ describe('provider-proxy starvation (AC8)', () => {
         if (heldAfterResume === null || heldAfterResume.phase !== 'executing') {
           throw new Error(`held operation for ${heldJobId} did not survive the freeze at 'executing'`);
         }
+
+        writeFileSync(join(fixture.fakeStateDir, 'turn-complete-gate'), 'continue');
+        const heldStatus = await held.completed;
+        mark('held work completed after resume');
+        if (heldStatus !== 0) {
+          throw new Error(
+            `held coral-cli exited with status ${heldStatus}\n` +
+              `stdout:\n${held.stdout()}\nstderr:\n${held.stderr()}`,
+          );
+        }
+        expect(held.stderr()).toBe('');
+        expect(held.stdout()).toMatch(new RegExp(`^Job ${heldJobId} completed$`, 'm'));
 
         // Coordinator death must lead the held containment to confirmed absence within its death bound.
         const killedAt = Date.now();
