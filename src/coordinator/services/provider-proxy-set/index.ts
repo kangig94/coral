@@ -2632,94 +2632,359 @@ export class ProviderProxySetLifecycle {
     proof: ProviderProxySetFencedContainmentProof,
     request: ProviderProxySetOperatorExitRequest,
   ): Promise<ProviderProxySetBooleanOperatorExitResult> {
-    const address = providerProxySetAddress(capability.setIdentity);
-    const noEffect: ProviderProxySetOperatorExitEffect = {
-      signalsSent: [],
-      containmentAbsent: false,
-      representationAction: 'none',
-    };
     if (capability[operatorExitCapabilityBrand] !== this) {
       throw new Error('provider_proxy_operator_exit_capability_invalid');
     }
-    await capability.priorDestructiveAttemptsSettled;
-    const evidence = providerProxySetContainmentEvidenceFor(
-      proof,
-      capability.setIdentity,
-      capability.containmentProofAuthorization,
-    );
-    const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
-    if (slot === undefined) {
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'set-not-found', setIdentity: address, effect: noEffect };
-    }
-    const fatalReleasePending =
-      (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
-      slot.fatalSettlement !== null;
-    const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
-    if (
-      (slot.kind !== 'containing' &&
-        slot.kind !== 'containment-wait' &&
-        slot.kind !== 'reattaching' &&
-        slot.kind !== 'reattachment-hold' &&
-        slot.kind !== 'capsule-recovering' &&
-        !fatalReleasePending &&
-        !heldWhileRoutable) ||
-      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
-    ) {
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
-    }
-    if (
-      slot.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
-      slot.operatorExitGeneration !== capability.operatorExitGeneration ||
-      slot.attemptToken !== capability.attemptToken ||
-      this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
-    ) {
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
-    }
-    const proofCurrentness = verifyProviderProxySetContainmentProofCurrent(proof, capability.setIdentity);
-    if (proofCurrentness.kind === 'authorization-missing') {
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
-    }
-    if (proofCurrentness.kind === 'authorization-stale') {
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
-    }
-    if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
-      if (slot.fatalSettlement === null) {
-        this.#releaseOperatorExitFence(capability);
+    let operatorExitFenceRetained = false;
+    const retainOperatorExitFence = (): void => {
+      operatorExitFenceRetained = true;
+    };
+    try {
+      const address = providerProxySetAddress(capability.setIdentity);
+      const noEffect: ProviderProxySetOperatorExitEffect = {
+        signalsSent: [],
+        containmentAbsent: false,
+        representationAction: 'none',
+      };
+      await capability.priorDestructiveAttemptsSettled;
+      const evidence = providerProxySetContainmentEvidenceFor(
+        proof,
+        capability.setIdentity,
+        capability.containmentProofAuthorization,
+      );
+      const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
+      if (slot === undefined) {
+        return { kind: 'set-not-found', setIdentity: address, effect: noEffect };
+      }
+      const fatalReleasePending =
+        (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
+        slot.fatalSettlement !== null;
+      const heldWhileRoutable =
+        (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
+      if (
+        (slot.kind !== 'containing' &&
+          slot.kind !== 'containment-wait' &&
+          slot.kind !== 'reattaching' &&
+          slot.kind !== 'reattachment-hold' &&
+          slot.kind !== 'capsule-recovering' &&
+          !fatalReleasePending &&
+          !heldWhileRoutable) ||
+        !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
+      ) {
         return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
       }
-      if (request.behavior === 'contain') {
-        this.#releaseOperatorExitFence(capability);
-        return { kind: 'representation-release-abandonment-required', setIdentity: address, effect: noEffect };
+      if (
+        slot.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+        slot.operatorExitGeneration !== capability.operatorExitGeneration ||
+        slot.attemptToken !== capability.attemptToken ||
+        this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
+      ) {
+        return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
       }
-      this.#releaseOperatorExitFence(capability);
-      this.#acceptFatalRepresentationReleaseSuccessor(slot);
-      return {
-        kind: 'representation-release-abandoned',
-        setIdentity: address,
-        successor: { owner: 'operator-command', acceptance: 'accepted' },
-        effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
-      };
-    }
-    if (proofCurrentness.kind === 'store-unreadable') {
-      this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
-    }
-    if (evidence.kind === 'store-unreadable') {
-      this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
-      this.#releaseOperatorExitFence(capability);
-      return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
-    }
-    if (request.behavior === 'abandon' && evidence.kind === 'reap-required') {
-      const enforcerObservations: ProviderProxySetEnforcerObservations = [
-        { role: 'guardian', observation: 'absent' },
-        { role: 'reaper', observation: 'absent' },
-      ];
+      const proofCurrentness = verifyProviderProxySetContainmentProofCurrent(proof, capability.setIdentity);
+      if (proofCurrentness.kind === 'authorization-missing') {
+        return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
+      }
+      if (proofCurrentness.kind === 'authorization-stale') {
+        return { kind: 'authorization-stale', setIdentity: address, effect: noEffect };
+      }
+      if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
+        if (slot.fatalSettlement === null) {
+          return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
+        }
+        if (request.behavior === 'contain') {
+          return { kind: 'representation-release-abandonment-required', setIdentity: address, effect: noEffect };
+        }
+        this.#acceptFatalRepresentationReleaseSuccessor(slot);
+        return {
+          kind: 'representation-release-abandoned',
+          setIdentity: address,
+          successor: { owner: 'operator-command', acceptance: 'accepted' },
+          effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
+        };
+      }
+      if (proofCurrentness.kind === 'store-unreadable') {
+        this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+        return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
+      }
+      if (evidence.kind === 'store-unreadable') {
+        this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+        return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
+      }
+      if (request.behavior === 'abandon' && evidence.kind === 'reap-required') {
+        const enforcerObservations: ProviderProxySetEnforcerObservations = [
+          { role: 'guardian', observation: 'absent' },
+          { role: 'reaper', observation: 'absent' },
+        ];
+        const decision: ProviderProxySetOperatorAbandonmentDecision = {
+          action: 'abandon',
+          reason: 'operator_exact_set_abandonment',
+          liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+          setIdentity: slot.identity,
+        };
+        if (slot.kind === 'capsule-recovering') {
+          this.#recordOperatorDisposition(decision);
+          this.#reportDecision(decision);
+        } else {
+          this.#recordDecision(slot, decision);
+        }
+        const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
+          kind: 'operator-abandoned',
+          basis: 'enforcer-observations',
+          enforcerObservations,
+          [operatorAbandonmentEvidenceBrand]: true as const,
+        });
+        return await this.#completeOperatorAbandonment({
+          slot,
+          capability,
+          retainOperatorExitFence,
+          proof,
+          request,
+          abandonmentEvidence,
+          setIdentity: address,
+          signalsSent: [],
+          resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
+            kind: 'abandoned',
+            setIdentity: address,
+            enforcerObservations,
+            claimDischarge,
+            effect: releaseEffect,
+          }),
+        });
+      }
+      if (evidence.kind === 'reap-required') {
+        const signalsSent: ProviderProxySetContainmentSignal[] = [];
+        const assertCapabilityCurrent = (): void => {
+          const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+          if (
+            current !== slot ||
+            current.attemptToken !== capability.attemptToken ||
+            current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+            current.operatorExitGeneration !== capability.operatorExitGeneration ||
+            this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
+          ) {
+            throw new Error('provider_proxy_operator_exit_authorization_stale');
+          }
+        };
+        const attemptSignal =
+          slot.kind === 'capsule-recovering'
+            ? slot.attemptAbort?.signal
+            : slot.kind === 'reattaching' || slot.kind === 'reattachment-hold'
+              ? slot.controlReattachmentWindow?.attemptAbort?.signal
+              : slot.containmentAttemptAbort?.signal;
+        const reapingSignal =
+          attemptSignal === undefined ? request.signal : AbortSignal.any([request.signal, attemptSignal]);
+        let reapResult: ProviderProxySetRecordedContainmentReapResult;
+        try {
+          reapResult = await this.#reapRecordedContainment(
+            capability.setIdentity,
+            proof,
+            reapingSignal,
+            (delivered) => {
+              if (!signalsSent.includes(delivered)) signalsSent.push(delivered);
+            },
+            assertCapabilityCurrent,
+          );
+        } catch {
+          const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+          const authorizationMoved =
+            current !== slot ||
+            current.attemptToken !== capability.attemptToken ||
+            current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+            current.operatorExitGeneration !== capability.operatorExitGeneration;
+          if (authorizationMoved) {
+            return {
+              kind: 'authorization-stale',
+              setIdentity: address,
+              effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+            };
+          }
+          return {
+            kind: 'containment-unconfirmed',
+            setIdentity: address,
+            recoveryAction: { kind: 'retry-exact-set-containment' },
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
+        if (
+          current !== slot ||
+          current.attemptToken !== capability.attemptToken ||
+          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
+          current.operatorExitGeneration !== capability.operatorExitGeneration
+        ) {
+          return {
+            kind: 'authorization-stale',
+            setIdentity: address,
+            effect: {
+              signalsSent,
+              containmentAbsent: reapResult.kind === 'containment-absent',
+              representationAction: 'none',
+            },
+          };
+        }
+        if (reapResult.kind === 'recorded-group-unattributable') {
+          if (request.behavior === 'boolean-abandon') {
+            const decision: ProviderProxySetOperatorAbandonmentDecision = {
+              action: 'abandon',
+              reason: 'operator_exact_set_abandonment',
+              liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+              setIdentity: slot.identity,
+            };
+            if (slot.kind === 'capsule-recovering') {
+              this.#recordOperatorDisposition(decision);
+              this.#reportDecision(decision);
+            } else {
+              this.#recordDecision(slot, decision);
+            }
+            const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
+              kind: 'operator-abandoned',
+              basis: 'recorded-group-unattributable',
+              [operatorAbandonmentEvidenceBrand]: true as const,
+            });
+            return await this.#completeOperatorAbandonment({
+              slot,
+              capability,
+              retainOperatorExitFence,
+              proof,
+              request,
+              abandonmentEvidence,
+              setIdentity: address,
+              signalsSent,
+              resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
+                kind: 'unattributable-group-abandoned',
+                setIdentity: address,
+                claimDischarge,
+                effect: releaseEffect,
+              }),
+            });
+          }
+          this.#recordOperatorExitRefusal(slot, 'operator_exit_recorded_group_unattributable', 'operator-abandonment');
+          return {
+            kind: 'recorded-group-unattributable',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        if (reapResult.kind === 'identity-unobservable') {
+          if (reapResult.signalDelivered) {
+            return {
+              kind: 'containment-unconfirmed',
+              setIdentity: address,
+              recoveryAction: { kind: 'retry-exact-set-containment' },
+              effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+            };
+          }
+          this.#recordOperatorExitRefusal(slot, 'operator_exit_identity_unobservable', 'operator-abandonment');
+          return {
+            kind: 'identity-unobservable',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        if (reapResult.kind === 'signal-authorization-refused') {
+          this.#recordOperatorExitRefusal(slot, 'operator_exit_signal_authorization_refused', 'operator-abandonment');
+          return {
+            kind: 'signal-authorization-refused',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        if (reapResult.kind === 'authorization-stale') {
+          return {
+            kind: 'authorization-stale',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        if (reapResult.kind === 'authorization-missing') {
+          return {
+            kind: 'authorization-stale',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        if (reapResult.kind === 'store-unreadable') {
+          this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+          return {
+            kind: 'store-unreadable',
+            setIdentity: address,
+            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+          };
+        }
+        const { disappearanceReceipt } = reapResult;
+        const decision: ProviderProxySetOperatorContainmentDecision = {
+          action: 'operator-contain',
+          reason: 'operator_exact_set_containment',
+          liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
+          setIdentity: slot.identity,
+        };
+        if (slot.kind === 'capsule-recovering') {
+          this.#recordOperatorDisposition(decision);
+          this.#reportDecision(decision);
+        } else {
+          this.#recordDecision(slot, decision);
+          if (
+            (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
+            slot.controlReattachmentWindow !== null
+          ) {
+            this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
+          }
+          this.#commitHeldSlotToContainment(slot);
+        }
+        const releaseObservation: {
+          pending: ReleaseDeliveryPendingSlot | null;
+          predecessorClaimDischarge: Promise<ProviderProxySetOperatorClaimDischarge> | null;
+        } = { pending: null, predecessorClaimDischarge: null };
+        const accepted = this.#containmentAbsent(slot.identity, disappearanceReceipt, proof, (pending) => {
+          retainOperatorExitFence();
+          releaseObservation.pending = pending;
+          releaseObservation.predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(
+            request.contract,
+            pending,
+          );
+        });
+        this.#detachOperatorExitFence(capability);
+        const pendingRelease = releaseObservation.pending;
+        if (pendingRelease === null) throw new Error('provider_proxy_operator_exit_release_missing');
+        const effect: ProviderProxySetOperatorExitEffect = {
+          signalsSent,
+          containmentAbsent: true,
+          representationAction: 'absence-release-started',
+        };
+        const claimDischarge = await operatorExitClaimDischargeAfterRelease(
+          request.contract,
+          releaseObservation.predecessorClaimDischarge,
+          accepted,
+          pendingRelease,
+        );
+        if (claimDischarge.kind === 'fatal-successor-pending') {
+          return this.#completeFatalOperatorExit(pendingRelease, request, effect);
+        }
+        return {
+          kind: 'contained',
+          setIdentity: address,
+          disappearanceReceipt,
+          claimDischarge,
+          effect,
+        };
+      }
+      const enforcerVerdict = providerProxySetEnforcerVerdict(evidence.observations);
+      if (request.behavior === 'contain') {
+        this.#recordOperatorExitRefusal(
+          slot,
+          `operator_exit_${enforcerVerdict}`,
+          'operator-abandonment',
+          evidence.observations,
+        );
+        return {
+          kind: enforcerVerdict,
+          setIdentity: address,
+          enforcerObservations: evidence.observations,
+          effect: noEffect,
+        };
+      }
+
       const decision: ProviderProxySetOperatorAbandonmentDecision = {
         action: 'abandon',
         reason: 'operator_exact_set_abandonment',
@@ -2735,12 +3000,13 @@ export class ProviderProxySetLifecycle {
       const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
         kind: 'operator-abandoned',
         basis: 'enforcer-observations',
-        enforcerObservations,
+        enforcerObservations: evidence.observations,
         [operatorAbandonmentEvidenceBrand]: true as const,
       });
-      return this.#completeOperatorAbandonment({
+      return await this.#completeOperatorAbandonment({
         slot,
         capability,
+        retainOperatorExitFence,
         proof,
         request,
         abandonmentEvidence,
@@ -2749,293 +3015,20 @@ export class ProviderProxySetLifecycle {
         resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
           kind: 'abandoned',
           setIdentity: address,
-          enforcerObservations,
+          enforcerObservations: evidence.observations,
           claimDischarge,
           effect: releaseEffect,
         }),
       });
+    } finally {
+      if (!operatorExitFenceRetained) this.#releaseOperatorExitFence(capability);
     }
-    if (evidence.kind === 'reap-required') {
-      const signalsSent: ProviderProxySetContainmentSignal[] = [];
-      const assertCapabilityCurrent = (): void => {
-        const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
-        if (
-          current !== slot ||
-          current.attemptToken !== capability.attemptToken ||
-          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
-          current.operatorExitGeneration !== capability.operatorExitGeneration ||
-          this.#deps.time.monotonicNow() < capability.notBeforeMonotonicMs
-        ) {
-          throw new Error('provider_proxy_operator_exit_authorization_stale');
-        }
-      };
-      const attemptSignal =
-        slot.kind === 'capsule-recovering'
-          ? slot.attemptAbort?.signal
-          : slot.kind === 'reattaching' || slot.kind === 'reattachment-hold'
-            ? slot.controlReattachmentWindow?.attemptAbort?.signal
-            : slot.containmentAttemptAbort?.signal;
-      const reapingSignal =
-        attemptSignal === undefined ? request.signal : AbortSignal.any([request.signal, attemptSignal]);
-      let reapResult: ProviderProxySetRecordedContainmentReapResult;
-      try {
-        reapResult = await this.#reapRecordedContainment(
-          capability.setIdentity,
-          proof,
-          reapingSignal,
-          (delivered) => {
-            if (!signalsSent.includes(delivered)) signalsSent.push(delivered);
-          },
-          assertCapabilityCurrent,
-        );
-      } catch {
-        const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
-        const authorizationMoved =
-          current !== slot ||
-          current.attemptToken !== capability.attemptToken ||
-          current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
-          current.operatorExitGeneration !== capability.operatorExitGeneration;
-        if (authorizationMoved) {
-          this.#releaseOperatorExitFence(capability);
-          return {
-            kind: 'authorization-stale',
-            setIdentity: address,
-            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-          };
-        }
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'containment-unconfirmed',
-          setIdentity: address,
-          recoveryAction: { kind: 'retry-exact-set-containment' },
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      const current = this.#slots.get(providerProxySetKey(capability.setIdentity));
-      if (
-        current !== slot ||
-        current.attemptToken !== capability.attemptToken ||
-        current.operatorExitNotBeforeMonotonicMs !== capability.notBeforeMonotonicMs ||
-        current.operatorExitGeneration !== capability.operatorExitGeneration
-      ) {
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'authorization-stale',
-          setIdentity: address,
-          effect: {
-            signalsSent,
-            containmentAbsent: reapResult.kind === 'containment-absent',
-            representationAction: 'none',
-          },
-        };
-      }
-      if (reapResult.kind === 'recorded-group-unattributable') {
-        if (request.behavior === 'boolean-abandon') {
-          const decision: ProviderProxySetOperatorAbandonmentDecision = {
-            action: 'abandon',
-            reason: 'operator_exact_set_abandonment',
-            liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-            setIdentity: slot.identity,
-          };
-          if (slot.kind === 'capsule-recovering') {
-            this.#recordOperatorDisposition(decision);
-            this.#reportDecision(decision);
-          } else {
-            this.#recordDecision(slot, decision);
-          }
-          const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
-            kind: 'operator-abandoned',
-            basis: 'recorded-group-unattributable',
-            [operatorAbandonmentEvidenceBrand]: true as const,
-          });
-          return this.#completeOperatorAbandonment({
-            slot,
-            capability,
-            proof,
-            request,
-            abandonmentEvidence,
-            setIdentity: address,
-            signalsSent,
-            resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
-              kind: 'unattributable-group-abandoned',
-              setIdentity: address,
-              claimDischarge,
-              effect: releaseEffect,
-            }),
-          });
-        }
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_recorded_group_unattributable', 'operator-abandonment');
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'recorded-group-unattributable',
-          setIdentity: address,
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      if (reapResult.kind === 'identity-unobservable') {
-        if (reapResult.signalDelivered) {
-          this.#releaseOperatorExitFence(capability);
-          return {
-            kind: 'containment-unconfirmed',
-            setIdentity: address,
-            recoveryAction: { kind: 'retry-exact-set-containment' },
-            effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-          };
-        }
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_identity_unobservable', 'operator-abandonment');
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'identity-unobservable',
-          setIdentity: address,
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      if (reapResult.kind === 'signal-authorization-refused') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_signal_authorization_refused', 'operator-abandonment');
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'signal-authorization-refused',
-          setIdentity: address,
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      if (reapResult.kind === 'authorization-stale') {
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'authorization-stale',
-          setIdentity: address,
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      if (reapResult.kind === 'authorization-missing') {
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'authorization-stale',
-          setIdentity: address,
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      if (reapResult.kind === 'store-unreadable') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
-        this.#releaseOperatorExitFence(capability);
-        return {
-          kind: 'store-unreadable',
-          setIdentity: address,
-          effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-        };
-      }
-      const { disappearanceReceipt } = reapResult;
-      const decision: ProviderProxySetOperatorContainmentDecision = {
-        action: 'operator-contain',
-        reason: 'operator_exact_set_containment',
-        liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-        setIdentity: slot.identity,
-      };
-      if (slot.kind === 'capsule-recovering') {
-        this.#recordOperatorDisposition(decision);
-        this.#reportDecision(decision);
-      } else {
-        this.#recordDecision(slot, decision);
-        if (
-          (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
-          slot.controlReattachmentWindow !== null
-        ) {
-          this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
-        }
-        this.#commitHeldSlotToContainment(slot);
-      }
-      const releaseObservation: {
-        pending: ReleaseDeliveryPendingSlot | null;
-        predecessorClaimDischarge: Promise<ProviderProxySetOperatorClaimDischarge> | null;
-      } = { pending: null, predecessorClaimDischarge: null };
-      const accepted = this.#containmentAbsent(slot.identity, disappearanceReceipt, proof, (pending) => {
-        releaseObservation.pending = pending;
-        releaseObservation.predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(
-          request.contract,
-          pending,
-        );
-      });
-      this.#detachOperatorExitFence(capability);
-      const pendingRelease = releaseObservation.pending;
-      if (pendingRelease === null) throw new Error('provider_proxy_operator_exit_release_missing');
-      const effect: ProviderProxySetOperatorExitEffect = {
-        signalsSent,
-        containmentAbsent: true,
-        representationAction: 'absence-release-started',
-      };
-      const claimDischarge = await operatorExitClaimDischargeAfterRelease(
-        request.contract,
-        releaseObservation.predecessorClaimDischarge,
-        accepted,
-        pendingRelease,
-      );
-      if (claimDischarge.kind === 'fatal-successor-pending') {
-        return this.#completeFatalOperatorExit(pendingRelease, request, effect);
-      }
-      return {
-        kind: 'contained',
-        setIdentity: address,
-        disappearanceReceipt,
-        claimDischarge,
-        effect,
-      };
-    }
-    const enforcerVerdict = providerProxySetEnforcerVerdict(evidence.observations);
-    if (request.behavior === 'contain') {
-      this.#recordOperatorExitRefusal(
-        slot,
-        `operator_exit_${enforcerVerdict}`,
-        'operator-abandonment',
-        evidence.observations,
-      );
-      this.#releaseOperatorExitFence(capability);
-      return {
-        kind: enforcerVerdict,
-        setIdentity: address,
-        enforcerObservations: evidence.observations,
-        effect: noEffect,
-      };
-    }
-
-    const decision: ProviderProxySetOperatorAbandonmentDecision = {
-      action: 'abandon',
-      reason: 'operator_exact_set_abandonment',
-      liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
-      setIdentity: slot.identity,
-    };
-    if (slot.kind === 'capsule-recovering') {
-      this.#recordOperatorDisposition(decision);
-      this.#reportDecision(decision);
-    } else {
-      this.#recordDecision(slot, decision);
-    }
-    const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
-      kind: 'operator-abandoned',
-      basis: 'enforcer-observations',
-      enforcerObservations: evidence.observations,
-      [operatorAbandonmentEvidenceBrand]: true as const,
-    });
-    return this.#completeOperatorAbandonment({
-      slot,
-      capability,
-      proof,
-      request,
-      abandonmentEvidence,
-      setIdentity: address,
-      signalsSent: [],
-      resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
-        kind: 'abandoned',
-        setIdentity: address,
-        enforcerObservations: evidence.observations,
-        claimDischarge,
-        effect: releaseEffect,
-      }),
-    });
   }
 
   async #completeOperatorAbandonment({
     slot,
     capability,
+    retainOperatorExitFence,
     proof,
     request,
     abandonmentEvidence,
@@ -3045,6 +3038,7 @@ export class ProviderProxySetLifecycle {
   }: Readonly<{
     slot: EstablishedSlot | CapsuleRecoveringSlot;
     capability: ProviderProxySetOperatorExitCapability;
+    retainOperatorExitFence: () => void;
     proof: ProviderProxySetFencedContainmentProof;
     request: Extract<ProviderProxySetOperatorExitRequest, { behavior: 'abandon' | 'boolean-abandon' }>;
     abandonmentEvidence: OperatorAbandonmentEvidence;
@@ -3058,7 +3052,6 @@ export class ProviderProxySetLifecycle {
     const commitment = this.#commitOperatorAbandonment(slot, abandonmentEvidence, proof);
     if (commitment.kind === 'held') {
       this.#recordOperatorExitRefusal(slot, 'operator_exit_disposition_store_write_failed', 'store-repair');
-      this.#releaseOperatorExitFence(capability);
       return {
         kind: 'store-unreadable',
         setIdentity,
@@ -3066,6 +3059,7 @@ export class ProviderProxySetLifecycle {
       };
     }
     const { pending } = commitment;
+    retainOperatorExitFence();
     this.#detachOperatorExitFence(capability);
     const predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(request.contract, pending);
     this.#beginRepresentationRelease(pending);

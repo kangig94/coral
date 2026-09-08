@@ -698,7 +698,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginContainment :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #beginHeartbeatLocalFailureHold :: Promise.catch :: slot.authority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #commitOperatorAbandonment :: Promise.catch :: slot.containmentAuthority.initiateControlClose().catch',
-  'src/coordinator/services/provider-proxy-set/index.ts :: #completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey, this.#releaseOperatorExitFence, this.#releaseOperatorExitFence] assignments=[]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #completeOperatorExit :: catch#1 :: calls=[this.#slots.get, providerProxySetKey] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
