@@ -1,4 +1,5 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
+import { assertNever } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
@@ -7,9 +8,13 @@ import {
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
+  PROVIDER_PROXY_SET_OPERATOR_EXIT_KINDS,
+  PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS,
   type ProviderProxySetOperatorDisposition,
   type ProviderProxySetDurableDispositionSkipStatus,
   type ProviderProxySetOperatorExit,
+  type ProviderProxySetOperatorExitKind,
+  type ProviderProxySetOperatorExitRefusalGround,
   type ProviderProxySetOperatorStatus,
 } from '../../../provider-proxy/operator-disposition-vocabulary.js';
 
@@ -214,34 +219,31 @@ type ProviderProxySetsParseResult = Readonly<{
   skippedSetTokens: string[];
 }>;
 
-const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
-  'enforcer-alive',
-  'enforcer-unobservable',
-  'recorded-group-unattributable',
-  'signal-authorization-refused',
-  'identity-unobservable',
-  'store-unreadable',
-  'representation-release-fatal',
-] as const;
-
 function parseProviderProxySetOperatorExit(value: unknown): ProviderProxySetOperatorExit | null {
-  if (!isRecord(value) || typeof value.kind !== 'string') return null;
-  switch (value.kind) {
+  if (
+    !isRecord(value) ||
+    typeof value.kind !== 'string' ||
+    !(PROVIDER_PROXY_SET_OPERATOR_EXIT_KINDS as readonly string[]).includes(value.kind)
+  ) {
+    return null;
+  }
+  const kind = value.kind as ProviderProxySetOperatorExitKind;
+  switch (kind) {
     case 'none':
     case 'contain':
     case 'abandon':
-      return { kind: value.kind };
+      return { kind };
     case 'gated':
       return isNonNegativeFiniteNumber(value.remainingMs) ? { kind: 'gated', remainingMs: value.remainingMs } : null;
     case 'refused':
       return (PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS as readonly unknown[]).includes(value.ground)
         ? {
             kind: 'refused',
-            ground: value.ground as Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'],
+            ground: value.ground as ProviderProxySetOperatorExitRefusalGround,
           }
         : null;
     default:
-      return null;
+      return assertNever(kind);
   }
 }
 

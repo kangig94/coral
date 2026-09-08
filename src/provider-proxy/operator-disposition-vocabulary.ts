@@ -55,21 +55,29 @@ export const PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR = [
 export type ProviderProxySetOperatorDispositionWaitingFor =
   (typeof PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR)[number];
 
+export const PROVIDER_PROXY_SET_OPERATOR_EXIT_KINDS = ['none', 'gated', 'contain', 'abandon', 'refused'] as const;
+export type ProviderProxySetOperatorExitKind = (typeof PROVIDER_PROXY_SET_OPERATOR_EXIT_KINDS)[number];
+
+export const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
+  'enforcer-alive',
+  'enforcer-unobservable',
+  'recorded-group-unattributable',
+  'signal-authorization-refused',
+  'identity-unobservable',
+  'store-unreadable',
+  'representation-release-fatal',
+] as const;
+export type ProviderProxySetOperatorExitRefusalGround =
+  (typeof PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS)[number];
+
 export type ProviderProxySetOperatorExit =
-  | Readonly<{ kind: 'none' }>
-  | Readonly<{ kind: 'gated'; remainingMs: number }>
-  | Readonly<{ kind: 'contain' }>
-  | Readonly<{ kind: 'abandon' }>
+  | Readonly<{ kind: Extract<ProviderProxySetOperatorExitKind, 'none'> }>
+  | Readonly<{ kind: Extract<ProviderProxySetOperatorExitKind, 'gated'>; remainingMs: number }>
+  | Readonly<{ kind: Extract<ProviderProxySetOperatorExitKind, 'contain'> }>
+  | Readonly<{ kind: Extract<ProviderProxySetOperatorExitKind, 'abandon'> }>
   | Readonly<{
-      kind: 'refused';
-      ground:
-        | 'enforcer-alive'
-        | 'enforcer-unobservable'
-        | 'recorded-group-unattributable'
-        | 'signal-authorization-refused'
-        | 'identity-unobservable'
-        | 'store-unreadable'
-        | 'representation-release-fatal';
+      kind: Extract<ProviderProxySetOperatorExitKind, 'refused'>;
+      ground: ProviderProxySetOperatorExitRefusalGround;
     }>;
 
 export type ProviderProxySetOperatorDisposition = Readonly<{

@@ -244,14 +244,6 @@ export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
    */
   admitSuccessor(): DeadlineChallengeIssueResult;
   observePairingLoss(): void;
-  /**
-   * Records that a holder was actually observed at `at`, with whatever disposition the caller's own
-   * observation produced. Re-anchors `bounds().holderCheckAt` to `at + A`, going forward, and clears a
-   * still-pending acceleration once `at` reaches or passes it — one accelerated check consumed, not a floor
-   * on every later one. `at` must be the instant the identity evidence was actually obtained
-   * (`HolderObservation.observedAt`), never a later consumption or gate instant: renewing from consumption
-   * time would silently advance the schedule further than the observation itself earned.
-   */
   renewHolderCheck(at: MonotonicInstant<Scope>): void;
   latchTeardown(): void;
   markContainmentAbsent(): void;

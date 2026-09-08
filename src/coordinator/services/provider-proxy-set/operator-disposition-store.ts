@@ -4,9 +4,12 @@ import { z } from 'zod';
 
 import { MAX_PROCESS_INCARNATION_LENGTH } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
-import type {
-  ProviderProxySetDurableDispositionSkipStatus,
-  ProviderProxySetOperatorDisposition,
+import {
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
+  PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR,
+  type ProviderProxySetDurableDispositionSkipStatus,
+  type ProviderProxySetOperatorDisposition,
 } from '../../../provider-proxy/operator-disposition-vocabulary.js';
 import { decodeProviderProxySetAddress, encodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import type { ProviderProxySetContainmentEvidence } from '../../../provider-proxy/containment-proof-contract.js';
@@ -124,31 +127,16 @@ const durableAcquisitionRecoverySubjectSchema = z.union([
 ]);
 const durableOperatorDispositionSchema = z
   .object({
-    disposition: z.enum(['held', 'awaiting-containment-absence', 'operator-exit-refused']),
+    disposition: z.enum(PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS),
     role: z.string().min(1).max(128).optional(),
     method: z.string().min(1).max(256).optional(),
-    cause: z.enum(['closed', 'invalid-unattributable-frame']).optional(),
+    cause: z.enum(PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES).optional(),
     attempts: z.number().int().nonnegative().safe().optional(),
     elapsedMs: z.number().nonnegative().finite().optional(),
     boundMs: z.number().nonnegative().finite().optional(),
     enforcerObservations: durableEnforcerObservationsSchema.optional(),
     incidentReason: z.string(),
-    waitingFor: z.enum([
-      'heartbeat-evidence-window',
-      'control-reattachment',
-      'independent-containment-absence',
-      'ordinary-drain',
-      'set-adoption-deadline',
-      'operator-abandonment',
-      'store-repair',
-      'publication-confirmation-or-control-release',
-      'containment-authorization',
-      'containment-outcome-unknown',
-      'heartbeat-bound-live-claims',
-      'control-reattachment-bound-live-claims',
-      'heartbeat-protocol-live-claims',
-      'operation-control-outcome-unknown',
-    ]),
+    waitingFor: z.enum(PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_WAITING_FOR),
   })
   .strict();
 const durableCurrentWriterStatusSchema = z

@@ -561,6 +561,8 @@ describe('provider-proxy starvation (AC8)', () => {
         expect(held.stdout()).toMatch(new RegExp(`^Job ${heldJobId} completed$`, 'm'));
 
         // Coordinator death must lead the held containment to confirmed absence within its death bound.
+        const containmentPids = [guardian.pid, reaper.pid, proxy.pid];
+        expect(containmentPids.every((pid) => observeProcessLiveness(pid) === 'alive')).toBe(true);
         const killedAt = Date.now();
         process.kill(coordinatorPid, 'SIGKILL');
         mark('SIGKILL sent to coordinator');
@@ -571,7 +573,7 @@ describe('provider-proxy starvation (AC8)', () => {
             lastPhaseTwoPollLogSec = elapsedSec;
             mark(`phase two poll, +${elapsedSec}s since SIGKILL`);
           }
-          return [guardian.pid, reaper.pid, proxy.pid].every((pid) => observeProcessLiveness(pid) === 'absent');
+          return containmentPids.every((pid) => observeProcessLiveness(pid) === 'absent');
         }, CONFIGURATION.orphanTimeoutMs + 10_000);
         mark('phase two absence confirmed');
         expect(Date.now() - killedAt).toBeLessThanOrEqual(CONFIGURATION.orphanTimeoutMs + 10_000);
