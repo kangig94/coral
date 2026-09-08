@@ -1,67 +1,45 @@
-# TODO — persist provider-proxy hold status across coordinator death
+# Provider-proxy hold status across coordinator death
 
-**Status**: deliberately deferred from the starvation-survival branch.
+**Status**: implemented. There is no remaining ownership or staleness decision in this entry.
 
-The in-memory projection has three set-scoped gaps after coordinator death:
+## Durable ownership
 
-- heartbeat evidence and its preservation disposition;
-- operator dispositions retained only by the lifecycle;
-- acquisition cleanup holds whose recovery capability has no durable successor.
+Set-scoped heartbeat preservation dispositions and acquisition-cleanup holds are durable records owned by
+`ProviderProxySetOperatorDispositionStore` (`src/coordinator/services/provider-proxy-set/operator-disposition-store.ts`).
+The records contain validated process and set identities and carry the coordinator writer's instance identity.
+`ProviderProxySetLifecycle` receives that owner as a dependency; the durable shape stays in provider-proxy
+vocabulary rather than becoming a Journal record.
 
-Starvation does not kill the coordinator, so none weakens this branch's guarantee. A coordinator crash can
-lose visibility and leave artifacts behind, but it must not lose live-work authority: a successor cannot act
-from its predecessor's record, and a leaked set must retain the orphan deadline armed when it spawned.
+Set and acquisition updates share one generation-addressed artifact. Replacing records and retiring their
+predecessor keys is one durable atomic write. An unreadable artifact, a refused write, or an unconfirmed write
+returns a hold with `waitingFor: 'store-repair'` and the
+`provider-proxy-set-operator-disposition-store-retry` exit; it never reports the disposition as recorded.
 
-## Decided design
+## Successor rule
 
-### Owner
+A record from another writer is predecessor evidence, never current authority. Before durable lifecycle
+authority is activated, the successor marks those set and acquisition records stale in memory and attempts
+to publish that classification atomically. A failed publication retains the store-repair hold and schedules
+reconciliation rather than promoting predecessor evidence to authority. Reconciliation observes the exact
+recorded subject:
 
-Persist a keyed record beside src/store/provider-operation-record.ts. The store boundary accepts only plain,
-validated process and set identities. The coordinator writes through a port injected into the lifecycle so
-the lifecycle imports no store module.
+- confirmed absence permits retirement;
+- observed live or unobservable containment remains a durable hold with the successor's observation;
+- a store failure preserves the hold and retries through the named store-repair exit;
+- a record whose shape or identity key cannot be validated is reported as skipped and cannot be reconciled or
+  retired by that build.
 
-This is not a Journal stream. Provider-proxy is deliberately outside the Journal-stream domains, and the
-provider-operation saga already uses a keyed store record for the same ownership boundary.
+The same rule applies to a heartbeat-derived set disposition and an acquisition-cleanup disposition. A
+successor cannot promote either predecessor record to authority or infer absence from a failed observation.
 
-### Staleness
+## Retention
 
-Every record carries the writer's process identity as {pid, incarnation}. Bound-socket authority already
-serializes coordinators, so a writer other than the reader is a predecessor by definition; no lease or epoch
-counter is needed.
+A durable set disposition is retired only after exact containment absence or explicit operator abandonment.
+An acquisition disposition is retired only by matching acquisition-absence evidence or explicit operator
+abandonment. Until then, the lifecycle snapshot retains the obligation and its available exit.
 
-The record is evidence, never authority. A successor re-observes the recorded subject and reaches its own
-disposition:
+The heartbeat exchange itself is not an event stream. The durable contract preserves the resulting evidence
+window and operator disposition, which is the lifecycle obligation that must survive coordinator death.
 
-- confirmed absence retires the record;
-- a live target produces a new hold under the successor's writer identity;
-- an unattributable group enters the existing quarantine and operator-abandonment path.
-
-### Retention and readers
-
-Retire a row on the successor's own absence confirmation, on operator abandonment, or on terminal job cleanup
-for a job-scoped row. Existing backend status diagnostics and startup recovery enumeration read the records;
-the persistence work adds a source to those products rather than creating another product.
-
-### Conditions on this deferral
-
-The deferral was re-checked against the live role and recovery paths. The objection that a coordinator crash
-necessarily creates an obligation gap was refuted: unobservable work remains owned by a live role, granted
-roles expose supported recovery and operator surfaces, and roles that were never granted continue probing
-rather than parking for an operator that cannot discover or authenticate to them.
-
-The deferral remains honest only while all of these stay checkable:
-
-1. Self-terminates whenever termination is observable; otherwise the obligation is retained by a live role
-   whose hold is grant-readable and whose exits are named. For a granted role, a parked hold is reachable
-   through the direct capsule-credentialed holder-status and abandon paths, a successor coordinator's
-   `contain`, and absence delivery to the parked role.
-2. Shutdown never reports confirmed past a live hold.
-3. A crash can create a status gap, never an obligation gap.
-
-### Rejected alternative
-
-Do not create one unified hold store spanning jobs and provider-proxy sets. It would cross the enforced
-layering boundary: provider-proxy may not import store, and jobs may not import proxy-domain brands. It would
-also become a content-blank magnet for unrelated ownership vocabularies.
-
-Use two instantiations of the same evidence-record pattern, each expressed in its owner's vocabulary.
+The jobs and provider-proxy domains keep separate durable hold vocabularies. A unified cross-domain hold store
+would erase owner-specific evidence and violate the store/provider-proxy boundary.

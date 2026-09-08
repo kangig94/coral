@@ -37,16 +37,6 @@ Darwin therefore sends no signal. A live durable launch is different: `DurableLa
 was the dangerous half: a durable handoff record can be arbitrarily old and can name a pid this build never
 spawned, so the recorded identity is the _only_ thing standing between the coordinator and a stranger.
 
-Two more paths were closed after review found them, and they are closed rather than deferred because a proxy
-role that is never given control ends itself: `buildGuardianSpawnUndo`
-(`src/coordinator/live/provider-proxy/spawn-undo.ts`) and `isStillTheRecordedProcess`
-(`src/provider-proxy/role-main.ts`), the guardian-construction unwind. Refusing there costs the orphan
-deadline — 37 seconds by default — and nothing permanent.
-
-`tests/invariants/signal-authority.test.ts` now enumerates every file that signals a bare pid, so this
-document is no longer the only place the open ones are written down. It found four more, unrelated to
-containment; they are [`durable-cli-signal-authority.md`](./durable-cli-signal-authority.md).
-
 ## Resolution
 
 `reapRecordedContainment` now applies one rule to the group leader and every recorded root: a signal requires
@@ -81,27 +71,6 @@ Leader absence or an incarnation mismatch cannot prove group absence. The asynch
 therefore probes the group: observed group absence may complete the obligation, while a surviving group
 returns `recorded-group-unattributable` and an unanswered group probe remains unobservable.
 
-## Liveness is not identity, and escalation still trusts it
-
-The three-valued probe fixed _which_ answer authorizes a signal. It did not fix what that answer proves.
-`'alive'` says the number is occupied. It does not say the occupant is the process that was recorded — and the
-window is the escalation grace itself: the recorded target receives SIGTERM, exits, its pid or process-group
-id is reused, and the confirming probe reports `'alive'`. SIGKILL then goes to whoever holds it now.
-
-`reapRecordedContainment` does not have this problem: it revalidates the recorded incarnation before it
-signals. The paths that do are the ones whose name says so — `reapUnheldTarget` in `role-main.ts` and
-`buildGuardianSpawnUndo` — which signal a bare number precisely because there is no containment record to
-revalidate against.
-
-So the question is not "add a re-check". It is **whether a path that signals an unheld number should exist**,
-which is the same question the caller split above is already blocked on, arrived at from the other side. Both
-want the same answer: a signal is authorized by held-child proof or by a platform-authoritative identity match,
-and nothing else. Close them together.
-
-Not folded into the change that found it, deliberately. Adding a revalidation to those two call sites without
-answering what a caller with no reclaimer does when it refuses is how the containment close was reverted twice
-already in this branch's history.
-
 ## The cheap partial, recorded because it is easy to miss
 
 Running the probe as `TZ=UTC ps -o lstart=` removes the DST ambiguity: two processes an hour apart then print
@@ -132,4 +101,5 @@ their targets unexited, and refuses without signalling after exit is observed or
 [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) and
 [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md) sit in the same group but do **not**
 close together. This entry is about the _authority_ to signal a correctly identified target; those two are
-about there being no party left to signal at all. A fix for either of them still has to answer this one.
+about there being no party left to signal at all. A fix for either must preserve this entry's settled signal
+authority rule.
