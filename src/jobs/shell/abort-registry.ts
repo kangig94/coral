@@ -15,8 +15,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
       abandon: () => AbortHoldDisposition;
     }>
   >();
-  /** An abandoned job keeps its entry until its terminal phase is persisted, so a later abort must still be
-   *  answered as the abandonment it already is rather than as a fresh abort that succeeded. */
+  /** An abandoned job must remain addressable until its terminal phase is persisted. */
   private readonly abandonments = new Map<string, NonNullable<AbortResult['abandoned']>[number]>();
 
   register(jobId: string = this.ids.uuid(), onAbort?: () => void): string {
@@ -74,8 +73,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
       if (controller.signal.aborted && heldBeforeRequest !== undefined) {
         const disposition = heldBeforeRequest.abandon();
         if (disposition.kind === 'abandoned') {
-          // Ownership of cleanup is what abandonment releases; the entry stays until the terminal phase is
-          // persisted, because the job still has to reach one.
+          // Abandonment must not remove the entry before its terminal phase is persisted.
           this.holds.delete(jobId);
           const record = { jobId, reason: disposition.reason, nextStep: disposition.nextStep };
           this.abandonments.set(jobId, record);

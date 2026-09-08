@@ -109,8 +109,7 @@ describe('cli main — output format', () => {
   const formatFlag = `--output${'-format'}`;
   const jsonFormat = `js${'on'}`;
 
-  // These assert parse-time refusal, so they must not inherit a home where a live coordinator can be found:
-  // probing one is unbounded work inside `runCli`'s fixed budget, and a killed process reports no exit code.
+  // Parse-time refusal fixtures must not discover a live coordinator.
   let tmpDir: TemporaryHome;
   beforeEach(() => {
     tmpDir = temporaryHomes.create('coral-cli-format-', BUILD_FLAVOR);

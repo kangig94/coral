@@ -568,11 +568,7 @@ export class DefaultProviderHostManager
     if (entry !== undefined) this.ensureProxySetFor(entry);
   }
 
-  /**
-   * Starts acquiring `entry`'s guardian/reaper/proxy set if one is not already live or in flight for it.
-   * Fire-and-forget relative to the host lease. The manager retains the acquisition until its callback has
-   * either published into the lifecycle or completed the stop disposition assigned by `stopAndClose`.
-   */
+  /** An acquisition must remain owned until publication or its assigned stop disposition completes. */
   private ensureProxySetFor(entry: ProviderHostEntry): void {
     const config = this.proxySetAcquisitionConfig;
     const lifecycle = this.providerProxyLifecycleRef?.get();

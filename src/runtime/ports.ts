@@ -177,7 +177,7 @@ export interface ProcessPort {
   kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   observeLiveness(pid: number): ProcessLiveness;
   readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
-  /** Non-blocking tri-state observation bound to one recorded `{ pid, incarnation }` identity. */
+  /** Process observation must remain non-blocking, tri-state, and bound to exact identity. */
   observeRecordedProcessAsync: AsyncRecordedProcessObserver;
   observeProcessIdentities(
     owners: readonly RecordedProcessIdentity[],

@@ -171,12 +171,7 @@ export type ProviderProxySetHeartbeatAwaitAbsenceDecision =
   | (ProviderProxySetHeartbeatAnswerUnusableFields & ProviderProxySetHeartbeatAwaitAbsenceFields)
   | (ProviderProxySetHeartbeatProtocolFields & ProviderProxySetHeartbeatAwaitAbsenceFields);
 
-/**
- * The reattachment window's own trigger proved only that a peer answered, or that this coordinator never
- * reached one at all — neither is the peer's decisive `teardown-latched` refusal. Carries the same fields
- * `ProviderProxySetControlReattachmentAwaitAbsenceDecision` does, minus `action`/`liveClaims`/`setIdentity`,
- * which the `ProviderProxySetContainmentRefusedDecision` wrapper supplies once.
- */
+/** A control-reattachment refusal must not authorize containment. */
 export type ProviderProxySetControlReattachmentRefusalDecision = Readonly<{
   reason: 'control_reattachment_bound_expired' | 'control_reattachment_refused';
   fault: 'control-channel-fault';
@@ -188,8 +183,7 @@ export type ProviderProxySetControlReattachmentRefusalDecision = Readonly<{
   error: string;
 }>;
 
-/** This process could not construct or send a heartbeat call at all — its own failure to reach the peer,
- *  never a disposition about the peer, so it joins the reattachment lifecycle rather than committing. */
+/** A local failure to reach the peer must not be treated as a disposition from that peer. */
 export type ProviderProxySetHeartbeatLocalFailureRefusalDecision = Readonly<{
   reason: 'heartbeat_local_failure';
   fault: 'heartbeat-failed';
@@ -231,8 +225,6 @@ export type ProviderProxySetHeartbeatProtocolRefusalDecision = Readonly<{
   error: string;
 }>;
 
-/** `ProviderProxyAuthorityFault`'s `operation-control-failed` member is always this containment-required
- *  policy shape — a retry-safe mutation failure never reaches this union, it stays on the preserve channel. */
 export type ProviderProxySetOperationControlRefusalDecision = Readonly<{
   reason: 'operation_control_indeterminate';
   fault: 'operation-control-failed';
@@ -240,11 +232,7 @@ export type ProviderProxySetOperationControlRefusalDecision = Readonly<{
   error: string;
 }>;
 
-/**
- * Every source this gate declined to treat as decisive, preserved with its own field shape rather than
- * flattened into one. `#recordOperatorDisposition`/`renderProviderProxySetDecision` branch on `reason`
- * within this union instead of reading a wrapper-level field that would collide across sources.
- */
+/** A non-authorizing refusal must not authorize containment. */
 export type ProviderProxySetNonAuthorizingContainmentDecision =
   | ProviderProxySetControlReattachmentRefusalDecision
   | ProviderProxySetHeartbeatLocalFailureRefusalDecision
@@ -252,11 +240,7 @@ export type ProviderProxySetNonAuthorizingContainmentDecision =
   | ProviderProxySetHeartbeatProtocolRefusalDecision
   | ProviderProxySetOperationControlRefusalDecision;
 
-/**
- * The claim-bearing counterpart of `stop-and-reap`/`await-containment-absence`: evidence that would have
- * authorized destruction with zero live claims present instead holds, because live claims are present.
- * `action: 'preserve'` reuses the existing rate-limited reporting lifecycle rather than a bespoke one.
- */
+/** A refusal with live claims must preserve those claims rather than authorize destruction. */
 export type ProviderProxySetContainmentRefusedDecision = FaultlessDecisionFields &
   Readonly<{
     action: 'preserve';

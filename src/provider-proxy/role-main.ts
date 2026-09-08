@@ -251,7 +251,7 @@ export type GuardianRoleHandle = Readonly<{
   reaperSpawn: SpawnedRoleProcess;
   proxySpawn: SpawnedRoleProcess;
   close(): Promise<void>;
-  /** Requests ordinary teardown without authorizing an unattributable hold to be abandoned. */
+  /** Ordinary teardown must not authorize abandonment of an unattributable hold. */
   giveUp(): Promise<LocalSignalTeardownDisposition>;
 }>;
 
@@ -263,7 +263,7 @@ export type ReaperRoleHandle = Readonly<{
   role: 'reaper';
   reaper: Reaper;
   close(): Promise<void>;
-  /** Requests ordinary teardown without authorizing an unattributable hold to be abandoned. */
+  /** Ordinary teardown must not authorize abandonment of an unattributable hold. */
   giveUp(): Promise<ReaperSignalTeardownDisposition>;
 }>;
 
@@ -1423,8 +1423,7 @@ let activeRoleShutdownDispose: (() => void) | null = null;
 export async function runProviderRoleMain(mode: ProviderRoleArgv, options: ProviderRoleMainOptions): Promise<number> {
   if (mode.role === 'none') return 0;
 
-  // An unhandled stream `'error'` would kill the enforcer that bounds coordinator loss, so these guards must
-  // be installed before this role can log. Only EPIPE from a closed output pipe is safe to ignore.
+  // Stream error guards must be installed before logging; only EPIPE from a closed output pipe may be ignored.
   const guardParentPipe = (error: Error): void => {
     if ((error as NodeJS.ErrnoException).code === 'EPIPE') return;
     throw error;

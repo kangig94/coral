@@ -146,8 +146,7 @@ describe('linux process incarnation (async)', () => {
     scriptLinux({ stat: new Error('ENOENT') });
     await expect(probeProcessIncarnationAsync(4321, terminateProbeChild, 'linux')).resolves.toBeNull();
 
-    // What a `signal: AbortSignal.timeout(...)` abort actually rejects with in production; the read's own
-    // `catch` treats it exactly like any other read failure.
+    // An AbortSignal timeout must be treated as an inconclusive read failure.
     const timedOut = new Error('The operation was aborted.');
     timedOut.name = 'AbortError';
     scriptLinux({ stat: timedOut });

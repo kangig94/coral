@@ -93,8 +93,7 @@ describe('async recorded process observation', () => {
   });
 
   it('answers unknown when the liveness check is itself inconclusive, even though the token matches', async () => {
-    // "liveness ... cannot be observed" is its own trigger for unknown (AC2), independent of whether identity
-    // could be — a matching, readable token does not override an inconclusive liveness answer.
+    // Inconclusive liveness must remain unknown even when the identity token matches.
     const { observe } = observerWith({
       observeLiveness: () => 'unknown',
       readIncarnation: () => Promise.resolve(RECORDED),

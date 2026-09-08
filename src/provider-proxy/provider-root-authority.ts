@@ -1106,8 +1106,7 @@ class ProxyProviderHostAdministration {
         const abandonment = await this.pool.abandonClose(matched);
         if (abandonment.kind === 'no-hold') return { kind: 'stale' };
         if (abandonment.kind === 'accepted') {
-          // Retained before the representation is released: once admission drops the reference, this
-          // disposition is the only remaining answer to what happened to it.
+          // The terminal disposition must be retained before its representation is released.
           const retained = this.pool.retainTerminalEviction(hostRef, abandonment.disposition);
           this.admission.abandon(hostRef);
           return retained;

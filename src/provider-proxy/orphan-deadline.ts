@@ -178,19 +178,9 @@ export type ProviderProxyEnforcerBounds<Scope extends symbol> = Readonly<{
   controlLossAt: MonotonicInstant<Scope>;
   exitDeadline: MonotonicInstant<Scope>;
   adoptionDeadline: MonotonicInstant<Scope>;
-  /**
-   * The deadline by which a holder's identity must next be observed. Independent of `adoptionDeadline`: a
-   * positive observation renews only this one, from the observation's own `observedAt` rather than from
-   * round-trip heartbeat evidence, so it keeps advancing through a coordinator stall that starves every
-   * heartbeat. Whether a caller consults this field or `adoptionDeadline` is the caller's own decision, based
-   * on facts this type does not itself carry.
-   */
+  /** Holder observations must renew this deadline from their own observed time, independently of heartbeats. */
   holderCheckAt: MonotonicInstant<Scope>;
-  /**
-   * Whether `holderCheckAt` is currently pulled earlier than its ordinary `observedAt + A` cadence by a
-   * pairing-loss or EOF report that has not yet been superseded by a completed check. One accelerated check,
-   * never a floor on every later one.
-   */
+  /** Acceleration may advance only the next holder check; it must not floor later checks. */
   holderCheckAccelerated: boolean;
 }>;
 
@@ -278,14 +268,8 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   let state: EnforcerDeadlineState = 'accepting-control';
   // Pairing loss is independent of round-trip lease evidence and may only move adoption earlier.
   let pairingLossAt: MonotonicInstant<Scope> | null = null;
-  // `holderCheckAt`'s own acceleration input, independent of `pairingLossAt` above: that field keeps
-  // flooring `adoptionDeadline()` every tick once pairing is lost, while this one accelerates the
-  // holder-check schedule by exactly one check and then lets the ordinary `observedAt + A` cadence resume.
-  // A single field cannot serve both rules — reusing `pairingLossAt` here would re-clamp every check
-  // forever, an unbounded `kill(pid, 0)` loop.
+  // Pairing loss may accelerate only one holder check; later checks must resume from observed holder evidence.
   let holderCheckAccelerationAt: MonotonicInstant<Scope> | null = null;
-  // The most recent instant a holder check actually completed at, of any disposition. `null` until the
-  // first one, in which case the schedule derives from round-trip evidence instead.
   let holderCheckAnchor: MonotonicInstant<Scope> | null = null;
 
   function adoptionDeadline(): MonotonicInstant<Scope> {
@@ -310,7 +294,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   }
 
   function accelerateHolderCheck(now: MonotonicInstant<Scope>): void {
-    // Earliest wins, matching `pairingLossAt` below: a second report cannot walk the acceleration back out.
+    // A later report must not postpone an earlier acceleration.
     holderCheckAccelerationAt =
       holderCheckAccelerationAt === null ? now : clock.earlier(holderCheckAccelerationAt, now);
   }
@@ -382,8 +366,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       const now = sampleBeforeQueuedWork();
       if (now === null) return;
       evidence.observeEof(now);
-      // EOF is not a holder verdict: it records transport loss and accelerates the next identity-bound
-      // observation, but mints no authorization and never floors the cadence beyond that one check.
+      // EOF must not mint absence authority or permanently accelerate holder checks.
       accelerateHolderCheck(now);
     },
     observePairingLoss: (): void => {
@@ -414,8 +397,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       state = 'exited';
     },
     renewHolderCheck: (at: MonotonicInstant<Scope>): void => {
-      // Monotonic forward only: a renewal never walks the anchor backward, so an out-of-order call (a
-      // slower probe resolving after a faster later one already renewed) cannot undo the later evidence.
+      // Out-of-order observations must not move the renewal anchor backward.
       holderCheckAnchor =
         holderCheckAnchor === null || clock.compare(holderCheckAnchor, at) < 0 ? at : holderCheckAnchor;
       if (holderCheckAccelerationAt !== null && clock.compare(at, holderCheckAccelerationAt) >= 0) {
@@ -425,14 +407,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   });
 }
 
-/**
- * The post-authorization containment budget: granted once, at the instant a holder-absence or explicit
- * teardown capability is consumed. `PROXY_TEARDOWN_RESERVE_MS` already includes the enforcer's own
- * not-before wake allowance (`PROXY_ENFORCER_MAX_WAKE_LATENCY_MS`), so spending up to that much before
- * consuming a capability leaves the remainder for the reap itself — spending the full reserve again after
- * the wake would count that allowance twice. A local-signal teardown has no not-before wake to have already
- * spent, so it is granted the full `PROXY_TEARDOWN_RESERVE_MS` instead, computed at its own call site.
- */
+/** A capability's not-before wake and subsequent reap must share one teardown reserve. */
 export function containmentExecutionDeadline<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   authorizedAt: MonotonicInstant<Scope>,

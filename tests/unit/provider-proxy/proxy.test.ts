@@ -1198,8 +1198,7 @@ describe('provider-proxy proxy: operation.prepare.v1 budget (BLOCKING B5)', () =
 });
 
 describe('provider-proxy proxy: proxy.acquisition-publish.v1 / proxy.acquisition-abort.v1', () => {
-  /** A `guardian`/`reaper` binding this proxy's own capsule accepts — every field the proxy actually checks
-   *  matches the capsule, and the rest of each identity's shape is filled in arbitrarily. */
+  /** Fixture identities must satisfy the proxy capsule binding. */
   function bindingFor(capsule: ProxyBootstrapCapsule): { guardian: unknown; reaper: unknown } {
     return {
       guardian: {

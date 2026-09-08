@@ -199,8 +199,7 @@ function createFixture(): Fixture {
   mkdirSync(binDir, { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
-  // The coordinator validates its whole adjacent build set at startup, so the Claude appserver bundle must be
-  // present or boot aborts on build identity, even though this test never drives a Claude job.
+  // The fixture bridge must carry a complete lifecycle build set.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   copyFileSync(SOURCE_DURABLE_WRAPPER_BUNDLE, join(root, 'bridge', 'coral-durable-wrapper.cjs'));
   copyFileSync(SOURCE_LEGACY_MANIFEST, join(root, 'bridge', 'manifest.json'));
@@ -212,8 +211,7 @@ function createFixture(): Fixture {
   mkdirSync(join(home, '.codex'), { recursive: true });
   writeFileSync(join(binDir, 'codex'), FAKE_CODEX_APP_SERVER, 'utf-8');
   chmodSync(join(binDir, 'codex'), 0o755);
-  // `account_id` is what makes this a bindable ChatGPT-mode profile: Codex account binding resolves its
-  // subject from it. Without it the launch fails on provider identity before the coordinator is exercised.
+  // The fixture profile must be bindable without using real credentials.
   writeFileSync(
     join(home, '.codex', 'auth.json'),
     JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: 'fake-account-id' } }),
@@ -347,8 +345,7 @@ describe('provider-proxy starvation (AC8)', () => {
       mark('test start');
       assertLifecycleBundleSetFresh(REPO_ROOT);
       const fixture = createFixture();
-      // The requirement's own premise, checked rather than assumed: a hold shorter than the mechanism's own
-      // death bound would prove nothing about tolerating it.
+      // The asserted hold interval must exceed the configured death bound.
       expect(STARVATION_HOLD_MS).toBeGreaterThan(CONFIGURATION.orphanTimeoutMs);
 
       const throwawayPromptPath = join(fixture.projectRoot, 'throwaway-prompt.txt');

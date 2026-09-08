@@ -336,9 +336,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const staged = new Map<string, StagedMembership>();
   const activating = new Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>();
 
-  // The reversible half of `guardian.containment-commit.v1`'s membership barrier: closing this gate refuses
-  // a new `guardian.register-provider-root.v1` admission outright, and draining lets one already forwarding a
-  // root to the reaper finish before this guardian asks the reaper to snapshot its own cumulative roots.
+  // Root registration must be closed and drained before either enforcer snapshots containment.
   let stagingGateOpen = true;
   let inFlightStagingRegistrations = 0;
   let stagingDrainWaiters: Array<() => void> = [];
@@ -362,9 +360,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           stagingDrainWaiters.push(resolve);
         });
 
-  /** Best-effort reopen of the reaper's own prepared gate after a pre-commit refusal or fault. Its own
-   *  failure never overrides the caller's original error: `guardian.containment-commit.v1`'s catch always
-   *  re-throws what it caught, so a lost abort surfaces as the commit's own refusal rather than a masked one. */
+  /** Reopening a prepared gate must not mask the original pre-commit failure. */
   const abortReaperContainmentPrepare = async (token: ContainmentPrepareToken): Promise<void> => {
     try {
       reaperContainmentAbortResultSchema.parse(
@@ -378,8 +374,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         ),
       );
     } catch {
-      // The reaper's own gate then waits for this guardian's next successful prepare to supersede it, or for
-      // the coordinator to observe this commit's refusal and retry.
+      // A failed abort must retain a retry exit that can supersede the prepared gate.
     }
   };
 
@@ -515,8 +510,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             const armed = requireEnforcer();
             assertNamedProxyIdentity('guardian', request.proxy, capsule);
             const root = { pid: request.providerPid, incarnation: request.providerIncarnation };
-            // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
-            // already holds, rather than a fresh one that silently invalidates it.
+            // Stable operation identity must make repeated root registration idempotent.
             const key = membershipKey(request.operation);
             const already = staged.get(key);
             if (already !== undefined) {
@@ -543,18 +537,14 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
                 'This guardian holds its maximum staged operations.',
               );
             }
-            // Checked before the reaper round trip, not after: this guardian's own enforcer can refuse a root
-            // on its own cap too, and finding that out only after the reaper has already staged it would leave
-            // the two authorities disagreeing about what this containment holds.
+            // Both enforcers' root caps must be checked before a root is forwarded.
             if (armed.wouldExceedProviderRootCap(root)) {
               throw new ProxyControlProtocolError(
                 'invalid_state',
                 'This guardian holds its maximum recorded provider roots.',
               );
             }
-            // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
-            // identity, so neither can be talked into containing something the other never recorded. The
-            // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
+            // A joint receipt must bind both authorities' acknowledgements to the same root identity.
             const reaperParams = reaperRegisterProviderRootParamsSchema.parse({ providerRoot: root });
             const acknowledgement = acknowledgeReaperRoot(
               requireReaperResult(
@@ -568,9 +558,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               root,
             );
             const record = recordGuardianRoot(armed, acknowledgement);
-            // Minted here and nowhere else, and only from both authorities' evidence — which is what makes
-            // "after both recorded the same root" a thing the compiler checks rather than a thing this
-            // handler's statement order happens to arrange.
+            // Only evidence that both authorities recorded the same root may mint the joint receipt.
             const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, record, mintReceipt);
             staged.set(key, {
               operation: request.operation,
@@ -696,10 +684,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         handle: async (params, authorization) => {
           const request = containmentCommitParamsSchema.parse(params);
           const armed = requireEnforcer();
-          // The caller must be naming this exact guardian, the reaper it itself spawned and paired with, and
-          // this guardian's own proxy — so a commit request either authority would refuse can never be
-          // accepted by the other, and this guardian is never talked into reaping a set some other process
-          // spawned.
+          // A containment commit must bind this guardian, its paired reaper, and its current proxy.
           assertNamedGuardianIdentity(request.guardian, identity);
           assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
           assertNamedProxyIdentity('guardian', request.proxy, capsule);
@@ -724,8 +709,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
                   ),
                 ),
               );
-              // Only after both drains: this guardian's own gate closed and drained above, the reaper's
-              // closed and drained inside `reaper.containment-prepare.v1` before it returned this snapshot.
+              // Both registration gates must close and drain before containment snapshots are compared.
               assertExactRecordedSetAgreement('guardian', armed.recordedRoots(), prepared.providerRoots);
               if (!endpoint.activeControlAuthorizationIsCurrent(authorization)) {
                 throw new ProxyControlProtocolError(
@@ -739,8 +723,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               throw error;
             }
 
-            // Minted from this guardian's own current holder: the revalidation immediately above just
-            // confirmed the socket, holder, and epoch dispatch admitted this call under are still current.
+            // Commit authority must bind to the revalidated current holder.
             const teardown = mintExplicitTeardownAuthorization(holderAuthority);
             if (teardown === null) {
               throw new ProxyControlProtocolError(
@@ -1003,9 +986,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         scheduler,
         holderAuthority,
         observeHolder,
-        // The guardian's pairing peer is the proxy, not the redemption linearizer — the guardian itself
-        // linearizes redemption and may still be installing a valid successor when its own pairing is lost,
-        // so an accelerated check may prefetch but must not authorize absence.
+        // Guardian pairing loss must not authorize absence while redemption can still install a successor.
         acceleratedCheckMayAuthorizeAbsence: false,
         onOutcome: options.onOutcome,
         onProgressViolation: options.onProgressViolation,

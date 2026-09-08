@@ -1383,11 +1383,8 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     time.tick(redeemedDeadline.heartbeatHoldBound.spanMs - observedDurationMs);
     incident('bound-exhausted');
 
-    // The reversal joined silence-hold-exhausted to its two siblings' `await-containment-absence` action, so
-    // exhaustion no longer sends the destructive guardian commit itself, at any claim count: it releases
-    // routing and heartbeats and waits on independent proof instead. What this test still pins is the span
-    // the wait is timed on — the redeemed capsule's, not the successor's own environment — observable as the
-    // hold entering exactly when `spanMs` elapses, not later.
+    // Hold exhaustion must release routing and heartbeats, await independent absence proof, and use the
+    // redeemed capsule's timeout span.
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
     services.stopProviderOperationReconciler();

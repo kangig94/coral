@@ -179,9 +179,7 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
         violations.push(canonical);
       }
     }
-    // To resolve a violation: use `gracefulKill(child, runtime, observeLiveness)` (SIGTERM then
-    // SIGKILL after a grace period). Only add to ALLOWLIST if the child is not a
-    // live process awaiting graceful shutdown, with the reason recorded there.
+    // A live child awaiting shutdown must use graceful escalation unless an allowlist records why it cannot.
     expect(violations).toEqual([]);
   });
 
@@ -566,9 +564,7 @@ describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside 
         violations.push(canonical);
       }
     }
-    // To resolve a violation: route the escalation through `gracefulKill(child, runtime, observeLiveness)` or
-    // `reapRecordedContainment(...)`. Only add to HAND_ROLLED_ESCALATION_ALLOWLIST for a documented, deliberate
-    // reason a sanctioned helper cannot be used yet — never merely to silence this.
+    // Hand-rolled escalation requires an allowlisted reason a sanctioned helper cannot be used.
     expect(violations).toEqual([]);
   });
 

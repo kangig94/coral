@@ -124,8 +124,7 @@ const OTHER_SUCCESSOR: ControlTenancyHolder = {
   pid: 202,
   incarnation: testIncarnation(9_002),
 };
-/** The same coordinator instance id as `SUCCESSOR`, but a different process: what a restarted or replaced
- *  successor looks like on the wire, and the exact shape a memoized redemption must not answer for. */
+/** A replacement process must not receive its predecessor's memoized redemption. */
 const IMPOSTOR_SUCCESSOR: ControlTenancyHolder = { ...SUCCESSOR, pid: 203, incarnation: testIncarnation(9_003) };
 
 function encode(capsule: unknown): Uint8Array {
@@ -221,7 +220,6 @@ describe('provider-proxy handoff capsule', () => {
   it('verifyInstalledGrant is a non-consuming read check: it never mutates redemption state', () => {
     const registry = createGrantRegistry(mintReceipt());
 
-    // Nothing installed yet: never true, however the caller phrases it.
     expect(
       registry.verifyInstalledGrant({
         grantId: randomUUID(),
@@ -271,7 +269,7 @@ describe('provider-proxy handoff capsule', () => {
     // The set was never presented in `request` above — it comes back only because `install` recorded it.
     expect(redeemed.grant.operations).toEqual(ORDERED);
     expect(redeemed.redemptionReceipt).toBe('receipt-1');
-    // The complete identity that redeemed the grant, not merely its instance id.
+    // Redemption identity must bind the complete process identity, not only the instance id.
     expect(redeemed.successor).toEqual(SUCCESSOR);
     // A successor whose reply was lost retries with the identical request. Refusing it would hand the set
     // to a teardown it had already earned the right to prevent, so it gets back exactly what it earned —
@@ -339,8 +337,7 @@ describe('provider-proxy handoff capsule', () => {
   });
 
   it('refuses a different process presenting the incumbent’s own instance id, and does not hand it the memoized receipt', () => {
-    // Same instance id as `SUCCESSOR`, different pid/incarnation: a restarted or replaced process, not a
-    // retry of the redemption `SUCCESSOR` already earned.
+    // A replacement process with the same instance id must not reuse its predecessor's redemption.
     const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFor(ORDERED);
     registry.install(grant);
@@ -404,7 +401,7 @@ describe('provider-proxy handoff capsule', () => {
     incumbentLive = false;
     const displaced = registry.redeem({ ...request, successor: IMPOSTOR_SUCCESSOR });
 
-    // A fresh receipt for the fresh process, not the incumbent's memoized one.
+    // A replacement process must receive a distinct receipt.
     expect(displaced.redemptionReceipt).toBe('receipt-2');
     expect(displaced.redemptionReceipt).not.toBe(incumbent.redemptionReceipt);
     expect(displaced.successor).toEqual(IMPOSTOR_SUCCESSOR);

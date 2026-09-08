@@ -346,10 +346,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     };
   }
 
-  /** Real spawned OS processes never exist behind these pids, so an unfaked, syscall-based liveness check
-   *  would always answer `absent` regardless of whether the fake role it names is still up. Ground truth is
-   *  instead whichever fake role handles this environment still has registered. A negative pid is the
-   *  process-group convention: alive while any registered handle's group leader is that group. */
+  /** Fixture pids must not identify live OS processes. */
   function fakeObserveLiveness(pid: number): ProcessLiveness {
     const observablePids = options.observeSpawnedProcessBeforeRoleReady ? livePids : new Set(pidHandles.keys());
     if (pid < 0) {
@@ -1559,8 +1556,7 @@ describe('provider-proxy process topology: acquisition', () => {
     return { runtime: { ...base, process: { ...base.process, kill, observeLiveness } }, kill };
   }
 
-  // `kind: 'spawned'` means this process still holds the child, so the fixture must carry one: the undo path
-  // mints its signal authority from the handle rather than from the recorded pid.
+  // A spawned-process fixture must retain the child handle that authorizes undo signalling.
   const uncollectedChild = (pid: number): ChildProcessLike => ({
     pid,
     exitCode: null,

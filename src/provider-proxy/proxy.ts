@@ -556,8 +556,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         authority: 'active',
         handle: (params) => {
           const request = proxyAcquisitionPublishParamsSchema.parse(params);
-          // The certificate itself is opaque; the binding it travels with is checked structurally, the same
-          // way every other identity claim on this protocol is — never by decoding the certificate.
+          // Publication certificates must remain opaque; only their accompanying binding may be inspected.
           if (
             request.guardian.guardianInstanceId !== capsule.guardianInstanceId ||
             request.guardian.buildSetId !== capsule.buildSetId ||
@@ -584,9 +583,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         authority: 'active',
         handle: (params) => {
           proxyAcquisitionAbortParamsSchema.parse(params);
-          // Publication is one-way and idempotent, and this proxy keeps no state that a not-yet-published
-          // acquisition needs undone — the catch that sends this is a belt-and-suspenders assurance sent
-          // before publish is ever attempted, not a rollback of anything already recorded.
           return proxyAcquisitionAbortResultSchema.parse({
             state: holderAuthority.phase() === 'published' ? 'already-published' : 'acquisition-aborted',
           });

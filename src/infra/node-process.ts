@@ -14,7 +14,6 @@ import { SIGTERM_GRACE_MS } from './process-constants.js';
 /** Every async platform probe must share one deadline derived from this end-to-end allowance. */
 export const PROCESS_INCARNATION_PROBE_TIMEOUT_MS = 2_000;
 
-/** Synchronous incarnation probes share one timeout-bearing exec shape. */
 const PROBE_EXEC_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
   encoding: 'utf-8',
   stdio: ['ignore', 'pipe', 'ignore'],
@@ -496,8 +495,6 @@ export async function terminateProcessIncarnationProbes(
 }
 
 function probeDeadlineError(signal: AbortSignal): Error {
-  // `AbortSignal.reason` is typed `any`, and a caller may pass a controller whose reason is not an `Error` at
-  // all, so the deadline this rejects with is narrowed here rather than at each `reject`.
   const reason: unknown = signal.reason;
   if (reason instanceof Error) return reason;
   return new Error('Process incarnation probe deadline expired');
@@ -525,9 +522,6 @@ function execFileAsync(
       settled = true;
       signal.removeEventListener('abort', onAbort);
       if (error) {
-        // `@types/node` builds `ExecFileException` as `Omit<ExecException, 'code'> & Omit<NodeJS.ErrnoException,
-        // 'code'>`, and `Omit` drops the `Error` base, so this value is not statically an `Error` however
-        // reliably Node supplies one. The wrap is what the type says, not defensive padding.
         reject(error instanceof Error ? error : new Error(error.message));
         return;
       }

@@ -1180,8 +1180,7 @@ describe('provider host pool proxy set registry', () => {
     const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
     const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
 
-    // Same shared entry both times, so the same hostKey — the second call must not start a second attempt
-    // while the first is still pending.
+    // Concurrent acquisition through one shared host entry must start only one attempt.
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
     first.close();
     second.close();

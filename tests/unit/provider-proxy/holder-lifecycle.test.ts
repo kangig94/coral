@@ -1,5 +1,4 @@
-// `ControlHolderAuthority` is the one home for a role process's holder identity (§7), and the provider-proxy
-// wrapper that turns an identity-bound observation into the one capability canonical `absent` may construct.
+// Holder identity and identity-bound absence authority must have one canonical owner.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -135,7 +134,6 @@ describe('ControlHolderAuthority: the *.holder-status.v1 disposition surface', (
       changedAtMs: 2_000,
     });
 
-    // A repeated identical observation is silent: no sequence bump, no changedAtMs move.
     now = 3_000;
     authority.recordObservation(admission, 'alive');
     expect(authority.status()).toEqual({
@@ -284,7 +282,6 @@ describe('observeControlHolder', () => {
       });
 
     const pending = observeControlHolder(authority, observe, testClock());
-    // A successor is admitted while the probe of the incumbent is still in flight.
     const successor = holder('successor', 2);
     authority.install({ controlEpoch: 2, holder: successor });
     resolveObservation('absent');
@@ -340,8 +337,7 @@ describe('observeControlHolder', () => {
 
     const result = await observeControlHolder(authority, observerAnswering('alive'), clock);
 
-    // The clock advances (ticks) on every `now()` read; a caller that consumed the result later must still
-    // see the instant `observeControlHolder` itself sampled, not whatever the clock reads at assertion time.
+    // Evidence time must remain its resolution instant when consumed later.
     expect(clock.compare(result.observedAt, evidenceResolvedAt)).toBeGreaterThanOrEqual(0);
     expect(clock.compare(result.observedAt, clock.now())).toBeLessThan(0);
   });

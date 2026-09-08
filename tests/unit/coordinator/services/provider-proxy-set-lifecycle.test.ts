@@ -2488,7 +2488,7 @@ describe('ProviderProxySetLifecycle', () => {
       `Provider proxy set action=preserve reason=containment_refused_live_claims fault=heartbeat-answer-unusable-hold-exhausted subject=guardian liveClaims=1 set=${setReference(authority.setIdentity)} error=answer still could not be decoded attempts=2 observedDurationMs=1000 schedulerLatenessMs=0 lastIncidentReason=unclassified`,
     );
 
-    // An accepted heartbeat clears the hold, the route stays live, and nothing was ever destroyed.
+    // An accepted heartbeat must preserve the live route and clear its hold.
     faults.reportIncident(heartbeatAuthorityObservation({ kind: 'accepted' }));
     expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
     expect(containmentDisappeared).not.toHaveBeenCalled();
@@ -2786,10 +2786,8 @@ describe('ProviderProxySetLifecycle', () => {
   });
 
   it('holds a heartbeat window on monotonic time even while the wall clock runs backwards', () => {
-    // The mirror of the case above, and the one that matters more: a backward correction must not be able to
-    // delete the proxy role's only automatic exit, because no enforcer deadline stands behind it. The
-    // reversal changed what exhaustion does (hold, not stop-and-reap), not what times it — this still proves
-    // exhaustion is driven by the monotonic elapse, not by a wall clock a backward step just moved.
+    // Backward wall-clock movement must neither remove the proxy's automatic exit nor affect monotonic hold
+    // expiry.
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -3757,8 +3755,6 @@ describe('ProviderProxySetLifecycle', () => {
     expect(stopAndReap).not.toHaveBeenCalled();
     expect(stopHeartbeats).toHaveBeenCalledOnce();
     expect(initiateControlClose).toHaveBeenCalledOnce();
-    // The hold's own retry cadence is deliberately restrained: entering it schedules the first redemption
-    // attempt rather than firing one immediately.
     expect(redeemControl).not.toHaveBeenCalled();
     expect(lifecycle.snapshot()).toEqual(
       expect.objectContaining({
@@ -4014,8 +4010,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.applyMutation({ kind: 'deleted', record });
     lifecycle.claimsChanged(authority.setIdentity);
 
-    // Zero claims makes ordinary retirement's own commit safe — this is not the hold's own decisive-evidence
-    // exit, it is the same faultless retirement path any drained slot uses.
+    // Zero live claims may authorize ordinary retirement, but not the hold's decisive-evidence exit.
     expect(stopAndReap).toHaveBeenCalledOnce();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
     expect(lifecycle.snapshot().operatorDispositions).not.toEqual(
@@ -6220,8 +6215,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(lifecycle.routeFor('codex-route')).toBeNull();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
-    // The commit is unconfirmed here, and an unconfirmed commit may not give up the lease: without a live
-    // heartbeat there is no way to retry the commit or redeem control, and the set would be stranded.
+    // An unconfirmed commit must retain the lease so control can retry or redeem it.
     expect(stopHeartbeats).not.toHaveBeenCalled();
     expect(stopAndReap).toHaveBeenCalledOnce();
     expect(reportLifecycle.mock.calls).toEqual([
@@ -7221,8 +7215,7 @@ describe('ProviderProxySetLifecycle', () => {
         stopped: false,
       },
     ]);
-    // Retirement crosses the destructive boundary the same way a fault does, so it keeps the lease until the
-    // commit confirms: this fixture's commit never does.
+    // Retirement must retain the lease until its destructive commit is confirmed.
     expect(stopHeartbeats).not.toHaveBeenCalled();
   });
 

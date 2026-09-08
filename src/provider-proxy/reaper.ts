@@ -186,10 +186,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
 
-  // The reaper's own half of `guardian.containment-commit.v1`'s reversible membership barrier: closing this
-  // gate refuses a new `reaper.register-provider-root.v1` admission outright. Nothing drains it — that
-  // handler contains no `await`, so no call can still be running when a later `reaper.containment-prepare.v1`
-  // takes its snapshot — but the gate itself is real and load-bearing.
+  // Root registration must close before the reaper snapshots containment.
   let registrationGateOpen = true;
   let preparedToken: ContainmentPrepareToken | null = null;
 
@@ -257,9 +254,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             scheduler,
             holderAuthority,
             observeHolder,
-            // The reaper's pairing peer is the guardian — the redemption linearizer. Its loss means no
-            // successor can still be in flight, so the reaper may consume a decisive result at an
-            // accelerated check, unlike the guardian's own stricter rule.
+            // Pairing loss may authorize accelerated absence only when no successor can remain in flight.
             acceleratedCheckMayAuthorizeAbsence: true,
             pairingLossObserved: () => pairingLost,
             onOutcome: options.onOutcome,
@@ -480,8 +475,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               'This reaper holds a different prepared containment token.',
             );
           }
-          // `preparedToken === null` and the presented token matches nothing current: idempotent no-op,
-          // either an already-aborted retry or a gate that was never closed.
+          // Replaying an already-aborted prepare token must remain idempotent.
           return reaperContainmentAbortResultSchema.parse({ state: 'containment-registration-reopened' });
         },
       },

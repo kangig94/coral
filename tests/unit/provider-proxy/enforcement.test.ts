@@ -69,13 +69,10 @@ function createHarness(options: {
   adoptionInMs: number;
   alive?: Set<number>;
   stubborn?: ReadonlySet<number>;
-  /** `false` (the default) leaves the holder authority unpublished, so the tick decides from the pure
-   *  clock bound alone. */
   published?: boolean;
   observeHolder?: AsyncRecordedProcessObserver;
   acceleratedCheckMayAuthorizeAbsence?: boolean;
   pairingLossObserved?: () => boolean;
-  /** Forces the fake `bounds().holderCheckAccelerated` this test observes, independent of `adoptionInMs`. */
   accelerated?: boolean;
   observeContainmentLiveness?(pid: number): ProcessLiveness;
   readContainmentIncarnation?(pid: number): RecordedProcessIdentity['incarnation'] | null;
@@ -181,14 +178,11 @@ function createHarness(options: {
     holderCheckAt: bounds.holderCheckAt,
     alive,
     holderAuthority,
-    /** Mints a fresh `ExplicitTeardownAuthorization` from this harness's own current holder. */
     mintExplicit(): ExplicitTeardownAuthorization {
       const authorization = mintExplicitTeardownAuthorization(holderAuthority);
       if (authorization === null) throw new Error('harness holder authority has nothing installed');
       return authorization;
     },
-    /** Observes the harness's own holder through `observeControlHolder`, the only real constructor of
-     *  `ObservedHolderAbsenceAuthorization`. */
     async observeAbsence(): Promise<ObservedHolderAbsenceAuthorization> {
       const observation = await observeControlHolder(holderAuthority, () => Promise.resolve('absent'), clock);
       if (observation.disposition !== 'absent') throw new Error('expected an absent disposition');
@@ -204,7 +198,6 @@ async function runPublishedHolderCheck(harness: Pick<ReturnType<typeof createHar
   for (let flush = 0; flush < 10; flush += 1) await Promise.resolve();
 }
 
-/** Advances the fake clock and pumps the manual scheduler until either it settles or `maxSteps` is spent. */
 async function pump(
   harness: Pick<ReturnType<typeof createHarness>, 'advance' | 'scheduler' | 'outcomes'>,
   stepMs: number,
@@ -518,8 +511,7 @@ describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', ()
 describe('giveUp — the local-signal capability (AC2, Phase 3)', () => {
   it('tears down unconditionally, regardless of holder phase or disposition', async () => {
     const alive = new Set([CONTAINMENT.pid]);
-    // Deliberately unpublished and with no observer wired to say anything useful: an OS signal to this
-    // process is not a claim any holder observation can refuse.
+    // OS signalling alone must not authorize holder absence.
     const harness = createHarness({ adoptionInMs: 60_000, alive, published: false });
 
     const disposition = await harness.enforcer.giveUp(mintLocalSignalTeardownAuthorization());
@@ -605,7 +597,6 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     expect(harness.outcomes).toHaveLength(0);
     expect(harness.latchTeardown).not.toHaveBeenCalled();
     expect(harness.renewHolderCheck).toHaveBeenCalled();
-    // The loop is still alive — it did not park forever with nothing scheduled.
     expect(harness.scheduler.pending()).toBeGreaterThan(0);
   });
 
@@ -696,21 +687,14 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     const successor = { instanceId: 'successor', pid: 4_001, incarnation: testIncarnation('successor') } as const;
 
     harness.enforcer.arm();
-    // First wake: still before `observationStartAt` (holderCheckAt(5000) - P(2000) - W(1000) = 2000), so it
-    // only reschedules.
     harness.scheduler.runDue();
     harness.advance(20_000);
-    // Second wake: past `observationStartAt` — starts the probe (unresolved) and reschedules once more.
     harness.scheduler.runDue();
     await Promise.resolve();
 
-    // A successor is admitted before the probe (of the incumbent) ever resolves.
     harness.holderAuthority.install({ controlEpoch: 2, holder: successor });
     resolveObserve('absent');
-    // Third wake: past `holderCheckAt` — commits to consuming the (already-resolved) probe.
     harness.scheduler.runDue();
-    // Every hop from here is a microtask (the fake clock's own `sleep` resolves via `Promise.resolve()`,
-    // never a real timer), so draining a generous number of turns is deterministic, not a race.
     for (let flush = 0; flush < 10; flush += 1) {
       await Promise.resolve();
     }
@@ -787,8 +771,7 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
     harness.enforcer.arm();
     await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 20);
 
-    // Deferred, not reaped: the accelerated result is treated like an inconclusive one and the schedule is
-    // renewed rather than authorizing absence.
+    // Accelerated absence evidence must defer rather than authorize reaping.
     expect(harness.outcomes).toHaveLength(0);
     expect(harness.renewHolderCheck).toHaveBeenCalled();
   });
@@ -816,9 +799,6 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
       'successor installed before the ordinary check is what the next observation targets — the incumbent ' +
       'absence is never consumed (AC4)',
     async () => {
-      // The real deadline machine, not the abstract harness's static bounds: this is what turns "pairing loss
-      // accelerates one check" and "a renewal consumes the acceleration" into an actual instant this test can
-      // advance past, which a fixed `bounds()` mock cannot model.
       let elapsedMs = 0n;
       const clock = createMonotonicClock(enforcementClockScope, {
         readMilliseconds: () => elapsedMs,
@@ -846,8 +826,6 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
       const observed: RecordedProcessIdentity[] = [];
       const observeHolder = (recorded: RecordedProcessIdentity): Promise<ProcessLiveness> => {
         observed.push(recorded);
-        // The first call is the pairing-loss-accelerated one, against the incumbent, and finds it decisively
-        // gone. Any later call targets whoever `holderAuthority` currently admits.
         return Promise.resolve(observed.length === 1 ? 'absent' : 'alive');
       };
 
@@ -878,8 +856,7 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
         scheduler,
         holderAuthority,
         observeHolder,
-        // Guardian mode: its pairing peer is the proxy, not the redemption linearizer, so it may not consume
-        // an accelerated absence result on its own.
+        // Guardian mode must not independently spend pairing-loss-accelerated absence evidence.
         acceleratedCheckMayAuthorizeAbsence: false,
         onOutcome: (outcome) => outcomes.push(outcome),
         onProgressViolation: () => {},
@@ -887,30 +864,19 @@ describe('published holder observation — the enforcer tick (AC3, AC4)', () => 
 
       enforcer.arm();
 
-      // Some time into the ordinary window, the guardian's proxy pairing is lost while a redemption is still
-      // awaiting the reaper — this accelerates the next holder check by one, without proving the redemption
-      // linearizer (the guardian itself) is gone.
       advance(10_000);
       deadlines.observePairingLoss();
 
-      // Only far enough to let the accelerated check settle and defer — the renewed, unaccelerated
-      // `holderCheckAt` this defers to is still ten seconds further out, so this cannot yet reach it.
       await pump({ advance, scheduler, outcomes }, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 10);
 
-      // The accelerated check ran and found the incumbent decisively absent, but guardian mode may not spend
-      // that result yet.
       expect(observed).toHaveLength(1);
       expect(observed[0]).toEqual({ pid: HOLDER.pid, incarnation: HOLDER.incarnation });
       expect(outcomes).toHaveLength(0);
 
-      // The guardian's own redemption completes: a valid successor is installed before the ordinary,
-      // unaccelerated check for this evidence epoch arrives.
       holderAuthority.install({ controlEpoch: 2, holder: successor });
 
       await pump({ advance, scheduler, outcomes }, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 80);
 
-      // No incumbent absence was ever consumed, and the next observation this loop ever ran targeted the
-      // successor, never a stale verdict about the incumbent.
       expect(outcomes).toHaveLength(0);
       expect(observed.length).toBeGreaterThanOrEqual(2);
       expect(observed[1]).toEqual({ pid: successor.pid, incarnation: successor.incarnation });
@@ -1029,9 +995,6 @@ describe('the killed-coordinator death timetable (AC9)', () => {
     const harness = createTimetableHarness(() => {
       calls += 1;
       if (calls === 1) {
-        // Captured at the instant the probe is *called*, matching what `observeControlHolder` itself reads:
-        // this fake resolves through a bare microtask with no `sleep`, so no fake-clock time separates the
-        // two reads.
         firstAliveObservedAt = harness.clock.now();
         return Promise.resolve('alive');
       }
@@ -1039,13 +1002,10 @@ describe('the killed-coordinator death timetable (AC9)', () => {
     });
 
     harness.enforcer.arm();
-    // Run only far enough for the first (alive) observation to settle and renew the schedule; nothing may
-    // reap yet.
     await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 30);
     expect(harness.outcomes).toHaveLength(0);
     if (firstAliveObservedAt === null) throw new Error('the first observation never settled');
 
-    // The holder dies sometime before the renewed gate; the next check finds it absent.
     await pump(harness, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, 80);
     await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
 

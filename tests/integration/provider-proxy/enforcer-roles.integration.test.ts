@@ -686,8 +686,6 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'invalid_state' } });
   });
 
-  // `guardian.containment-commit.v1` still refuses via its own `requireEnforcer()` while no containment is
-  // recorded (unchanged), but that state is no longer reachable through active control at all: control
   // Active control methods must remain unreachable before containment is recorded.
 
   it('refuses guardian.open.v1 while no containment is recorded, and the nonce survives for a later successful open', async () => {
@@ -1354,8 +1352,7 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('refuses a commit when the guardian and reaper cumulative roots disagree, and reopens both gates', async () => {
     const set = await startSet();
-    // Register a root on the reaper's own enforcer directly, bypassing the guardian's forward — the guardian
-    // never recorded it on its own enforcer, so the two cumulative snapshots disagree.
+    // This fixture must give the roles divergent containment snapshots.
     const strayRoot = { pid: 9_999, incarnation: testIncarnation(1) };
     await strictTestExchange(set.reaperChannel, 'reaper.register-provider-root.v1', { providerRoot: strayRoot }, 5_000);
 
@@ -1368,8 +1365,7 @@ describe('provider-proxy guardian and reaper', () => {
       ),
     ).rejects.toThrow(/different provider-root set/u);
 
-    // Both gates reopened: staging a fresh operation on the guardian, and registering another root directly
-    // on the reaper, both still succeed after the refused commit.
+    // A refused commit must reopen both staging gates.
     const { jointContainmentReceipt } = await stage(set);
     expect(jointContainmentReceipt).toEqual(expect.any(String));
     await expect(
@@ -1413,9 +1409,7 @@ describe('provider-proxy guardian and reaper', () => {
       const [registrationOutcome, commitOutcome] = await Promise.allSettled([registration, commit]);
 
       if (registrationOutcome.status === 'fulfilled') {
-        // Admitted before the staging gate closed: the guardian's own drain must have waited for this
-        // registration's full round trip to the reaper before ever asking it to snapshot, so the root is a
-        // member of the exact containment this commit reaped.
+        // A registration admitted before the staging gate closes must belong to the committed containment.
         expect(registrationOutcome.value).toMatchObject({ state: 'staged-contained' });
         expect(commitOutcome.status).toBe('fulfilled');
         if (commitOutcome.status !== 'fulfilled') {
@@ -1425,8 +1419,7 @@ describe('provider-proxy guardian and reaper', () => {
           `root:${ROOT.pid}@${ROOT.incarnation}`,
         );
       } else {
-        // Arrived after the gate closed: refused outright, and the commit it raced against reaped a
-        // containment that never recorded it on either side.
+        // A registration arriving after the staging gate closes must be refused and excluded from containment.
         const reason = registrationOutcome.reason as { message?: string; remoteFailure?: { protocolCode?: string } };
         expect(reason.remoteFailure?.protocolCode).toBe('invalid_state');
         expect(reason.message).toMatch(/staging is closed/u);
@@ -1443,9 +1436,7 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('refuses guardian.containment-commit.v1 from a lease-lapsed predecessor still on its own connection', async () => {
     const set = await startSet();
-    // A wedged predecessor: its lease lapses while its own connection stays open. Active-tier authority
-    // requires a live lease, not merely an open socket — checked here against the real destructive method
-    // itself, not a stand-in for it.
+    // Active-tier authority requires a live lease, not merely an open socket.
     set.lapseControl();
 
     await expect(
@@ -1458,8 +1449,6 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toMatchObject({ remoteFailure: { protocolCode: 'unauthorized_control' } });
   });
 
-  /** Installs the identical grant on both the guardian and reaper's own active control — the credential
-   *  `*.holder-status.v1` checks — and returns the fields a caller presents to name it. */
   async function installHolderStatusCredential(
     set: SetUnderTest,
   ): Promise<{ credential: Record<string, unknown>; reaperControl: ControlClient }> {
@@ -1511,8 +1500,7 @@ describe('provider-proxy guardian and reaper', () => {
         changedAtMs: number;
         holder: { instanceId: string; pid: number; incarnation: string };
       };
-      // No enforcer tick ever ran (`idleScheduler`), and nothing published this acquisition: the one recorded
-      // transition is the guardian's own admission, which seeds `unobservable` rather than inheriting a belief.
+      // Admission must seed unobservable status without inheriting earlier evidence.
       expect(guardianStatus).toMatchObject({
         disposition: 'unobservable',
         phase: 'acquisition-provisional',
@@ -1691,13 +1679,7 @@ describe('provider-proxy guardian and reaper', () => {
     );
 
     const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
-    // Both authority slots are held at this point — `retried` is the live control tenancy, and the proxy's
-    // pairing channel is still open — so this foreign successor's connection lands in the bounded provisional
-    // bucket an observation-only connection does, and `guardian.handoff-redeem.v1` never reaches the real
-    // credential check there. The endpoint still answers `control-active`, not a generic refusal: the same
-    // reason a normal connection gets when it reaches `establishControl` while control is live, so the caller
-    // knows to retry rather than give up. `ControlAdmissionRefusedError` exists precisely so `invalid_state`
-    // alone never has to carry that distinction.
+    // A foreign successor refused during provisional admission must receive the retryable control-active reason.
     await expect(redeemOn({ ...request, successor: other })).rejects.toMatchObject({
       remoteFailure: { protocolCode: 'invalid_state', admissionReason: 'control-active' },
     });

@@ -27,10 +27,7 @@ import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecyc
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
 
-/** A deterministic `ControlTenancyHolder` for a given instance id and pid: the same pair always yields the
- *  same incarnation, so two calls naming the same pair are the same process and a differing pid is a
- *  distinct one — mirroring how a real `coordinatorIdentitySchema` parse carries pid and incarnation
- *  together. */
+/** Fixture holder identities must be deterministic and distinguish processes that share an instance id. */
 function holderFor(instanceId: string, pid = 1): ControlTenancyHolder {
   return { instanceId, pid, incarnation: testIncarnation(`${instanceId}:${pid}`) };
 }
@@ -72,8 +69,6 @@ async function startEndpoint(
     /** When present, the role serves `role.status.v1` under `authority: 'observation'`. */
     observation?: (params: unknown) => unknown;
     operator?: (params: unknown) => unknown;
-    /** When present, the role serves `role.authorized.v1` under `authority: 'active'`, and every dispatched
-     *  call's freshly minted `ActiveControlAuthorization` is forwarded here. */
     onActiveAuthorization?: (authorization: ActiveControlAuthorization) => void;
   } = {},
 ): Promise<{
@@ -164,10 +159,7 @@ async function startEndpoint(
       },
     ],
     ['role.work.v1', { authority: 'active', handle: () => ({ state: 'worked' }) }],
-    // A second opening method with its own credential — the successor's analogue of a handoff grant.
-    // `holder` is named by the caller, mirroring how a real grant derives it from `successor`'s complete
-    // identity. `pid` defaults to 1 so most tests need only vary `successorId`; a test proving the
-    // same-instance/different-process distinction supplies a different `pid` under the same `successorId`.
+    // Redemption fixtures must distinguish processes that share an instance id.
     [
       'role.redeem.v1',
       {
@@ -745,12 +737,9 @@ describe('provider-proxy control endpoint', () => {
     await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     set.lapseControl();
     const impostor = await connect(socketPath);
-    // The incumbent's heartbeat lands first, reasserting live control before the redeem below arrives.
     await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
-    // The same instance id the incumbent opened with ('incumbent'), but a different pid: a different
-    // process claiming the identical tenancy is not a retry, however identical its instance id, and must
-    // not reach the reattach shortcut while the incumbent is still live.
+    // A same-instance replacement must not reattach while the incumbent holder is live.
     const refused = await impostor.call('role.redeem.v1', { successorId: 'incumbent', pid: 2 });
 
     expect(refused.error?.data?.code).toBe('invalid_state');
@@ -766,9 +755,7 @@ describe('provider-proxy control endpoint', () => {
     set.lapseControl();
 
     const successor = await connect(socketPath);
-    // Same instance id as the incumbent, but a restarted process's own pid: this is deliberate successor
-    // admission, not silent tenancy re-minting, so it advances the epoch exactly as a genuinely different
-    // instance id would.
+    // A replacement process must advance the epoch instead of silently reminting the incumbent tenancy.
     const redeemed = await successor.call('role.redeem.v1', { successorId: 'incumbent', pid: 2 });
 
     expect(redeemed.result).toMatchObject({ role: 'successor', controlEpoch: 2 });
@@ -924,8 +911,7 @@ describe('provider-proxy control endpoint', () => {
     await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
 
     const third = await connect(socketPath);
-    // Sends nothing — the endpoint was constructed with `requestTimeoutMs: 5_000`, so the idle socket must
-    // close on its own rather than being held open indefinitely.
+    // An idle socket must close without client input.
     await vi.waitFor(() => expect(third.socket.destroyed).toBe(true), { timeout: 7_000, interval: 100 });
   });
 
@@ -940,7 +926,6 @@ describe('provider-proxy control endpoint', () => {
     await pairing.call('role.pair.v1', { pairingSecret: 'shared-secret' });
 
     const third = await connect(socketPath);
-    // Two frames written in the same synchronous burst, before either can be answered.
     const first = third.call('role.status.v1', {});
     const second = third.call('role.status.v1', {});
     const firstReply = await Promise.race([
@@ -952,7 +937,6 @@ describe('provider-proxy control endpoint', () => {
       second,
       new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
     ]);
-    // The connection is destroyed after the first frame, so the second call's promise never resolves.
     expect(secondReply).toBe('timeout');
     await vi.waitFor(() => expect(third.socket.destroyed).toBe(true));
   });
@@ -1019,8 +1003,7 @@ describe('provider-proxy control endpoint', () => {
       const foreign = {} as ActiveControlAuthorization;
       expect(endpoint.activeControlAuthorizationIsCurrent(foreign)).toBe(false);
 
-      // A genuine successor (a different holder, admitted after the lease lapses — not a same-holder retry)
-      // revokes the incumbent's authorization even though it was minted only moments before.
+      // Successor admission must revoke the incumbent's authorization immediately.
       lapseControl();
       const successor = await connect(socketPath);
       const redeemed = (await successor.call('role.redeem.v1', { successorId: 'a-different-instance' })).result as {
@@ -1030,7 +1013,6 @@ describe('provider-proxy control endpoint', () => {
       await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
       expect(endpoint.activeControlAuthorizationIsCurrent(incumbentAuthorization)).toBe(false);
 
-      // The successor's own freshly minted authorization is current in its place.
       await successor.call('role.heartbeat.v1', {
         controlEpoch: redeemed.controlEpoch,
         heartbeatChallenge: redeemed.heartbeatChallenge,

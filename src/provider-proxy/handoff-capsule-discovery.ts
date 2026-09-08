@@ -39,7 +39,7 @@ export function providerHandoffCapsuleCandidatePaths(
     .map((entry) => join(runDir, entry));
 }
 
-/** Canonical addressing is judged against the decoded capsule's own version. */
+/** Canonical addressing must be judged against the decoded capsule's own version. */
 export function readProviderHandoffCapsuleCandidate(
   path: string,
   generationRoot: string,

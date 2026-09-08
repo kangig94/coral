@@ -395,9 +395,7 @@ export async function connectRoleControlWithRetry(
   options: RoleConnectRetryOptions,
   onProviderEvent?: ProviderEventHandler,
 ): Promise<ControlClient> {
-  // This budget bounds our own retrying, so it spends real elapsed time: charging only a poll cadence per
-  // attempt would let a slow connect attempt stretch the deadline without limit, and a retry that cannot
-  // exhaust is not an exit.
+  // Retry exhaustion must measure elapsed time, including connection attempts.
   const deadlineMonotonicMs = options.monotonicNow() + BigInt(options.overallDeadlineMs);
   while (true) {
     try {

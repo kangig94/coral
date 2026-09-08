@@ -232,8 +232,7 @@ function createGuardianHarness(
     if (found === undefined) throw new Error(`Guardian method ${name} was not registered.`);
     return found;
   };
-  // This harness may cast locally only because it stubs endpoint provenance; control-endpoint integration
-  // tests must exercise the brand's runtime validation.
+  // This harness may cast only because it stubs endpoint provenance.
   const activeAuthorization = {} as ActiveControlAuthorization;
   const call = (name: string, params: unknown): Promise<unknown> | unknown => {
     const entry = method(name);

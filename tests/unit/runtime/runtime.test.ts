@@ -147,6 +147,28 @@ describe('createRealRuntime', () => {
     expect(pending).toEqual([]);
   });
 
+  it('rejects a malformed durable wrapper control message', async () => {
+    const time: TimePort = {
+      now: () => 0,
+      monotonicNow: () => 0n,
+      sleep: async () => undefined,
+      setTimeout: vi.fn(() => ({})),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
+    };
+    const wrapper = Object.assign(new EventEmitter(), {
+      pid: 101,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    const readiness = waitForDurableRuntime({ time, wrapper: wrapper as never });
+
+    wrapper.stdout.write('null\n');
+
+    await expect(readiness).rejects.toThrow('Durable wrapper emitted an invalid control message');
+  });
+
   it('measures durable exit confirmation across a forward wall-clock jump with monotonic time', async () => {
     const result = await confirmExitGraceAcrossWallClockJump(60_000);
 

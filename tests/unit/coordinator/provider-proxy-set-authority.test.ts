@@ -193,12 +193,7 @@ function authorityWithProxyClient(proxyClient: ControlClient): ReturnType<typeof
 describe('createProviderProxySetAuthority: stopAndReap budget', () => {
   it('confirms a teardown against a stubborn target that spends the full SIGTERM+SIGKILL escalation', async () => {
     const time = new VirtualTime();
-    // The minimum time a legitimate hard reap takes when the target does not die on the first signal: SIGTERM
-    // grace, then SIGKILL grace, then the disappearance confirmation window — the exact floor
-    // `guardian.containment-commit.v1`'s `budgetMs: 'caller-deadline'` exists to protect, and exclusive of any
-    // per-syscall overhead. A budget below this floor cannot ever succeed against a stubborn process, so this
-    // is deliberately the value under test rather than an arbitrary number that merely exceeds the bug's
-    // 5s budget.
+    // The test budget must cover TERM grace, KILL grace, and disappearance confirmation.
     const stubbornReapFloorMs = SIGTERM_GRACE_MS + SIGKILL_GRACE_MS + CONTAINMENT_DISAPPEARANCE_CONFIRM_MS;
     expect(stubbornReapFloorMs).toBe(11_000);
     expect(stubbornReapFloorMs).toBeGreaterThan(PROXY_CONTROL_RPC_TIMEOUT_MS);

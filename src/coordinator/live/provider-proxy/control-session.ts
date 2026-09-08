@@ -180,7 +180,7 @@ export function establishProviderProxyAcquisitionSession<Owner extends ProviderP
   return { kind: 'established', set, publicationReceipt };
 }
 
-/** Closure consumes ownership and releases every heartbeat and control client. */
+/** Closing a session must consume ownership and release every heartbeat and control client. */
 export function closeProviderProxyAcquisitionSession<Owner extends ProviderProxyControlSessionOwner>(
   session: OwnedProviderProxyAcquisitionControlSession<Owner>,
   reason: string,

@@ -44,10 +44,7 @@ export type ProviderProxySetAcquisitionConfig = Readonly<{
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
-  /**
-   * Must remain a factory because the handler may depend on resources unavailable when acquisition is
-   * configured. Invocation is permitted only after provider-proxy control is established.
-   */
+  /** Invocation is permitted only after provider-proxy control is established. */
   onProviderEvent?: () => ProviderEventHandler;
 }>;
 
@@ -157,16 +154,8 @@ export async function disposeStoppedProviderProxySetAcquisition(
 }
 
 /**
- * Starts one acquisition attempt for `entry`'s guardian/reaper/proxy set and reports how it settled.
- *
- * Never rejects before invoking `onSettled`: the caller of `acquireHostLease` gets its real app-server
- * session exactly as before, unaffected by whether this succeeds, fails, or is still running when that
- * session opens — a slow or failed acquisition here must add neither latency nor failure to it. Single-
- * flighting one attempt per entry is the caller's responsibility (mirrors `ensureProviderServerHandle` in
- * `recovery.ts`); this function always starts a fresh attempt when called.
- *
- * `env.signal` never converts a possibly published set into an ordinary failure; publication uncertainty
- * retains its recovery owner even when the signal has already aborted.
+ * `onSettled` must be invoked before rejection. Abortion must not turn possible publication into ordinary
+ * failure or release its recovery owner.
  */
 export function ensureProviderProxySet(
   entry: ProviderHostEntry,

@@ -1,8 +1,7 @@
-// Every non-probe signal aimed at a number must refresh the exact target identity inside its enclosing
-// signalling function, or derive that number from a branded live-child authority after refusing when the
-// child has been collected. A guarded sibling cannot authorize another function in the same module.
-// `child.kill(signal)` remains outside the scan because the child handle, rather than a reusable number,
-// carries the target authority. Signal-zero probes carry no delivery authority.
+// Every non-probe signal to a numeric target must refresh its exact identity in the enclosing signalling
+// function, or derive the number from a branded live-child authority after refusing a collected child.
+// Authority cannot cross function boundaries. Child-handle signalling carries its own authority, while
+// signal-zero probes carry no delivery authority.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
@@ -21,7 +20,6 @@ const SRC_ROOT = 'src';
 
 const AUTHORITY_OWNER_FILE = 'src/infra/node-process.ts';
 
-/** Exact calls whose target identity is intrinsic to the call site rather than a recorded number. */
 const EXACT_CALL_ALLOWLIST = new Map<string, string>([
   [
     'src/runtime/real.ts:process.kill(pid)',
@@ -329,8 +327,7 @@ function establishesSignalAuthority(
   source: ts.SourceFile,
 ): boolean {
   const text = codeTextOnly(scope.getText(source));
-  // A branded capability the wrong evidence cannot construct carries the same authority as an inline
-  // guard: `verifySignalTarget` refuses unless it refreshed the exact identity, and nothing else mints one.
+  // Only exact identity evidence may authorize signalling through a branded capability or inline guard.
   if (/verifySignalTarget\s*\(/u.test(text) || /\bHandoffSignalCapability\b/u.test(text)) return true;
   if (liveChildAuthorityGuardsSignal(scope, call, source)) return true;
   // The refusal must end the `if` it opens: a tail that could run past `{`, `}` or `;` would be satisfied
@@ -368,8 +365,7 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       const source = readFileSync(filePath, 'utf-8');
       for (const scope of unguardedSignallingFunctions(source, canonical)) violations.push(`${canonical}::${scope}`);
     }
-    // To resolve: refuse when `incarnationMayAuthorizeSignal(platform)` is false and compare the recorded
-    // incarnation against a fresh probe — or add an ALLOWLIST entry stating what else proves the pid.
+    // Numeric signal authority requires a fresh matching incarnation or an explicit allowlist proof.
     expect(violations.sort()).toEqual([]);
   });
 

@@ -270,9 +270,6 @@ type EstablishedSlot = {
   operatorExitObservedGate: OperatorExitObservedGate | null;
   operatorExitGeneration: number;
   protection: ProviderProxySetProtection;
-  /** Set only while this slot is `containing`/`containment-wait` for a `stop-and-reap` decision, and cleared
-   *  once containment absence is confirmed. Distinguishes the two AC3 holds for status reporting; the retry
-   *  cadence itself is the same `#runContainmentAttempt` loop for both. */
   containmentCommitStatus: 'not-sent' | 'outcome-unknown' | null;
 };
 
@@ -2227,8 +2224,7 @@ export class ProviderProxySetLifecycle {
   claimsChanged(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (slot === undefined) return;
-    // A reattachment hold never became decisive on its own evidence, but zero claims makes ordinary
-    // retirement safe regardless of source: nothing this coordinator still has a claim in is destroyed.
+    // Ordinary retirement from a reattachment hold requires zero live claims.
     if (slot.kind === 'reattachment-hold') {
       const window = slot.controlReattachmentWindow;
       if (window === null || this.#deps.claims.claimsFor(slot.identity).length !== 0) return;
@@ -3126,9 +3122,7 @@ export class ProviderProxySetLifecycle {
     );
 
     for (const authority of authoritiesToClose) {
-      // Deferred to confirmed absence rather than the containment attempt's own start: a `stop-and-reap`
-      // decision keeps its heartbeat lease live for as long as the guardian commit is unconfirmed, so a
-      // retry always has a current lease to commit against instead of one this coordinator tore down itself.
+      // Control must remain available until containment absence is confirmed.
       authority.stopHeartbeats();
       void authority
         .initiateControlClose()
@@ -4487,10 +4481,7 @@ export class ProviderProxySetLifecycle {
     });
   }
 
-  /**
-   * The redemption channel's own decisive answer, reachable from both the active window and the post-bound
-   * hold — decisiveness does not depend on which one observed it.
-   */
+  /** Only a decisive teardown latch may begin fault containment. */
   #commitReattachmentTeardownLatched(
     slot: EstablishedSlot,
     window: ControlReattachmentWindow,
@@ -4522,10 +4513,8 @@ export class ProviderProxySetLifecycle {
   }
 
   /**
-   * Moves the slot into the unbounded post-bound hold: the window's own deadline is no longer enforced, and
-   * redemption plus containment observation continue at a restrained cadence instead of the active window's
-   * backoff. Reachable only with live claims present — the liveClaims===0 case stays on the decisive
-   * `await-containment-absence` path, which destroys nothing this coordinator still has a claim in.
+   * A reattachment hold must preserve live claims until control redemption, confirmed absence, accepted
+   * succession, or operator override.
    */
   #enterReattachmentHold(
     slot: EstablishedSlot,
@@ -4540,9 +4529,6 @@ export class ProviderProxySetLifecycle {
     if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     slot.retryTimer = null;
     slot.kind = 'reattachment-hold';
-    // Already in the past when this hold followed an expired active window's own deadline — that lets the
-    // operator override apply immediately rather than waiting a second grace period. A window opened directly
-    // from a heartbeat local-failure fault has no prior deadline, so this is the one that arms it.
     this.#armObservedOperatorExitGate(slot);
     const decision: ProviderProxySetContainmentRefusedDecision = {
       action: 'preserve',
@@ -4552,17 +4538,9 @@ export class ProviderProxySetLifecycle {
       refusedDecision,
     };
     this.#recordDecision(slot, decision);
-    // Restrained cadence starts from the hold's own entry, not from an immediate re-attempt: the active
-    // window already just tried and was refused or timed out, so retrying again at once would defeat the
-    // point of slowing down.
     this.#scheduleReattachmentHoldRetry(slot, window);
   }
 
-  /**
-   * The reattachment hold's own retry loop: the same redemption and absence sources as the active window, at
-   * a restrained cadence and with no deadline to expire against — the bound already expired, so nothing here
-   * re-arms it. `#isCurrentControlReattachment` doubles as this loop's own currency check.
-   */
   #runReattachmentHoldAttempt(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
     if (
       this.#slots.get(slot.key) !== slot ||
@@ -4720,10 +4698,8 @@ export class ProviderProxySetLifecycle {
     this.#removeRoute(slot);
     slot.kind = 'containing';
     if (decision.action === 'await-containment-absence') {
-      // Sends no containment command: this hold is resolved only by an independently observed absence, an
-      // accepted successor, or the operator override, never by anything this close accelerates. Heartbeats and
-      // control are given up immediately because there is no commit in flight whose ownership this coordinator
-      // must retain.
+      // Without containment authority, this hold may end only through confirmed absence, accepted succession,
+      // or operator override.
       slot.authority.stopHeartbeats();
       void this.#runContainmentAttempt(slot, decision);
       void slot.authority.initiateControlClose().catch((error: unknown) => {
@@ -4736,12 +4712,7 @@ export class ProviderProxySetLifecycle {
     this.#commitContainmentThenBegin(slot, decision);
   }
 
-  /**
-   * The single coordinator ingress to the guardian's destructive `guardian.containment-commit.v1`. Heartbeats
-   * and control stay untouched until a confirmed result — `containment-absent` — arrives: an unconfirmed sent
-   * request (`outcome-unknown`) or a proven non-latch (`not-sent`) both retain full reconciliation ownership,
-   * which needs a live heartbeat lease to keep retrying against, not a torn-down one.
-   */
+  /** Control must remain available until containment absence is confirmed. */
   #commitContainmentThenBegin(
     slot: EstablishedSlot,
     decision: ProviderProxySetAuthorityStopDecision | ProviderProxySetRetirementStopDecision,
@@ -5297,12 +5268,7 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  /**
-   * `heartbeat-failed` with `local-failure` and live claims present: this process's own failure to reach the
-   * peer, never a disposition about the peer. Opens a fresh reattachment window directly in the hold phase —
-   * there is no bounded active window to run first, because a local send failure already is the same "our own
-   * failure to reach the peer" conclusion the bound exists to reach.
-   */
+  /** A local failure to reach the peer must not be treated as a disposition from that peer. */
   #beginHeartbeatLocalFailureHold(
     slot: EstablishedSlot,
     fault: Extract<ProviderProxyAuthorityFault, { kind: 'heartbeat-failed' }>,
@@ -5446,10 +5412,8 @@ export class ProviderProxySetLifecycle {
               settleCommittedAbsence();
               return;
             }
-            // `not-sent` proves the commit did not latch; `outcome-unknown` proves only that it may have.
-            // Neither ends this attempt: the retry above and the independent `absence` source both keep
-            // running, and this coordinator retains reconciliation ownership until one of them, an accepted
-            // successor, or the operator override resolves it.
+            // An unconfirmed commit must retain reconciliation ownership until confirmed absence, accepted
+            // succession, or operator override.
             if (slot.kind !== 'capsule-recovering' && decision.action === 'stop-and-reap') {
               const aggregateOutcome =
                 slot.containmentCommitStatus === 'outcome-unknown' ? 'outcome-unknown' : outcome.kind;

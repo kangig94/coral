@@ -35,8 +35,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const NONCE = 'a'.repeat(64);
 
-/** A deterministic `ControlTenancyHolder` for a fixture's own credential name. Two distinct names are two
- *  distinct processes, mirroring a real `coordinatorIdentitySchema` parse. */
+/** Fixture holder identities must be deterministic and collision-free by credential name. */
 function holderFor(instanceId: string): ControlTenancyHolder {
   return { instanceId, pid: 1, incarnation: testIncarnation(instanceId) };
 }

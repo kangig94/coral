@@ -253,8 +253,6 @@ async function proxyLeaseSession(
         [
           'proxy.acquisition-publish.v1',
           {
-            // The real `proxy.acquisition-publish.v1` verifies the certificate binding structurally; this
-            // fixture proxy is not under test for that check, so it accepts unconditionally.
             authority: 'active' as const,
             handle: publicationHandler,
           },
@@ -354,8 +352,7 @@ describe('exchangeAcquisitionStage', () => {
   }
 
   it('classifies an explicit acquisition-publication-unknown reply as unknown, never not-attempted, never ok', async () => {
-    // The guardian's own reply schema for this stage is a discriminated union that includes this exact
-    // shape — proving the check fires before `resultSchema.safeParse` would otherwise read it as `'ok'`.
+    // Rejection must occur before reply-schema parsing can accept the payload.
     const client = clientAnswering({
       state: 'acquisition-publication-unknown',
       reason: 'reaper.acquisition-publish.v1 could not be confirmed',
@@ -830,7 +827,7 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const guardian: ControlClient = {
       exchange: async (method: string) => {
         if (method === 'guardian.acquisition-publish.v1') {
-          // The response is lost after the request may have reached the guardian.
+          // A lost response is not proof that the request was never delivered.
           return controlExchangeForTest({
             kind: 'no-response',
             cause: 'connection-closed-after-write',

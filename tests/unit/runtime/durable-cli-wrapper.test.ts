@@ -416,6 +416,104 @@ describe('durable-cli-wrapper', () => {
     expect(existsSync(providerStartedPath)).toBe(false);
   });
 
+  it('reports ordinary completion when a provider closes stdin before receiving the prompt', async () => {
+    const rootDir = createTempDir();
+    const jobDir = join(rootDir, 'job');
+    const wrapperPath = join(rootDir, 'durable-cli-wrapper.mjs');
+    const launchPayloadPath = join(jobDir, 'launch.v1.json');
+    mkdirSync(jobDir);
+    writeFileSync(join(jobDir, 'env.json'), '{}');
+
+    await build({
+      entryPoints: [fileURLToPath(new URL('../../../src/runtime/durable-cli-wrapper.ts', import.meta.url))],
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      outfile: wrapperPath,
+      plugins: [
+        {
+          name: 'closed-provider-stdin',
+          setup(pluginBuild) {
+            pluginBuild.onResolve({ filter: /^node:child_process$/, namespace: 'file' }, () => ({
+              path: 'closed-provider-stdin',
+              namespace: 'closed-provider-stdin',
+            }));
+            pluginBuild.onLoad({ filter: /.*/, namespace: 'closed-provider-stdin' }, () => ({
+              loader: 'js',
+              contents: `
+                import { execFile, execFileSync, spawn as realSpawn } from 'node:child_process';
+                import { EventEmitter } from 'node:events';
+                export { execFile, execFileSync };
+                export const spawn = (command, args, options) => {
+                  if (command !== 'provider-closes-stdin') return realSpawn(command, args, options);
+                  const child = new EventEmitter();
+                  const childStdin = new EventEmitter();
+                  child.pid = process.pid;
+                  child.stdin = childStdin;
+                  childStdin.destroyed = true;
+                  childStdin.write = () => {
+                    queueMicrotask(() => {
+                      childStdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+                      child.emit('close', 0, null);
+                    });
+                    return false;
+                  };
+                  childStdin.end = () => undefined;
+                  return child;
+                };
+              `,
+            }));
+          },
+        },
+      ],
+    });
+
+    writeFileSync(
+      launchPayloadPath,
+      JSON.stringify({
+        version: 1,
+        command: 'provider-closes-stdin',
+        args: [],
+        cwd: null,
+        prompt: 'non-empty prompt',
+        startTime: new Date().toISOString(),
+      }),
+    );
+    const wrapper = spawn(process.execPath, [wrapperPath, launchPayloadPath], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    const stdout = wrapper.stdout;
+    const stderr = wrapper.stderr;
+    if (stdout === null || stderr === null) throw new Error('Expected wrapper control pipes');
+
+    let controlOutput = '';
+    let errorOutput = '';
+    stdout.on('data', (chunk: Buffer) => {
+      controlOutput += chunk.toString();
+    });
+    stderr.on('data', (chunk: Buffer) => {
+      errorOutput += chunk.toString();
+    });
+    wrapper.send('runtime-start-published');
+
+    const close = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      wrapper.once('error', reject);
+      wrapper.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    const records = controlOutput
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string });
+
+    expect(close).toEqual({ code: 0, signal: null });
+    expect(errorOutput).toBe('');
+    expect(records.map((record) => record.type)).toEqual(['runtime', 'exit']);
+    expect(records.at(-1)).toMatchObject({
+      type: 'exit',
+      exitRecord: { exitCode: 0, signal: null, endTime: expect.any(String) },
+    });
+  });
+
   it('flushes its complete exit record while its stdout reader is paused', async () => {
     const rootDir = createTempDir();
     const jobDir = join(rootDir, 'job');

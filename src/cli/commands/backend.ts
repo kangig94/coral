@@ -597,8 +597,7 @@ function routingStatusPath(runtime: Runtime): string {
   );
 }
 
-/** Bounds this CLI's own direct role dial so a starved-*and*-unreachable role cannot hang the fallback read
- *  the coordinator's own unreachability already triggered. */
+/** A starved and unreachable role must not hang the fallback read. */
 const DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS = 3_000;
 
 export type DirectHolderStatusReading =
@@ -636,8 +635,7 @@ function readProviderHandoffCapsulesForDiagnostics(runtime: Runtime): readonly D
   try {
     candidates = providerHandoffCapsuleCandidatePaths(runDir, runtime.storage);
   } catch (error: unknown) {
-    // A run directory that never existed, or that a coordinator already gone has since cleaned up, has
-    // nothing to discover — the unreachable coordinator this fallback exists for is exactly this case.
+    // A missing run directory must be treated as nothing to discover.
     if (isNoEntryError(error)) return [];
     return [{ kind: 'unreadable-run-directory', path: runDir, reason: errorMessage(error) }];
   }
@@ -675,9 +673,7 @@ async function readDirectHolderStatus(
     const exchange = await client.exchange(method, params, DIRECT_HOLDER_STATUS_CONNECT_TIMEOUT_MS);
     if (exchange.kind === 'response') {
       if (exchange.response.kind === 'result') {
-        // Display, not authority: an undecodable "result" is not one of AC6's two named v0.10.9 shapes, so
-        // it renders `unreachable` rather than throwing out of this reading and blanking every other role's
-        // row along with it.
+        // An undecodable display result must render as unreachable without suppressing other roles.
         const parsed = holderStatusResultSchema.safeParse(exchange.response.value);
         if (!parsed.success) {
           return { kind: 'unreachable', reason: `undecodable result: ${parsed.error.message}` };

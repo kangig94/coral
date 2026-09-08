@@ -94,17 +94,11 @@ export type ArmedEnforcerOptions<Scope extends symbol> = Readonly<{
   containment: RecordedContainmentIdentity;
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;
-  /** The canonical holder identity authority. This module may read it but must never install an identity. */
+  /** This module must never install a holder identity. */
   holderAuthority: ControlHolderAuthority;
-  /** The non-blocking, identity-bound observer a published holder's checks are scheduled through. */
+  /** Holder observation must remain non-blocking and identity-bound. */
   observeHolder: AsyncRecordedProcessObserver;
-  /**
-   * Whether an absence result observed at a pairing-loss/EOF-accelerated check may be consumed immediately.
-   * `true` for the reaper: its pairing peer is the guardian, the redemption linearizer, so that peer's loss
-   * means no successor can still be in flight. `false` for the guardian: its pairing peer is the proxy, and
-   * the guardian itself still linearizes redemption and may be installing a valid successor, so an
-   * accelerated absence result waits for the next ordinary, unaccelerated check before it may be consumed.
-   */
+  /** Pairing loss may authorize absence only when it proves no successor can remain in flight. */
   acceleratedCheckMayAuthorizeAbsence: boolean;
   /** Only a permanent pairing loss may enable the independent containment-absence observation. */
   pairingLossObserved?(): boolean;
@@ -133,7 +127,6 @@ export interface ArmedEnforcer {
    * authorities disagreeing about what this containment holds.
    */
   wouldExceedProviderRootCap(root: RecordedProcessIdentity): boolean;
-  /** The roots recorded so far, in registration order. */
   recordedRoots(): readonly RecordedProcessIdentity[];
   reapAbsentHolder(
     authorization: ObservedHolderAbsenceAuthorization,
@@ -143,11 +136,11 @@ export interface ArmedEnforcer {
   ): Promise<EnforcementConsumptionDisposition<ExplicitTeardownAuthorization>>;
   /** A local signal is irrevocable authority to attempt teardown, not to settle an unattributable result. */
   giveUp(authorization: LocalSignalTeardownAuthorization): Promise<LocalSignalTeardownDisposition>;
-  /** Re-observes a teardown-latched group only while an unconfirmed hold remains current. */
+  /** Re-observation is authorized only while an unconfirmed teardown hold remains current. */
   retryUnattributable(): Promise<EnforcementOutcome> | null;
-  /** Starts the independently scheduled loop. Idempotent. */
+  /** Must be idempotent. */
   arm(): void;
-  /** Stops the loop without reaping. Used when the set retires cleanly. */
+  /** Disarming must not reap. */
   disarm(): void;
 }
 
@@ -174,8 +167,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   let teardownInFlight: Promise<EnforcementOutcome> | null = null;
   let settledOutcome: SettledEnforcementOutcome | null = null;
   let holdingUnconfirmed = false;
-  // The published-holder observation flow's own in-flight probe. A probe is bounded evidence-gathering, not
-  // a destructive act, so it is safe to hold across ticks and safe to discard if a renewal supersedes it.
+  // Observation probes must never acquire process-control authority.
   let holderProbe: { forCheckAt: MonotonicInstant<Scope>; promise: Promise<HolderObservation<Scope>> } | null = null;
   let consuming = false;
 
@@ -308,9 +300,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   const consumeLocalSignal = async (
     _authorization: LocalSignalTeardownAuthorization,
   ): Promise<LocalSignalTeardownDisposition> => {
-    // A fresh full reserve from the signal instant, not the reduced post-wake reserve the not-before-gated
-    // capabilities above receive — there is no wake to have already spent: an actual OS signal is delivered
-    // directly, not queued behind a not-before gate.
+    // Local-signal teardown must receive a fresh full reserve from the signal instant.
     const outcome = await teardown(clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS));
     return outcome.kind === 'containment-absent' ? { kind: 'settled', outcome } : { kind: 'holding', outcome };
   };
@@ -340,10 +330,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     }
     if (observation.disposition === 'absent') {
       if (deadlines.bounds().holderCheckAccelerated && !acceleratedCheckMayAuthorizeAbsence) {
-        // This role may prefetch an accelerated observation but may not consume an incumbent-absence result
-        // before the ordinary unaccelerated check: its own pairing peer's loss does not by itself prove the
-        // redemption linearizer is gone, and a successor may still be in flight. Advance the schedule past
-        // the acceleration and retry at the ordinary cadence, exactly as an inconclusive result would.
+        // Pairing loss must not authorize incumbent absence while a successor may still be in flight.
         deadlines.renewHolderCheck(checkedAt);
         schedule(generation);
         return;
@@ -364,10 +351,8 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       });
       return;
     }
-    // Neither disposition authorizes anything; both renew, so the loop retries rather than stalling forever
-    // (a hold must name what ends it). `alive` renews from the evidence's own `observedAt`; `unobservable`
-    // has no positive evidence to anchor to, so it renews from the instant this check was performed —
-    // clearing any spent acceleration and avoiding a hot loop without inventing a second, unnamed cadence.
+    // Alive and unobservable observations must not authorize teardown; later evidence or explicit teardown
+    // ends the hold.
     deadlines.renewHolderCheck(observation.disposition === 'alive' ? observation.observedAt : checkedAt);
     schedule(generation);
   };
@@ -378,8 +363,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     if (teardownInFlight !== null || settledOutcome !== null || consuming) return;
 
     if (holderAuthority.phase() === 'acquisition-provisional') {
-      // No holder has been published: the pure clock bound decides. No operation authority or claim exists
-      // yet, so there is nothing for a holder-check schedule to protect.
+      // Provisional acquisition must not derive teardown authority from an unpublished holder.
       const bounds = deadlines.bounds();
       const now = clock.now();
       if (clock.compare(now, bounds.adoptionDeadline) < 0) {
@@ -399,8 +383,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     const now = clock.now();
 
     if (holderProbe !== null && clock.compare(holderProbe.forCheckAt, holderCheckAtInstant) !== 0) {
-      // A renewal moved the schedule while this probe was still in flight; its eventual resolution is left
-      // unconsumed rather than judged against a check it no longer answers.
+      // A probe for a superseded check must not authorize teardown.
       holderProbe = null;
     }
 
@@ -419,7 +402,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     }
 
     if (clock.compare(now, holderCheckAtInstant) < 0) {
-      // The probe may already be settled, but its result cannot be consumed before the not-before gate.
+      // Probe results must not be consumed before the not-before gate.
       schedule(generation);
       return;
     }

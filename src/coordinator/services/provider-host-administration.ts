@@ -148,8 +148,7 @@ export class ProviderHostAdministrationService {
     hostRef: HostRef,
   ): Promise<Readonly<{ owner: ProviderHostAdministrationOwner; hostRef: HostRef }>> {
     const owners = this.captureOwners();
-    // A terminal outcome outlives the inventory row it was about, so a coordinator that never saw this
-    // reference must ask the owners for it before concluding from an inventory that no longer lists it.
+    // Absence from inventory must not override a terminal outcome retained by its owner.
     const retained = await this.discoverRetainedEvictionOwner(owners, hostRef);
     if (retained !== null) return retained;
     const inventory = await this.captureInventory();

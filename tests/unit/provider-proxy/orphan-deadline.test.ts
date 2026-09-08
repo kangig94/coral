@@ -804,8 +804,7 @@ describe('published holder-check schedule (AC4)', () => {
     guardian.observePairingLoss();
     expectSameInstant(fake.clock, guardian.bounds().holderCheckAt, pairingLossAt);
 
-    // The accelerated check is performed (of any disposition) and renews from that instant — the
-    // acceleration must not keep re-clamping every later cadence into a zero-delay loop.
+    // One acceleration must not clamp subsequent checks into a zero-delay loop.
     guardian.renewHolderCheck(pairingLossAt);
 
     expectSameInstant(
@@ -849,7 +848,6 @@ describe('published holder-check schedule (AC4)', () => {
     const authority = createControlHolderAuthority();
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'), authority);
 
-    // Nothing has ever been admitted, so the authority's phase remains 'acquisition-provisional'.
     expectSameInstant(
       fake.clock,
       guardian.bounds().holderCheckAt,
@@ -877,7 +875,6 @@ describe('AC5 — a late heartbeat from a recovering coordinator is accepted onc
   it('still latches from elapsed time before publication (AC3’s provisional bootstrap window)', () => {
     const fake = createFakeClock(guardianClockScope, 0);
     const authority = installedHolder();
-    // Deliberately not published.
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'), authority);
     const first = mustAccept(guardian.issueFirstChallenge());
     fake.set(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS - PROXY_TEARDOWN_RESERVE_MS + 5_000);
@@ -924,8 +921,7 @@ describe('mathematical test vectors — the death timetable composed end to end 
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'), authority);
     const observedAt = fake.clock.now();
 
-    // The evidence completed at `observedAt`; the not-before gate is reached only later, and the wake that
-    // consumes it may itself run up to `W` late.
+    // Evidence may not be consumed before its not-before gate.
     guardian.renewHolderCheck(observedAt);
     const holderCheckAt = guardian.bounds().holderCheckAt;
     const authorizedAt = fake.clock.shiftMilliseconds(holderCheckAt, PROXY_ENFORCER_MAX_WAKE_LATENCY_MS);
@@ -946,8 +942,7 @@ describe('mathematical test vectors — the death timetable composed end to end 
     guardian.renewHolderCheck(observedAt);
     const holderCheckAt = guardian.bounds().holderCheckAt;
 
-    // A probe that starts at `holderCheckAt - P - W` and spends its full P-second bound resolves exactly at
-    // the not-before gate; the wake that consumes it may then spend up to `W` more.
+    // The deadline budget must include full probe and wake latency.
     const observationStartAt = fake.clock.shiftMilliseconds(
       holderCheckAt,
       -(PROCESS_INCARNATION_PROBE_TIMEOUT_MS + PROXY_ENFORCER_MAX_WAKE_LATENCY_MS),

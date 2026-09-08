@@ -201,8 +201,7 @@ describe('durable transport observer timing and cleanup ownership', () => {
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    // Retargeting starts the replacement at once: serialising it behind the superseded attempt would make
-    // the poll loop await an attempt that abort only asks to stop, and the job would never settle.
+    // Retargeting must start the replacement without waiting for the superseded attempt to settle.
     expect(reapRecordedContainment).toHaveBeenCalledTimes(2);
     expect(operatorControl?.abandon()).toMatchObject({ kind: 'retained', reason: expect.stringContaining('settling') });
 

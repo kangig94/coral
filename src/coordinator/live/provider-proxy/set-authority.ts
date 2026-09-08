@@ -147,8 +147,7 @@ function requireControlResult(method: string, exchange: ControlExchange): unknow
   throw new Error(`${method} could not be sent.`, { cause: exchange.error });
 }
 
-/** A peer that does not know a method is answering about its own generation, not about the request; every
- *  other exchange still owes the caller the ordinary result-or-refusal decision, so it is handed back whole. */
+/** A method-not-found reply must not classify any other exchange. */
 type ControlMethodAvailability =
   | Readonly<{ kind: 'answered'; exchange: ControlExchange }>
   | Readonly<{ kind: 'method-absent' }>;

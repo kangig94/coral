@@ -270,8 +270,7 @@ declare const unqualifiedHeartbeatReap: Readonly<{
 const invalidHeartbeatReap: ProviderProxySetDecision = unqualifiedHeartbeatReap;
 void invalidHeartbeatReap;
 
-// @ts-expect-error heartbeat_hold_exhausted no longer authorizes stop-and-reap: it joins its two siblings on
-// the non-destructive await-containment-absence action instead.
+// @ts-expect-error hold exhaustion must await containment absence, never authorize stop-and-reap.
 const invalidHeartbeatHoldExhaustedStopAndReap: ProviderProxySetDecision = {
   action: 'stop-and-reap',
   reason: 'heartbeat_hold_exhausted',
@@ -339,8 +338,6 @@ void [
   validHeartbeatHoldExhaustedAwaitAbsence,
 ];
 
-// Each of the five non-authorizing sources keeps its own field shape rather than a flattened wrapper shape —
-// `ProviderProxySetContainmentRefusedDecision.refusedDecision` is the only place they are read back from.
 const boundExpiryRefusal: ProviderProxySetNonAuthorizingContainmentDecision = {
   reason: 'control_reattachment_bound_expired',
   fault: 'control-channel-fault',
@@ -402,11 +399,10 @@ declare const flattenedContainmentRefusalShape: Readonly<{
   method: 'guardian.heartbeat.v1';
 }>;
 
-// @ts-expect-error the wrapper carries its source in `refusedDecision`, never flattened onto its own fields.
+// @ts-expect-error flattened refusals must not inhabit containment-refusal decisions.
 const flattenedContainmentRefusal: ProviderProxySetContainmentRefusedDecision = flattenedContainmentRefusalShape;
 
-// @ts-expect-error a bare `stop-and-reap` decision cannot be built from a non-authorizing source directly —
-// only the peer's exact `teardown-latched` refusal or zero live claims may reach `stop-and-reap`.
+// @ts-expect-error non-authorizing refusals must never authorize stop-and-reap.
 const nonAuthorizingCannotStop: Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }> = localFailureRefusal;
 void nonAuthorizingCannotStop;
 

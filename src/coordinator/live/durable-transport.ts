@@ -337,8 +337,7 @@ export async function spawnDurableJobTransport(params: {
     absence: DurableContainmentAbsenceCapability,
   ): CleanupOwnershipReleaseDisposition => {
     if (cleanupKey === null) return { kind: 'released' };
-    // Release is reached only with proven absence, so an attempt still settling cannot contradict it and a
-    // signal it may yet deliver has no process to reach. Abandonment is the opposite case and does refuse.
+    // Release requires proven absence; abandonment must not release a still-settling attempt.
     if (absence.retention !== retainedProcess) {
       return { kind: 'retained', reason: 'durable containment identity changed after absence observation' };
     }
@@ -409,8 +408,7 @@ export async function spawnDurableJobTransport(params: {
         nextStep: 'Inspect the job before retrying durable abandonment.',
       };
     }
-    // A refusal must not destroy the attempt it declines to join: this abandonment cannot await, so the
-    // attempt keeps its own ownership until it settles and the operator repeats the abort.
+    // A refusal must not destroy or release the cleanup attempt it declines to join.
     if (unsettledCleanupAttempts.size > 0) {
       return {
         kind: 'retained',
@@ -642,9 +640,7 @@ export async function spawnDurableJobTransport(params: {
       cleanupRetentions.set(cleanup, retainedProcess);
       provisionalSubject = null;
       if (cleanupNeedsRetargeting) {
-        // Clearing this slot retargets the next attempt; it does not forget the superseded one. Ownership
-        // reads `unsettledCleanupAttempts`, which the superseded attempt leaves only when it settles, so an
-        // abandonment still cannot release an identity a live attempt is signalling.
+        // Superseding a cleanup attempt must not release its ownership before it settles.
         cleanupAbortController?.abort();
         cleanupInFlight = null;
         void cleanup().catch((error: unknown) => {

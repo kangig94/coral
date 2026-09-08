@@ -153,10 +153,7 @@ export type ProviderProxyAcquisitionOptions = Readonly<{
   acceptHold(
     hold: ProviderProxyAcquisitionHeld<'provider-host-acquisition'>,
   ): Promise<ProviderProxyAcquisitionHoldAcceptance> | ProviderProxyAcquisitionHoldAcceptance;
-  /**
-   * The initial acquisition and cleanup attempt share this budget. Expiry cannot discharge an unresolved
-   * guardian; it returns a recovery capability to the next owner instead.
-   */
+  /** Expiry must not discharge an unresolved guardian; ownership transfers through a recovery capability. */
   deadlineSignal: AbortSignal;
   onCleanupFailure?(label: string, error: unknown): void;
 }>;
@@ -178,12 +175,7 @@ function deadlineElapsed(deadlineSignal: AbortSignal): Promise<never> {
   });
 }
 
-/**
- * Runs one undo, bounded by the same deadline the whole acquisition attempt is bounded by.
- *
- * `run()` is invoked before the race. Deadline expiry bounds this attempt but is not proof that the undo
- * stopped or completed.
- */
+/** Deadline expiry must not be treated as proof that an undo stopped or completed. */
 function boundedUndo(undo: AcquisitionUndo, deadlineSignal: AbortSignal): Promise<void> {
   let attempt = undoAttempts.get(undo);
   if (attempt === undefined) {
@@ -206,12 +198,7 @@ function boundedUndo(undo: AcquisitionUndo, deadlineSignal: AbortSignal): Promis
   return Promise.race([attempt, deadlineElapsed(deadlineSignal)]);
 }
 
-/**
- * Runs every undo, newest first, without short-circuiting.
- *
- * Recovery capabilities are retained until guardian absence. Other actions still run newest first without
- * short-circuiting.
- */
+/** Recovery capabilities must remain owned until guardian absence; one undo failure must not skip later undos. */
 async function unwind(
   undos: readonly AcquisitionUndo[],
   deadlineSignal: AbortSignal,

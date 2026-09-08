@@ -586,8 +586,7 @@ describe('provider-host proxy controls', () => {
         return disposition;
       },
     };
-    // The abandonment this fixture arms is accepted, so the first eviction is already terminal; what the
-    // caller loses is the reply carrying it, which is indistinguishable from an owner that could not answer.
+    // A lost reply must not be treated as proof that accepted abandonment did not occur.
     const firstService = new ProviderHostAdministrationService({ owners: () => [proxyOwner] });
     await expect(firstService.evict({ hostRef })).rejects.toMatchObject({
       code: 'provider_host_inventory_unavailable',
