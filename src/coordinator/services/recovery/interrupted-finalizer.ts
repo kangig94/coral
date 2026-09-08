@@ -105,6 +105,7 @@ async function finalizeSessionExact(
   if (!finalized) {
     throw new InterruptedRecoveryCommitError(plan.launchRecord.jobId, 'session-finalize');
   }
+  // eslint-disable-next-line no-restricted-syntax -- RecoveryCommitReceipt may only be minted by finalizeSessionExact.
   return Object.freeze({ plan }) as RecoveryCommitReceipt;
 }
 

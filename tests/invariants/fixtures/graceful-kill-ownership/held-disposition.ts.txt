@@ -1,8 +1,0 @@
-async function launch(child: Child, runtime: Runtime): Promise<LaunchResult> {
-  gracefulKill(child, runtime, observeLiveness);
-  return {
-    kind: 'held',
-    retryAfter: child.closed,
-    retry: () => launch(child, runtime),
-  };
-}

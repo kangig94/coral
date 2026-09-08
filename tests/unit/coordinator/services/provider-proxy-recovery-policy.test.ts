@@ -28,6 +28,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
 
 type Settlement = Readonly<{ kind: 'value'; value: unknown }> | Readonly<{ kind: 'throw'; error: unknown }>;
+type ProducerSettlement = Settlement | Readonly<{ kind: 'reject'; error: Error }>;
 
 const unavailable = new ProviderProxyRoleControlUnavailableError({
   kind: 'role-control-unavailable',
@@ -88,7 +89,7 @@ const seamFor = (producerId: ProviderProxyRecoveryProducerId): ProviderProxyReco
 
 async function observe(
   producerId: ProviderProxyRecoveryProducerId,
-  settlement: Settlement,
+  settlement: ProducerSettlement,
   context: ProviderProxyRecoveryExactContext = {},
 ): Promise<Readonly<{ evidence: number; retry: number; localFatal: number; globalFatal: number }>> {
   let evidence = 0;
@@ -101,7 +102,7 @@ async function observe(
     producerId === 'containment-proof' || producerId === 'capsule-redemption'
       ? { ...context, setIdentity: containment.identity }
       : context;
-  const effectiveSettlement: Settlement =
+  const effectiveSettlement: ProducerSettlement =
     settlement.kind === 'value' && producerId === 'containment-proof'
       ? { kind: 'value', value: containment.proof }
       : settlement.kind === 'value' && producerId === 'capsule-redemption'
@@ -115,6 +116,7 @@ async function observe(
         : settlement;
   const producer = () => {
     if (effectiveSettlement.kind === 'throw') throw effectiveSettlement.error;
+    if (effectiveSettlement.kind === 'reject') return Promise.reject(effectiveSettlement.error);
     return effectiveSettlement.value;
   };
   // `capsule-redemption`'s only seam reduces two sources — a redemption and an independent containment proof —
@@ -422,6 +424,15 @@ describe('provider proxy recovery producer classification', () => {
         },
       }),
     ).resolves.toEqual({ evidence: 0, retry: 1, localFatal: 0, globalFatal: 0 });
+  });
+
+  it('classifies a producer that returns a rejecting promise', async () => {
+    await expect(observe('capsule-retirement', { kind: 'reject', error: unavailable })).resolves.toEqual({
+      evidence: 0,
+      retry: 1,
+      localFatal: 0,
+      globalFatal: 0,
+    });
   });
 
   it('classifies disappearance delivery only from the strict outcome and complete operation identity', async () => {

@@ -10,7 +10,7 @@ import type {
   TimePort,
 } from '../infra/port-types.js';
 import type { RecordedProcessIdentity } from '../infra/process-containment.js';
-import type { LiveChildAuthority } from '../infra/process-supervision.js';
+import type { GracefulKillDisposition, LiveChildAuthority } from '../infra/process-supervision.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimePaths {
@@ -83,7 +83,7 @@ export type DurableLaunchOptions = {
 export type DurablePendingLaunchObligation = Readonly<{
   pid: number | null;
   settled: Promise<void>;
-  requestTermination(): void;
+  requestTermination(): GracefulKillDisposition;
 }>;
 
 export type DurableLaunchOwnershipAcceptance = Readonly<{ kind: 'accepted' }>;
@@ -112,7 +112,7 @@ export type DurableProvisionalLaunch = Readonly<{
 
 export type DurableLaunchSignalAuthority = LiveChildAuthority &
   Readonly<{
-    requestTermination?(): void;
+    requestTermination?(): GracefulKillDisposition;
   }>;
 
 export type DurableContainmentStatus =

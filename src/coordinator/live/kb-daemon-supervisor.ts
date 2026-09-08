@@ -1,5 +1,6 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
+import type { ChildProcessLike } from '../../infra/port-types.js';
 import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
@@ -156,6 +157,10 @@ const DEFAULT_START_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
+
+function scheduleKbDaemonKill(child: ChildProcessLike, runtime: Runtime): void {
+  gracefulKill(child, runtime, (pid) => runtime.process.observeLiveness(pid));
+}
 
 /**
  * Convention: every CORAL_* env var the KB daemon reads from its own process.env
@@ -1106,7 +1111,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
     if (result === 'timeout' && daemonProcess === spawned) {
       setFailure(`daemon did not become ready within ${startTimeoutMs}ms`);
-      gracefulKill(spawned, runtime, (pid) => runtime.process.observeLiveness(pid));
+      scheduleKbDaemonKill(spawned, runtime);
     }
 
     return read();
@@ -1136,7 +1141,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       );
       activeDaemonProcess.stdin?.end();
     } catch {
-      gracefulKill(activeDaemonProcess, runtime, (pid) => runtime.process.observeLiveness(pid));
+      scheduleKbDaemonKill(activeDaemonProcess, runtime);
     }
 
     const result = await Promise.race([closed, withAbortableTimeout(runtime, stopTimeoutMs, signal)]);
@@ -1146,7 +1151,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           ? 'daemon stop aborted by shutdown budget'
           : `daemon stop timed out after ${stopTimeoutMs}ms`,
       );
-      gracefulKill(activeDaemonProcess, runtime, (pid) => runtime.process.observeLiveness(pid));
+      scheduleKbDaemonKill(activeDaemonProcess, runtime);
     }
     rejectPendingRequests('KB daemon stopped');
     if (result === 'closed' || daemonProcess !== activeDaemonProcess) {

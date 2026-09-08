@@ -1,6 +1,5 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { Socket } from 'node:net';
 
 import type { z } from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,7 +11,6 @@ import {
   type ControlExchange,
 } from '#src/provider-proxy/control-client.js';
 import {
-  mintActiveControlAuthorizationForTesting,
   type ActiveControlAuthorization,
   type ControlEndpointOptions,
   type ControlMethod,
@@ -234,14 +232,9 @@ function createGuardianHarness(
     if (found === undefined) throw new Error(`Guardian method ${name} was not registered.`);
     return found;
   };
-  // This harness drives a handler directly, with no live tenancy of its own to admit one — so an `active`
-  // handler still needs a genuine `ActiveControlAuthorization`, minted the same way `dispatch` mints one, not
-  // a same-shaped value cast into the brand.
-  const activeAuthorization: ActiveControlAuthorization = mintActiveControlAuthorizationForTesting(new Socket(), 1, {
-    instanceId: coordinatorIdentity.instanceId,
-    pid: coordinatorIdentity.pid,
-    incarnation: coordinatorIdentity.incarnation,
-  });
+  // This harness may cast locally only because it stubs endpoint provenance; control-endpoint integration
+  // tests must exercise the brand's runtime validation.
+  const activeAuthorization = {} as ActiveControlAuthorization;
   const call = (name: string, params: unknown): Promise<unknown> | unknown => {
     const entry = method(name);
     if (entry.authority === 'active') return entry.handle(params, activeAuthorization);

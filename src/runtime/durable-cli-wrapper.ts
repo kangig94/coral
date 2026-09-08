@@ -14,6 +14,10 @@ const GROUP_OBSERVATION_TIMEOUT_MS = 1_000;
 const GROUP_FINALIZER_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 const RETAINED_GROUP_TERMINATION_INTERVAL_MS = 1_000;
 
+function scheduleObservedChildKill(child: ChildProcessLike, time: ReturnType<typeof createRealTimePort>): void {
+  gracefulKill(child, { time }, observeProcessLiveness);
+}
+
 type LaunchPayload = Readonly<{
   version: 1;
   command: string;
@@ -229,7 +233,7 @@ export function groupMembers(
       if (observed.pid === undefined) {
         return held('unobservable');
       }
-      gracefulKill(observed as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+      scheduleObservedChildKill(observed as unknown as ChildProcessLike, time);
       try {
         const observation = observeProcessLiveness(observed.pid);
         if (observation === 'absent') {
@@ -427,7 +431,7 @@ function createContainedGroupSettlement(
       }
       if (active.finalizer.kind === 'available') handoff();
     }, RETAINED_GROUP_TERMINATION_INTERVAL_MS);
-    gracefulKill(groupHandle, { time }, observeProcessLiveness);
+    scheduleObservedChildKill(groupHandle, time);
     handoff();
   }
 
@@ -496,7 +500,7 @@ function createContainedGroupSettlement(
         clearInterval(retainedTermination);
         retainedTermination = null;
       }
-      gracefulKill(groupHandle, { time }, observeProcessLiveness);
+      scheduleObservedChildKill(groupHandle, time);
     });
     finalizer.once('error', failAttempt);
     finalizer.once('exit', failAttempt);
@@ -576,7 +580,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     if (groupSettlement.requestTermination().kind !== 'not-started') return;
     if (child === null || terminationStarted) return;
     terminationStarted = true;
-    gracefulKill(child as unknown as ChildProcessLike, { time }, observeProcessLiveness);
+    scheduleObservedChildKill(child as unknown as ChildProcessLike, time);
   };
 
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {

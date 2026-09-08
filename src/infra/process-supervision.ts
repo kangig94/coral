@@ -329,6 +329,31 @@ export type GracefulKillByPidDisposition =
   | GracefulKillByPidSignalRefusal
   | GracefulKillByPidSignalFailure;
 
+type GracefulKillSignalRefusal = Readonly<{
+  kind: 'signal-refused';
+  pid: null;
+  reason: 'child-pid-unavailable';
+}>;
+
+type GracefulKillSignalFailure = Readonly<{
+  kind: 'signal-failed';
+  pid: number | null;
+  signal: 'SIGTERM' | 'SIGKILL';
+  reason: 'kill-port-returned-false' | 'kill-port-threw';
+}>;
+
+export type GracefulKillOutcome =
+  | GracefulKillSignalRefusal
+  | GracefulKillSignalFailure
+  | Readonly<{ kind: 'observed-absent'; pid: number }>
+  | Readonly<{ kind: 'target-unobservable'; pid: number; stage: 'after-sigterm' | 'after-sigkill' }>
+  | Readonly<{ kind: 'target-alive'; pid: number; stage: 'after-sigkill' }>;
+
+export type GracefulKillDisposition =
+  | Readonly<{ kind: 'escalation-scheduled'; pid: number; settlement: Promise<GracefulKillOutcome> }>
+  | GracefulKillSignalRefusal
+  | GracefulKillSignalFailure;
+
 export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {
     child.kill(signal);
@@ -337,23 +362,88 @@ export function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void 
   }
 }
 
+type ChildSignalDelivery = 'delivered' | 'returned-false' | 'threw';
+
+function deliverChildSignal(child: ChildProcessLike, signal: 'SIGTERM' | 'SIGKILL'): ChildSignalDelivery {
+  try {
+    return child.kill(signal) ? 'delivered' : 'returned-false';
+  } catch {
+    return 'threw';
+  }
+}
+
+function settleGracefulKill(
+  child: ChildProcessLike,
+  runtime: GracefulKillRuntime,
+  observeLiveness: (pid: number) => ProcessLiveness,
+  pid: number,
+): Promise<GracefulKillOutcome> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<TimePort['setTimeout']> | undefined;
+    let settled = false;
+    const finish = (outcome: GracefulKillOutcome): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) runtime.time.clearTimeout(timer);
+      resolve(outcome);
+    };
+    const observe = (stage: 'after-sigterm' | 'after-sigkill'): 'alive' | undefined => {
+      try {
+        const observation = observeLiveness(pid);
+        if (observation === 'absent') {
+          finish({ kind: 'observed-absent', pid });
+          return undefined;
+        }
+        if (observation === 'unknown') {
+          finish({ kind: 'target-unobservable', pid, stage });
+          return undefined;
+        }
+        return 'alive';
+      } catch {
+        finish({ kind: 'target-unobservable', pid, stage });
+        return undefined;
+      }
+    };
+
+    child.on('close', () => finish({ kind: 'observed-absent', pid }));
+    timer = runtime.time.setTimeout(() => {
+      if (observe('after-sigterm') !== 'alive') return;
+      const delivery = deliverChildSignal(child, 'SIGKILL');
+      if (delivery !== 'delivered') {
+        finish({
+          kind: 'signal-failed',
+          pid,
+          signal: 'SIGKILL',
+          reason: delivery === 'returned-false' ? 'kill-port-returned-false' : 'kill-port-threw',
+        });
+        return;
+      }
+      timer = runtime.time.setTimeout(() => {
+        if (observe('after-sigkill') === 'alive') finish({ kind: 'target-alive', pid, stage: 'after-sigkill' });
+      }, SIGKILL_GRACE_MS);
+      timer.unref?.();
+    }, SIGTERM_GRACE_MS);
+    timer.unref?.();
+  });
+}
+
 export function gracefulKill(
   child: ChildProcessLike,
   runtime: GracefulKillRuntime,
   observeLiveness: (pid: number) => ProcessLiveness,
-): void {
-  safeKill(child, 'SIGTERM');
-  const killTimer = runtime.time.setTimeout(() => {
-    if (child.pid === undefined) return;
-    try {
-      if (observeLiveness(child.pid) !== 'alive') return;
-    } catch {
-      return;
-    }
-    safeKill(child, 'SIGKILL');
-  }, SIGTERM_GRACE_MS);
-  killTimer.unref?.();
-  child.on('close', () => runtime.time.clearTimeout(killTimer));
+): GracefulKillDisposition {
+  const pid = child.pid;
+  const delivery = deliverChildSignal(child, 'SIGTERM');
+  if (delivery !== 'delivered') {
+    return {
+      kind: 'signal-failed',
+      pid: pid ?? null,
+      signal: 'SIGTERM',
+      reason: delivery === 'returned-false' ? 'kill-port-returned-false' : 'kill-port-threw',
+    };
+  }
+  if (pid === undefined) return { kind: 'signal-refused', pid: null, reason: 'child-pid-unavailable' };
+  return { kind: 'escalation-scheduled', pid, settlement: settleGracefulKill(child, runtime, observeLiveness, pid) };
 }
 
 function observeRecordedTarget(

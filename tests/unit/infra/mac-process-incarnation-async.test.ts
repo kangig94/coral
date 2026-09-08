@@ -15,7 +15,7 @@ vi.mock('#src/infra/process-supervision.js', async (importOriginal) => {
     ...actual,
     gracefulKill: vi.fn((...args: Parameters<typeof actual.gracefulKill>) => {
       gracefulKillSpy(...args);
-      actual.gracefulKill(...args);
+      return actual.gracefulKill(...args);
     }),
   };
 });

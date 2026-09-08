@@ -27,6 +27,19 @@ const capabilityNameCastRestrictions = [
   },
 ];
 
+const finalizationAuthorityCastRestrictions = [
+  {
+    selector:
+      "TSAsExpression[typeAnnotation.type='TSTypeReference'][typeAnnotation.typeName.type='Identifier'][typeAnnotation.typeName.name=/(Capability|Receipt|Authorization|Proof)$/]",
+    message: 'Finalization authority types may only be minted at their declared owner boundary.',
+  },
+  {
+    selector:
+      "TSTypeAssertion[typeAnnotation.type='TSTypeReference'][typeAnnotation.typeName.type='Identifier'][typeAnnotation.typeName.name=/(Capability|Receipt|Authorization|Proof)$/]",
+    message: 'Finalization authority types may only be minted at their declared owner boundary.',
+  },
+];
+
 const backendStderrRestrictions = [
   {
     selector:
@@ -137,6 +150,17 @@ export default tseslint.config(
     ],
     rules: {
       'no-restricted-syntax': ['error', ...capabilityNameCastRestrictions],
+    },
+  },
+
+  {
+    files: [
+      'src/coordinator/handoff.ts',
+      'src/coordinator/live/durable-transport.ts',
+      'src/coordinator/services/recovery/interrupted-finalizer.ts',
+    ],
+    rules: {
+      'no-restricted-syntax': ['error', ...finalizationAuthorityCastRestrictions],
     },
   },
 

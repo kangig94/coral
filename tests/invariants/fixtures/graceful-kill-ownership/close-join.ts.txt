@@ -1,4 +1,0 @@
-async function launch(child: Child, runtime: Runtime): Promise<void> {
-  gracefulKill(child, runtime, observeLiveness);
-  await child.closed;
-}

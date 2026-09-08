@@ -1,7 +1,0 @@
-async function launch(child: Child, runtime: Runtime, shouldJoin: boolean): Promise<void> {
-  gracefulKill(child, runtime, observeLiveness);
-  if (shouldJoin) {
-    await child.closed;
-  }
-  return;
-}

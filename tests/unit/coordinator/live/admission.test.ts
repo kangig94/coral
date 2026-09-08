@@ -816,7 +816,11 @@ describe('launch admission', () => {
       options.onWrapperSpawned?.({
         pid: TEST_PROVIDER_PID,
         settled: wrapperSettlement,
-        requestTermination: () => undefined,
+        requestTermination: () => ({
+          kind: 'signal-refused',
+          pid: null,
+          reason: 'child-pid-unavailable',
+        }),
       });
       options.onWrapperIdentified?.({
         runtimeRecord: {

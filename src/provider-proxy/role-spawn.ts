@@ -55,6 +55,10 @@ export type RoleSpawnPorts = Readonly<{
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
+function scheduleRoleKill(child: ChildProcessLike, ports: RoleSpawnPorts): void {
+  gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
+}
+
 export type RoleSpawnOptions = Readonly<{
   pluginRoot: string;
   /** `true` makes the child a new process-group leader; `false` for an ordinary child that inherits its
@@ -286,7 +290,7 @@ export function spawnRoleProcess(
           retry,
         };
       }
-      gracefulKill(child, ports.runtime, (pid) => ports.runtime.process.observeLiveness(pid));
+      scheduleRoleKill(child, ports);
       if (childClosed) return observedProcessAbsent(subject);
       if (typeof child.pid === 'number') {
         try {

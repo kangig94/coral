@@ -368,6 +368,10 @@ type ProviderProcessSettlement = {
 
 type ProviderProcessSettlementEvidence = ProviderServerFailedSpawnCleanupDisposition;
 
+function scheduleProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): void {
+  gracefulKill(settlement.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+}
+
 function createProviderProcessSettlement(
   child: ChildProcessLike,
   detached: boolean,
@@ -643,7 +647,7 @@ async function terminateProviderServerProcess(
       };
     }
 
-    gracefulKill(settlement.child, runtime, (targetPid) => runtime.process.observeLiveness(targetPid));
+    scheduleProviderServerKill(settlement, runtime);
     if (settlement.closed) return observedAbsent();
     if (settlement.pid !== null) {
       try {
@@ -758,7 +762,7 @@ function bindProviderServerEvents(entry: ProviderServerEntry, pipes: ProviderSer
     const stdinError = createProviderHostFault(entry, `stdin error: ${error.message}`);
     backendLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+    scheduleProviderServerKill(entry.processSettlement, runtime);
   });
   entry.child.on('error', (error: Error) => {
     const closeError = createProviderHostFault(entry, `failed: ${error.message}`);
@@ -808,7 +812,7 @@ function createProviderServerRpc(entry: ProviderServerEntry, runtime: Runtime): 
         const notifyError = error instanceof Error ? error : createProviderHostFault(entry, `failed to send ${method}`);
         backendLog.error(notifyError.message, error);
         detachProviderServer(entry, notifyError);
-        gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+        scheduleProviderServerKill(entry.processSettlement, runtime);
       }
     },
   };
@@ -1046,7 +1050,7 @@ function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: 
     entry.stdoutBuffer = '';
     entry.stdoutBufferBytes = 0;
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+    scheduleProviderServerKill(entry.processSettlement, runtime);
     return false;
   }
 
@@ -1084,7 +1088,7 @@ function parseProviderServerLine(
     });
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+    scheduleProviderServerKill(entry.processSettlement, runtime);
     return undefined;
   }
 }
@@ -1105,7 +1109,7 @@ function handleProviderServerRequest(
       error instanceof Error ? error : createProviderHostFault(entry, 'failed to answer server request');
     backendLog.error(protocolError.message, error);
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+    scheduleProviderServerKill(entry.processSettlement, runtime);
   }
 }
 
@@ -1161,7 +1165,7 @@ function handleProviderServerNotification(
     const protocolError = createProviderHostFault(entry, 'emitted a malformed JSON-RPC message', message);
     backendLog.error(protocolError.message);
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+    scheduleProviderServerKill(entry.processSettlement, runtime);
     return;
   }
 
@@ -1177,7 +1181,7 @@ function handleProviderServerNotification(
       backendLog.error(dispatchError.message, error);
       if (!entry.closed) {
         detachProviderServer(entry, dispatchError);
-        gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+        scheduleProviderServerKill(entry.processSettlement, runtime);
       }
       return;
     }
@@ -1192,5 +1196,5 @@ function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string)
 
 function shutdownProviderServer(entry: ProviderServerEntry, detail: string, runtime: Runtime): void {
   beginProviderServerShutdown(entry, detail);
-  gracefulKill(entry.child, runtime, (pid) => runtime.process.observeLiveness(pid));
+  scheduleProviderServerKill(entry.processSettlement, runtime);
 }

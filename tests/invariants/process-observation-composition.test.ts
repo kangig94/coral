@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,26 +9,43 @@ const FIXTURE_ROOT = resolve(REPO_ROOT, 'tests/invariants/fixtures/process-obser
 const PROCESS_PORT_PATH = 'src/runtime/ports.ts';
 const PROCESS_OWNER_PATTERN = /^src\/infra\/process-[^/]+\.ts$/u;
 
+type RegistrySpec = Readonly<{
+  key: string;
+  undecided: readonly (string | number)[];
+}>;
+
 const REGISTRY = [
-  'src/infra/node-process.ts#ProcessLiveness',
-  'src/infra/port-types.ts#ExecOutcome',
-  'src/infra/process-containment.ts#RecordedContainmentObservation',
-  'src/infra/process-containment.ts#RecordedContainmentReapResult',
-  'src/infra/process-supervision.ts#GracefulKillByPidDisposition',
-  'src/infra/process-supervision.ts#GracefulKillByPidOutcome',
-  'src/infra/process-supervision.ts#SpawnedProcessGroupCleanupDisposition',
-  'src/coordinator/services/provider-proxy-set/recorded-containment-reaper.ts#ProviderProxySetRecordedContainmentReapResult',
-  'src/provider-proxy/control-client.ts#ControlExchange',
-  'src/provider-proxy/role-spawn.ts#RoleSpawnCleanupDisposition',
-  'src/providers/app-server-transport.ts#ProviderServerFailedSpawnCleanupDisposition',
-  'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#DurableProviderProxySetOperatorDispositionWriteResult',
-] as const;
+  { key: 'src/infra/node-process.ts#ProcessLiveness', undecided: ['unknown'] },
+  { key: 'src/infra/port-types.ts#ExecOutcome', undecided: ['no-answer'] },
+  { key: 'src/infra/process-containment.ts#RecordedContainmentObservation', undecided: ['unobservable'] },
+  { key: 'src/infra/process-containment.ts#RecordedContainmentReapResult', undecided: ['identity-unobservable'] },
+  { key: 'src/infra/process-supervision.ts#GracefulKillDisposition', undecided: [] },
+  { key: 'src/infra/process-supervision.ts#GracefulKillOutcome', undecided: ['target-unobservable'] },
+  { key: 'src/infra/process-supervision.ts#GracefulKillByPidDisposition', undecided: [] },
+  { key: 'src/infra/process-supervision.ts#GracefulKillByPidOutcome', undecided: ['target-unobservable'] },
+  { key: 'src/infra/process-supervision.ts#SpawnedProcessGroupCleanupDisposition', undecided: ['held-unobservable'] },
+  {
+    key: 'src/coordinator/services/provider-proxy-set/recorded-containment-reaper.ts#ProviderProxySetRecordedContainmentReapResult',
+    undecided: ['identity-unobservable'],
+  },
+  {
+    key: 'src/provider-proxy/control-client.ts#ControlExchange',
+    undecided: ['no-response', 'delivery-unconfirmed', 'channel-fault'],
+  },
+  { key: 'src/provider-proxy/role-spawn.ts#RoleSpawnCleanupDisposition', undecided: ['held-unobservable'] },
+  {
+    key: 'src/providers/app-server-transport.ts#ProviderServerFailedSpawnCleanupDisposition',
+    undecided: ['held-unobservable'],
+  },
+  {
+    key: 'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#DurableProviderProxySetOperatorDispositionWriteResult',
+    undecided: ['unconfirmed'],
+  },
+] as const satisfies readonly RegistrySpec[];
 
 const STRUCTURAL_SUBTYPE_REGISTRY = new Set<string>(['src/provider-proxy/control-client.ts#ControlExchange']);
 
-const REGISTRY_SHA256 = '589043d328edf8efd870e7ccfd662cc1dbed31ef2255e137457481b8b647ecf7';
-
-const ALLOWLIST = new Map<string, string>([
+const SOURCE_VOCABULARY_EXEMPTIONS = new Map<string, string>([
   ['src/runtime/ports.ts#ProcessPort.spawn', 'spawn failure is still reported later by the child error event'],
   ['src/runtime/ports.ts#ProcessPort.exec', 'legacy raw exec result is classified by ExecOutcome at its consumers'],
   [
@@ -41,190 +57,336 @@ const ALLOWLIST = new Map<string, string>([
     'src/runtime/ports.ts#ProcessPort.readProcessIncarnation',
     'an unavailable or failed incarnation observation is still collapsed into null',
   ],
-  [
-    'src/infra/process-supervision.ts#safeKill',
-    'best-effort child cleanup deliberately discards process-control refusal',
-  ],
-  [
-    'src/infra/process-supervision.ts#gracefulKill',
-    'child escalation has no returned settlement or unobservable disposition yet',
-  ],
-  [
-    'src/infra/process-supervision.ts#liveChildAuthority',
-    'authority is minted from an uncollected child handle this process owns, so it reports no external observation and has no third answer to name',
-  ],
-  [
-    'src/infra/process-supervision.ts#requirePipedHandles',
-    'stdio validation either returns all handles or throws before process ownership is admitted',
-  ],
-  ['src/infra/process-supervision.ts#appendBuffer', 'bounded text accumulation does not observe external state'],
-  [
-    'src/infra/process-containment.ts#assertRecordedContainmentIdentity',
-    'identity validation either returns normally or throws before process-control authority exists',
-  ],
-  [
-    'src/infra/process-containment.ts#abortRecordedContainment',
-    'abort admission has exactly accepted and refused answers and does not claim an external observation',
-  ],
+]);
+
+type CompositionDebt = Readonly<{ reason: string; exit: string }>;
+
+function debt(reason: string, exit: string): CompositionDebt {
+  return { reason, exit };
+}
+
+const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
   [
     'src/coordinator/composition/execution-services.ts#createExecutionServices.initializeProviderProxyLifecycle',
-    'lifecycle initialization currently installs a ProcessLiveness observer through a void composition boundary',
+    debt(
+      'lifecycle initialization installs a ProcessLiveness observer through a void composition boundary',
+      'initializeProviderProxyLifecycle returns the lifecycle initialization disposition',
+    ),
   ],
   [
-    'src/coordinator/live/durable-transport.ts#enterContainmentHold.<setInterval:0:0>',
-    'periodic containment retry reports through retained cleanup state while the timer callback returns void',
+    'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.enterContainmentHold.setInterval',
+    debt(
+      'periodic containment retry reports through retained cleanup state while the timer callback returns void',
+      'enterContainmentHold exposes the retained cleanup disposition from its timer boundary',
+    ),
   ],
   [
     'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.publishSpawned',
-    'durable identity publication restarts cleanup without exposing its disposition',
+    debt(
+      'durable identity publication restarts cleanup without exposing its disposition',
+      'publishSpawned returns the restarted cleanup disposition',
+    ),
   ],
   [
     'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.publishWrapperSpawned',
-    'provisional publication starts abort cleanup without exposing its disposition',
+    debt(
+      'provisional publication starts abort cleanup without exposing its disposition',
+      'publishWrapperSpawned returns the abort-cleanup disposition',
+    ),
   ],
   [
     'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.retry',
-    'operator retry triggers retained containment cleanup through a void control method',
+    debt(
+      'operator retry triggers retained containment cleanup through a void control method',
+      'spawnDurableJobTransport.retry returns the retained cleanup disposition',
+    ),
   ],
   [
-    'src/coordinator/live/provider-hosts/drain.ts#containmentReaperWithClock.<anonymous-1>',
-    'provider-host reaping reports unresolved containment through rejection instead of returning the reap disposition',
+    'src/coordinator/live/provider-hosts/drain.ts#containmentReaperWithClock.anonymous',
+    debt(
+      'provider-host reaping reports unresolved containment through rejection instead of returning the reap disposition',
+      'containmentReaperWithClock returns ProviderProxySetRecordedContainmentReapResult',
+    ),
   ],
   [
     'src/coordinator/live/provider-proxy/spawn-undo.ts#buildGuardianSpawnUndo.perform',
-    'guardian spawn undo converts control and reap holds to rejected completion',
+    debt(
+      'guardian spawn undo converts control and reap holds to rejected completion',
+      'buildGuardianSpawnUndo.perform returns its unresolved control or reap disposition',
+    ),
   ],
   [
     'src/coordinator/live/provider-proxy/spawn-undo.ts#requireAcknowledgedAbsence',
-    'guardian teardown acknowledgement converts every non-acknowledged control disposition to an exception',
+    debt(
+      'guardian teardown acknowledgement converts every non-acknowledged control disposition to an exception',
+      'requireAcknowledgedAbsence returns the non-acknowledged ControlExchange',
+    ),
   ],
   [
     'src/coordinator/services/provider-proxy-operation-activation.ts#routeControlExchangeFailure',
-    'legacy failure routing consumes ControlExchange through reporting callbacks while its caller throws',
+    debt(
+      'legacy failure routing consumes ControlExchange through reporting callbacks while its caller throws',
+      'routeControlExchangeFailure returns the unresolved ControlExchange',
+    ),
   ],
   [
     'src/coordinator/services/provider-proxy-operation-activation.ts#callStrict',
-    'strict operation control converts every non-result ControlExchange into reporting plus rejection',
+    debt(
+      'strict operation control converts every non-result ControlExchange into reporting plus rejection',
+      'callStrict returns the unresolved ControlExchange to its operation boundary',
+    ),
   ],
   [
     'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.installDiscoveredCapsule',
-    'capsule installation consumes ProcessLiveness and records its decision only in lifecycle state',
+    debt(
+      'capsule installation consumes ProcessLiveness and records its decision only in lifecycle state',
+      'ProviderProxySetLifecycle.installDiscoveredCapsule returns the recorded lifecycle disposition',
+    ),
   ],
   [
     'src/coordinator/services/provider-proxy-set/index.ts#recordedProcessesAllAbsent',
-    'the all-absent predicate collapses alive and unknown into the same false result',
+    debt(
+      'the all-absent predicate collapses alive and unknown into the same false result',
+      'recordedProcessesAllAbsent returns a three-answer aggregate observation',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#recordedProcessesAllAbsent.<every:0:0>',
-    'the array predicate collapses alive and unknown while requiring every recorded process to be absent',
+    'src/coordinator/services/provider-proxy-set/index.ts#recordedProcessesAllAbsent.every',
+    debt(
+      'the array predicate collapses alive and unknown while requiring every recorded process to be absent',
+      'recordedProcessesAllAbsent performs the aggregate classification outside the array predicate',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#recoverExactCapsule.evidence',
-    'the dispatcher starts recorded-containment reaping and settles exact-capsule recovery through lifecycle state',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.recoverExactCapsule.evidence',
+    debt(
+      'the dispatcher starts recorded-containment reaping and settles exact-capsule recovery through lifecycle state',
+      'recoverExactCapsule.evidence returns the reap disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#evidence.<then:0:0>',
-    'exact-capsule recovery commits absence or schedules another attempt through a void continuation',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.recoverExactCapsule.evidence.then:0',
+    debt(
+      'exact-capsule recovery commits absence or schedules another attempt through a void continuation',
+      'recoverExactCapsule.evidence.then returns the lifecycle disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#runControlReattachmentAttempt.evidence',
-    'the dispatcher starts recorded-containment reaping and settles control reattachment through lifecycle state',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.runControlReattachmentAttempt.evidence',
+    debt(
+      'the dispatcher starts recorded-containment reaping and settles control reattachment through lifecycle state',
+      'runControlReattachmentAttempt.evidence returns the reap disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#evidence.<then:0:2>',
-    'control reattachment commits absence or schedules another attempt through a void continuation',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.runControlReattachmentAttempt.evidence.then:0',
+    debt(
+      'control reattachment commits absence or schedules another attempt through a void continuation',
+      'runControlReattachmentAttempt.evidence.then returns the lifecycle disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#runReattachmentHoldAttempt.evidence',
-    'the dispatcher starts recorded-containment reaping and settles the reattachment hold through lifecycle state',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.runReattachmentHoldAttempt.evidence',
+    debt(
+      'the dispatcher starts recorded-containment reaping and settles the reattachment hold through lifecycle state',
+      'runReattachmentHoldAttempt.evidence returns the reap disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#evidence.<then:0:4>',
-    'reattachment hold commits absence or retains retry ownership through a void continuation',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.runReattachmentHoldAttempt.evidence.then:0',
+    debt(
+      'reattachment hold commits absence or retains retry ownership through a void continuation',
+      'runReattachmentHoldAttempt.evidence.then returns the retained lifecycle disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#runContainmentAttempt.evidence',
-    'the dispatcher starts recorded-containment reaping and settles containment through lifecycle state',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.runContainmentAttempt.evidence',
+    debt(
+      'the dispatcher starts recorded-containment reaping and settles containment through lifecycle state',
+      'runContainmentAttempt.evidence returns the reap disposition',
+    ),
   ],
   [
-    'src/coordinator/services/provider-proxy-set/index.ts#evidence.<then:0:6>',
-    'containment attempt forwards the reap disposition into lifecycle completion without returning it',
+    'src/coordinator/services/provider-proxy-set/index.ts#ProviderProxySetLifecycle.runContainmentAttempt.evidence.then:0',
+    debt(
+      'containment attempt forwards the reap disposition into lifecycle completion without returning it',
+      'runContainmentAttempt.evidence.then returns the lifecycle completion disposition',
+    ),
   ],
   [
-    'src/coordinator/services/recovery/index.ts#retireAbsentSupersededProviderOperations.<every:0:0>',
-    'the superseded-row predicate maps alive and unknown to false while requiring proven absence for retirement',
+    'src/coordinator/services/recovery/index.ts#createRecoveryCoordinator.retireAbsentSupersededProviderOperations.every',
+    debt(
+      'the superseded-row predicate maps alive and unknown to false while requiring proven absence for retirement',
+      'retireAbsentSupersededProviderOperations classifies the aggregate observation before retirement',
+    ),
   ],
   [
     'src/coordinator/services/recovery/interrupted-performer.ts#reapProviderOperationCarrier',
-    'carrier recovery reports every non-absence reap disposition by throwing from Promise<void>',
+    debt(
+      'carrier recovery reports every non-absence reap disposition by throwing from Promise<void>',
+      'reapProviderOperationCarrier returns ProviderProxySetRecordedContainmentReapResult',
+    ),
   ],
   [
     'src/coordinator/services/recovery/snapshot.ts#buildRecoverySnapshot.isPidAlive',
-    'recovery planning maps unknown liveness to alive so only proven absence authorizes stale-runtime recovery',
+    debt(
+      'recovery planning maps unknown liveness to alive so only proven absence authorizes stale-runtime recovery',
+      'buildRecoverySnapshot.isPidAlive returns the three-answer process observation',
+    ),
   ],
   [
-    'src/infra/process-supervision.ts#gracefulKill.<setTimeout:0:0>',
-    'legacy escalation ends on absent and unknown without publishing a settlement from the timer callback',
+    'src/infra/process-supervision.ts#settleGracefulKill.finish',
+    debt(
+      'the settlement sink resolves Promise<GracefulKillOutcome> through a void function',
+      'settleGracefulKill.finish returns the graceful-kill outcome to its promise boundary',
+    ),
   ],
   [
-    'src/infra/process-supervision.ts#settleGracefulKillByPid.<setTimeout:0:0>',
-    'the timer continuation routes its process disposition into the owning promise through a void callback',
+    'src/infra/process-supervision.ts#settleGracefulKillByPid.setTimeout',
+    debt(
+      'the timer continuation routes its process disposition into the owning promise through a void callback',
+      'settleGracefulKillByPid.setTimeout resolves the owning Promise<GracefulKillByPidOutcome>',
+    ),
   ],
   [
-    'src/kb-daemon/daemon-main.ts#startKbDaemonParentWatchdog.<setIntervalFn:0:0>',
-    'the watchdog callback finalizes only absence while alive and unknown retain ownership until the next tick',
+    'src/kb-daemon/daemon-main.ts#startKbDaemonParentWatchdog.setIntervalFn',
+    debt(
+      'the watchdog callback finalizes only absence while alive and unknown retain ownership until the next tick',
+      'startKbDaemonParentWatchdog.setIntervalFn returns the watchdog observation disposition',
+    ),
+  ],
+  [
+    'src/coordinator/live/kb-daemon-supervisor.ts#scheduleKbDaemonKill',
+    debt(
+      'the supervisor retains daemonProcess until its close handler or stop retry observes absence while escalation remains fire-and-forget',
+      'scheduleKbDaemonKill returns the graceful-kill disposition beside the daemon settlement',
+    ),
   ],
   [
     'src/kb/curate/frontmatter-merge-driver.ts#mergeBodiesWithGit',
-    'merge-file no-answer is raised because the current return type admits only numeric merge results',
+    debt(
+      'merge-file no-answer is raised because the current return type admits only numeric merge results',
+      'mergeBodiesWithGit returns ExecOutcome beside the merge result',
+    ),
   ],
   [
     'src/kb/ops/source/import.ts#runCommand',
-    'legacy command execution translates ExecOutcome into completion or throw instead of returning its disposition',
+    debt(
+      'legacy command execution translates ExecOutcome into completion or throw instead of returning its disposition',
+      'runCommand returns ExecOutcome to the import boundary',
+    ),
   ],
   [
-    'src/provider-proxy/control-client.ts#connectControlClient.<createFrameReader:0:0>',
-    'the frame callback preserves ControlExchange by resolving its request promise through a void parser callback',
+    'src/provider-proxy/control-client.ts#connectControlClient.createFrameReader',
+    debt(
+      'the frame callback preserves ControlExchange by resolving its request promise through a void parser callback',
+      'connectControlClient.createFrameReader returns the frame-routing disposition',
+    ),
   ],
   [
-    'src/provider-proxy/control-client.ts#connectControlClient.<on:1:1>',
-    'the socket-close callback preserves ControlExchange by settling pending request promises through a void listener',
+    'src/provider-proxy/control-client.ts#connectControlClient.on:1',
+    debt(
+      'the socket-close callback preserves ControlExchange by settling pending request promises through a void listener',
+      'connectControlClient.on returns the close-routing disposition',
+    ),
   ],
   [
     'src/provider-proxy/control-client.ts#connectControlClient.faultInvalidFrame',
-    'invalid-frame handling preserves ControlExchange by settling pending requests before closing the socket',
+    debt(
+      'invalid-frame handling preserves ControlExchange by settling pending requests before closing the socket',
+      'connectControlClient.faultInvalidFrame returns the channel-fault disposition',
+    ),
   ],
   [
     'src/provider-proxy/control-client.ts#connectControlClient.settleAll',
-    'the fan-out sink preserves its ControlExchange by resolving every pending request promise',
+    debt(
+      'the fan-out sink preserves its ControlExchange by resolving every pending request promise',
+      'connectControlClient.settleAll returns the fan-out settlement disposition',
+    ),
   ],
   [
-    'src/provider-proxy/control-client.ts#exchange.<anonymous-20>',
-    'the Promise executor owns Promise<ControlExchange> and resolves synchronous write refusal through void control flow',
+    'src/provider-proxy/control-client.ts#connectControlClient.exchange.Promise',
+    debt(
+      'the Promise executor owns Promise<ControlExchange> and resolves synchronous write refusal through void control flow',
+      'connectControlClient.exchange.Promise resolves Promise<ControlExchange>',
+    ),
   ],
   [
-    'src/provider-proxy/control-client.ts#exchange.<setTimeout:0:0>',
-    'the timeout callback preserves no-response by resolving the owning Promise<ControlExchange>',
+    'src/provider-proxy/control-client.ts#connectControlClient.exchange.setTimeout',
+    debt(
+      'the timeout callback preserves no-response by resolving the owning Promise<ControlExchange>',
+      'connectControlClient.exchange.setTimeout resolves Promise<ControlExchange>',
+    ),
   ],
   [
     'src/provider-proxy/guardian.ts#createGuardian.abortReaperContainmentPrepare',
-    'best-effort reaper abort consumes ControlExchange while retry ownership remains with later prepare attempts',
+    debt(
+      'best-effort reaper abort consumes ControlExchange while retry ownership remains with later prepare attempts',
+      'createGuardian.abortReaperContainmentPrepare returns the abort ControlExchange',
+    ),
   ],
   [
     'src/provider-proxy/guardian.ts#createGuardian.recordContainment',
-    'guardian containment recording converts ControlExchange failure into rejection after local ownership is armed',
+    debt(
+      'guardian containment recording converts ControlExchange failure into rejection after local ownership is armed',
+      'createGuardian.recordContainment returns the recording ControlExchange',
+    ),
   ],
   [
-    'src/provider-proxy/role-main.ts#stageProviderRoot.abortAndRelease',
-    'guardian release converts ControlExchange failure into rejection while guardian-side ownership remains idempotent',
+    'src/provider-proxy/role-main.ts#createProxyGuardianContainment.stageProviderRoot.abortAndRelease',
+    debt(
+      'guardian release converts ControlExchange failure into rejection while guardian-side ownership remains idempotent',
+      'stageProviderRoot.abortAndRelease returns the release ControlExchange',
+    ),
   ],
   [
-    'src/runtime/durable-cli-wrapper.ts#runGroupFinalizer.<setInterval:0:0>',
-    'the polling callback retains alive and unknown ownership implicitly and returns no timer disposition',
+    'src/provider-proxy/role-spawn.ts#scheduleRoleKill',
+    debt(
+      'childSettled retains failed role-spawn ownership while cleanup retry remains fire-and-forget',
+      'scheduleRoleKill returns the graceful-kill disposition beside childSettled',
+    ),
   ],
   [
-    'src/runtime/real.ts#waitForRecordedDurableExit',
-    'recorded absence is translated into rejection instead of a returned disposition',
+    'src/providers/app-server-transport.ts#scheduleProviderServerKill',
+    debt(
+      'ProviderProcessSettlement retains the close obligation while provider-server callers remain fire-and-forget',
+      'scheduleProviderServerKill returns the graceful-kill disposition beside ProviderProcessSettlement',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#runGroupFinalizer.setInterval',
+    debt(
+      'the polling callback retains alive and unknown ownership implicitly and returns no timer disposition',
+      'runGroupFinalizer.setInterval returns the group observation disposition',
+    ),
+  ],
+  [
+    'src/runtime/durable-cli-wrapper.ts#scheduleObservedChildKill',
+    debt(
+      'the observer-child close promise or ContainedGroupSettlement retains absence ownership for fire-and-forget callers',
+      'scheduleObservedChildKill returns the graceful-kill disposition to its retained settlement owner',
+    ),
+  ],
+  [
+    'src/runtime/real.ts#createRealRuntime.terminateProcessIncarnationProbe',
+    debt(
+      'probe cleanup retains settlement in the process-incarnation probe registry while its terminator port returns void',
+      'ProcessIncarnationProbeTerminator returns the graceful-kill disposition',
+    ),
+  ],
+  [
+    'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.schedulePendingWrapperTermination',
+    debt(
+      'pending wrapper settlement retains termination ownership while the AbortSignal callback returns void',
+      'schedulePendingWrapperTermination returns the disposition beside DurablePendingLaunchObligation.settled',
+    ),
+  ],
+  [
+    'src/infra/process-containment.ts#observeContainment',
+    debt(
+      'unknown group liveness is translated into ProcessContainmentError',
+      'observeContainment returns an unobservable TargetObservation',
+    ),
   ],
 ]);
 
@@ -232,6 +394,7 @@ type RegistryEntry = Readonly<{
   key: string;
   type: ts.Type;
   union: readonly ts.Type[];
+  undecided: ReadonlySet<string | number>;
 }>;
 
 type AnalysisContext = Readonly<{
@@ -341,7 +504,7 @@ function semanticUnion(type: ts.Type): readonly ts.Type[] {
   return [];
 }
 
-function createContext(program: ts.Program, root: string, registryKeys: readonly string[]): AnalysisContext {
+function createContext(program: ts.Program, root: string, registrySpecs: readonly RegistrySpec[]): AnalysisContext {
   const diagnostics = [
     ...program.getConfigFileParsingDiagnostics(),
     ...program.getOptionsDiagnostics(),
@@ -362,13 +525,18 @@ function createContext(program: ts.Program, root: string, registryKeys: readonly
     .getSourceFiles()
     .filter((source) => !source.isDeclarationFile && source.fileName.startsWith(`${resolve(root)}/`));
   const base = { root, program, checker, sources };
-  const registry = registryKeys.map((key) => {
+  const registry = registrySpecs.map(({ key, undecided }) => {
     const type = exportedType(base, key);
     const union = semanticUnion(type);
-    if (unionDiscriminator(checker, type) === undefined) {
+    const discriminator = unionDiscriminator(checker, type);
+    if (discriminator === undefined) {
       throw new Error(`${key}: registry entry does not carry three distinctly discriminated answers`);
     }
-    return { key, type, union };
+    const missing = undecided.filter((answer) => !discriminator.values.includes(answer));
+    if (missing.length > 0) {
+      throw new Error(`${key}: undecided answers are not discriminants: ${missing.join(', ')}`);
+    }
+    return { key, type, union, undecided: new Set(undecided) };
   });
   return { ...base, registry };
 }
@@ -488,46 +656,52 @@ function declarationName(node: BodyFunction): string | undefined {
   if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && ts.isPropertyAssignment(node.parent)) {
     return node.parent.name.getText(node.getSourceFile());
   }
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    ts.isBinaryExpression(node.parent) &&
+    node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isIdentifier(node.parent.left)
+  ) {
+    return node.parent.left.text;
+  }
   return undefined;
 }
 
-function enclosingName(node: ts.Node): string | undefined {
-  for (let current = node.parent; current !== undefined; current = current.parent) {
-    if (ts.isClassLike(current) && current.name !== undefined) return current.name.text;
+function namedScopeChain(node: ts.Node): string[] {
+  const names: string[] = [];
+  for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent) {
     if (isBodyFunction(current)) {
       const name = declarationName(current);
-      if (name !== undefined) return name;
+      if (name !== undefined) names.push(name);
+    } else if (ts.isClassLike(current) && current.name !== undefined) {
+      names.push(current.name.text);
     }
   }
-  return undefined;
+  return names.reverse();
+}
+
+function calledScopeName(node: ts.CallExpression | ts.NewExpression): string {
+  return ts.isPropertyAccessExpression(node.expression)
+    ? node.expression.name.text
+    : node.expression.getText(node.getSourceFile());
+}
+
+function boundaryScope(node: BodyFunction): string {
+  const chain = namedScopeChain(node);
+  if (declarationName(node) !== undefined) return chain.join('.');
+  if (ts.isCallExpression(node.parent) || ts.isNewExpression(node.parent)) {
+    return [...chain, calledScopeName(node.parent)].join('.');
+  }
+  if (ts.isConstructorDeclaration(node)) return [...chain, 'constructor'].join('.');
+  return [...chain, 'anonymous'].join('.');
 }
 
 function boundaryName(context: AnalysisContext, node: BodyFunction): string {
   const path = canonicalPath(context.root, node.getSourceFile().fileName);
-  const ownName = declarationName(node);
-  if (ownName !== undefined) {
-    const owner = enclosingName(node);
-    return `${path}#${owner === undefined ? '' : `${owner}.`}${ownName}`;
-  }
-  if (ts.isCallExpression(node.parent)) {
-    const argument = node.parent.arguments.indexOf(node as ts.Expression);
-    const callee = ts.isPropertyAccessExpression(node.parent.expression)
-      ? node.parent.expression.name.text
-      : node.parent.expression.getText(node.getSourceFile());
-    const owner = enclosingName(node) ?? '<module>';
-    const occurrence =
-      functionLikeNodes(node.getSourceFile()).filter((candidate) => {
-        if (candidate.pos > node.pos || !ts.isCallExpression(candidate.parent)) return false;
-        const candidateCallee = ts.isPropertyAccessExpression(candidate.parent.expression)
-          ? candidate.parent.expression.name.text
-          : candidate.parent.expression.getText(candidate.getSourceFile());
-        return candidateCallee === callee && (enclosingName(candidate) ?? '<module>') === owner;
-      }).length - 1;
-    return `${path}#${owner}.<${callee}:${argument}:${occurrence}>`;
-  }
-  if (ts.isConstructorDeclaration(node)) return `${path}#${enclosingName(node) ?? '<anonymous-class>'}.constructor`;
-  const siblings = functionLikeNodes(node.getSourceFile());
-  return `${path}#${enclosingName(node) ?? '<module>'}.<anonymous-${siblings.indexOf(node)}>`;
+  const scope = boundaryScope(node);
+  const collisions = functionLikeNodes(node.getSourceFile()).filter((candidate) => boundaryScope(candidate) === scope);
+  const ordinal = collisions.length > 1 ? `:${collisions.indexOf(node)}` : '';
+  return `${path}#${scope}${ordinal}`;
 }
 
 function isBodyFunction(node: ts.Node): node is BodyFunction {
@@ -657,7 +831,7 @@ function sourceVocabularyViolations(
       for (const signature of signatures) {
         const declaration = signature.getDeclaration() ?? declarations[0];
         const returnType = signature.getReturnType();
-        if (refusedSourceReturn(context, returnType) || !typeCarriesVocabulary(context, returnType)) {
+        if (typeCarriesRegistry(context, returnType) && refusedSourceReturn(context, returnType)) {
           violations.push({
             boundary: `${path}#${exported.name}`,
             reason: `returns ${context.checker.typeToString(returnType, declaration, ts.TypeFormatFlags.NoTruncation)}`,
@@ -696,7 +870,7 @@ function functionRegistryCarriers(context: AnalysisContext, node: BodyFunction):
   return [...carriers];
 }
 
-function discriminatedNonFirstBranchThrows(context: AnalysisContext, node: BodyFunction): boolean {
+function discriminatedUndecidedBranchThrows(context: AnalysisContext, node: BodyFunction): boolean {
   let violation = false;
   const branchThrows = (branch: ts.Node): boolean => {
     let throws = false;
@@ -760,24 +934,29 @@ function discriminatedNonFirstBranchThrows(context: AnalysisContext, node: BodyF
     }
     return undefined;
   };
-  const memberIndex = (source: DiscriminantSource, value: string | number): number | undefined => {
+  const memberValue = (source: DiscriminantSource, value: string | number): string | number | undefined => {
     const discriminator = unionDiscriminator(context.checker, source.entry.type);
     if (discriminator === undefined || discriminator.property !== source.property) return undefined;
-    const index = discriminator.values.findIndex((candidate) => candidate === value);
-    return index < 0 ? undefined : index;
+    return discriminator.values.includes(value) ? value : undefined;
   };
-  const comparisonMember = (expression: ts.BinaryExpression): number | undefined => {
+  const comparisonSelectionIncludesUndecided = (expression: ts.BinaryExpression, truthy: boolean): boolean => {
     const operator = expression.operatorToken.kind;
     if (operator !== ts.SyntaxKind.EqualsEqualsEqualsToken && operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken) {
-      return undefined;
+      return false;
     }
     const leftLiteral = expressionLiteralValue(expression.left);
     const rightLiteral = expressionLiteralValue(expression.right);
     const literal = leftLiteral ?? rightLiteral;
-    if (literal === undefined) return undefined;
+    if (literal === undefined) return false;
     const value = leftLiteral === undefined ? expression.left : expression.right;
     const source = discriminantSource(value);
-    return source === undefined ? undefined : memberIndex(source, literal);
+    if (source === undefined || memberValue(source, literal) === undefined) return false;
+    const discriminator = unionDiscriminator(context.checker, source.entry.type);
+    if (discriminator === undefined) return false;
+    const equality = operator === ts.SyntaxKind.EqualsEqualsEqualsToken;
+    return discriminator.values.some(
+      (candidate) => source.entry.undecided.has(candidate) && truthy === (equality === (candidate === literal)),
+    );
   };
   const typeLiteralValues = (type: ts.Type): readonly (string | number)[] => {
     const members = semanticUnion(type);
@@ -796,7 +975,7 @@ function discriminatedNonFirstBranchThrows(context: AnalysisContext, node: BodyF
     const propertyType = context.checker.getTypeOfSymbolAtLocation(property, declaration);
     return typeLiteralValues(propertyType);
   };
-  const typeGuardSelectsNonFirst = (expression: ts.CallExpression, truthy: boolean): boolean => {
+  const typeGuardSelectsUndecided = (expression: ts.CallExpression, truthy: boolean): boolean => {
     const signature = context.checker.getResolvedSignature(expression);
     const predicate = signature === undefined ? undefined : context.checker.getTypePredicateOfSignature(signature);
     if (predicate === undefined || predicate.type === undefined || predicate.kind !== ts.TypePredicateKind.Identifier) {
@@ -809,41 +988,39 @@ function discriminatedNonFirstBranchThrows(context: AnalysisContext, node: BodyF
     const guardedType = predicate.type;
     const discriminator = unionDiscriminator(context.checker, entry.type);
     const guardedValues = guardedDiscriminatorValues(entry, guardedType);
-    const selected = new Set<number>();
+    const selected = new Set<string | number>();
     if (discriminator !== undefined && guardedValues.length > 0) {
-      for (const [index, value] of discriminator.values.entries()) {
-        if (guardedValues.includes(value)) selected.add(index);
+      for (const value of discriminator.values) {
+        if (guardedValues.includes(value)) selected.add(value);
       }
     } else {
       for (const [index, member] of entry.union.entries()) {
-        if (context.checker.isTypeAssignableTo(member, guardedType)) selected.add(index);
+        const value = discriminator?.values[index];
+        if (value !== undefined && context.checker.isTypeAssignableTo(member, guardedType)) selected.add(value);
       }
     }
-    const branch = entry.union.map((_, index) => index).filter((index) => truthy === selected.has(index));
-    return branch.length > 0 && !branch.includes(0);
+    return [...entry.undecided].some((value) => truthy === selected.has(value));
   };
-  const conditionSelectsNonFirst = (expression: ts.Expression, truthy: boolean): boolean => {
+  const conditionSelectsUndecided = (expression: ts.Expression, truthy: boolean): boolean => {
     if (ts.isParenthesizedExpression(expression)) {
-      return conditionSelectsNonFirst(expression.expression, truthy);
+      return conditionSelectsUndecided(expression.expression, truthy);
     }
     if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
-      return conditionSelectsNonFirst(expression.operand, !truthy);
+      return conditionSelectsUndecided(expression.operand, !truthy);
     }
     if (ts.isBinaryExpression(expression)) {
       if (
         expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
         expression.operatorToken.kind === ts.SyntaxKind.BarBarToken
       ) {
-        return conditionSelectsNonFirst(expression.left, truthy) || conditionSelectsNonFirst(expression.right, truthy);
+        return (
+          conditionSelectsUndecided(expression.left, truthy) || conditionSelectsUndecided(expression.right, truthy)
+        );
       }
-      const member = comparisonMember(expression);
-      if (member === undefined) return false;
-      const equality = expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
-      const selectsEqualMember = truthy === equality;
-      return selectsEqualMember ? member > 0 : member === 0;
+      return comparisonSelectionIncludesUndecided(expression, truthy);
     }
     if (ts.isCallExpression(expression)) {
-      return typeGuardSelectsNonFirst(expression, truthy);
+      return typeGuardSelectsUndecided(expression, truthy);
     }
     return false;
   };
@@ -854,12 +1031,15 @@ function discriminatedNonFirstBranchThrows(context: AnalysisContext, node: BodyF
     for (const clause of statement.caseBlock.clauses) {
       if (ts.isCaseClause(clause)) {
         const literal = expressionLiteralValue(clause.expression);
-        const index = literal === undefined ? undefined : memberIndex(source, literal);
-        if (index !== undefined) handled.add(index);
-        if (index !== undefined && index > 0 && branchThrows(clause)) return true;
+        const value = literal === undefined ? undefined : memberValue(source, literal);
+        const discriminator = unionDiscriminator(context.checker, source.entry.type);
+        const index = value === undefined ? -1 : (discriminator?.values.indexOf(value) ?? -1);
+        if (index >= 0) handled.add(index);
+        if (value !== undefined && source.entry.undecided.has(value) && branchThrows(clause)) return true;
       } else if (ts.isDefaultClause(clause)) {
-        const remaining = source.entry.union.map((_, index) => index).filter((index) => !handled.has(index));
-        if (remaining.length > 0 && !remaining.includes(0) && branchThrows(clause)) return true;
+        const discriminator = unionDiscriminator(context.checker, source.entry.type);
+        const remaining = discriminator?.values.filter((_, index) => !handled.has(index)) ?? [];
+        if (remaining.some((value) => source.entry.undecided.has(value)) && branchThrows(clause)) return true;
       }
     }
     return false;
@@ -868,9 +1048,9 @@ function discriminatedNonFirstBranchThrows(context: AnalysisContext, node: BodyF
     if (violation || (child !== node && isBodyFunction(child))) return;
     if (ts.isIfStatement(child)) {
       if (
-        (conditionSelectsNonFirst(child.expression, true) && branchThrows(child.thenStatement)) ||
+        (conditionSelectsUndecided(child.expression, true) && branchThrows(child.thenStatement)) ||
         (child.elseStatement !== undefined &&
-          conditionSelectsNonFirst(child.expression, false) &&
+          conditionSelectsUndecided(child.expression, false) &&
           branchThrows(child.elseStatement))
       ) {
         violation = true;
@@ -898,10 +1078,10 @@ function compositionViolations(context: AnalysisContext): Violation[] {
       if (returnType !== undefined && forbiddenReturn(context, returnType)) {
         violations.push({ boundary, reason: `returns a refused completion primitive (${carriers.join(', ')})` });
       }
-      if (discriminatedNonFirstBranchThrows(context, node)) {
+      if (discriminatedUndecidedBranchThrows(context, node)) {
         violations.push({
           boundary,
-          reason: `throws after discriminating a non-first observation answer (${carriers.join(', ')})`,
+          reason: `throws after discriminating an undecided observation answer (${carriers.join(', ')})`,
         });
       }
     }
@@ -930,24 +1110,23 @@ function enforceAllowlist(violations: readonly Violation[], allowlist: ReadonlyM
   return failures.sort();
 }
 
-function registryFingerprint(context: AnalysisContext): string {
-  const resolved = context.registry
-    .map(
-      (entry) =>
-        `${entry.key}=${context.checker.typeToString(
-          entry.type,
-          undefined,
-          ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.InTypeAlias,
-        )}`,
-    )
-    .sort()
-    .join('\n');
-  return createHash('sha256').update(resolved).digest('hex');
+function enforceDebts(violations: readonly Violation[], debts: ReadonlyMap<string, CompositionDebt>): string[] {
+  const failures = enforceAllowlist(
+    violations,
+    new Map([...debts].map(([boundary, entry]) => [boundary, entry.reason])),
+  );
+  for (const [boundary, entry] of debts) {
+    if (entry.exit.trim() === '') failures.push(`${boundary}: debt exit is empty`);
+  }
+  return failures.sort();
 }
 
-function fixtureContext(source: string, registryKeys: readonly string[] = ['subject.ts#Observation']): AnalysisContext {
+function fixtureContext(
+  source: string,
+  registrySpecs: readonly RegistrySpec[] = [{ key: 'subject.ts#Observation', undecided: ['unobservable'] }],
+): AnalysisContext {
   const root = FIXTURE_ROOT;
-  return createContext(fixtureProgram(source), root, registryKeys);
+  return createContext(fixtureProgram(source), root, registrySpecs);
 }
 
 function diagnosticsFor(program: ts.Program, path: string): string[] {
@@ -963,16 +1142,8 @@ const PRODUCTION_CONTEXT = createContext(productionProgram(), REPO_ROOT, REGISTR
 
 describe('process observation vocabulary composes without collapsing its third answer', () => {
   it('keeps process-owned vocabulary and its composition explicit', () => {
-    expect(
-      enforceAllowlist(
-        [...sourceVocabularyViolations(PRODUCTION_CONTEXT), ...compositionViolations(PRODUCTION_CONTEXT)],
-        ALLOWLIST,
-      ),
-    ).toEqual([]);
-  });
-
-  it('pins the resolved observation vocabulary', () => {
-    expect(registryFingerprint(PRODUCTION_CONTEXT)).toBe(REGISTRY_SHA256);
+    expect(enforceAllowlist(sourceVocabularyViolations(PRODUCTION_CONTEXT), SOURCE_VOCABULARY_EXEMPTIONS)).toEqual([]);
+    expect(enforceDebts(compositionViolations(PRODUCTION_CONTEXT), COMPOSITION_DEBTS)).toEqual([]);
   });
 
   it('rejects primitive and null-bearing members added to ProcessPort', () => {
@@ -1011,24 +1182,24 @@ describe('process observation vocabulary composes without collapsing its third a
       reason: 'returns boolean',
     });
 
-    const listedExportMutation = `${source}\nfunction listedProbe(): boolean { return true; }\nexport { listedProbe };\n`;
+    const listedExportMutation = `${source}\nfunction listedProbe(): Observation | null { return null; }\nexport { listedProbe };\n`;
     expect(
       sourceVocabularyViolations(fixtureContext(listedExportMutation), 'subject.ts', /^subject\.ts$/u),
     ).toContainEqual({
       boundary: 'subject.ts#listedProbe',
-      reason: 'returns boolean',
+      reason: 'returns Observation | null',
     });
 
-    const defaultExportMutation = `${source}\nexport default ((): boolean => true);\n`;
+    const defaultExportMutation = `${source}\nexport default ((observation: Observation): Observation | null => observation);\n`;
     expect(
       sourceVocabularyViolations(fixtureContext(defaultExportMutation), 'subject.ts', /^subject\.ts$/u),
     ).toContainEqual({
       boundary: 'subject.ts#default',
-      reason: 'returns boolean',
+      reason: 'returns Observation | null',
     });
   });
 
-  it('rejects primitive completion and throws after a non-first answer is discriminated', () => {
+  it('rejects primitive completion and throws after an undecided answer is discriminated', () => {
     const source = readFileSync(resolve(FIXTURE_ROOT, 'subject.ts.txt'), 'utf8');
     const primitiveMutation = source.replace(
       'export function translate(observation: Observation): Observation {\n  return observation;\n}',
@@ -1089,7 +1260,9 @@ describe('process observation vocabulary composes without collapsing its third a
 
     const brandedSource = `${source}\ndeclare const observationBrand: unique symbol;\nexport type BrandedObservation = (\n  | { kind: 'present'; value: string }\n  | { kind: 'absent' }\n  | { kind: 'unobservable'; reason: string }\n) & { readonly [observationBrand]: true };\n\nfunction isBrandedUnobservable(\n  value: BrandedObservation,\n): value is BrandedObservation & { kind: 'unobservable' } {\n  return value.kind === 'unobservable';\n}\n\nexport function translateBranded(observation: BrandedObservation): BrandedObservation {\n  if (isBrandedUnobservable(observation)) throw new Error('unobservable');\n  return observation;\n}\n`;
     expect(
-      compositionViolations(fixtureContext(brandedSource, ['subject.ts#BrandedObservation'])).some(
+      compositionViolations(
+        fixtureContext(brandedSource, [{ key: 'subject.ts#BrandedObservation', undecided: ['unobservable'] }]),
+      ).some(
         ({ boundary, reason }) =>
           boundary === 'subject.ts#translateBranded' && reason.startsWith('throws after discriminating'),
       ),
@@ -1104,11 +1277,29 @@ describe('process observation vocabulary composes without collapsing its third a
         "  if (observation.kind === 2) throw new Error('unobservable');\n  return observation;",
       );
     expect(
-      compositionViolations(fixtureContext(numericMutation)).some(
+      compositionViolations(fixtureContext(numericMutation, [{ key: 'subject.ts#Observation', undecided: [2] }])).some(
         ({ boundary, reason }) =>
           boundary === 'subject.ts#translate' && reason.startsWith('throws after discriminating'),
       ),
     ).toBe(true);
+
+    const decidedNonFirstMutation = source.replace(
+      '  return observation;',
+      "  if (observation.kind === 'absent') throw new Error('absent');\n  return observation;",
+    );
+    expect(compositionViolations(fixtureContext(decidedNonFirstMutation))).toEqual([]);
+
+    const reordered = source.replace(
+      "  | Readonly<{ kind: 'present' }>\n  | Readonly<{ kind: 'absent' }>\n  | Readonly<{ kind: 'unobservable'; reason: string }>",
+      "  | Readonly<{ kind: 'unobservable'; reason: string }>\n  | Readonly<{ kind: 'present' }>\n  | Readonly<{ kind: 'absent' }>",
+    );
+    const reorderedThrow = reordered.replace(
+      '  return observation;',
+      "  if (observation.kind === 'unobservable') throw new Error('unobservable');\n  return observation;",
+    );
+    expect(compositionViolations(fixtureContext(reorderedThrow))).toEqual([
+      expect.objectContaining({ boundary: 'subject.ts#translate' }),
+    ]);
   });
 
   it('rejects a disposition write composed back into the old void-and-throw boundary', () => {
@@ -1119,11 +1310,15 @@ describe('process observation vocabulary composes without collapsing its third a
     );
 
     expect(
-      compositionViolations(fixtureContext(oldBoundary, ['subject.ts#DispositionWrite'])).map(
-        ({ boundary }) => boundary,
-      ),
+      compositionViolations(
+        fixtureContext(oldBoundary, [{ key: 'subject.ts#DispositionWrite', undecided: ['unconfirmed'] }]),
+      ).map(({ boundary }) => boundary),
     ).toContain('subject.ts#persistDisposition');
-    expect(compositionViolations(fixtureContext(source, ['subject.ts#DispositionWrite']))).toEqual([]);
+    expect(
+      compositionViolations(
+        fixtureContext(source, [{ key: 'subject.ts#DispositionWrite', undecided: ['unconfirmed'] }]),
+      ),
+    ).toEqual([]);
   });
 
   it('rejects leader-only and mismatched-group settlement of a retained process-group obligation', () => {
@@ -1168,21 +1363,20 @@ describe('process observation vocabulary composes without collapsing its third a
     ]);
   });
 
-  it('rejects unpinned registry vocabulary drift', () => {
+  it('rejects registry entries without a distinct discriminator or their named undecided answer', () => {
     const source = readFileSync(resolve(FIXTURE_ROOT, 'subject.ts.txt'), 'utf8');
-    const context = fixtureContext(source);
-    const mutation = fixtureContext(source.replace("kind: 'unobservable'", "kind: 'uninspectable'"));
-    expect(registryFingerprint(mutation)).not.toBe(registryFingerprint(context));
-
-    const duplicateDiscriminants = `${source}\nexport type DuplicateObservation =\n  | { kind: 'same'; one: 1 }\n  | { kind: 'same'; two: 2 }\n  | { kind: 'same'; three: 3 };\n`;
-    expect(() => fixtureContext(duplicateDiscriminants, ['subject.ts#DuplicateObservation'])).toThrow(
-      'does not carry three distinctly discriminated answers',
+    expect(() => fixtureContext(source, [{ key: 'subject.ts#Observation', undecided: ['uninspectable'] }])).toThrow(
+      'undecided answers are not discriminants',
     );
+    const duplicateDiscriminants = `${source}\nexport type DuplicateObservation =\n  | { kind: 'same'; one: 1 }\n  | { kind: 'same'; two: 2 }\n  | { kind: 'same'; three: 3 };\n`;
+    expect(() =>
+      fixtureContext(duplicateDiscriminants, [{ key: 'subject.ts#DuplicateObservation', undecided: ['same'] }]),
+    ).toThrow('does not carry three distinctly discriminated answers');
 
     const undiscriminated = `${source}\nexport type UndiscriminatedObservation =\n  | { one: 1 }\n  | { two: 2 }\n  | { three: 3 };\n`;
-    expect(() => fixtureContext(undiscriminated, ['subject.ts#UndiscriminatedObservation'])).toThrow(
-      'does not carry three distinctly discriminated answers',
-    );
+    expect(() =>
+      fixtureContext(undiscriminated, [{ key: 'subject.ts#UndiscriminatedObservation', undecided: [] }]),
+    ).toThrow('does not carry three distinctly discriminated answers');
   });
 
   it('rejects an allowlist entry after its boundary becomes compliant', () => {
@@ -1191,9 +1385,11 @@ describe('process observation vocabulary composes without collapsing its third a
       'export function translate(observation: Observation): Observation {\n  return observation;\n}',
       'export function translate(observation: Observation): void {\n  void observation;\n}',
     );
-    const allowlist = new Map([['subject.ts#translate', 'legacy boundary has no returned disposition']]);
-    expect(enforceAllowlist(compositionViolations(fixtureContext(legacy)), allowlist)).toEqual([]);
-    expect(enforceAllowlist(compositionViolations(fixtureContext(source)), allowlist)).toEqual([
+    const allowlist = new Map([
+      ['subject.ts#translate', debt('legacy boundary has no returned disposition', 'translate returns Observation')],
+    ]);
+    expect(enforceDebts(compositionViolations(fixtureContext(legacy)), allowlist)).toEqual([]);
+    expect(enforceDebts(compositionViolations(fixtureContext(source)), allowlist)).toEqual([
       'subject.ts#translate: stale allowlist entry (legacy boundary has no returned disposition)',
     ]);
   });

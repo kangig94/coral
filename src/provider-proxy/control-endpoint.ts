@@ -359,15 +359,6 @@ function mintActiveControlAuthorization(
   return authorization;
 }
 
-/** Test-only minting must install the same opaque authorization record as ordinary admission. */
-export function mintActiveControlAuthorizationForTesting(
-  socket: Socket,
-  controlEpoch: ControlEpoch,
-  holder: ControlTenancyHolder,
-): ActiveControlAuthorization {
-  return mintActiveControlAuthorization(socket, controlEpoch, holder);
-}
-
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {
   const { socketPath, role, observer, challenges, timer, requestTimeoutMs, holderAuthority } = options;
   let server: NetServer | null = null;

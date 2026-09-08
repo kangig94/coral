@@ -482,7 +482,14 @@ export class MockProcessSpawner {
       const acceptance = options.onWrapperSpawned?.({
         pid,
         settled: wrapperSettlement,
-        requestTermination: () => this.applyKill(leader, 'SIGTERM'),
+        requestTermination: () => {
+          this.applyKill(leader, 'SIGTERM');
+          return {
+            kind: 'escalation-scheduled',
+            pid,
+            settlement: wrapperSettlement.then(() => ({ kind: 'observed-absent' as const, pid })),
+          };
+        },
       });
       if (options.onWrapperSpawned !== undefined && acceptance?.kind !== 'accepted') {
         return resolveLaunchFailure('Durable wrapper ownership was not accepted.');

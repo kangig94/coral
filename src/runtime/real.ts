@@ -81,7 +81,7 @@ import {
   type ProcessIncarnationProbeTerminator,
 } from '../infra/node-process.js';
 import { observeRecordedContainment, type RecordedProcessIdentity } from '../infra/process-containment.js';
-import { gracefulKill, liveChildAuthority } from '../infra/process-supervision.js';
+import { gracefulKill, liveChildAuthority, type GracefulKillDisposition } from '../infra/process-supervision.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
 
@@ -507,7 +507,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         const ownershipAcceptance = options.onWrapperSpawned?.({
           pid: wrapper.pid ?? null,
           settled: wrapperSettlement,
-          requestTermination: () =>
+          requestTermination: (): GracefulKillDisposition =>
             gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
         });
         if (options.onWrapperSpawned !== undefined && ownershipAcceptance?.kind !== 'accepted') {
@@ -527,7 +527,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           ? undefined
           : Object.freeze({
               ...wrapperAuthority,
-              requestTermination: () =>
+              requestTermination: (): GracefulKillDisposition =>
                 gracefulKill(wrapper as unknown as ChildProcessLike, { time }, observeProcessLiveness),
             });
 

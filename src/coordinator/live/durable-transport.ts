@@ -210,7 +210,8 @@ async function resolveDurableProcessContainment(
   }
 
   return outcome.kind === 'absence-observed'
-    ? (Object.freeze({ kind: 'observed-absent', pid, retention: retained }) as DurableContainmentAbsenceCapability)
+    ? // eslint-disable-next-line no-restricted-syntax -- DurableContainmentAbsenceCapability may only be minted by resolveDurableProcessContainment.
+      (Object.freeze({ kind: 'observed-absent', pid, retention: retained }) as DurableContainmentAbsenceCapability)
     : outcome;
 }
 
@@ -315,6 +316,9 @@ export async function spawnDurableJobTransport(params: {
     pendingLaunches.delete(pendingLaunch);
     resolvePendingLaunch();
   };
+  const schedulePendingWrapperTermination = (obligation: DurablePendingLaunchObligation): void => {
+    obligation.requestTermination();
+  };
   pendingLaunches.add(pendingLaunch);
 
   const acceptPendingWrapper = (obligation: DurablePendingLaunchObligation): Readonly<{ kind: 'accepted' }> => {
@@ -323,7 +327,7 @@ export async function spawnDurableJobTransport(params: {
     }
     pendingWrapperObligation = obligation;
     void obligation.settled.then(releasePendingLaunch);
-    if (abortedBySignal) obligation.requestTermination();
+    if (abortedBySignal) schedulePendingWrapperTermination(obligation);
     return { kind: 'accepted' };
   };
 
@@ -673,7 +677,7 @@ export async function spawnDurableJobTransport(params: {
         if (abortedBySignal) return;
         abortedBySignal = true;
         if (cleanupKey === null) {
-          pendingWrapperObligation?.requestTermination();
+          if (pendingWrapperObligation !== null) schedulePendingWrapperTermination(pendingWrapperObligation);
           return;
         }
         enterContainmentHold('termination requested; process absence is not yet proven');

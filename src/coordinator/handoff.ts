@@ -632,6 +632,7 @@ function verifySignalTarget(
     return observation;
   }
   assertSignalCapability(incumbent, context);
+  // eslint-disable-next-line no-restricted-syntax -- HandoffSignalCapability may only be minted by verifySignalTarget.
   return Object.freeze({ kind: 'alive', incumbent }) as HandoffSignalCapability;
 }
 

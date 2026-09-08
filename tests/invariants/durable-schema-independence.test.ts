@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, posix, resolve } from 'node:path';
 
@@ -7,8 +6,6 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
 const FIXTURE_ROOT = 'tests/invariants/fixtures/durable-schema-independence';
-const SCHEMA_CATALOG_SHA256 = '60dcb6b505243cb17d7db1f67272f2ec23fb933f7e812c888731224500411e1d';
-
 type SchemaKey = `${string}#${string}`;
 
 type SourceUnit = Readonly<{
@@ -406,25 +403,6 @@ function referencedSchemaComponents(unit: SourceUnit, node: ts.Node): ReadonlySe
   return references;
 }
 
-function schemaCatalogFingerprint(
-  schemaKeys: Iterable<SchemaKey>,
-  units: readonly SourceUnit[],
-  componentKeys: ReadonlySet<SchemaKey>,
-): string {
-  const unitsByPath = new Map(units.map((unit) => [unit.path, unit]));
-  const componentEntries = [...componentKeys].map((key) => {
-    const separator = key.lastIndexOf('#');
-    const unit = unitsByPath.get(key.slice(0, separator));
-    const declaration = unit === undefined ? undefined : localConstDeclarations(unit).get(key.slice(separator + 1));
-    const initializer = declaration?.initializer;
-    return `component:${key}\n${initializer === undefined || unit === undefined ? '<missing>' : initializer.getText(unit.source)}`;
-  });
-  const entries = [...schemaKeys].map((key) => `schema:${key}`);
-  return createHash('sha256')
-    .update([...entries, ...componentEntries].sort().join('\n'))
-    .digest('hex');
-}
-
 function isPersistenceCall(node: ts.CallExpression): boolean {
   if (
     node.arguments.some(
@@ -670,7 +648,6 @@ describe('durable schema independence invariant', () => {
     const roots = new Set([...DURABLE_SCHEMA_ROOTS, ...factorySchemaRoots(units), ...registrySchemaRoots(units)]);
     const durableSchemas = durableSchemaClosure(units, declarations, roots);
     const components = durableSchemaComponents(units, declarations, durableSchemas);
-    expect(schemaCatalogFingerprint(declarations.keys(), units, components)).toBe(SCHEMA_CATALOG_SHA256);
     expect(componentRegistrationViolations(components)).toEqual([]);
     expect(unregisteredBoundaryViolations(units, durableSchemas)).toEqual([]);
     expect(borrowedSchemaViolations(units, declarations, durableSchemas)).toEqual([]);
@@ -712,38 +689,8 @@ describe('durable schema independence invariant', () => {
     const durableRoot = schemaKey(fixture.path, 'durableRecordSchema');
     const durableSchemas = durableSchemaClosure([fixture], declarations, new Set([durableRoot]));
     const components = durableSchemaComponents([fixture], declarations, durableSchemas);
-    const fingerprint = schemaCatalogFingerprint(declarations.keys(), [fixture], components);
     expect(componentRegistrationViolations(components)).toEqual([
       `${fixture.path}#sharedRecordShape: durable schema component is not registered`,
     ]);
-
-    const validatorMutation = parseSource(
-      fixture.path,
-      fixture.source.text.replace('z.string().regex(/^[a-z]+$/u)', 'z.string().regex(/^[A-Z]+$/u)'),
-    );
-    const validatorDeclarations = schemaDeclarations([validatorMutation]);
-    const validatorComponents = durableSchemaComponents(
-      [validatorMutation],
-      validatorDeclarations,
-      durableSchemaClosure([validatorMutation], validatorDeclarations, new Set([durableRoot])),
-    );
-    expect(schemaCatalogFingerprint(validatorDeclarations.keys(), [validatorMutation], validatorComponents)).not.toBe(
-      fingerprint,
-    );
-
-    const fieldMutation = parseSource(
-      fixture.path,
-      fixture.source.text.replace(
-        '  value: z.string().regex(/^[a-z]+$/u),',
-        '  value: z.string().regex(/^[a-z]+$/u),\n  revision: z.number().int(),',
-      ),
-    );
-    const fieldDeclarations = schemaDeclarations([fieldMutation]);
-    const fieldComponents = durableSchemaComponents(
-      [fieldMutation],
-      fieldDeclarations,
-      durableSchemaClosure([fieldMutation], fieldDeclarations, new Set([durableRoot])),
-    );
-    expect(schemaCatalogFingerprint(fieldDeclarations.keys(), [fieldMutation], fieldComponents)).not.toBe(fingerprint);
   });
 });

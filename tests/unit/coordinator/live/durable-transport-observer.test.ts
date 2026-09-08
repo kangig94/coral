@@ -215,4 +215,80 @@ describe('durable transport observer timing and cleanup ownership', () => {
     wake?.();
     await expect(result).resolves.toMatchObject({ code: 0, aborted: true });
   });
+
+  it('retains cleanup ownership until an active attempt settles before abandonment', async () => {
+    const paths = durableFixturePaths('abandon-settlement');
+    const launched = launchResult(paths);
+    const cleanupAttempt = deferred<{ kind: 'identity-unobservable'; signalDelivered: boolean }>();
+    const cleanupHandles = new Map<symbol, DurableProcessCleanup>();
+    reapRecordedContainment.mockImplementationOnce(() => cleanupAttempt.promise);
+    const controller = new AbortController();
+    let operatorControl: DurableContainmentOperatorControl | undefined;
+    let wake: (() => void) | undefined;
+    const onIdentity: DurableProcessIdentityCallback = (_subject, status, control) => {
+      if (status?.kind === 'held') operatorControl = control;
+      return { kind: 'published' };
+    };
+    const base = createRealRuntime('prod');
+    const runtime: Runtime = {
+      ...base,
+      time: {
+        ...base.time,
+        monotonicNow: () => 0n,
+        sleep: () =>
+          new Promise<void>((resolve) => {
+            wake = resolve;
+          }),
+        setInterval: () => ({}),
+        clearInterval: vi.fn(),
+      },
+      process: {
+        ...base.process,
+        durable: {
+          launch: async (options) => {
+            options.onSpawned?.({
+              runtimeRecord: launched.runtimeRecord,
+              leaderIncarnation: launched.processSubject.incarnation,
+              childRoot: launched.processSubject.childRoot,
+            });
+            return launched;
+          },
+          waitForExit: () => new Promise<DurableProcessExit>(() => undefined),
+        },
+      },
+    };
+
+    const result = spawnDurableJobTransport({
+      runtime,
+      options: {
+        provider: 'codex',
+        command: 'fixture',
+        args: [],
+        jobDir: paths.jobDir,
+        signal: controller.signal,
+        onDurableProcessIdentity: onIdentity,
+      },
+      pool: {} as LaunchPool,
+      internalPermitJobId: null,
+      cleanupHandles,
+      cleanupRetentions: new Map<DurableProcessCleanup, DurableProcessRetention>(),
+      pendingLaunches: new Set<PendingDurableLaunch>(),
+      releaseLaunch: vi.fn(),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(reapRecordedContainment).toHaveBeenCalledOnce();
+    expect(operatorControl?.abandon()).toMatchObject({ kind: 'retained', reason: expect.stringContaining('settling') });
+    expect(cleanupHandles.size).toBe(1);
+
+    cleanupAttempt.resolve({ kind: 'identity-unobservable', signalDelivered: false });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(operatorControl?.abandon()).toMatchObject({ kind: 'abandoned' });
+    expect(cleanupHandles.size).toBe(0);
+    wake?.();
+    await expect(result).resolves.toMatchObject({ code: null, aborted: true });
+  });
 });
