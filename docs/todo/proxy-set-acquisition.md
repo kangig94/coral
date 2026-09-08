@@ -129,8 +129,9 @@ leader incarnation no longer matches. An absent group remains decisive. An alive
 liveness cannot be observed, returns the typed `recorded-group-unattributable` verdict through absence
 confirmation, recorded-set reaping, and the lifecycle reaper. That verdict authorizes no signal, mints no
 disappearance receipt, and leaves Coral's representation held. The exact-set operator command reports the
-no-verdict and names `provider-proxy-set abandon` as the honest exit: abandonment releases Coral's
-representation without asserting process absence.
+no-verdict and names `coral-cli backend provider-proxy-set abandon <pps1-token>` as the honest exit, with
+the token taken from `backend status`: abandonment releases Coral's representation without asserting
+process absence.
 
 This corrects the branch-history claims in `7f2b5b50` that the operator path always mints a receipt from a
 confirmed reap and in `42f47813` that containment always settles on a disappearance receipt. A reap may now
