@@ -186,6 +186,17 @@ function enterFailureDrain(
   executionSvc.abort([...state.pending.keys()]);
 }
 
+function recordWaitActivity(
+  state: AwaitStepState,
+  atom: LaunchedAtom,
+  message: string,
+  options: Pick<WaitForAtomsOptions, 'onProgress' | 'time'>,
+): void {
+  state.lastActivityAt.set(atom.atomKey, options.time.now());
+  state.observedIdleMs.set(atom.atomKey, 0);
+  options.onProgress(formatAtomProgress(atom, message));
+}
+
 function handleWaitEvent(
   event: WaitStreamEvent,
   state: AwaitStepState,
@@ -196,9 +207,7 @@ function handleWaitEvent(
     case 'queued': {
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
-      state.lastActivityAt.set(atom.atomKey, options.time.now());
-      state.observedIdleMs.set(atom.atomKey, 0);
-      options.onProgress(formatAtomProgress(atom, `queued (position ${event.queuePosition})`));
+      recordWaitActivity(state, atom, `queued (position ${event.queuePosition})`, options);
       return 'handled';
     }
 
@@ -206,9 +215,7 @@ function handleWaitEvent(
       state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
-      state.lastActivityAt.set(atom.atomKey, options.time.now());
-      state.observedIdleMs.set(atom.atomKey, 0);
-      options.onProgress(formatAtomProgress(atom, stripElapsedPrefix(event.message)));
+      recordWaitActivity(state, atom, stripElapsedPrefix(event.message), options);
       return 'handled';
     }
 

@@ -865,8 +865,7 @@ describe('AC5 — a late heartbeat from a recovering coordinator is accepted onc
     authority.publish();
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'), authority);
     const first = mustAccept(guardian.issueFirstChallenge());
-    // Cross the old clock-only adoption deadline while nothing has latched teardown autonomously — only
-    // `runTeardown` (enforcement.ts) may latch now that a holder has been published.
+    // A published holder must not latch teardown without enforcement authorization.
     fake.set(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS - PROXY_TEARDOWN_RESERVE_MS + 5_000);
 
     const echoed = guardian.echoChallenge(first.challenge);
@@ -896,9 +895,6 @@ describe('AC5 — a late heartbeat from a recovering coordinator is accepted onc
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'), authority);
     const first = mustAccept(guardian.issueFirstChallenge());
 
-    // `runTeardown` (enforcement.ts) latches synchronously before its first await; this machine has no
-    // other way to model that from outside enforcement.ts, so the same public `latchTeardown()` it calls is
-    // exercised directly here.
     guardian.latchTeardown();
 
     expect(guardian.echoChallenge(first.challenge)).toEqual({ accepted: false, reason: 'teardown-latched' });

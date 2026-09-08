@@ -610,10 +610,6 @@ function fakeAuthority(
   const fault = options.fault;
   const faults = options.faults ?? (fault === undefined ? createProviderProxyAuthorityFaultLatch() : undefined);
   const stopAndReap = options.stopAndReap ?? (async () => ({ unconfirmed: 'not proved' }) as const);
-  // Every existing fixture configures `stopAndReap`; `#runContainmentAttempt` now calls `commitContainment`
-  // instead. Deriving the default from `stopAndReap` keeps every fixture that supplies only the coarse
-  // contract observably called, translated into the three-way shape production code now consumes, rather than
-  // requiring every call site across this file to be rewritten to a second, parallel mock.
   const commitContainment =
     options.commitContainment ??
     (async (signal: AbortSignal) => {

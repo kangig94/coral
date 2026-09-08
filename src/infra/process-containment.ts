@@ -543,8 +543,7 @@ function deliverSignal<Scope extends symbol>(
     // 24.04.4 under WSL2 Linux 6.18.33.2, kernel.pid_max is 4194304 and Linux pid allocation is cyclic:
     // misdelivery requires collection by the target's own parent, pid wrap and reuse, and, for a group, a new
     // holder calling setsid or setpgid, all within the read/kill adjacent-syscall gap with no await, bounded by
-    // scheduler latency. Own children never reach this recovered-identity branch; see liveChildAuthority in
-    // src/infra/process-supervision.ts.
+    // scheduler latency. See liveChildAuthority in src/infra/process-supervision.ts.
     if (readIncarnation(identity, environment) !== identity.incarnation) return 'authorization-refused';
     delivered = environment.process.kill(pid, signal);
   }

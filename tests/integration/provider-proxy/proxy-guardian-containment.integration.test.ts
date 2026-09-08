@@ -318,8 +318,7 @@ async function startGuardianAndReaper() {
     receipts += 1;
     return `receipt-${receipts}`;
   };
-  // Each role owns its own authority in production (§7); these fakes never publish, so the hand-built
-  // `deadlines` above stays authoritative for these tests.
+  // Each role must retain an independent holder authority.
   const guardianHolderAuthority = createControlHolderAuthority();
   const reaperHolderAuthority = createControlHolderAuthority();
   const observeHolder = (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const);

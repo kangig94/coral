@@ -1,7 +1,4 @@
-// The non-blocking, stricter sibling of `recorded-process-observation.test.ts`: the same three-answer
-// question, but answered without ever calling `execFileSync`/`readFileSync`, and with no pid-only `alive`
-// fallback when the incarnation cannot be read — pid-only life cannot prove the admitted holder still owns
-// the pid, which is why AC2 requires this sibling to be stricter rather than merely non-blocking.
+// Recorded identity observation must remain non-blocking and preserve alive, absent, and unknown distinctly.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -86,10 +83,7 @@ describe('async recorded process observation', () => {
   });
 
   it('answers unknown on a probe timeout, the same as any other unreadable token', async () => {
-    // The reader contract is: a timed-out platform probe resolves null exactly like any other unreadable
-    // read (see linux/mac-process-incarnation-async.test.ts for the bound that produces this null). This
-    // combinator cannot distinguish "timed out" from "unreadable for another reason". Neither licenses
-    // pid-only life; only a second liveness check that proves disappearance may answer absent.
+    // A timed-out or unreadable identity probe cannot license pid-only life as recorded-holder evidence.
     const { observe } = observerWith({
       observeLiveness: () => 'alive',
       readIncarnation: () => Promise.resolve(null),

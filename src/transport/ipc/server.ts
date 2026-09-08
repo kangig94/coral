@@ -715,22 +715,24 @@ async function dispatchFrame(
   finishRequest: () => void,
   options: { writeDrainTimeoutMs: number },
 ): Promise<void> {
+  const finishUnaryResponse = async (response: JsonRpcEnvelope, onUnwritten?: () => void): Promise<void> => {
+    const wroteResponse = await writeEnvelope(socket, response, {
+      drainTimeoutMs: options.writeDrainTimeoutMs,
+    });
+    if (!wroteResponse) onUnwritten?.();
+    socket.end();
+  };
+
   let envelope: JsonRpcEnvelope;
   try {
     envelope = decode(frame);
   } catch (error: unknown) {
-    await writeEnvelope(socket, transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }), {
-      drainTimeoutMs: options.writeDrainTimeoutMs,
-    });
-    socket.end();
+    await finishUnaryResponse(transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }));
     return;
   }
 
   if (envelope.kind !== 'request') {
-    await writeEnvelope(socket, invalidRequestResponse('id' in envelope ? envelope.id : null), {
-      drainTimeoutMs: options.writeDrainTimeoutMs,
-    });
-    socket.end();
+    await finishUnaryResponse(invalidRequestResponse('id' in envelope ? envelope.id : null));
     return;
   }
 
@@ -739,18 +741,10 @@ async function dispatchFrame(
   if (operationalSpec?.dispatch.kind === 'ping') {
     const authError = authorizeIpcOperation(request, operationalSpec, IPC_BOOTSTRAP_LIVENESS_PRINCIPAL);
     if (authError) {
-      await writeEnvelope(socket, authError, { drainTimeoutMs: options.writeDrainTimeoutMs });
-      socket.end();
+      await finishUnaryResponse(authError);
       return;
     }
-    await writeEnvelope(
-      socket,
-      { kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) },
-      {
-        drainTimeoutMs: options.writeDrainTimeoutMs,
-      },
-    );
-    socket.end();
+    await finishUnaryResponse({ kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) });
     return;
   }
 
@@ -758,8 +752,7 @@ async function dispatchFrame(
   if (operationalSpec?.authentication === 'principal') {
     const authError = authorizeIpcOperation(request, operationalSpec, principal);
     if (authError) {
-      await writeEnvelope(socket, authError, { drainTimeoutMs: options.writeDrainTimeoutMs });
-      socket.end();
+      await finishUnaryResponse(authError);
       return;
     }
   }
@@ -773,28 +766,12 @@ async function dispatchFrame(
 
   if (operationalSpec) {
     if (operationalSpec.requiresRunningLifecycle && backendUnavailable) {
-      await writeEnvelope(
-        socket,
-        {
-          kind: 'response',
-          id: request.id,
-          result: BACKEND_SHUTTING_DOWN_RESPONSE,
-        },
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
-      );
-      socket.end();
+      await finishUnaryResponse({ kind: 'response', id: request.id, result: BACKEND_SHUTTING_DOWN_RESPONSE });
       return;
     }
 
     if (operationalSpec.dispatch.kind === 'health') {
-      await writeEnvelope(
-        socket,
-        { kind: 'response', id: request.id, result: rpcPorts.health.read() },
-        {
-          drainTimeoutMs: options.writeDrainTimeoutMs,
-        },
-      );
-      socket.end();
+      await finishUnaryResponse({ kind: 'response', id: request.id, result: rpcPorts.health.read() });
       return;
     }
 
@@ -816,33 +793,22 @@ async function dispatchFrame(
       // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
       // directly. No-op when lifecycle is already running (drain handles it).
       onShutdownRequest?.(reason);
-      await writeEnvelope(
-        socket,
-        {
-          kind: 'response',
-          id: request.id,
-          result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
-        },
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
-      );
-      socket.end();
+      await finishUnaryResponse({
+        kind: 'response',
+        id: request.id,
+        result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
+      });
       return;
     }
 
     if (operationalSpec.dispatch.kind === 'shutdown-abandon') {
       if (onShutdownObligationAbandonment === null) {
-        await writeEnvelope(socket, methodNotFoundResponse(request.id), {
-          drainTimeoutMs: options.writeDrainTimeoutMs,
-        });
-        socket.end();
+        await finishUnaryResponse(methodNotFoundResponse(request.id));
         return;
       }
       const parsedRequest = shutdownObligationAbandonRequestSchema.safeParse(request.params ?? {});
       if (!parsedRequest.success) {
-        await writeEnvelope(socket, validationErrorResponse(request.id, parsedRequest.error), {
-          drainTimeoutMs: options.writeDrainTimeoutMs,
-        });
-        socket.end();
+        await finishUnaryResponse(validationErrorResponse(request.id, parsedRequest.error));
         return;
       }
       const result = shutdownObligationAbandonResultSchema.parse(
@@ -866,24 +832,15 @@ async function dispatchFrame(
         result.kind === 'accepted' && onShutdownRecoveryAccepted !== null
           ? armShutdownRecoveryContinuation(socket, onShutdownRecoveryAccepted)
           : null;
-      const wroteResponse = await writeEnvelope(
-        socket,
-        { kind: 'response', id: request.id, result },
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
-      );
-      if (!wroteResponse) completeShutdownRecovery?.();
-      socket.end();
+      await finishUnaryResponse({ kind: 'response', id: request.id, result }, completeShutdownRecovery ?? undefined);
       return;
     }
 
     if (operationalSpec.dispatch.kind === 'kb-restart') {
       if (!rpcPorts.admin.restartKbDaemon) {
-        await writeEnvelope(
-          socket,
+        await finishUnaryResponse(
           requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
-          { drainTimeoutMs: options.writeDrainTimeoutMs },
         );
-        socket.end();
         return;
       }
       writeAuditEvent(
@@ -897,24 +854,16 @@ async function dispatchFrame(
       );
       try {
         const kbDaemon = await rpcPorts.admin.restartKbDaemon('ipc-admin');
-        await writeEnvelope(
-          socket,
-          {
-            kind: 'response',
-            id: request.id,
-            result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
-          },
-          { drainTimeoutMs: options.writeDrainTimeoutMs },
-        );
-        socket.end();
+        await finishUnaryResponse({
+          kind: 'response',
+          id: request.id,
+          result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
+        });
       } catch (error: unknown) {
         rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
         if (!socket.destroyed && !socket.writableEnded) {
           const response = buildTransportErrorResponse(error);
-          await writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data), {
-            drainTimeoutMs: options.writeDrainTimeoutMs,
-          });
-          socket.end();
+          await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
         }
       }
       return;
@@ -922,43 +871,25 @@ async function dispatchFrame(
   }
 
   if (backendUnavailable && !drainingRecoveryIngress) {
-    await writeEnvelope(
-      socket,
-      {
-        kind: 'response',
-        id: request.id,
-        result: BACKEND_SHUTTING_DOWN_RESPONSE,
-      },
-      { drainTimeoutMs: options.writeDrainTimeoutMs },
-    );
-    socket.end();
+    await finishUnaryResponse({ kind: 'response', id: request.id, result: BACKEND_SHUTTING_DOWN_RESPONSE });
     return;
   }
 
   const entry = dispatchMap.get(request.method);
   if (!entry) {
-    await writeEnvelope(socket, methodNotFoundResponse(request.id), { drainTimeoutMs: options.writeDrainTimeoutMs });
-    socket.end();
+    await finishUnaryResponse(methodNotFoundResponse(request.id));
     return;
   }
   if (!principal) {
-    await writeEnvelope(
-      socket,
+    await finishUnaryResponse(
       requestErrorResponse(request.id, IPC_UNAUTHORIZED_RESPONSE.message, IPC_UNAUTHORIZED_RESPONSE),
-      {
-        drainTimeoutMs: options.writeDrainTimeoutMs,
-      },
     );
-    socket.end();
     return;
   }
 
   const parsed = entry.spec.requestSchema.safeParse(request.params ?? {});
   if (!parsed.success) {
-    await writeEnvelope(socket, validationErrorResponse(request.id, parsed.error), {
-      drainTimeoutMs: options.writeDrainTimeoutMs,
-    });
-    socket.end();
+    await finishUnaryResponse(validationErrorResponse(request.id, parsed.error));
     return;
   }
   startRequest();
@@ -972,10 +903,7 @@ async function dispatchFrame(
     socket.once('close', abortDispatchOnClose);
     const invocation = await entry.dispatch(parsed.data, principal, subscriptionController.signal);
     if (invocation.kind === 'unsupported-method') {
-      await writeEnvelope(socket, methodNotFoundResponse(request.id), {
-        drainTimeoutMs: options.writeDrainTimeoutMs,
-      });
-      socket.end();
+      await finishUnaryResponse(methodNotFoundResponse(request.id));
       return;
     }
     if (invocation.kind === 'unary') {
@@ -987,23 +915,17 @@ async function dispatchFrame(
       if (typeof invocation.statusCode === 'number' && invocation.statusCode >= 400) {
         const body = invocation.body as { code?: unknown; message?: unknown };
         const message = typeof body.message === 'string' ? body.message : 'request failed';
-        await writeEnvelope(socket, requestErrorResponse(request.id, message, invocation.body), {
-          drainTimeoutMs: options.writeDrainTimeoutMs,
-        });
-        socket.end();
+        await finishUnaryResponse(requestErrorResponse(request.id, message, invocation.body));
         return;
       }
       const completeShutdownRecovery =
         drainingRecoveryIngress && acceptedDrainingRecovery(request.method) && onShutdownRecoveryAccepted !== null
           ? armShutdownRecoveryContinuation(socket, onShutdownRecoveryAccepted)
           : null;
-      const wroteResponse = await writeEnvelope(
-        socket,
+      await finishUnaryResponse(
         { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope,
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
+        completeShutdownRecovery ?? undefined,
       );
-      if (!wroteResponse) completeShutdownRecovery?.();
-      socket.end();
       return;
     }
 
@@ -1016,10 +938,7 @@ async function dispatchFrame(
     rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
     if (!socket.destroyed && !socket.writableEnded) {
       const response = buildTransportErrorResponse(error);
-      await writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data), {
-        drainTimeoutMs: options.writeDrainTimeoutMs,
-      });
-      socket.end();
+      await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
     }
   } finally {
     socket.off('close', abortDispatchOnClose);

@@ -2724,31 +2724,23 @@ export class ProviderProxySetLifecycle {
         enforcerObservations,
         [operatorAbandonmentEvidenceBrand]: true as const,
       });
-      const commitment = this.#commitOperatorAbandonment(slot, abandonmentEvidence, proof);
-      if (commitment.kind === 'held') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_disposition_store_write_failed', 'store-repair');
-        this.#releaseOperatorExitFence(capability);
-        return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
-      }
-      const { pending } = commitment;
-      this.#detachOperatorExitFence(capability);
-      const predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(contract, pending);
-      this.#beginRepresentationRelease(pending);
-      const effect: ProviderProxySetOperatorExitEffect = {
-        signalsSent: [],
-        containmentAbsent: false,
-        representationAction: 'abandonment-release-started',
-      };
-      const claimDischarge = await operatorExitClaimDischargeAfterRelease(
+      return this.#completeOperatorAbandonment({
+        slot,
+        capability,
+        proof,
+        behavior,
         contract,
-        predecessorClaimDischarge,
-        pending.initialDisposition,
-        pending,
-      );
-      if (claimDischarge.kind === 'fatal-successor-pending') {
-        return this.#completeFatalOperatorExit(pending, behavior, effect);
-      }
-      return { kind: 'abandoned', setIdentity: address, enforcerObservations, claimDischarge, effect };
+        abandonmentEvidence,
+        setIdentity: address,
+        signalsSent: [],
+        resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
+          kind: 'abandoned',
+          setIdentity: address,
+          enforcerObservations,
+          claimDischarge,
+          effect: releaseEffect,
+        }),
+      });
     }
     if (evidence.kind === 'reap-required') {
       const signalsSent: ProviderProxySetContainmentSignal[] = [];
@@ -2842,40 +2834,22 @@ export class ProviderProxySetLifecycle {
             basis: 'recorded-group-unattributable',
             [operatorAbandonmentEvidenceBrand]: true as const,
           });
-          const commitment = this.#commitOperatorAbandonment(slot, abandonmentEvidence, proof);
-          if (commitment.kind === 'held') {
-            this.#recordOperatorExitRefusal(slot, 'operator_exit_disposition_store_write_failed', 'store-repair');
-            this.#releaseOperatorExitFence(capability);
-            return {
-              kind: 'store-unreadable',
-              setIdentity: address,
-              effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
-            };
-          }
-          const { pending } = commitment;
-          this.#detachOperatorExitFence(capability);
-          const predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(contract, pending);
-          this.#beginRepresentationRelease(pending);
-          const effect: ProviderProxySetOperatorExitEffect = {
-            signalsSent,
-            containmentAbsent: false,
-            representationAction: 'abandonment-release-started',
-          };
-          const claimDischarge = await operatorExitClaimDischargeAfterRelease(
+          return this.#completeOperatorAbandonment({
+            slot,
+            capability,
+            proof,
+            behavior,
             contract,
-            predecessorClaimDischarge,
-            pending.initialDisposition,
-            pending,
-          );
-          if (claimDischarge.kind === 'fatal-successor-pending') {
-            return this.#completeFatalOperatorExit(pending, behavior, effect);
-          }
-          return {
-            kind: 'unattributable-group-abandoned',
+            abandonmentEvidence,
             setIdentity: address,
-            claimDischarge,
-            effect,
-          };
+            signalsSent,
+            resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
+              kind: 'unattributable-group-abandoned',
+              setIdentity: address,
+              claimDischarge,
+              effect: releaseEffect,
+            }),
+          });
         }
         this.#recordOperatorExitRefusal(slot, 'operator_exit_recorded_group_unattributable', 'operator-abandonment');
         this.#releaseOperatorExitFence(capability);
@@ -3025,18 +2999,65 @@ export class ProviderProxySetLifecycle {
       enforcerObservations: evidence.observations,
       [operatorAbandonmentEvidenceBrand]: true as const,
     });
+    return this.#completeOperatorAbandonment({
+      slot,
+      capability,
+      proof,
+      behavior,
+      contract,
+      abandonmentEvidence,
+      setIdentity: address,
+      signalsSent: [],
+      resultForClaimDischarge: (claimDischarge, releaseEffect) => ({
+        kind: 'abandoned',
+        setIdentity: address,
+        enforcerObservations: evidence.observations,
+        claimDischarge,
+        effect: releaseEffect,
+      }),
+    });
+  }
+
+  async #completeOperatorAbandonment({
+    slot,
+    capability,
+    proof,
+    behavior,
+    contract,
+    abandonmentEvidence,
+    setIdentity,
+    signalsSent,
+    resultForClaimDischarge,
+  }: Readonly<{
+    slot: EstablishedSlot | CapsuleRecoveringSlot;
+    capability: ProviderProxySetOperatorExitCapability;
+    proof: ProviderProxySetFencedContainmentProof;
+    behavior: 'abandon' | 'boolean-abandon';
+    contract: 'current' | 'boolean';
+    abandonmentEvidence: OperatorAbandonmentEvidence;
+    setIdentity: ProviderProxySetAddress;
+    signalsSent: readonly ProviderProxySetContainmentSignal[];
+    resultForClaimDischarge: (
+      claimDischarge: ProviderProxySetOperatorClaimDischarge,
+      effect: ProviderProxySetOperatorExitEffect,
+    ) => ProviderProxySetBooleanOperatorExitResult;
+  }>): Promise<ProviderProxySetBooleanOperatorExitResult> {
     const commitment = this.#commitOperatorAbandonment(slot, abandonmentEvidence, proof);
     if (commitment.kind === 'held') {
       this.#recordOperatorExitRefusal(slot, 'operator_exit_disposition_store_write_failed', 'store-repair');
       this.#releaseOperatorExitFence(capability);
-      return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
+      return {
+        kind: 'store-unreadable',
+        setIdentity,
+        effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
+      };
     }
     const { pending } = commitment;
     this.#detachOperatorExitFence(capability);
     const predecessorClaimDischarge = predecessorClaimDischargeBeforeRelease(contract, pending);
     this.#beginRepresentationRelease(pending);
-    const effect: ProviderProxySetOperatorExitEffect = {
-      signalsSent: [],
+    const releaseEffect: ProviderProxySetOperatorExitEffect = {
+      signalsSent,
       containmentAbsent: false,
       representationAction: 'abandonment-release-started',
     };
@@ -3047,15 +3068,9 @@ export class ProviderProxySetLifecycle {
       pending,
     );
     if (claimDischarge.kind === 'fatal-successor-pending') {
-      return this.#completeFatalOperatorExit(pending, behavior, effect);
+      return this.#completeFatalOperatorExit(pending, behavior, releaseEffect);
     }
-    return {
-      kind: 'abandoned',
-      setIdentity: address,
-      enforcerObservations: evidence.observations,
-      claimDischarge,
-      effect,
-    };
+    return resultForClaimDischarge(claimDischarge, releaseEffect);
   }
 
   #beginRepresentationRelease(slot: ReleaseDeliveryPendingSlot): void {

@@ -80,6 +80,41 @@ export type GroupMemberObservationDisposition =
   | GroupMemberObservationTransferred
   | GroupMemberObservationHold;
 
+type ObservedGroupMembers = Extract<GroupMemberObservationDisposition, { kind: 'observed' }>;
+
+type ContainedGroupObservation =
+  | Readonly<{ kind: 'absent'; evidence: ObservedGroupMembers }>
+  | Readonly<{ kind: 'alive'; evidence: GroupMemberObservationDisposition }>
+  | Readonly<{ kind: 'unobservable'; evidence: GroupMemberObservationDisposition }>;
+
+type FinalizerState =
+  | Readonly<{ kind: 'available'; failures: number }>
+  | Readonly<{ kind: 'starting' }>
+  | Readonly<{ kind: 'attempting'; process: ReturnType<typeof spawn> }>
+  | Readonly<{ kind: 'retrying'; failures: number; timer: NodeJS.Timeout }>
+  | Readonly<{ kind: 'accepted'; process: ReturnType<typeof spawn> }>;
+
+type ActiveGroupSettlement = {
+  kind: 'active';
+  exit: PendingExit;
+  observationInFlight: boolean;
+  observationHold: Extract<GroupMemberObservationDisposition, { kind: 'held-alive' | 'held-unobservable' }> | null;
+  poll: NodeJS.Timeout | null;
+  finalizer: FinalizerState;
+};
+
+type GroupSettlementState = Readonly<{ kind: 'idle' }> | ActiveGroupSettlement | Readonly<{ kind: 'finished' }>;
+
+type GroupSettlementTerminationDisposition =
+  | Readonly<{ kind: 'not-started' }>
+  | Readonly<{ kind: 'settling' }>
+  | Readonly<{ kind: 'finished' }>;
+
+type ContainedGroupSettlement = Readonly<{
+  begin(exit: PendingExit): Promise<void>;
+  requestTermination(): GroupSettlementTerminationDisposition;
+}>;
+
 const groupMemberObservationOwnershipBrand: unique symbol = Symbol('coral.group-member-observation-ownership');
 
 export type GroupMemberObservationOwnership = Readonly<{
@@ -304,6 +339,201 @@ function waitForRuntimeStartPublication(terminationSignal: AbortSignal): Promise
   });
 }
 
+function createContainedGroupSettlement(
+  time: ReturnType<typeof createRealTimePort>,
+  closeOutputFiles: () => void,
+  terminationRequested: () => boolean,
+): ContainedGroupSettlement {
+  const ownership = createGroupMemberObservationOwnership();
+  const closeListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
+  const groupHandle: ChildProcessLike = {
+    pid: process.pid,
+    exitCode: null,
+    signalCode: null,
+    stdin: null,
+    stdout: null,
+    stderr: null,
+    on(event, listener) {
+      if (event === 'close')
+        closeListeners.push(listener as (code: number | null, signal: NodeJS.Signals | null) => void);
+      return this;
+    },
+    kill(signal) {
+      if (signal === undefined) return false;
+      process.kill(-process.pid, signal);
+      return true;
+    },
+  };
+  let state: GroupSettlementState = { kind: 'idle' };
+  let retainedTermination: NodeJS.Timeout | null = null;
+
+  const classifyObservation = (evidence: GroupMemberObservationDisposition): ContainedGroupObservation => {
+    if (evidence.kind === 'observed') {
+      return evidence.members.every((pid) => pid === process.pid)
+        ? { kind: 'absent', evidence }
+        : { kind: 'alive', evidence };
+    }
+    return evidence.kind === 'held-alive' ? { kind: 'alive', evidence } : { kind: 'unobservable', evidence };
+  };
+
+  const observeChildren = async (active: ActiveGroupSettlement): Promise<ContainedGroupObservation> => {
+    const evidence =
+      active.observationHold === null
+        ? await groupMembers(process.pid, time, ownership)
+        : await active.observationHold.retry();
+    active.observationHold = evidence.kind === 'held-alive' || evidence.kind === 'held-unobservable' ? evidence : null;
+    return classifyObservation(evidence);
+  };
+
+  function finish(absence: Extract<ContainedGroupObservation, { kind: 'absent' }>): void {
+    if (state.kind !== 'active') return;
+    if (absence.evidence.members.some((pid) => pid !== process.pid)) return;
+    const completed = state;
+    state = { kind: 'finished' };
+    if (completed.poll !== null) clearInterval(completed.poll);
+    if (completed.finalizer.kind === 'retrying') clearTimeout(completed.finalizer.timer);
+    if (retainedTermination !== null) clearInterval(retainedTermination);
+    for (const listener of closeListeners) listener(null, null);
+    const finalizer =
+      completed.finalizer.kind === 'attempting' || completed.finalizer.kind === 'accepted'
+        ? completed.finalizer.process
+        : null;
+    if (finalizer?.connected) finalizer.send('cancel');
+    closeOutputFiles();
+    writeControlExit(completed.exit);
+  }
+
+  async function observe(): Promise<void> {
+    if (state.kind !== 'active' || state.observationInFlight) return;
+    const active = state;
+    active.observationInFlight = true;
+    try {
+      const observation = await observeChildren(active);
+      if (observation.kind === 'absent') finish(observation);
+    } finally {
+      if (state === active) active.observationInFlight = false;
+    }
+  }
+
+  function retain(): void {
+    if (state.kind !== 'active' || retainedTermination !== null) return;
+    const active = state;
+    retainedTermination = setInterval(() => {
+      if (state !== active || active.finalizer.kind === 'accepted') return;
+      try {
+        groupHandle.kill('SIGTERM');
+      } catch {
+        // The absence poll must decide whether a rejected signal raced with group disappearance.
+      }
+      if (active.finalizer.kind === 'available') handoff();
+    }, RETAINED_GROUP_TERMINATION_INTERVAL_MS);
+    gracefulKill(groupHandle, { time }, observeProcessLiveness);
+    handoff();
+  }
+
+  function scheduleHandoffRetry(failures: number, retained: boolean): void {
+    if (state.kind !== 'active') return;
+    const active = state;
+    active.finalizer = { kind: 'available', failures };
+    if (retained) return;
+    const delay = GROUP_FINALIZER_RETRY_DELAYS_MS[failures - 1];
+    if (delay === undefined) {
+      retain();
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (state !== active || active.finalizer.kind !== 'retrying' || active.finalizer.timer !== timer) return;
+      active.finalizer = { kind: 'available', failures };
+      handoff();
+    }, delay);
+    active.finalizer = { kind: 'retrying', failures, timer };
+    timer.unref?.();
+  }
+
+  function handoff(): void {
+    if (state.kind !== 'active') return;
+    const active = state;
+    if (active.finalizer.kind === 'retrying') {
+      clearTimeout(active.finalizer.timer);
+      active.finalizer = { kind: 'available', failures: active.finalizer.failures };
+    }
+    if (active.finalizer.kind !== 'available') return;
+    const failures = active.finalizer.failures;
+    const retained = retainedTermination !== null;
+    active.finalizer = { kind: 'starting' };
+
+    let finalizer: ReturnType<typeof spawn>;
+    try {
+      finalizer = spawn(
+        process.execPath,
+        [process.argv[1] ?? '', GROUP_FINALIZER_MODE, String(process.pid), JSON.stringify(active.exit)],
+        { detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] },
+      );
+    } catch {
+      scheduleHandoffRetry(failures + 1, retained);
+      return;
+    }
+    active.finalizer = { kind: 'attempting', process: finalizer };
+
+    const failAttempt = (): void => {
+      if (state !== active || active.finalizer.kind !== 'attempting' || active.finalizer.process !== finalizer) {
+        return;
+      }
+      scheduleHandoffRetry(failures + 1, retained);
+    };
+
+    finalizer.once('message', (message: unknown) => {
+      if (
+        message !== 'ready' ||
+        state !== active ||
+        active.finalizer.kind !== 'attempting' ||
+        active.finalizer.process !== finalizer
+      ) {
+        return;
+      }
+      active.finalizer = { kind: 'accepted', process: finalizer };
+      if (retainedTermination !== null) {
+        clearInterval(retainedTermination);
+        retainedTermination = null;
+      }
+      gracefulKill(groupHandle, { time }, observeProcessLiveness);
+    });
+    finalizer.once('error', failAttempt);
+    finalizer.once('exit', failAttempt);
+    finalizer.once('close', failAttempt);
+    finalizer.unref();
+    finalizer.channel?.unref();
+  }
+
+  const begin = async (exit: PendingExit): Promise<void> => {
+    if (state.kind !== 'idle') return;
+    const active: ActiveGroupSettlement = {
+      kind: 'active',
+      exit,
+      observationInFlight: false,
+      observationHold: null,
+      poll: null,
+      finalizer: { kind: 'available', failures: 0 },
+    };
+    state = active;
+    await observe();
+    if (state !== active) return;
+    if (terminationRequested()) handoff();
+    active.poll = setInterval(() => {
+      void observe();
+    }, GROUP_OBSERVATION_INTERVAL_MS);
+  };
+
+  const requestTermination = (): GroupSettlementTerminationDisposition => {
+    if (state.kind === 'idle') return { kind: 'not-started' };
+    if (state.kind === 'finished') return { kind: 'finished' };
+    handoff();
+    return { kind: 'settling' };
+  };
+
+  return { begin, requestTermination };
+}
+
 async function runWrapper(payloadPath: string | undefined): Promise<void> {
   if (process.platform === 'win32') {
     throw new Error(
@@ -319,201 +549,31 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const stdoutFd = openSync(stdoutPath, 'w', 0o600);
   const stderrFd = openSync(stderrPath, 'w', 0o600);
   const time = createRealTimePort();
-  const groupMemberObservationOwnership = createGroupMemberObservationOwnership();
 
   let child: ReturnType<typeof spawn> | null = null;
   let terminationRequested = false;
   const publicationGateTermination = new AbortController();
   let terminationStarted = false;
-  let exitWritten = false;
-  let pendingExit: PendingExit | null = null;
-  let groupPoll: NodeJS.Timeout | null = null;
-  let groupObservationInFlight = false;
-  let groupMemberObservationHold: Extract<
-    GroupMemberObservationDisposition,
-    { kind: 'held-alive' | 'held-unobservable' }
-  > | null = null;
-  let groupFinalizer: ReturnType<typeof spawn> | null = null;
-  let groupFinalizerReady = false;
-  let groupFinalizerSettled = true;
-  let groupFinalizerFailures = 0;
-  let groupFinalizerRetry: NodeJS.Timeout | null = null;
-  let retainedGroupTermination: NodeJS.Timeout | null = null;
-  const groupCloseListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
-  const groupHandle: ChildProcessLike = {
-    pid: process.pid,
-    exitCode: null,
-    signalCode: null,
-    stdin: null,
-    stdout: null,
-    stderr: null,
-    on(event, listener) {
-      if (event === 'close')
-        groupCloseListeners.push(listener as (code: number | null, signal: NodeJS.Signals | null) => void);
-      return this;
-    },
-    kill(signal) {
-      if (signal === undefined) return false;
-      process.kill(-process.pid, signal);
-      return true;
-    },
-  };
 
   const closeOutputFiles = (): void => {
     try {
       closeSync(stdoutFd);
     } catch {
-      // ignored
+      // Output-close failure must not prevent process-group settlement.
     }
     try {
       closeSync(stderrFd);
     } catch {
-      // ignored
+      // Output-close failure must not prevent process-group settlement.
     }
   };
 
-  const writeExit = (exit: PendingExit): void => {
-    if (exitWritten) return;
-    exitWritten = true;
-    if (groupPoll !== null) clearInterval(groupPoll);
-    if (groupFinalizerRetry !== null) clearTimeout(groupFinalizerRetry);
-    if (retainedGroupTermination !== null) clearInterval(retainedGroupTermination);
-    for (const listener of groupCloseListeners) listener(null, null);
-    if (groupFinalizer?.connected) groupFinalizer.send('cancel');
-    closeOutputFiles();
-    writeControlExit(exit);
-  };
-
-  const observeContainedChildren = async (): Promise<GroupMemberObservationDisposition> => {
-    const disposition =
-      groupMemberObservationHold === null
-        ? await groupMembers(process.pid, time, groupMemberObservationOwnership)
-        : await groupMemberObservationHold.retry();
-    groupMemberObservationHold =
-      disposition.kind === 'held-alive' || disposition.kind === 'held-unobservable' ? disposition : null;
-    return disposition;
-  };
-
-  const observationProvesContainedChildrenAbsent = (observation: GroupMemberObservationDisposition): boolean => {
-    return observation.kind === 'observed' && observation.members.every((pid) => pid === process.pid);
-  };
-
-  function exerciseRetainedGroupTermination(exit: PendingExit): void {
-    if (exitWritten || groupFinalizerReady) return;
-    try {
-      groupHandle.kill('SIGTERM');
-    } catch {
-      // The absence poll must decide whether a rejected signal raced with group disappearance.
-    }
-    if (groupFinalizerSettled && groupFinalizerRetry === null) handExitToGroupFinalizer(exit, true);
-  }
-
-  function retainGroupTerminationAuthority(exit: PendingExit): void {
-    if (retainedGroupTermination !== null) return;
-    retainedGroupTermination = setInterval(() => {
-      exerciseRetainedGroupTermination(exit);
-    }, RETAINED_GROUP_TERMINATION_INTERVAL_MS);
-    gracefulKill(groupHandle, { time }, observeProcessLiveness);
-    handExitToGroupFinalizer(exit, true);
-  }
-
-  function handExitToGroupFinalizer(exit: PendingExit, retainedAuthority = false): void {
-    if (exitWritten || groupFinalizerReady || !groupFinalizerSettled || groupFinalizerRetry !== null) return;
-    groupFinalizerSettled = false;
-
-    function scheduleRetry(): void {
-      if (exitWritten || groupFinalizerReady) return;
-      if (retainedAuthority) return;
-      const delay = GROUP_FINALIZER_RETRY_DELAYS_MS[groupFinalizerFailures];
-      groupFinalizerFailures += 1;
-      if (delay === undefined) {
-        retainGroupTerminationAuthority(exit);
-        return;
-      }
-      groupFinalizerRetry = setTimeout(() => {
-        groupFinalizerRetry = null;
-        handExitToGroupFinalizer(exit);
-      }, delay);
-      groupFinalizerRetry.unref?.();
-    }
-
-    let finalizer: ReturnType<typeof spawn>;
-    try {
-      finalizer = spawn(
-        process.execPath,
-        [process.argv[1] ?? '', GROUP_FINALIZER_MODE, String(process.pid), JSON.stringify(exit)],
-        { detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] },
-      );
-    } catch {
-      groupFinalizerSettled = true;
-      scheduleRetry();
-      return;
-    }
-    groupFinalizer = finalizer;
-    let attemptSettled = false;
-
-    const failAttempt = (): void => {
-      if (attemptSettled) return;
-      attemptSettled = true;
-      groupFinalizerSettled = true;
-      if (groupFinalizer === finalizer) groupFinalizer = null;
-      scheduleRetry();
-    };
-
-    finalizer.once('message', (message: unknown) => {
-      if (message !== 'ready' || attemptSettled) return;
-      attemptSettled = true;
-      groupFinalizerReady = true;
-      groupFinalizerSettled = true;
-      if (retainedGroupTermination !== null) {
-        clearInterval(retainedGroupTermination);
-        retainedGroupTermination = null;
-      }
-      gracefulKill(groupHandle, { time }, observeProcessLiveness);
-    });
-    finalizer.once('error', failAttempt);
-    finalizer.once('exit', failAttempt);
-    finalizer.once('close', failAttempt);
-    finalizer.unref();
-    finalizer.channel?.unref();
-  }
-
-  const observeContainedGroup = async (exit: PendingExit): Promise<void> => {
-    if (groupObservationInFlight || exitWritten) return;
-    groupObservationInFlight = true;
-    try {
-      if (observationProvesContainedChildrenAbsent(await observeContainedChildren())) writeExit(exit);
-    } finally {
-      groupObservationInFlight = false;
-    }
-  };
-
-  const beginContainedGroupSettlement = async (exit: PendingExit): Promise<void> => {
-    if (pendingExit !== null) return;
-    pendingExit = exit;
-    if (observationProvesContainedChildrenAbsent(await observeContainedChildren())) {
-      writeExit(exit);
-      return;
-    }
-
-    if (terminationRequested) handExitToGroupFinalizer(exit);
-    groupPoll = setInterval(() => {
-      void observeContainedGroup(exit);
-    }, GROUP_OBSERVATION_INTERVAL_MS);
-  };
+  const groupSettlement = createContainedGroupSettlement(time, closeOutputFiles, () => terminationRequested);
 
   const terminateChild = (): void => {
     terminationRequested = true;
     publicationGateTermination.abort();
-    if (pendingExit !== null) {
-      if (groupFinalizerRetry !== null) {
-        clearTimeout(groupFinalizerRetry);
-        groupFinalizerRetry = null;
-      }
-      if (retainedGroupTermination === null) handExitToGroupFinalizer(pendingExit);
-      else handExitToGroupFinalizer(pendingExit, true);
-      return;
-    }
+    if (groupSettlement.requestTermination().kind !== 'not-started') return;
     if (child === null || terminationStarted) return;
     terminationStarted = true;
     gracefulKill(child as unknown as ChildProcessLike, { time }, observeProcessLiveness);
@@ -561,7 +621,7 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
   const settleChildCompletion = (exit: PendingExit): void => {
     if (childCompletionSettled) return;
     childCompletionSettled = true;
-    void beginContainedGroupSettlement(exit);
+    void groupSettlement.begin(exit);
   };
   child.once('close', (code, signal) => {
     settleChildCompletion({ code, signal, wrapperExitCode: 0 });

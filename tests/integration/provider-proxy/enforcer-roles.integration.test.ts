@@ -164,8 +164,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
       holderCheckAccelerated: false,
     };
   };
-  // Each role owns its own authority in production (§7); these fakes never publish, so the fake `deadlines`
-  // above stays authoritative for these tests.
+  // Each role must retain an independent holder authority.
   const guardianHolderAuthority = createControlHolderAuthority();
   const reaperHolderAuthority = createControlHolderAuthority();
   const observeHolder = (): Promise<ProcessLiveness> => Promise.resolve('unknown' as const);
@@ -689,10 +688,7 @@ describe('provider-proxy guardian and reaper', () => {
 
   // `guardian.containment-commit.v1` still refuses via its own `requireEnforcer()` while no containment is
   // recorded (unchanged), but that state is no longer reachable through active control at all: control
-  // cannot open in the first place without a recorded containment (see the `guardian.open.v1` test below),
-  // and `containment-commit.v1` is an `authority: 'active'` method — reachable only once open already
-  // succeeded, which by then guarantees containment is recorded. The equivalent guarantee for a method
-  // reachable without active control (`authority: 'pairing'`) is still exercised directly, above.
+  // Active control methods must remain unreachable before containment is recorded.
 
   it('refuses guardian.open.v1 while no containment is recorded, and the nonce survives for a later successful open', async () => {
     const set = await startSet({ recordContainment: false });
@@ -1394,8 +1390,7 @@ describe('provider-proxy guardian and reaper', () => {
       const operation = set.operationFor();
       const reservation = randomUUID();
 
-      // Written in this order — the registration's own frame goes out first — but the guarantee below holds
-      // for whichever the guardian actually processes first: the two branches are exhaustive.
+      // Either processing order must preserve the same exhaustive outcomes.
       const registration = strictTestExchange(
         set.proxyChannel,
         'guardian.register-provider-root.v1',
@@ -1607,8 +1602,6 @@ describe('provider-proxy guardian and reaper', () => {
       const reaperStatus = (await strictTestExchange(reaperControl, 'reaper.holder-status.v1', credential, 5_000)) as {
         phase: string;
       };
-      // Published through the guardian's own forward over the paired channel — the coordinator never calls the
-      // reaper directly for this transaction.
       expect(reaperStatus.phase).toBe('published');
 
       const afterPublish = (await strictTestExchange(

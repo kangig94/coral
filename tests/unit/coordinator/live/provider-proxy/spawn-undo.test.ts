@@ -269,15 +269,9 @@ describe('guardian spawn undo', () => {
         },
       },
     } as unknown as Runtime;
-    const undo = buildGuardianSpawnUndo(
-      runtime,
-      {
-        child: { on: vi.fn().mockReturnThis() },
-        pid: guardian.pid,
-        incarnation: guardian.incarnation,
-      } as unknown as SpawnedRoleProcess,
-      'linux',
-      (pid) => (pid === proxy.pid ? proxy.incarnation : guardian.incarnation),
+    const { spawned } = guardianSpawnWithEvents();
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', (pid) =>
+      pid === proxy.pid ? proxy.incarnation : guardian.incarnation,
     );
     undo.bindProxyIdentity(proxy);
 
@@ -311,15 +305,9 @@ describe('guardian spawn undo', () => {
         sleep: async () => undefined,
       },
     } as unknown as Runtime;
-    const undo = buildGuardianSpawnUndo(
-      runtime,
-      {
-        child: { on: vi.fn().mockReturnThis() },
-        pid: guardian.pid,
-        incarnation: guardian.incarnation,
-      } as unknown as SpawnedRoleProcess,
-      'linux',
-      (pid) => (pid === proxy.pid ? proxy.incarnation : guardian.incarnation),
+    const { spawned } = guardianSpawnWithEvents();
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', (pid) =>
+      pid === proxy.pid ? proxy.incarnation : guardian.incarnation,
     );
     undo.bindProxyIdentity(proxy);
 
@@ -358,16 +346,8 @@ describe('guardian spawn undo', () => {
       onFault: () => () => undefined,
       close,
     } satisfies ControlClient;
-    const undo = buildGuardianSpawnUndo(
-      runtime,
-      {
-        child: { on: vi.fn().mockReturnThis() },
-        pid: guardian.pid,
-        incarnation: guardian.incarnation,
-      } as unknown as SpawnedRoleProcess,
-      'linux',
-      () => guardian.incarnation,
-    );
+    const { spawned } = guardianSpawnWithEvents();
+    const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => guardian.incarnation);
     undo.bindControl({ client, guardian, reaper, proxy });
     const steps: ProviderProxyAcquisitionSteps = {
       createCapsules: async () => ({ label: 'capsules', run: () => undefined }),

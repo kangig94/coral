@@ -77,9 +77,6 @@ afterAll(() => containmentProofDb.close());
 
 const mockedEnsureProxySet = vi.mocked(ensureProviderProxySet);
 
-/** `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap` — derived from whatever `stopAndReap`
- *  a fixture configures, so every layer built on top of this one stays observable through the surface
- *  production code actually calls without a second, parallel mock at each layer. */
 function commitContainmentFrom(
   stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'],
 ): DurableProviderProxyOperationAuthority['commitContainment'] {

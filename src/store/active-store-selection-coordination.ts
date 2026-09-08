@@ -563,6 +563,21 @@ function transitionForSelectionEvidence(
   throw new Error('Active-store transition evidence is incomplete.');
 }
 
+async function recoverCurrentSelectionFromEvidence(
+  runtime: Runtime,
+  authority: BackendStoreResetAuthority,
+  options: ActiveStoreSelectionProtocolOptions,
+  transition: ActiveStoreTransition,
+  adoption: GenerationAdoptionLockLease,
+): Promise<Extract<ActiveStoreSelectionProtocolResult, { kind: 'opened' }>> {
+  publishTransitionOrRefuse(runtime, transition);
+  publishSelectionOrRefuse(runtime, options.currentSelection);
+  return {
+    kind: 'opened',
+    db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
+  };
+}
+
 export async function coordinateActiveStoreSelection(
   runtime: Runtime,
   authority: BackendStoreResetAuthority,
@@ -612,12 +627,7 @@ export async function coordinateActiveStoreSelection(
     }
     if (selection.kind === 'absent' || selection.kind === 'malformed') {
       const transition = transitionForSelectionEvidence(runtime, options.currentSelection, selection);
-      publishTransitionOrRefuse(runtime, transition);
-      publishSelectionOrRefuse(runtime, options.currentSelection);
-      return {
-        kind: 'opened',
-        db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
-      };
+      return await recoverCurrentSelectionFromEvidence(runtime, authority, options, transition, adoption);
     }
 
     if (selection.kind === 'v1') {
@@ -639,12 +649,7 @@ export async function coordinateActiveStoreSelection(
           { kind: 'valid', selection: resolved },
           validation.evidence,
         );
-        publishTransitionOrRefuse(runtime, transition);
-        publishSelectionOrRefuse(runtime, options.currentSelection);
-        return {
-          kind: 'opened',
-          db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
-        };
+        return await recoverCurrentSelectionFromEvidence(runtime, authority, options, transition, adoption);
       }
       publishSelectionOrRefuse(runtime, options.currentSelection);
       return {
@@ -669,12 +674,7 @@ export async function coordinateActiveStoreSelection(
         selection,
         validation.evidence,
       );
-      publishTransitionOrRefuse(runtime, transition);
-      publishSelectionOrRefuse(runtime, options.currentSelection);
-      return {
-        kind: 'opened',
-        db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
-      };
+      return await recoverCurrentSelectionFromEvidence(runtime, authority, options, transition, adoption);
     }
 
     if (relation !== 'exact') {

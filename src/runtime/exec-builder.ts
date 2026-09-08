@@ -66,9 +66,8 @@ function appendOutput(
 export function buildExecPromise(options: BuildExecPromiseOptions): Promise<ExecResult> {
   // Group containment requires an uncollected leader; after collection, its process-group id must
   // not be treated as attributable or signalled. An exec settlement never claims descendant absence,
-  // only the command's answer or its absence. A caller requiring an owned tree must retain cleanup
-  // authority (see retainSpawnedProcessGroupCleanup in src/infra/process-supervision.ts) or use the
-  // durable wrapper.
+  // only the command's answer or its absence. A caller requiring an owned tree must retain cleanup authority
+  // or use the durable wrapper. See retainSpawnedProcessGroupCleanup in src/infra/process-supervision.ts.
   const {
     args,
     clearTimeout,

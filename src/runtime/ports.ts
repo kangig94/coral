@@ -76,7 +76,7 @@ export type DurableLaunchOptions = {
       signalAuthority?: DurableLaunchSignalAuthority;
     }>,
   ): void;
-  /** Runs after the wrapper identifies its child and before launch readiness is returned. */
+  /** Launch readiness must not be returned before this callback completes. */
   onSpawned?(launch: DurableProvisionalLaunch): void;
 };
 

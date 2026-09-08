@@ -307,8 +307,6 @@ async function createSharedSetHarness(control: SharedSetControl) {
       ? { unconfirmed: 'unexpected settlement containment' }
       : { disappearanceReceipt: `${control}-containment-absent` },
   );
-  // `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap`; deriving it from the same mock
-  // keeps every `stopAndReap`-observing assertion below meaningful without a second, parallel spy.
   const commitContainment: DurableProviderProxyOperationAuthority['commitContainment'] = async (signal) => {
     const result = await stopAndReap(signal);
     return 'disappearanceReceipt' in result
@@ -1320,9 +1318,6 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
     });
     const installation = await base.installRecoveryCredential(new AbortController().signal);
     if (installation.kind !== 'installed') throw new Error(`recovery credential ${installation.kind}`);
-    // `#runContainmentAttempt` calls `commitContainment`, not `stopAndReap` — `stopAndReap` is now only a
-    // thin wrapper over it (see `set-authority.ts`). Spying on `commitContainment` is what actually observes
-    // production code's call; `stopAndReap` is wired to call through it too, so either surface reflects it.
     const commitContainment = vi.fn(base.commitContainment);
     const authority = createProviderProxyOperationAuthority({
       base: {

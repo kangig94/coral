@@ -125,8 +125,6 @@ export type ProviderRoleMainPorts = Readonly<{
   /** Injected for tests; defaults to the real embedded-vs-adjacent-manifest strict identity check. */
   resolveStrictIdentity?(): StrictBundleIdentityResult;
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
-  /** Injected for tests; defaults to the runtime's own non-blocking identity-bound observer
-   *  (`runtime.process.observeRecordedProcessAsync`). */
   observeRecordedProcessAsync?: AsyncRecordedProcessObserver;
   /** Injected for tests; defaults to the real `process.exit`. Called once a guardian or reaper's enforcement
    *  outcome has settled and its own control has closed — its only reason to keep running was bounding one
@@ -825,8 +823,7 @@ export async function startProviderGuardianRole(
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'guardian', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(guardianRoleClockScope);
   const deadlineConfiguration = resolveProviderProxyDeadlineConfiguration(ports.runtime.env);
-  // One `ControlHolderAuthority` per process (§7), constructed once here and shared with both the deadline
-  // machine and the guardian's own control endpoint/enforcer — never a second instance built by either.
+  // Guardian deadlines and enforcement must share one holder authority.
   const holderAuthority = createControlHolderAuthority({ wallClockNow: ports.runtime.time.now });
   const deadlines = buildDeadlines(clock, deadlineConfiguration, ports, holderAuthority);
   const containmentEnvironment = buildContainmentEnvironment(clock, ports);
@@ -963,8 +960,7 @@ export async function startProviderGuardianRole(
             outcome: { kind: 'containment-absent', disappearanceReceipt: 'no-containment-recorded' },
           };
         }
-        // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
-        // no remote peer or autonomous observation could construct this authority.
+        // Local signal authority must be minted only while handling that signal.
         return armed.giveUp(mintLocalSignalTeardownAuthorization());
       },
     };
@@ -989,8 +985,7 @@ export async function startProviderReaperRole(
 ): Promise<ReaperRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'reaper', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(reaperRoleClockScope);
-  // One `ControlHolderAuthority` per process (§7), constructed once here and shared with both the deadline
-  // machine and the reaper's own control endpoint/enforcer — never a second instance built by either.
+  // Reaper deadlines and enforcement must share one holder authority.
   const holderAuthority = createControlHolderAuthority({ wallClockNow: ports.runtime.time.now });
   const deadlines = buildDeadlines(
     clock,
@@ -1049,8 +1044,7 @@ export async function startProviderReaperRole(
           .finally(() => exitProcess(0));
         return { kind: 'settled', outcome };
       }
-      // A fresh capability, minted here inside the signal handler itself: this process was signalled, and
-      // no remote peer or autonomous observation could construct this authority.
+      // Local signal authority must be minted only while handling that signal.
       return armed.giveUp(mintLocalSignalTeardownAuthorization());
     },
   };
@@ -1434,15 +1428,14 @@ let activeRoleShutdownDispose: (() => void) | null = null;
 export async function runProviderRoleMain(mode: ProviderRoleArgv, options: ProviderRoleMainOptions): Promise<number> {
   if (mode.role === 'none') return 0;
 
-  // Every role logs to stderr (`backendLog`), and `role-spawn.ts` spawns roles through the short-lived-child
-  // path — piped, not redirected to a file. If this role's parent (the coordinator spawning the guardian, or
-  // the guardian spawning the reaper/proxy) exits first, the read end of that pipe closes, and this
-  // process's next stderr write raises EPIPE. A `Writable` stream's `'error'` with no listener is an
-  // uncaught exception, which would kill the very enforcer that exists to bound coordinator loss — so the
-  // guard is installed before anything else in this role can log. `stdout` is guarded for the same reason,
-  // though no role writes to it today.
-  process.stdout.on('error', () => {});
-  process.stderr.on('error', () => {});
+  // An unhandled stream `'error'` would kill the enforcer that bounds coordinator loss, so these guards must
+  // be installed before this role can log. Only EPIPE from a closed output pipe is safe to ignore.
+  const guardParentPipe = (error: Error): void => {
+    if ((error as NodeJS.ErrnoException).code === 'EPIPE') return;
+    throw error;
+  };
+  process.stdout.on('error', guardParentPipe);
+  process.stderr.on('error', guardParentPipe);
 
   const runtime = options.runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
   activeRoleShutdownDispose?.();

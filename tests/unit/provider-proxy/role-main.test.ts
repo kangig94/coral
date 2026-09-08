@@ -238,14 +238,6 @@ vi.mock('#src/provider-proxy/guardian.js', async (importOriginal) => {
   };
 });
 
-/**
- * `runProviderRoleMain`'s dispatch has no test anywhere: `process-topology.integration.test.ts` drives
- * `startProviderGuardianRole`/`startProviderReaperRole`/`startProviderProxyRole` directly, never through this
- * function's own `mode.role` branch, and never exercises `'none'` at all. `buildEnforcementOutcomeHandlers`
- * (BLOCKING 3) is likewise only reachable, in production, from deep inside a real guardian/reaper socket —
- * this exercises its close/mark-exited/exit contract directly, with fakes standing in for all three.
- */
-
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
@@ -574,6 +566,42 @@ describe('runProviderRoleMain', () => {
     // No capsule path is even given — reaching a non-zero result, or a throw, would prove this fell through
     // to a role branch rather than staying the documented no-op.
     await expect(runProviderRoleMain({ role: 'none' }, { pluginRoot: '/unused' })).resolves.toBe(0);
+  });
+
+  it('ignores a closed parent pipe but rethrows every other output stream error', async () => {
+    const stdoutGuards: Array<(error: Error) => void> = [];
+    const stderrGuards: Array<(error: Error) => void> = [];
+    vi.spyOn(process.stdout, 'on').mockImplementation(((event: string, listener: (error: Error) => void) => {
+      if (event === 'error') stdoutGuards.push(listener);
+      return process.stdout;
+    }) as typeof process.stdout.on);
+    vi.spyOn(process.stderr, 'on').mockImplementation(((event: string, listener: (error: Error) => void) => {
+      if (event === 'error') stderrGuards.push(listener);
+      return process.stderr;
+    }) as typeof process.stderr.on);
+
+    await runProviderRoleMain(
+      { role: 'guardian', capsulePath: '/missing-provider-role-capsule' },
+      { pluginRoot: '/unused' },
+    ).catch(() => undefined);
+
+    const stdoutGuard = stdoutGuards[0];
+    const stderrGuard = stderrGuards[0];
+    if (stdoutGuard === undefined || stderrGuard === undefined) {
+      throw new Error('role stream guards were not installed');
+    }
+    expect(stderrGuard).toBe(stdoutGuard);
+    const brokenPipe = Object.assign(new Error('parent pipe closed'), { code: 'EPIPE' });
+    expect(() => stdoutGuard(brokenPipe)).not.toThrow();
+
+    const unexpected = Object.assign(new Error('unexpected stream failure'), { code: 'EIO' });
+    let observed: unknown;
+    try {
+      stderrGuard(unexpected);
+    } catch (error: unknown) {
+      observed = error;
+    }
+    expect(observed).toBe(unexpected);
   });
 
   it('rejects a mismatched construction abandonment before accepting the exact guardian signal exit', async () => {
@@ -1149,8 +1177,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
 
     handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'receipt' });
 
-    // Deferred, not run inline: an in-flight `guardian.containment-commit.v1` caller's own response has to
-    // reach the wire before this closes anything out from under it.
+    // Close-and-exit must remain deferred until an in-flight control response can be written.
     expect(markExited).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(exitProcess).not.toHaveBeenCalled();

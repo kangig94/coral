@@ -243,6 +243,45 @@ async function waitForSpawnedProcessGroupGrace(
   }
 }
 
+type SpawnedProcessGroupSignalPhaseDisposition<ProcessGroupId extends number> =
+  | Readonly<{ kind: 'still-alive' }>
+  | Readonly<{
+      kind: 'disposition';
+      disposition: SpawnedProcessGroupCleanupDisposition<ProcessGroupId>;
+    }>;
+
+async function runSpawnedProcessGroupSignalPhase<ProcessGroupId extends number>(
+  cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
+  runtime: SpawnedProcessGroupCleanupRuntime,
+  processSignal: NodeJS.Signals,
+  graceMs: number,
+  signal?: AbortSignal,
+): Promise<SpawnedProcessGroupSignalPhaseDisposition<ProcessGroupId>> {
+  const delivery = signalSpawnedProcessGroup(cleanup, runtime, processSignal, signal);
+  if (delivery !== 'delivered') {
+    return {
+      kind: 'disposition',
+      disposition: dispositionForSpawnedProcessGroupObservation(cleanup, runtime, delivery),
+    };
+  }
+  const immediateObservation = observeSpawnedProcessGroup(cleanup, runtime);
+  if (immediateObservation !== 'alive') {
+    return {
+      kind: 'disposition',
+      disposition: dispositionForSpawnedProcessGroupObservation(cleanup, runtime, immediateObservation),
+    };
+  }
+  await waitForSpawnedProcessGroupGrace(runtime, graceMs, signal);
+
+  const observation = observeSpawnedProcessGroup(cleanup, runtime);
+  return observation === 'alive' && !signal?.aborted
+    ? { kind: 'still-alive' }
+    : {
+        kind: 'disposition',
+        disposition: dispositionForSpawnedProcessGroupObservation(cleanup, runtime, observation),
+      };
+}
+
 export async function cleanupSpawnedProcessGroup<ProcessGroupId extends number>(
   cleanup: SpawnedProcessGroupCleanup<ProcessGroupId>,
   runtime: SpawnedProcessGroupCleanupRuntime,
@@ -252,26 +291,13 @@ export async function cleanupSpawnedProcessGroup<ProcessGroupId extends number>(
   if (initialObservation !== 'alive' || signal?.aborted)
     return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, initialObservation);
 
-  const sigterm = signalSpawnedProcessGroup(cleanup, runtime, 'SIGTERM', signal);
-  if (sigterm !== 'delivered') return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, sigterm);
-  const immediatelyAfterSigterm = observeSpawnedProcessGroup(cleanup, runtime);
-  if (immediatelyAfterSigterm !== 'alive')
-    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, immediatelyAfterSigterm);
-  await waitForSpawnedProcessGroupGrace(runtime, SIGTERM_GRACE_MS, signal);
+  const sigterm = await runSpawnedProcessGroupSignalPhase(cleanup, runtime, 'SIGTERM', SIGTERM_GRACE_MS, signal);
+  if (sigterm.kind === 'disposition') return sigterm.disposition;
 
-  const afterSigterm = observeSpawnedProcessGroup(cleanup, runtime);
-  if (afterSigterm !== 'alive' || signal?.aborted)
-    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, afterSigterm);
-
-  const sigkill = signalSpawnedProcessGroup(cleanup, runtime, 'SIGKILL', signal);
-  if (sigkill !== 'delivered') return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, sigkill);
-  const immediatelyAfterSigkill = observeSpawnedProcessGroup(cleanup, runtime);
-  if (immediatelyAfterSigkill !== 'alive')
-    return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, immediatelyAfterSigkill);
-  await waitForSpawnedProcessGroupGrace(runtime, SIGKILL_GRACE_MS, signal);
-
-  const afterSigkill = observeSpawnedProcessGroup(cleanup, runtime);
-  return dispositionForSpawnedProcessGroupObservation(cleanup, runtime, afterSigkill);
+  const sigkill = await runSpawnedProcessGroupSignalPhase(cleanup, runtime, 'SIGKILL', SIGKILL_GRACE_MS, signal);
+  return sigkill.kind === 'disposition'
+    ? sigkill.disposition
+    : dispositionForSpawnedProcessGroupObservation(cleanup, runtime, 'alive');
 }
 
 type GracefulKillByPidSignalRefusal = Readonly<{

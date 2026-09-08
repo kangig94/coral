@@ -23,20 +23,13 @@ import type {
  * shutdown needs ordered relinquishment, while neither should reach into role clients directly.
  */
 
-/**
- * `commitContainment`'s three-way outcome. Distinguishes what `stopAndReap`'s coarse `unconfirmed` collapses:
- * whether the guardian commit is proven not to have latched (`not-sent` — a local send failure, or a
- * structured refusal before the destructive latch) or may have latched without confirmed absence
- * (`outcome-unknown` — the request cannot be un-sent, so silence or a post-latch failure must not be read as
- * either a completed teardown or a proven no-op).
- */
+/** Commit results must distinguish confirmed absence, proven non-attempt, and unknown outcome. */
 export type ContainmentCommitOutcome =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'not-sent'; error: string }>
   | Readonly<{ kind: 'outcome-unknown'; error: string }>;
 
 export interface ProviderProxyContainmentAuthority {
-  /** Classifies whether the guardian commit was absent, proven unsent, or left with an unknown outcome. */
   commitContainment(signal: AbortSignal): Promise<ContainmentCommitOutcome>;
   /** Heartbeats must stop before control closes so no lease is renewed during relinquishment. */
   stopHeartbeats(): void;

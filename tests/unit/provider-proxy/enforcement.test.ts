@@ -945,8 +945,7 @@ describe('the killed-coordinator death timetable (AC9)', () => {
     return { mintChallenge: () => `ac9-${(count += 1)}` };
   }
 
-  /** Wires the real deadline machine to the real armed enforcer — production defaults, no manual `bounds`
-   *  stand-in — so a settled outcome's elapsed time is the timetable this criterion asserts, not a mock's. */
+  /** Timetable assertions must exercise the real deadline and enforcer logic. */
   function createTimetableHarness(observe: () => Promise<ProcessLiveness>) {
     let elapsedMs = 0n;
     const clock = createMonotonicClock(enforcementClockScope, {

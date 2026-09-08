@@ -466,8 +466,7 @@ describe('guardian control-method request schemas, shared with their one coordin
     const { proxy: _omitted, ...missingProxy } = valid;
     expect(guardianContainmentCommitParamsSchema.safeParse(missingProxy).success).toBe(false);
 
-    // No `providerRoots` field: the guardian's own enforcer supplies the authoritative cumulative set, so a
-    // caller naming one is presenting a field this schema has no place for.
+    // Coordinator requests must not supply containment roots.
     expect(guardianContainmentCommitParamsSchema.safeParse({ ...valid, providerRoots: [providerRoot] }).success).toBe(
       false,
     );

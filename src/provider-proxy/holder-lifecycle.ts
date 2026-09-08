@@ -2,31 +2,15 @@ import type { AsyncRecordedProcessObserver } from '../infra/node-process.js';
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import { sameControlTenancyHolder, type ControlEpoch, type ControlTenancyHolder } from './control-endpoint.js';
 
-/**
- * The complete installed holder identity: who currently holds control, and the epoch at which they earned it.
- * Separate from a bare `ControlTenancyHolder` because an epoch names one specific *admission* of that holder
- * — a reattach on the same holder keeps the epoch, a successor admission always advances it — and every
- * capability below is bound to both fields together, never the holder alone.
- */
 export type ControlHolderIdentity = Readonly<{ controlEpoch: ControlEpoch; holder: ControlTenancyHolder }>;
 
-/**
- * `acquisition-provisional` until initial three-role publication commits; `published` afterward. The
- * transition is one-way, and no operation result or claim authority may escape a set while any of its three
- * roles is still `acquisition-provisional`.
- */
+/** Operation results and claim authority must not escape while acquisition remains provisional. */
 export type AcquisitionPhase = 'acquisition-provisional' | 'published';
 
-/**
- * The starvation-readable disposition `*.holder-status.v1` serves — deliberately not this module's own
- * `HolderDisposition`: `absent` is the word an observation spends to construct teardown authority, and a
- * status read must never carry a word that could be mistaken for that capability. `departed` names the same
- * canonical evidence without minting anything.
- */
+/** Status reads must not use `absent`; that disposition is reserved for observations that mint authority. */
 export type HolderStatusDisposition = 'alive' | 'unobservable' | 'departed';
 
-/** The identity and disposition share one snapshot so a reader cannot combine different holder admissions.
- *  `changedAtMs` is wall-clock epoch milliseconds, never a process-local monotonic instant. */
+/** `changedAtMs` must be wall-clock epoch milliseconds, never a process-local monotonic instant. */
 export type HolderStatusSnapshot = Readonly<{
   identity: ControlHolderIdentity;
   disposition: HolderStatusDisposition;
@@ -36,23 +20,19 @@ export type HolderStatusSnapshot = Readonly<{
 
 export type ControlHolderAuthorityOptions = Readonly<{
   wallClockNow?: () => number;
-  /** Fired synchronously, exactly once per recorded transition — never on a repeated identical observation,
-   *  and never batched. */
+  /** Transition notifications must be synchronous and unbatched; repeated identical observations must not notify. */
   onTransition?: (transition: HolderStatusSnapshot) => void;
 }>;
 
 export interface ControlHolderAuthority {
   /** Installs only a holder whose control epoch is strictly greater than the currently installed epoch. */
   install(identity: ControlHolderIdentity): void;
-  /** Returns `null` until a holder has been installed. */
   current(): ControlHolderIdentity | null;
   phase(): AcquisitionPhase;
-  /** One-way `acquisition-provisional` -> `published`. Idempotent: publishing an already-published authority
-   *  changes nothing. */
+  /** Publication must be one-way and idempotent. */
   publish(): void;
   /** An observation may change status only while its exact holder admission remains installed. */
   recordObservation(subject: ControlHolderIdentity, disposition: HolderStatusDisposition): void;
-  /** Returns `null` until a holder has been installed. */
   status(): HolderStatusSnapshot | null;
 }
 
@@ -78,8 +58,7 @@ export function createControlHolderAuthority(options: ControlHolderAuthorityOpti
         );
       }
       installed = identity;
-      // A successor's own liveness is unobserved until this authority's own next check confirms it — never
-      // inherited from the predecessor's last recorded disposition.
+      // Predecessor evidence must never determine a successor's liveness.
       transitionTo(identity, 'unobservable');
     },
     current: (): ControlHolderIdentity | null => installed,
@@ -102,19 +81,9 @@ export function createControlHolderAuthority(options: ControlHolderAuthorityOpti
   });
 }
 
-/**
- * The provider-proxy three-answer disposition: what the identity-bound probe below found. `absent` carries
- * the one capability it authorizes; `alive` and `unobservable` carry nothing to authorize, because pid
- * liveness alone — and the inability to observe at all — must never be read as evidence either way (§11).
- */
 export type HolderDisposition = 'alive' | 'absent' | 'unobservable';
 
-/**
- * `observedAt` is the instant the identity evidence was actually obtained — when the probe's own liveness
- * and incarnation reads resolved — never the later instant a caller gets around to consuming the result. A
- * caller that renews a schedule from this timestamp cannot silently borrow extra tolerance a queued or
- * not-before-gated consumption never earned.
- */
+/** `observedAt` must name when the identity-bound observation completed, not when its result is consumed. */
 export type HolderObservation<Scope extends symbol> =
   | Readonly<{
       disposition: 'alive';
@@ -133,11 +102,7 @@ export type HolderObservation<Scope extends symbol> =
       authorization: ObservedHolderAbsenceAuthorization;
     }>;
 
-/**
- * Unforgeable: the branding symbol below is module-private, so no object literal built from `controlEpoch`
- * and `holder` alone — however exact a match — can be typed as this capability. Only `observeControlHolder`,
- * on a canonical `absent` result, constructs one.
- */
+/** Observed-absence authorization must be minted only from canonical `absent` evidence. */
 declare const observedHolderAbsenceBrand: unique symbol;
 export type ObservedHolderAbsenceAuthorization = Readonly<{
   readonly [observedHolderAbsenceBrand]: true;
@@ -145,12 +110,7 @@ export type ObservedHolderAbsenceAuthorization = Readonly<{
   readonly holder: ControlTenancyHolder;
 }>;
 
-/**
- * Unforgeable the same way `ObservedHolderAbsenceAuthorization` is, and not substitutable for it despite
- * carrying the identical two public fields: the branding symbols differ, so a value typed as one can never be
- * assigned where the other is expected. The two meet only inside the enforcer's own private idempotent reap;
- * neither may authorize the other's path.
- */
+/** Explicit-teardown and observed-absence authorizations must remain non-substitutable. */
 declare const explicitTeardownBrand: unique symbol;
 export type ExplicitTeardownAuthorization = Readonly<{
   readonly [explicitTeardownBrand]: true;
@@ -158,17 +118,7 @@ export type ExplicitTeardownAuthorization = Readonly<{
   readonly holder: ControlTenancyHolder;
 }>;
 
-/**
- * Observes the authority's currently admitted holder through `observe` and maps its stricter
- * `alive | absent | unknown` onto this module's `alive | absent | unobservable`, minting
- * `ObservedHolderAbsenceAuthorization` only on canonical `absent`.
- *
- * The identity handed to `observe`, and the identity the capability is bound to, is `admitted` — read once,
- * before `observe` runs — never a later re-read of `authority.current()`. A successor installed while the
- * probe is in flight must not make this mint a capability naming a holder nobody just observed absent;
- * `controlHolderAuthorizationIsCurrent` is the separate, later check that catches exactly that race (and any
- * later one) at consumption time.
- */
+/** The observation and any authorization it mints must bind to the same pre-probe admission. */
 export async function observeControlHolder<Scope extends symbol>(
   authority: ControlHolderAuthority,
   observe: AsyncRecordedProcessObserver,
@@ -176,8 +126,6 @@ export async function observeControlHolder<Scope extends symbol>(
 ): Promise<HolderObservation<Scope>> {
   const admitted = authority.current();
   if (admitted === null) {
-    // Nothing has ever been admitted: a caller that asks anyway gets the answer that authorizes nothing,
-    // not a throw.
     return { disposition: 'unobservable', subject: null, observedAt: clock.now() };
   }
   const liveness = await observe({ pid: admitted.holder.pid, incarnation: admitted.holder.incarnation });
@@ -216,12 +164,6 @@ export function controlHolderIdentityIsCurrent(
   );
 }
 
-/**
- * Whether an `ObservedHolderAbsenceAuthorization` or `ExplicitTeardownAuthorization` still names the holder
- * and epoch this authority currently has installed. `install()`'s synchronous, no-`await` admission is what
- * makes this check race-free: a successor accepted after a capability was minted is visible to this check the
- * instant it is accepted, before any teardown built on the stale capability can act on it.
- */
 export function controlHolderAuthorizationIsCurrent(
   authority: ControlHolderAuthority,
   authorization: ObservedHolderAbsenceAuthorization | ExplicitTeardownAuthorization,
@@ -229,15 +171,7 @@ export function controlHolderAuthorizationIsCurrent(
   return controlHolderIdentityIsCurrent(authority, authorization);
 }
 
-/**
- * Mints `ExplicitTeardownAuthorization` from this authority's own current holder — never from a
- * caller-supplied identity, so a forged identity cannot be laundered into a real capability through this
- * function. `null` when nothing is currently admitted: there is no holder to explicitly tear down.
- *
- * This does not itself prove the caller was authorized to request explicit containment; active-control
- * revalidation must precede calling this — the active-control boundary, not this function, decides when
- * explicit containment may be minted at all.
- */
+/** Explicit-teardown authorization must be minted only after active-control revalidation. */
 export function mintExplicitTeardownAuthorization(
   authority: ControlHolderAuthority,
 ): ExplicitTeardownAuthorization | null {

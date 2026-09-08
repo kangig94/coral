@@ -249,11 +249,9 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
    *  identity the guardian observed directly at spawn time, mirroring how it already checks `self` for its
    *  own claim and the capsule for the proxy's. */
   reaperSelf: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
-  /** The one home for this guardian process's holder identity (§7) — constructed once by the composer and
-   *  shared with the deadline machine already injected into `createControlEndpoint`'s `challenges`. This
-   *  module must not construct a second instance. */
+  /** Guardian deadlines and endpoint enforcement must share one holder authority. */
   holderAuthority: ControlHolderAuthority;
-  /** The non-blocking identity-bound observer the guardian's own enforcer schedules holder checks through. */
+  /** Holder observation must not block the guardian's answering loop. */
   observeHolder: AsyncRecordedProcessObserver;
   enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   abandonUnattributable(): boolean;

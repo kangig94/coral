@@ -181,8 +181,6 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Runtime;
   onProviderEvent?(): ProviderEventHandler;
-  /** `commitContainment` does not read this; `promote()` still forwards it into the reconstructed authority
-   *  it builds on redemption. */
   operationRegistry: ProviderProxyOperationSnapshot;
   /** Fresh acquisition must transfer cleanup ownership in the same turn that writes the capsule. */
   registerAcquisitionUndo?(undo: AcquisitionUndo): void;
@@ -456,8 +454,7 @@ export function createProviderProxySetAuthority(
   };
 
   const commitContainment = (signal: AbortSignal): Promise<ContainmentCommitOutcome> => {
-    // The guardian's enforcer supplies the authoritative cumulative root set to destroy; this coordinator
-    // nominates none.
+    // Containment roots must come from the guardian's cumulative enforcer state, never coordinator claims.
     return commitProviderProxyGuardianContainment(
       {
         client: guardianClient,
@@ -529,8 +526,7 @@ export function createProviderProxySetAuthority(
     installRecoveryCredential,
     registerSuccessionOperation,
     commitContainment,
-    // Collapses `not-sent` and `outcome-unknown` into the same `unconfirmed` a caller that does not
-    // distinguish "proven not to have started" from "may have started" already treats identically.
+    // The coarse compatibility result must not translate either unresolved outcome into completion.
     stopAndReap: async (signal) => {
       const outcome = await commitContainment(signal);
       return outcome.kind === 'containment-absent'

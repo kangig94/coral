@@ -1,6 +1,4 @@
-// The non-blocking sibling of `mac-process-incarnation.test.ts`: the same boot-session/`lstart` framing, run
-// through `execFile`'s callback form instead of `execFileSync` so a guardian/reaper answering loop never
-// blocks on either subprocess. Runs anywhere: the platform is a parameter and both subprocesses are mocked.
+// Guardian and reaper process-incarnation probes must not block on either subprocess.
 
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';

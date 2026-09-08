@@ -248,8 +248,7 @@ describe('provider-proxy handoff capsule', () => {
     // A grantId that does not match the installed one refuses, even with the right secret and binding.
     expect(registry.verifyInstalledGrant({ grantId: randomUUID(), secret: SECRET, binding })).toBe(false);
 
-    // Repeated checks never spend or install a redemption — `redeem` still runs its own first genuine
-    // redemption afterward, unaffected by any of the reads above.
+    // Verification must not spend or install a redemption.
     expect(registry.redemption()).toBeNull();
     const redeemed = registry.redeem({ grantId: grant.grantId, secret: SECRET, successor: SUCCESSOR, binding });
     expect(redeemed.redemptionReceipt).toBe('receipt-1');
@@ -392,8 +391,7 @@ describe('provider-proxy handoff capsule', () => {
   });
 
   it('gives a genuinely different process its own redemption after incumbent liveness ends, not the prior receipt', () => {
-    // The same instance id as `SUCCESSOR` throughout — only the process changes — so a check keyed on
-    // instance id alone would wrongly treat the impostor below as the incumbent's own retry.
+    // Redemption identity must distinguish process replacement under the same instance id.
     let incumbentLive = true;
     const registry = createGrantRegistry(mintReceipt(), { mayReplaceRedemption: () => !incumbentLive });
     const grant = installedGrantFor([]);

@@ -756,17 +756,22 @@ export async function spawnDurableJobTransport(params: {
       }
     };
 
+    const awaitProviderResultContainment = async (): Promise<void> => {
+      for (;;) {
+        const disposition = await settleProviderResultContainment();
+        if (disposition.kind !== 'held') return;
+        enterContainmentHold(disposition.reason);
+        await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), containmentAbsence]);
+        drainStdout();
+      }
+    };
+
     while (true) {
       drainStdout();
 
       const completedExit = durableState.exitRecord;
       if (completedExit !== null) {
-        const disposition = await settleProviderResultContainment();
-        if (disposition.kind === 'held') {
-          enterContainmentHold(disposition.reason);
-          await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), containmentAbsence]);
-          continue;
-        }
+        await awaitProviderResultContainment();
         drainStdout();
         return {
           stdout: readOutputFile(runtime.storage, durable.stdoutPath),
@@ -786,12 +791,7 @@ export async function spawnDurableJobTransport(params: {
       }
 
       if (durableState.exitError) {
-        const disposition = await settleProviderResultContainment();
-        if (disposition.kind === 'held') {
-          enterContainmentHold(disposition.reason);
-          await Promise.race([runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS), containmentAbsence]);
-          continue;
-        }
+        await awaitProviderResultContainment();
         throw durableState.exitError instanceof Error
           ? durableState.exitError
           : new Error(errorMessage(durableState.exitError));

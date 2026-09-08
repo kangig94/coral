@@ -1549,10 +1549,7 @@ describe('provider-proxy process topology: acquisition', () => {
     await vi.waitFor(() => expect(environment.exitLog).toContain(0), { timeout: 5_000 });
   });
 
-  // The other two directions `reapRecordedContainment` gives the acquisition undo: the group above was
-  // observed alive and had to be signalled. These check that an already-absent group is never signalled at
-  // all, and that a group this process cannot observe holds the undo open rather than letting it resolve as
-  // if cleanup had succeeded.
+  // Already-absent groups must not be signalled; unobservable groups must retain cleanup ownership.
   function undoRuntimeWithLiveness(observeLiveness: (pid: number) => ProcessLiveness): {
     runtime: Runtime;
     kill: ReturnType<typeof vi.fn>;

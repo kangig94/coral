@@ -284,10 +284,7 @@ export function createRecordedProcessObserver(
   };
 }
 
-// -------------------------------------------------------------------------------------------------------
-// The non-blocking sibling of everything above: identity evidence obtained without ever calling
-// `execFileSync`/`readFileSync`, for a guardian/reaper answering loop that cannot afford either to stall.
-// -------------------------------------------------------------------------------------------------------
+// Guardian and reaper identity probes must not block their answering loops.
 
 type AsyncProbeExecOptions = ExecFileOptionsWithStringEncoding & Readonly<{ signal: AbortSignal }>;
 
@@ -693,8 +690,7 @@ const ASYNC_PROCESS_INCARNATION_PROBES: ReadonlyMap<
   ['win32', probeWindowsProcessIncarnationAsync],
 ]);
 
-/** The non-blocking sibling of `probeProcessIncarnation`: same null-on-unreadable contract, same per-platform
- *  probes, none of them synchronous. */
+/** Platform identity probes must resolve unreadable evidence as null and must not perform synchronous I/O. */
 export async function probeProcessIncarnationAsync(
   pid: number,
   terminate: ProcessIncarnationProbeTerminator,
@@ -732,27 +728,16 @@ export async function probeProcessIncarnationAsync(
   }
 }
 
-/** The asynchronous three-answer question: the same shape as `RecordedProcessObserver`, resolved instead of
- *  returned, so a caller can await it without blocking the loop it answers on. */
+/** Identity-bound observation must preserve all three liveness outcomes without blocking. */
 export type AsyncRecordedProcessObserver = (
   recorded: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
   signal?: AbortSignal,
 ) => Promise<ProcessLiveness>;
 
 /**
- * The stricter, non-blocking sibling of `createRecordedProcessObserver`. `incarnation` is required here, not
- * optional: there is no call this function accepts that names a record with no incarnation, so there is
- * nothing for a pid-only fallback to apply to — pid-only life cannot prove the admitted holder still owns
- * the pid, which is the whole reason a stricter sibling exists.
- *
- * Liveness (`kill(pid, 0)`, synchronous and free of I/O) is checked first: a genuine `ESRCH` is decisive on
- * its own and short-circuits the identity read, which is bounded but never free. Otherwise the token is read
- * and compared. An unreadable token cannot prove identity; only a second liveness check that finds the pid
- * absent may decide the process disappeared. A readable, mismatched token answers `absent` (pid reuse)
- * regardless of what the liveness check believed. And a liveness check that could not itself
- * conclude alive-or-absent keeps the overall answer `unknown` even when the token happens to read back a
- * match: "liveness ... cannot be observed" is its own trigger for `unknown`, independent of whether identity
- * could be.
+ * Pid-only life cannot prove the recorded holder still owns the pid. Unreadable identity evidence and
+ * inconclusive liveness must remain `unknown`; only decisive disappearance or identity mismatch may answer
+ * `absent`.
  */
 export function createAsyncRecordedProcessObserver(
   readers: Readonly<{

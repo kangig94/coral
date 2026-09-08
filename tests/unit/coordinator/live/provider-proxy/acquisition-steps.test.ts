@@ -93,8 +93,6 @@ import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 
-/** Schema-valid but otherwise unchecked identities for `guardian.acquisition-publish.v1`'s faked reply — the
- *  fixture proxy below does not verify the certificate binding, so these need only satisfy the strict schema. */
 const ACQUISITION_PUBLISH_GUARDIAN_IDENTITY = {
   guardianInstanceId: '99999999-9999-4999-8999-999999999991',
   pid: 9_001,

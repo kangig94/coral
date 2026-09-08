@@ -104,56 +104,29 @@ class ControlHeartbeatRefusedError extends ProxyControlProtocolError {
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
 
 declare const activeControlAuthorizationBrand: unique symbol;
-/**
- * Bound to the exact tenancy socket, holder, and epoch active at the instant dispatch admitted the call.
- * `dispatch` mints this fresh for every `active` call and hands it to the handler; a handler that starts a
- * multi-step commit (a paired-peer round trip in between) must revalidate it, through
- * `ControlEndpoint.activeControlAuthorizationIsCurrent`, synchronously immediately before its own
- * irreversible latch — an `await` inside that handler can let control change hands before the commit, and
- * trusting the dispatch-time snapshot alone would let a stale caller finish what a successor already
- * superseded.
- */
+/** Irreversible active-control mutations must revalidate this socket, holder, and epoch after every await. */
 export type ActiveControlAuthorization = Readonly<{ readonly [activeControlAuthorizationBrand]: true }>;
 
-/** `active`-authority methods receive the freshly minted authorization as a second argument; every other
- *  authority tier keeps the plain single-argument `ControlMethodHandler`. */
 export type ActiveControlMethodHandler = (
   params: unknown,
   authorization: ActiveControlAuthorization,
 ) => Promise<unknown> | unknown;
 
-/**
- * Who holds a control tenancy: the complete process identity an opening method already parsed off the wire.
- * Two opens naming the same instance id, pid, and incarnation are one tenancy re-reported, not two — the same
- * instance id under a different pid or incarnation is a different process and never a retry of this one.
- */
+/** Tenancy identity must distinguish process replacement from an exact retry. */
 export type ControlTenancyHolder = Readonly<Pick<CoordinatorIdentity, 'instanceId' | 'pid' | 'incarnation'>>;
 
-/** Whether two holder identities name the same process, not merely the same coordinator instance id. */
+/** Holder equality must include instance id, pid, and incarnation. */
 export function sameControlTenancyHolder(left: ControlTenancyHolder, right: ControlTenancyHolder): boolean {
   return left.instanceId === right.instanceId && left.pid === right.pid && left.incarnation === right.incarnation;
 }
 
-/**
- * The tenancy-holder projection every opening method takes off its already-parsed coordinator/successor
- * identity: the three fields `sameControlTenancyHolder` compares, and nothing else `CoordinatorIdentity`
- * carries. One owner for a shape guardian, reaper, and proxy would otherwise each re-write by hand at every
- * `establishes-control` handler.
- */
 export function controlTenancyHolderOf(
   identity: Pick<CoordinatorIdentity, 'instanceId' | 'pid' | 'incarnation'>,
 ): ControlTenancyHolder {
   return { instanceId: identity.instanceId, pid: identity.pid, incarnation: identity.incarnation };
 }
 
-/**
- * What an opening method answers: who earned the tenancy, and the role-specific result fields. The endpoint
- * merges the epoch and the first challenge into `fields`; a role that supplied those itself would be naming
- * a tenancy it has not been granted. `holder` is what lets a retry be recognised as the same tenancy rather
- * than refused or silently re-minted — every opening method already derives it from `coordinator` or
- * `successor`'s complete identity, so naming it here costs nothing the credential check did not already
- * establish.
- */
+/** Role handlers must not mint endpoint epochs or challenges, and every opening must name its complete holder. */
 export type ControlOpening = Readonly<{ holder: ControlTenancyHolder; fields: Record<string, unknown> }>;
 export type ControlOpenHandler = (params: unknown) => Promise<ControlOpening> | ControlOpening;
 
@@ -260,9 +233,7 @@ export type ControlEndpointOptions = Readonly<{
   challenges: ControlChallengeAuthority;
   timer: ControlEndpointTimer;
   requestTimeoutMs: number;
-  /** The one home for this process's holder identity (§7). Every admission this endpoint accepts installs
-   *  into it; reattachment validates against it instead of a second copy kept on this endpoint's own tenancy
-   *  record. */
+  /** Admission and reattachment must share one holder authority. */
   holderAuthority: ControlHolderAuthority;
 }>;
 
@@ -278,9 +249,7 @@ export interface ControlEndpoint {
    */
   pushOnTenancy(frame: string, timeoutMs: number): ControlTenancyPush;
   faultControlTenancy(expectedControlEpoch: ControlEpoch): void;
-  /** Whether an `ActiveControlAuthorization` this endpoint minted still names the exact socket, holder, and
-   *  epoch currently active. See `ActiveControlAuthorization`'s own doc for why a handler must call this
-   *  again immediately before an irreversible latch rather than trust the value dispatch handed it. */
+  /** Irreversible latches must reject authorization superseded by socket, holder, or epoch replacement. */
   activeControlAuthorizationIsCurrent(authorization: ActiveControlAuthorization): boolean;
 }
 
@@ -470,9 +439,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     const epoch = nextEpoch;
     nextEpoch += 1;
     const opening = { ...fields, controlEpoch: epoch, heartbeatChallenge: issued.challenge };
-    // Installed before the tenancy record and before the displaced socket is destroyed, with no `await`
-    // between any of the three: a teardown authorization already bound to the predecessor must see this
-    // successor's identity the instant its epoch exists, not after the predecessor's own close is reported.
+    // No await may separate holder installation, tenancy publication, and displaced-socket destruction.
     holderAuthority.install({ controlEpoch: epoch, holder });
     // Record the replacement before destroying the predecessor: its `close` handler then sees a tenancy that
     // is not its own and reports no control loss. Reporting one would hand the deadline machine an EOF for

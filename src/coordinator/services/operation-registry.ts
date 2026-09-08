@@ -174,11 +174,7 @@ export class LocalOperationRegistry {
     return found;
   }
 
-  /**
-   * Every distinct provider root this coordinator's own live operations hold against one proxy set. Deduped
-   * by process identity: a shared host serving more than one activated operation is one target, not one per
-   * operation.
-   */
+  /** Provider-root snapshots must include only live operations for the set and deduplicate process identity. */
   providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; incarnation: ProcessIncarnation }>[] {
     const seen = new Map<string, Readonly<{ pid: number; incarnation: ProcessIncarnation }>>();
     for (const entry of this.entries.values()) {

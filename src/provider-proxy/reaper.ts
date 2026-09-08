@@ -108,11 +108,9 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   mintReceipt(): string;
   /** The reaper's own pid/start identity, reported in `ReaperIdentity`. */
   self: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
-  /** The one home for this reaper process's holder identity (§7) — constructed once by the composer and
-   *  shared with the deadline machine already injected into `createControlEndpoint`'s `challenges`. This
-   *  module must not construct a second instance. */
+  /** Reaper deadlines and endpoint enforcement must share one holder authority. */
   holderAuthority: ControlHolderAuthority;
-  /** The non-blocking identity-bound observer the reaper's own enforcer schedules holder checks through. */
+  /** Holder observation must not block the reaper's answering loop. */
   observeHolder: AsyncRecordedProcessObserver;
   enforcementHoldStatus?(): z.infer<typeof enforcementHoldStatusSchema> | null;
   abandonUnattributable(): boolean;
@@ -451,9 +449,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     [
       'reaper.containment-prepare.v1',
       {
-        // The guardian's own channel: it is the sole destructive containment owner and the sole caller of
-        // this method, closing this reaper's registration gate before asking it to snapshot its own
-        // cumulative roots.
+        // Only paired guardian authority may close the reaper's registration gate and request its root snapshot.
         authority: 'pairing',
         handle: (params) => {
           reaperContainmentPrepareParamsSchema.parse(params);

@@ -471,15 +471,7 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
         const identity: ProviderOperationEventIdentity = request.operation;
         const event = toApplyProviderEventBody(deps, identity, request.event);
         const result = await applyProviderEventAtSeq(port, { identity, seq: request.providerSeq, event });
-        // A proxied operation never returns through `executeJob`'s local finalization, so this is the only moment
-        // anything learns it is over. Without it the launcher holds that job's admission slot forever and the
-        // daemon stops accepting work once the pool fills — durable state perfectly correct, coordinator dead.
-        //
-        // The condition is on what durably happened, not on what arrived. `replay` returns before `applyEffect`
-        // runs, so a terminal that lands on a sequence gap has ended nothing and must not release a slot the
-        // operation is still using. And `suspended` ends a job exactly as `terminal` does — it appends the job
-        // terminal and releases the session claim — so keying on `terminal` alone leaks every aborted and every
-        // interrupted proxied operation.
+        // Admission may be released only after a terminal or suspended event is durably applied, never replayed.
         const endedTheJob = event.kind === 'terminal' || event.kind === 'suspended';
         if (result.kind === 'ack' && endedTheJob) {
           notifyProviderOperationSettlementPending(identity);

@@ -113,8 +113,7 @@ function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
  */
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
-  // The proxy has no enforcer to share this with, but still needs the one home for its own holder identity
-  // (§7) — the same instance every admission this endpoint accepts installs into.
+  // Every proxy admission must install into one holder authority.
   const holderAuthority = createControlHolderAuthority();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const startedAt = clock.now();

@@ -242,9 +242,6 @@ function createGuardianHarness(
     pid: coordinatorIdentity.pid,
     incarnation: coordinatorIdentity.incarnation,
   });
-  // `ControlMethod.handle`'s union has no common call signature — `active` requires a second argument the
-  // other two authorities' handler types don't declare — so a caller must narrow on `authority` before
-  // calling at all; this is what makes every call below well-typed, not merely convenient.
   const call = (name: string, params: unknown): Promise<unknown> | unknown => {
     const entry = method(name);
     if (entry.authority === 'active') return entry.handle(params, activeAuthorization);
@@ -719,8 +716,7 @@ describe('guardian outbound schemas', () => {
       expect(unconfirmed.reason).toEqual(expect.any(String));
       expect(harness.mintReceipt).not.toHaveBeenCalled();
 
-      // Idempotent recovery: a retry after the transient reply problem clears still succeeds, because nothing
-      // above committed this guardian to a certificate the first, unconfirmed attempt never minted.
+      // An unconfirmed attempt must not prevent a later idempotent publication.
       const published = (await harness.call('guardian.acquisition-publish.v1', publishRequest)) as {
         state: string;
         certificate: string;

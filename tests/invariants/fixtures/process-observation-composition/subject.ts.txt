@@ -10,4 +10,3 @@ export interface ProcessPort {
 export function translate(observation: Observation): Observation {
   return observation;
 }
-
