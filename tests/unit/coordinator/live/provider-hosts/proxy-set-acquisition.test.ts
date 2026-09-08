@@ -18,17 +18,16 @@ import {
 } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import type { HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import {
   closeProviderProxyAcquisitionSession,
-  createOwnedProviderProxyAcquisitionControlSession,
   handOverProviderProxyAcquisitionControlSession,
   providerProxyAcquisitionSessionDescriptor,
   providerProxyControlSessionOwner,
+  retryProviderProxyAcquisitionPublication,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
-import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
+import { createPublicationUnknownAcquisitionSessionFixture } from '#tests/helpers/provider-proxy-acquisition-session.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const readProcessIncarnation = vi.fn<(pid: number, platform: NodeJS.Platform) => ProcessIncarnation | null>(() =>
@@ -95,37 +94,16 @@ function fakeSet(): ProviderProxyOperationAuthority {
   };
 }
 
-function publicationUnknownAcquisitionHandoff(capsuleBinding: HandoffCapsuleV3) {
-  const client: ControlClient = {
-    exchange: async () => {
-      throw new Error('not used');
-    },
-    faulted: new Promise<never>(() => undefined),
-    onFault: () => () => undefined,
-    close: () => undefined,
+function publicationUnknownAcquisitionHandoff() {
+  const fixture = createPublicationUnknownAcquisitionSessionFixture(providerProxyControlSessionOwner.acquisition);
+  return {
+    handoff: handOverProviderProxyAcquisitionControlSession(
+      fixture.session,
+      providerProxyControlSessionOwner.providerHostAcquisition,
+      { kind: 'publication-unknown', role: 'guardian', reason: 'publication response was lost' },
+    ),
+    ...fixture,
   };
-  const session = createOwnedProviderProxyAcquisitionControlSession(providerProxyControlSessionOwner.acquisition, {
-    base: fakeSet() as never,
-    setIdentity: {} as never,
-    clients: { guardian: client, reaper: client, proxy: client },
-    heartbeats: {
-      guardian: { stop: () => undefined },
-      reaper: { stop: () => undefined },
-      proxy: { stop: () => undefined },
-    },
-    faults: createProviderProxyAuthorityFaultLatch(),
-    guardianIdentity: {} as never,
-    reaperIdentity: {} as never,
-    proxyIdentity: {} as never,
-    capsulePath: '/capsules/publication-unknown.handoff.v3.json',
-    capsuleBinding,
-    mutationRpcTimeoutMs: 1,
-  });
-  return handOverProviderProxyAcquisitionControlSession(
-    session,
-    providerProxyControlSessionOwner.providerHostAcquisition,
-    { kind: 'publication-unknown', role: 'guardian', reason: 'publication response was lost' },
-  );
 }
 
 describe('disposeStoppedProviderProxySetAcquisition', () => {
@@ -336,8 +314,8 @@ describe('ensureProviderProxySet', () => {
   });
 
   it('hands the publication-unknown live session to the provider host manager', async () => {
-    const capsuleBinding = { version: 3 } as HandoffCapsuleV3;
-    mockedAcquire.mockResolvedValueOnce(publicationUnknownAcquisitionHandoff(capsuleBinding));
+    const publicationUnknown = publicationUnknownAcquisitionHandoff();
+    mockedAcquire.mockResolvedValueOnce(publicationUnknown.handoff);
     let outcome: unknown;
 
     await new Promise<void>((resolve) => {
@@ -356,8 +334,22 @@ describe('ensureProviderProxySet', () => {
     const session = outcome.session as Parameters<typeof providerProxyAcquisitionSessionDescriptor>[0];
     expect(providerProxyAcquisitionSessionDescriptor(session)).toMatchObject({
       capsulePath: '/capsules/publication-unknown.handoff.v3.json',
-      capsuleBinding,
+      capsuleBinding: publicationUnknown.capsuleBinding,
     });
+    await expect(retryProviderProxyAcquisitionPublication(session)).resolves.toMatchObject({
+      kind: 'publication-unknown',
+      role: 'guardian',
+    });
+    expect(publicationUnknown.guardianExchange.mock.calls).toContainEqual([
+      'guardian.acquisition-publish.v1',
+      {
+        guardian: publicationUnknown.guardianIdentity,
+        reaper: publicationUnknown.reaperIdentity,
+        proxy: publicationUnknown.proxyIdentity,
+      },
+      PROXY_CONTROL_RPC_TIMEOUT_MS,
+    ]);
+    expect(publicationUnknown.proxyExchange).not.toHaveBeenCalled();
     closeProviderProxyAcquisitionSession(session, 'test complete');
   });
 

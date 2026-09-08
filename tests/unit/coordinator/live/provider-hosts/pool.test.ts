@@ -22,18 +22,11 @@ import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/se
 import type { ProviderProxySetRecoveryAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import type { ProviderProxyAcquisitionRecoveryOutcome } from '#src/coordinator/live/provider-proxy/index.js';
 import { reobserveDurableProviderProxyAcquisitionContainment } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
 import {
-  createOwnedProviderProxyAcquisitionControlSession,
   handOverProviderProxyAcquisitionControlSession,
   providerProxyControlSessionOwner,
-  type ProviderProxyAcquisitionSessionHandedOver,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
-import {
-  createProviderProxyAuthorityFaultLatch,
-  type ProviderProxyAuthorityFaultLatch,
-} from '#src/coordinator/services/provider-proxy-authority-fault.js';
-import { providerProxySetIdentityFromCapsule } from '#src/coordinator/services/provider-proxy-set/identity.js';
-import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import type {
   DurableProviderProxyOperationAuthority,
   ProviderProxyOperationAuthority,
@@ -61,6 +54,7 @@ import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { createPublicationUnknownAcquisitionSessionFixture } from '#tests/helpers/provider-proxy-acquisition-session.js';
 import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
@@ -222,55 +216,18 @@ function publicationUnknownCapsule(spec: ProviderServerSpec): HandoffCapsuleV3 {
   };
 }
 
-function publicationUnknownHandoff(capsule: HandoffCapsuleV3): Readonly<{
-  handoff: ProviderProxyAcquisitionSessionHandedOver<'provider-host-manager'>;
-  faults: ProviderProxyAuthorityFaultLatch;
-  close: ReturnType<typeof vi.fn>;
-  stop: ReturnType<typeof vi.fn>;
-}> {
-  const close = vi.fn();
-  const stop = vi.fn();
-  const client: ControlClient = {
-    exchange: async () =>
-      controlExchangeForTest({
-        kind: 'no-response',
-        cause: 'timeout',
-        error: new ControlClientError('control_call_failed', 'publication response was lost', 'timeout'),
-      }),
-    faulted: new Promise<never>(() => undefined),
-    onFault: () => () => undefined,
-    close,
-  };
-  const faults = createProviderProxyAuthorityFaultLatch();
-  const session = createOwnedProviderProxyAcquisitionControlSession(
+function publicationUnknownHandoff(capsule: HandoffCapsuleV3) {
+  const fixture = createPublicationUnknownAcquisitionSessionFixture(
     providerProxyControlSessionOwner.providerHostAcquisition,
-    {
-      base: fakeDurableProxySet(capsule.proxyInstanceId),
-      setIdentity: providerProxySetIdentityFromCapsule(capsule),
-      clients: { guardian: client, reaper: client, proxy: client },
-      heartbeats: {
-        guardian: { stop },
-        reaper: { stop },
-        proxy: { stop },
-      },
-      faults,
-      guardianIdentity: {} as never,
-      reaperIdentity: {} as never,
-      proxyIdentity: {} as never,
-      capsulePath: '/capsules/publication-unknown.handoff.v3.json',
-      capsuleBinding: capsule,
-      mutationRpcTimeoutMs: 1,
-    },
+    capsule,
   );
   return {
     handoff: handOverProviderProxyAcquisitionControlSession(
-      session,
+      fixture.session,
       providerProxyControlSessionOwner.providerHostManager,
       { kind: 'publication-unknown', role: 'guardian', reason: 'publication response was lost' },
     ),
-    faults,
-    close,
-    stop,
+    ...fixture,
   };
 }
 
@@ -1399,6 +1356,17 @@ describe('provider host pool proxy set registry', () => {
     const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
 
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(publicationUnknown.guardianExchange).toHaveBeenCalled());
+    expect(publicationUnknown.guardianExchange.mock.calls).toContainEqual([
+      'guardian.acquisition-publish.v1',
+      {
+        guardian: publicationUnknown.guardianIdentity,
+        reaper: publicationUnknown.reaperIdentity,
+        proxy: publicationUnknown.proxyIdentity,
+      },
+      PROXY_CONTROL_RPC_TIMEOUT_MS,
+    ]);
+    expect(publicationUnknown.proxyExchange).not.toHaveBeenCalled();
     expect(lifecycleRef.get()?.snapshot()).toEqual(expect.objectContaining({ represented: 1, states: ['recovering'] }));
     expect(lifecycleRef.get()?.snapshot().operatorDispositions).toContainEqual(
       expect.objectContaining({ waitingFor: 'publication-confirmation-or-control-release' }),
