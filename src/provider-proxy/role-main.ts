@@ -255,12 +255,16 @@ export type GuardianRoleHandle = Readonly<{
   giveUp(): Promise<LocalSignalTeardownDisposition>;
 }>;
 
+export type ReaperSignalTeardownDisposition =
+  | LocalSignalTeardownDisposition
+  | Readonly<{ kind: 'closed-without-containment' }>;
+
 export type ReaperRoleHandle = Readonly<{
   role: 'reaper';
   reaper: Reaper;
   close(): Promise<void>;
   /** Requests ordinary teardown without authorizing an unattributable hold to be abandoned. */
-  giveUp(): Promise<LocalSignalTeardownDisposition>;
+  giveUp(): Promise<ReaperSignalTeardownDisposition>;
 }>;
 
 export type ProxyRoleHandle = Readonly<{
@@ -883,9 +887,6 @@ export async function startProviderGuardianRole(
       pairedReaperChannel.close();
       await guardianRef.close();
     };
-    // Captured once `close` holds its real value, so `giveUp` below closes over a function rather than the
-    // `(() => Promise<void>) | null` type `close` itself carries for the rest of this attempt.
-    const closeGuardian = close;
     const { onOutcome, onProgressViolation, enforcementHoldStatus, abandonUnattributable } =
       buildEnforcementOutcomeHandlers({
         role: 'guardian',
@@ -941,6 +942,10 @@ export async function startProviderGuardianRole(
       containmentKind: DETACHED_CONTAINMENT_KIND,
     });
     await raceReadinessAgainstSpawnFailure(containmentRecorded, proxySpawn.spawnFailed);
+    const enforcer = guardian.enforcer();
+    if (enforcer === null) {
+      throw new Error('Guardian containment recording completed without an armed enforcer.');
+    }
 
     return {
       role: 'guardian',
@@ -949,19 +954,8 @@ export async function startProviderGuardianRole(
       proxySpawn,
       close,
       giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
-        const armed = guardian.enforcer();
-        if (armed === null) {
-          // Unreachable once this handle exists — `recordContainment` above always succeeds before this
-          // function returns — but a null enforcer still has nothing to reap, so the plain close it would
-          // otherwise have gotten on SIGTERM is the correct fallback rather than a thrown assertion.
-          await closeGuardian();
-          return {
-            kind: 'settled',
-            outcome: { kind: 'containment-absent', disappearanceReceipt: 'no-containment-recorded' },
-          };
-        }
         // Local signal authority must be minted only while handling that signal.
-        return armed.giveUp(mintLocalSignalTeardownAuthorization());
+        return enforcer.giveUp(mintLocalSignalTeardownAuthorization());
       },
     };
   } catch (error: unknown) {
@@ -1035,14 +1029,13 @@ export async function startProviderReaperRole(
     role: 'reaper',
     reaper: reaperRef,
     close,
-    giveUp: async (): Promise<LocalSignalTeardownDisposition> => {
+    giveUp: async (): Promise<ReaperSignalTeardownDisposition> => {
       const armed = reaperRef.enforcer();
       if (armed === null) {
-        const outcome = { kind: 'containment-absent', disappearanceReceipt: 'no-containment-recorded' } as const;
         await close()
           .catch((error: unknown) => backendLog.error('reaper: close on exit failed', error))
           .finally(() => exitProcess(0));
-        return { kind: 'settled', outcome };
+        return { kind: 'closed-without-containment' };
       }
       // Local signal authority must be minted only while handling that signal.
       return armed.giveUp(mintLocalSignalTeardownAuthorization());
@@ -1551,7 +1544,15 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
       );
       return;
     }
-    void handle.giveUp();
+    const role = handle.role;
+    void handle
+      .giveUp()
+      .catch((error: unknown) =>
+        backendLog.error(
+          `${role}: give-up on shutdown failed; containment remains held; SIGTERM or SIGINT retries teardown`,
+          error,
+        ),
+      );
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

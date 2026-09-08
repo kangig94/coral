@@ -355,10 +355,7 @@ export async function spawnProviderServerTransport(
   const containmentIdentity = containmentDisposition;
   if (containmentIdentity !== undefined) {
     try {
-      const acceptance = params.recordContainment?.(containmentIdentity);
-      if (params.recordContainment !== undefined && acceptance !== PROVIDER_CONTAINMENT_ACCEPTED) {
-        throw new Error('Provider containment owner did not accept the spawned process group.');
-      }
+      params.recordContainment?.(containmentIdentity);
     } catch (error: unknown) {
       return settleFailedProviderServerSpawn(
         spawned.entry.processSettlement,

@@ -27,6 +27,7 @@ import {
   runProviderRoleMain,
   startProviderGuardianRole,
   startProviderProxyRole,
+  startProviderReaperRole,
   type ProviderRoleMainPorts,
 } from '#src/provider-proxy/role-main.js';
 import type { ProviderRole } from '#src/provider-proxy/role-argv.js';
@@ -350,14 +351,18 @@ function fakeChild(pid: number): ChildProcessLike {
   return child;
 }
 
-function fakeSpawnedRole(): unknown {
+function fakeSpawnedRoleFor(pid: number): ReturnType<typeof spawnRoleProcessType> {
   return {
     kind: 'spawned',
-    child: fakeChild(2_000_000_000),
-    pid: 2_000_000_000,
+    child: fakeChild(pid),
+    pid,
     incarnation: testIncarnation(1),
     spawnFailed: new Promise<never>(() => {}),
   };
+}
+
+function fakeSpawnedRole(): ReturnType<typeof spawnRoleProcessType> {
+  return fakeSpawnedRoleFor(2_000_000_000);
 }
 
 function enableRoleSender(
@@ -558,6 +563,78 @@ describe('role pairing sender schemas', () => {
     expect(spawnRoleProcess.mock.calls[0]?.[3].envAdditions).toMatchObject({
       [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: '74000',
     });
+  });
+
+  it('unwinds construction when containment recording completes without arming an enforcer', async () => {
+    const directory = scopedTempDir('coral-guardian-enforcer-invariant-');
+    const reaperPid = 2_000_000_000;
+    const proxyPid = 2_000_000_001;
+    const channelClose = vi.fn();
+    enableRoleSender(
+      pairingCapsule('guardian', directory, randomBytes(32).toString('hex')),
+      {
+        exchange: vi.fn(
+          async (): Promise<ControlExchange> =>
+            controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: { state: 'paired' } } }),
+        ),
+        close: channelClose,
+      },
+      vi.fn().mockReturnValueOnce(fakeSpawnedRoleFor(reaperPid)).mockReturnValueOnce(fakeSpawnedRoleFor(proxyPid)),
+    );
+    guardianConstructionHarness.enabled = true;
+    guardianConstructionHarness.listen.mockResolvedValue();
+    guardianConstructionHarness.close.mockResolvedValue();
+    guardianConstructionHarness.recordContainment.mockResolvedValue();
+    const baseRuntime = createRealRuntime('prod');
+    const readProcessIncarnation = (pid: number) => (pid === process.pid ? testIncarnation(1) : testIncarnation(2));
+    const runtime = {
+      ...baseRuntime,
+      process: {
+        ...baseRuntime.process,
+        kill: vi.fn(() => true),
+        observeLiveness: () => 'absent' as const,
+        observeRecordedProcessAsync: async () => 'absent' as const,
+        readProcessIncarnation,
+      },
+    };
+
+    const failure = await startProviderGuardianRole('/unused', {
+      ...roleSenderPorts(directory),
+      runtime,
+      readProcessIncarnation,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      message: 'Guardian containment recording completed without an armed enforcer.',
+    });
+    expect(guardianConstructionHarness.recordContainment).toHaveBeenCalledOnce();
+    expect(channelClose).toHaveBeenCalledOnce();
+    expect(guardianConstructionHarness.close).toHaveBeenCalledOnce();
+    expect(runtime.process.kill).not.toHaveBeenCalled();
+  });
+
+  it('closes an unarmed reaper without claiming containment absence', async () => {
+    const directory = scopedTempDir('coral-reaper-unarmed-close-');
+    enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
+      exchange: vi.fn(async (): Promise<never> => {
+        throw new Error('reaper unexpectedly opened an outbound control exchange');
+      }),
+      close: vi.fn(),
+    });
+    reaperRoleCloseHarness.enabled = true;
+    reaperRoleCloseHarness.reaperListen.mockResolvedValue();
+    reaperRoleCloseHarness.reaperClose.mockResolvedValue();
+    reaperRoleCloseHarness.enforcer.mockReturnValue(null);
+    const exitProcess = vi.fn();
+
+    const handle = await startProviderReaperRole('/unused', {
+      ...roleSenderPorts(directory),
+      exitProcess,
+    });
+
+    await expect(handle.giveUp()).resolves.toEqual({ kind: 'closed-without-containment' });
+    expect(reaperRoleCloseHarness.reaperClose).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(0);
   });
 });
 
@@ -1077,6 +1154,50 @@ describe('runProviderRoleMain', () => {
       expect(exitProcess).not.toHaveBeenCalled();
     },
   );
+
+  it('reports a rejected signal teardown without finalizing containment', async () => {
+    const directory = scopedTempDir('coral-reaper-role-signal-rejection-');
+    enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
+      exchange: vi.fn(async (): Promise<never> => {
+        throw new Error('reaper unexpectedly opened an outbound control exchange');
+      }),
+      close: vi.fn(),
+    });
+    reaperRoleCloseHarness.enabled = true;
+    reaperRoleCloseHarness.reaperListen.mockResolvedValue();
+    reaperRoleCloseHarness.reaperClose.mockResolvedValue();
+    const failure = new Error('signal teardown rejected');
+    const giveUp = vi.fn().mockRejectedValue(failure);
+    reaperRoleCloseHarness.enforcer.mockReturnValue({ giveUp, retryUnattributable: () => null });
+
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+
+    await expect(
+      runProviderRoleMain({ role: 'reaper', capsulePath: '/unused' }, { pluginRoot: directory }),
+    ).resolves.toBe(0);
+    reaperRoleCloseHarness.reaperClose.mockClear();
+    exitProcess.mockClear();
+
+    (shutdown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(giveUp).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(
+      'reaper: give-up on shutdown failed; containment remains held; SIGTERM or SIGINT retries teardown',
+      failure,
+    );
+    (shutdown as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(giveUp).toHaveBeenCalledTimes(2);
+    expect(reaperRoleCloseHarness.reaperClose).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
+  });
 
   it('exits 0 when signal-requested teardown confirms containment absence', async () => {
     const directory = scopedTempDir('coral-reaper-role-signal-absence-');

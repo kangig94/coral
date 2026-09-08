@@ -43,6 +43,10 @@ const acceptCloseHold: Parameters<ProviderServerHandle['close']>[0] = (hold) => 
   settlement: hold.settled,
 });
 
+const failContainmentRecording = (): ProviderContainmentAcceptance => {
+  throw new Error('synthetic containment recording failure');
+};
+
 describe('requestJoinableProviderServerShutdown', () => {
   it('joins a pending request and starts a fresh request after settlement', async () => {
     let settleRequest!: (value: unknown) => void;
@@ -180,7 +184,7 @@ describe('provider app-server spawn ownership', () => {
     child.close();
   });
 
-  it('joins an active failed-spawn retry before operator abandonment settles', async () => {
+  it('joins an active exception-cleanup retry before operator abandonment settles', async () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
     const child = delayedClose();
@@ -193,7 +197,7 @@ describe('provider app-server spawn ownership', () => {
       observeProviderResponse: () => {},
       detached: true,
       acceptFailedSpawnCleanup: acceptCleanupHold,
-      recordContainment: (() => Symbol('refused')) as unknown as () => ProviderContainmentAcceptance,
+      recordContainment: failContainmentRecording,
     });
     await flushMicrotasks();
     runtime.time.tick(SIGTERM_GRACE_MS);
@@ -326,7 +330,7 @@ describe('provider app-server spawn ownership', () => {
     });
   });
 
-  it('keeps containment locally owned when the proposed owner refuses it', async () => {
+  it('keeps containment locally owned while a recording exception is cleaned up', async () => {
     const runtime = new SimulationRuntime();
     let processGroupAlive = true;
     vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((pid) =>
@@ -342,7 +346,7 @@ describe('provider app-server spawn ownership', () => {
       observeProviderResponse: () => {},
       detached: true,
       acceptFailedSpawnCleanup: acceptCleanupHold,
-      recordContainment: (() => Symbol('refused')) as unknown as () => ProviderContainmentAcceptance,
+      recordContainment: failContainmentRecording,
     });
     const observation = observePromise(launch);
     await flushMicrotasks();
@@ -353,7 +357,7 @@ describe('provider app-server spawn ownership', () => {
     const held = await launch;
     expect(observation.settled).toBe(true);
     if (!('kind' in held) || (held.kind !== 'held-alive' && held.kind !== 'held-unobservable')) {
-      throw new Error('Expected the refused containment publication to return an accepted cleanup hold.');
+      throw new Error('Expected containment recording failure to return an accepted cleanup hold.');
     }
     const groupSettlement = observePromise(held.settled);
     child.close();
