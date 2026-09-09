@@ -74,6 +74,30 @@ file-backed stores at all, and the e2e backend leak that accumulated a set per r
 Start condition: a flake observed under current conditions, naming which of the 22 sites produced it. Starting
 from the list rather than from an observation would be converting sleeps that no longer hurt.
 
+**Observed 2026-09-09, and it is not one of the 22.** Two flakes on one gate run of
+`fix/preflight-cannot-defer`, both passing on every re-run:
+
+- `tests/unit/jobs/shell/launch.test.ts`, "runs provider CLI jobs through the durable runner and persists
+  runtime artifacts" — `Expected terminal event`. The test spawns a real `process.execPath` child that writes
+  over ~40 ms and then waits through `waitForTerminalEvent`, whose `waitStream({ timeoutSeconds: 5 })` is the
+  budget that elapsed. It passed 3/3 in isolation immediately afterwards, and the full suite passed on the
+  next two runs. The same test failed once in seven runs a week earlier, on the same branch, before any of
+  that branch's code existed in the working tree.
+- `npm run test:e2e:build` — three of 35 failed, in a run that took 36.4 s against 7.4 s for the four clean
+  runs that followed.
+
+Neither is a raw sleep. Both are a **real subprocess raced against a wall-clock budget**, which the 22-site
+inventory does not cover and which no `useFakeTimers` swap reaches: the budget belongs to `waitStream`, and
+the thing it is waiting for is a process this suite does not virtualise. So the remaining half is at least two
+site classes, and this one is the one that has actually been seen to fail.
+
+What was running beside it matters and was not controlled for: a codebase-memory watcher re-indexing eleven
+files a delegate had just changed. That is the ordinary state of this machine during a gate run, which is the
+point — the entry above already records that the suite cannot absorb a 2 Hz sampling loop.
+
+Naming the site is what this start condition asked for, so this half can begin. It should not begin by
+converting sleeps.
+
 ## Start condition
 
 The remaining half is above. It should not be folded into a feature branch: removing a real sleep changes what

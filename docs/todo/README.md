@@ -216,6 +216,20 @@ not about what the probe claims.
 
 ---
 
+## A disposition reaches its consumer and the consumer erases it
+
+Added 2026-09-09 from a tier-1 panel on `fix/preflight-cannot-defer`. The mirror of the section above: there,
+a caller infers more than its evidence carries; here the evidence arrives correctly typed and the owner below
+flattens it into a vocabulary that predates it. Both members are pre-existing — the same paths received
+`rejected` before the third answer existed and did the same thing with it — so neither is a regression, and
+each is a behaviour change rather than a correction.
+
+|                                                                                                                              |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`launch-disposition-flattened-below-the-boundary.md`](./launch-disposition-flattened-below-the-boundary.md)                 | **Two independent members; the first needs no new type at all.** `executeAgentAttempt` already distinguishes a launch that never started (`consumedAttempt: false`) from a failure after a job ran, and nothing in `src/` reads the field — so discuss expels required participants, appends a `speech.timed_out` transcript entry that later prompts render, and commits a launch diagnostic as `follow_up.answered`, all for a participant nobody ran. The second: every workflow launch failure becomes `wrapper_crashed`, so the same non-answer exits 75 under `codex` and 1 under `workflow`. |
+
+---
+
 ## Durable state with no lifecycle owner
 
 |                                                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                      |
