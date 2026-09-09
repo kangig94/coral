@@ -387,16 +387,29 @@ describe('codexPreflight', () => {
     appServer?: { status?: number | null; error?: Error };
     authFile?: string | Error;
     home?: string;
+    cwd?: string;
+    cwdState?: 'directory' | 'missing' | 'not-directory' | 'unobserved';
   }): ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> } {
     const appServer = options.appServer ?? { status: 0 };
     const authFile = options.authFile ?? TOKENS;
+    const cwdState = options.cwdState ?? 'directory';
     return {
       access: { home: options.home ?? TEST_CODEX_ACCESS.home },
-      cwd: '/workspace/project',
+      cwd: options.cwd ?? '/workspace/project',
       storage: {
         readFileSync: () => {
           if (authFile instanceof Error) throw authFile;
           return authFile;
+        },
+        statSync: () => {
+          if (cwdState === 'missing') throw errno('ENOENT');
+          if (cwdState === 'unobserved') throw errno('EACCES');
+          return {
+            size: 0,
+            mtimeMs: 0,
+            isDirectory: () => cwdState === 'directory',
+            isFile: () => cwdState === 'not-directory',
+          };
         },
       },
       time: { now: () => clock },
@@ -433,7 +446,7 @@ describe('codexPreflight', () => {
     });
   });
 
-  it('reports ENOENT as a missing or outdated CLI', async () => {
+  it('reports ENOENT as a missing or outdated CLI when the working directory is a directory', async () => {
     await expect(
       codexPreflight(preflightRuntime({ appServer: { error: errno('ENOENT'), status: null } })),
     ).resolves.toEqual({ kind: 'refused', message: expect.stringMatching(UPGRADE) });
@@ -457,6 +470,47 @@ describe('codexPreflight', () => {
     expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/configured command path/iu) });
     if (outcome.kind !== 'refused') throw new Error('expected refused');
     expect(outcome.message).not.toMatch(UPGRADE);
+  });
+
+  it.each([
+    ['missing', 'ENOENT', /does not exist/iu],
+    ['not-directory', 'ENOTDIR', /is not a directory/iu],
+  ] as const)('reports a %s working directory as a request refusal', async (cwdState, code, remedy) => {
+    const cwd = '/workspace/removed-project';
+    const outcome = await codexPreflight(
+      preflightRuntime({ appServer: { error: errno(code), status: null }, cwd, cwdState }),
+    );
+
+    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(remedy) });
+    if (outcome.kind !== 'refused') throw new Error('expected refused');
+    expect(outcome.message).toContain(cwd);
+    expect(outcome.message).not.toMatch(UPGRADE);
+  });
+
+  it('returns undetermined when the working directory cannot be observed', async () => {
+    const outcome = await codexPreflight(
+      preflightRuntime({ appServer: { error: errno('ENOENT'), status: null }, cwdState: 'unobserved' }),
+    );
+
+    expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/could not inspect/iu) });
+    if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+    expect(outcome.message).not.toMatch(UPGRADE);
+  });
+
+  it('does not let a request-specific refusal poison the global capability cache', async () => {
+    const removedCwd = preflightRuntime({
+      appServer: { error: errno('ENOENT'), status: null },
+      cwd: '/workspace/removed-project',
+      cwdState: 'missing',
+    });
+    const healthyCwd = preflightRuntime({});
+
+    await expect(codexPreflight(removedCwd)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringContaining(removedCwd.cwd),
+    });
+    await expect(codexPreflight(healthyCwd)).resolves.toEqual({ kind: 'satisfied' });
+    expect(healthyCwd.runExact).toHaveBeenCalledOnce();
   });
 
   it('reports a CLI without the subcommand as one to update', async () => {

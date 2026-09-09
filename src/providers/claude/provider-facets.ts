@@ -131,13 +131,21 @@ export async function claudePreflight(
   if (settingsOutcome.kind !== 'satisfied') return settingsOutcome;
   const routingEnv = claudeRoutingEnv(runtime.access);
   const cli = await detectClaudeCli(
-    { exec: (command, args, options) => runtime.runExact(command, args, options) },
+    {
+      exec: (command, args, options) => runtime.runExact(command, args, options),
+      cwd: runtime.cwd,
+      storage: runtime.storage,
+    },
     { get: (key) => routingEnv[key] },
   );
   if (!cli.available) {
-    return cli.reason === 'undetermined'
-      ? { kind: 'undetermined', message: `Claude CLI availability is unknown — ${cli.error}` }
-      : { kind: 'refused', message: `Claude CLI not available: ${cli.error}` };
+    if (cli.reason === 'undetermined') {
+      return { kind: 'undetermined', message: `Claude CLI availability is unknown — ${cli.error}` };
+    }
+    return {
+      kind: 'refused',
+      message: cli.reason === 'invalid-working-directory' ? cli.error : `Claude CLI not available: ${cli.error}`,
+    };
   }
   if (cli.authState === 'unauthenticated') {
     return { kind: 'refused', message: cli.authError };

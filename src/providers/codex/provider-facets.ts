@@ -48,6 +48,30 @@ type PreflightCacheEntry = {
   checkedAt: number;
 };
 
+type CodexAppServerProbeResult =
+  | {
+      disposition: 'cli-capability';
+      outcome: Extract<ProviderPreflightOutcome, { kind: 'satisfied' | 'refused' }>;
+    }
+  | { disposition: 'request'; outcome: Extract<ProviderPreflightOutcome, { kind: 'refused' }> }
+  | { disposition: 'unobserved'; outcome: Extract<ProviderPreflightOutcome, { kind: 'undetermined' }> };
+
+type WorkingDirectoryObservation = 'directory' | 'missing' | 'not-directory' | 'unobserved';
+
+function cliCapabilityOutcome(
+  outcome: Extract<ProviderPreflightOutcome, { kind: 'satisfied' | 'refused' }>,
+): CodexAppServerProbeResult {
+  return { disposition: 'cli-capability', outcome };
+}
+
+function requestRefusal(message: string): CodexAppServerProbeResult {
+  return { disposition: 'request', outcome: { kind: 'refused', message } };
+}
+
+function unobservedProbe(message: string): CodexAppServerProbeResult {
+  return { disposition: 'unobserved', outcome: { kind: 'undetermined', message } };
+}
+
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
 
@@ -93,14 +117,57 @@ export async function codexPreflight(
 }
 
 /**
- * Whether this Codex CLI has an `app-server` subcommand — and whether we got to find out.
- *
- * Only an answered probe may establish whether `app-server` is supported. A launch refusal may refuse
- * preflight only with the remedy for the command condition its errno established.
+ * Measured on Node v26.3.1: child_process.spawn reports ENOENT with error.path set to the command for both a
+ * missing command and a missing cwd, and synchronously throws ENOTDIR when an existing command is given a cwd
+ * that is a file. Either errno must therefore be resolved against the probe's cwd before it can establish a
+ * fact about the Codex CLI.
  */
+function observeWorkingDirectory(runtime: ProviderPreflightRuntime<CodexProviderAccess>): WorkingDirectoryObservation {
+  try {
+    return runtime.storage.statSync(runtime.cwd).isDirectory() ? 'directory' : 'not-directory';
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') return 'missing';
+    if (code === 'ENOTDIR') return 'not-directory';
+    return 'unobserved';
+  }
+}
+
+function classifyCodexPathLaunchRefusal(
+  runtime: ProviderPreflightRuntime<CodexProviderAccess>,
+  code: 'ENOENT' | 'ENOTDIR',
+): CodexAppServerProbeResult {
+  const cwd = observeWorkingDirectory(runtime);
+  switch (cwd) {
+    case 'missing':
+      return requestRefusal(
+        `Codex preflight cannot start because working directory \`${runtime.cwd}\` does not exist. Restore it or choose another working directory, then retry.`,
+      );
+    case 'not-directory':
+      return requestRefusal(
+        `Codex preflight cannot start because working directory \`${runtime.cwd}\` is not a directory. Choose a directory, then retry.`,
+      );
+    case 'unobserved':
+      return unobservedProbe(
+        `Codex preflight could not inspect working directory \`${runtime.cwd}\` after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
+      );
+    case 'directory':
+      return code === 'ENOENT'
+        ? cliCapabilityOutcome({ kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE })
+        : cliCapabilityOutcome({
+            kind: 'refused',
+            message:
+              'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
+          });
+    default:
+      return assertNever(cwd);
+  }
+}
+
+/** Request-specific launch evidence must never be represented as CLI-capability evidence. */
 async function probeCodexAppServer(
   runtime: ProviderPreflightRuntime<CodexProviderAccess>,
-): Promise<ProviderPreflightOutcome> {
+): Promise<CodexAppServerProbeResult> {
   const result = await runtime.runExact('codex', ['app-server', '--help'], {
     encoding: 'utf-8',
     timeout: 10_000,
@@ -109,33 +176,27 @@ async function probeCodexAppServer(
   const outcome = classifyExecOutcome(result);
   switch (outcome.kind) {
     case 'no-answer':
-      return {
-        kind: 'undetermined',
-        message: `Codex preflight could not run \`codex app-server --help\` (${outcome.detail}); this says nothing about the installed Codex CLI. Retry the command in a moment.`,
-      };
+      return unobservedProbe(
+        `Codex preflight could not run \`codex app-server --help\` (${outcome.detail}); this says nothing about the installed Codex CLI. Retry the command in a moment.`,
+      );
     case 'launch-refused':
       switch (outcome.code) {
         case 'ENOENT':
-          return { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+        case 'ENOTDIR':
+          return classifyCodexPathLaunchRefusal(runtime, outcome.code);
         case 'EACCES':
         case 'EPERM':
-          return {
+          return cliCapabilityOutcome({
             kind: 'refused',
             message: `Codex preflight cannot execute \`codex\` (${outcome.code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
-          };
-        case 'ENOTDIR':
-          return {
-            kind: 'refused',
-            message:
-              'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
-          };
+          });
         default:
           return assertNever(outcome.code);
       }
     case 'answered':
-      return outcome.status === 0
-        ? { kind: 'satisfied' }
-        : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+      return cliCapabilityOutcome(
+        outcome.status === 0 ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE },
+      );
   }
 }
 
@@ -150,12 +211,12 @@ async function checkCodexAppServerAvailability(
     return codexAppServerAvailabilityCache.outcome;
   }
 
-  const outcome = await probeCodexAppServer(runtime);
-  // One job's failure to observe must never decide another job's preflight, so only an answer is cached.
-  if (outcome.kind !== 'undetermined') {
-    codexAppServerAvailabilityCache = { outcome, checkedAt: runtime.time.now() };
+  const probe = await probeCodexAppServer(runtime);
+  // The global cache may contain only a CLI-capability disposition, never a request-scoped refusal.
+  if (probe.disposition === 'cli-capability') {
+    codexAppServerAvailabilityCache = { outcome: probe.outcome, checkedAt: runtime.time.now() };
   }
-  return outcome;
+  return probe.outcome;
 }
 
 /**
@@ -167,12 +228,9 @@ async function checkCodexAppServerAvailability(
  * or corrupt. The third is not an answer at all, and the remedy does not apply to it — a login that cannot
  * read `auth.json` afterwards has fixed nothing.
  *
- * `ENOENT` sits on the decisive side here, same as it does for `STANDING_PROBE_ERRNOS`
- * (`infra/process-constants.ts`, consulted by `classifyExecOutcome`'s launch probe): there it describes a
- * binary that could not be launched, here a file that is simply absent, and both are answers rather than
- * absences of one. What actually reverses is `EACCES`/`EPERM`: decisive there — a binary this process may not
- * execute is refused outright — but `undetermined` here, because a file this process cannot read might still
- * hold valid tokens it simply could not see. Same errno, different question — do not unify the two lists.
+ * `ENOENT` from this absolute file read establishes that no auth document exists at the selected path, so a
+ * login that writes the file is a valid remedy. `EACCES`/`EPERM` must remain `undetermined`: the file might
+ * hold valid tokens this process cannot observe, and login does not grant the daemon permission to read it.
  */
 function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAccess>): ProviderPreflightOutcome {
   const authPath = join(runtime.access.home, 'auth.json');

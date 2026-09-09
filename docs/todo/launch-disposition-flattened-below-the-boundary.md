@@ -88,6 +88,18 @@ The two shapes worth weighing, neither obviously right:
 A third option — adopt the late job id idempotently instead of discarding it — keeps both timers but makes
 the wrapper's return a hand-off rather than an abandonment.
 
+**The same missing contract, one layer down.** `runProviderPreflight`
+(`src/coordinator/services/execution-policies.ts`) races the provider's probe against its own 27 s budget and
+starts a re-ask whenever any positive budget remains, but it cannot cancel a probe and does not know how long
+one takes to settle. A Codex probe names a 10 s timeout (`probeCodexAppServer`), and `buildExecPromise`
+(`src/runtime/exec-builder.ts`) then adds SIGTERM and SIGKILL grace on top of it, so a probe started late in
+the budget can still hold timers after the coordinator has returned `undetermined{deadline}` — and an
+operator retrying immediately starts another beside it. Claude's detector carries the same fixed probe bound
+(`createCliDetector`). Nothing here produces a wrong answer, which is why it is not a member: the answer is
+honest and the budget is respected. What is missing is the same thing member 3 is missing — an absolute
+deadline or a cancellation capability that crosses into the provider — so whoever takes that on should settle
+both at once rather than adding a second mechanism.
+
 ## Also observed, not filed as members
 
 The `answered` non-zero branches of `probeCodexAppServer` (`src/providers/codex/provider-facets.ts`) and

@@ -18,12 +18,39 @@ const CONFIG: CliDetectorConfig = {
         : null,
 };
 
-function detector(options: { token?: string; exec: ReturnType<typeof vi.fn> }) {
+function detector(options: {
+  token?: string;
+  exec: ReturnType<typeof vi.fn>;
+  cwd?: string;
+  cwdState?: 'directory' | 'missing' | 'not-directory' | 'unobserved';
+  statSync?: ReturnType<typeof vi.fn>;
+}) {
+  const cwdState = options.cwdState ?? 'directory';
+  const statSync =
+    options.statSync ??
+    vi.fn(() => {
+      if (cwdState === 'missing') throw errno('ENOENT');
+      if (cwdState === 'unobserved') throw errno('EACCES');
+      return {
+        size: 0,
+        mtimeMs: 0,
+        isDirectory: () => cwdState === 'directory',
+        isFile: () => cwdState === 'not-directory',
+      };
+    });
   return createCliDetector(
-    { exec: options.exec } as never,
+    {
+      exec: options.exec,
+      cwd: options.cwd ?? '/workspace/project',
+      storage: { statSync },
+    } as never,
     { get: (key) => (key === 'FIXTURE_TOKEN' ? options.token : undefined) },
     CONFIG,
   );
+}
+
+function errno(code: string): Error {
+  return Object.assign(new Error(code), { code });
 }
 
 /** How the exec port reports a launch that never produced an answer: an error carrying an errno. */
@@ -147,7 +174,7 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('reports ENOENT as not-found with the configured installation remedy', async () => {
+  it('reports ENOENT as not-found when the working directory is observed to be a directory', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
 
     await expect(detector({ exec }).detect()).resolves.toEqual({
@@ -167,7 +194,7 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('reports ENOTDIR with a configured-path remedy', async () => {
+  it('reports ENOTDIR with a configured-path remedy when the working directory is a directory', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOTDIR'));
 
     await expect(detector({ exec }).detect()).resolves.toEqual({
@@ -175,6 +202,53 @@ describe('provider-neutral CLI detection', () => {
       reason: 'invalid-path',
       error: expect.stringMatching(/configured command path/iu),
     });
+  });
+
+  it.each([
+    ['missing', 'ENOENT', /does not exist/iu],
+    ['not-directory', 'ENOTDIR', /is not a directory/iu],
+  ] as const)('reports a %s working directory as a request-specific refusal', async (cwdState, code, remedy) => {
+    const exec = vi.fn().mockResolvedValue(launchFailure(code));
+    const cwd = '/workspace/removed-project';
+    const subject = detector({ exec, cwd, cwdState });
+
+    const info = await subject.detect();
+
+    expect(info).toEqual({
+      available: false,
+      reason: 'invalid-working-directory',
+      error: expect.stringMatching(remedy),
+    });
+    if (info.available) throw new Error('expected unavailable');
+    expect(info.error).toContain(cwd);
+  });
+
+  it('reports an unobservable working directory as undetermined', async () => {
+    const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
+
+    await expect(detector({ exec, cwdState: 'unobserved' }).detect()).resolves.toEqual({
+      available: false,
+      reason: 'undetermined',
+      error: expect.stringMatching(/could not inspect working directory/iu),
+    });
+  });
+
+  it('does not cache a request-specific working-directory refusal', async () => {
+    const statSync = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw errno('ENOENT');
+      })
+      .mockReturnValue({ isDirectory: () => true });
+    const exec = vi
+      .fn()
+      .mockResolvedValueOnce(launchFailure('ENOENT'))
+      .mockResolvedValueOnce({ stdout: 'fixture 1.0', stderr: '', status: 0 });
+    const subject = detector({ token: 'secret', exec, statSync });
+
+    await expect(subject.detect()).resolves.toMatchObject({ reason: 'invalid-working-directory' });
+    await expect(subject.detect()).resolves.toMatchObject({ available: true, version: 'fixture 1.0' });
+    expect(exec).toHaveBeenCalledTimes(2);
   });
 
   it.each(['EACCES', 'EPERM', 'ENOTDIR'])('caches the established %s refusal', async (code) => {

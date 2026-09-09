@@ -54,6 +54,7 @@ function unanswerableVersionProbeRuntime(code: string): ProviderPreflightRuntime
       readFileSync: () => {
         throw Object.assign(new Error('not found'), { code: 'ENOENT' });
       },
+      statSync: () => ({ isDirectory: () => true }),
     },
     runExact: vi.fn(async () => ({
       stdout: '',

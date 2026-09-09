@@ -288,6 +288,44 @@ describe('execution policies', () => {
     expect(pendingTimerCount(runtime)).toBe(0);
   });
 
+  it.each([
+    ['refused with a missing message', { kind: 'refused' }],
+    ['refused with an empty message', { kind: 'refused', message: '' }],
+    ['refused with a blank message', { kind: 'refused', message: '   ' }],
+    ['undetermined with a missing message', { kind: 'undetermined' }],
+    ['undetermined with an empty message', { kind: 'undetermined', message: '' }],
+  ])('faults a recognized preflight discriminator carrying no message: %s', async (_label, outcome) => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => outcome as unknown as ProviderPreflightOutcome),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).rejects.toMatchObject({
+      code: 'provider_preflight_faulted',
+      context: { provider: 'codex', cause: expect.stringMatching(/outside its contract/iu) },
+    });
+    expect(provider.preflight).toHaveBeenCalledOnce();
+    expect(pendingTimerCount(runtime)).toBe(0);
+  });
+
+  // An unknown field is not a missing answer. The reader is ours, and §10 asks a reader we own to tolerate
+  // what it does not recognise rather than refuse it, so a field nobody reads must not fail a launch.
+  it('accepts a satisfied outcome carrying a field the coordinator does not read', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => ({ kind: 'satisfied', note: 'unread' }) as unknown as ProviderPreflightOutcome),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).resolves.toEqual({ kind: 'satisfied' });
+    expect(pendingTimerCount(runtime)).toBe(0);
+  });
+
   it('rejects an outcome that settles after the deadline before its timer callback runs', async () => {
     const runtime = new SimulationRuntime();
     let monotonicTime = 0n;

@@ -1,13 +1,14 @@
-import type { EnvPort } from '../infra/port-types.js';
+import type { EnvPort, StoragePort } from '../infra/port-types.js';
 import { classifyExecOutcome } from '../infra/port-types.js';
 import { assertNever } from '../infra/error-format.js';
 import type { ProcessPort } from '../runtime/ports.js';
 
-/** Unavailable answers are cacheable only when their reason is an established condition of this command. */
+/** Only command-scoped unavailability may be cached across probes. */
 export type CliInfo =
   | { available: false; reason: 'not-found'; error: string }
   | { available: false; reason: 'permission-denied'; error: string }
   | { available: false; reason: 'invalid-path'; error: string }
+  | { available: false; reason: 'invalid-working-directory'; error: string }
   | { available: false; reason: 'undetermined'; error: string }
   | { available: true; version: string; authState: 'authenticated' }
   | { available: true; version: string; authState: 'unknown' }
@@ -18,8 +19,13 @@ export type AuthProbeResult =
   | { authState: 'unknown' }
   | { authState: 'unauthenticated'; authError: string };
 
-export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'>;
+export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'> & {
+  cwd: string;
+  storage: Pick<StoragePort, 'statSync'>;
+};
 export type CliDetectorEnvPort = Pick<EnvPort, 'get'>;
+
+type WorkingDirectoryObservation = 'directory' | 'missing' | 'not-directory' | 'unobserved';
 
 export type CliDetectorConfig = {
   binaryName: string;
@@ -32,14 +38,23 @@ export type CliDetectorConfig = {
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
 };
 
+function observeWorkingDirectory(port: CliDetectorProcessPort): WorkingDirectoryObservation {
+  try {
+    return port.storage.statSync(port.cwd).isDirectory() ? 'directory' : 'not-directory';
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') return 'missing';
+    if (code === 'ENOTDIR') return 'not-directory';
+    return 'unobserved';
+  }
+}
+
 export function createCliDetector(
   processPort: CliDetectorProcessPort,
   envPort: CliDetectorEnvPort,
   config: CliDetectorConfig,
 ): { detect: () => Promise<CliInfo>; resetCache: () => void } {
-  /**
-   * Answers only. A probe that could not be answered is not remembered at all, and deliberately so.
-   */
+  /** Command-scoped answers only; request-scoped and unobserved outcomes must be re-probed. */
   let cachedCli: CliInfo | null = null;
   let inFlightProbe: Promise<CliInfo> | null = null;
   let confirmedAuth = false;
@@ -63,9 +78,8 @@ export function createCliDetector(
 
   async function runProbe(): Promise<CliInfo> {
     const cli = cachedCli ?? (await queryCliVersion());
-    // A non-answer is returned and forgotten: caching it would let one unobserved fork failure answer for
-    // every later call, which is the collapse the `reason` split above exists to end.
-    if (!cli.available && cli.reason === 'undetermined') return cli;
+    // Request-scoped and unobserved failures must not survive into a later request through this cache.
+    if (!cli.available && (cli.reason === 'invalid-working-directory' || cli.reason === 'undetermined')) return cli;
     cachedCli = cli;
     if (!cli.available) return cli;
 
@@ -101,23 +115,50 @@ export function createCliDetector(
           error: `could not run \`${command}\` to check (${outcome.detail}); this does not mean ${config.binaryName} is missing — retry the command in a moment`,
         };
       case 'launch-refused':
-        // ENOENT establishes absence, EACCES/EPERM establish denied execution, and ENOTDIR establishes an
-        // invalid command path; only an answered probe may establish a verdict about command behavior.
+        // Measured on Node v26.3.1: child_process.spawn reports ENOENT with error.path set to the command for
+        // both a missing command and a missing cwd, and synchronously throws ENOTDIR when an existing command
+        // is given a cwd that is a file.
         switch (outcome.code) {
           case 'ENOENT':
-            return { available: false, reason: 'not-found', error: config.notFoundMessage };
+          case 'ENOTDIR': {
+            const cwd = observeWorkingDirectory(processPort);
+            switch (cwd) {
+              case 'missing':
+                return {
+                  available: false,
+                  reason: 'invalid-working-directory',
+                  error: `could not run \`${command}\` because working directory \`${processPort.cwd}\` does not exist; restore it or choose another working directory, then retry`,
+                };
+              case 'not-directory':
+                return {
+                  available: false,
+                  reason: 'invalid-working-directory',
+                  error: `could not run \`${command}\` because working directory \`${processPort.cwd}\` is not a directory; choose a directory, then retry`,
+                };
+              case 'unobserved':
+                return {
+                  available: false,
+                  reason: 'undetermined',
+                  error: `could not inspect working directory \`${processPort.cwd}\` after \`${command}\` failed to launch (${outcome.code}); whether ${config.binaryName} is installed was not established — check that the working directory is accessible, then retry`,
+                };
+              case 'directory':
+                return outcome.code === 'ENOENT'
+                  ? { available: false, reason: 'not-found', error: config.notFoundMessage }
+                  : {
+                      available: false,
+                      reason: 'invalid-path',
+                      error: `could not run \`${command}\` (ENOTDIR); a component of the configured command path \`${config.binaryName}\` is not a directory — correct the configured path, then retry`,
+                    };
+              default:
+                return assertNever(cwd);
+            }
+          }
           case 'EACCES':
           case 'EPERM':
             return {
               available: false,
               reason: 'permission-denied',
               error: `could not run \`${command}\` (${outcome.code}); check execute permissions on \`${config.binaryName}\` and for the user running the Coral daemon, then retry`,
-            };
-          case 'ENOTDIR':
-            return {
-              available: false,
-              reason: 'invalid-path',
-              error: `could not run \`${command}\` (ENOTDIR); a component of the configured command path \`${config.binaryName}\` is not a directory — correct the configured path, then retry`,
             };
           default:
             return assertNever(outcome.code);

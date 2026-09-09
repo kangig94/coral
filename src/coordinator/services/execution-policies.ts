@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import { assertNever, errorMessage } from '../../infra/error-format.js';
+import { errorMessage } from '../../infra/error-format.js';
 import type {
   EffortLevel,
   ProviderInstruction,
@@ -223,16 +223,34 @@ function deadlinePreflightDecision(provider: BoundProvider): PreflightDecision {
   };
 }
 
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * A provider that answers outside its own union has not answered, and recognising the discriminator is not
+ * enough to say it did: `refused` and `undetermined` are read for their message, and one that is absent or
+ * blank reaches the operator as a wire body promising a reason and carrying none. Anything this cannot
+ * classify throws, because a preflight that produced no answer is an internal fault and not a fourth answer.
+ */
 function classifyProviderPreflightOutcome(outcome: ProviderPreflightOutcome): PreflightDecision {
   switch (outcome.kind) {
     case 'satisfied':
+      return { kind: 'satisfied' };
     case 'refused':
-      return outcome;
+      if (isNonBlankString(outcome.message)) {
+        return { kind: 'refused', message: outcome.message };
+      }
+      break;
     case 'undetermined':
-      return { ...outcome, cause: 'provider' };
+      if (isNonBlankString(outcome.message)) {
+        return { kind: 'undetermined', cause: 'provider', message: outcome.message };
+      }
+      break;
     default:
-      return assertNever(outcome);
+      break;
   }
+  throw new Error(`preflight returned an outcome outside its contract: ${JSON.stringify(outcome)}`);
 }
 
 function runPreflightWithTimeout(
