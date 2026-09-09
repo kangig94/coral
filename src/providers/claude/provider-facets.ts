@@ -56,13 +56,12 @@ function checkSupportedClaudeSettings(
 
   let readFailure: Extract<ProviderPreflightOutcome, { kind: 'undetermined' }> | undefined;
   for (const [settingsPath, layer] of settingsPaths) {
-    if (!runtime.storage.existsSync(settingsPath)) continue;
-
     let raw: string;
     try {
       raw = runtime.storage.readFileSync(settingsPath, 'utf-8');
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
       const remedy =
         code === 'EACCES' || code === 'EPERM'
           ? ' Check that these settings are readable by the user running the Coral daemon, then retry.'

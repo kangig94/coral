@@ -2,19 +2,11 @@ import type { EnvPort } from '../infra/port-types.js';
 import { classifyExecOutcome } from '../infra/port-types.js';
 import type { ProcessPort } from '../runtime/ports.js';
 
-/**
- * Three answers about the binary, not two. `not-found` is a probe that ran and settled the question; the CLI
- * is absent, or present and unable to report a version. `undetermined` is a probe that never got an answer —
- * the 10s bound elapsed, or the system had no process slot to fork with — which says nothing about whether the
- * CLI is installed.
- *
- * The split is in the type rather than only in the caching because this value becomes a sentence an operator
- * reads. Collapsed, a timeout under load surfaced the configured `notFoundMessage`, which by its nature tells
- * someone to install the binary — instructing them to fix software they already have, and naming a cause that
- * was never observed. `authState` had modelled its own third answer from the beginning; availability had not.
- */
+/** Unavailable answers are cacheable only when their reason is an established condition of this command. */
 export type CliInfo =
   | { available: false; reason: 'not-found'; error: string }
+  | { available: false; reason: 'permission-denied'; error: string }
+  | { available: false; reason: 'invalid-path'; error: string }
   | { available: false; reason: 'undetermined'; error: string }
   | { available: true; version: string; authState: 'authenticated' }
   | { available: true; version: string; authState: 'unknown' }
@@ -108,9 +100,31 @@ export function createCliDetector(
           error: `could not run \`${command}\` to check (${outcome.detail}); this does not mean ${config.binaryName} is missing — retry the command in a moment`,
         };
       case 'launch-refused':
-        // The launch failed for a reason that will not change under a running daemon, so the configured
-        // "install it" message is the right one and is worth caching.
-        return { available: false, reason: 'not-found', error: config.notFoundMessage };
+        // ENOENT establishes absence, EACCES/EPERM establish denied execution, and ENOTDIR establishes an
+        // invalid command path; only an answered probe may establish a verdict about command behavior.
+        switch (outcome.code) {
+          case 'ENOENT':
+            return { available: false, reason: 'not-found', error: config.notFoundMessage };
+          case 'EACCES':
+          case 'EPERM':
+            return {
+              available: false,
+              reason: 'permission-denied',
+              error: `could not run \`${command}\` (${outcome.code}); check execute permissions on \`${config.binaryName}\` and for the user running the Coral daemon, then retry`,
+            };
+          case 'ENOTDIR':
+            return {
+              available: false,
+              reason: 'invalid-path',
+              error: `could not run \`${command}\` (ENOTDIR); a component of the configured command path \`${config.binaryName}\` is not a directory — correct the configured path, then retry`,
+            };
+          default:
+            return {
+              available: false,
+              reason: 'undetermined',
+              error: `could not run \`${command}\` because the launch refusal (${outcome.code}) is not classified — retry the command`,
+            };
+        }
       case 'answered':
         // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
         // absent one and is cached the same way.

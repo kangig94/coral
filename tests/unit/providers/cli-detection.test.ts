@@ -147,17 +147,44 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it.each([
-    ['ENOENT', 'the binary is not installed'],
-    ['EACCES', 'this process may not execute it'],
-  ])('reports %s as not-found, because %s does not change under a running daemon', async (code) => {
-    const exec = vi.fn().mockResolvedValue(launchFailure(code));
+  it('reports ENOENT as not-found with the configured installation remedy', async () => {
+    const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
 
     await expect(detector({ exec }).detect()).resolves.toEqual({
       available: false,
       reason: 'not-found',
       error: 'fixture CLI unavailable',
     });
+  });
+
+  it.each(['EACCES', 'EPERM'])('reports %s with an execution-permission remedy', async (code) => {
+    const exec = vi.fn().mockResolvedValue(launchFailure(code));
+
+    await expect(detector({ exec }).detect()).resolves.toEqual({
+      available: false,
+      reason: 'permission-denied',
+      error: expect.stringMatching(/execute permissions/iu),
+    });
+  });
+
+  it('reports ENOTDIR with a configured-path remedy', async () => {
+    const exec = vi.fn().mockResolvedValue(launchFailure('ENOTDIR'));
+
+    await expect(detector({ exec }).detect()).resolves.toEqual({
+      available: false,
+      reason: 'invalid-path',
+      error: expect.stringMatching(/configured command path/iu),
+    });
+  });
+
+  it.each(['EACCES', 'EPERM', 'ENOTDIR'])('caches the established %s refusal', async (code) => {
+    const exec = vi.fn().mockResolvedValue(launchFailure(code));
+    const subject = detector({ exec });
+
+    await subject.detect();
+    await subject.detect();
+
+    expect(exec).toHaveBeenCalledOnce();
   });
 
   it('never remembers an undetermined probe, so a recovered machine heals on the next call', async () => {

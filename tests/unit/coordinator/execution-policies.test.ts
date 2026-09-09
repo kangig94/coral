@@ -246,6 +246,24 @@ describe('execution policies', () => {
     expect(pendingTimerCount(runtime)).toBe(0);
   });
 
+  it('rejects a malformed fulfilled outcome into the faulted decision instead of hanging', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => undefined as never),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).resolves.toEqual({
+      kind: 'undetermined',
+      cause: 'faulted',
+      message: expect.stringMatching(/kind/iu),
+    });
+    expect(provider.preflight).toHaveBeenCalledOnce();
+    expect(pendingTimerCount(runtime)).toBe(0);
+  });
+
   it('rejects an outcome that settles after the deadline before its timer callback runs', async () => {
     const runtime = new SimulationRuntime();
     let monotonicTime = 0n;

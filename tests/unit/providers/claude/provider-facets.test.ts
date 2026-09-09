@@ -36,7 +36,8 @@ function claudePreflightRuntime(
       readFileSync: (path: string) => {
         const contents = files[path];
         if (contents instanceof Error) throw contents;
-        return contents ?? '';
+        if (contents === undefined) throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+        return contents;
       },
     },
     runExact,
@@ -48,7 +49,12 @@ function unanswerableVersionProbeRuntime(code: string): ProviderPreflightRuntime
   return {
     access: TEST_CLAUDE_ACCESS,
     cwd: '/workspace/project',
-    storage: { existsSync: () => false, readFileSync: () => '' },
+    storage: {
+      existsSync: () => false,
+      readFileSync: () => {
+        throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+      },
+    },
     runExact: vi.fn(async () => ({
       stdout: '',
       stderr: '',
@@ -132,6 +138,32 @@ describe('claudePreflight', () => {
     expect(outcome.message).not.toContain('Repair or remove that settings file');
     expect(outcome.message).toMatch(/readable by the user running the Coral daemon/u);
     expect(runtime.runExact).not.toHaveBeenCalled();
+  });
+
+  it('returns undetermined when an existence probe would hide a settings observation error', async () => {
+    const settingsPath = '/workspace/project/.claude/settings.json';
+    const runtime = claudePreflightRuntime({});
+    runtime.storage.existsSync = vi.fn(() => false);
+    runtime.storage.readFileSync = vi.fn((path: string) => {
+      if (path === settingsPath) throw Object.assign(new Error('I/O failed'), { code: 'EIO' });
+      throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+    }) as never;
+
+    const outcome = await claudePreflight(runtime);
+
+    expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/EIO/u) });
+    expect(runtime.storage.existsSync).not.toHaveBeenCalled();
+    expect(runtime.runExact).not.toHaveBeenCalled();
+  });
+
+  it.each(['ENOENT', 'ENOTDIR'])('treats %s while reading a settings path as decisive absence', async (code) => {
+    const runtime = claudePreflightRuntime({});
+    runtime.storage.readFileSync = vi.fn(() => {
+      throw Object.assign(new Error(code), { code });
+    }) as never;
+
+    await expect(claudePreflight(runtime)).resolves.toEqual({ kind: 'satisfied' });
+    expect(runtime.runExact).toHaveBeenCalledTimes(2);
   });
 
   it('prefers a refusal from a later settings layer over an unreadable ancestor', async () => {

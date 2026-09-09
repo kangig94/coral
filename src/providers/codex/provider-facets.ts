@@ -94,9 +94,8 @@ export async function codexPreflight(
 /**
  * Whether this Codex CLI has an `app-server` subcommand — and whether we got to find out.
  *
- * Only the binary answering settles it. A launch that failed on anything but a standing fact about this
- * machine, and a child killed before it exited, are both non-answers: they leave the installed Codex CLI
- * exactly as unknown as before the probe ran.
+ * Only an answered probe may establish whether `app-server` is supported. A launch refusal may refuse
+ * preflight only with the remedy for the command condition its errno established.
  */
 async function probeCodexAppServer(
   runtime: ProviderPreflightRuntime<CodexProviderAccess>,
@@ -114,7 +113,27 @@ async function probeCodexAppServer(
         message: `Codex preflight could not run \`codex app-server --help\` (${outcome.detail}); this says nothing about the installed Codex CLI. Retry the command in a moment.`,
       };
     case 'launch-refused':
-      return { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+      switch (outcome.code) {
+        case 'ENOENT':
+          return { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE };
+        case 'EACCES':
+        case 'EPERM':
+          return {
+            kind: 'refused',
+            message: `Codex preflight cannot execute \`codex\` (${outcome.code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
+          };
+        case 'ENOTDIR':
+          return {
+            kind: 'refused',
+            message:
+              'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
+          };
+        default:
+          return {
+            kind: 'undetermined',
+            message: `Codex preflight could not classify the \`codex\` launch refusal (${outcome.code}); this says nothing about app-server support. Retry the command.`,
+          };
+      }
     case 'answered':
       return outcome.status === 0
         ? { kind: 'satisfied' }

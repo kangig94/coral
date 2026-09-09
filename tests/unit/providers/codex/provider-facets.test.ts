@@ -433,13 +433,30 @@ describe('codexPreflight', () => {
     });
   });
 
-  it.each([
-    ['ENOENT', 'the binary is not installed'],
-    ['EACCES', 'this process may not execute it'],
-  ])('reports %s as an unusable CLI, because %s is a fact about this machine', async (code) => {
+  it('reports ENOENT as a missing or outdated CLI', async () => {
     await expect(
-      codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } })),
+      codexPreflight(preflightRuntime({ appServer: { error: errno('ENOENT'), status: null } })),
     ).resolves.toEqual({ kind: 'refused', message: expect.stringMatching(UPGRADE) });
+  });
+
+  it.each(['EACCES', 'EPERM'])(
+    'reports %s as an execution-permission refusal, not an upgrade verdict',
+    async (code) => {
+      const outcome = await codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } }));
+
+      expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/execute permissions/iu) });
+      if (outcome.kind !== 'refused') throw new Error('expected refused');
+      expect(outcome.message).not.toMatch(UPGRADE);
+      expect(outcome.message).not.toMatch(/app-server support/iu);
+    },
+  );
+
+  it('reports ENOTDIR as an invalid configured command path, not an upgrade verdict', async () => {
+    const outcome = await codexPreflight(preflightRuntime({ appServer: { error: errno('ENOTDIR'), status: null } }));
+
+    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/configured command path/iu) });
+    if (outcome.kind !== 'refused') throw new Error('expected refused');
+    expect(outcome.message).not.toMatch(UPGRADE);
   });
 
   it('reports a CLI without the subcommand as one to update', async () => {

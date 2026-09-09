@@ -654,7 +654,7 @@ describe('workflow recovery branch rules', () => {
     }
   });
 
-  it('reports when a pending replacement launch check established nothing', async () => {
+  it('quarantines a pending replacement launch check that established nothing', async () => {
     const harness = createHarness({
       atomPhase: 'running',
       projectionPhase: 'error',
@@ -686,17 +686,37 @@ describe('workflow recovery branch rules', () => {
           releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).resolves.toEqual(['workflow-1']);
-      expect(finalizeWorkflow).toHaveBeenCalledWith(
-        expect.objectContaining({
-          outcome: 'failed',
-          lifecycleFault: expect.objectContaining({
-            message:
-              "Workflow recovery replacement launch check for slot 'workflow-1:0:0' established nothing: Provider preflight could not inspect credentials.",
-          }),
-        }),
-      );
+      ).resolves.toEqual([]);
+      expect(finalizeWorkflow).not.toHaveBeenCalled();
       expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
+      const continuation = harness.db
+        .prepare<[], { continuation_kind: string; continuation_key: string }>(
+          `SELECT continuation_kind, continuation_key
+             FROM recovery_quarantine
+            WHERE boundary_id = 'workflow-recovery'
+              AND subject_key = 'workflow-1'`,
+        )
+        .get();
+      expect(continuation?.continuation_kind).toBe('workflow-recovery.v1');
+      expect(JSON.parse(continuation?.continuation_key ?? '{}')).toMatchObject({
+        stage: 'external-outcome-unknown',
+        intendedFinalization: { kind: 'pending' },
+      });
+
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual([]);
+      expect(harness.executionSvc.resume).toHaveBeenCalledOnce();
+      expect(finalizeWorkflow).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
     }

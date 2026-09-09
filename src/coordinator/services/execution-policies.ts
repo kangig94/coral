@@ -249,6 +249,12 @@ function runPreflightWithTimeout(
     }, Number(remaining));
     timeout.unref?.();
 
+    const rejectWith = (error: unknown): void => {
+      settled = true;
+      runtime.time.clearTimeout(timeout);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
     Promise.resolve()
       .then(() => provider.preflight(runtime))
       .then(
@@ -256,21 +262,27 @@ function runPreflightWithTimeout(
           if (settled) {
             return;
           }
-          settled = true;
-          runtime.time.clearTimeout(timeout);
-          if (runtime.time.monotonicNow() >= deadline) {
-            resolve(deadlinePreflightDecision(provider));
+          // The decision is built before the latch closes: closing it first and then throwing would leave this
+          // promise unsettled with its timer already cancelled, and the launch awaiting it never returns.
+          let decision: PreflightDecision;
+          try {
+            decision =
+              runtime.time.monotonicNow() >= deadline
+                ? deadlinePreflightDecision(provider)
+                : classifyProviderPreflightOutcome(outcome);
+          } catch (error: unknown) {
+            rejectWith(error);
             return;
           }
-          resolve(classifyProviderPreflightOutcome(outcome));
+          settled = true;
+          runtime.time.clearTimeout(timeout);
+          resolve(decision);
         },
         (error: unknown) => {
           if (settled) {
             return;
           }
-          settled = true;
-          runtime.time.clearTimeout(timeout);
-          reject(error instanceof Error ? error : new Error(String(error)));
+          rejectWith(error);
         },
       );
   });

@@ -387,8 +387,9 @@ async function resumePendingReplacementIntents(
           `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message}.`,
         );
       case 'undetermined':
-        throw new Error(
-          `Workflow recovery replacement launch check for slot '${slot.slotId}' established nothing: ${resumed.message}.`,
+        throw new UnknownWorkflowRecoveryOutcome(
+          `replacement launch check for slot '${slot.slotId}'`,
+          new Error(resumed.message),
         );
       case 'running':
       case 'queued':
