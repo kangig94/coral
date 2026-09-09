@@ -7,7 +7,7 @@ import { none } from '#src/providers/capability.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
-import type { AdmittedHandle, JobAdmissionPort, LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { JobAdmissionPort } from '#src/jobs/contracts/admission.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { ContinuitySnapshot } from '#src/sessions/continuity.js';
 import type { AppServerSession } from '#src/providers/contract.js';
@@ -28,6 +28,7 @@ import type { DefaultProviderHostManager } from '#src/coordinator/live/provider-
 import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -120,7 +121,7 @@ function fakeRuntime(): Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'path
       existsSync: () => false,
       readFileSync: () => '',
     } as never,
-    env: { platform: () => 'linux', fullSnapshot: () => ({}) } as never,
+    env: { get: () => undefined, platform: () => 'linux', fullSnapshot: () => ({}) } as never,
     paths: {
       coral: {
         exports: { jobsRoot: '/tmp/coral/exports/jobs' },
@@ -145,7 +146,7 @@ interface QuiesceHarness {
   recordArtifactHandleSpy: ReturnType<typeof vi.fn>;
   providerRunSpy: ReturnType<typeof vi.fn>;
   hostCloseSpy: ReturnType<typeof vi.fn>;
-  jobPools: Map<string, LaunchPool>;
+  launchCoordinator: LaunchCoordinator;
   providerStream: ReturnType<typeof createControlledProviderStream>;
   attachServer: () => Promise<void>;
   readinessStarted: Promise<void>;
@@ -177,7 +178,6 @@ async function buildOrchestratorAroundProviderStream(
   const recordTerminalSpy = vi.fn();
   const appendProgressSpy = vi.fn();
   const writeArtifactSpy = vi.fn();
-  const releaseLaunchSpy = vi.fn();
   const abortRemoveSpy = vi.fn();
   const releaseJobClaimSpy = vi.fn(async () => {
     await options.releaseJobClaimGate;
@@ -231,19 +231,11 @@ async function buildOrchestratorAroundProviderStream(
     remove: abortRemoveSpy,
   } as unknown as AbortRegistry;
 
-  const launchAdmission: JobAdmissionPort = {
-    requestLaunch: () => ({ type: 'immediate' }) satisfies AdmittedHandle,
-    releaseLaunch: releaseLaunchSpy,
-    cancelQueued: () => false,
-  };
-
   const durableSpawner: ProviderDurableSpawner = {
     spawnCli: async () => {
       throw new Error('Durable spawner should not run in app-server quiesce test');
     },
   } as never;
-
-  const jobPools = new Map<string, LaunchPool>([[jobId, 'default']]);
 
   const progressStoreSpy = {
     nextEnqueueSequence: () => 1,
@@ -272,6 +264,17 @@ async function buildOrchestratorAroundProviderStream(
 
   const writeResultArtifactWatcher = writeArtifactSpy;
   const runtime = fakeRuntime();
+  const launchCoordinator = new LaunchCoordinator({ runtime: runtime as Runtime });
+  const launchAdmission: JobAdmissionPort = launchCoordinator;
+  const releaseLaunchSpy = vi.spyOn(launchCoordinator, 'releaseLaunch');
+  const admission = launchAdmission.requestLaunch(
+    jobId,
+    'codex',
+    { kind: 'provider-session', id: sessionId },
+    'default',
+  );
+  if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected launch permit');
+  expect(admission.permit.reservationId).not.toBe('');
   (runtime.storage as unknown as { writeAtomicSync: ReturnType<typeof vi.fn> }).writeAtomicSync =
     writeResultArtifactWatcher;
 
@@ -321,7 +324,6 @@ async function buildOrchestratorAroundProviderStream(
     coordinatorCommit: (cb) => progressStoreSpy.commit(cb),
     backendNamespace: 'ns',
     bundleHash: 'bundle',
-    jobPools,
     terminalMaterializer: {
       recordProviderTerminal: recordTerminalSpy as never,
     },
@@ -392,7 +394,7 @@ async function buildOrchestratorAroundProviderStream(
   } as unknown as ProviderRequest;
 
   const start = (): void => {
-    orchestrator.runAsync(launchProvider, sessionId, jobId, request, { type: 'immediate' }, 'default');
+    orchestrator.runAsync(launchProvider, sessionId, jobId, request, admission, 'default');
   };
   if (options.startImmediately !== false) {
     start();
@@ -418,7 +420,7 @@ async function buildOrchestratorAroundProviderStream(
     recordArtifactHandleSpy,
     providerRunSpy,
     hostCloseSpy,
-    jobPools,
+    launchCoordinator,
     providerStream,
     attachServer,
     readinessStarted: readinessStarted.promise,
@@ -441,7 +443,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
-    expect(harness.jobPools.get(harness.jobId)).toBe('default');
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toMatchObject({ pool: 'default' });
   });
 
   it('preserves an app-server job when successful readiness settles after the handoff fence', async () => {
@@ -461,7 +463,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
-    expect(harness.jobPools.get(harness.jobId)).toBe('default');
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toMatchObject({ pool: 'default' });
   });
 
   it('closes a host acquired after the handoff fence without starting the provider operation', async () => {
@@ -606,7 +608,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
-    expect(harness.jobPools.has(harness.jobId)).toBe(true);
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
 
     harness.providerStream.end();
   });
@@ -623,7 +625,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
-    expect(harness.jobPools.has(harness.jobId)).toBe(true);
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
   });
 
   it.each(['stale', 'throw'] as const)(
@@ -645,7 +647,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
       expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
       expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
       expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
-      expect(harness.jobPools.has(harness.jobId)).toBe(true);
+      expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
     },
   );
 
@@ -745,7 +747,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
-    expect(harness.jobPools.has(harness.jobId)).toBe(true);
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
   });
 
   it('preserves ownership when the exact-version terminal claim release is stale', async () => {
@@ -765,7 +767,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     });
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
-    expect(harness.jobPools.has(harness.jobId)).toBe(true);
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
   });
 
   it('releases a terminal claim at the version returned by the last continuity CAS', async () => {

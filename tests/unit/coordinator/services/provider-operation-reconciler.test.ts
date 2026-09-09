@@ -2712,9 +2712,8 @@ describe('ProviderOperationReconciler publication', () => {
     await harness.begin();
     const executing = readProviderOperation(harness.db, harness.record.operation);
     if (executing?.phase !== 'executing') throw new Error('expected executing journal row');
-    const { controlIntent: _controlIntent, ...settlementRecord } = executing;
     const settlement = providerOperationRecordSchema.parse({
-      ...settlementRecord,
+      ...executing,
       phase: 'settlement-pending',
       committedThroughProviderSeq: 1,
       terminalProviderSeq: 1,

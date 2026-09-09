@@ -108,7 +108,12 @@ describe('admittedByThisCoordinator', () => {
   it('is true for a job in the active set', () => {
     const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    launchCoordinator.requestLaunch('active-job', 'codex', { kind: 'provider-session', id: 'session-1' });
+    launchCoordinator.requestLaunch(
+      'active-job',
+      'codex',
+      { kind: 'provider-session', id: 'session-1' },
+      'default',
+    );
 
     expect(admittedByThisCoordinator(launchCoordinator, 'active-job')).toBe(true);
   });
@@ -116,7 +121,12 @@ describe('admittedByThisCoordinator', () => {
   it('is true for a job only in the queue', () => {
     const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    launchCoordinator.restoreQueuedLaunch('queued-job', 'codex', { kind: 'provider-session', id: 'session-2' });
+    launchCoordinator.restoreQueuedLaunch(
+      'queued-job',
+      'codex',
+      { kind: 'provider-session', id: 'session-2' },
+      'default',
+    );
 
     expect(admittedByThisCoordinator(launchCoordinator, 'queued-job')).toBe(true);
   });

@@ -1037,7 +1037,7 @@ describe('lifecycle recovery', () => {
     progressStore
       .getDb()
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
-      .run('provider_operation_saga.v2:record:unattributable', JSON.stringify({ version: 'unknown', locator: null }));
+      .run('provider_operation_saga.v3:record:unattributable', JSON.stringify({ version: 'unknown', locator: null }));
 
     const runStartupRecoveryFn = vi.fn(async (inputs: StartupRecoveryInputs) => {
       expect(inputs.providerOperationStartupOwnership).toEqual({ jobIds: [] });
@@ -2264,8 +2264,8 @@ describe('lifecycle recovery', () => {
         'queued-low',
         'queued-high',
       ]);
-      expect(recoveredCoordinator.queuePosition('queued-low')).toBe(1);
-      expect(recoveredCoordinator.queuePosition('queued-high')).toBe(2);
+      expect(recoveredCoordinator.queuePosition('queued-low', 'default')).toBe(1);
+      expect(recoveredCoordinator.queuePosition('queued-high', 'default')).toBe(2);
     } finally {
       await stopLifecycleController(controller);
     }
@@ -3963,7 +3963,7 @@ describe('lifecycle recovery', () => {
         expectRecordedRecoveryFault(progressStore, jobId, adoptionError);
         expect(runtimeState.getLaunchFenceActive()).toBe(false);
         expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
-        expect(launchCoordinator.queuePosition(jobId)).toBeNull();
+        expect(launchCoordinator.queuePosition(jobId, 'default')).toBeNull();
         expect(launchCoordinator.getActiveJobIds()).not.toContain(jobId);
 
         const reader = new modules.sessionManagerModule.SessionManager(

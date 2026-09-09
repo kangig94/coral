@@ -1,5 +1,7 @@
+export type AbortSettledCallback = () => void;
+
 export interface JobAbortRegistryPort {
-  register(jobId?: string, onAbort?: () => void): string;
+  register(jobId?: string, onAbort?: () => void, onAbortSettled?: AbortSettledCallback): string;
   getSignal(jobId: string): AbortSignal | null;
   has(jobId: string): boolean;
   listActive(): string[];

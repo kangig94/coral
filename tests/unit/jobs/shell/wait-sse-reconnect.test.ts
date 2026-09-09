@@ -178,7 +178,6 @@ describe('wait SSE reconnect', () => {
       sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
-      jobPools: new Map(),
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
       readJobEvents: (targetJobId) => readJobEvents(db, targetJobId, progressStore),
@@ -365,7 +364,6 @@ describe('wait SSE reconnect', () => {
       sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
-      jobPools: new Map(),
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
       readJobEvents: (targetJobId) => {

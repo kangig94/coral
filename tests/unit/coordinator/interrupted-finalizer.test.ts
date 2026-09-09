@@ -13,7 +13,9 @@ import type {
   PerformedDurableRecovery,
   PerformedInterruptedRecovery,
 } from '#src/coordinator/services/recovery/interrupted-performer.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import type { JobStatus } from '#src/jobs/records.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const plan = {
   kind: 'artifacts',
@@ -116,8 +118,18 @@ function createHarness(
     return true;
   });
   const remove = vi.fn(() => order.push('abort-remove'));
-  const releaseLaunch = vi.fn(() => order.push('admission-release'));
-  const jobPools = new Map([['interrupted-job', 'continuation' as const]]);
+  const launchCoordinator = new LaunchCoordinator({ runtime: new SimulationRuntime() });
+  const launchPermit = launchCoordinator.restoreActiveLaunch(
+    'interrupted-job',
+    'fixture',
+    { kind: 'provider-session', id: 'interrupted-session' },
+    'default',
+  );
+  const releaseExact = launchCoordinator.releaseLaunch.bind(launchCoordinator);
+  const releaseLaunch = vi.spyOn(launchCoordinator, 'releaseLaunch').mockImplementation((permit) => {
+    order.push('admission-release');
+    return releaseExact(permit);
+  });
   const mkdirSync = vi.fn(() => order.push('artifact-mkdir'));
   const writeAtomicSync = vi.fn(() => {
     order.push('artifact-write');
@@ -131,7 +143,8 @@ function createHarness(
     finalizeJobContinuityAtomic,
     remove,
     releaseLaunch,
-    jobPools,
+    launchCoordinator,
+    launchPermit,
     deps: {
       runtime: {
         time: { now: () => Date.parse('2026-07-22T00:01:00.000Z') },
@@ -140,8 +153,7 @@ function createHarness(
       },
       sessionManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
       abortRegistry: { remove },
-      launchAdmission: { releaseLaunch },
-      jobPools,
+      launchAdmission: launchCoordinator,
     } as never,
   };
 }
@@ -170,7 +182,9 @@ describe('interrupted app-server recovery finalizer', () => {
       }),
     );
     expect(harness.remove).toHaveBeenCalledWith('interrupted-job');
-    expect(harness.releaseLaunch).toHaveBeenCalledWith('interrupted-job', 'continuation');
+    expect(harness.launchPermit.reservationId).not.toBe('');
+    expect(harness.releaseLaunch).toHaveBeenCalledWith(harness.launchPermit);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
   });
 
   it('persists artifact handles before terminal settlement and carries the advanced CAS version', async () => {
@@ -208,8 +222,9 @@ describe('interrupted app-server recovery finalizer', () => {
       'abort-remove',
       'admission-release',
     ]);
-    expect(harness.jobPools.has('interrupted-job')).toBe(false);
-    expect(harness.releaseLaunch).toHaveBeenCalledWith('interrupted-job', 'continuation');
+    expect(harness.launchPermit.reservationId).not.toBe('');
+    expect(harness.releaseLaunch).toHaveBeenCalledWith(harness.launchPermit);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
   });
 
   it('fails closed before terminal persistence when artifact-handle CAS is stale', async () => {
@@ -224,7 +239,10 @@ describe('interrupted app-server recovery finalizer', () => {
 
     expect(harness.recordArtifactHandleAtomic).toHaveBeenCalled();
     expect(harness.order).toEqual(['artifact-cas']);
-    expect(harness.jobPools.has('interrupted-job')).toBe(true);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'recovery' },
+    });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
   });
@@ -240,7 +258,7 @@ describe('interrupted app-server recovery finalizer', () => {
     );
 
     expect(harness.order).toEqual(['artifact-cas', 'session-cas']);
-    expect(harness.jobPools.has('interrupted-job')).toBe(true);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
   });
@@ -253,7 +271,7 @@ describe('interrupted app-server recovery finalizer', () => {
     );
 
     expect(harness.order).toEqual(['artifact-cas', 'session-cas']);
-    expect(harness.jobPools.has('interrupted-job')).toBe(true);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
   });
@@ -290,7 +308,9 @@ describe('interrupted durable recovery finalizer', () => {
       'abort-remove',
       'admission-release',
     ]);
-    expect(harness.jobPools.has('interrupted-job')).toBe(false);
+    expect(harness.launchPermit.reservationId).not.toBe('');
+    expect(harness.releaseLaunch).toHaveBeenCalledWith(harness.launchPermit);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
   });
 
   it('does not persist a durable terminal when the exact final session CAS is stale', async () => {
@@ -306,7 +326,7 @@ describe('interrupted durable recovery finalizer', () => {
     );
 
     expect(harness.order).toEqual(['artifact-cas', 'session-cas']);
-    expect(harness.jobPools.has('interrupted-job')).toBe(true);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
   });
@@ -325,7 +345,7 @@ describe('interrupted durable recovery finalizer', () => {
 
     expect(harness.recordArtifactHandleAtomic).toHaveBeenCalled();
     expect(harness.order).toEqual(['artifact-cas']);
-    expect(harness.jobPools.has('interrupted-job')).toBe(true);
+    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
   });
 });

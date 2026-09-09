@@ -11,6 +11,7 @@ import {
   type ProviderOperationEventIdentity,
 } from '#src/jobs/provider-event.js';
 import {
+  PROVIDER_CONTAINMENT_CAUSES,
   PROVIDER_INTERRUPTION_CAUSES,
   PROVIDER_STOP_CAUSES,
   type ProviderContinuityEventBody,
@@ -291,7 +292,9 @@ describe('applyProviderEventAtSeq', () => {
   // Driven from the production-exported cause list, not a hand-written literal, so a future addition to
   // `PROVIDER_INTERRUPTION_CAUSES` is exercised here automatically instead of the test silently going stale.
   const ABORT_CAUSES: readonly ProviderStopCause[] = PROVIDER_STOP_CAUSES.filter(
-    (cause) => !(PROVIDER_INTERRUPTION_CAUSES as readonly string[]).includes(cause),
+    (cause) =>
+      !(PROVIDER_INTERRUPTION_CAUSES as readonly string[]).includes(cause) &&
+      !(PROVIDER_CONTAINMENT_CAUSES as readonly string[]).includes(cause),
   );
 
   it.each(PROVIDER_INTERRUPTION_CAUSES)(

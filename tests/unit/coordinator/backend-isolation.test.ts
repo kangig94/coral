@@ -19,8 +19,8 @@ describe('backend isolation', () => {
     const coordA = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     const coordB = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
 
-    const admitA = coordA.requestLaunch('job-a1', 'codex', { kind: 'provider-session', id: 'session-a1' });
-    const admitB = coordB.requestLaunch('job-b1', 'codex', { kind: 'provider-session', id: 'session-b1' });
+    const admitA = coordA.requestLaunch('job-a1', 'codex', { kind: 'provider-session', id: 'session-a1' }, 'default');
+    const admitB = coordB.requestLaunch('job-b1', 'codex', { kind: 'provider-session', id: 'session-b1' }, 'default');
     expect(admitA).toMatchObject({ type: 'immediate' });
     expect(admitB).toMatchObject({ type: 'immediate' });
 
@@ -28,7 +28,8 @@ describe('backend isolation', () => {
     expect(coordB.getActiveJobIds()).toEqual(['job-b1']);
 
     coordA.terminateAll();
-    coordA.releaseLaunch('job-a1');
+    if (admitA === 'queue_full' || admitA.type !== 'immediate') throw new Error('expected coordinator A permit');
+    coordA.releaseLaunch(admitA.permit);
     expect(coordA.getActiveJobIds()).toEqual([]);
     expect(coordB.getActiveJobIds()).toEqual(['job-b1']);
   });
@@ -112,8 +113,13 @@ describe('backend isolation', () => {
     const busB = new TypedEventBus();
     const regB = createDiscussContextRegistry();
 
-    coordA.requestLaunch('job-a', 'codex', { kind: 'provider-session', id: 'session-a' });
-    coordB.requestLaunch('job-b', 'codex', { kind: 'provider-session', id: 'session-b' });
+    const admissionA = coordA.requestLaunch(
+      'job-a',
+      'codex',
+      { kind: 'provider-session', id: 'session-a' },
+      'default',
+    );
+    coordB.requestLaunch('job-b', 'codex', { kind: 'provider-session', id: 'session-b' }, 'default');
 
     const createdJobIdsB: string[] = [];
     busB.on('job:created', (e) => createdJobIdsB.push(e.jobId));
@@ -122,7 +128,8 @@ describe('backend isolation', () => {
     regB.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
 
     coordA.terminateAll();
-    coordA.releaseLaunch('job-a');
+    if (admissionA === 'queue_full' || admissionA.type !== 'immediate') throw new Error('expected coordinator A permit');
+    coordA.releaseLaunch(admissionA.permit);
     busA.removeAllListeners();
     regA.contexts.clear();
 

@@ -6,7 +6,8 @@ import type { ProviderOperationChildAuthorization } from './provider-operation-l
 export type AppServerProxyPlacementResult =
   | Readonly<{ kind: 'remote-executing' }>
   | Readonly<{ kind: 'local-authorized'; reason: string }>
-  | Readonly<{ kind: 'terminalized' }>;
+  | Readonly<{ kind: 'terminalized' }>
+  | Readonly<{ kind: 'rekey-refused-contained'; operationId: string; reason: string }>;
 
 export interface AppServerProxyRoute {
   /**

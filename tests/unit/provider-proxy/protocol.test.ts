@@ -914,6 +914,9 @@ describe('proxy control-method request schemas, shared with their coordinator se
   it('operation.stop.v1 rejects an extra field', () => {
     expect(proxyOperationStopParamsSchema.safeParse({ operation, cause: 'signal_abort' }).success).toBe(true);
     expect(
+      proxyOperationStopParamsSchema.safeParse({ operation, cause: 'coordinator_rekey_refused' }).success,
+    ).toBe(true);
+    expect(
       proxyOperationStopParamsSchema.safeParse({ operation, cause: 'signal_abort', unexpected: true }).success,
     ).toBe(false);
   });

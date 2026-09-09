@@ -28,6 +28,7 @@ import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.j
 import { parseExpression } from '#src/workflow/parser.js';
 import { type AgentRef } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { LaunchPermit, LaunchPool } from '#src/jobs/contracts/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
@@ -208,7 +209,7 @@ function jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
+function cancelQueued(jobId: string, pool: LaunchPool): boolean {
   return launchCoordinator.cancelQueued(jobId, pool);
 }
 
@@ -224,12 +225,17 @@ function queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
   return launchCoordinator.queueDepth(pool);
 }
 
-function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.releaseLaunch(jobId, pool);
+function releaseLaunch(permit: LaunchPermit): void {
+  launchCoordinator.releaseLaunch(permit);
 }
 
-function restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.restoreActiveLaunch(jobId, provider, { kind: 'provider-session', id: `session-${jobId}` }, pool);
+function restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool): LaunchPermit {
+  return launchCoordinator.restoreActiveLaunch(
+    jobId,
+    provider,
+    { kind: 'provider-session', id: `session-${jobId}` },
+    pool,
+  );
 }
 
 function createService(
@@ -2501,7 +2507,8 @@ describe('ExecutionService', () => {
           }),
         );
 
-        restoreActiveLaunch(jobId, 'codex');
+        const restoredPermit = restoreActiveLaunch(jobId, 'codex', 'default');
+        expect(restoredPermit.reservationId).not.toBe('');
         service.completeRecoveredJob(
           jobId,
           session.sessionId,

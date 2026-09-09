@@ -31,6 +31,7 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { LaunchPermit, LaunchPool } from '#src/jobs/contracts/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
@@ -112,7 +113,7 @@ function _jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
+function cancelQueued(jobId: string, pool: LaunchPool): boolean {
   return launchCoordinator.cancelQueued(jobId, pool);
 }
 
@@ -128,8 +129,8 @@ function _queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
   return launchCoordinator.queueDepth(pool);
 }
 
-function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.releaseLaunch(jobId, pool);
+function releaseLaunch(permit: LaunchPermit): void {
+  launchCoordinator.releaseLaunch(permit);
 }
 
 function createService(

@@ -965,9 +965,8 @@ describe('provider-proxy operation lifecycle', () => {
     set.advanceSilently(5_001);
     const executing = readProviderOperation(launched.db, operation);
     if (executing?.phase !== 'executing') throw new Error('expected executing journal row');
-    const { controlIntent: _controlIntent, ...settlementRecord } = executing;
     const settlement = providerOperationRecordSchema.parse({
-      ...settlementRecord,
+      ...executing,
       phase: 'settlement-pending',
       committedThroughProviderSeq: 0,
       terminalProviderSeq: 0,
@@ -1272,6 +1271,7 @@ describe('provider-proxy operation lifecycle', () => {
     ['user_abort', 'terminal-awaiting-journal-ack'],
     ['signal_abort', 'terminal-awaiting-journal-ack'],
     ['queue_shutdown', 'terminal-awaiting-journal-ack'],
+    ['coordinator_rekey_refused', 'terminal-awaiting-journal-ack'],
   ])('stops on %s into %s, awaiting the coordinator’s durable decision', async (cause, expected) => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);

@@ -1,5 +1,9 @@
 import type { PrincipalWire } from '../../security/principal-wire.js';
-import type { LaunchPool } from './admission.js';
+import type {
+  LaunchPermit,
+  LaunchPool,
+  OperationBindingResult,
+} from './admission.js';
 
 export type ProviderOperationChildAuthorization = Readonly<{
   principalWire: PrincipalWire;
@@ -31,4 +35,29 @@ export interface ProviderOperationCleanupRegistrar {
 
 export interface ProviderOperationCleanupPort {
   release(identity: ProviderOperationCleanupIdentity): void;
+}
+
+export type ProviderOperationBindingIdentity = Readonly<{
+  jobId: string;
+  operationId: string;
+}>;
+
+export type ProviderOperationBindingState =
+  | Readonly<{ kind: 'settled-unbound' }>
+  | Readonly<{ kind: 'prepared'; sourcePermit: LaunchPermit }>
+  | Readonly<{ kind: 'bound'; proxyPermit: LaunchPermit }>
+  | Readonly<{ kind: 'settled'; reservationId: string }>;
+
+export interface ProviderOperationBindingPort {
+  prepareProviderOperationBinding(
+    permit: LaunchPermit,
+    identity: ProviderOperationBindingIdentity,
+  ): OperationBindingResult;
+  cancelProviderOperationBinding(
+    permit: LaunchPermit,
+    identity: ProviderOperationBindingIdentity,
+  ): OperationBindingResult;
+  commitProviderOperationBinding(identity: ProviderOperationBindingIdentity): OperationBindingResult;
+  settleProviderOperationBinding(identity: ProviderOperationBindingIdentity): OperationBindingResult;
+  retireProviderOperationBinding(identity: ProviderOperationBindingIdentity): boolean;
 }

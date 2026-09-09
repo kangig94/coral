@@ -35,6 +35,7 @@ import {
   finalizeInterruptedAppServerRecovery,
   RecoveryOwnershipReleaseError,
 } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 
 import { providerOperationRecord } from '../store/provider-operation-fixtures.js';
@@ -547,8 +548,15 @@ describe('interrupted recovery settlement ownership', () => {
         if (options.releaseError !== undefined) throw options.releaseError;
       }),
     };
-    const launchAdmission = { releaseLaunch: vi.fn() };
-    const jobPools = new Map([[launchRecord.jobId, launchRecord.pool]]);
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    const launchPermit = launchCoordinator.restoreActiveLaunch(
+      launchRecord.jobId,
+      launchRecord.provider,
+      launchRecord.owner,
+      launchRecord.pool,
+    );
+    const launchAdmission = launchCoordinator;
+    const releaseLaunch = vi.spyOn(launchCoordinator, 'releaseLaunch');
     const plan = planInterruptedAppServerRecovery(
       {
         launchRecord,
@@ -574,13 +582,13 @@ describe('interrupted recovery settlement ownership', () => {
       recordArtifactHandleAtomic,
       abortRegistry,
       launchAdmission,
-      jobPools,
+      launchPermit,
+      releaseLaunch,
       deps: {
         runtime,
         sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
         abortRegistry,
         launchAdmission,
-        jobPools,
       },
     };
   }
@@ -614,7 +622,9 @@ describe('interrupted recovery settlement ownership', () => {
       fixture.finalizeJobContinuityAtomic.mock.invocationCallOrder[0],
     );
     expect(fixture.abortRegistry.remove).toHaveBeenCalledWith(launchRecord.jobId);
-    expect(fixture.launchAdmission.releaseLaunch).toHaveBeenCalledWith(launchRecord.jobId, launchRecord.pool);
+    expect(fixture.launchPermit.reservationId).not.toBe('');
+    expect(fixture.releaseLaunch).toHaveBeenCalledWith(fixture.launchPermit);
+    expect(fixture.launchAdmission.reservationFor(launchRecord.jobId)).toBeNull();
   });
 
   it('uses an unchanged artifact replay version for the final settlement CAS', async () => {

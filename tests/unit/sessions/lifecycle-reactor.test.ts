@@ -7,11 +7,11 @@ import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch, AppServerRuntime, JobTerminalInput } from '#src/jobs/records.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import type { LaunchPool, QueuedHandle } from '#src/jobs/contracts/admission.js';
 import type { JobPhase } from '#src/jobs/phase.js';
 import type { TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -1811,6 +1811,7 @@ describe('LifecycleReactor retention enforcement', () => {
         leaseState: 'waiting',
       },
     };
+    const launchCoordinator = new LaunchCoordinator({ runtime: harness.runtime });
     const recoveryService = new RecoveryService({
       runtime: harness.runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(harness.runtime.ids),
@@ -1827,17 +1828,9 @@ describe('LifecycleReactor retention enforcement', () => {
       backendNamespace: harness.namespace,
       bundleHash: 'test-bundle',
       progressStore: harness.progressStore,
-      launchAdmission: {
-        releaseLaunch: vi.fn(),
-      },
-      launchRecovery: {
-        restoreActiveLaunch: vi.fn(),
-        restoreQueuedLaunch: vi.fn((): QueuedHandle => {
-          throw new Error('unexpected restoreQueuedLaunch');
-        }),
-      },
+      launchAdmission: launchCoordinator,
+      launchRecovery: launchCoordinator,
       providerRegistry: harness.providerRegistry,
-      jobPools: new Map<string, LaunchPool>(),
       launchOrchestrator: {
         runRecoveredQueuedJob: vi.fn(),
         writeJobTerminal: (

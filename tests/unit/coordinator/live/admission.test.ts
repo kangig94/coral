@@ -7,7 +7,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import type { LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { LaunchPermit, LaunchPool } from '#src/jobs/contracts/admission.js';
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { liveChildAuthority } from '#src/infra/process-supervision.js';
@@ -350,21 +350,31 @@ describe('launch admission', () => {
   });
 
   it('returns an admitted outcome when capacity is available', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toEqual({
-      type: 'immediate',
+    const admission = coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'), 'default');
+    expect(admission).toMatchObject({ type: 'immediate' });
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
+    expect(admission.permit).toMatchObject({
+      jobId: 'job-1',
+      pool: 'default',
+      provider: 'codex',
+      holder: { kind: 'local-execution' },
     });
+    expect(admission.permit.reservationId).not.toBe('');
     expect(coordinator.queueDepth()).toBe(0);
-    expect(coordinator.queuePosition('job-1')).toBeNull();
+    expect(coordinator.queuePosition('job-1', 'default')).toBeNull();
   });
 
   it('fails closed for a runtime pool value outside the exhaustive LaunchPool set', async () => {
     const invalidPool = 'unknown-pool' as LaunchPool;
     const invariantMessage = 'Launch admission invariant violated: unknown pool "unknown-pool".';
+    const valid = coordinator.requestLaunch('valid', 'codex', providerOwner('valid-session'), 'default');
+    if (valid === 'queue_full' || valid.type !== 'immediate') throw new Error('expected immediate permit');
+    const invalidPermit = { ...valid.permit, pool: invalidPool } satisfies LaunchPermit;
 
     expect(() => coordinator.requestLaunch('intruder', 'codex', providerOwner('session'), invalidPool)).toThrow(
       invariantMessage,
     );
-    expect(() => coordinator.releaseLaunch('intruder', invalidPool)).toThrow(invariantMessage);
+    expect(() => coordinator.releaseLaunch(invalidPermit)).toThrow(invariantMessage);
     expect(() => coordinator.cancelQueued('intruder', invalidPool)).toThrow(invariantMessage);
     expect(() => coordinator.queueDepth(invalidPool)).toThrow(invariantMessage);
     expect(() => coordinator.queuePosition('intruder', invalidPool)).toThrow(invariantMessage);
@@ -379,16 +389,16 @@ describe('launch admission', () => {
         pool: invalidPool,
       }),
     ).rejects.toThrow(invariantMessage);
-    expect(coordinator.active).toBe(0);
+    expect(coordinator.active).toBe(1);
     expect(coordinator.queueDepth()).toBe(0);
   });
 
   it('returns a queued outcome with the current position when capacity is full', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'), 'default')).toMatchObject({
       type: 'immediate',
     });
 
-    const queued = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'));
+    const queued = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'), 'default');
 
     expect(queued).not.toBe('queue_full');
     expect(queued).toMatchObject({
@@ -396,14 +406,46 @@ describe('launch admission', () => {
       queuePosition: 1,
     });
     expect(coordinator.queueDepth()).toBe(1);
-    expect(coordinator.queuePosition('job-2')).toBe(1);
+    expect(coordinator.queuePosition('job-2', 'default')).toBe(1);
+  });
+
+  it('describes active and queued reservations without exposing release authority', () => {
+    const active = coordinator.requestLaunch('active-view', 'codex', providerOwner('active-session'), 'default');
+    if (active === 'queue_full' || active.type !== 'immediate') throw new Error('expected active reservation');
+    const queued = coordinator.requestLaunch('queued-view', 'claude', providerOwner('queued-session'), 'default');
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued reservation');
+
+    const activeView = coordinator.reservationFor('active-view');
+    expect(activeView).toMatchObject({
+      kind: 'active',
+      pool: 'default',
+      provider: 'codex',
+      executionOwner: providerOwner('active-session'),
+      holder: { kind: 'local-execution' },
+      heldForMs: expect.any(Number),
+    });
+    expect(activeView).not.toHaveProperty('permit');
+    expect(activeView).not.toHaveProperty('reservationId');
+
+    const queuedView = coordinator.reservationFor('queued-view');
+    expect(queuedView).toEqual({
+      kind: 'queued',
+      pool: 'default',
+      provider: 'claude',
+      executionOwner: providerOwner('queued-session'),
+      position: 1,
+    });
+    expect(queuedView).not.toHaveProperty('permit');
+    expect(queuedView).not.toHaveProperty('reservationId');
   });
 
   it('rejects duplicate job ids without exposing or mutating the incumbent reservation', async () => {
-    expect(coordinator.requestLaunch('active', 'codex', providerOwner('session-active'))).toMatchObject({
+    const active = coordinator.requestLaunch('active', 'codex', providerOwner('session-active'), 'default');
+    expect(active).toMatchObject({
       type: 'immediate',
     });
-    const queued = coordinator.requestLaunch('queued', 'codex', providerOwner('session-queued'));
+    if (active === 'queue_full' || active.type !== 'immediate') throw new Error('expected active reservation');
+    const queued = coordinator.requestLaunch('queued', 'codex', providerOwner('session-queued'), 'default');
     if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued reservation');
 
     expect(() => coordinator.requestLaunch('active', 'claude', providerOwner('intruder-active'), 'discuss')).toThrow(
@@ -414,25 +456,46 @@ describe('launch admission', () => {
     );
 
     expect(coordinator.getActiveJobIds()).toEqual(['active']);
-    expect(coordinator.queuePosition('queued')).toBe(1);
+    expect(coordinator.queuePosition('queued', 'default')).toBe(1);
     expect(coordinator.getActiveJobIds('discuss')).toEqual([]);
     expect(coordinator.queueDepth('discuss')).toBe(0);
 
     const permit = queued.waitForPermit();
-    coordinator.releaseLaunch('active');
+    coordinator.releaseLaunch(active.permit);
     await permit;
     expect(coordinator.getActiveJobIds()).toEqual(['queued']);
   });
 
   it('tracks default and discuss pools independently', async () => {
-    expect(coordinator.requestLaunch('default-1', 'codex', providerOwner('default-session-1'))).toMatchObject({
+    const defaultAdmission = coordinator.requestLaunch(
+      'default-1',
+      'codex',
+      providerOwner('default-session-1'),
+      'default',
+    );
+    expect(defaultAdmission).toMatchObject({
       type: 'immediate',
     });
-    expect(
-      coordinator.requestLaunch('discuss-1', 'codex', { kind: 'discussion', id: 'discussion-1' }, 'discuss'),
-    ).toMatchObject({ type: 'immediate' });
+    const discussAdmission = coordinator.requestLaunch(
+      'discuss-1',
+      'codex',
+      { kind: 'discussion', id: 'discussion-1' },
+      'discuss',
+    );
+    expect(discussAdmission).toMatchObject({ type: 'immediate' });
+    if (defaultAdmission === 'queue_full' || defaultAdmission.type !== 'immediate') {
+      throw new Error('expected immediate default permit');
+    }
+    if (discussAdmission === 'queue_full' || discussAdmission.type !== 'immediate') {
+      throw new Error('expected immediate discuss permit');
+    }
 
-    const queuedDefault = coordinator.requestLaunch('default-2', 'codex', providerOwner('default-session-2'));
+    const queuedDefault = coordinator.requestLaunch(
+      'default-2',
+      'codex',
+      providerOwner('default-session-2'),
+      'default',
+    );
     const queuedDiscuss = coordinator.requestLaunch(
       'discuss-2',
       'codex',
@@ -449,12 +512,12 @@ describe('launch admission', () => {
     const defaultPermit = queuedDefault.waitForPermit();
     const discussPermit = queuedDiscuss.waitForPermit();
 
-    coordinator.releaseLaunch('default-1');
+    coordinator.releaseLaunch(defaultAdmission.permit);
     await defaultPermit;
     expect(coordinator.queueDepth()).toBe(0);
     expect(coordinator.queueDepth('discuss')).toBe(1);
 
-    coordinator.releaseLaunch('discuss-1', 'discuss');
+    coordinator.releaseLaunch(discussAdmission.permit);
     await discussPermit;
     expect(coordinator.queueDepth('discuss')).toBe(0);
     expect(coordinator.getActiveJobIds()).toEqual(['default-2']);
@@ -462,12 +525,12 @@ describe('launch admission', () => {
   });
 
   it('returns queue_full when the internal queue limit is reached', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'), 'default')).toMatchObject({
       type: 'immediate',
     });
 
     for (let i = 2; i <= 21; i += 1) {
-      const result = coordinator.requestLaunch(`job-${i}`, 'codex', providerOwner(`session-${i}`));
+      const result = coordinator.requestLaunch(`job-${i}`, 'codex', providerOwner(`session-${i}`), 'default');
       expect(result).not.toBe('queue_full');
       if (result !== 'queue_full' && result.type === 'queued') {
         void result.waitForPermit().catch(() => null);
@@ -475,16 +538,18 @@ describe('launch admission', () => {
     }
 
     expect(coordinator.queueDepth()).toBe(20);
-    expect(coordinator.requestLaunch('job-22', 'codex', providerOwner('session-22'))).toBe('queue_full');
+    expect(coordinator.requestLaunch('job-22', 'codex', providerOwner('session-22'), 'default')).toBe('queue_full');
     await coordinator.terminateAll();
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+    const first = coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'), 'default');
+    expect(first).toMatchObject({
       type: 'immediate',
     });
-    const queuedSecond = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'));
-    const queuedThird = coordinator.requestLaunch('job-3', 'codex', providerOwner('session-3'));
+    if (first === 'queue_full' || first.type !== 'immediate') throw new Error('expected immediate permit');
+    const queuedSecond = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'), 'default');
+    const queuedThird = coordinator.requestLaunch('job-3', 'codex', providerOwner('session-3'), 'default');
 
     if (queuedSecond === 'queue_full' || queuedSecond.type !== 'queued') throw new Error('expected queued job-2');
     if (queuedThird === 'queue_full' || queuedThird.type !== 'queued') throw new Error('expected queued job-3');
@@ -495,25 +560,27 @@ describe('launch admission', () => {
       thirdGranted = true;
     });
 
-    coordinator.releaseLaunch('job-1');
-    await secondPermit;
+    coordinator.releaseLaunch(first.permit);
+    const admittedSecond = await secondPermit;
     await Promise.resolve();
 
     expect(thirdGranted).toBe(false);
-    expect(coordinator.queuePosition('job-3')).toBe(1);
+    expect(coordinator.queuePosition('job-3', 'default')).toBe(1);
 
-    coordinator.releaseLaunch('job-2');
+    coordinator.releaseLaunch(admittedSecond);
     await thirdPermit;
     expect(thirdGranted).toBe(true);
     expect(coordinator.queueDepth()).toBe(0);
   });
 
   it('cancelQueued rejects the queued permit and advances the queue head', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+    const first = coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'), 'default');
+    expect(first).toMatchObject({
       type: 'immediate',
     });
-    const queuedSecond = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'));
-    const queuedThird = coordinator.requestLaunch('job-3', 'codex', providerOwner('session-3'));
+    if (first === 'queue_full' || first.type !== 'immediate') throw new Error('expected immediate permit');
+    const queuedSecond = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'), 'default');
+    const queuedThird = coordinator.requestLaunch('job-3', 'codex', providerOwner('session-3'), 'default');
 
     if (queuedSecond === 'queue_full' || queuedSecond.type !== 'queued') throw new Error('expected queued job-2');
     if (queuedThird === 'queue_full' || queuedThird.type !== 'queued') throw new Error('expected queued job-3');
@@ -523,41 +590,58 @@ describe('launch admission', () => {
       (error: unknown) => error as Error,
     );
 
-    expect(coordinator.cancelQueued('job-2')).toBe(true);
+    expect(coordinator.cancelQueued('job-2', 'default')).toBe(true);
     expect((await rejected)?.message).toBe('Launch canceled while queued');
 
     const thirdPermit = queuedThird.waitForPermit();
-    coordinator.releaseLaunch('job-1');
+    coordinator.releaseLaunch(first.permit);
     await thirdPermit;
-    expect(coordinator.queuePosition('job-3')).toBeNull();
+    expect(coordinator.queuePosition('job-3', 'default')).toBeNull();
   });
 
   it('binds queued-handle cancellation to its exact reservation generation', async () => {
-    coordinator.requestLaunch('blocker-1', 'codex', providerOwner('blocker-session-1'));
-    const staleHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('old-session'));
+    const firstBlocker = coordinator.requestLaunch(
+      'blocker-1',
+      'codex',
+      providerOwner('blocker-session-1'),
+      'default',
+    );
+    if (firstBlocker === 'queue_full' || firstBlocker.type !== 'immediate') throw new Error('expected blocker');
+    const staleHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('old-session'), 'default');
     if (staleHandle === 'queue_full' || staleHandle.type !== 'queued') throw new Error('expected old queued handle');
 
-    coordinator.releaseLaunch('blocker-1');
-    await staleHandle.waitForPermit();
-    coordinator.releaseLaunch('reused-job');
+    coordinator.releaseLaunch(firstBlocker.permit);
+    const stalePermit = await staleHandle.waitForPermit();
+    coordinator.releaseLaunch(stalePermit);
 
-    coordinator.requestLaunch('blocker-2', 'codex', providerOwner('blocker-session-2'));
-    const currentHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('new-session'));
+    const secondBlocker = coordinator.requestLaunch(
+      'blocker-2',
+      'codex',
+      providerOwner('blocker-session-2'),
+      'default',
+    );
+    if (secondBlocker === 'queue_full' || secondBlocker.type !== 'immediate') throw new Error('expected blocker');
+    const currentHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('new-session'), 'default');
     if (currentHandle === 'queue_full' || currentHandle.type !== 'queued') {
       throw new Error('expected current queued handle');
     }
 
-    expect(staleHandle.cancel()).toBe(false);
-    expect(coordinator.queuePosition('reused-job')).toBe(1);
+    expect(staleHandle.cancel()).toEqual({ kind: 'admitted', permit: stalePermit });
+    expect(coordinator.queuePosition('reused-job', 'default')).toBe(1);
 
     const permit = currentHandle.waitForPermit();
-    coordinator.releaseLaunch('blocker-2');
+    coordinator.releaseLaunch(secondBlocker.permit);
     await permit;
     expect(coordinator.getActiveJobIds()).toEqual(['reused-job']);
   });
 
   it('restores active and queued launches for recovery bookkeeping', async () => {
-    coordinator.restoreActiveLaunch('default-1', 'codex', providerOwner('default-session-1'), 'default');
+    const restoredDefault = coordinator.restoreActiveLaunch(
+      'default-1',
+      'codex',
+      providerOwner('default-session-1'),
+      'default',
+    );
     coordinator.restoreActiveLaunch('discuss-1', 'codex', { kind: 'discussion', id: 'discussion-1' }, 'discuss');
     expect(coordinator.active).toBe(2);
 
@@ -566,9 +650,175 @@ describe('launch admission', () => {
     expect(coordinator.queueDepth()).toBe(1);
 
     const permit = restored.waitForPermit();
-    coordinator.releaseLaunch('default-1');
+    coordinator.releaseLaunch(restoredDefault);
     await permit;
     expect(coordinator.getActiveJobIds('default')).toContain('queued-1');
+  });
+
+  it('fences a reused job id from a stale permit', () => {
+    const first = coordinator.requestLaunch('reused', 'codex', providerOwner('first'), 'default');
+    if (first === 'queue_full' || first.type !== 'immediate') throw new Error('expected first permit');
+    expect(coordinator.releaseLaunch(first.permit)).toEqual({
+      kind: 'released',
+      pool: 'default',
+      admittedNext: false,
+    });
+
+    const second = coordinator.requestLaunch('reused', 'codex', providerOwner('second'), 'default');
+    if (second === 'queue_full' || second.type !== 'immediate') throw new Error('expected second permit');
+    expect(second.permit.reservationId).not.toBe(first.permit.reservationId);
+    expect(coordinator.releaseLaunch(first.permit)).toEqual({ kind: 'already-released', pool: 'default' });
+    expect(coordinator.reservationFor('reused')).toMatchObject({
+      kind: 'active',
+      executionOwner: providerOwner('second'),
+    });
+  });
+
+  it('rejects a synthetic durable reservation that collides across pools', async () => {
+    const base = createRealRuntime('prod');
+    const uuid = vi.fn().mockReturnValueOnce('existing-reservation').mockReturnValueOnce('collision');
+    const localCoordinator = new LaunchCoordinator({ runtime: { ...base, ids: { ...base.ids, uuid } } });
+    const existing = localCoordinator.requestLaunch(
+      'spawndurable-collision',
+      'codex',
+      { kind: 'discussion', id: 'collision-discussion' },
+      'discuss',
+    );
+    if (existing === 'queue_full' || existing.type !== 'immediate') throw new Error('expected existing reservation');
+
+    await expect(
+      localCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'never-spawned',
+        args: [],
+        jobDir: '/never-created',
+        pool: 'default',
+      }),
+    ).rejects.toThrow(/reservation already exists for job spawndurable-collision in pool discuss/u);
+    expect(localCoordinator.reservationFor('spawndurable-collision')).toMatchObject({
+      kind: 'active',
+      pool: 'discuss',
+    });
+  });
+
+  it('binds and settles a proxy operation with a successor permit', () => {
+    const admission = coordinator.requestLaunch('job-proxy', 'codex', providerOwner('session-proxy'), 'default');
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
+    const identity = { jobId: 'job-proxy', operationId: 'operation-proxy' };
+
+    expect(coordinator.prepareProviderOperationBinding(admission.permit, identity)).toEqual({ kind: 'prepared' });
+    const binding = coordinator.commitProviderOperationBinding(identity);
+    expect(binding).toMatchObject({
+      kind: 'bound',
+      successorPermit: {
+        reservationId: admission.permit.reservationId,
+        holder: { kind: 'proxy-operation', operationId: 'operation-proxy' },
+      },
+    });
+    if (binding.kind !== 'bound') throw new Error('expected bound operation');
+    expect(coordinator.releaseLaunch(admission.permit)).toEqual({
+      kind: 'transferred',
+      pool: 'default',
+      holder: { kind: 'proxy-operation', operationId: 'operation-proxy' },
+    });
+    expect(coordinator.settleProviderOperationBinding(identity)).toMatchObject({
+      kind: 'settled',
+      reservationId: admission.permit.reservationId,
+    });
+    expect(coordinator.releaseLaunch(binding.successorPermit)).toEqual({
+      kind: 'already-released',
+      pool: 'default',
+    });
+  });
+
+  it('commutes settlement before preparation without inventing a reservation id', () => {
+    const identity = { jobId: 'job-early-settlement', operationId: 'operation-early-settlement' };
+    expect(coordinator.settleProviderOperationBinding(identity)).toEqual({ kind: 'settled-unbound' });
+
+    const admission = coordinator.requestLaunch(
+      identity.jobId,
+      'codex',
+      providerOwner('session-early-settlement'),
+      'default',
+    );
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
+    expect(coordinator.prepareProviderOperationBinding(admission.permit, identity)).toEqual({
+      kind: 'already-settled',
+    });
+    expect(coordinator.reservationFor(identity.jobId)).toBeNull();
+    expect(coordinator.commitProviderOperationBinding(identity)).toEqual({ kind: 'already-settled' });
+  });
+
+  it('settles a prepared source permit and makes repeated settlement idempotent', () => {
+    const admission = coordinator.requestLaunch(
+      'job-prepared',
+      'codex',
+      providerOwner('session-prepared'),
+      'default',
+    );
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
+    const identity = { jobId: 'job-prepared', operationId: 'operation-prepared' };
+
+    expect(coordinator.prepareProviderOperationBinding(admission.permit, identity)).toEqual({ kind: 'prepared' });
+    expect(coordinator.settleProviderOperationBinding(identity)).toEqual({
+      kind: 'settled',
+      reservationId: admission.permit.reservationId,
+    });
+    expect(coordinator.settleProviderOperationBinding(identity)).toEqual({ kind: 'already-settled' });
+    expect(coordinator.commitProviderOperationBinding(identity)).toEqual({ kind: 'already-settled' });
+    expect(coordinator.releaseLaunch(admission.permit)).toEqual({ kind: 'already-released', pool: 'default' });
+  });
+
+  it('keys operation bindings by both job and operation id', () => {
+    const first = coordinator.requestLaunch('job-one', 'codex', providerOwner('session-one'), 'default');
+    const second = coordinator.requestLaunch('job-two', 'codex', providerOwner('session-two'), 'discuss');
+    if (first === 'queue_full' || first.type !== 'immediate') throw new Error('expected first source permit');
+    if (second === 'queue_full' || second.type !== 'immediate') throw new Error('expected second source permit');
+
+    const operationId = 'shared-operation-id';
+    expect(
+      coordinator.prepareProviderOperationBinding(first.permit, { jobId: 'job-one', operationId }),
+    ).toEqual({ kind: 'prepared' });
+    expect(
+      coordinator.prepareProviderOperationBinding(second.permit, { jobId: 'job-two', operationId }),
+    ).toEqual({ kind: 'prepared' });
+    expect(coordinator.settleProviderOperationBinding({ jobId: 'job-one', operationId })).toMatchObject({
+      kind: 'settled',
+      reservationId: first.permit.reservationId,
+    });
+    expect(coordinator.reservationFor('job-two')).toMatchObject({ kind: 'active' });
+  });
+
+  it('cancels only the matching prepared operation binding', () => {
+    const admission = coordinator.requestLaunch('job-cancel', 'codex', providerOwner('session-cancel'), 'default');
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
+    const identity = { jobId: 'job-cancel', operationId: 'operation-cancel' };
+    expect(coordinator.prepareProviderOperationBinding(admission.permit, identity)).toEqual({ kind: 'prepared' });
+
+    const wrongPermit = { ...admission.permit, reservationId: 'stale-reservation' };
+    expect(coordinator.cancelProviderOperationBinding(wrongPermit, identity)).toMatchObject({ kind: 'refused' });
+    expect(coordinator.cancelProviderOperationBinding(admission.permit, identity)).toEqual({ kind: 'cancelled' });
+    expect(coordinator.reservationFor(identity.jobId)).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'local-execution' },
+    });
+  });
+
+  it('returns the exact admitted permit when cancellation loses the queue race', async () => {
+    const blocker = coordinator.requestLaunch('blocker', 'codex', providerOwner('blocker-session'), 'default');
+    if (blocker === 'queue_full' || blocker.type !== 'immediate') throw new Error('expected blocker permit');
+    const queued = coordinator.requestLaunch('racing', 'codex', providerOwner('racing-session'), 'default');
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued reservation');
+    const waiting = queued.waitForPermit();
+
+    coordinator.releaseLaunch(blocker.permit);
+    const cancellation = queued.cancel();
+    if (cancellation.kind !== 'admitted') throw new Error('expected admission to win');
+    expect(cancellation.permit.holder).toEqual({ kind: 'queue-handoff' });
+    expect(coordinator.releaseLaunch(cancellation.permit)).toMatchObject({ kind: 'released' });
+    const waiterPermit = await waiting;
+    expect(waiterPermit.reservationId).toBe(cancellation.permit.reservationId);
+    expect(coordinator.releaseLaunch(waiterPermit)).toEqual({ kind: 'already-released', pool: 'default' });
   });
 
   it('confirms termination when a refused attempt is followed by observed absence', async () => {
@@ -1406,7 +1656,7 @@ describe('launch admission', () => {
   it('refuses new admission after shutdown begins', async () => {
     await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
 
-    expect(() => coordinator.requestLaunch('late-job', 'codex', providerOwner('late-session'))).toThrow(
+    expect(() => coordinator.requestLaunch('late-job', 'codex', providerOwner('late-session'), 'default')).toThrow(
       'Launch rejected because shutdown has begun',
     );
     await expect(

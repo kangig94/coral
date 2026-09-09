@@ -8,35 +8,106 @@ import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 export const LAUNCH_POOLS = ['default', 'discuss', 'curate'] as const;
 export type LaunchPool = (typeof LAUNCH_POOLS)[number];
 
+export type PermitHolder =
+  | Readonly<{ kind: 'local-execution' }>
+  | Readonly<{ kind: 'system-task'; id: string }>
+  | Readonly<{ kind: 'proxy-operation'; operationId: string }>
+  | Readonly<{ kind: 'recovery' }>
+  | Readonly<{ kind: 'queue-handoff' }>;
+
+export type LaunchPermit = Readonly<{
+  reservationId: string;
+  jobId: string;
+  pool: LaunchPool;
+  provider: string;
+  holder: PermitHolder;
+  acquiredAt: number;
+}>;
+
+export type QueueCancellation =
+  | Readonly<{ kind: 'cancelled' }>
+  | Readonly<{ kind: 'admitted'; permit: LaunchPermit }>;
+
 export type QueuedHandle = {
   type: 'queued';
   queuePosition: number;
-  waitForPermit: () => Promise<void>;
+  waitForPermit: () => Promise<LaunchPermit>;
   /** Cancels only the reservation generation represented by this handle. */
-  cancel: () => boolean;
+  cancel: () => QueueCancellation;
 };
 
 export type AdmittedHandle = {
   type: 'immediate';
+  permit: LaunchPermit;
 };
 
 export type AdmissionResult = AdmittedHandle | QueuedHandle | 'queue_full';
 export type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 
+export type LaunchReservationView =
+  | Readonly<{
+      kind: 'queued';
+      pool: LaunchPool;
+      provider: string;
+      executionOwner: ExecutionOwner;
+      position: number;
+    }>
+  | Readonly<{
+      kind: 'active';
+      pool: LaunchPool;
+      provider: string;
+      executionOwner: ExecutionOwner;
+      holder: PermitHolder;
+      heldForMs: number;
+    }>;
+
+export type LaunchRelease =
+  | Readonly<{ kind: 'released'; pool: LaunchPool; admittedNext: boolean }>
+  | Readonly<{ kind: 'already-released'; pool: LaunchPool }>
+  | Readonly<{ kind: 'transferred'; pool: LaunchPool; holder: PermitHolder }>;
+
+export type OperationBindingResult =
+  | Readonly<{ kind: 'prepared' }>
+  | Readonly<{ kind: 'bound'; successorPermit: LaunchPermit }>
+  | Readonly<{ kind: 'cancelled' }>
+  | Readonly<{ kind: 'settled-unbound' }>
+  | Readonly<{ kind: 'settled'; reservationId: string }>
+  | Readonly<{ kind: 'already-settled' }>
+  | Readonly<{ kind: 'refused'; reason: string }>;
+
+export type SettlementRefusal =
+  | Readonly<{
+      kind: 'settlement-refused';
+      cause: 'terminal-persist-failed' | 'claim-release-failed';
+      quarantine: 'recorded' | 'recording-failed';
+    }>
+  | Readonly<{ kind: 'settlement-refused'; cause: 'claim-already-reassigned' }>;
+
 export interface JobAdmissionPort {
-  requestLaunch(jobId: string, provider: string, owner: ExecutionOwner, pool?: LaunchPool): AdmissionResult;
-  releaseLaunch(jobId: string, pool?: LaunchPool): void;
-  cancelQueued(jobId: string, pool?: LaunchPool): boolean;
+  requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult;
+  releaseLaunch(permit: LaunchPermit): LaunchRelease;
+  cancelQueued(jobId: string, pool: LaunchPool): boolean;
 }
 
 export interface JobQueueReadPort {
-  queuePosition(jobId: string, pool?: LaunchPool): number | null;
+  queuePosition(jobId: string, pool: LaunchPool): number | null;
   getActiveJobIds(pool?: LaunchPool): string[];
+  reservationFor(jobId: string): LaunchReservationView | null;
 }
 
 export interface JobLaunchRecoveryPort {
-  restoreActiveLaunch(jobId: string, provider: string, owner: ExecutionOwner, pool?: LaunchPool): void;
-  restoreQueuedLaunch(jobId: string, provider: string, owner: ExecutionOwner, pool?: LaunchPool): QueuedHandle;
+  restoreActiveLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+  ): LaunchPermit;
+  restoreQueuedLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+  ): QueuedHandle;
 }
 
 export type LaunchCoordinatorPort = JobAdmissionPort & JobQueueReadPort & JobLaunchRecoveryPort;

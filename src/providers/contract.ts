@@ -361,15 +361,22 @@ const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const s
 export const PROVIDER_INTERRUPTION_CAUSES = ['restart', 'handoff'] as const;
 export type ProviderInterruptionCause = (typeof PROVIDER_INTERRUPTION_CAUSES)[number];
 
+/** A remote operation accepted before its local ownership re-key failed and must be terminally contained. */
+export const PROVIDER_CONTAINMENT_CAUSES = ['coordinator_rekey_refused'] as const;
+export type ProviderContainmentCause = (typeof PROVIDER_CONTAINMENT_CAUSES)[number];
+
 /**
- * Every cause `operation.stop.v1` accepts. Derived from `abortReasons` rather than restated, so "the
- * deliberate stop causes are exactly the abort reasons" is structural: a fourth abort reason joins this set
- * by construction instead of silently diverging from a second flat list somewhere else.
+ * Every cause `operation.stop.v1` accepts. The interruption, deliberate-abort, and containment partitions
+ * remain separately named so downstream lifecycle code cannot silently classify one as another.
  *
  * It lives here because both sides of the wire may reach `providers/` and neither may reach the other — the
  * proxy is barred from `jobs/`, and a `jobs/`-to-proxy edge would point the dependency the wrong way.
  */
-export const PROVIDER_STOP_CAUSES = [...PROVIDER_INTERRUPTION_CAUSES, ...abortReasons] as const;
+export const PROVIDER_STOP_CAUSES = [
+  ...PROVIDER_INTERRUPTION_CAUSES,
+  ...abortReasons,
+  ...PROVIDER_CONTAINMENT_CAUSES,
+] as const;
 export type ProviderStopCause = (typeof PROVIDER_STOP_CAUSES)[number];
 export const providerStopCauseSchema = z.enum(PROVIDER_STOP_CAUSES);
 

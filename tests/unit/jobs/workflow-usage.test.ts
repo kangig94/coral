@@ -359,9 +359,8 @@ describe('workflow usage aggregation', () => {
 
       const coordinator = new WaitCoordinator({
         sessionManager: {} as never,
-        launchQueue: { queuePosition: () => null, getActiveJobIds: () => [] } as never,
+        launchQueue: { reservationFor: () => null } as never,
         eventBus: {} as never,
-        jobPools: new Map(),
         time,
         loadJobProjectionDetail: (jobId) => loadJobProjectionDetail(db, jobId, readCtx),
         readJobEvents: (jobId) => readJobEvents(db, jobId, readCtx),

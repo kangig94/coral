@@ -158,6 +158,7 @@ export function providerOperationRecord(
         ...executing,
         committedThroughProviderSeq: 4,
         phase,
+        controlIntent: { kind: 'run' },
         terminalProviderSeq: 4,
         settlementIntent: 'release-after-terminal',
       });

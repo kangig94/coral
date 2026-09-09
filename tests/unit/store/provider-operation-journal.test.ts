@@ -481,8 +481,17 @@ describe('provider operation journal', () => {
       ...providerOperationRecord('executing'),
       controlIntent: { kind: 'stop', cause: 'signal_abort', requestedAt },
     });
+    const contained = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('settlement-pending'),
+      controlIntent: {
+        kind: 'rekey-refusal-containment',
+        cause: 'coordinator_rekey_refused',
+        reason: 'The coordinator refused the exact launch reservation re-key.',
+        requestedAt,
+      },
+    });
 
-    for (const record of [prestart, resolving, executing]) {
+    for (const record of [prestart, resolving, executing, contained]) {
       expect(decodeProviderOperationRecord(encodeProviderOperationRecord(record))).toEqual(record);
     }
     expect(
@@ -497,6 +506,24 @@ describe('provider operation journal', () => {
         controlIntent: { kind: 'stop', cause: 'signal_abort' },
       }).success,
     ).toBe(false);
+    expect(
+      providerOperationRecordSchema.safeParse({
+        ...providerOperationRecord('settlement-pending'),
+        controlIntent: {
+          kind: 'rekey-refusal-containment',
+          cause: 'coordinator_rekey_refused',
+          reason: 'x'.repeat(4_097),
+          requestedAt,
+        },
+      }).success,
+    ).toBe(false);
+
+    const settlement = providerOperationRecord('settlement-pending');
+    if (settlement.phase !== 'settlement-pending') throw new Error('expected settlement fixture');
+    const { controlIntent: _controlIntent, ...missingControlIntent } = settlement;
+    expect(() => decodeProviderOperationRecord(JSON.stringify(missingControlIntent))).toThrow(
+      /failed schema validation.*controlIntent/s,
+    );
 
     const cleanup = providerOperationRecord('prestart-cleanup-pending');
     if (cleanup.phase !== 'prestart-cleanup-pending') throw new Error('expected prestart cleanup fixture');

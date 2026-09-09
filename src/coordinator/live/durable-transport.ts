@@ -4,7 +4,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
-import type { LaunchPool } from '../../jobs/contracts/admission.js';
+import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
 import type { AbortHoldDisposition } from '../../jobs/contracts/abort-registry.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
@@ -265,14 +265,14 @@ export async function spawnDurableJobTransport(params: {
   runtime: Runtime;
   options: SpawnDurableJobOptions;
   pool: LaunchPool;
-  internalPermitJobId: string | null;
+  internalPermit: LaunchPermit | null;
   cleanupHandles: Map<symbol, DurableProcessCleanup>;
   cleanupRetentions: Map<DurableProcessCleanup, DurableProcessRetention>;
   pendingLaunches: Set<PendingDurableLaunch>;
-  releaseLaunch: (jobId: string, pool: LaunchPool) => void;
+  releaseLaunch: (permit: LaunchPermit) => LaunchRelease;
 }): Promise<CliExecResult> {
   const { runtime, options, pool, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
-  const { internalPermitJobId } = params;
+  const { internalPermit } = params;
   let abortHandler: (() => void) | null = null;
   let abortedBySignal = false;
   let cleanupKey: symbol | null = null;
@@ -817,8 +817,8 @@ export async function spawnDurableJobTransport(params: {
     if (abortHandler && options.signal) {
       options.signal.removeEventListener('abort', abortHandler);
     }
-    if (internalPermitJobId) {
-      releaseLaunch(internalPermitJobId, pool);
+    if (internalPermit !== null) {
+      releaseLaunch(internalPermit);
     }
   }
 }

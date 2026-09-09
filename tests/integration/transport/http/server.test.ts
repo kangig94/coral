@@ -1655,8 +1655,18 @@ describe('execution backend server', () => {
     const launchCoordinator = createLaunchCoordinator();
     const backend = await startBackendServer({ launchCoordinator });
 
-    launchCoordinator.restoreActiveLaunch('job-1', 'codex', { kind: 'provider-session', id: 'session-job-1' });
-    launchCoordinator.restoreActiveLaunch('job-2', 'codex', { kind: 'provider-session', id: 'session-job-2' });
+    const firstPermit = launchCoordinator.restoreActiveLaunch(
+      'job-1',
+      'codex',
+      { kind: 'provider-session', id: 'session-job-1' },
+      'default',
+    );
+    const secondPermit = launchCoordinator.restoreActiveLaunch(
+      'job-2',
+      'codex',
+      { kind: 'provider-session', id: 'session-job-2' },
+      'default',
+    );
 
     try {
       const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
@@ -1666,8 +1676,8 @@ describe('execution backend server', () => {
 
       expect(body.active).toBe(2);
     } finally {
-      launchCoordinator.releaseLaunch('job-1');
-      launchCoordinator.releaseLaunch('job-2');
+      launchCoordinator.releaseLaunch(firstPermit);
+      launchCoordinator.releaseLaunch(secondPermit);
     }
   });
 

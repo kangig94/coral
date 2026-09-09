@@ -561,7 +561,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
 
     // An indeterminate current-generation row contributes no fenced job id, preserving the permissive
     // behavior that predates startup admission holds.
-    const unattributableKey = 'provider_operation_saga.v2:record:not-canonical';
+    const unattributableKey = 'provider_operation_saga.v3:record:not-canonical';
     progressStore
       .getDb()
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')

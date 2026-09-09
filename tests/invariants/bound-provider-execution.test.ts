@@ -18,6 +18,7 @@ import {
   toCanonicalSrcPath,
 } from '#tests/helpers/ts-import-scanner.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 
 const ROOT = new URL('../../', import.meta.url);
 const REPO_ROOT = ROOT.pathname;
@@ -361,16 +362,12 @@ describe('bound-provider execution architecture', () => {
       appendRuntimeStarted() {},
       commit() {},
     };
-    const jobPools = new Map();
+    const launchCoordinator = new LaunchCoordinator({ runtime });
     const orchestrator = new LaunchOrchestrator({
       abortRegistry,
       progressStore: progressStore as never,
       sessionManager: sessionManager as never,
-      launchAdmission: {
-        requestLaunch: () => ({ type: 'immediate' as const }),
-        releaseLaunch() {},
-        cancelQueued: () => false,
-      },
+      launchAdmission: launchCoordinator,
       durableSpawner: {
         async spawnDurableJob(options: { exactEnv?: Record<string, string> }) {
           observedCliEnv = options.exactEnv;
@@ -382,7 +379,6 @@ describe('bound-provider execution architecture', () => {
       coordinatorCommit: coordinatorCommit as never,
       backendNamespace: 'fixture-backend',
       bundleHash: 'fixture-bundle',
-      jobPools,
       terminalMaterializer: {
         recordProviderTerminal(_store: unknown, event: unknown, metadata: unknown) {
           terminalCalls.push({ event, metadata });
@@ -417,7 +413,7 @@ describe('bound-provider execution architecture', () => {
       },
     );
     await released;
-    await vi.waitFor(() => expect(jobPools.has('fixture-job')).toBe(false));
+    await vi.waitFor(() => expect(launchCoordinator.reservationFor('fixture-job')).toBeNull());
 
     expect(decision).toEqual({
       kind: 'provider-session',
@@ -473,6 +469,6 @@ describe('bound-provider execution architecture', () => {
       binding: expect.objectContaining({ provider: 'fixture' }),
     });
     expect(storedSession).not.toHaveProperty('activeJobId');
-    expect(jobPools.has('fixture-job')).toBe(false);
+    expect(launchCoordinator.reservationFor('fixture-job')).toBeNull();
   });
 });

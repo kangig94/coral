@@ -190,7 +190,6 @@ describe('wait carrier observation composition', () => {
       sessionManager: { get: () => null },
       launchQueue: new LaunchCoordinator({ runtime }),
       eventBus: new TypedEventBus(),
-      jobPools: new Map(),
       time: runtime.time,
       loadJobProjectionDetail: (jobId) =>
         jobId === INHERITED_JOB_ID ? detail : { status: null, launch: null, runtime: null, exit: null },

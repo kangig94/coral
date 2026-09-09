@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { reapProviderOperationCarrier } from '#src/coordinator/services/recovery/interrupted-performer.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { AppServerRuntime } from '#src/jobs/records.js';
 import type { ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
@@ -184,6 +185,7 @@ describe('interrupted provider-operation carrier reclamation', () => {
       startTime: status.updatedAt,
       providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef: record.activationAck.hostRef },
     };
+    const launchCoordinator = new LaunchCoordinator({ runtime });
     const service = new RecoveryService({
       runtime,
       progressStore: {
@@ -195,10 +197,9 @@ describe('interrupted provider-operation carrier reclamation', () => {
       abortRegistry: {} as never,
       backendNamespace: 'interrupted-carrier-test',
       bundleHash: 'test-bundle',
-      launchAdmission: {} as never,
-      launchRecovery: {} as never,
+      launchAdmission: launchCoordinator,
+      launchRecovery: launchCoordinator,
       providerRegistry: {} as never,
-      jobPools: new Map(),
       launchOrchestrator: {} as never,
       childPrincipalRegistry: {} as never,
       parentPrincipal: {} as never,
