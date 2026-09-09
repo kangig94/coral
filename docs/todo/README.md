@@ -230,6 +230,17 @@ each is a behaviour change rather than a correction.
 
 ---
 
+## Nothing is wrong, and the next reader pays for it
+
+Added 2026-09-10 from a tier-3 review. Entries here have no defect behind them: the code is correct and
+covered, and what it costs is the effort of the next person to change it safely.
+
+|                                                                                    |                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`hand-rolled-timeout-latches.md`](./hand-rolled-timeout-latches.md)               | **One shape written three ways, and the latch is where it went wrong once already.** `runPreflightWithTimeout`, `withDiscussLaunchTimeout` and `raceTimeout` each settle from two callbacks behind a `settled` boolean where `Promise.race` with a `finally` would say it structurally. Carries a second member: the Claude settings scan does four things in one loop, and the read-error precedence that matters is hidden in a `??=`. |
+
+---
+
 ## Durable state with no lifecycle owner
 
 |                                                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                      |
