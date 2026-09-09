@@ -100,6 +100,29 @@ honest and the budget is respected. What is missing is the same thing member 3 i
 deadline or a cancellation capability that crosses into the provider — so whoever takes that on should settle
 both at once rather than adding a second mechanism.
 
+## Member 4 — a capability probe runs in the requester's working directory
+
+`buildCodexPreflightRuntime` (`src/providers/codex/execution-plan.ts`) builds `runExact` with
+`cwd: input.cwd`, so every preflight probe spawns in the working directory the request named. Two of those
+probes ask questions that have nothing to do with that directory: whether this Codex CLI supports
+`app-server`, and whether a CLI can report its version. Running them there is what created the entire
+ENOENT/EACCES ambiguity two commits spent resolving — a child `chdir`s before it execs, so the request's
+directory can fail a probe about the binary, with an errno that names the command either way.
+
+Those commits resolve the ambiguity **after** the fact, by observing the directory once the spawn has
+already failed. That observation is of mutable state at a later instant, so a directory whose permissions
+changed in between is attributed to the wrong cause, and Node offers no atomic failure-stage provenance to
+close the race from here. The consequence is now bounded — only an answered probe may be cached, so a
+mis-attribution costs one job its message rather than every job for the cache's lifetime — but the race
+itself remains.
+
+The root fix removes the ambiguity at its source rather than resolving it afterwards: a capability probe
+should not run in the requester's directory at all. What has to be established first is whether either CLI
+reads anything relative to `cwd` when answering `--version` or `app-server --help`; if neither does, the
+probe can run somewhere this process controls and an ENOENT from it means the command, with no observation
+and no race. The request's own directory still has to be validated, but that is a launch-time check with
+its own message, not something a capability probe should be inferring.
+
 ## Also observed, not filed as members
 
 The `answered` non-zero branches of `probeCodexAppServer` (`src/providers/codex/provider-facets.ts`) and

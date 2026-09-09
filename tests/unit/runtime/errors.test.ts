@@ -876,6 +876,16 @@ describe('CoralSetupError', () => {
     expect(error.context?.cause).toBe("EACCES: permission denied, open '/private/customer/store.db'");
   });
 
+  it('renders a provider preflight fault cause into operator-facing text', () => {
+    const cause = 'preflight implementation failed';
+    const error = documentedCoralSetupError('provider_preflight_faulted', { provider: 'codex', cause });
+
+    expect(error.userMessage).toBe(`Coral's codex provider preflight failed internally: ${cause}`);
+    expect(error.remediation).toContain('complete error message');
+    expect(error.remediation).not.toContain('error.context.cause');
+    expect(error.context).toEqual({ provider: 'codex', cause });
+  });
+
   it('should construct with all fields', () => {
     const err = new CoralSetupError({
       code: 'E_TEST',

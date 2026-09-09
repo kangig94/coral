@@ -292,8 +292,8 @@ function runPreflightWithTimeout(
           if (settled) {
             return;
           }
-          // The decision is built before the latch closes: closing it first and then throwing would leave this
-          // promise unsettled with its timer already cancelled, and the launch awaiting it never returns.
+          // No path may cancel the timer without settling this promise: once the timer is gone nothing else
+          // will, and a launch awaiting an unsettled preflight never returns.
           let decision: PreflightDecision;
           try {
             decision =

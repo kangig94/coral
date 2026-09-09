@@ -68,9 +68,9 @@ export type StorageBigIntStat = {
 export type StorageEntryKind = { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 
 /**
- * Whether this process may traverse a directory — the permission a child's `chdir` needs, which no other
- * observation on this port tests: measured on Node v26.3.1, `statSync` succeeds on a `chmod 000` directory
- * and `readdirSync` fails on an execute-only one that `spawn` enters without complaint.
+ * Whether this process may traverse a directory — the permission a child's `chdir` needs, which neither
+ * existence nor readability implies: measured on Node v26.3.1, `statSync` succeeds on a `chmod 000`
+ * directory and `readdirSync` fails on an execute-only one that `spawn` enters without complaint.
  *
  * `denied` answers only the question asked, which an absent path answers the same way as an unsearchable
  * one: neither may be traversed. A caller that must tell those apart observes existence separately.

@@ -149,6 +149,26 @@ describe('cli errors', () => {
       });
     });
 
+    it('prints a provider preflight fault cause from a structured transport error before dropping its context', () => {
+      const cause = 'preflight implementation failed';
+      const error = documentedCoralSetupError('provider_preflight_faulted', { provider: 'codex', cause });
+      const response = buildTransportErrorResponse(error);
+
+      expect(response.body).toMatchObject({ context: { provider: 'codex', cause } });
+      expect(
+        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)),
+      ).toEqual({
+        envelope: {
+          error: true,
+          code: 'provider_preflight_faulted',
+          message: `Coral's codex provider preflight failed internally: ${cause}`,
+          remediation:
+            'Report provider_preflight_faulted with the complete error message. This internal fault does not establish whether the provider is installed, available, or authenticated; do not reinstall or re-authenticate based on this error.',
+        },
+        exitCode: 70,
+      });
+    });
+
     it.each(['direct', 'ipc', 'http'] as const)(
       'distinguishes an unknown writer observation from the shipped live-writer code over %s',
       (transport) => {
@@ -340,11 +360,8 @@ describe('cli errors', () => {
       ['kb_offline', 'Knowledge base is offline'],
       ['provider_host_inventory_unavailable', 'Provider-host inventory is temporarily unavailable.'],
     ] as const)('retries %s at exit 75 over IPC even though the wire carries no numeric status', (code, message) => {
-      // src/transport/ipc/server.ts's requestErrorResponse puts only the raw domain body
-      // (`{code, message, remediation?, detail?}`) on the JSON-RPC error `data` — no
-      // `statusCode`/`http` field ever crosses IPC. errorCodeToExit must recognize these
-      // retry-later codes by name, the same way it already does for `transient` and
-      // `backend_shutting_down`, or this exact shape falls through to exit 1.
+      // No numeric HTTP status crosses IPC, so a code whose HTTP mapping is 503 must be recognised by name
+      // or it reaches the operator as a settled failure.
       const envelope = buildErrorEnvelope(
         new IpcRpcError({
           code: -32603,

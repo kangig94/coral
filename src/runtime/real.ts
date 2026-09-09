@@ -281,6 +281,9 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const storage: StoragePort = {
     assertReadableSync: (path) => accessSync(path, fsConstants.R_OK),
     observeDirectoryTraversabilitySync: (path) => {
+      // Node documents `fs.constants.X_OK` as having no effect on Windows, so it cannot establish
+      // traversability there.
+      if (capturedEnv.platform === 'win32') return 'unobserved';
       try {
         accessSync(path, fsConstants.X_OK);
         return 'traversable';

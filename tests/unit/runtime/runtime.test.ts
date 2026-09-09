@@ -203,6 +203,20 @@ describe('createRealRuntime', () => {
     expect(runtime.env.get('CORAL_OWNER')).toBe('owner-a');
   });
 
+  it('does not claim to observe directory traversability on Windows', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (platform === undefined) throw new Error('process.platform descriptor is unavailable');
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+
+    try {
+      const runtime = createRealRuntime('prod');
+
+      expect(runtime.storage.observeDirectoryTraversabilitySync('/path-that-need-not-exist')).toBe('unobserved');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
   it('spawns piped children with sanitized inherited env and per-spawn CORAL overrides', async () => {
     vi.stubEnv('KEEP_ME', 'base-value');
     vi.stubEnv('CORAL_TEST_STRIP_ME', 'secret');

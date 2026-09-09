@@ -50,18 +50,23 @@ type PreflightCacheEntry = {
 
 type CodexAppServerProbeResult =
   | {
-      disposition: 'cli-capability';
+      disposition: 'answered';
       outcome: Extract<ProviderPreflightOutcome, { kind: 'satisfied' | 'refused' }>;
     }
+  | { disposition: 'launch-refused'; outcome: Extract<ProviderPreflightOutcome, { kind: 'refused' }> }
   | { disposition: 'request'; outcome: Extract<ProviderPreflightOutcome, { kind: 'refused' }> }
   | { disposition: 'unobserved'; outcome: Extract<ProviderPreflightOutcome, { kind: 'undetermined' }> };
 
 type WorkingDirectoryObservation = 'directory' | 'missing' | 'not-directory' | 'unobserved';
 
-function cliCapabilityOutcome(
+function answeredProbe(
   outcome: Extract<ProviderPreflightOutcome, { kind: 'satisfied' | 'refused' }>,
 ): CodexAppServerProbeResult {
-  return { disposition: 'cli-capability', outcome };
+  return { disposition: 'answered', outcome };
+}
+
+function cliLaunchRefusal(message: string): CodexAppServerProbeResult {
+  return { disposition: 'launch-refused', outcome: { kind: 'refused', message } };
 }
 
 function requestRefusal(message: string): CodexAppServerProbeResult {
@@ -152,10 +157,9 @@ function classifyCodexPermissionLaunchRefusal(
       );
     case 'traversable':
       return directoryObserved
-        ? cliCapabilityOutcome({
-            kind: 'refused',
-            message: `Codex preflight cannot execute \`codex\` (${code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
-          })
+        ? cliLaunchRefusal(
+            `Codex preflight cannot execute \`codex\` (${code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
+          )
         : unobservedProbe(
             `Codex preflight could not establish that working directory \`${runtime.cwd}\` is a directory after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
           );
@@ -187,13 +191,11 @@ function classifyCodexLaunchRefusal(
     case 'directory':
       switch (code) {
         case 'ENOENT':
-          return cliCapabilityOutcome({ kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE });
+          return cliLaunchRefusal(CODEX_APP_SERVER_UPGRADE_MESSAGE);
         case 'ENOTDIR':
-          return cliCapabilityOutcome({
-            kind: 'refused',
-            message:
-              'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
-          });
+          return cliLaunchRefusal(
+            'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
+          );
         case 'EACCES':
         case 'EPERM':
           return classifyCodexPermissionLaunchRefusal(runtime, code, true);
@@ -231,7 +233,7 @@ async function probeCodexAppServer(
           return assertNever(outcome.code);
       }
     case 'answered':
-      return cliCapabilityOutcome(
+      return answeredProbe(
         outcome.status === 0 ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE },
       );
   }
@@ -249,8 +251,9 @@ async function checkCodexAppServerAvailability(
   }
 
   const probe = await probeCodexAppServer(runtime);
-  // The global cache may contain only a CLI-capability disposition, never a request-scoped refusal.
-  if (probe.disposition === 'cli-capability') {
+  // Only what the binary answered may be cached; launch attribution reconstructed after failure cannot be
+  // re-verified later.
+  if (probe.disposition === 'answered') {
     codexAppServerAvailabilityCache = { outcome: probe.outcome, checkedAt: runtime.time.now() };
   }
   return probe.outcome;

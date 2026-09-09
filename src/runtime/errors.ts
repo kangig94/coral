@@ -419,9 +419,9 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   provider_preflight_faulted: {
     userMessage: (context) =>
-      `Coral's ${stringContextValue(context, 'provider', '<provider>')} provider preflight failed internally.`,
+      `Coral's ${stringContextValue(context, 'provider', '<provider>')} provider preflight failed internally: ${stringContextValue(context, 'cause', 'cause unavailable')}`,
     remediation:
-      'Report provider_preflight_faulted with error.context.cause from the structured error payload. This internal fault does not establish whether the provider is installed, available, or authenticated; do not reinstall or re-authenticate based on this error.',
+      'Report provider_preflight_faulted with the complete error message. This internal fault does not establish whether the provider is installed, available, or authenticated; do not reinstall or re-authenticate based on this error.',
     exitCode: 70,
   },
   coordinator_socket_in_use: {

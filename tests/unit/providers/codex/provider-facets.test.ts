@@ -466,18 +466,17 @@ describe('codexPreflight', () => {
     },
   );
 
-  it('caches an EACCES refusal when the working directory is traversable', async () => {
-    const runtime = preflightRuntime({ appServer: { error: errno('EACCES'), status: null } });
+  it('does not cache a launch refusal attributed to the CLI from a traversable directory', async () => {
+    const refused = preflightRuntime({ appServer: { error: errno('EACCES'), status: null } });
+    const later = preflightRuntime({});
 
-    await expect(codexPreflight(runtime)).resolves.toEqual({
+    await expect(codexPreflight(refused)).resolves.toEqual({
       kind: 'refused',
       message: expect.stringMatching(/execute permissions/iu),
     });
-    await expect(codexPreflight(runtime)).resolves.toEqual({
-      kind: 'refused',
-      message: expect.stringMatching(/execute permissions/iu),
-    });
-    expect(runtime.runExact).toHaveBeenCalledOnce();
+    await expect(codexPreflight(later)).resolves.toEqual({ kind: 'satisfied' });
+    expect(refused.runExact).toHaveBeenCalledOnce();
+    expect(later.runExact).toHaveBeenCalledOnce();
   });
 
   it('reports EACCES as a request refusal when the working directory is not traversable', async () => {
