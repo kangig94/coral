@@ -87,7 +87,7 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
 }
 
 type MockExecutionService = WorkflowExecutionPort & {
-  coralDispatch: ReturnType<typeof vi.fn>;
+  coralDispatch: ReturnType<typeof vi.fn<WorkflowExecutionPort['coralDispatch']>>;
   resume: ReturnType<typeof vi.fn>;
   recordContinuationLease: ReturnType<typeof vi.fn>;
   clearContinuationLease: ReturnType<typeof vi.fn>;
@@ -717,8 +717,7 @@ describe('workflow pipe executor', () => {
       coralDispatch: vi.fn(async (_provider, coralName) => {
         if (coralName === 'architect') return running('job-a', 'session-a');
         return {
-          status: 'rejected' as const,
-          phase: 'preflight' as const,
+          status: 'refused' as const,
           code: 'busy',
           message: 'launch blocked',
         };
@@ -994,11 +993,10 @@ describe('launchAtomWithRetry', () => {
     );
   });
 
-  it('throws with step/atom context when coralDispatch returns rejected status', async () => {
+  it('throws with step/atom context when coralDispatch returns refused status', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async () => ({
-        status: 'rejected' as const,
-        phase: 'preflight' as const,
+        status: 'refused' as const,
         code: 'unknown_provider',
         message: 'Unknown provider: ghost',
       })),
@@ -1015,6 +1013,31 @@ describe('launchAtomWithRetry', () => {
         workflowJobId: 'workflow-1',
       }),
     ).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
+  });
+
+  it('reports when the launch check established nothing', async () => {
+    const executionSvc = createExecutionService({
+      coralDispatch: vi.fn(async () => ({
+        status: 'undetermined' as const,
+        code: 'provider_preflight_undetermined',
+        message: 'Provider preflight could not inspect credentials',
+      })),
+    });
+
+    await expect(
+      launchAtomWithRetry({
+        slot: planSlot(),
+        atomIndex: 0,
+        stepPrompt: 'do work',
+        executionSvc,
+        ctx,
+        completedStepDetails: [],
+        workflowJobId: 'workflow-1',
+      }),
+    ).rejects.toThrow(
+      "Step 0, atom 'architect' launch check established nothing: Provider preflight could not inspect credentials",
+    );
+    expect(executionSvc.awaitLaunch).not.toHaveBeenCalled();
   });
 
   it('passes the planned workflow identifiers through to coralDispatch', async () => {

@@ -24,7 +24,7 @@ type BoundProviderExecutionRuntimeCommon = Omit<
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { type ProviderSessionLaunchDecision, rejectLaunch } from '../launch.js';
+import { type ProviderSessionLaunchDecision, refuseLaunch } from '../launch.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { RetentionPolicy, ProviderSession } from '../../sessions/entry.js';
@@ -389,7 +389,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool);
     if (admission === 'queue_full') {
       jobPools.delete(jobId);
-      return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
+      return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
     }
 
     const { hostedRequest, launch, projectRoot } = this.buildProviderLaunch(
@@ -540,7 +540,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool);
     if (admission === 'queue_full') {
       jobPools.delete(jobId);
-      return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
+      return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
     }
 
     const built = this.buildProviderLaunch(provider, session, jobId, request, opts);
@@ -579,7 +579,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       jobPools.delete(jobId);
 
       if (error instanceof SessionClaimError) {
-        return rejectLaunch('session_busy', opts.sessionBusyMessage);
+        return refuseLaunch('session_busy', opts.sessionBusyMessage);
       }
       throw error;
     }
@@ -625,7 +625,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool);
     if (admission === 'queue_full') {
       this.deps.jobPools.delete(jobId);
-      return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
+      return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
     }
     const built = this.buildProviderLaunch(provider, session, jobId, request, {
       ...opts,

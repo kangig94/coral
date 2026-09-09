@@ -1,69 +1,82 @@
 import type { LaunchDecision } from '../jobs/launch.js';
+import { assertNever } from '../infra/error-format.js';
 import type { ToolDomainResult } from './tool-result.js';
 
 export function launchToHttp(
   decision: LaunchDecision,
   acceptedStatusCode: 201 | 202,
 ): { statusCode: number; body: unknown } {
-  if (decision.status !== 'rejected') {
-    return {
-      statusCode: acceptedStatusCode,
-      body:
-        decision.kind === 'provider-session'
-          ? {
-              kind: decision.kind,
-              sessionId: decision.sessionId,
-              jobId: decision.jobId,
-              launchState: decision.status,
-            }
-          : {
-              kind: decision.kind,
-              workflowId: decision.workflowId,
-              jobId: decision.jobId,
-              launchState: decision.status,
-            },
-    };
-  }
+  switch (decision.status) {
+    case 'running':
+    case 'queued':
+      return {
+        statusCode: acceptedStatusCode,
+        body:
+          decision.kind === 'provider-session'
+            ? {
+                kind: decision.kind,
+                sessionId: decision.sessionId,
+                jobId: decision.jobId,
+                launchState: decision.status,
+              }
+            : {
+                kind: decision.kind,
+                workflowId: decision.workflowId,
+                jobId: decision.jobId,
+                launchState: decision.status,
+              },
+      };
+    case 'undetermined':
+      return {
+        statusCode: 503,
+        body: {
+          code: decision.code,
+          message: decision.message,
+        },
+      };
+    case 'refused': {
+      let statusCode = 400;
+      switch (decision.code) {
+        case 'busy':
+          statusCode = 503;
+          break;
+        case 'invalid_agent':
+          statusCode = 400;
+          break;
+        case 'agent_not_found':
+        case 'agent_namespace_not_found':
+        case 'unknown_provider':
+        case 'session_not_found':
+          statusCode = 404;
+          break;
+        case 'scope_mismatch':
+          statusCode = 403;
+          break;
+        case 'session_busy':
+        case 'non_resumable':
+        case 'provider_mismatch':
+        case 'job_owner_mismatch':
+        case 'job_owner_missing':
+        case 'job_provider_session_missing':
+        case 'job_binding_owner_mismatch':
+        case 'discussion_job_launch_conflict':
+        case 'workflow_owner_terminal':
+        case 'workflow_slot_chain_invalid':
+          statusCode = 409;
+          break;
+      }
 
-  let statusCode = 400;
-  switch (decision.code) {
-    case 'busy':
-    case 'preflight_failed':
-      statusCode = 503;
-      break;
-    case 'invalid_agent':
-      statusCode = 400;
-      break;
-    case 'agent_not_found':
-    case 'agent_namespace_not_found':
-    case 'unknown_provider':
-    case 'session_not_found':
-      statusCode = 404;
-      break;
-    case 'scope_mismatch':
-      statusCode = 403;
-      break;
-    case 'session_busy':
-    case 'non_resumable':
-    case 'provider_mismatch':
-    case 'job_owner_mismatch':
-    case 'job_owner_missing':
-    case 'job_provider_session_missing':
-    case 'job_binding_owner_mismatch':
-    case 'discussion_job_launch_conflict':
-    case 'workflow_owner_terminal':
-    case 'workflow_slot_chain_invalid':
-      statusCode = 409;
-      break;
+      return {
+        statusCode,
+        body: {
+          code: decision.code,
+          message: decision.message,
+        },
+      };
+    }
+    default:
+      return assertNever(decision);
   }
-
-  return {
-    statusCode,
-    body: {
-      code: decision.code,
-      message: decision.message,
-    },
-  };
 }
 
 export function domainResultToHttp(result: ToolDomainResult): { statusCode: number; body: unknown } {

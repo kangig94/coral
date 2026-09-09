@@ -19,7 +19,7 @@ import {
   type WorkflowExecutionPort,
 } from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
-import { type WorkflowLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
+import { type WorkflowLaunchDecision, refuseLaunch } from '../../jobs/launch.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
@@ -59,10 +59,10 @@ export class WorkflowExecutionService {
     workDir: CanonicalWorkDir,
   ): Promise<WorkflowLaunchDecision> {
     if (!this.deps.providerRegistry.get(providerName)) {
-      return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+      return refuseLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
     if (!hasProviderScope(ctx)) {
-      return rejectLaunch(
+      return refuseLaunch(
         'provider_scope_missing',
         'This workflow request has no provider scope. Start it again from a launch-capable client with the selected provider profile.',
       );
@@ -72,7 +72,7 @@ export class WorkflowExecutionService {
       workflowProviderNames(ast, providerName),
     );
     if (!decodedScope.ok) {
-      return rejectLaunch(
+      return refuseLaunch(
         providerBindingFailureCode(decodedScope.failure),
         this.deps.providerRegistry.renderBindingFailure(decodedScope.failure),
       );

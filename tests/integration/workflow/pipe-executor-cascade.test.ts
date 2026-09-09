@@ -186,7 +186,7 @@ describe('pipe executor coral cascade invariant', () => {
       const decision = await workflowCommands.execute(executionSvc, compiled, ctx);
 
       expect(decision.status).toBe('running');
-      if (decision.status === 'rejected') {
+      if (decision.status === 'refused') {
         throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
       }
       await executionSvc.waitForJobTerminal(decision.jobId, 1_000);
@@ -329,7 +329,7 @@ describe('pipe executor coral cascade invariant', () => {
       const decision = await workflowCommands.execute(executionSvc, compiled, ctx);
 
       expect(decision.status).toBe('running');
-      if (decision.status === 'rejected') {
+      if (decision.status === 'refused') {
         throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
       }
       await executionSvc.waitForJobTerminal(decision.jobId, 1_000);

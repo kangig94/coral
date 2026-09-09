@@ -815,8 +815,7 @@ describe('ExecutionService', () => {
       );
 
       expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
+        status: 'refused',
         code: 'provider_binding_missing_profile',
       });
       expect(allocate).not.toHaveBeenCalled();
@@ -844,8 +843,7 @@ describe('ExecutionService', () => {
       const decision = await service.start('codex', { prompt: 'hello' }, requestCtx);
 
       expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
+        status: 'refused',
         code: 'provider_binding_missing_profile',
       });
       expect(allocate).not.toHaveBeenCalled();
@@ -961,11 +959,10 @@ describe('ExecutionService', () => {
       const decision = await service.resume('codex', { sessionId: 'missing', prompt: 'hello' }, ctx);
 
       expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
+        status: 'refused',
         code: 'session_not_found',
       });
-      if (decision.status === 'rejected') {
+      if (decision.status === 'refused') {
         expect(decision.message).toContain('Session not found: missing');
       }
     });
@@ -993,7 +990,7 @@ describe('ExecutionService', () => {
 
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, requestCtx);
 
-      expect(decision).toMatchObject({ status: 'rejected', phase: 'preflight', code });
+      expect(decision).toMatchObject({ status: 'refused', code });
       expect(preflight).not.toHaveBeenCalled();
       expect(execute).not.toHaveBeenCalled();
       expect(queueDepth()).toBe(0);
@@ -1024,8 +1021,7 @@ describe('ExecutionService', () => {
         const decision = await service.resume('codex', { sessionId: session.sessionId, prompt: 'hello' }, ctx);
 
         expect(decision).toMatchObject({
-          status: 'rejected',
-          phase: 'preflight',
+          status: 'refused',
           code: 'provider_binding_subject_mismatch',
         });
         expect(preflight).not.toHaveBeenCalled();
@@ -1106,11 +1102,10 @@ describe('ExecutionService', () => {
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
       expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
+        status: 'refused',
         code: 'session_busy',
       });
-      if (decision.status === 'rejected') {
+      if (decision.status === 'refused') {
         expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
       }
     });
@@ -1142,8 +1137,8 @@ describe('ExecutionService', () => {
 
       const decision = await decisionPromise;
 
-      expect(decision.status).toBe('rejected');
-      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.status).toBe('refused');
+      if (decision.status !== 'refused') throw new Error('expected refused');
       expect(decision.code).toBe('session_busy');
       expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
       expectRuntimePreflightArg(racingProvider.preflight!);
@@ -3236,8 +3231,8 @@ describe('ExecutionService adversarial', () => {
       const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
-      expect(decision.status).toBe('rejected');
-      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.status).toBe('refused');
+      if (decision.status !== 'refused') throw new Error('expected refused');
       expect(decision.code).toBe('non_resumable');
       expect(decision.message).toContain(`Session ${entry.sessionId} is non-resumable`);
     });
@@ -3256,8 +3251,8 @@ describe('ExecutionService adversarial', () => {
 
       const decision = await service.resume('codex', { sessionId: firstDecision.sessionId, prompt: 'resume' }, ctx);
 
-      expect(decision.status).toBe('rejected');
-      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.status).toBe('refused');
+      if (decision.status !== 'refused') throw new Error('expected refused');
       expect(decision.code).toBe('session_busy');
       expect(decision.message).toContain(`Session ${firstDecision.sessionId} already has an active job`);
     });
@@ -3270,8 +3265,8 @@ describe('ExecutionService adversarial', () => {
       const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hi' }, ctx);
 
-      expect(decision.status).toBe('rejected');
-      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.status).toBe('refused');
+      if (decision.status !== 'refused') throw new Error('expected refused');
       expect(decision.code).toBe('unknown_provider');
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBeUndefined();
     });
@@ -3299,17 +3294,17 @@ describe('ExecutionService adversarial', () => {
 
       const decisions = await Promise.all([firstResume, secondResume]);
       const running = decisions.filter((decision) => decision.status === 'running');
-      const rejected = decisions.filter((decision) => decision.status === 'rejected');
+      const refused = decisions.filter((decision) => decision.status === 'refused');
 
       expect(running).toHaveLength(1);
-      expect(rejected).toHaveLength(1);
+      expect(refused).toHaveLength(1);
 
       const winner = running[0];
       if (!winner || winner.status !== 'running') throw new Error('expected running winner');
       trackJob(winner.jobId);
 
-      const loser = rejected[0];
-      if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
+      const loser = refused[0];
+      if (!loser || loser.status !== 'refused') throw new Error('expected refused loser');
       expect(loser.code).toBe('session_busy');
       expect(loser.message).toContain(`Session ${entry.sessionId} already has an active job`);
       expectRuntimePreflightArg(preflight!);
@@ -3325,7 +3320,7 @@ describe('ExecutionService adversarial', () => {
 
       const decision = await service.start('missing', { prompt: 'test' }, ctx);
 
-      expect(decision.status).toBe('rejected');
+      expect(decision.status).toBe('refused');
       expect(decision).not.toHaveProperty('job');
       expect(decision).not.toHaveProperty('session');
     });

@@ -1,7 +1,7 @@
 import { ZodError } from 'zod';
 
 import type { ProviderCatalog } from '../providers/catalog.js';
-import type { RejectedLaunchDecision } from '../jobs/launch.js';
+import { type RefusedLaunchDecision, refuseLaunch } from '../jobs/launch.js';
 import { errorMessage } from '../infra/error-format.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { PipelineAST } from './ast.js';
@@ -17,15 +17,13 @@ import {
 import { parseExpression } from './parser.js';
 import { readWorkflowProjection } from './read-queries.js';
 
-function unknownProviderDecision(providers: string[]): RejectedLaunchDecision {
+function unknownProviderDecision(providers: string[]): RefusedLaunchDecision {
   const providerLabel = providers.join(', ');
   const isSingular = providers.length === 1;
-  return {
-    status: 'rejected',
-    phase: 'preflight',
-    code: 'unknown_provider',
-    message: isSingular ? `Unknown provider: ${providerLabel}` : `Unknown providers: ${providerLabel}`,
-  };
+  return refuseLaunch(
+    'unknown_provider',
+    isSingular ? `Unknown provider: ${providerLabel}` : `Unknown providers: ${providerLabel}`,
+  );
 }
 
 export function isWorkflowInputFailure(error: unknown): error is WorkflowInputError | ZodError {
@@ -48,7 +46,7 @@ export const workflowCompiler = {
   compile(
     command: CanonicalWorkflowCommand,
     providerRegistry: ProviderCatalog,
-  ): CompiledWorkflow | RejectedLaunchDecision {
+  ): CompiledWorkflow | RefusedLaunchDecision {
     try {
       const ast = normalizeAst(parseExpression(command.expression), command.provider);
       validateNamespaces(ast);

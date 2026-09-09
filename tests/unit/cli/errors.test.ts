@@ -351,6 +351,21 @@ describe('cli errors', () => {
 
       expect(envelope.exitCode).toBe(75);
     });
+
+    it.each([
+      ['provider_preflight_undetermined', 75],
+      ['provider_preflight_failed', 1],
+    ] as const)('maps IPC launch code %s to exit %i without an HTTP status', (code, exitCode) => {
+      const envelope = buildErrorEnvelope(
+        new IpcRpcError({
+          code: -32603,
+          message: 'Provider preflight result',
+          data: { code, message: 'Provider preflight result' },
+        }),
+      );
+
+      expect(envelope.exitCode).toBe(exitCode);
+    });
   });
 
   describe('errorCodeToExit', () => {

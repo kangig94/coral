@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { closeIpcServer, createIpcServer, ipcAdapter, listenIpcServer } from '#src/transport/ipc/server.js';
-import { requestIpcMethod } from '#src/transport/ipc/client.js';
+import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
@@ -377,6 +377,48 @@ describe('http/ipc parity', () => {
       { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: projectRoot } },
       { subject: 'operator', transport: 'http', binding: { kind: 'project', root: projectRoot } },
     ]);
+  });
+
+  it('carries an undetermined preflight error body through HTTP and IPC without an IPC status', async () => {
+    const ports = createPorts();
+    const errorBody = {
+      code: 'provider_preflight_undetermined',
+      message: 'Provider preflight could not inspect credentials',
+    };
+    ports.sessions.start = vi.fn<HttpHandlerPorts['sessions']['start']>(async () => ({
+      status: 'undetermined',
+      ...errorBody,
+    }));
+    const projectRoot = makeProjectRoot();
+    const socketPath = makeSocketPath();
+    const ipcListener = createIpcServer(ports);
+    const { baseUrl } = await startHttpServer(ports);
+
+    await listenIpcServer(ipcListener, socketPath);
+    try {
+      const httpResponse = await fetch(`${baseUrl}/sessions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': ports.identity.token,
+        },
+        body: JSON.stringify({ provider: 'codex', prompt: 'hello', projectRoot }),
+      });
+      expect(httpResponse.status).toBe(503);
+      expect(await httpResponse.json()).toEqual(errorBody);
+
+      const ipcError = await requestIpcMethod(
+        socketPath,
+        'sessions.create',
+        { provider: 'codex', prompt: 'hello', projectRoot, providerScope: TEST_PROVIDER_SCOPE },
+        { auth: { kind: 'boot', token: 'test-boot-token' } },
+      ).catch((error: unknown) => error);
+
+      expect(ipcError).toBeInstanceOf(IpcRpcError);
+      expect(ipcError).toMatchObject({ data: errorBody });
+    } finally {
+      await closeIpcServer(ipcListener);
+    }
   });
 
   it('rejects client-supplied source-import authority while deriving an HTTP project principal', async () => {

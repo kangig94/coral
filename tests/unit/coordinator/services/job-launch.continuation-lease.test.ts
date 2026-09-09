@@ -94,7 +94,7 @@ describe('JobLaunchService continuation lease admission', () => {
     await expect(
       service.resume('codex', { sessionId: 'session-retention-lock', prompt: 'continue' }, ctx),
     ).resolves.toMatchObject({
-      status: 'rejected',
+      status: 'refused',
       code: 'retention_discard_in_flight',
     });
     expect(launchOrchestrator.launchResumedProviderJob).not.toHaveBeenCalled();

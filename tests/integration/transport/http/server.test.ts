@@ -49,6 +49,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { resolveProjectSource } from '#src/infra/project-source.js';
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
+import type { ExecutionService } from '#src/coordinator/execution-service.js';
 import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -199,7 +200,7 @@ type BackendInfoModule = typeof BackendDiscoveryMod;
 type LifecycleModule = typeof LifecycleMod;
 
 type FakeExecutionService = {
-  start: ReturnType<typeof vi.fn>;
+  start: ReturnType<typeof vi.fn<ExecutionService['start']>>;
   executeWorkflow: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
@@ -4043,7 +4044,7 @@ describe('execution backend server', () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
           start: vi.fn(async () => ({
-            status: 'rejected',
+            status: 'refused',
             code: 'agent_not_found',
             message: 'Agent "coral:does-not-exist" not found',
           })),

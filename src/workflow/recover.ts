@@ -1,6 +1,6 @@
 import type { Database } from '../store/db.js';
 
-import { errorMessage } from '../infra/error-format.js';
+import { assertNever, errorMessage } from '../infra/error-format.js';
 import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
 import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -381,10 +381,20 @@ async function resumePendingReplacementIntents(
       },
       deps.ctx,
     );
-    if (resumed.status === 'rejected') {
-      throw new Error(
-        `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message ?? 'unknown error'}.`,
-      );
+    switch (resumed.status) {
+      case 'refused':
+        throw new Error(
+          `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message}.`,
+        );
+      case 'undetermined':
+        throw new Error(
+          `Workflow recovery replacement launch check for slot '${slot.slotId}' established nothing: ${resumed.message}.`,
+        );
+      case 'running':
+      case 'queued':
+        break;
+      default:
+        assertNever(resumed);
     }
     // Before any further fallible work — `awaitLaunch` below is the first thing that can throw, and the
     // close that follows a throw can only release what the continuation names. Recording here is what

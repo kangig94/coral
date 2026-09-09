@@ -167,8 +167,7 @@ describe('launchToHttp', () => {
 
   it('maps provider_mismatch launch rejections to HTTP 409 with the expected error body', () => {
     const decision = {
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'provider_mismatch',
       message: 'Session session-1 belongs to provider codex',
     } satisfies LaunchDecision;
@@ -184,8 +183,7 @@ describe('launchToHttp', () => {
 
   it('maps execution-owner conflicts to a safe HTTP 409 rejection', () => {
     const decision = {
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'job_binding_owner_mismatch',
       message: "Job 'job-1' does not match its provider session binding and execution owner.",
     } satisfies LaunchDecision;
@@ -199,13 +197,29 @@ describe('launchToHttp', () => {
     });
   });
 
+  it('maps an undetermined provider preflight to HTTP 503 without an accepted launch body', () => {
+    const decision = {
+      status: 'undetermined',
+      code: 'provider_preflight_undetermined',
+      message: 'Provider preflight could not inspect credentials',
+    } satisfies LaunchDecision;
+
+    expect(launchToHttp(decision, 201)).toEqual({
+      statusCode: 503,
+      body: {
+        code: 'provider_preflight_undetermined',
+        message: 'Provider preflight could not inspect credentials',
+      },
+    });
+  });
+
   it.each([
     ['invalid_agent', 400],
     ['agent_not_found', 404],
     ['agent_namespace_not_found', 404],
     ['busy', 503],
     ['session_not_found', 404],
-    ['preflight_failed', 503],
+    ['provider_preflight_failed', 400],
     ['unknown_provider', 404],
     ['scope_mismatch', 403],
     ['session_busy', 409],
@@ -215,8 +229,7 @@ describe('launchToHttp', () => {
     ['provider_scope_missing', 400],
   ])('maps rejected launch code %s to HTTP %i', (code, statusCode) => {
     const decision = {
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code,
       message: `Rejected: ${code}`,
     } satisfies LaunchDecision;

@@ -1,9 +1,13 @@
 import { resolve } from 'node:path';
 
-import type { EffortLevel, ProviderInstruction, ProviderPreflightInput } from '../../providers/contract.js';
+import type {
+  EffortLevel,
+  ProviderInstruction,
+  ProviderPreflightInput,
+  ProviderPreflightOutcome,
+} from '../../providers/contract.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { type JobLaunchRequest, type RejectedLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
+import { type JobLaunchRequest, type RefusedLaunchDecision, refuseLaunch } from '../../jobs/launch.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -69,20 +73,20 @@ export function buildSessionControllerProfile(
   return profile;
 }
 
-export function mapResolverError(err: unknown): RejectedLaunchDecision | null {
-  if (err instanceof InvalidAgentRefError) return rejectLaunch('invalid_agent', err.message);
-  if (err instanceof AgentNotFoundError) return rejectLaunch('agent_not_found', err.message);
-  if (err instanceof AgentNamespaceNotFoundError) return rejectLaunch('agent_namespace_not_found', err.message);
+export function mapResolverError(err: unknown): RefusedLaunchDecision | null {
+  if (err instanceof InvalidAgentRefError) return refuseLaunch('invalid_agent', err.message);
+  if (err instanceof AgentNotFoundError) return refuseLaunch('agent_not_found', err.message);
+  if (err instanceof AgentNamespaceNotFoundError) return refuseLaunch('agent_namespace_not_found', err.message);
   return null;
 }
 
-export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | RejectedLaunchDecision {
+export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | RefusedLaunchDecision {
   const { sessionId, ...rest } = input;
   if (sessionId === undefined) {
     return rest;
   }
   if (sessionId.length === 0) {
-    return rejectLaunch('invalid_request', 'Session ID is required when provided.');
+    return refuseLaunch('invalid_request', 'Session ID is required when provided.');
   }
   return { ...rest, sessionId };
 }
@@ -203,31 +207,61 @@ export function toPreflightRuntime(
 
 export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
 
+export type PreflightDecision =
+  | { kind: 'satisfied' }
+  | { kind: 'refused'; message: string }
+  | { kind: 'undetermined'; cause: 'provider' | 'deadline' | 'faulted'; message: string };
+
+function deadlinePreflightDecision(provider: BoundProvider): PreflightDecision {
+  return {
+    kind: 'undetermined',
+    cause: 'deadline',
+    message: `${provider.name} preflight timed out after ${PROVIDER_PREFLIGHT_TIMEOUT_MS}ms`,
+  };
+}
+
+function classifyProviderPreflightOutcome(outcome: ProviderPreflightOutcome): PreflightDecision {
+  if (outcome.kind !== 'undetermined') {
+    return outcome;
+  }
+  return { ...outcome, cause: 'provider' };
+}
+
 function runPreflightWithTimeout(
   provider: BoundProvider,
   runtime: Omit<ProviderPreflightInput, 'access'>,
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+  deadline: bigint,
+): Promise<PreflightDecision> {
+  const remaining = deadline - runtime.time.monotonicNow();
+  if (remaining <= 0n) {
+    return Promise.resolve(deadlinePreflightDecision(provider));
+  }
+
+  return new Promise<PreflightDecision>((resolve, reject) => {
     let settled = false;
     const timeout = runtime.time.setTimeout(() => {
       if (settled) {
         return;
       }
       settled = true;
-      reject(new Error(`${provider.name} preflight timed out after ${PROVIDER_PREFLIGHT_TIMEOUT_MS}ms`));
-    }, PROVIDER_PREFLIGHT_TIMEOUT_MS);
+      resolve(deadlinePreflightDecision(provider));
+    }, Number(remaining));
     timeout.unref?.();
 
     Promise.resolve()
       .then(() => provider.preflight(runtime))
       .then(
-        () => {
+        (outcome) => {
           if (settled) {
             return;
           }
           settled = true;
           runtime.time.clearTimeout(timeout);
-          resolve();
+          if (runtime.time.monotonicNow() >= deadline) {
+            resolve(deadlinePreflightDecision(provider));
+            return;
+          }
+          resolve(classifyProviderPreflightOutcome(outcome));
         },
         (error: unknown) => {
           if (settled) {
@@ -244,11 +278,15 @@ function runPreflightWithTimeout(
 export async function runProviderPreflight(
   provider: BoundProvider,
   runtime: Omit<ProviderPreflightInput, 'access'>,
-): Promise<string | null> {
+): Promise<PreflightDecision> {
+  const deadline = runtime.time.monotonicNow() + BigInt(PROVIDER_PREFLIGHT_TIMEOUT_MS);
   try {
-    await runPreflightWithTimeout(provider, runtime);
-    return null;
+    return await runPreflightWithTimeout(provider, runtime, deadline);
   } catch (error: unknown) {
-    return errorMessage(error);
+    return {
+      kind: 'undetermined',
+      cause: 'faulted',
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 }

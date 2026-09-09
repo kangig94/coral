@@ -153,6 +153,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     code === 'backend_shutting_down' ||
     code === 'kb_disabled' ||
     code === 'provider_host_inventory_unavailable' ||
+    code === 'provider_preflight_undetermined' ||
     httpStatus === 503
   ) {
     return 75;

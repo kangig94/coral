@@ -12,7 +12,7 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
 } from '#src/discuss/shell/live-registry.js';
-import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '#src/discuss/shell/runtime-build.js';
+import { PURPOSE_BID, PURPOSE_SPEECH, executeAgentAttempt, runPlainTurn } from '#src/discuss/shell/runtime-build.js';
 import { abortDiscussSession, startDiscussSession } from '#src/discuss/shell/operations.js';
 import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { detachSession, getSession, getWatchState } from '#src/discuss/shell/registry.js';
@@ -305,6 +305,38 @@ describe('Discuss executor and operations', () => {
     expect(agentRun?.currentJobId).toBeUndefined();
     expect(agentRun?.currentAttempt).toBeUndefined();
     expect(agentRun?.lastAttemptOutcome).toBeUndefined();
+
+    harness.cleanup();
+  });
+
+  it('reports when the provider launch check established nothing without consuming an attempt', async () => {
+    const start = vi.fn().mockResolvedValue({
+      status: 'undetermined',
+      code: 'provider_preflight_undetermined',
+      message: 'Provider preflight could not inspect credentials',
+    });
+    const waitStreamOnce = vi.fn();
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    await persistSession(harness, { sessionId: 'discuss-undetermined-launch', recover: true });
+
+    const result = await executeAgentAttempt(harness.context, {
+      agentName: 'alpha',
+      sessionId: 'discuss-undetermined-launch',
+      provider: 'codex',
+      model: 'gpt-5',
+      prompt: 'Bid now',
+      instruction: 'System turn contract',
+      cwd: harness.ctx.projectRoot,
+      invocationCtx: harness.ctx,
+      purpose: PURPOSE_BID,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      consumedAttempt: false,
+      message: 'Discuss launch check established nothing: Provider preflight could not inspect credentials',
+    });
+    expect(waitStreamOnce).not.toHaveBeenCalled();
 
     harness.cleanup();
   });

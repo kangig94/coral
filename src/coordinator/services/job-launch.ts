@@ -14,11 +14,12 @@ import { CoralSetupError } from '../../runtime/errors.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import {
-  rejectLaunch,
+  refuseLaunch,
+  undeterminedLaunch,
   type JobLaunchRequest,
   type JobResumeRequest,
   type ProviderSessionLaunchDecision,
-  type RejectedLaunchDecision,
+  type RefusedLaunchDecision,
 } from '../../jobs/launch.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { ListResult } from '../contracts.js';
@@ -61,7 +62,7 @@ export class JobLaunchService {
     this.deps = deps;
   }
 
-  private rejectLaunchConflict(error: unknown): RejectedLaunchDecision | null {
+  private refuseLaunchConflict(error: unknown): RefusedLaunchDecision | null {
     if (!(error instanceof CoralSetupError)) return null;
     switch (error.code) {
       case 'job_launch_duplicate':
@@ -72,18 +73,18 @@ export class JobLaunchService {
       case 'discussion_job_launch_conflict':
       case 'workflow_owner_terminal':
       case 'workflow_slot_chain_invalid':
-        return rejectLaunch(error.code, error.userMessage);
+        return refuseLaunch(error.code, error.userMessage);
       default:
         return null;
     }
   }
 
-  private launchOrReject(run: () => ProviderSessionLaunchDecision): ProviderSessionLaunchDecision {
+  private launchOrRefuse(run: () => ProviderSessionLaunchDecision): ProviderSessionLaunchDecision {
     try {
       return run();
     } catch (error: unknown) {
-      const rejection = this.rejectLaunchConflict(error);
-      if (rejection !== null) return rejection;
+      const refusal = this.refuseLaunchConflict(error);
+      if (refusal !== null) return refusal;
       throw error;
     }
   }
@@ -94,7 +95,7 @@ export class JobLaunchService {
     ctx: InvocationContext,
   ): Promise<ProviderSessionLaunchDecision> {
     if (!this.deps.providerRegistry.get(providerName)) {
-      return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+      return refuseLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
     const bound = await this.bindInvocationProfile(providerName, ctx, 'launch');
@@ -130,13 +131,18 @@ export class JobLaunchService {
     try {
       preflightRuntime = toPreflightRuntime(this.deps.runtime, cwd, effectiveCoralEnv);
     } catch (error: unknown) {
-      return rejectLaunch(
+      return refuseLaunch(
         'provider_execution_environment_invalid',
         error instanceof Error ? error.message : String(error),
       );
     }
-    const preflightError = await runProviderPreflight(bound, preflightRuntime);
-    if (preflightError) return rejectLaunch('provider_preflight_failed', preflightError);
+    const preflightDecision = await runProviderPreflight(bound, preflightRuntime);
+    if (preflightDecision.kind === 'refused') {
+      return refuseLaunch('provider_preflight_failed', preflightDecision.message);
+    }
+    if (preflightDecision.kind === 'undetermined') {
+      return undeterminedLaunch('provider_preflight_undetermined', preflightDecision.message);
+    }
 
     const session = this.deps.sessionManager.prepare({
       binding: bound.envelope,
@@ -167,7 +173,7 @@ export class JobLaunchService {
       coralEnv: effectiveCoralEnv,
     };
 
-    return this.launchOrReject(() =>
+    return this.launchOrRefuse(() =>
       this.deps.launchOrchestrator.launchInitialProviderJob(bound, session, request, {
         owner: input.owner ?? { kind: 'provider-session', id: session.sessionId },
         requestedJobId: input.jobId,
@@ -190,21 +196,21 @@ export class JobLaunchService {
     ctx: InvocationContext,
   ): Promise<ProviderSessionLaunchDecision> {
     if (!this.deps.providerRegistry.get(providerName)) {
-      return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+      return refuseLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
     const session = this.deps.sessionManager.get(providerName, input.sessionId);
     if (!session) {
-      return rejectLaunch(
+      return refuseLaunch(
         'session_not_found',
         `Session not found: ${input.sessionId}. Use exec to start a new session.`,
       );
     }
 
     const persisted = this.deps.providerRegistry.rehydrateBinding(session.binding);
-    if (!persisted.ok) return this.rejectBinding(persisted.failure);
+    if (!persisted.ok) return this.refuseBinding(persisted.failure);
     const persistedReadiness = await persisted.value.readiness('resume', this.bindingRuntime());
-    if (!persistedReadiness.ok) return this.rejectBinding(persistedReadiness.failure);
+    if (!persistedReadiness.ok) return this.refuseBinding(persistedReadiness.failure);
     const caller = await this.bindInvocationProfile(providerName, ctx, 'resume');
     if ('status' in caller) return caller;
 
@@ -232,7 +238,7 @@ export class JobLaunchService {
     }
 
     const identity = persisted.value.compareIdentity(caller.envelope);
-    if (!identity.ok) return this.rejectBinding(identity.failure);
+    if (!identity.ok) return this.refuseBinding(identity.failure);
 
     return this.resumeResolved(providerName, persisted.value, session, effectiveInput, ctx);
   }
@@ -241,17 +247,17 @@ export class JobLaunchService {
     return this.deps.runtime.storage;
   }
 
-  private rejectBinding(failure: ProviderBindingFailure): RejectedLaunchDecision {
-    return rejectLaunch(providerBindingFailureCode(failure), this.deps.providerRegistry.renderBindingFailure(failure));
+  private refuseBinding(failure: ProviderBindingFailure): RefusedLaunchDecision {
+    return refuseLaunch(providerBindingFailureCode(failure), this.deps.providerRegistry.renderBindingFailure(failure));
   }
 
   private async bindInvocationProfile(
     providerName: string,
     ctx: InvocationContext,
     use: 'launch' | 'resume',
-  ): Promise<BoundProvider | RejectedLaunchDecision> {
+  ): Promise<BoundProvider | RefusedLaunchDecision> {
     if (!hasProviderScope(ctx)) {
-      return this.rejectBinding({ reason: 'missing-profile', provider: providerName });
+      return this.refuseBinding({ reason: 'missing-profile', provider: providerName });
     }
     const binding = await this.deps.providerRegistry.bindFromScope(
       ctx.providerScope,
@@ -259,7 +265,7 @@ export class JobLaunchService {
       use,
       this.bindingRuntime(),
     );
-    if (!binding.ok) return this.rejectBinding(binding.failure);
+    if (!binding.ok) return this.refuseBinding(binding.failure);
     return binding.value;
   }
 
@@ -351,16 +357,16 @@ export class JobLaunchService {
   ): Promise<ProviderSessionLaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     if (session.state === 'non_resumable') {
-      return rejectLaunch(
+      return refuseLaunch(
         'non_resumable',
         `Session ${input.sessionId} is non-resumable. Use exec to start a new session.`,
       );
     }
     if (session.activeJobId !== undefined) {
-      return rejectLaunch('session_busy', busyMessage);
+      return refuseLaunch('session_busy', busyMessage);
     }
     if (hasUnterminalRetentionDiscardRequest(session)) {
-      return rejectLaunch(
+      return refuseLaunch(
         'retention_discard_in_flight',
         `Session ${input.sessionId} has a retention discard request in flight. Start a new session instead.`,
       );
@@ -373,13 +379,18 @@ export class JobLaunchService {
     try {
       preflightRuntime = toPreflightRuntime(this.deps.runtime, continuation.cwd, continuation.coralEnv);
     } catch (error: unknown) {
-      return rejectLaunch(
+      return refuseLaunch(
         'provider_execution_environment_invalid',
         error instanceof Error ? error.message : String(error),
       );
     }
-    const preflightError = await runProviderPreflight(provider, preflightRuntime);
-    if (preflightError) return rejectLaunch('provider_preflight_failed', preflightError);
+    const preflightDecision = await runProviderPreflight(provider, preflightRuntime);
+    if (preflightDecision.kind === 'refused') {
+      return refuseLaunch('provider_preflight_failed', preflightDecision.message);
+    }
+    if (preflightDecision.kind === 'undetermined') {
+      return undeterminedLaunch('provider_preflight_undetermined', preflightDecision.message);
+    }
 
     const request: ProviderRequest = {
       action: 'resume',
@@ -407,7 +418,7 @@ export class JobLaunchService {
       const workflowSlotId = input.workflowSlotId;
       const workflowSlotGeneration = input.workflowSlotGeneration;
       const replacesWorkflowJobId = input.replacesWorkflowJobId;
-      return this.launchOrReject(() =>
+      return this.launchOrRefuse(() =>
         this.deps.launchOrchestrator.launchWorkflowReplacement(provider, session, request, {
           owner,
           parentWorkflowJobId,
@@ -421,7 +432,7 @@ export class JobLaunchService {
       );
     }
 
-    return this.launchOrReject(() =>
+    return this.launchOrRefuse(() =>
       this.deps.launchOrchestrator.launchResumedProviderJob(provider, session, request, {
         owner: input.owner ?? { kind: 'provider-session', id: session.sessionId },
         expectedVersion,

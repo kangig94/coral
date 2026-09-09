@@ -1,5 +1,6 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
+import { assertNever } from '../infra/error-format.js';
 import type { CompiledPlanSlot } from './plan.js';
 import {
   WorkflowExecutionError,
@@ -127,13 +128,26 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     ctx,
   );
 
-  if (decision.status === 'rejected') {
-    throw createWorkflowExecutionError(
-      `Step ${slot.stepIndex}, atom '${slot.label}' launch failed: ${decision.message ?? 'unknown error'}`,
-      false,
-      completedStepDetails,
-      { failedStep: slot.stepIndex, failedAtom: slot.label, failedSlotId: slot.slotId },
-    );
+  switch (decision.status) {
+    case 'refused':
+      throw createWorkflowExecutionError(
+        `Step ${slot.stepIndex}, atom '${slot.label}' launch failed: ${decision.message}`,
+        false,
+        completedStepDetails,
+        { failedStep: slot.stepIndex, failedAtom: slot.label, failedSlotId: slot.slotId },
+      );
+    case 'undetermined':
+      throw createWorkflowExecutionError(
+        `Step ${slot.stepIndex}, atom '${slot.label}' launch check established nothing: ${decision.message}`,
+        false,
+        completedStepDetails,
+        { failedStep: slot.stepIndex, failedAtom: slot.label, failedSlotId: slot.slotId },
+      );
+    case 'running':
+    case 'queued':
+      break;
+    default:
+      assertNever(decision);
   }
 
   const launchState = await executionSvc.awaitLaunch(decision.jobId, BOOTSTRAP_TIMEOUT_MS);

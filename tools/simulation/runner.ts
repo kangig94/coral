@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { extractRuntimePid, SimulationWorld, type WaitDetail } from './adversarial.js';
 import type { ExpectStep, KillStep, SimulationDocument, Step } from './scenario-schema.js';
-import { errorMessage } from '../../src/infra/error-format.js';
+import { assertNever, errorMessage } from '../../src/infra/error-format.js';
 import type { LifecycleShutdownDisposition } from '../../src/coordinator/lifecycle.js';
 
 export type StepResult = {
@@ -345,17 +345,34 @@ async function executeStep(
 
       case 'launch': {
         const decision = await world.launchJob(step);
-        if (decision.status === 'rejected') {
-          return buildStepResult(world, step, stepIndex, startedAt, {
-            ok: false,
-            actual: decision,
-            detail: {
-              failureKind: 'launch_rejected',
-              message: decision.message,
+        switch (decision.status) {
+          case 'refused':
+            return buildStepResult(world, step, stepIndex, startedAt, {
+              ok: false,
               actual: decision,
-              decision,
-            },
-          });
+              detail: {
+                failureKind: 'launch_rejected',
+                message: decision.message,
+                actual: decision,
+                decision,
+              },
+            });
+          case 'undetermined':
+            return buildStepResult(world, step, stepIndex, startedAt, {
+              ok: false,
+              actual: decision,
+              detail: {
+                failureKind: 'launch_undetermined',
+                message: `Simulation launch check established nothing: ${decision.message}`,
+                actual: decision,
+                decision,
+              },
+            });
+          case 'running':
+          case 'queued':
+            break;
+          default:
+            return assertNever(decision);
         }
         if (decision.kind !== 'provider-session') {
           throw new Error(`Simulation launch step unexpectedly created a ${decision.kind} launch.`);

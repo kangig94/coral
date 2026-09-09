@@ -20,15 +20,23 @@ export type AcceptedWorkflowLaunchDecision =
   | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
   | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined };
 
-export type RejectedLaunchDecision = {
-  status: 'rejected';
-  phase: 'preflight';
+export type RefusedLaunchDecision = {
+  status: 'refused';
   code: string;
   message: string;
 };
 
-export type ProviderSessionLaunchDecision = AcceptedProviderSessionLaunchDecision | RejectedLaunchDecision;
-export type WorkflowLaunchDecision = AcceptedWorkflowLaunchDecision | RejectedLaunchDecision;
+export type UndeterminedLaunchDecision = {
+  status: 'undetermined';
+  code: string;
+  message: string;
+};
+
+export type ProviderSessionLaunchDecision =
+  | AcceptedProviderSessionLaunchDecision
+  | RefusedLaunchDecision
+  | UndeterminedLaunchDecision;
+export type WorkflowLaunchDecision = AcceptedWorkflowLaunchDecision | RefusedLaunchDecision;
 export type LaunchDecision = ProviderSessionLaunchDecision | AcceptedWorkflowLaunchDecision;
 
 /**
@@ -49,10 +57,17 @@ export type AcceptedLaunchResponse =
       launchState: 'running' | 'queued';
     };
 
-export function rejectLaunch(code: string, message: string): RejectedLaunchDecision {
+export function refuseLaunch(code: string, message: string): RefusedLaunchDecision {
   return {
-    status: 'rejected',
-    phase: 'preflight',
+    status: 'refused',
+    code,
+    message,
+  };
+}
+
+export function undeterminedLaunch(code: string, message: string): UndeterminedLaunchDecision {
+  return {
+    status: 'undetermined',
     code,
     message,
   };

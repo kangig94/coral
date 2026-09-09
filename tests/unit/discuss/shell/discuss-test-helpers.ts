@@ -247,7 +247,7 @@ export function createDiscussHarness(
     request: Record<string, unknown>,
     decision: Awaited<ReturnType<ExecutionService['start']>>,
   ) => {
-    if (decision.status === 'rejected' || decision.sessionId === undefined) return;
+    if (decision.status !== 'running' && decision.status !== 'queued') return;
     if (progressStore.readStatus(decision.jobId) !== null) return;
     seedTestSessionProjection(progressStore.getDb(), {
       sessionId: decision.sessionId,

@@ -144,8 +144,7 @@ describe('workflow api', () => {
     );
 
     expect(decision).toEqual({
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'unknown_provider',
       message: 'Unknown provider: missing-provider',
     });

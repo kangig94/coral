@@ -9,13 +9,14 @@ import {
 } from '../events.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import { errorMessage } from '../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../infra/error-format.js';
+import { refuseLaunch } from '../../jobs/launch.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
-import type { AgentConfig, DiscussContext } from './types.js';
+import type { AgentConfig, DiscussContext, DiscussLaunchDecision } from './types.js';
 import { discussAgentExecution } from '../execution-policy.js';
 
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set<DiscussAgentJobOutcome>([
@@ -360,7 +361,7 @@ export async function executeAgentAttempt(
   }
 
   const executionSessionId = activeRun.executionSessionId;
-  const launch = await (async () => {
+  const launch = await (async (): Promise<DiscussLaunchDecision> => {
     try {
       const pendingLaunch =
         executionSessionId === undefined
@@ -397,21 +398,28 @@ export async function executeAgentAttempt(
             );
       return await withDiscussLaunchTimeout(ctx, pendingLaunch, `${provider} discuss launch`);
     } catch (error: unknown) {
-      return {
-        status: 'rejected' as const,
-        phase: 'preflight' as const,
-        code: 'launch_failed',
-        message: errorMessage(error),
-      };
+      return refuseLaunch('launch_failed', errorMessage(error));
     }
   })();
 
-  if (launch.status === 'rejected') {
-    return {
-      ok: false,
-      consumedAttempt: false,
-      message: launch.message,
-    };
+  switch (launch.status) {
+    case 'refused':
+      return {
+        ok: false,
+        consumedAttempt: false,
+        message: launch.message,
+      };
+    case 'undetermined':
+      return {
+        ok: false,
+        consumedAttempt: false,
+        message: `Discuss launch check established nothing: ${launch.message}`,
+      };
+    case 'running':
+    case 'queued':
+      break;
+    default:
+      return assertNever(launch);
   }
   const providerSessionId = launch.sessionId;
 

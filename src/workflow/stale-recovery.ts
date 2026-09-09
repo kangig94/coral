@@ -1,6 +1,6 @@
 import type { EnvPort } from '../infra/port-types.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { errorMessage } from '../infra/error-format.js';
+import { assertNever, errorMessage } from '../infra/error-format.js';
 import {
   createWorkflowExecutionError,
   type LaunchedAtom,
@@ -164,13 +164,26 @@ export async function recoverStaleAtom(
       ctx,
     );
 
-    if (resumed.status === 'rejected') {
-      await clearContinuationLeaseForStaleRecovery(executionSvc, atom, atom.jobId, 'resume_rejected');
-      staleFailureMetadata(
-        atom,
-        options.buildPartialStepDetails(),
-        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message ?? 'unknown error'}`,
-      );
+    switch (resumed.status) {
+      case 'refused':
+        await clearContinuationLeaseForStaleRecovery(executionSvc, atom, atom.jobId, 'resume_rejected');
+        return staleFailureMetadata(
+          atom,
+          options.buildPartialStepDetails(),
+          `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message}`,
+        );
+      case 'undetermined':
+        await clearContinuationLeaseForStaleRecovery(executionSvc, atom, atom.jobId, 'explicit_clear');
+        return staleFailureMetadata(
+          atom,
+          options.buildPartialStepDetails(),
+          `Step ${atom.stepIndex}, atom '${atom.agent}' resume check established nothing: ${resumed.message}`,
+        );
+      case 'running':
+      case 'queued':
+        break;
+      default:
+        assertNever(resumed);
     }
 
     const launchState = await executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);

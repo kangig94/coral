@@ -1425,14 +1425,13 @@ describe('ExecutionService launch', () => {
     const decision = await service.start('missing', { prompt: 'hello' }, ctx);
 
     expect(decision).toEqual({
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'unknown_provider',
       message: 'Unknown provider: missing',
     });
   });
 
-  it('start rejects when preflight throws', async () => {
+  it('returns an undetermined launch when preflight throws', async () => {
     const { provider, preflight } = makeProvider({
       preflight: async (_preflightRuntime) => {
         throw new Error('not ready');
@@ -1446,9 +1445,8 @@ describe('ExecutionService launch', () => {
     expect(preflight).toHaveBeenCalledTimes(1);
     expectRuntimePreflightArg(preflight!);
     expect(decision).toEqual({
-      status: 'rejected',
-      phase: 'preflight',
-      code: 'provider_preflight_failed',
+      status: 'undetermined',
+      code: 'provider_preflight_undetermined',
       message: 'not ready',
     });
   });
@@ -1464,8 +1462,7 @@ describe('ExecutionService launch', () => {
     const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
 
     expect(decision).toEqual({
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'invalid_agent',
       message: 'Invalid mocked agent ref',
     });
@@ -1482,8 +1479,7 @@ describe('ExecutionService launch', () => {
     const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
 
     expect(decision).toEqual({
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'agent_not_found',
       message: 'Agent "architect" not found',
     });
@@ -1500,8 +1496,7 @@ describe('ExecutionService launch', () => {
     const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
 
     expect(decision).toEqual({
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'agent_namespace_not_found',
       message: 'Plugin namespace "other" not found',
     });
@@ -1698,7 +1693,7 @@ describe('ExecutionService launch', () => {
     const rejectedJobId = `full-queue-${randomUUID()}`;
     const rejected = await service.start('codex', { prompt: 'must reject', jobId: rejectedJobId }, ctx);
 
-    expect(rejected).toMatchObject({ status: 'rejected', code: 'busy' });
+    expect(rejected).toMatchObject({ status: 'refused', code: 'busy' });
     expect(service.list('codex').sessions).toEqual(sessionsBeforeRejection);
     expect(sessionsBeforeRejection.every((session) => session.activeJobId !== undefined)).toBe(true);
     expect(getInternals(service).progressStore.readStatus(rejectedJobId)).toBeNull();
@@ -1846,8 +1841,7 @@ describe('ExecutionService launch', () => {
     const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello', sessionId: '' }, ctx);
 
     expect(decision).toMatchObject({
-      status: 'rejected',
-      phase: 'preflight',
+      status: 'refused',
       code: 'invalid_request',
       message: 'Session ID is required when provided.',
     });

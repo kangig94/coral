@@ -28,10 +28,72 @@ describe('execution policies', () => {
 
     const result = runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {}));
     await Promise.resolve();
-    runtime.time.tick(PROVIDER_PREFLIGHT_TIMEOUT_MS);
+    runtime.time.tick(PROVIDER_PREFLIGHT_TIMEOUT_MS + 1);
 
-    await expect(result).resolves.toContain('codex preflight timed out after 30000ms');
+    await expect(result).resolves.toEqual({
+      kind: 'undetermined',
+      cause: 'deadline',
+      message: 'codex preflight timed out after 30000ms',
+    });
     expect(preflight).toHaveBeenCalledOnce();
+  });
+
+  it('returns a satisfied provider outcome as a satisfied decision', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => ({ kind: 'satisfied' }) as const),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).resolves.toEqual({ kind: 'satisfied' });
+  });
+
+  it('returns a refused provider outcome as a refused decision', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => ({ kind: 'refused', message: 'credentials are invalid' }) as const),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).resolves.toEqual({ kind: 'refused', message: 'credentials are invalid' });
+  });
+
+  it('classifies an undetermined provider outcome with the provider cause', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => ({ kind: 'undetermined', message: 'availability was not observed' }) as const),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).resolves.toEqual({
+      kind: 'undetermined',
+      cause: 'provider',
+      message: 'availability was not observed',
+    });
+  });
+
+  it('classifies a thrown non-verdict with the faulted cause', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => {
+        throw new Error('preflight implementation failed');
+      }),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).resolves.toEqual({
+      kind: 'undetermined',
+      cause: 'faulted',
+      message: 'preflight implementation failed',
+    });
   });
 
   it('passes only provider-opaque environment inputs to the bound preflight', async () => {

@@ -163,6 +163,38 @@ describe('recoverStaleAtom continuation lease', () => {
     expect(port.resume).not.toHaveBeenCalled();
   });
 
+  it('clears the continuation lease explicitly when the resume check established nothing', async () => {
+    const staleAtom = atom();
+    const port = executionPort({
+      resume: vi.fn(async () => ({
+        status: 'undetermined' as const,
+        code: 'provider_preflight_undetermined',
+        message: 'Provider preflight could not inspect credentials',
+      })),
+    });
+
+    await expect(
+      recoverStaleAtom(stateFor(staleAtom), port, ctx, {
+        time: { now: () => 100_000 },
+        staleTimeoutMs: 1,
+        staleAbortTimeoutMs: 30_000,
+        workflowJobId: 'workflow-1',
+        onProgress: vi.fn(),
+        buildPartialStepDetails: () => [],
+      }),
+    ).rejects.toMatchObject({
+      message:
+        "Step 0, atom 'architect' resume check established nothing: Provider preflight could not inspect credentials",
+    });
+
+    expect(port.clearContinuationLease).toHaveBeenCalledWith({
+      sessionId: 'session-stale',
+      jobId: 'job-stale',
+      outcome: 'explicit_clear',
+    });
+    expect(port.awaitLaunch).not.toHaveBeenCalled();
+  });
+
   it('clears the continuation lease with launch_failed when resumed launch fails', async () => {
     const staleAtom = atom();
     const port = executionPort({

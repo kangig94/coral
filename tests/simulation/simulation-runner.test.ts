@@ -1,10 +1,10 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'yaml';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runScenario } from '#tools/simulation/runner.js';
 import { simulationDocumentSchema, type SimulationDocument } from '#tools/simulation/scenario-schema.js';
-import type { SimulationWorld } from '#tools/simulation/adversarial.js';
+import { SimulationWorld } from '#tools/simulation/adversarial.js';
 
 const FIRST_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000002';
 const FIRST_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000003';
@@ -95,7 +95,7 @@ describe('scenario runner', () => {
     );
   });
 
-  it('normalizes missing targets and launch rejections into structured step failures', async () => {
+  it('normalizes missing targets and launch refusals into structured step failures', async () => {
     const missingTargetRun = await runScenario({
       world: {},
       steps: [
@@ -134,12 +134,44 @@ describe('scenario runner', () => {
         failureKind: 'launch_rejected',
         message: 'simulated preflight failure',
         decision: {
-          status: 'rejected',
+          status: 'refused',
           code: 'provider_preflight_failed',
         },
       },
     });
     expect(rejectedRun.world.listJobIds()).toEqual([]);
+  });
+
+  it('records an undetermined launch without reading accepted-only fields', async () => {
+    const launchJob = vi.spyOn(SimulationWorld.prototype, 'launchJob').mockResolvedValue({
+      status: 'undetermined',
+      code: 'provider_preflight_undetermined',
+      message: 'Provider preflight could not inspect credentials',
+    });
+
+    try {
+      const run = await runScenario({
+        world: {},
+        steps: [{ type: 'boot' }, { type: 'launch', provider: 'codex', prompt: 'check launch' }],
+      });
+      worlds.push(run.world);
+
+      expect(run.result.passed).toBe(false);
+      expect(run.result.steps[1]).toMatchObject({
+        ok: false,
+        actual: {
+          status: 'undetermined',
+          code: 'provider_preflight_undetermined',
+        },
+        detail: {
+          failureKind: 'launch_undetermined',
+          message: 'Simulation launch check established nothing: Provider preflight could not inspect credentials',
+        },
+      });
+      expect(run.world.listJobIds()).toEqual([]);
+    } finally {
+      launchJob.mockRestore();
+    }
   });
 
   it('resolves omitted targets through the current cursor, including queued launches, and reports wait timeouts', async () => {
