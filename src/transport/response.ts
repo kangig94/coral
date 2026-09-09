@@ -1,11 +1,25 @@
 import type { LaunchDecision } from '../jobs/launch.js';
 import { assertNever } from '../infra/error-format.js';
+import { LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } from '../runtime/errors.js';
 import type { ToolDomainResult } from './tool-result.js';
 
 export function launchToHttp(
   decision: LaunchDecision,
   acceptedStatusCode: 201 | 202,
 ): { statusCode: number; body: unknown } {
+  if (
+    (decision.status === 'refused' || decision.status === 'undetermined') &&
+    LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES.has(decision.code)
+  ) {
+    return {
+      statusCode: 503,
+      body: {
+        code: decision.code,
+        message: decision.message,
+      },
+    };
+  }
+
   switch (decision.status) {
     case 'running':
     case 'queued':
@@ -28,7 +42,7 @@ export function launchToHttp(
       };
     case 'undetermined':
       return {
-        statusCode: 503,
+        statusCode: 500,
         body: {
           code: decision.code,
           message: decision.message,
@@ -37,9 +51,6 @@ export function launchToHttp(
     case 'refused': {
       let statusCode = 400;
       switch (decision.code) {
-        case 'busy':
-          statusCode = 503;
-          break;
         case 'invalid_agent':
           statusCode = 400;
           break;
@@ -84,7 +95,7 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
     return { statusCode: 200, body: result.data };
   }
 
-  let statusCode = 500;
+  let statusCode = LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES.has(result.code) ? 503 : 500;
   switch (result.code) {
     case 'invalid_request':
     case 'provider_scope_missing':
@@ -98,8 +109,6 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
     case 'scope_mismatch':
       statusCode = 403;
       break;
-    case 'backend_recovering':
-    case 'kb_disabled':
     case 'kb_unavailable':
     case 'kb_initializing':
     case 'kb_offline':

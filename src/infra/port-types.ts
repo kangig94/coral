@@ -201,6 +201,15 @@ export type ExecOutcome =
   | Readonly<{ kind: 'launch-refused'; code: StandingProbeErrno }>
   | Readonly<{ kind: 'no-answer'; detail: string }>;
 
+/** Adapters must not infer a command or working-directory condition beyond these evidence variants. */
+export type SpawnFailureEvidence =
+  | Readonly<{ kind: 'command-not-found' }>
+  | Readonly<{ kind: 'command-not-executable'; code: Exclude<StandingProbeErrno, 'ENOENT'> }>
+  | Readonly<{ kind: 'working-directory-missing' }>
+  | Readonly<{ kind: 'working-directory-not-directory' }>
+  | Readonly<{ kind: 'working-directory-not-traversable' }>
+  | Readonly<{ kind: 'unresolved'; code: StandingProbeErrno }>;
+
 function isStandingProbeErrno(code: string): code is StandingProbeErrno {
   return STANDING_PROBE_ERRNOS.has(code);
 }
@@ -245,4 +254,38 @@ export function classifyExecOutcome(result: ExecResult): ExecOutcome {
     return { kind: 'no-answer', detail: 'killed before it exited' };
   }
   return { kind: 'answered', status: result.status };
+}
+
+/**
+ * A standing spawn errno cannot establish a command condition until the cwd ambiguity is resolved. Measured
+ * on Node v26.3.1: `spawn` reports ENOENT for a missing command and a missing cwd, ENOTDIR when cwd is a file,
+ * and EACCES for a cwd without search permission. `statSync` still succeeds without search permission, while
+ * `readdirSync` rejects an execute-only directory; only `accessSync(path, X_OK)` matched the child's `chdir`.
+ */
+export function classifySpawnFailure(
+  storage: Pick<StoragePort, 'observeDirectoryTraversabilitySync' | 'statSync'>,
+  cwd: string,
+  code: StandingProbeErrno,
+): SpawnFailureEvidence {
+  let directoryObserved = false;
+  try {
+    if (!storage.statSync(cwd).isDirectory()) return { kind: 'working-directory-not-directory' };
+    directoryObserved = true;
+  } catch (error: unknown) {
+    const cwdCode = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (cwdCode === 'ENOENT') return { kind: 'working-directory-missing' };
+    if (cwdCode === 'ENOTDIR') return { kind: 'working-directory-not-directory' };
+  }
+
+  if (code === 'ENOENT') {
+    return directoryObserved ? { kind: 'command-not-found' } : { kind: 'unresolved', code };
+  }
+  if (code === 'ENOTDIR') {
+    return directoryObserved ? { kind: 'command-not-executable', code } : { kind: 'unresolved', code };
+  }
+
+  const traversability = storage.observeDirectoryTraversabilitySync(cwd);
+  if (traversability === 'denied') return { kind: 'working-directory-not-traversable' };
+  if (traversability === 'unobserved' || !directoryObserved) return { kind: 'unresolved', code };
+  return { kind: 'command-not-executable', code };
 }

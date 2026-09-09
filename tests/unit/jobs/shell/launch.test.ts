@@ -1437,6 +1437,80 @@ describe('ExecutionService launch', () => {
     });
   });
 
+  /**
+   * A provider-returned `undetermined` is re-asked for the whole answer budget, so these two drive the
+   * clock rather than waiting on it: the fence being proven here is that no session and no job outlive a
+   * launch that never established anything, and the re-ask policy that governs how often preflight is
+   * asked is proven in the execution-policies suite.
+   */
+  function driveClockThroughPreflightBudget(): void {
+    let elapsedMs = 0;
+    const base = runtime.time.monotonicNow();
+    vi.spyOn(runtime.time, 'monotonicNow').mockImplementation(() => base + BigInt(elapsedMs));
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms: number) => {
+      elapsedMs += ms;
+    });
+  }
+
+  it('returns an undetermined start without creating a session or job', async () => {
+    const message = 'Provider readiness could not be determined';
+    const { provider, execute, preflight } = makeProvider({
+      preflight: async () => ({ kind: 'undetermined', message }),
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const prepareSession = vi.spyOn(sessionManager, 'prepare');
+    driveClockThroughPreflightBudget();
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision).toEqual({
+      status: 'undetermined',
+      code: 'provider_preflight_undetermined',
+      message,
+    });
+    expect(preflight).toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(prepareSession).not.toHaveBeenCalled();
+    expect(sessionManager.list('codex')).toEqual([]);
+    expect(progressStore.listJobIds()).toEqual([]);
+  });
+
+  it('returns an undetermined resume without creating another session or a job', async () => {
+    const message = 'Provider readiness could not be determined';
+    const { provider, execute, preflight } = makeProvider({
+      preflight: async () => ({ kind: 'undetermined', message }),
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'resume-preflight',
+      'test-model',
+      ctx.projectRoot,
+      ctx.projectRoot,
+    );
+    const sessionsBefore = sessionManager.list('codex');
+    const prepareSession = vi.spyOn(sessionManager, 'prepare');
+    driveClockThroughPreflightBudget();
+
+    const decision = await service.resume('codex', { sessionId: session.sessionId, prompt: 'continue' }, ctx);
+
+    expect(decision).toEqual({
+      status: 'undetermined',
+      code: 'provider_preflight_undetermined',
+      message,
+    });
+    expect(preflight).toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(prepareSession).not.toHaveBeenCalled();
+    expect(sessionManager.list('codex')).toEqual(sessionsBefore);
+    expect(progressStore.listJobIds()).toEqual([]);
+  });
+
   it('faults the launch when preflight throws instead of offering a retry', async () => {
     const { provider, preflight } = makeProvider({
       preflight: async (_preflightRuntime) => {

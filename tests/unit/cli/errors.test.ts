@@ -154,6 +154,7 @@ describe('cli errors', () => {
       const error = documentedCoralSetupError('provider_preflight_faulted', { provider: 'codex', cause });
       const response = buildTransportErrorResponse(error);
 
+      expect(response.statusCode).toBe(500);
       expect(response.body).toMatchObject({ context: { provider: 'codex', cause } });
       expect(
         buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)),
@@ -426,35 +427,25 @@ describe('cli errors', () => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
     });
 
-    it('maps every source-mapped HTTP 503 error code to exit 75 without an HTTP status', async () => {
-      const { readFileSync } = await import('node:fs');
-      const source = readFileSync('src/transport/response.ts', 'utf8');
-      const jobLaunchSource = readFileSync('src/coordinator/services/job-launch.ts', 'utf8');
-      const domainStart = source.indexOf('export function domainResultToHttp');
-      expect(domainStart).toBeGreaterThan(0);
-
-      const explicit503CaseCodes = (functionSource: string): string[] =>
-        [...functionSource.matchAll(/((?:\s*case\s+'[^']+':)+)\s*statusCode\s*=\s*503;/gu)].flatMap(([, cases]) =>
-          [...cases.matchAll(/case\s+'([^']+)':/gu)].map(([, code]) => code),
-        );
-      const launchCodes = explicit503CaseCodes(source.slice(0, domainStart));
-      const domainCodes = explicit503CaseCodes(source.slice(domainStart));
-      const undeterminedLaunchCodes = [
-        ...new Set([...jobLaunchSource.matchAll(/undeterminedLaunch\(\s*'([^']+)'/gu)].map(([, code]) => code)),
+    it('keeps launch and domain retry-later codes aligned across HTTP and code-only exits', async () => {
+      const EXPECTED_LAUNCH_AND_DOMAIN_RETRY_LATER_CODES = [
+        'backend_recovering',
+        'busy',
+        'kb_disabled',
+        'provider_preflight_undetermined',
       ];
+      const { DOCUMENTED_CORAL_SETUP_ERROR_CODES, LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } =
+        await import('#src/runtime/errors.js');
 
-      expect(launchCodes.length).toBeGreaterThan(0);
-      expect(domainCodes.length).toBeGreaterThan(0);
-      expect(undeterminedLaunchCodes.length).toBeGreaterThan(0);
-      for (const code of launchCodes) {
+      expect([...LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES].sort()).toEqual(
+        EXPECTED_LAUNCH_AND_DOMAIN_RETRY_LATER_CODES.sort(),
+      );
+      const documentedCodes = new Set<string>(DOCUMENTED_CORAL_SETUP_ERROR_CODES);
+      expect([...LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES].filter((code) => documentedCodes.has(code))).toEqual([]);
+
+      for (const code of LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES) {
         expect(launchToHttp({ status: 'refused', code, message: 'unused' }, 201).statusCode).toBe(503);
-        expect(errorCodeToExit(code)).toBe(75);
-      }
-      for (const code of undeterminedLaunchCodes) {
         expect(launchToHttp({ status: 'undetermined', code, message: 'unused' }, 201).statusCode).toBe(503);
-        expect(errorCodeToExit(code)).toBe(75);
-      }
-      for (const code of domainCodes) {
         expect(domainResultToHttp({ ok: false, code, message: 'unused' }).statusCode).toBe(503);
         expect(errorCodeToExit(code)).toBe(75);
       }

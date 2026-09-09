@@ -18,6 +18,8 @@ function pendingTimerCount(runtime: SimulationRuntime): number {
   return (runtime.time as unknown as { timers: Map<number, unknown> }).timers.size;
 }
 
+const CODEX_DEADLINE_MESSAGE = `Coral could not complete the codex availability check within ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms. Repeat the request; if it times out again, verify that the codex CLI starts promptly for the user running the Coral daemon.`;
+
 describe('execution policies', () => {
   it('bounds provider preflight before a launch can wait forever without a job id', async () => {
     const runtime = new SimulationRuntime();
@@ -39,7 +41,7 @@ describe('execution policies', () => {
     await expect(result).resolves.toEqual({
       kind: 'undetermined',
       cause: 'deadline',
-      message: `codex preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
+      message: CODEX_DEADLINE_MESSAGE,
     });
     expect(preflight).toHaveBeenCalledOnce();
   });
@@ -166,7 +168,7 @@ describe('execution policies', () => {
     await expect(result).resolves.toEqual({
       kind: 'undetermined',
       cause: 'deadline',
-      message: `codex preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
+      message: CODEX_DEADLINE_MESSAGE,
     });
     expect(preflight).toHaveBeenCalledTimes(2);
   });
@@ -352,7 +354,7 @@ describe('execution policies', () => {
     await expect(result).resolves.toEqual({
       kind: 'undetermined',
       cause: 'deadline',
-      message: `codex preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
+      message: CODEX_DEADLINE_MESSAGE,
     });
     expect(preflight).toHaveBeenCalledOnce();
     expect(pendingTimerCount(runtime)).toBe(0);

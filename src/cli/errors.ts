@@ -6,7 +6,11 @@ import { BackendUnreachableError, TransientHttpError } from '../infra/http-error
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
 import { HandoffGuardError } from '../coordinator/handoff-routing/runner.js';
-import { documentedCoralSetupErrorExitCode, serializeCoralSetupError } from '../runtime/errors.js';
+import {
+  LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES,
+  documentedCoralSetupErrorExitCode,
+  serializeCoralSetupError,
+} from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../transport/ipc/client.js';
 
@@ -147,13 +151,9 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   }
   if (
     code === 'transient' ||
-    code === 'busy' ||
     code === 'backend_shutting_down' ||
-    code === 'backend_recovering' ||
-    code === 'kb_disabled' ||
-    code === 'kb_unavailable' ||
     code === 'provider_host_inventory_unavailable' ||
-    code === 'provider_preflight_undetermined' ||
+    LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES.has(code) ||
     httpStatus === 503
   ) {
     return 75;

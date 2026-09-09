@@ -219,7 +219,7 @@ function deadlinePreflightDecision(provider: BoundProvider): PreflightDecision {
   return {
     kind: 'undetermined',
     cause: 'deadline',
-    message: `${provider.name} preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
+    message: `Coral could not complete the ${provider.name} availability check within ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms. Repeat the request; if it times out again, verify that the ${provider.name} CLI starts promptly for the user running the Coral daemon.`,
   };
 }
 
@@ -250,7 +250,7 @@ function classifyProviderPreflightOutcome(outcome: ProviderPreflightOutcome): Pr
     default:
       break;
   }
-  throw new Error(`preflight returned an outcome outside its contract: ${JSON.stringify(outcome)}`);
+  throw new Error(`provider availability check returned an outcome outside its contract: ${JSON.stringify(outcome)}`);
 }
 
 function runPreflightWithTimeout(

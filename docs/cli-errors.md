@@ -158,9 +158,10 @@ Provider-host `list` and `inspect` can report `reclamation-failed`. This status 
 | `77` | Authorization failures that no retry fixes: `missing_capability`, `child_credentials_incomplete`, `handoff_signal_capability_unavailable`, `handoff_shutdown_capability_rejected`, `handoff_shutdown_credential_unavailable`, `handoff_manual_policy`, `handoff_platform_identity_insufficient`, `handoff_published_incarnation_missing`, and `handoff_signal_rejected_live`. `handoff_term_only_policy` also exits `77`, but is retryable because Coral already delivered SIGTERM and the target can finish autonomously. The same code is used by `coral-cli expansion …`, whose single-JSON-line output carries `missing_capability` and `child_credentials_incomplete` as an `InstallError` |
 | `70` | `internal`, `internal_error`, `provider_preflight_faulted`, `store_open_unclassified`, `store_reset_build_mismatch`, `store_reset_incident_build_mismatch`, `store_reset_reporting_failed`, and generic HTTP `500` fallback                                                                                                                                                |
 
-`busy`, `backend_recovering`, and `kb_unavailable` map to exit `75` by code name because IPC carries no HTTP
-status. This keeps their code-only disposition aligned with the HTTP `503` mapping. Documented codes with an
-explicit non-default exit keep that authored exit. The registry sweep found no other existing code whose code-only exit changed: `startup_not_ready`, `kb_initializing`, `kb_offline`,
+`busy`, `backend_recovering`, `kb_disabled`, and `provider_preflight_undetermined` share one launch/domain
+retry-later code set, so IPC's code-only disposition stays aligned with the HTTP `503` mapping. Documented
+codes, including `kb_unavailable`, get their exit from `DOCUMENTED_CORAL_SETUP_ERRORS`. The registry sweep
+found no other existing code whose code-only exit changed: `startup_not_ready`, `kb_initializing`, `kb_offline`,
 `coordinator_unreachable`, `coordinator_record_unreadable`, and `coordinator_socket_dir_unverified` remain `75`;
 all other pre-existing documented codes remain `1`. The new `store_open_contended` and
 `store_open_unclassified` codes deliberately add exits `75` and `70` respectively. The

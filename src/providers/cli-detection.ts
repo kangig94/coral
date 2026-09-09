@@ -1,5 +1,5 @@
-import type { EnvPort, StoragePort } from '../infra/port-types.js';
-import { classifyExecOutcome } from '../infra/port-types.js';
+import type { EnvPort, SpawnFailureEvidence, StoragePort } from '../infra/port-types.js';
+import { classifyExecOutcome, classifySpawnFailure } from '../infra/port-types.js';
 import { assertNever } from '../infra/error-format.js';
 import type { ProcessPort } from '../runtime/ports.js';
 
@@ -25,8 +25,6 @@ export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'> & {
 };
 export type CliDetectorEnvPort = Pick<EnvPort, 'get'>;
 
-type WorkingDirectoryObservation = 'directory' | 'missing' | 'not-directory' | 'unobserved';
-
 export type CliDetectorConfig = {
   binaryName: string;
   versionArgs: readonly string[];
@@ -38,109 +36,54 @@ export type CliDetectorConfig = {
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
 };
 
-function observeWorkingDirectory(port: CliDetectorProcessPort): WorkingDirectoryObservation {
-  try {
-    return port.storage.statSync(port.cwd).isDirectory() ? 'directory' : 'not-directory';
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === 'ENOENT') return 'missing';
-    if (code === 'ENOTDIR') return 'not-directory';
-    return 'unobserved';
-  }
-}
-
-function classifyCliPermissionLaunchRefusal(
+function cliInfoFromSpawnFailure(
   processPort: CliDetectorProcessPort,
   config: CliDetectorConfig,
   command: string,
-  code: 'EACCES' | 'EPERM',
-  directoryObserved: boolean,
+  evidence: SpawnFailureEvidence,
 ): CliInfo {
-  const traversability = processPort.storage.observeDirectoryTraversabilitySync(processPort.cwd);
-  switch (traversability) {
-    case 'denied':
+  switch (evidence.kind) {
+    case 'command-not-found':
+      return { available: false, reason: 'not-found', error: config.notFoundMessage };
+    case 'command-not-executable':
+      if (evidence.code === 'ENOTDIR') {
+        return {
+          available: false,
+          reason: 'invalid-path',
+          error: `Could not run \`${command}\` because the Coral daemon's PATH resolves \`${config.binaryName}\` through a component that is not a directory (${evidence.code}); correct that PATH, restart the Coral backend, then retry.`,
+        };
+      }
+      return {
+        available: false,
+        reason: 'permission-denied',
+        error: `Could not run \`${command}\` because the executable selected by the Coral daemon's PATH may not be executed by the daemon user (${evidence.code}); fix that executable's permissions, or correct the daemon's PATH and restart the Coral backend, then retry.`,
+      };
+    case 'working-directory-missing':
       return {
         available: false,
         reason: 'invalid-working-directory',
-        error: `could not run \`${command}\` because working directory \`${processPort.cwd}\` is not traversable by the user running the Coral daemon; restore it if missing or grant search permission, or choose another working directory, then retry`,
+        error: `Could not run \`${command}\` because working directory \`${processPort.cwd}\` does not exist; restore it or choose another working directory, then retry.`,
       };
-    case 'unobserved':
+    case 'working-directory-not-directory':
+      return {
+        available: false,
+        reason: 'invalid-working-directory',
+        error: `Could not run \`${command}\` because working directory \`${processPort.cwd}\` is not a directory; choose a directory, then retry.`,
+      };
+    case 'working-directory-not-traversable':
+      return {
+        available: false,
+        reason: 'invalid-working-directory',
+        error: `Could not run \`${command}\` because working directory \`${processPort.cwd}\` is not traversable by the user running the Coral daemon; grant that user search permission or choose another working directory, then retry.`,
+      };
+    case 'unresolved':
       return {
         available: false,
         reason: 'undetermined',
-        error: `could not determine whether working directory \`${processPort.cwd}\` is traversable after \`${command}\` failed to launch (${code}); whether ${config.binaryName} may be executed was not established — check that the working directory is accessible, then retry`,
+        error: `Could not determine whether \`${command}\` failed because of the command or working directory \`${processPort.cwd}\` (${evidence.code}); verify that the directory exists and is traversable by the user running the Coral daemon, then retry.`,
       };
-    case 'traversable':
-      return directoryObserved
-        ? {
-            available: false,
-            reason: 'permission-denied',
-            error: `could not run \`${command}\` (${code}); check execute permissions on \`${config.binaryName}\` and for the user running the Coral daemon, then retry`,
-          }
-        : {
-            available: false,
-            reason: 'undetermined',
-            error: `could not establish that working directory \`${processPort.cwd}\` is a directory after \`${command}\` failed to launch (${code}); whether ${config.binaryName} may be executed was not established — check that the working directory is accessible, then retry`,
-          };
     default:
-      return assertNever(traversability);
-  }
-}
-
-/**
- * Measured on Node v26.3.1: `spawn` reports ENOENT with `error.path` set to the command for both a missing
- * command and cwd, and throws ENOTDIR for an existing command whose cwd is a file. As uid 1000 on ext4, it
- * reported EACCES for cwd modes 000 and 444, and succeeded for 111 and 755. `statSync` succeeded at every
- * mode, while `readdirSync` also rejected 111; only `accessSync(path, X_OK)` matched the child's `chdir`
- * across all four. These four path and permission errnos cannot establish a command fact before the matching
- * cwd observation.
- */
-function classifyCliLaunchRefusal(
-  processPort: CliDetectorProcessPort,
-  config: CliDetectorConfig,
-  command: string,
-  code: 'ENOENT' | 'ENOTDIR' | 'EACCES' | 'EPERM',
-): CliInfo {
-  const cwd = observeWorkingDirectory(processPort);
-  switch (cwd) {
-    case 'missing':
-      return {
-        available: false,
-        reason: 'invalid-working-directory',
-        error: `could not run \`${command}\` because working directory \`${processPort.cwd}\` does not exist; restore it or choose another working directory, then retry`,
-      };
-    case 'not-directory':
-      return {
-        available: false,
-        reason: 'invalid-working-directory',
-        error: `could not run \`${command}\` because working directory \`${processPort.cwd}\` is not a directory; choose a directory, then retry`,
-      };
-    case 'unobserved':
-      return code === 'EACCES' || code === 'EPERM'
-        ? classifyCliPermissionLaunchRefusal(processPort, config, command, code, false)
-        : {
-            available: false,
-            reason: 'undetermined',
-            error: `could not inspect working directory \`${processPort.cwd}\` after \`${command}\` failed to launch (${code}); whether ${config.binaryName} is installed was not established — check that the working directory is accessible, then retry`,
-          };
-    case 'directory':
-      switch (code) {
-        case 'ENOENT':
-          return { available: false, reason: 'not-found', error: config.notFoundMessage };
-        case 'ENOTDIR':
-          return {
-            available: false,
-            reason: 'invalid-path',
-            error: `could not run \`${command}\` (ENOTDIR); a component of the configured command path \`${config.binaryName}\` is not a directory — correct the configured path, then retry`,
-          };
-        case 'EACCES':
-        case 'EPERM':
-          return classifyCliPermissionLaunchRefusal(processPort, config, command, code, true);
-        default:
-          return assertNever(code);
-      }
-    default:
-      return assertNever(cwd);
+      return assertNever(evidence);
   }
 }
 
@@ -207,10 +150,15 @@ export function createCliDetector(
         return {
           available: false,
           reason: 'undetermined',
-          error: `could not run \`${command}\` to check (${outcome.detail}); this does not mean ${config.binaryName} is missing — retry the command in a moment`,
+          error: `Could not run \`${command}\` to check (${outcome.detail}); this does not mean ${config.binaryName} is missing, so retry the command in a moment.`,
         };
       case 'launch-refused':
-        return classifyCliLaunchRefusal(processPort, config, command, outcome.code);
+        return cliInfoFromSpawnFailure(
+          processPort,
+          config,
+          command,
+          classifySpawnFailure(processPort.storage, processPort.cwd, outcome.code),
+        );
       case 'answered':
         // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
         // absent one and is cached the same way.

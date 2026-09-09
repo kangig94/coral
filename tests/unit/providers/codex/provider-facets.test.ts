@@ -390,10 +390,23 @@ describe('codexPreflight', () => {
     cwd?: string;
     cwdState?: 'directory' | 'missing' | 'not-directory' | 'unobserved';
     cwdTraversability?: 'traversable' | 'denied' | 'unobserved';
+    statSync?: ReturnType<typeof vi.fn>;
   }): ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> } {
     const appServer = options.appServer ?? { status: 0 };
     const authFile = options.authFile ?? TOKENS;
     const cwdState = options.cwdState ?? 'directory';
+    const statSync =
+      options.statSync ??
+      vi.fn(() => {
+        if (cwdState === 'missing') throw errno('ENOENT');
+        if (cwdState === 'unobserved') throw errno('EACCES');
+        return {
+          size: 0,
+          mtimeMs: 0,
+          isDirectory: () => cwdState === 'directory',
+          isFile: () => cwdState === 'not-directory',
+        };
+      });
     return {
       access: { home: options.home ?? TEST_CODEX_ACCESS.home },
       cwd: options.cwd ?? '/workspace/project',
@@ -402,16 +415,7 @@ describe('codexPreflight', () => {
           if (authFile instanceof Error) throw authFile;
           return authFile;
         },
-        statSync: () => {
-          if (cwdState === 'missing') throw errno('ENOENT');
-          if (cwdState === 'unobserved') throw errno('EACCES');
-          return {
-            size: 0,
-            mtimeMs: 0,
-            isDirectory: () => cwdState === 'directory',
-            isFile: () => cwdState === 'not-directory',
-          };
-        },
+        statSync,
         observeDirectoryTraversabilitySync: () => options.cwdTraversability ?? 'traversable',
       },
       time: { now: () => clock },
@@ -435,7 +439,7 @@ describe('codexPreflight', () => {
 
       const outcome = await codexPreflight(runtime);
 
-      expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/could not run/iu) });
+      expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/could not complete/iu) });
       if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
       expect(outcome.message).not.toMatch(UPGRADE);
     },
@@ -448,19 +452,28 @@ describe('codexPreflight', () => {
     });
   });
 
-  it('reports ENOENT as a missing or outdated CLI when the working directory is a directory', async () => {
-    await expect(
-      codexPreflight(preflightRuntime({ appServer: { error: errno('ENOENT'), status: null } })),
-    ).resolves.toEqual({ kind: 'refused', message: expect.stringMatching(UPGRADE) });
+  it('reports ENOENT as an absent Codex CLI after verifying the working directory', async () => {
+    const statSync = vi.fn(() => ({ isDirectory: () => true }));
+    const runtime = preflightRuntime({ appServer: { error: errno('ENOENT'), status: null }, statSync });
+    const outcome = await codexPreflight(runtime);
+
+    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/could not find `codex`/iu) });
+    if (outcome.kind !== 'refused') throw new Error('expected refused');
+    expect(statSync).toHaveBeenCalledWith(runtime.cwd);
+    expect(outcome.message).toMatch(/PATH used by the Coral daemon/iu);
+    expect(outcome.message).toMatch(/restart the Coral backend/iu);
+    expect(outcome.message).not.toMatch(UPGRADE);
   });
 
   it.each(['EACCES', 'EPERM'])(
-    'reports %s as an execution-permission refusal, not an upgrade verdict',
+    'reports %s with the selected executable, daemon PATH, and restart remedies',
     async (code) => {
       const outcome = await codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } }));
 
-      expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/execute permissions/iu) });
+      expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/daemon's PATH/iu) });
       if (outcome.kind !== 'refused') throw new Error('expected refused');
+      expect(outcome.message).toMatch(/permissions/iu);
+      expect(outcome.message).toMatch(/restart the Coral backend/iu);
       expect(outcome.message).not.toMatch(UPGRADE);
       expect(outcome.message).not.toMatch(/app-server support/iu);
     },
@@ -472,7 +485,7 @@ describe('codexPreflight', () => {
 
     await expect(codexPreflight(refused)).resolves.toEqual({
       kind: 'refused',
-      message: expect.stringMatching(/execute permissions/iu),
+      message: expect.stringMatching(/daemon's PATH/iu),
     });
     await expect(codexPreflight(later)).resolves.toEqual({ kind: 'satisfied' });
     expect(refused.runExact).toHaveBeenCalledOnce();
@@ -513,17 +526,19 @@ describe('codexPreflight', () => {
 
     expect(outcome).toEqual({
       kind: 'undetermined',
-      message: expect.stringMatching(/could not determine whether working directory/iu),
+      message: expect.stringMatching(/could not determine whether `codex` or working directory/iu),
     });
     if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
     expect(outcome.message).not.toMatch(/execute permissions on the Codex binary/iu);
   });
 
-  it('reports ENOTDIR as an invalid configured command path, not an upgrade verdict', async () => {
+  it('reports ENOTDIR with the daemon PATH and backend restart remedy', async () => {
     const outcome = await codexPreflight(preflightRuntime({ appServer: { error: errno('ENOTDIR'), status: null } }));
 
-    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/configured command path/iu) });
+    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/daemon's PATH/iu) });
     if (outcome.kind !== 'refused') throw new Error('expected refused');
+    expect(outcome.message).toMatch(/restart the Coral backend/iu);
+    expect(outcome.message).not.toMatch(/configured (?:command )?path/iu);
     expect(outcome.message).not.toMatch(UPGRADE);
   });
 
@@ -547,7 +562,10 @@ describe('codexPreflight', () => {
       preflightRuntime({ appServer: { error: errno('ENOENT'), status: null }, cwdState: 'unobserved' }),
     );
 
-    expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/could not inspect/iu) });
+    expect(outcome).toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not determine whether `codex` or working directory/iu),
+    });
     if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
     expect(outcome.message).not.toMatch(UPGRADE);
   });
@@ -598,15 +616,15 @@ describe('codexPreflight', () => {
 
     await expect(codexPreflight(runtime)).resolves.toEqual({
       kind: 'undetermined',
-      message: expect.stringMatching(/could not run/iu),
+      message: expect.stringMatching(/could not complete/iu),
     });
     await expect(codexPreflight(runtime)).resolves.toEqual({
       kind: 'undetermined',
-      message: expect.stringMatching(/could not run/iu),
+      message: expect.stringMatching(/could not complete/iu),
     });
     await expect(codexPreflight(runtime)).resolves.toEqual({
       kind: 'undetermined',
-      message: expect.stringMatching(/could not run/iu),
+      message: expect.stringMatching(/could not complete/iu),
     });
 
     expect(runtime.runExact, 'one fork that lost to EAGAIN must not answer for two later jobs').toHaveBeenCalledTimes(

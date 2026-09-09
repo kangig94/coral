@@ -33,11 +33,13 @@ import {
 } from './execution-plan.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { assertNever } from '../../infra/error-format.js';
-import { classifyExecOutcome } from '../../infra/port-types.js';
+import { classifyExecOutcome, classifySpawnFailure, type SpawnFailureEvidence } from '../../infra/port-types.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
+const CODEX_CLI_NOT_FOUND_MESSAGE =
+  "Coral could not find `codex` on the PATH used by the Coral daemon. Install Codex in a directory already on that PATH, then retry; if you change the daemon's PATH, restart the Coral backend first.";
 const CODEX_AUTH_ERROR_MESSAGE =
   'The selected Codex account is not authenticated. Run "codex login" with the same CODEX_HOME and retry.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
@@ -49,33 +51,14 @@ type PreflightCacheEntry = {
 };
 
 type CodexAppServerProbeResult =
-  | {
-      disposition: 'answered';
+  | Readonly<{
+      answered: true;
       outcome: Extract<ProviderPreflightOutcome, { kind: 'satisfied' | 'refused' }>;
-    }
-  | { disposition: 'launch-refused'; outcome: Extract<ProviderPreflightOutcome, { kind: 'refused' }> }
-  | { disposition: 'request'; outcome: Extract<ProviderPreflightOutcome, { kind: 'refused' }> }
-  | { disposition: 'unobserved'; outcome: Extract<ProviderPreflightOutcome, { kind: 'undetermined' }> };
-
-type WorkingDirectoryObservation = 'directory' | 'missing' | 'not-directory' | 'unobserved';
-
-function answeredProbe(
-  outcome: Extract<ProviderPreflightOutcome, { kind: 'satisfied' | 'refused' }>,
-): CodexAppServerProbeResult {
-  return { disposition: 'answered', outcome };
-}
-
-function cliLaunchRefusal(message: string): CodexAppServerProbeResult {
-  return { disposition: 'launch-refused', outcome: { kind: 'refused', message } };
-}
-
-function requestRefusal(message: string): CodexAppServerProbeResult {
-  return { disposition: 'request', outcome: { kind: 'refused', message } };
-}
-
-function unobservedProbe(message: string): CodexAppServerProbeResult {
-  return { disposition: 'unobserved', outcome: { kind: 'undetermined', message } };
-}
+    }>
+  | Readonly<{
+      answered: false;
+      outcome: Extract<ProviderPreflightOutcome, { kind: 'refused' | 'undetermined' }>;
+    }>;
 
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
@@ -121,93 +104,49 @@ export async function codexPreflight(
   return checkCodexAuthTokens(runtime);
 }
 
-/**
- * Measured on Node v26.3.1: `spawn` reports ENOENT with `error.path` set to the command for both a missing
- * command and cwd, and throws ENOTDIR for an existing command whose cwd is a file. As uid 1000 on ext4, it
- * reported EACCES for cwd modes 000 and 444, and succeeded for 111 and 755. `statSync` succeeded at every
- * mode, while `readdirSync` also rejected 111; only `accessSync(path, X_OK)` matched the child's `chdir`
- * across all four. These four path and permission errnos cannot establish a Codex CLI fact before the
- * matching cwd observation.
- */
-function observeWorkingDirectory(runtime: ProviderPreflightRuntime<CodexProviderAccess>): WorkingDirectoryObservation {
-  try {
-    return runtime.storage.statSync(runtime.cwd).isDirectory() ? 'directory' : 'not-directory';
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === 'ENOENT') return 'missing';
-    if (code === 'ENOTDIR') return 'not-directory';
-    return 'unobserved';
-  }
-}
-
-function classifyCodexPermissionLaunchRefusal(
+function codexOutcomeFromSpawnFailure(
   runtime: ProviderPreflightRuntime<CodexProviderAccess>,
-  code: 'EACCES' | 'EPERM',
-  directoryObserved: boolean,
-): CodexAppServerProbeResult {
-  const traversability = runtime.storage.observeDirectoryTraversabilitySync(runtime.cwd);
-  switch (traversability) {
-    case 'denied':
-      return requestRefusal(
-        `Codex preflight cannot start because working directory \`${runtime.cwd}\` is not traversable by the user running Coral. Restore it if missing or grant search permission, or choose another working directory, then retry.`,
-      );
-    case 'unobserved':
-      return unobservedProbe(
-        `Codex preflight could not determine whether working directory \`${runtime.cwd}\` is traversable after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
-      );
-    case 'traversable':
-      return directoryObserved
-        ? cliLaunchRefusal(
-            `Codex preflight cannot execute \`codex\` (${code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
-          )
-        : unobservedProbe(
-            `Codex preflight could not establish that working directory \`${runtime.cwd}\` is a directory after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
-          );
+  evidence: SpawnFailureEvidence,
+): Extract<ProviderPreflightOutcome, { kind: 'refused' | 'undetermined' }> {
+  switch (evidence.kind) {
+    case 'command-not-found':
+      return { kind: 'refused', message: CODEX_CLI_NOT_FOUND_MESSAGE };
+    case 'command-not-executable':
+      return evidence.code === 'ENOTDIR'
+        ? {
+            kind: 'refused',
+            message:
+              "Coral could not execute `codex` because the Coral daemon's PATH resolves it through a component that is not a directory (ENOTDIR). Correct that PATH, restart the Coral backend, then retry.",
+          }
+        : {
+            kind: 'refused',
+            message: `Coral could not execute the \`codex\` command selected by the Coral daemon's PATH (${evidence.code}). Fix that executable's permissions and retry, or correct the daemon's PATH and restart the Coral backend first.`,
+          };
+    case 'working-directory-missing':
+      return {
+        kind: 'refused',
+        message: `Coral could not start Codex because working directory \`${runtime.cwd}\` does not exist. Restore it or choose another working directory, then retry.`,
+      };
+    case 'working-directory-not-directory':
+      return {
+        kind: 'refused',
+        message: `Coral could not start Codex because working directory \`${runtime.cwd}\` is not a directory. Choose a directory, then retry.`,
+      };
+    case 'working-directory-not-traversable':
+      return {
+        kind: 'refused',
+        message: `Coral could not start Codex because working directory \`${runtime.cwd}\` is not traversable by the user running the Coral daemon. Grant that user search permission or choose another working directory, then retry.`,
+      };
+    case 'unresolved':
+      return {
+        kind: 'undetermined',
+        message: `Coral could not determine whether \`codex\` or working directory \`${runtime.cwd}\` prevented the app-server check from starting (${evidence.code}). Verify that the directory exists and is traversable by the user running the Coral daemon, then retry.`,
+      };
     default:
-      return assertNever(traversability);
+      return assertNever(evidence);
   }
 }
 
-function classifyCodexLaunchRefusal(
-  runtime: ProviderPreflightRuntime<CodexProviderAccess>,
-  code: 'ENOENT' | 'ENOTDIR' | 'EACCES' | 'EPERM',
-): CodexAppServerProbeResult {
-  const cwd = observeWorkingDirectory(runtime);
-  switch (cwd) {
-    case 'missing':
-      return requestRefusal(
-        `Codex preflight cannot start because working directory \`${runtime.cwd}\` does not exist. Restore it or choose another working directory, then retry.`,
-      );
-    case 'not-directory':
-      return requestRefusal(
-        `Codex preflight cannot start because working directory \`${runtime.cwd}\` is not a directory. Choose a directory, then retry.`,
-      );
-    case 'unobserved':
-      return code === 'EACCES' || code === 'EPERM'
-        ? classifyCodexPermissionLaunchRefusal(runtime, code, false)
-        : unobservedProbe(
-            `Codex preflight could not inspect working directory \`${runtime.cwd}\` after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
-          );
-    case 'directory':
-      switch (code) {
-        case 'ENOENT':
-          return cliLaunchRefusal(CODEX_APP_SERVER_UPGRADE_MESSAGE);
-        case 'ENOTDIR':
-          return cliLaunchRefusal(
-            'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
-          );
-        case 'EACCES':
-        case 'EPERM':
-          return classifyCodexPermissionLaunchRefusal(runtime, code, true);
-        default:
-          return assertNever(code);
-      }
-    default:
-      return assertNever(cwd);
-  }
-}
-
-/** Request-specific launch evidence must never be represented as CLI-capability evidence. */
 async function probeCodexAppServer(
   runtime: ProviderPreflightRuntime<CodexProviderAccess>,
 ): Promise<CodexAppServerProbeResult> {
@@ -219,23 +158,27 @@ async function probeCodexAppServer(
   const outcome = classifyExecOutcome(result);
   switch (outcome.kind) {
     case 'no-answer':
-      return unobservedProbe(
-        `Codex preflight could not run \`codex app-server --help\` (${outcome.detail}); this says nothing about the installed Codex CLI. Retry the command in a moment.`,
-      );
+      return {
+        answered: false,
+        outcome: {
+          kind: 'undetermined',
+          message: `Coral could not complete the Codex app-server check because \`codex app-server --help\` did not answer (${outcome.detail}). Retry the request; if this keeps happening, verify that the Codex CLI starts promptly for the user running the Coral daemon.`,
+        },
+      };
     case 'launch-refused':
-      switch (outcome.code) {
-        case 'ENOENT':
-        case 'ENOTDIR':
-        case 'EACCES':
-        case 'EPERM':
-          return classifyCodexLaunchRefusal(runtime, outcome.code);
-        default:
-          return assertNever(outcome.code);
-      }
+      return {
+        answered: false,
+        outcome: codexOutcomeFromSpawnFailure(
+          runtime,
+          classifySpawnFailure(runtime.storage, runtime.cwd, outcome.code),
+        ),
+      };
     case 'answered':
-      return answeredProbe(
-        outcome.status === 0 ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE },
-      );
+      return {
+        answered: true,
+        outcome:
+          outcome.status === 0 ? { kind: 'satisfied' } : { kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE },
+      };
   }
 }
 
@@ -251,9 +194,8 @@ async function checkCodexAppServerAvailability(
   }
 
   const probe = await probeCodexAppServer(runtime);
-  // Only what the binary answered may be cached; launch attribution reconstructed after failure cannot be
-  // re-verified later.
-  if (probe.disposition === 'answered') {
+  // Launch attribution reconstructed after failure must not outlive the request that observed it.
+  if (probe.answered) {
     codexAppServerAvailabilityCache = { outcome: probe.outcome, checkedAt: runtime.time.now() };
   }
   return probe.outcome;
@@ -291,7 +233,7 @@ function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAcc
         : ' Retry the command; this says nothing about whether the account is authenticated.';
     return {
       kind: 'undetermined',
-      message: `Codex preflight could not read ${authPath} (${code ?? 'unknown error'}); whether this account is authenticated was not established.${remedy}`,
+      message: `Coral could not read the Codex authentication file at ${authPath} (${code ?? 'unknown error'}); whether this account is authenticated was not established.${remedy}`,
     };
   }
 

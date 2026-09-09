@@ -865,6 +865,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const binding = stringContextValue(context, 'binding', '<binding>');
       return `No engine is currently bound to '${binding}'. Equip the bundled or installed engine that fills it, then retry.`;
     },
+    exitCode: 75,
   },
   // Transport-level distinction; CLI does not auto-retry on `_initializing`
   // and relies on the remediation hint instead.
@@ -1166,6 +1167,14 @@ export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set
     (code) => documentedCoralSetupErrorSpec(code)?.observation === 'not_observed',
   ),
 );
+
+/** Launch and domain retry-later codes must not duplicate documented setup-error policy. */
+export const LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES: ReadonlySet<string> = new Set([
+  'backend_recovering',
+  'busy',
+  'kb_disabled',
+  'provider_preflight_undetermined',
+]);
 
 /** A documented code's exit must come from its registry entry, including the default exit 1. */
 export function documentedCoralSetupErrorExitCode(code: string): number | undefined {

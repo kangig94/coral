@@ -180,24 +180,31 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('reports ENOENT as not-found when the working directory is observed to be a directory', async () => {
+  it('reports ENOENT as command absence after verifying the working directory', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
+    const statSync = vi.fn(() => ({ isDirectory: () => true }));
 
-    await expect(detector({ exec }).detect()).resolves.toEqual({
+    await expect(detector({ exec, statSync }).detect()).resolves.toEqual({
       available: false,
       reason: 'not-found',
       error: 'fixture CLI unavailable',
     });
+    expect(statSync).toHaveBeenCalledWith('/workspace/project');
   });
 
-  it.each(['EACCES', 'EPERM'])('reports %s with an execution-permission remedy', async (code) => {
+  it.each(['EACCES', 'EPERM'])('reports %s with the daemon PATH and permission remedies', async (code) => {
     const exec = vi.fn().mockResolvedValue(launchFailure(code));
 
-    await expect(detector({ exec }).detect()).resolves.toEqual({
+    const info = await detector({ exec }).detect();
+
+    expect(info).toEqual({
       available: false,
       reason: 'permission-denied',
-      error: expect.stringMatching(/execute permissions/iu),
+      error: expect.stringMatching(/daemon's PATH/iu),
     });
+    if (info.available) throw new Error('expected unavailable');
+    expect(info.error).toMatch(/permissions/iu);
+    expect(info.error).toMatch(/restart the Coral backend/iu);
   });
 
   it('reports EACCES as a request-specific refusal when the working directory is not traversable', async () => {
@@ -231,18 +238,25 @@ describe('provider-neutral CLI detection', () => {
     await expect(detector({ exec, cwdTraversability: 'unobserved' }).detect()).resolves.toEqual({
       available: false,
       reason: 'undetermined',
-      error: expect.stringMatching(/could not determine whether working directory/iu),
+      error: expect.stringMatching(
+        /could not determine whether .* failed because of the command or working directory/iu,
+      ),
     });
   });
 
-  it('reports ENOTDIR with a configured-path remedy when the working directory is a directory', async () => {
+  it('reports ENOTDIR with the daemon PATH and backend restart remedy', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOTDIR'));
 
-    await expect(detector({ exec }).detect()).resolves.toEqual({
+    const info = await detector({ exec }).detect();
+
+    expect(info).toEqual({
       available: false,
       reason: 'invalid-path',
-      error: expect.stringMatching(/configured command path/iu),
+      error: expect.stringMatching(/daemon's PATH/iu),
     });
+    if (info.available) throw new Error('expected unavailable');
+    expect(info.error).toMatch(/restart the Coral backend/iu);
+    expect(info.error).not.toMatch(/configured (?:command )?path/iu);
   });
 
   it.each([
@@ -270,7 +284,9 @@ describe('provider-neutral CLI detection', () => {
     await expect(detector({ exec, cwdState: 'unobserved' }).detect()).resolves.toEqual({
       available: false,
       reason: 'undetermined',
-      error: expect.stringMatching(/could not inspect working directory/iu),
+      error: expect.stringMatching(
+        /could not determine whether .* failed because of the command or working directory/iu,
+      ),
     });
   });
 
