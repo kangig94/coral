@@ -125,6 +125,41 @@ live and zero unknown persisted jobs, but it does not inspect the launch coordin
 reservations. Nothing in the carrier diagnostics could classify the two active entries, which is why exposing
 `getActiveJobIds` and ownership matters rather than expecting an existing surface to have caught it.
 
+## A third observation — 2026-09-09, and it names a death path
+
+Reported from ordinary use on the same host: a delegated `codex` job stopped because the **provider's usage
+limit was exhausted**, and the coordinator's active count did not return to zero — the slot stayed occupied
+after the job was gone. This is the first observation that names *which* death path was running, which is the
+question the two observations above could not answer.
+
+**The candidate mechanism, not yet established.** `runAsync` (`src/jobs/shell/launch.ts`) releases in a
+`finally`, but behind three gates:
+
+```ts
+const quiesced = this.quiescedAppServerJobs.has(jobId);
+if (permitAcquired && !quiesced && !preserveOwnership) {
+  launchAdmission.releaseLaunch(jobId, pool);
+}
+```
+
+`preserveOwnership` is set from `disposition === 'preserved'`, and the disposition is `preserved` whenever
+`consumed.kind === 'suspended'` or the job was quiesced for an app-server handoff. So two paths deliberately
+keep the slot, on the premise that a successor adopts the job and releases it later. `suspended` carries two
+reasons — `interrupt_unconfirmed` and `durable_state_uncommitted` (`src/jobs/shell/continuity-consumer.ts`) —
+and neither is a usage limit; nothing under `src/providers/` matches `quota`, `usage limit`, or `rate limit`
+at all, so how a quota stop is classified is exactly what has not been traced.
+
+What makes this the shape §11 forbids rather than a slow release: no path under
+`src/coordinator/services/recovery/` mentions `suspended`, so within the life of the process the retained slot
+has no named claimant. If the successor never arrives, the hold has no exit and the capacity is gone until the
+coordinator restarts — which is what all three observations report.
+
+**What would settle it**, in order: expose `getActiveJobIds` with owners (this entry already argues for it,
+and every observation so far has been blocked on the same missing diagnostic); reproduce by exhausting a
+provider's usage limit against a live coordinator; then read whether the held id is the quota-stopped job, a
+`spawndurable-*` internal permit, or neither. The reproduction is cheap for anyone who can reach a usage
+limit, which is what makes this observation more actionable than the two above.
+
 ## Start condition
 
 Independent of `backend-routing-disposition`. Worth doing before that plan's PR3, since a leaked slot is
