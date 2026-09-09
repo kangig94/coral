@@ -71,8 +71,9 @@ and a test racing a 300 ms timeout against real work inverts. That justification
 was written, because the load that produced the flakes is smaller — the concurrent tier no longer opens
 file-backed stores at all, and the e2e backend leak that accumulated a set per run is fixed.
 
-Start condition: a flake observed under current conditions, naming which of the 22 sites produced it. Starting
-from the list rather than from an observation would be converting sleeps that no longer hurt.
+Start condition, as originally written: a flake observed under current conditions, naming which of the 22 sites
+produced it. Starting from the list rather than from an observation would be converting sleeps that no longer hurt.
+**That condition has been overtaken by what was observed below, and the corrected one replaces it.**
 
 **Observed 2026-09-09, and it is not one of the 22.** Two flakes on one gate run of
 `fix/preflight-cannot-defer`, both passing on every re-run:
@@ -95,8 +96,11 @@ What was running beside it matters and was not controlled for: a codebase-memory
 files a delegate had just changed. That is the ordinary state of this machine during a gate run, which is the
 point — the entry above already records that the suite cannot absorb a 2 Hz sampling loop.
 
-Naming the site is what this start condition asked for, so this half can begin. It should not begin by
-converting sleeps.
+**So the start condition is now the wrong shape, and this replaces it.** It asked for a flake among the 22
+raw sleeps; what was observed is a different class, and no sleep conversion reaches it. The work to start is:
+take the two named failures above, decide whether a real subprocess raced against a wall-clock budget can be
+virtualised at all in this suite or whether those budgets simply have to be generous, and settle that before
+touching the 22 — which remain unproven as a source of flake and must not be converted on suspicion.
 
 ## Start condition
 

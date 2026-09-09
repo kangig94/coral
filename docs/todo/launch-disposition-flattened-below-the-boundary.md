@@ -1,6 +1,8 @@
 # TODO — the launch boundary's third answer is flattened by the owners below it
 
-**Status**: open, two independent members. Found by a tier-1 panel on `fix/preflight-cannot-defer` and left
+**Status**: open, four independent members, each with its own start condition below. Members 1 and 2 were found
+by a tier-1 panel on `fix/preflight-cannot-defer`; members 3 and 4 by two later panels on the same branch, and each
+is a cause of the ones above it rather than a restatement. Left
 out of that branch after a design pass ruled that neither is what §11 demands of *that* change: the launch
 decision now carries `undetermined` in its own type, and what the members below do with it is each owner
 withdrawing a promise it owns rather than finalizing on someone else's evidence. Both are pre-existing —
@@ -90,7 +92,8 @@ the wrapper's return a hand-off rather than an abandonment.
 
 **The same missing contract, one layer down.** `runProviderPreflight`
 (`src/coordinator/services/execution-policies.ts`) races the provider's probe against its own 27 s budget and
-starts a re-ask whenever any positive budget remains, but it cannot cancel a probe and does not know how long
+re-asks a returned `undetermined{cause:'provider'}` while budget remains — a `deadline` returns at once, precisely
+because that probe may still be running — but it cannot cancel a probe and does not know how long
 one takes to settle. A Codex probe names a 10 s timeout (`probeCodexAppServer`), and `buildExecPromise`
 (`src/runtime/exec-builder.ts`) then adds SIGTERM and SIGKILL grace on top of it, so a probe started late in
 the budget can still hold timers after the coordinator has returned `undetermined{deadline}` — and an
@@ -138,6 +141,17 @@ version check rather than an absent CLI.
 
 ## Start condition
 
-Independent. Member 1 is discuss-owned and wants its ending decision agreed first — it changes when a
-discussion ends, not only what it records. Member 2 needs the durable-shape decision that
-`build-identity-and-upgrade` is holding, since it adds a fault kind an older build will meet.
+Independent of each other, but 3 and 4 are the causes of what 1 and 2 report, so a fix that starts above
+them will be a fix to a symptom.
+
+- **Member 1** is discuss-owned and wants its ending decision agreed first — it changes when a discussion
+  ends, not only what it records.
+- **Member 2** needs the durable-shape decision that `build-identity-and-upgrade` is holding, since it adds
+  a fault kind an older build will meet.
+- **Member 3** needs one of its three shapes chosen before any code moves, and the first of them requires
+  re-checking a claim this entry deliberately did not inherit: whether discuss can reach the launch service
+  with an absolute deadline at all.
+- **Member 4** starts with a measurement, not a change: whether `codex` or `claude` reads anything relative
+  to `cwd` while answering `--version` or `app-server --help`. If neither does, the probe moves and the
+  ambiguity member 3's race turns on stops existing; if either does, member 4 closes as won't-fix and
+  member 3 carries the whole problem.
