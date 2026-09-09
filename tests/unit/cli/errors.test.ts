@@ -427,6 +427,16 @@ describe('cli errors', () => {
       }
     });
 
+    it('names provider_preflight_undetermined in the exit-75 catalog row', async () => {
+      const { readFileSync } = await import('node:fs');
+      const row = readFileSync('docs/cli-errors.md', 'utf-8')
+        .split('\n')
+        .find((line) => line.startsWith('| `75` |'));
+
+      expect(row).toBeDefined();
+      expect(row).toContain('`provider_preflight_undetermined`');
+    });
+
     it('names every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member in the exit-75 catalog row', async () => {
       const { NOT_OBSERVED_CORAL_SETUP_ERROR_CODES } = await import('#src/runtime/errors.js');
       const { readFileSync } = await import('node:fs');
