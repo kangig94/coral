@@ -64,15 +64,16 @@ function launchFailure(code: string) {
 }
 
 describe('provider-neutral CLI detection', () => {
-  it('reports a failed version check without probing authentication', async () => {
+  it('reports and caches a failed version check without probing authentication', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: '', stderr: 'missing', status: 1 });
+    const subject = detector({ exec });
 
-    await expect(detector({ exec }).detect()).resolves.toEqual({
+    await expect(subject.detect()).resolves.toMatchObject({
       available: false,
-      reason: 'version-check-failed',
       error:
         '`fixture-cli version` exited with status 1 instead of reporting a version; ensure `fixture-cli` runs correctly for the user running the Coral daemon, then retry.',
     });
+    await subject.detect();
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
@@ -180,32 +181,33 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('reports ENOENT only as a command that could not start after verifying the working directory', async () => {
+  it('reports and caches ENOENT only as a command that could not start after verifying the working directory', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
     const statSync = vi.fn(() => ({ isDirectory: () => true }));
+    const subject = detector({ exec, statSync });
 
-    await expect(detector({ exec, statSync }).detect()).resolves.toEqual({
+    await expect(subject.detect()).resolves.toMatchObject({
       available: false,
-      reason: 'command-could-not-start',
       error:
         "Could not start `fixture-cli version` using the Coral daemon's PATH (ENOENT); ensure `fixture-cli` is installed and runnable at a location on that PATH, and restart the Coral backend after changing that PATH before retrying.",
     });
+    await subject.detect();
     expect(statSync).toHaveBeenCalledWith('/workspace/project');
+    expect(exec).toHaveBeenCalledOnce();
   });
 
-  it.each(['EACCES', 'EPERM'])('reports %s with the daemon PATH and permission remedies', async (code) => {
+  it.each(['EACCES', 'EPERM'])('reports and caches %s with the daemon PATH and permission remedies', async (code) => {
     const exec = vi.fn().mockResolvedValue(launchFailure(code));
+    const subject = detector({ exec });
 
-    const info = await detector({ exec }).detect();
+    const info = await subject.detect();
 
-    expect(info).toEqual({
+    expect(info).toMatchObject({
       available: false,
-      reason: 'permission-denied',
-      error: expect.stringMatching(/daemon's PATH/iu),
+      error: `Could not run \`fixture-cli version\` because the executable selected by the Coral daemon's PATH may not be executed by the daemon user (${code}); fix that executable's permissions, or correct the daemon's PATH and restart the Coral backend, then retry.`,
     });
-    if (info.available) throw new Error('expected unavailable');
-    expect(info.error).toMatch(/permissions/iu);
-    expect(info.error).toMatch(/restart the Coral backend/iu);
+    await subject.detect();
+    expect(exec).toHaveBeenCalledOnce();
   });
 
   it('reports EACCES as a request-specific refusal when the working directory is not traversable', async () => {
@@ -245,19 +247,19 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('reports ENOTDIR with the daemon PATH and backend restart remedy', async () => {
+  it('reports and caches ENOTDIR with the daemon PATH and backend restart remedy', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOTDIR'));
+    const subject = detector({ exec });
 
-    const info = await detector({ exec }).detect();
+    const info = await subject.detect();
 
-    expect(info).toEqual({
+    expect(info).toMatchObject({
       available: false,
-      reason: 'invalid-path',
-      error: expect.stringMatching(/daemon's PATH/iu),
+      error:
+        "Could not run `fixture-cli version` because the Coral daemon's PATH resolves `fixture-cli` through a component that is not a directory (ENOTDIR); correct that PATH, restart the Coral backend, then retry.",
     });
-    if (info.available) throw new Error('expected unavailable');
-    expect(info.error).toMatch(/restart the Coral backend/iu);
-    expect(info.error).not.toMatch(/configured (?:command )?path/iu);
+    await subject.detect();
+    expect(exec).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -322,16 +324,6 @@ describe('provider-neutral CLI detection', () => {
     expect(exec).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['EACCES', 'EPERM', 'ENOTDIR'])('caches the established %s refusal', async (code) => {
-    const exec = vi.fn().mockResolvedValue(launchFailure(code));
-    const subject = detector({ exec });
-
-    await subject.detect();
-    await subject.detect();
-
-    expect(exec).toHaveBeenCalledOnce();
-  });
-
   it('never remembers an undetermined probe, so a recovered machine heals on the next call', async () => {
     const exec = vi
       .fn()
@@ -355,16 +347,5 @@ describe('provider-neutral CLI detection', () => {
     }
 
     expect(exec, 'one unobserved fork failure must not decide for five later calls').toHaveBeenCalledTimes(5);
-  });
-
-  it('still caches a decisive command-start refusal for the process lifetime', async () => {
-    const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
-    const subject = detector({ exec });
-
-    await subject.detect();
-    await subject.detect();
-    await subject.detect();
-
-    expect(exec, 'the settled command-start refusal remains cached for this daemon lifetime').toHaveBeenCalledTimes(1);
   });
 });

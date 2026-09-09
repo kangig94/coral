@@ -125,14 +125,16 @@ its own message, not something a capability probe should be inferring.
 
 ## Also observed, not filed as members
 
-The `answered` non-zero branches of `probeCodexAppServer` (`src/providers/codex/provider-facets.ts`) and
-`queryCliVersion` (`src/providers/cli-detection.ts`) still answer every non-zero exit with one message —
-"upgrade Codex" and "install Claude" respectively — although a binary that starts and exits non-zero for a
-configuration failure has established only that it could not answer. The refusal itself is right in both
-cases: a CLI that cannot report its version is unusable whatever the reason. Only the remedy over-claims.
-Correcting it needs measured exit-code signatures for both CLIs, and `.claude/rules/conventions.md` requires
-citing what was measured and on what — so this wants a measurement, not a guess, and is recorded here rather
-than fixed from inference.
+`probeCodexAppServer` (`src/providers/codex/provider-facets.ts`) answers every non-zero exit of
+`codex app-server --help` with the upgrade message, although a binary that starts and exits non-zero for a
+configuration failure has established only that it could not answer. The refusal itself is right — a CLI
+that cannot answer is unusable whatever the reason — and only the remedy over-claims. Separating "this
+Codex has no app-server subcommand" from "this Codex could not get far enough to say" needs the exit-code
+signature Codex actually uses, and `.claude/rules/conventions.md` requires citing what was measured and on
+what, so this wants a measurement rather than a guess.
+
+The generic detector's equivalent branch no longer over-claims: a non-zero version exit reports a failed
+version check rather than an absent CLI.
 
 ## Start condition
 

@@ -5,10 +5,7 @@ import type { ProcessPort } from '../runtime/ports.js';
 
 /** Only command-scoped unavailability may be cached across probes. */
 export type CliInfo =
-  | { available: false; reason: 'command-could-not-start'; error: string }
-  | { available: false; reason: 'version-check-failed'; error: string }
-  | { available: false; reason: 'permission-denied'; error: string }
-  | { available: false; reason: 'invalid-path'; error: string }
+  | { available: false; reason: 'cacheable-command-failure'; error: string }
   | { available: false; reason: 'invalid-working-directory'; error: string }
   | { available: false; reason: 'undetermined'; error: string }
   | { available: true; version: string; authState: 'authenticated' }
@@ -46,20 +43,20 @@ function cliInfoFromSpawnFailure(
     case 'command-could-not-start':
       return {
         available: false,
-        reason: 'command-could-not-start',
+        reason: 'cacheable-command-failure',
         error: `Could not start \`${command}\` using the Coral daemon's PATH (ENOENT); ensure \`${config.binaryName}\` is installed and runnable at a location on that PATH, and restart the Coral backend after changing that PATH before retrying.`,
       };
     case 'command-not-executable':
       if (evidence.code === 'ENOTDIR') {
         return {
           available: false,
-          reason: 'invalid-path',
+          reason: 'cacheable-command-failure',
           error: `Could not run \`${command}\` because the Coral daemon's PATH resolves \`${config.binaryName}\` through a component that is not a directory (${evidence.code}); correct that PATH, restart the Coral backend, then retry.`,
         };
       }
       return {
         available: false,
-        reason: 'permission-denied',
+        reason: 'cacheable-command-failure',
         error: `Could not run \`${command}\` because the executable selected by the Coral daemon's PATH may not be executed by the daemon user (${evidence.code}); fix that executable's permissions, or correct the daemon's PATH and restart the Coral backend, then retry.`,
       };
     case 'working-directory-missing':
@@ -121,7 +118,7 @@ export function createCliDetector(
   async function runProbe(): Promise<CliInfo> {
     const cli = cachedCli ?? (await queryCliVersion());
     // Request-scoped and unobserved failures must not survive into a later request through this cache.
-    if (!cli.available && (cli.reason === 'invalid-working-directory' || cli.reason === 'undetermined')) return cli;
+    if (!cli.available && cli.reason !== 'cacheable-command-failure') return cli;
     cachedCli = cli;
     if (!cli.available) return cli;
 
@@ -168,7 +165,7 @@ export function createCliDetector(
           ? { available: true, version: result.stdout.trim(), authState: 'unknown' }
           : {
               available: false,
-              reason: 'version-check-failed',
+              reason: 'cacheable-command-failure',
               error: `\`${command}\` exited with status ${outcome.status} instead of reporting a version; ensure \`${config.binaryName}\` runs correctly for the user running the Coral daemon, then retry.`,
             };
     }

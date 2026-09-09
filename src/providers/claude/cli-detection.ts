@@ -77,8 +77,7 @@ const CONFIG: CliDetectorConfig = Object.freeze({
 /**
  * Detectors are memoised per (process port, env port) pair, and `claudePreflight` builds both as fresh object
  * literals on every call — so this `WeakMap` never hits from there and each preflight gets an empty detector.
- * Everything `createCliDetector` remembers, including a decisive `not-found`, is therefore per-call at that
- * site rather than per-daemon.
+ * Everything `createCliDetector` remembers is therefore per-call at that site rather than per-daemon.
  *
  * Left as it is on purpose. Object identity is what keeps two callers holding different `exec` ports from
  * sharing an answer, which is the property `tests/unit/providers/claude/cli-detection.test.ts` pins; keying by
