@@ -142,21 +142,24 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     return 2;
   }
   const documentedExitCode = documentedCoralSetupErrorExitCode(code);
-  if (documentedExitCode === 1 && httpStatus === 503) {
-    return 75;
-  }
-  if (documentedExitCode !== undefined) {
+  if (documentedExitCode !== undefined && documentedExitCode !== 1) {
     return documentedExitCode;
   }
   if (
     code === 'transient' ||
+    code === 'busy' ||
     code === 'backend_shutting_down' ||
+    code === 'backend_recovering' ||
     code === 'kb_disabled' ||
+    code === 'kb_unavailable' ||
     code === 'provider_host_inventory_unavailable' ||
     code === 'provider_preflight_undetermined' ||
     httpStatus === 503
   ) {
     return 75;
+  }
+  if (documentedExitCode !== undefined) {
+    return documentedExitCode;
   }
   if (code === 'backend_unreachable') {
     return 69;

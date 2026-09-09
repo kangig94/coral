@@ -57,6 +57,48 @@ The fix is a `JobLifecycleFault` kind carrying the launch decision so the CLI ca
 launch decision already draws. That is a durable shape addition and owes §10 its usual obligations, which is
 most of why it is here rather than in the branch.
 
+## Member 3 — the discuss launch wrapper abandons a launch that can still commit a job
+
+`withDiscussLaunchTimeout` (`src/discuss/shell/runtime-build.ts`) arms `DISCUSS_LAUNCH_TIMEOUT_MS` (30 s) when
+it calls into the coordinator. The preflight budget `PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS` (27 s) is armed
+*inside* that call, after provider binding and agent resolution. The two are relative timers started at
+different boundaries and nothing enforces their ordering: if the work before preflight takes more than the
+3 s between them, the outer timer fires first. The wrapper then resolves `undetermined`, the attempt returns
+`consumedAttempt: false`, and its `settled` latch discards whatever the launch returns afterwards — while
+`JobLaunchService.start` goes on to `sessionManager.prepare` and commit a job whose id nobody holds. A retry
+then meets `discussion_job_launch_conflict`.
+
+This is §11's successor clause: local ownership was released with no successor named, and the abandoned work
+can still produce the thing that was abandoned. It is pre-existing — the wrapper previously resolved
+`{status:'rejected', code:'launch_failed'}` and discarded the same job — so the third answer did not create
+it. Raised twice by independent panels on `fix/preflight-cannot-defer`; both times the branch was the wrong
+place, because the fix is a cross-service change and not a message.
+
+The two shapes worth weighing, neither obviously right:
+
+- **One absolute deadline** threaded from discuss through the launch service, so the outer bound covers
+  binding *and* preflight and the service guarantees no commit after it returns. An earlier design pass
+  rejected this as structurally blocked and its reasons should be re-checked rather than inherited:
+  `DiscussRuntimePorts.time` is a `Pick<TimePort, …>` without `monotonicNow`, and discuss reaches the
+  coordinator through `CoordinatorSessionOps.start` rather than `ExecutionService.start`.
+- **Delete the discuss race** and let the coordinator's budget be the only one. Cheaper and removes the
+  second deadline entirely, but the wrapper is also what bounds a launch that hangs *before* preflight arms,
+  so removing it needs that bound to exist somewhere else first.
+
+A third option — adopt the late job id idempotently instead of discarding it — keeps both timers but makes
+the wrapper's return a hand-off rather than an abandonment.
+
+## Also observed, not filed as members
+
+The `answered` non-zero branches of `probeCodexAppServer` (`src/providers/codex/provider-facets.ts`) and
+`queryCliVersion` (`src/providers/cli-detection.ts`) still answer every non-zero exit with one message —
+"upgrade Codex" and "install Claude" respectively — although a binary that starts and exits non-zero for a
+configuration failure has established only that it could not answer. The refusal itself is right in both
+cases: a CLI that cannot report its version is unusable whatever the reason. Only the remedy over-claims.
+Correcting it needs measured exit-code signatures for both CLIs, and `.claude/rules/conventions.md` requires
+citing what was measured and on what — so this wants a measurement, not a guess, and is recorded here rather
+than fixed from inference.
+
 ## Start condition
 
 Independent. Member 1 is discuss-owned and wants its ending decision agreed first — it changes when a

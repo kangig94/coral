@@ -8,6 +8,7 @@ import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtim
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
+import { domainResultToHttp, launchToHttp } from '#src/transport/response.js';
 
 describe('cli errors', () => {
   describe('buildErrorEnvelope', () => {
@@ -331,7 +332,10 @@ describe('cli errors', () => {
     );
 
     it.each([
+      ['busy', 'All provider workers are busy'],
+      ['backend_recovering', 'Backend recovery is still in progress'],
       ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
+      ['kb_unavailable', 'Knowledge base is unavailable'],
       ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
       ['kb_offline', 'Knowledge base is offline'],
       ['provider_host_inventory_unavailable', 'Provider-host inventory is temporarily unavailable.'],
@@ -339,7 +343,7 @@ describe('cli errors', () => {
       // src/transport/ipc/server.ts's requestErrorResponse puts only the raw domain body
       // (`{code, message, remediation?, detail?}`) on the JSON-RPC error `data` — no
       // `statusCode`/`http` field ever crosses IPC. errorCodeToExit must recognize these
-      // three retry-later codes by name, the same way it already does for `transient` and
+      // retry-later codes by name, the same way it already does for `transient` and
       // `backend_shutting_down`, or this exact shape falls through to exit 1.
       const envelope = buildErrorEnvelope(
         new IpcRpcError({
@@ -372,11 +376,13 @@ describe('cli errors', () => {
     it.each([
       ['invalid_usage', undefined, 2],
       ['transient', undefined, 75],
+      ['busy', undefined, 75],
       ['backend_shutting_down', undefined, 75],
+      ['backend_recovering', undefined, 75],
       ['kb_disabled', undefined, 75],
       ['kb_initializing', undefined, 75],
       ['kb_offline', undefined, 75],
-      ['kb_unavailable', undefined, 1],
+      ['kb_unavailable', undefined, 75],
       ['kb_unavailable', 503, 75],
       ['store_open_contended', undefined, 75],
       ['provider_host_inventory_unavailable', undefined, 75],
@@ -401,6 +407,40 @@ describe('cli errors', () => {
       ['unexpected_code', undefined, 1],
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
+    });
+
+    it('maps every source-mapped HTTP 503 error code to exit 75 without an HTTP status', async () => {
+      const { readFileSync } = await import('node:fs');
+      const source = readFileSync('src/transport/response.ts', 'utf8');
+      const jobLaunchSource = readFileSync('src/coordinator/services/job-launch.ts', 'utf8');
+      const domainStart = source.indexOf('export function domainResultToHttp');
+      expect(domainStart).toBeGreaterThan(0);
+
+      const explicit503CaseCodes = (functionSource: string): string[] =>
+        [...functionSource.matchAll(/((?:\s*case\s+'[^']+':)+)\s*statusCode\s*=\s*503;/gu)].flatMap(([, cases]) =>
+          [...cases.matchAll(/case\s+'([^']+)':/gu)].map(([, code]) => code),
+        );
+      const launchCodes = explicit503CaseCodes(source.slice(0, domainStart));
+      const domainCodes = explicit503CaseCodes(source.slice(domainStart));
+      const undeterminedLaunchCodes = [
+        ...new Set([...jobLaunchSource.matchAll(/undeterminedLaunch\(\s*'([^']+)'/gu)].map(([, code]) => code)),
+      ];
+
+      expect(launchCodes.length).toBeGreaterThan(0);
+      expect(domainCodes.length).toBeGreaterThan(0);
+      expect(undeterminedLaunchCodes.length).toBeGreaterThan(0);
+      for (const code of launchCodes) {
+        expect(launchToHttp({ status: 'refused', code, message: 'unused' }, 201).statusCode).toBe(503);
+        expect(errorCodeToExit(code)).toBe(75);
+      }
+      for (const code of undeterminedLaunchCodes) {
+        expect(launchToHttp({ status: 'undetermined', code, message: 'unused' }, 201).statusCode).toBe(503);
+        expect(errorCodeToExit(code)).toBe(75);
+      }
+      for (const code of domainCodes) {
+        expect(domainResultToHttp({ ok: false, code, message: 'unused' }).statusCode).toBe(503);
+        expect(errorCodeToExit(code)).toBe(75);
+      }
     });
 
     it('gives every NOT_OBSERVED_CORAL_SETUP_ERROR_CODES member exit 75 in both errorCodeToExit and expansionExitCode', async () => {

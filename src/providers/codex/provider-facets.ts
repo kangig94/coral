@@ -151,8 +151,7 @@ async function checkCodexAppServerAvailability(
   }
 
   const outcome = await probeCodexAppServer(runtime);
-  // This cache has no tenant key, so only an answer may be cached; a job must not be refused on an observation
-  // an earlier job failed to make.
+  // One job's failure to observe must never decide another job's preflight, so only an answer is cached.
   if (outcome.kind !== 'undetermined') {
     codexAppServerAvailabilityCache = { outcome, checkedAt: runtime.time.now() };
   }

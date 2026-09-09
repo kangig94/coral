@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import { errorMessage } from '../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type {
   EffortLevel,
   ProviderInstruction,
@@ -224,10 +224,15 @@ function deadlinePreflightDecision(provider: BoundProvider): PreflightDecision {
 }
 
 function classifyProviderPreflightOutcome(outcome: ProviderPreflightOutcome): PreflightDecision {
-  if (outcome.kind !== 'undetermined') {
-    return outcome;
+  switch (outcome.kind) {
+    case 'satisfied':
+    case 'refused':
+      return outcome;
+    case 'undetermined':
+      return { ...outcome, cause: 'provider' };
+    default:
+      return assertNever(outcome);
   }
-  return { ...outcome, cause: 'provider' };
 }
 
 function runPreflightWithTimeout(

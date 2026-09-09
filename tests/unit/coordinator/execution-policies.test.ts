@@ -268,6 +268,26 @@ describe('execution policies', () => {
     expect(pendingTimerCount(runtime)).toBe(0);
   });
 
+  it('rejects an invalid fulfilled outcome object with the documented fault', async () => {
+    const runtime = new SimulationRuntime();
+    const provider = {
+      name: 'codex',
+      preflight: vi.fn(async () => ({ kind: 'skipped' }) as unknown as ProviderPreflightOutcome),
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
+
+    await expect(
+      runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
+    ).rejects.toMatchObject({
+      code: 'provider_preflight_faulted',
+      context: {
+        provider: 'codex',
+        cause: expect.stringMatching(/skipped/iu),
+      },
+    });
+    expect(provider.preflight).toHaveBeenCalledOnce();
+    expect(pendingTimerCount(runtime)).toBe(0);
+  });
+
   it('rejects an outcome that settles after the deadline before its timer callback runs', async () => {
     const runtime = new SimulationRuntime();
     let monotonicTime = 0n;

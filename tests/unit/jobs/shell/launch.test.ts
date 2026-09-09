@@ -18,7 +18,13 @@ import {
   streamProviderEvents,
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
-import type { AppServerTransport, HostRef, ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
+import type {
+  AppServerTransport,
+  HostRef,
+  ProviderEventBody,
+  ProviderPreflightOutcome,
+  ProviderRequest,
+} from '#src/providers/contract.js';
 import type { AppServerHostAuthority } from '#src/providers/internal/app-server-host.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
@@ -1447,6 +1453,27 @@ describe('ExecutionService launch', () => {
 
     expect(preflight).toHaveBeenCalledTimes(1);
     expectRuntimePreflightArg(preflight!);
+  });
+
+  it('creates no session or job when preflight returns an invalid outcome object', async () => {
+    const { provider, execute, preflight } = makeProvider({
+      preflight: async () => ({ kind: 'skipped' }) as unknown as ProviderPreflightOutcome,
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const sessionsBefore = service.list('codex').sessions;
+    const jobsBefore = progressStore.listJobIds();
+
+    await expect(service.start('codex', { prompt: 'hello' }, ctx)).rejects.toMatchObject({
+      code: 'provider_preflight_faulted',
+      context: { provider: 'codex', cause: expect.stringMatching(/skipped/iu) },
+    });
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(service.list('codex').sessions).toEqual(sessionsBefore);
+    expect(progressStore.listJobIds()).toEqual(jobsBefore);
   });
 
   it('start rejects invalid agent refs from the resolver', async () => {

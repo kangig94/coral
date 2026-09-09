@@ -11,6 +11,7 @@ import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
+import { assertNever } from '../../infra/error-format.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import {
@@ -137,11 +138,15 @@ export class JobLaunchService {
       );
     }
     const preflightDecision = await runProviderPreflight(bound, preflightRuntime);
-    if (preflightDecision.kind === 'refused') {
-      return refuseLaunch('provider_preflight_failed', preflightDecision.message);
-    }
-    if (preflightDecision.kind === 'undetermined') {
-      return undeterminedLaunch('provider_preflight_undetermined', preflightDecision.message);
+    switch (preflightDecision.kind) {
+      case 'satisfied':
+        break;
+      case 'refused':
+        return refuseLaunch('provider_preflight_failed', preflightDecision.message);
+      case 'undetermined':
+        return undeterminedLaunch('provider_preflight_undetermined', preflightDecision.message);
+      default:
+        return assertNever(preflightDecision);
     }
 
     const session = this.deps.sessionManager.prepare({
@@ -385,11 +390,15 @@ export class JobLaunchService {
       );
     }
     const preflightDecision = await runProviderPreflight(provider, preflightRuntime);
-    if (preflightDecision.kind === 'refused') {
-      return refuseLaunch('provider_preflight_failed', preflightDecision.message);
-    }
-    if (preflightDecision.kind === 'undetermined') {
-      return undeterminedLaunch('provider_preflight_undetermined', preflightDecision.message);
+    switch (preflightDecision.kind) {
+      case 'satisfied':
+        break;
+      case 'refused':
+        return refuseLaunch('provider_preflight_failed', preflightDecision.message);
+      case 'undetermined':
+        return undeterminedLaunch('provider_preflight_undetermined', preflightDecision.message);
+      default:
+        return assertNever(preflightDecision);
     }
 
     const request: ProviderRequest = {
