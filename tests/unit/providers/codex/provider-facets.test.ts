@@ -410,7 +410,7 @@ describe('codexPreflight', () => {
   }
 
   it('accepts a Codex CLI that answers and a home that holds tokens', async () => {
-    await expect(codexPreflight(preflightRuntime({}))).resolves.toBeUndefined();
+    await expect(codexPreflight(preflightRuntime({}))).resolves.toEqual({ kind: 'satisfied' });
   });
 
   it.each([['EAGAIN'], ['ETIMEDOUT'], ['EMFILE']])(
@@ -418,28 +418,35 @@ describe('codexPreflight', () => {
     async (code) => {
       const runtime = preflightRuntime({ appServer: { error: errno(code), status: null } });
 
-      await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
-      await expect(
-        codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } })),
-      ).rejects.not.toThrow(UPGRADE);
+      const outcome = await codexPreflight(runtime);
+
+      expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/could not run/iu) });
+      if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+      expect(outcome.message).not.toMatch(UPGRADE);
     },
   );
 
   it('does not blame the installed CLI when the probe was killed before it answered', async () => {
-    await expect(codexPreflight(preflightRuntime({ appServer: { status: null } }))).rejects.toThrow(/killed/iu);
+    await expect(codexPreflight(preflightRuntime({ appServer: { status: null } }))).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/killed/iu),
+    });
   });
 
   it.each([
     ['ENOENT', 'the binary is not installed'],
     ['EACCES', 'this process may not execute it'],
   ])('reports %s as an unusable CLI, because %s is a fact about this machine', async (code) => {
-    await expect(codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } }))).rejects.toThrow(
-      UPGRADE,
-    );
+    await expect(
+      codexPreflight(preflightRuntime({ appServer: { error: errno(code), status: null } })),
+    ).resolves.toEqual({ kind: 'refused', message: expect.stringMatching(UPGRADE) });
   });
 
   it('reports a CLI without the subcommand as one to update', async () => {
-    await expect(codexPreflight(preflightRuntime({ appServer: { status: 1 } }))).rejects.toThrow(UPGRADE);
+    await expect(codexPreflight(preflightRuntime({ appServer: { status: 1 } }))).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(UPGRADE),
+    });
   });
 
   // The cache has no tenant key, so anything it holds decides for every later job. An answer may do that; an
@@ -447,9 +454,18 @@ describe('codexPreflight', () => {
   it('never caches an undetermined verdict, so every preflight re-probes', async () => {
     const runtime = preflightRuntime({ appServer: { error: errno('EAGAIN'), status: null } });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not run/iu);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not run/iu),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not run/iu),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not run/iu),
+    });
 
     expect(runtime.runExact, 'one fork that lost to EAGAIN must not answer for two later jobs').toHaveBeenCalledTimes(
       3,
@@ -459,8 +475,14 @@ describe('codexPreflight', () => {
   it('still caches an answered verdict for the TTL', async () => {
     const runtime = preflightRuntime({ appServer: { status: 1 } });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(UPGRADE);
-    await expect(codexPreflight(runtime)).rejects.toThrow(UPGRADE);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(UPGRADE),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(UPGRADE),
+    });
 
     expect(runtime.runExact, 'the CLI answered; asking again inside the minute repeats it').toHaveBeenCalledTimes(1);
   });
@@ -491,9 +513,18 @@ describe('codexPreflight', () => {
   it('never caches an undetermined auth verdict, so every preflight re-reads', async () => {
     const { runtime, reads } = countingAuthRuntime(errno('EACCES'), `/home/user/.codex-uncached-${clock}`);
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not read/iu),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not read/iu),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not read/iu),
+    });
 
     expect(reads(), 'one unreadable file must not answer for two later jobs').toBe(3);
   });
@@ -501,8 +532,14 @@ describe('codexPreflight', () => {
   it('still caches an answered auth verdict for the TTL', async () => {
     const { runtime, reads } = countingAuthRuntime(JSON.stringify({ tokens: {} }), `/home/user/.codex-cached-${clock}`);
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
-    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(LOGIN),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(LOGIN),
+    });
 
     expect(reads(), 'the file answered; asking again inside the minute repeats it').toBe(1);
   });
@@ -510,13 +547,19 @@ describe('codexPreflight', () => {
   it('reports an absent auth.json as an unauthenticated account', async () => {
     const runtime = preflightRuntime({ authFile: errno('ENOENT'), home: `/home/user/.codex-a-${clock}` });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(LOGIN),
+    });
   });
 
   it('reports a corrupt auth.json as unauthenticated, because logging in rewrites it', async () => {
     const runtime = preflightRuntime({ authFile: '{not json', home: `/home/user/.codex-b-${clock}` });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(LOGIN),
+    });
   });
 
   it('does not tell an operator to log in when auth.json could not be read at all', async () => {
@@ -524,10 +567,11 @@ describe('codexPreflight', () => {
     // remedy does not apply and must not be offered.
     const runtime = preflightRuntime({ authFile: errno('EACCES'), home: `/home/user/.codex-c-${clock}` });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(/could not read/iu);
-    await expect(
-      codexPreflight(preflightRuntime({ authFile: errno('EACCES'), home: `/home/user/.codex-d-${clock}` })),
-    ).rejects.not.toThrow(LOGIN);
+    const outcome = await codexPreflight(runtime);
+
+    expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/could not read/iu) });
+    if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+    expect(outcome.message).not.toMatch(LOGIN);
   });
 
   // Both branches of the unreadable case have to leave the operator with something to do. Naming what was not
@@ -541,7 +585,10 @@ describe('codexPreflight', () => {
   ])('names an action for an auth.json it could not read (%s)', async (code, remedy) => {
     const runtime = preflightRuntime({ authFile: errno(code), home: `/home/user/.codex-remedy-${code}-${clock}` });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(remedy);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(remedy),
+    });
   });
 
   it('names the error as unknown when an auth.json read failure carries no code', async () => {
@@ -550,8 +597,11 @@ describe('codexPreflight', () => {
       home: `/home/user/.codex-remedy-codeless-${clock}`,
     });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(/\(unknown error\)/u);
-    await expect(codexPreflight(runtime)).rejects.toThrow(/Retry the command/u);
+    const outcome = await codexPreflight(runtime);
+
+    expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/\(unknown error\)/u) });
+    if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+    expect(outcome.message).toMatch(/Retry the command/u);
   });
 
   it('reports a readable auth.json without tokens as unauthenticated', async () => {
@@ -560,6 +610,9 @@ describe('codexPreflight', () => {
       home: `/home/user/.codex-e-${clock}`,
     });
 
-    await expect(codexPreflight(runtime)).rejects.toThrow(LOGIN);
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(LOGIN),
+    });
   });
 });

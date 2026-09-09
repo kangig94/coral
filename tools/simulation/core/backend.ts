@@ -464,9 +464,7 @@ export function createFakeProvider(
     },
     ...(preflightError
       ? {
-          preflight: async () => {
-            throw toError(preflightError);
-          },
+          preflight: async () => ({ kind: 'refused' as const, message: toError(preflightError).message }),
         }
       : {}),
     recovery: {

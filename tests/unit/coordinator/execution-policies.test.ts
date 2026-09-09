@@ -8,6 +8,7 @@ import {
   toPreflightRuntime,
 } from '#src/coordinator/services/execution-policies.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
+import type { ProviderPreflightOutcome } from '#src/providers/contract.js';
 import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -16,7 +17,7 @@ describe('execution policies', () => {
     const runtime = new SimulationRuntime();
     const preflight = vi.fn(
       () =>
-        new Promise<void>(() => {
+        new Promise<ProviderPreflightOutcome>(() => {
           // Deliberately unresolved to exercise the preflight timeout.
         }),
     );

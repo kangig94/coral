@@ -19,6 +19,7 @@ import type {
   ProviderAppServerImplementation,
   ProviderStandaloneImplementation,
   ProviderPreflightInput,
+  ProviderPreflightOutcome,
   ProviderRequest,
   ProviderRecoveryContract,
   ProviderRuntime,
@@ -652,8 +653,8 @@ function runPreflight<Plan extends ProviderExecutionPlan, Access extends JsonVal
   implementation: ProviderImplementation<Plan, Access>,
   access: Access,
   input: Omit<ProviderPreflightInput, 'access'>,
-): Promise<void> {
-  if (implementation.preflight === undefined) return Promise.resolve();
+): Promise<ProviderPreflightOutcome> {
+  if (implementation.preflight === undefined) return Promise.resolve({ kind: 'satisfied' });
   const canonical = snapshotPlainReceiver(
     input,
     'Provider preflight input',

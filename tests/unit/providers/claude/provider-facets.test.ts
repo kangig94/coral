@@ -17,7 +17,7 @@ import type { ClaudeProviderAccess } from '#src/providers/claude/execution-plan.
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function claudePreflightRuntime(
-  files: Readonly<Record<string, string>>,
+  files: Readonly<Record<string, string | Error>>,
 ): ProviderPreflightRuntime<ClaudeProviderAccess> {
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
@@ -33,7 +33,11 @@ function claudePreflightRuntime(
     cwd: '/workspace/project',
     storage: {
       existsSync: (path: string) => Object.hasOwn(files, path),
-      readFileSync: (path: string) => files[path] ?? '',
+      readFileSync: (path: string) => {
+        const contents = files[path];
+        if (contents instanceof Error) throw contents;
+        return contents ?? '';
+      },
     },
     runExact,
   } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
@@ -70,21 +74,19 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
 }
 
 describe('claudePreflight', () => {
-  // Preflight refuses either way, and the two refusals must not read alike. Telling an operator whose machine
-  // ran out of process slots to install the Claude CLI sends them to fix something that was never broken.
   it('does not report an unanswerable version probe as a missing CLI', async () => {
-    // The two refusals must not read alike, and the "unknown" one must not repeat the inner sentence's own
-    // opening — it composed to "could not be determined: could not run ...".
-    await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(
-      /availability is unknown/iu,
-    );
-    await expect(claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'))).rejects.toThrow(/retry the command/iu);
+    const outcome = await claudePreflight(unanswerableVersionProbeRuntime('EAGAIN'));
+
+    expect(outcome).toEqual({ kind: 'undetermined', message: expect.stringMatching(/availability is unknown/iu) });
+    if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+    expect(outcome.message).toMatch(/retry the command/iu);
   });
 
   it('still reports a genuinely missing CLI as missing', async () => {
-    await expect(claudePreflight(unanswerableVersionProbeRuntime('ENOENT'))).rejects.toThrow(
-      /Claude CLI not available/iu,
-    );
+    await expect(claudePreflight(unanswerableVersionProbeRuntime('ENOENT'))).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(/Claude CLI not available/iu),
+    });
   });
 
   it.each([
@@ -103,14 +105,46 @@ describe('claudePreflight', () => {
   ])('identifies the $layer settings layer and gives path-safe recovery for malformed JSON', async (fixture) => {
     const runtime = claudePreflightRuntime({ [fixture.settingsPath]: fixture.contents });
 
-    const failure = await claudePreflight(runtime).catch((error: unknown) => error);
+    const outcome = await claudePreflight(runtime);
 
-    expect(failure).toBeInstanceOf(Error);
-    const message = (failure as Error).message;
+    expect(outcome.kind).toBe('refused');
+    if (outcome.kind !== 'refused') throw new Error('expected refused');
+    const { message } = outcome;
     expect(message).toContain(`the ${fixture.layer} settings ${fixture.problem}`);
     expect(message).toContain('Repair or remove that settings file, then retry.');
     expect(message).toContain('docs/configuration.md#multi-account-provider-routing');
     expect(message).not.toContain(fixture.settingsPath);
+    expect(runtime.runExact).not.toHaveBeenCalled();
+  });
+
+  it('returns undetermined when an existing settings file cannot be read', async () => {
+    const settingsPath = '/workspace/.claude/settings.json';
+    const runtime = claudePreflightRuntime({
+      [settingsPath]: Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+    });
+
+    const outcome = await claudePreflight(runtime);
+
+    expect(outcome.kind).toBe('undetermined');
+    if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+    expect(outcome.message).toContain('the project settings could not be read');
+    expect(outcome.message).not.toContain(settingsPath);
+    expect(outcome.message).not.toContain('Repair or remove that settings file');
+    expect(outcome.message).toMatch(/readable by the user running the Coral daemon/u);
+    expect(runtime.runExact).not.toHaveBeenCalled();
+  });
+
+  it('prefers a refusal from a later settings layer over an unreadable ancestor', async () => {
+    const runtime = claudePreflightRuntime({
+      '/workspace/.claude/settings.json': Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+      '/.claude/settings.json': JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } }),
+    });
+
+    await expect(claudePreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message:
+        "Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.",
+    });
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
 
@@ -124,9 +158,11 @@ describe('claudePreflight', () => {
       [settingsPath]: JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } }),
     });
 
-    await expect(claudePreflight(runtime)).rejects.toThrow(
-      "Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK'",
-    );
+    await expect(claudePreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message:
+        "Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.",
+    });
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
 
@@ -136,9 +172,11 @@ describe('claudePreflight', () => {
       [settingsPath]: JSON.stringify({ env: { claude_code_use_bedrock: '1' } }),
     });
 
-    await expect(claudePreflight(runtime)).rejects.toThrow(
-      "Unsupported Claude credential selector 'claude_code_use_bedrock'",
-    );
+    await expect(claudePreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message:
+        "Unsupported Claude credential selector 'claude_code_use_bedrock'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.",
+    });
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
 
@@ -148,7 +186,10 @@ describe('claudePreflight', () => {
       const settingsPath = '/home/user/.claude/settings.json';
       const runtime = claudePreflightRuntime({ [settingsPath]: JSON.stringify({ [helper]: '/usr/bin/helper' }) });
 
-      await expect(claudePreflight(runtime)).rejects.toThrow(`Unsupported Claude credential helper '${helper}'`);
+      await expect(claudePreflight(runtime)).resolves.toEqual({
+        kind: 'refused',
+        message: `Unsupported Claude credential helper '${helper}'. Remove it or run Claude outside Coral.`,
+      });
       expect(runtime.runExact).not.toHaveBeenCalled();
     },
   );
@@ -158,7 +199,7 @@ describe('claudePreflight', () => {
       '/home/user/.claude/settings.json': JSON.stringify({ env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } }),
     });
 
-    await expect(claudePreflight(runtime)).resolves.toBeUndefined();
+    await expect(claudePreflight(runtime)).resolves.toEqual({ kind: 'satisfied' });
     expect(vi.mocked(runtime.runExact).mock.calls).toEqual([
       ['claude', ['--version'], { timeout: 10_000, encoding: 'utf-8' }],
       ['claude', ['auth', 'status', '--json'], { timeout: 5_000, encoding: 'utf-8' }],
@@ -176,15 +217,16 @@ describe('claudePreflight', () => {
         status: 0,
       });
 
-    await expect(claudePreflight(runtime)).rejects.toThrow(
-      'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.',
-    );
+    await expect(claudePreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: 'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.',
+    });
   });
 
   it.each([
     ['conflicting recognized evidence', { loggedIn: true, status: 'unauthenticated' }],
     ['an unknown schema containing an auth-error token', { futureAuthState: 'unauthenticated' }],
-  ])('retains compatibility when Claude returns %s', async (_label, authOutput) => {
+  ])('returns satisfied when Claude reports unknown auth state from %s', async (_label, authOutput) => {
     const runtime = claudePreflightRuntime({});
     runtime.runExact = vi
       .fn()
@@ -195,7 +237,8 @@ describe('claudePreflight', () => {
         status: 0,
       });
 
-    await expect(claudePreflight(runtime)).resolves.toBeUndefined();
+    await expect(claudePreflight(runtime)).resolves.toEqual({ kind: 'satisfied' });
+    expect(runtime.runExact).toHaveBeenCalledTimes(2);
   });
 });
 

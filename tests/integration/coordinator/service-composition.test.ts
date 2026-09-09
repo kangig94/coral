@@ -826,7 +826,7 @@ describe('ExecutionService', () => {
     });
 
     it('rejects an HTTP launch without configured system scope before allocation', async () => {
-      const preflight = vi.fn(async () => {});
+      const preflight = vi.fn(async () => ({ kind: 'satisfied' as const }));
       const { provider, execute } = makeProvider({ preflight });
       mockState.getNewProvider.mockReturnValue(provider);
       const requestCtx: InvocationContext = {
@@ -974,7 +974,7 @@ describe('ExecutionService', () => {
       ['missing caller authority', 'provider_binding_missing_profile'] as const,
       ['different caller profile', 'provider_binding_profile_mismatch'] as const,
     ])('resume rejects %s before preflight, admission, claim, or spawn', async (scenario, code) => {
-      const preflight = vi.fn(async () => {});
+      const preflight = vi.fn(async () => ({ kind: 'satisfied' as const }));
       const { provider, execute } = makeProvider({ preflight });
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = createSessionManager(ctx.projectRoot);
@@ -1009,7 +1009,7 @@ describe('ExecutionService', () => {
       async (_field, nextIssuer, nextSubject) => {
         let issuer = 'https://api.openai.com/chatgpt-account';
         let subject = 'test-account';
-        const preflight = vi.fn(async () => {});
+        const preflight = vi.fn(async () => ({ kind: 'satisfied' as const }));
         const { provider, execute } = makeProvider({ preflight });
         mockState.getNewProvider.mockReturnValue(provider);
         const manager = createSessionManager(ctx.projectRoot);
@@ -1126,6 +1126,7 @@ describe('ExecutionService', () => {
       const racingProvider = makeProvider({
         preflight: async (_preflightRuntime) => {
           await gate.promise;
+          return { kind: 'satisfied' };
         },
       });
       mockState.getNewProvider.mockReturnValue(racingProvider.provider);
@@ -3281,6 +3282,7 @@ describe('ExecutionService adversarial', () => {
       const { provider, preflight } = makeProvider({
         preflight: async (_preflightRuntime) => {
           await gate.promise;
+          return { kind: 'satisfied' };
         },
         execute: async () => never,
       });

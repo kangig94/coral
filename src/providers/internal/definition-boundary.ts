@@ -6,6 +6,7 @@ import type {
   ProviderImplementation,
   ProviderHostPlanningInput,
   ProviderPreflightInput,
+  ProviderPreflightOutcome,
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderAppServerRuntime,
@@ -218,7 +219,10 @@ export function snapshotImplementation<Plan extends ProviderExecutionPlan, Acces
     name: receiver.name,
     ...(preflight === undefined
       ? {}
-      : { preflight: (input: ProviderPreflightInput<Access>) => preflight.call(receiver, input) }),
+      : {
+          preflight: (input: ProviderPreflightInput<Access>): Promise<ProviderPreflightOutcome> =>
+            preflight.call(receiver, input),
+        }),
     ...(recovery === undefined ? {} : { recovery }),
   };
   if (receiver.transport === 'standalone') {

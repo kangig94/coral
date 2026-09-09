@@ -4,6 +4,7 @@ import { detectClaudeCli } from './cli-detection.js';
 import type {
   AppServerTransport,
   ProviderInterruptRequestOutcome,
+  ProviderPreflightOutcome,
   ProviderPreflightRuntime,
   ProviderAppServerCapability,
   ProviderRecoveryContract,
@@ -36,7 +37,9 @@ function claudeConfigRoot(runtime: ProviderPreflightRuntime<ClaudeProviderAccess
   return runtime.access.configDir;
 }
 
-function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): void {
+function checkSupportedClaudeSettings(
+  runtime: ProviderPreflightRuntime<ClaudeProviderAccess>,
+): ProviderPreflightOutcome {
   const settingsPaths = new Map<string, 'selected-profile' | 'project'>([
     [join(claudeConfigRoot(runtime), 'settings.json'), 'selected-profile'],
   ]);
@@ -51,21 +54,40 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeP
     directory = parent;
   }
 
+  let readFailure: Extract<ProviderPreflightOutcome, { kind: 'undetermined' }> | undefined;
   for (const [settingsPath, layer] of settingsPaths) {
     if (!runtime.storage.existsSync(settingsPath)) continue;
 
+    let raw: string;
+    try {
+      raw = runtime.storage.readFileSync(settingsPath, 'utf-8');
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const remedy =
+        code === 'EACCES' || code === 'EPERM'
+          ? ' Check that these settings are readable by the user running the Coral daemon, then retry.'
+          : ' Retry the command.';
+      readFailure ??= {
+        kind: 'undetermined',
+        message: `Cannot validate Claude credential selectors because the ${layer} settings could not be read (${code ?? 'unknown error'}); their contents were not observed.${remedy}`,
+      };
+      continue;
+    }
+
     let settings: unknown;
     try {
-      settings = JSON.parse(runtime.storage.readFileSync(settingsPath, 'utf-8')) as unknown;
+      settings = JSON.parse(raw) as unknown;
     } catch {
-      throw new Error(
-        `Cannot validate Claude credential selectors because the ${layer} settings contain invalid JSON. Repair or remove that settings file, then retry. See docs/configuration.md#multi-account-provider-routing.`,
-      );
+      return {
+        kind: 'refused',
+        message: `Cannot validate Claude credential selectors because the ${layer} settings contain invalid JSON. Repair or remove that settings file, then retry. See docs/configuration.md#multi-account-provider-routing.`,
+      };
     }
     if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
-      throw new Error(
-        `Cannot validate Claude credential selectors because the ${layer} settings are not a JSON object. Repair or remove that settings file, then retry. See docs/configuration.md#multi-account-provider-routing.`,
-      );
+      return {
+        kind: 'refused',
+        message: `Cannot validate Claude credential selectors because the ${layer} settings are not a JSON object. Repair or remove that settings file, then retry. See docs/configuration.md#multi-account-provider-routing.`,
+      };
     }
 
     const record = settings as Record<string, unknown>;
@@ -76,7 +98,10 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeP
         record[helper] !== false &&
         record[helper] !== ''
       ) {
-        throw new Error(`Unsupported Claude credential helper '${helper}'. Remove it or run Claude outside Coral.`);
+        return {
+          kind: 'refused',
+          message: `Unsupported Claude credential helper '${helper}'. Remove it or run Claude outside Coral.`,
+        };
       }
     }
 
@@ -89,33 +114,38 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeP
         ((typeof value === 'string' && value.trim().length > 0) ||
           (typeof value !== 'string' && value !== null && value !== undefined))
       ) {
-        throw new Error(
-          `Unsupported Claude credential selector '${key}'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.`,
-        );
+        return {
+          kind: 'refused',
+          message: `Unsupported Claude credential selector '${key}'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.`,
+        };
       }
     }
   }
+
+  return readFailure ?? { kind: 'satisfied' };
 }
 
-export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): Promise<void> {
-  assertSupportedClaudeSettings(runtime);
+export async function claudePreflight(
+  runtime: ProviderPreflightRuntime<ClaudeProviderAccess>,
+): Promise<ProviderPreflightOutcome> {
+  const settingsOutcome = checkSupportedClaudeSettings(runtime);
+  if (settingsOutcome.kind !== 'satisfied') return settingsOutcome;
   const routingEnv = claudeRoutingEnv(runtime.access);
   const cli = await detectClaudeCli(
     { exec: (command, args, options) => runtime.runExact(command, args, options) },
     { get: (key) => routingEnv[key] },
   );
   if (!cli.available) {
-    // Both refuse the operation, and they must not say the same thing while doing it: one tells the operator
-    // to install a CLI, the other tells them the check itself did not complete.
-    throw new Error(
-      cli.reason === 'undetermined'
-        ? `Claude CLI availability is unknown — ${cli.error}`
-        : `Claude CLI not available: ${cli.error}`,
-    );
+    return cli.reason === 'undetermined'
+      ? { kind: 'undetermined', message: `Claude CLI availability is unknown — ${cli.error}` }
+      : { kind: 'refused', message: `Claude CLI not available: ${cli.error}` };
   }
   if (cli.authState === 'unauthenticated') {
-    throw new Error(cli.authError);
+    return { kind: 'refused', message: cli.authError };
   }
+  // Unknown authentication may proceed because execution can report unauthenticated cheaply and decisively.
+  // Unknown availability may not: committing a job before another EAGAIN would leave it with the same non-answer.
+  return { kind: 'satisfied' };
 }
 
 export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan, ClaudeProviderAccess> = {

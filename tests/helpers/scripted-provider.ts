@@ -2,6 +2,7 @@ import type { SessionContinuityMutation } from '#src/sessions/continuity-mutatio
 import { none } from '#src/providers/capability.js';
 import type {
   PreflightRuntime,
+  ProviderPreflightOutcome,
   ProviderAppServerCapability,
   ProviderArtifactCapability,
   ProviderArtifactHandleInput,
@@ -82,7 +83,7 @@ type TestArtifactRecovery = {
 
 type ProviderCommon = {
   readonly name: string;
-  preflight?(runtime: PreflightRuntime): Promise<void>;
+  preflight?(runtime: PreflightRuntime): Promise<ProviderPreflightOutcome>;
   artifactRecovery?: TestArtifactRecovery;
   artifactCapability?: ProviderArtifactCapability;
 };

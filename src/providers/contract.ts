@@ -665,6 +665,15 @@ export interface ProviderRecoveryContract<Access extends ProviderAccess = Provid
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
+/**
+ * `refused` requires an established condition and a message naming its remedy. `undetermined` means the check
+ * did not complete and must not borrow that message; citing an unobserved cause directs operators to fix what
+ * was never shown broken.
+ */
+export type ProviderPreflightOutcome =
+  | { kind: 'satisfied' }
+  | { kind: 'refused'; message: string }
+  | { kind: 'undetermined'; message: string };
 export type ProviderPreflightRuntime<Access extends ProviderAccess = ProviderAccess> = PreflightRuntime & {
   access: Access;
   cwd: string;
@@ -782,7 +791,7 @@ type ProviderStandalonePlanPreparation<Plan extends ProviderExecutionPlan, Acces
 
 type ProviderImplementationCommon<Access extends ProviderAccess> = {
   readonly name: string;
-  readonly preflight?: (input: ProviderPreflightInput<Access>) => Promise<void>;
+  readonly preflight?: (input: ProviderPreflightInput<Access>) => Promise<ProviderPreflightOutcome>;
   readonly recovery?: ProviderRecoveryContract<Access>;
 };
 

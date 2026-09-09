@@ -9,6 +9,7 @@ import type {
   ProviderCurationUsageRuntime,
   ProviderEventBody,
   ProviderPreflightInput,
+  ProviderPreflightOutcome,
   ProviderInterruptRequestOutcome,
   ProviderTurnTerminalEvidence,
   ProviderRecoveryContract,
@@ -151,7 +152,7 @@ export interface BoundProvider {
   ): Promise<ProviderBindingResult<ProviderReadiness>>;
   compareIdentity(otherEnvelope: unknown): ProviderBindingResult<true>;
   decodeContinuity(rawContinuity: unknown): ProviderBindingResult<ProviderValidatedContinuityBlob | undefined>;
-  preflight(input: Omit<ProviderPreflightInput, 'access'>): Promise<void>;
+  preflight(input: Omit<ProviderPreflightInput, 'access'>): Promise<ProviderPreflightOutcome>;
   prepareExecution(input: BoundProviderExecutionPreparationInput): BoundProviderPreparedExecution;
   readonly appServer?: BoundProviderAppServerCapability;
   readonly recovery?: BoundProviderRecovery;

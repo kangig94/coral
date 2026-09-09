@@ -1082,6 +1082,7 @@ describe('ProviderRegistry', () => {
         async preflight(input) {
           observedBaseEnv = input.baseEnv;
           observedRequestEnv = input.requestEnv;
+          return { kind: 'satisfied' };
         },
       })
         .binding(fixtureProviderBindingCodec('sealed-preflight'))
