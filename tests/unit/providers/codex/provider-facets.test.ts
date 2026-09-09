@@ -452,15 +452,19 @@ describe('codexPreflight', () => {
     });
   });
 
-  it('reports ENOENT as an absent Codex CLI after verifying the working directory', async () => {
+  it('reports ENOENT only as a Codex command that could not start after verifying the working directory', async () => {
     const statSync = vi.fn(() => ({ isDirectory: () => true }));
     const runtime = preflightRuntime({ appServer: { error: errno('ENOENT'), status: null }, statSync });
     const outcome = await codexPreflight(runtime);
 
-    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/could not find `codex`/iu) });
+    expect(outcome).toEqual({
+      kind: 'refused',
+      message:
+        "Coral could not start `codex` using the Coral daemon's PATH (ENOENT); ensure `codex` is installed and runnable at a location on that PATH, and restart the Coral backend after changing that PATH before retrying.",
+    });
     if (outcome.kind !== 'refused') throw new Error('expected refused');
     expect(statSync).toHaveBeenCalledWith(runtime.cwd);
-    expect(outcome.message).toMatch(/PATH used by the Coral daemon/iu);
+    expect(outcome.message).not.toMatch(/could not find|not found/iu);
     expect(outcome.message).toMatch(/restart the Coral backend/iu);
     expect(outcome.message).not.toMatch(UPGRADE);
   });

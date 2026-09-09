@@ -5,7 +5,6 @@ import { createCliDetector, type CliDetectorConfig } from '#src/providers/cli-de
 const CONFIG: CliDetectorConfig = {
   binaryName: 'fixture-cli',
   versionArgs: ['version'],
-  notFoundMessage: 'fixture CLI unavailable',
   authEnvVar: 'FIXTURE_TOKEN',
   authCommand: ['auth', 'status'],
   authErrorPattern: /sign in required/iu,
@@ -65,13 +64,14 @@ function launchFailure(code: string) {
 }
 
 describe('provider-neutral CLI detection', () => {
-  it('reports an unavailable executable without probing authentication', async () => {
+  it('reports a failed version check without probing authentication', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: '', stderr: 'missing', status: 1 });
 
     await expect(detector({ exec }).detect()).resolves.toEqual({
       available: false,
-      reason: 'not-found',
-      error: 'fixture CLI unavailable',
+      reason: 'version-check-failed',
+      error:
+        '`fixture-cli version` exited with status 1 instead of reporting a version; ensure `fixture-cli` runs correctly for the user running the Coral daemon, then retry.',
     });
     expect(exec).toHaveBeenCalledTimes(1);
   });
@@ -148,8 +148,8 @@ describe('provider-neutral CLI detection', () => {
       const info = await detector({ exec }).detect();
 
       expect(info).toMatchObject({ available: false, reason: 'undetermined' });
-      expect(info.available === false && info.error, 'the message must not name a cause nobody observed').not.toBe(
-        'fixture CLI unavailable',
+      expect(info.available === false && info.error, 'the message must not name a cause nobody observed').not.toMatch(
+        /not found|install it/iu,
       );
     },
   );
@@ -180,14 +180,15 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
-  it('reports ENOENT as command absence after verifying the working directory', async () => {
+  it('reports ENOENT only as a command that could not start after verifying the working directory', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
     const statSync = vi.fn(() => ({ isDirectory: () => true }));
 
     await expect(detector({ exec, statSync }).detect()).resolves.toEqual({
       available: false,
-      reason: 'not-found',
-      error: 'fixture CLI unavailable',
+      reason: 'command-could-not-start',
+      error:
+        "Could not start `fixture-cli version` using the Coral daemon's PATH (ENOENT); ensure `fixture-cli` is installed and runnable at a location on that PATH, and restart the Coral backend after changing that PATH before retrying.",
     });
     expect(statSync).toHaveBeenCalledWith('/workspace/project');
   });
@@ -356,7 +357,7 @@ describe('provider-neutral CLI detection', () => {
     expect(exec, 'one unobserved fork failure must not decide for five later calls').toHaveBeenCalledTimes(5);
   });
 
-  it('still caches a decisive not-found for the process lifetime', async () => {
+  it('still caches a decisive command-start refusal for the process lifetime', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOENT'));
     const subject = detector({ exec });
 
@@ -364,6 +365,6 @@ describe('provider-neutral CLI detection', () => {
     await subject.detect();
     await subject.detect();
 
-    expect(exec, 'a missing binary does not appear under a running daemon').toHaveBeenCalledTimes(1);
+    expect(exec, 'the settled command-start refusal remains cached for this daemon lifetime').toHaveBeenCalledTimes(1);
   });
 });

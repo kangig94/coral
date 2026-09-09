@@ -38,8 +38,6 @@ import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
-const CODEX_CLI_NOT_FOUND_MESSAGE =
-  "Coral could not find `codex` on the PATH used by the Coral daemon. Install Codex in a directory already on that PATH, then retry; if you change the daemon's PATH, restart the Coral backend first.";
 const CODEX_AUTH_ERROR_MESSAGE =
   'The selected Codex account is not authenticated. Run "codex login" with the same CODEX_HOME and retry.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
@@ -109,8 +107,12 @@ function codexOutcomeFromSpawnFailure(
   evidence: SpawnFailureEvidence,
 ): Extract<ProviderPreflightOutcome, { kind: 'refused' | 'undetermined' }> {
   switch (evidence.kind) {
-    case 'command-not-found':
-      return { kind: 'refused', message: CODEX_CLI_NOT_FOUND_MESSAGE };
+    case 'command-could-not-start':
+      return {
+        kind: 'refused',
+        message:
+          "Coral could not start `codex` using the Coral daemon's PATH (ENOENT); ensure `codex` is installed and runnable at a location on that PATH, and restart the Coral backend after changing that PATH before retrying.",
+      };
     case 'command-not-executable':
       return evidence.code === 'ENOTDIR'
         ? {

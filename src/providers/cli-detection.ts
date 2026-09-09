@@ -5,7 +5,8 @@ import type { ProcessPort } from '../runtime/ports.js';
 
 /** Only command-scoped unavailability may be cached across probes. */
 export type CliInfo =
-  | { available: false; reason: 'not-found'; error: string }
+  | { available: false; reason: 'command-could-not-start'; error: string }
+  | { available: false; reason: 'version-check-failed'; error: string }
   | { available: false; reason: 'permission-denied'; error: string }
   | { available: false; reason: 'invalid-path'; error: string }
   | { available: false; reason: 'invalid-working-directory'; error: string }
@@ -28,7 +29,6 @@ export type CliDetectorEnvPort = Pick<EnvPort, 'get'>;
 export type CliDetectorConfig = {
   binaryName: string;
   versionArgs: readonly string[];
-  notFoundMessage: string;
   authEnvVar: string;
   authCommand: readonly string[];
   authErrorPattern: RegExp;
@@ -43,8 +43,12 @@ function cliInfoFromSpawnFailure(
   evidence: SpawnFailureEvidence,
 ): CliInfo {
   switch (evidence.kind) {
-    case 'command-not-found':
-      return { available: false, reason: 'not-found', error: config.notFoundMessage };
+    case 'command-could-not-start':
+      return {
+        available: false,
+        reason: 'command-could-not-start',
+        error: `Could not start \`${command}\` using the Coral daemon's PATH (ENOENT); ensure \`${config.binaryName}\` is installed and runnable at a location on that PATH, and restart the Coral backend after changing that PATH before retrying.`,
+      };
     case 'command-not-executable':
       if (evidence.code === 'ENOTDIR') {
         return {
@@ -160,11 +164,13 @@ export function createCliDetector(
           classifySpawnFailure(processPort.storage, processPort.cwd, outcome.code),
         );
       case 'answered':
-        // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an
-        // absent one and is cached the same way.
         return outcome.status === 0
           ? { available: true, version: result.stdout.trim(), authState: 'unknown' }
-          : { available: false, reason: 'not-found', error: config.notFoundMessage };
+          : {
+              available: false,
+              reason: 'version-check-failed',
+              error: `\`${command}\` exited with status ${outcome.status} instead of reporting a version; ensure \`${config.binaryName}\` runs correctly for the user running the Coral daemon, then retry.`,
+            };
     }
   }
 

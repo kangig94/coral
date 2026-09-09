@@ -66,7 +66,6 @@ function parseAuthStatus(stdout: string): AuthProbeResult | null {
 const CONFIG: CliDetectorConfig = Object.freeze({
   binaryName: 'claude',
   versionArgs: Object.freeze(['--version']),
-  notFoundMessage: 'Claude CLI not found. Install it from the Claude Code distribution.',
   authEnvVar: 'ANTHROPIC_API_KEY',
   authCommand: Object.freeze(['auth', 'status', '--json']),
   authErrorPattern:

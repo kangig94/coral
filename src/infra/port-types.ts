@@ -201,9 +201,15 @@ export type ExecOutcome =
   | Readonly<{ kind: 'launch-refused'; code: StandingProbeErrno }>
   | Readonly<{ kind: 'no-answer'; detail: string }>;
 
-/** Adapters must not infer a command or working-directory condition beyond these evidence variants. */
+/**
+ * Adapters must not infer a command or working-directory condition beyond these evidence variants;
+ * `command-could-not-start` is not evidence that the command is absent. Measured on Node v26.3.1: an
+ * executable script whose shebang interpreter was missing and a genuinely absent executable path both
+ * produced ENOENT with `error.path` naming the selected executable, while an executable file with a bogus ELF
+ * header exited 127 instead of producing a launch failure.
+ */
 export type SpawnFailureEvidence =
-  | Readonly<{ kind: 'command-not-found' }>
+  | Readonly<{ kind: 'command-could-not-start' }>
   | Readonly<{ kind: 'command-not-executable'; code: Exclude<StandingProbeErrno, 'ENOENT'> }>
   | Readonly<{ kind: 'working-directory-missing' }>
   | Readonly<{ kind: 'working-directory-not-directory' }>
@@ -278,7 +284,7 @@ export function classifySpawnFailure(
   }
 
   if (code === 'ENOENT') {
-    return directoryObserved ? { kind: 'command-not-found' } : { kind: 'unresolved', code };
+    return directoryObserved ? { kind: 'command-could-not-start' } : { kind: 'unresolved', code };
   }
   if (code === 'ENOTDIR') {
     return directoryObserved ? { kind: 'command-not-executable', code } : { kind: 'unresolved', code };

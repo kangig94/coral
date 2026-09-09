@@ -1437,12 +1437,8 @@ describe('ExecutionService launch', () => {
     });
   });
 
-  /**
-   * A provider-returned `undetermined` is re-asked for the whole answer budget, so these two drive the
-   * clock rather than waiting on it: the fence being proven here is that no session and no job outlive a
-   * launch that never established anything, and the re-ask policy that governs how often preflight is
-   * asked is proven in the execution-policies suite.
-   */
+  // A provider-returned `undetermined` is re-asked until the answer budget is spent, so a fence test that
+  // waits on the clock instead of driving it waits 27 seconds.
   function driveClockThroughPreflightBudget(): void {
     let elapsedMs = 0;
     const base = runtime.time.monotonicNow();
