@@ -206,6 +206,7 @@ export function toPreflightRuntime(
 }
 
 export const PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS = 27_000;
+export const PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS = 1_000;
 
 export type PreflightDecision =
   | { kind: 'satisfied' }
@@ -280,8 +281,31 @@ export async function runProviderPreflight(
   runtime: Omit<ProviderPreflightInput, 'access'>,
 ): Promise<PreflightDecision> {
   const deadline = runtime.time.monotonicNow() + BigInt(PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
+  let isFinalProbe = false;
   try {
-    return await runPreflightWithTimeout(provider, runtime, deadline);
+    while (true) {
+      const decision = await runPreflightWithTimeout(provider, runtime, deadline);
+      // Only a returned provider non-answer may authorize another probe: a deadline may leave the
+      // prior probe in flight, and a fault is not a verdict to retry.
+      if (decision.kind !== 'undetermined' || decision.cause !== 'provider') {
+        return decision;
+      }
+
+      if (isFinalProbe) {
+        return decision;
+      }
+
+      const remaining = deadline - runtime.time.monotonicNow();
+      if (remaining <= 0n) {
+        return decision;
+      }
+      if (remaining <= BigInt(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS)) {
+        isFinalProbe = true;
+        continue;
+      }
+
+      await runtime.time.sleep(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS);
+    }
   } catch (error: unknown) {
     return {
       kind: 'undetermined',

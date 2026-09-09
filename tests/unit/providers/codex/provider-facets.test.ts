@@ -575,9 +575,9 @@ describe('codexPreflight', () => {
   });
 
   // Both branches of the unreadable case have to leave the operator with something to do. Naming what was not
-  // established and stopping there is half a refusal — it closes the wrong door without opening one — and the
-  // deferred half (teaching the job to ask again instead of dying) is `docs/todo/preflight-cannot-defer.md`,
-  // so until then the retry is the operator's and has to be said.
+  // established and stopping there is half a refusal — it closes the wrong door without opening one. The
+  // coordinator re-asks within its own budget, but the message is what is left once that budget is spent, so
+  // the action still has to be in it.
   it.each([
     ['EACCES', /readable by the user running the Coral daemon/u],
     ['EPERM', /readable by the user running the Coral daemon/u],
