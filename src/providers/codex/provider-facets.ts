@@ -32,6 +32,7 @@ import {
   type CodexExecutionPlan,
 } from './execution-plan.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import { assertNever } from '../../infra/error-format.js';
 import { classifyExecOutcome } from '../../infra/port-types.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
@@ -129,10 +130,7 @@ async function probeCodexAppServer(
               'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
           };
         default:
-          return {
-            kind: 'undetermined',
-            message: `Codex preflight could not classify the \`codex\` launch refusal (${outcome.code}); this says nothing about app-server support. Retry the command.`,
-          };
+          return assertNever(outcome.code);
       }
     case 'answered':
       return outcome.status === 0

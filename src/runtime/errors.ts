@@ -73,6 +73,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'startup_not_ready'
   | 'startup_bundle_unresolvable'
   | 'system_provider_scope_invalid'
+  | 'provider_preflight_faulted'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
   | 'coordinator_socket_dir_insecure'
@@ -415,6 +416,13 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       stringContextValue(context, 'scopeName', '').length > 0
         ? 'Edit CORAL_SYSTEM_PROVIDER_SCOPE, remove the duplicate or invalid provider entry, and restart Coral.'
         : 'Set CORAL_SYSTEM_PROVIDER_SCOPE to a strict JSON object with origin "system", a non-empty name, and canonical provider profiles, or unset it to disable HTTP/internal provider execution.',
+  },
+  provider_preflight_faulted: {
+    userMessage: (context) =>
+      `Coral's ${stringContextValue(context, 'provider', '<provider>')} provider preflight failed internally.`,
+    remediation:
+      'Report provider_preflight_faulted with error.context.cause from the structured error payload. This internal fault does not establish whether the provider is installed, available, or authenticated; do not reinstall or re-authenticate based on this error.',
+    exitCode: 70,
   },
   coordinator_socket_in_use: {
     userMessage: (context) =>

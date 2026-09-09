@@ -1,5 +1,6 @@
 import type { EnvPort } from '../infra/port-types.js';
 import { classifyExecOutcome } from '../infra/port-types.js';
+import { assertNever } from '../infra/error-format.js';
 import type { ProcessPort } from '../runtime/ports.js';
 
 /** Unavailable answers are cacheable only when their reason is an established condition of this command. */
@@ -119,11 +120,7 @@ export function createCliDetector(
               error: `could not run \`${command}\` (ENOTDIR); a component of the configured command path \`${config.binaryName}\` is not a directory — correct the configured path, then retry`,
             };
           default:
-            return {
-              available: false,
-              reason: 'undetermined',
-              error: `could not run \`${command}\` because the launch refusal (${outcome.code}) is not classified — retry the command`,
-            };
+            return assertNever(outcome.code);
         }
       case 'answered':
         // A non-zero exit is the binary answering that it cannot report a version, which is as settled as an

@@ -1431,7 +1431,7 @@ describe('ExecutionService launch', () => {
     });
   });
 
-  it('returns an undetermined launch when preflight throws', async () => {
+  it('faults the launch when preflight throws instead of offering a retry', async () => {
     const { provider, preflight } = makeProvider({
       preflight: async (_preflightRuntime) => {
         throw new Error('not ready');
@@ -1440,15 +1440,13 @@ describe('ExecutionService launch', () => {
     mockState.getNewProvider.mockReturnValue(provider);
     const service = createService(ctx);
 
-    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+    await expect(service.start('codex', { prompt: 'hello' }, ctx)).rejects.toMatchObject({
+      code: 'provider_preflight_faulted',
+      context: { provider: 'codex', cause: 'not ready' },
+    });
 
     expect(preflight).toHaveBeenCalledTimes(1);
     expectRuntimePreflightArg(preflight!);
-    expect(decision).toEqual({
-      status: 'undetermined',
-      code: 'provider_preflight_undetermined',
-      message: 'not ready',
-    });
   });
 
   it('start rejects invalid agent refs from the resolver', async () => {

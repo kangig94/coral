@@ -71,7 +71,9 @@ export const SPAWN_SYNC_MAXBUFFER_ERRNO = 'ENOBUFS';
  * This says nothing about a launch that *succeeded* and exited non-zero. That is an answer whatever the code,
  * and each caller reads it from its own result rather than from here.
  */
-export const STANDING_PROBE_ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
+const STANDING_PROBE_ERRNO_CODES = ['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR'] as const;
+export type StandingProbeErrno = (typeof STANDING_PROBE_ERRNO_CODES)[number];
+export const STANDING_PROBE_ERRNOS: ReadonlySet<string> = new Set<StandingProbeErrno>(STANDING_PROBE_ERRNO_CODES);
 
 /**
  * How long a probe that could not be answered is left alone before being tried again.

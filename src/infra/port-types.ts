@@ -1,4 +1,4 @@
-import { STANDING_PROBE_ERRNOS } from './process-constants.js';
+import { STANDING_PROBE_ERRNOS, type StandingProbeErrno } from './process-constants.js';
 import type { ProcessIncarnation } from './node-process.js';
 import type { RecordedProcessIdentity } from './process-containment.js';
 
@@ -186,8 +186,12 @@ export type ExecResult = {
  */
 export type ExecOutcome =
   | Readonly<{ kind: 'answered'; status: number }>
-  | Readonly<{ kind: 'launch-refused'; code: string }>
+  | Readonly<{ kind: 'launch-refused'; code: StandingProbeErrno }>
   | Readonly<{ kind: 'no-answer'; detail: string }>;
+
+function isStandingProbeErrno(code: string): code is StandingProbeErrno {
+  return STANDING_PROBE_ERRNOS.has(code);
+}
 
 /**
  * The same three answers for the throwing shape, so a caller that reaches `node:child_process` directly is not
@@ -207,7 +211,7 @@ export function classifyThrownExecOutcome(error: unknown): ExecOutcome {
   if (typeof errno.status === 'number') {
     return { kind: 'answered', status: errno.status };
   }
-  if (typeof errno.code === 'string' && STANDING_PROBE_ERRNOS.has(errno.code)) {
+  if (typeof errno.code === 'string' && isStandingProbeErrno(errno.code)) {
     return { kind: 'launch-refused', code: errno.code };
   }
   return { kind: 'no-answer', detail: errno.code ?? errno.message ?? 'unknown error' };
@@ -216,7 +220,7 @@ export function classifyThrownExecOutcome(error: unknown): ExecOutcome {
 export function classifyExecOutcome(result: ExecResult): ExecOutcome {
   if (result.error !== undefined) {
     const code = (result.error as NodeJS.ErrnoException).code;
-    if (typeof code === 'string' && STANDING_PROBE_ERRNOS.has(code)) {
+    if (typeof code === 'string' && isStandingProbeErrno(code)) {
       return { kind: 'launch-refused', code };
     }
     return { kind: 'no-answer', detail: code ?? result.error.message };

@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 
+import { errorMessage } from '../../infra/error-format.js';
 import type {
   EffortLevel,
   ProviderInstruction,
@@ -20,6 +21,7 @@ import {
 } from '../../jobs/agent-resolution.js';
 import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';
@@ -211,7 +213,7 @@ export const PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS = 1_000;
 export type PreflightDecision =
   | { kind: 'satisfied' }
   | { kind: 'refused'; message: string }
-  | { kind: 'undetermined'; cause: 'provider' | 'deadline' | 'faulted'; message: string };
+  | { kind: 'undetermined'; cause: 'provider' | 'deadline'; message: string };
 
 function deadlinePreflightDecision(provider: BoundProvider): PreflightDecision {
   return {
@@ -252,7 +254,12 @@ function runPreflightWithTimeout(
     const rejectWith = (error: unknown): void => {
       settled = true;
       runtime.time.clearTimeout(timeout);
-      reject(error instanceof Error ? error : new Error(String(error)));
+      reject(
+        documentedCoralSetupError('provider_preflight_faulted', {
+          provider: provider.name,
+          cause: errorMessage(error),
+        }),
+      );
     };
 
     Promise.resolve()
@@ -294,35 +301,27 @@ export async function runProviderPreflight(
 ): Promise<PreflightDecision> {
   const deadline = runtime.time.monotonicNow() + BigInt(PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
   let isFinalProbe = false;
-  try {
-    while (true) {
-      const decision = await runPreflightWithTimeout(provider, runtime, deadline);
-      // Only a returned provider non-answer may authorize another probe: a deadline may leave the
-      // prior probe in flight, and a fault is not a verdict to retry.
-      if (decision.kind !== 'undetermined' || decision.cause !== 'provider') {
-        return decision;
-      }
-
-      if (isFinalProbe) {
-        return decision;
-      }
-
-      const remaining = deadline - runtime.time.monotonicNow();
-      if (remaining <= 0n) {
-        return decision;
-      }
-      if (remaining <= BigInt(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS)) {
-        isFinalProbe = true;
-        continue;
-      }
-
-      await runtime.time.sleep(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS);
+  while (true) {
+    const decision = await runPreflightWithTimeout(provider, runtime, deadline);
+    // Only a returned provider non-answer may authorize another probe: a deadline may leave the
+    // prior probe in flight.
+    if (decision.kind !== 'undetermined' || decision.cause !== 'provider') {
+      return decision;
     }
-  } catch (error: unknown) {
-    return {
-      kind: 'undetermined',
-      cause: 'faulted',
-      message: error instanceof Error ? error.message : String(error),
-    };
+
+    if (isFinalProbe) {
+      return decision;
+    }
+
+    const remaining = deadline - runtime.time.monotonicNow();
+    if (remaining <= 0n) {
+      return decision;
+    }
+    if (remaining <= BigInt(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS)) {
+      isFinalProbe = true;
+      continue;
+    }
+
+    await runtime.time.sleep(PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS);
   }
 }

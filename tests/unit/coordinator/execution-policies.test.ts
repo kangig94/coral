@@ -225,7 +225,7 @@ describe('execution policies', () => {
     expect(pendingTimerCount(runtime)).toBe(0);
   });
 
-  it('classifies a thrown non-verdict with the faulted cause without retrying', async () => {
+  it('rejects a thrown preflight fault with its documented code without retrying', async () => {
     const runtime = new SimulationRuntime();
     const preflight = vi.fn(async () => {
       throw new Error('preflight implementation failed');
@@ -237,16 +237,18 @@ describe('execution policies', () => {
 
     await expect(
       runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
-    ).resolves.toEqual({
-      kind: 'undetermined',
-      cause: 'faulted',
-      message: 'preflight implementation failed',
+    ).rejects.toMatchObject({
+      code: 'provider_preflight_faulted',
+      context: {
+        provider: 'codex',
+        cause: 'preflight implementation failed',
+      },
     });
     expect(preflight).toHaveBeenCalledOnce();
     expect(pendingTimerCount(runtime)).toBe(0);
   });
 
-  it('rejects a malformed fulfilled outcome into the faulted decision instead of hanging', async () => {
+  it('rejects a malformed fulfilled outcome with the documented fault instead of hanging', async () => {
     const runtime = new SimulationRuntime();
     const provider = {
       name: 'codex',
@@ -255,10 +257,12 @@ describe('execution policies', () => {
 
     await expect(
       runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {})),
-    ).resolves.toEqual({
-      kind: 'undetermined',
-      cause: 'faulted',
-      message: expect.stringMatching(/kind/iu),
+    ).rejects.toMatchObject({
+      code: 'provider_preflight_faulted',
+      context: {
+        provider: 'codex',
+        cause: expect.stringMatching(/kind/iu),
+      },
     });
     expect(provider.preflight).toHaveBeenCalledOnce();
     expect(pendingTimerCount(runtime)).toBe(0);
