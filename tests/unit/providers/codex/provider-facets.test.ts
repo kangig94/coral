@@ -389,6 +389,7 @@ describe('codexPreflight', () => {
     home?: string;
     cwd?: string;
     cwdState?: 'directory' | 'missing' | 'not-directory' | 'unobserved';
+    cwdTraversability?: 'traversable' | 'denied' | 'unobserved';
   }): ProviderPreflightRuntime<CodexProviderAccess> & { runExact: ReturnType<typeof vi.fn> } {
     const appServer = options.appServer ?? { status: 0 };
     const authFile = options.authFile ?? TOKENS;
@@ -411,6 +412,7 @@ describe('codexPreflight', () => {
             isFile: () => cwdState === 'not-directory',
           };
         },
+        observeDirectoryTraversabilitySync: () => options.cwdTraversability ?? 'traversable',
       },
       time: { now: () => clock },
       runExact: vi.fn(async () => ({
@@ -464,6 +466,60 @@ describe('codexPreflight', () => {
     },
   );
 
+  it('caches an EACCES refusal when the working directory is traversable', async () => {
+    const runtime = preflightRuntime({ appServer: { error: errno('EACCES'), status: null } });
+
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(/execute permissions/iu),
+    });
+    await expect(codexPreflight(runtime)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringMatching(/execute permissions/iu),
+    });
+    expect(runtime.runExact).toHaveBeenCalledOnce();
+  });
+
+  it('reports EACCES as a request refusal when the working directory is not traversable', async () => {
+    const cwd = '/workspace/untraversable-project';
+    const outcome = await codexPreflight(
+      preflightRuntime({ appServer: { error: errno('EACCES'), status: null }, cwd, cwdTraversability: 'denied' }),
+    );
+
+    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/not traversable/iu) });
+    if (outcome.kind !== 'refused') throw new Error('expected refused');
+    expect(outcome.message).toContain(cwd);
+    expect(outcome.message).not.toMatch(/execute permissions on the Codex binary/iu);
+  });
+
+  it('uses denied traversability when the working-directory shape cannot be observed', async () => {
+    const outcome = await codexPreflight(
+      preflightRuntime({
+        appServer: { error: errno('EACCES'), status: null },
+        cwdState: 'unobserved',
+        cwdTraversability: 'denied',
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: 'refused', message: expect.stringMatching(/not traversable/iu) });
+  });
+
+  it('reports EACCES as undetermined when working-directory traversability cannot be observed', async () => {
+    const outcome = await codexPreflight(
+      preflightRuntime({
+        appServer: { error: errno('EACCES'), status: null },
+        cwdTraversability: 'unobserved',
+      }),
+    );
+
+    expect(outcome).toEqual({
+      kind: 'undetermined',
+      message: expect.stringMatching(/could not determine whether working directory/iu),
+    });
+    if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
+    expect(outcome.message).not.toMatch(/execute permissions on the Codex binary/iu);
+  });
+
   it('reports ENOTDIR as an invalid configured command path, not an upgrade verdict', async () => {
     const outcome = await codexPreflight(preflightRuntime({ appServer: { error: errno('ENOTDIR'), status: null } }));
 
@@ -508,6 +564,22 @@ describe('codexPreflight', () => {
     await expect(codexPreflight(removedCwd)).resolves.toEqual({
       kind: 'refused',
       message: expect.stringContaining(removedCwd.cwd),
+    });
+    await expect(codexPreflight(healthyCwd)).resolves.toEqual({ kind: 'satisfied' });
+    expect(healthyCwd.runExact).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a request-specific permission refusal poison the global capability cache', async () => {
+    const blockedCwd = preflightRuntime({
+      appServer: { error: errno('EACCES'), status: null },
+      cwd: '/workspace/untraversable-project',
+      cwdTraversability: 'denied',
+    });
+    const healthyCwd = preflightRuntime({});
+
+    await expect(codexPreflight(blockedCwd)).resolves.toEqual({
+      kind: 'refused',
+      message: expect.stringContaining(blockedCwd.cwd),
     });
     await expect(codexPreflight(healthyCwd)).resolves.toEqual({ kind: 'satisfied' });
     expect(healthyCwd.runExact).toHaveBeenCalledOnce();

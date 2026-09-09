@@ -67,8 +67,20 @@ export type StorageBigIntStat = {
 /** What a non-following observation reports about a path, without describing what it may resolve to. */
 export type StorageEntryKind = { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 
+/**
+ * Whether this process may traverse a directory — the permission a child's `chdir` needs, which no other
+ * observation on this port tests: measured on Node v26.3.1, `statSync` succeeds on a `chmod 000` directory
+ * and `readdirSync` fails on an execute-only one that `spawn` enters without complaint.
+ *
+ * `denied` answers only the question asked, which an absent path answers the same way as an unsearchable
+ * one: neither may be traversed. A caller that must tell those apart observes existence separately.
+ * `unobserved` must never be treated as evidence that permission was granted or denied.
+ */
+export type DirectoryTraversability = 'traversable' | 'denied' | 'unobserved';
+
 export interface StoragePort {
   assertReadableSync(path: string): void;
+  observeDirectoryTraversabilitySync(path: string): DirectoryTraversability;
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
   writeFileSync(

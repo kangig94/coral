@@ -117,10 +117,12 @@ export async function codexPreflight(
 }
 
 /**
- * Measured on Node v26.3.1: child_process.spawn reports ENOENT with error.path set to the command for both a
- * missing command and a missing cwd, and synchronously throws ENOTDIR when an existing command is given a cwd
- * that is a file. Either errno must therefore be resolved against the probe's cwd before it can establish a
- * fact about the Codex CLI.
+ * Measured on Node v26.3.1: `spawn` reports ENOENT with `error.path` set to the command for both a missing
+ * command and cwd, and throws ENOTDIR for an existing command whose cwd is a file. As uid 1000 on ext4, it
+ * reported EACCES for cwd modes 000 and 444, and succeeded for 111 and 755. `statSync` succeeded at every
+ * mode, while `readdirSync` also rejected 111; only `accessSync(path, X_OK)` matched the child's `chdir`
+ * across all four. These four path and permission errnos cannot establish a Codex CLI fact before the
+ * matching cwd observation.
  */
 function observeWorkingDirectory(runtime: ProviderPreflightRuntime<CodexProviderAccess>): WorkingDirectoryObservation {
   try {
@@ -133,9 +135,38 @@ function observeWorkingDirectory(runtime: ProviderPreflightRuntime<CodexProvider
   }
 }
 
-function classifyCodexPathLaunchRefusal(
+function classifyCodexPermissionLaunchRefusal(
   runtime: ProviderPreflightRuntime<CodexProviderAccess>,
-  code: 'ENOENT' | 'ENOTDIR',
+  code: 'EACCES' | 'EPERM',
+  directoryObserved: boolean,
+): CodexAppServerProbeResult {
+  const traversability = runtime.storage.observeDirectoryTraversabilitySync(runtime.cwd);
+  switch (traversability) {
+    case 'denied':
+      return requestRefusal(
+        `Codex preflight cannot start because working directory \`${runtime.cwd}\` is not traversable by the user running Coral. Restore it if missing or grant search permission, or choose another working directory, then retry.`,
+      );
+    case 'unobserved':
+      return unobservedProbe(
+        `Codex preflight could not determine whether working directory \`${runtime.cwd}\` is traversable after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
+      );
+    case 'traversable':
+      return directoryObserved
+        ? cliCapabilityOutcome({
+            kind: 'refused',
+            message: `Codex preflight cannot execute \`codex\` (${code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
+          })
+        : unobservedProbe(
+            `Codex preflight could not establish that working directory \`${runtime.cwd}\` is a directory after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
+          );
+    default:
+      return assertNever(traversability);
+  }
+}
+
+function classifyCodexLaunchRefusal(
+  runtime: ProviderPreflightRuntime<CodexProviderAccess>,
+  code: 'ENOENT' | 'ENOTDIR' | 'EACCES' | 'EPERM',
 ): CodexAppServerProbeResult {
   const cwd = observeWorkingDirectory(runtime);
   switch (cwd) {
@@ -148,17 +179,27 @@ function classifyCodexPathLaunchRefusal(
         `Codex preflight cannot start because working directory \`${runtime.cwd}\` is not a directory. Choose a directory, then retry.`,
       );
     case 'unobserved':
-      return unobservedProbe(
-        `Codex preflight could not inspect working directory \`${runtime.cwd}\` after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
-      );
+      return code === 'EACCES' || code === 'EPERM'
+        ? classifyCodexPermissionLaunchRefusal(runtime, code, false)
+        : unobservedProbe(
+            `Codex preflight could not inspect working directory \`${runtime.cwd}\` after \`codex app-server --help\` failed to launch (${code}); this says nothing about app-server support. Check that the working directory is accessible, then retry.`,
+          );
     case 'directory':
-      return code === 'ENOENT'
-        ? cliCapabilityOutcome({ kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE })
-        : cliCapabilityOutcome({
+      switch (code) {
+        case 'ENOENT':
+          return cliCapabilityOutcome({ kind: 'refused', message: CODEX_APP_SERVER_UPGRADE_MESSAGE });
+        case 'ENOTDIR':
+          return cliCapabilityOutcome({
             kind: 'refused',
             message:
               'Codex preflight cannot execute `codex` (ENOTDIR) because a component of its resolved command path is not a directory. Correct the configured command path, then retry.',
           });
+        case 'EACCES':
+        case 'EPERM':
+          return classifyCodexPermissionLaunchRefusal(runtime, code, true);
+        default:
+          return assertNever(code);
+      }
     default:
       return assertNever(cwd);
   }
@@ -183,13 +224,9 @@ async function probeCodexAppServer(
       switch (outcome.code) {
         case 'ENOENT':
         case 'ENOTDIR':
-          return classifyCodexPathLaunchRefusal(runtime, outcome.code);
         case 'EACCES':
         case 'EPERM':
-          return cliCapabilityOutcome({
-            kind: 'refused',
-            message: `Codex preflight cannot execute \`codex\` (${outcome.code}). Check execute permissions on the Codex binary and for the user running the Coral daemon, then retry.`,
-          });
+          return classifyCodexLaunchRefusal(runtime, outcome.code);
         default:
           return assertNever(outcome.code);
       }

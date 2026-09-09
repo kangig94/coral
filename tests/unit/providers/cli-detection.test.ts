@@ -24,6 +24,8 @@ function detector(options: {
   cwd?: string;
   cwdState?: 'directory' | 'missing' | 'not-directory' | 'unobserved';
   statSync?: ReturnType<typeof vi.fn>;
+  cwdTraversability?: 'traversable' | 'denied' | 'unobserved';
+  observeDirectoryTraversabilitySync?: ReturnType<typeof vi.fn>;
 }) {
   const cwdState = options.cwdState ?? 'directory';
   const statSync =
@@ -42,7 +44,11 @@ function detector(options: {
     {
       exec: options.exec,
       cwd: options.cwd ?? '/workspace/project',
-      storage: { statSync },
+      storage: {
+        statSync,
+        observeDirectoryTraversabilitySync:
+          options.observeDirectoryTraversabilitySync ?? vi.fn(() => options.cwdTraversability ?? 'traversable'),
+      },
     } as never,
     { get: (key) => (key === 'FIXTURE_TOKEN' ? options.token : undefined) },
     CONFIG,
@@ -194,6 +200,41 @@ describe('provider-neutral CLI detection', () => {
     });
   });
 
+  it('reports EACCES as a request-specific refusal when the working directory is not traversable', async () => {
+    const exec = vi.fn().mockResolvedValue(launchFailure('EACCES'));
+    const cwd = '/workspace/untraversable-project';
+    const info = await detector({ exec, cwd, cwdTraversability: 'denied' }).detect();
+
+    expect(info).toEqual({
+      available: false,
+      reason: 'invalid-working-directory',
+      error: expect.stringMatching(/not traversable/iu),
+    });
+    if (info.available) throw new Error('expected unavailable');
+    expect(info.error).toContain(cwd);
+    expect(info.error).not.toMatch(/execute permissions on `fixture-cli`/iu);
+  });
+
+  it('uses denied traversability when the working-directory shape cannot be observed', async () => {
+    const exec = vi.fn().mockResolvedValue(launchFailure('EACCES'));
+
+    await expect(detector({ exec, cwdState: 'unobserved', cwdTraversability: 'denied' }).detect()).resolves.toEqual({
+      available: false,
+      reason: 'invalid-working-directory',
+      error: expect.stringMatching(/not traversable/iu),
+    });
+  });
+
+  it('reports EACCES as undetermined when working-directory traversability cannot be observed', async () => {
+    const exec = vi.fn().mockResolvedValue(launchFailure('EACCES'));
+
+    await expect(detector({ exec, cwdTraversability: 'unobserved' }).detect()).resolves.toEqual({
+      available: false,
+      reason: 'undetermined',
+      error: expect.stringMatching(/could not determine whether working directory/iu),
+    });
+  });
+
   it('reports ENOTDIR with a configured-path remedy when the working directory is a directory', async () => {
     const exec = vi.fn().mockResolvedValue(launchFailure('ENOTDIR'));
 
@@ -245,6 +286,19 @@ describe('provider-neutral CLI detection', () => {
       .mockResolvedValueOnce(launchFailure('ENOENT'))
       .mockResolvedValueOnce({ stdout: 'fixture 1.0', stderr: '', status: 0 });
     const subject = detector({ token: 'secret', exec, statSync });
+
+    await expect(subject.detect()).resolves.toMatchObject({ reason: 'invalid-working-directory' });
+    await expect(subject.detect()).resolves.toMatchObject({ available: true, version: 'fixture 1.0' });
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a permission refusal attributed to one request's working directory", async () => {
+    const observeDirectoryTraversabilitySync = vi.fn().mockReturnValueOnce('denied').mockReturnValue('traversable');
+    const exec = vi
+      .fn()
+      .mockResolvedValueOnce(launchFailure('EACCES'))
+      .mockResolvedValueOnce({ stdout: 'fixture 1.0', stderr: '', status: 0 });
+    const subject = detector({ token: 'secret', exec, observeDirectoryTraversabilitySync });
 
     await expect(subject.detect()).resolves.toMatchObject({ reason: 'invalid-working-directory' });
     await expect(subject.detect()).resolves.toMatchObject({ available: true, version: 'fixture 1.0' });

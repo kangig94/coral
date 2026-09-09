@@ -1,6 +1,7 @@
 import { dirname, normalize } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
+  DirectoryTraversability,
   DirentLike,
   SqliteDatabasePort,
   StorageBigIntStat,
@@ -259,6 +260,16 @@ export class InMemoryStorage implements StoragePort {
       const error = createErrnoError('EACCES', normalized);
       error.errno = -13;
       throw error;
+    }
+  }
+
+  observeDirectoryTraversabilitySync(path: string): DirectoryTraversability {
+    let current = normalizePathForStorage(path);
+    while (true) {
+      const directory = this.directories.get(current);
+      if (directory === undefined || (directory.mode & 0o111) === 0) return 'denied';
+      if (current === '/') return 'traversable';
+      current = parentPath(current);
     }
   }
 
