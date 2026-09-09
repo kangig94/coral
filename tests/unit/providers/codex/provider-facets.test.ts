@@ -734,8 +734,6 @@ describe('codexPreflight', () => {
     expect(outcome.message).not.toMatch(LOGIN);
   });
 
-  // Both branches of the unreadable case have to leave the operator with something to do. Naming what was not
-  // established and stopping there is half a refusal — it closes the wrong door without opening one.
   it.each([
     ['EACCES', /readable by the user running the Coral daemon/u],
     ['EPERM', /readable by the user running the Coral daemon/u],

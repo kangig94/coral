@@ -204,15 +204,10 @@ async function checkCodexAppServerAvailability(
 /**
  * Whether the selected Codex home holds usable auth tokens.
  *
- * The one blanket `catch` here covered a file that is not there, a file that is there and is not JSON, and a
- * file this process is not allowed to open — and answered all three with "run `codex login`". The first two
- * are answers, and that remedy is the right one for both: `codex login` writes the file, whether it is absent
- * or corrupt. The third is not an answer at all, and the remedy does not apply to it — a login that cannot
- * read `auth.json` afterwards has fixed nothing.
- *
  * `ENOENT` from this absolute file read establishes that no auth document exists at the selected path, so a
- * login that writes the file is a valid remedy. `EACCES`/`EPERM` must remain `undetermined`: the file might
- * hold valid tokens this process cannot observe, and login does not grant the daemon permission to read it.
+ * login that writes the file is a valid remedy — as it is for a file that is there and is not JSON.
+ * `EACCES`/`EPERM` must remain `undetermined`: the file might hold valid tokens this process cannot
+ * observe, and a login does not grant the daemon permission to read it.
  */
 function probeCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAccess>): ProviderPreflightOutcome {
   const authPath = join(runtime.access.home, 'auth.json');
