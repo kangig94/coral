@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  PROVIDER_PREFLIGHT_TIMEOUT_MS,
+  PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS,
   buildEffectiveCoralEnv,
   buildSessionControllerProfile,
   runProviderPreflight,
@@ -28,12 +28,12 @@ describe('execution policies', () => {
 
     const result = runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {}));
     await Promise.resolve();
-    runtime.time.tick(PROVIDER_PREFLIGHT_TIMEOUT_MS + 1);
+    runtime.time.tick(PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS + 1);
 
     await expect(result).resolves.toEqual({
       kind: 'undetermined',
       cause: 'deadline',
-      message: 'codex preflight timed out after 30000ms',
+      message: `codex preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
     });
     expect(preflight).toHaveBeenCalledOnce();
   });

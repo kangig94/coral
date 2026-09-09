@@ -72,7 +72,7 @@ question this becomes two.
 ## Explicitly out of scope
 
 - The provider-side classification. It is done and correct.
-- `PROVIDER_PREFLIGHT_TIMEOUT_MS` (declared in `src/coordinator/services/execution-policies.ts`). A preflight that overruns its own bound is a
+- `PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS` (declared in `src/coordinator/services/execution-policies.ts`). A preflight that overruns its own bound is a
   different question from one that completed and could not conclude, and folding them together is how this
   entry would get the wrong fix.
 

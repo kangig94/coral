@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS } from '#src/coordinator/services/execution-policies.js';
 import { makeEvent } from '#src/discuss/events.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import * as discussSpeechFlow from '#src/discuss/shell/flow/speech.js';
@@ -12,7 +13,13 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
 } from '#src/discuss/shell/live-registry.js';
-import { PURPOSE_BID, PURPOSE_SPEECH, executeAgentAttempt, runPlainTurn } from '#src/discuss/shell/runtime-build.js';
+import {
+  DISCUSS_LAUNCH_TIMEOUT_MS,
+  PURPOSE_BID,
+  PURPOSE_SPEECH,
+  executeAgentAttempt,
+  runPlainTurn,
+} from '#src/discuss/shell/runtime-build.js';
 import { abortDiscussSession, startDiscussSession } from '#src/discuss/shell/operations.js';
 import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { detachSession, getSession, getWatchState } from '#src/discuss/shell/registry.js';
@@ -32,6 +39,8 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+
+const REQUIRED_PREFLIGHT_POLICY_SLACK_MS = 3_000;
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -170,6 +179,12 @@ describe('Discuss provider scope', () => {
 });
 
 describe('Discuss executor and operations', () => {
+  it('keeps policy slack between the provider answer budget and discuss launch timeout', () => {
+    expect(DISCUSS_LAUNCH_TIMEOUT_MS - PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS).toBeGreaterThanOrEqual(
+      REQUIRED_PREFLIGHT_POLICY_SLACK_MS,
+    );
+  });
+
   it('passes the canonical target cwd through a discuss launch', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-discuss-canonical-'));
     const physicalProject = join(root, 'physical-project');
@@ -274,17 +289,12 @@ describe('Discuss executor and operations', () => {
     harness.cleanup();
   });
 
-  it('fails provider launch when start never returns a job id', async () => {
-    const start = vi.fn(
-      () =>
-        new Promise<never>(() => {
-          // Deliberately unresolved to exercise the discuss launch timeout.
-        }),
-    );
+  it('reports the discuss launch as undetermined when start never returns a job id', async () => {
+    const start = vi.fn(() => new Promise<never>(() => {}));
     const harness = createDiscussHarness(createExecutionServiceStub({ start }));
     await persistSession(harness, { sessionId: 'discuss-launch-timeout', recover: true });
 
-    const turn = runPlainTurn(harness.context, {
+    const attempt = executeAgentAttempt(harness.context, {
       agentName: 'alpha',
       sessionId: 'discuss-launch-timeout',
       provider: 'codex',
@@ -294,13 +304,16 @@ describe('Discuss executor and operations', () => {
       cwd: fixtureCanonicalWorkDir('/repo'),
       invocationCtx: harness.ctx,
       purpose: PURPOSE_BID,
-    }).catch((error: unknown) => error);
+    });
 
-    await advanceDiscussRuntime(harness, 30_000);
-    const error = await turn;
+    await advanceDiscussRuntime(harness, PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
+    await advanceDiscussRuntime(harness, DISCUSS_LAUNCH_TIMEOUT_MS - PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
 
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('codex discuss launch timed out after 30000ms');
+    await expect(attempt).resolves.toEqual({
+      ok: false,
+      consumedAttempt: false,
+      message: `Discuss launch check established nothing: codex discuss launch timed out after ${DISCUSS_LAUNCH_TIMEOUT_MS}ms before returning a job id`,
+    });
     const agentRun = harness.store.load('discuss-launch-timeout')?.runtime.agentRuns.alpha;
     expect(agentRun?.currentJobId).toBeUndefined();
     expect(agentRun?.currentAttempt).toBeUndefined();
@@ -309,17 +322,23 @@ describe('Discuss executor and operations', () => {
     harness.cleanup();
   });
 
-  it('reports when the provider launch check established nothing without consuming an attempt', async () => {
-    const start = vi.fn().mockResolvedValue({
-      status: 'undetermined',
-      code: 'provider_preflight_undetermined',
-      message: 'Provider preflight could not inspect credentials',
-    });
+  it('preserves a provider preflight deadline as undetermined without consuming an attempt', async () => {
+    const start = vi.fn();
     const waitStreamOnce = vi.fn();
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    start.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        harness.runtime.time.setTimeout(resolve, PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
+      });
+      return {
+        status: 'undetermined',
+        code: 'provider_preflight_undetermined',
+        message: `codex preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
+      } as const;
+    });
     await persistSession(harness, { sessionId: 'discuss-undetermined-launch', recover: true });
 
-    const result = await executeAgentAttempt(harness.context, {
+    const attempt = executeAgentAttempt(harness.context, {
       agentName: 'alpha',
       sessionId: 'discuss-undetermined-launch',
       provider: 'codex',
@@ -331,10 +350,12 @@ describe('Discuss executor and operations', () => {
       purpose: PURPOSE_BID,
     });
 
-    expect(result).toEqual({
+    await advanceDiscussRuntime(harness, PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
+
+    await expect(attempt).resolves.toEqual({
       ok: false,
       consumedAttempt: false,
-      message: 'Discuss launch check established nothing: Provider preflight could not inspect credentials',
+      message: `Discuss launch check established nothing: codex preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
     });
     expect(waitStreamOnce).not.toHaveBeenCalled();
 

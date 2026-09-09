@@ -10,7 +10,7 @@ import {
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
-import { refuseLaunch } from '../../jobs/launch.js';
+import { refuseLaunch, undeterminedLaunch } from '../../jobs/launch.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
@@ -35,7 +35,7 @@ export const PURPOSE_SPEECH: DiscussAgentJobPurpose = 'speech';
 export const PURPOSE_EPOCH_EVALUATION: DiscussAgentJobPurpose = 'epoch_evaluation';
 export const PURPOSE_FOLLOW_UP: DiscussAgentJobPurpose = 'follow_up';
 export const PURPOSE_SYNTHESIS: DiscussAgentJobPurpose = 'synthesis';
-const DISCUSS_LAUNCH_TIMEOUT_MS = 30_000;
+export const DISCUSS_LAUNCH_TIMEOUT_MS = 30_000;
 
 export type AttemptSuccess = {
   ok: true;
@@ -95,15 +95,24 @@ function isRetryableAttemptOutcome(outcome: DiscussAgentJobOutcome | undefined):
   return outcome !== undefined && RETRYABLE_ATTEMPT_OUTCOMES.has(outcome);
 }
 
-function withDiscussLaunchTimeout<T>(ctx: DiscussContext, launch: Promise<T>, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
+function withDiscussLaunchTimeout(
+  ctx: DiscussContext,
+  launch: Promise<DiscussLaunchDecision>,
+  label: string,
+): Promise<DiscussLaunchDecision> {
+  return new Promise<DiscussLaunchDecision>((resolve, reject) => {
     let settled = false;
     const timeout = ctx.runtime.time.setTimeout(() => {
       if (settled) {
         return;
       }
       settled = true;
-      reject(new Error(`${label} timed out after ${DISCUSS_LAUNCH_TIMEOUT_MS}ms before returning a job id`));
+      resolve(
+        undeterminedLaunch(
+          'discuss_launch_undetermined',
+          `${label} timed out after ${DISCUSS_LAUNCH_TIMEOUT_MS}ms before returning a job id`,
+        ),
+      );
     }, DISCUSS_LAUNCH_TIMEOUT_MS);
     timeout.unref?.();
 

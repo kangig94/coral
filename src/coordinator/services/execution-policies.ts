@@ -205,7 +205,7 @@ export function toPreflightRuntime(
   };
 }
 
-export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
+export const PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS = 27_000;
 
 export type PreflightDecision =
   | { kind: 'satisfied' }
@@ -216,7 +216,7 @@ function deadlinePreflightDecision(provider: BoundProvider): PreflightDecision {
   return {
     kind: 'undetermined',
     cause: 'deadline',
-    message: `${provider.name} preflight timed out after ${PROVIDER_PREFLIGHT_TIMEOUT_MS}ms`,
+    message: `${provider.name} preflight timed out after ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms`,
   };
 }
 
@@ -279,7 +279,7 @@ export async function runProviderPreflight(
   provider: BoundProvider,
   runtime: Omit<ProviderPreflightInput, 'access'>,
 ): Promise<PreflightDecision> {
-  const deadline = runtime.time.monotonicNow() + BigInt(PROVIDER_PREFLIGHT_TIMEOUT_MS);
+  const deadline = runtime.time.monotonicNow() + BigInt(PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS);
   try {
     return await runPreflightWithTimeout(provider, runtime, deadline);
   } catch (error: unknown) {
