@@ -21,10 +21,12 @@ import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderOperationEventIdentity } from '#src/jobs/provider-event.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import {
+  compareAndSwapProviderOperation,
   insertProviderOperation,
   providerOperationMutationAdmission,
   readProviderOperation,
 } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import {
   createProviderEventHandler,
   createStoreProviderEventEffectPort,
@@ -528,5 +530,47 @@ describe('createProviderEventHandler', () => {
     await expect(
       handler({ operation: identity, providerSeq: 1, event: { kind: 'suspended', reason: 'interrupt_unconfirmed' } }),
     ).rejects.toThrow(/no recorded operation\.stop\.v1 cause/u);
+  });
+
+  it.each([
+    [
+      'terminal',
+      {
+        kind: 'terminal' as const,
+        terminal: { content: 'provider result', durationMs: 5, outcome: { kind: 'completed' as const } },
+        diagnostics: {},
+      },
+    ],
+    ['suspended', { kind: 'suspended' as const, reason: 'interrupt_unconfirmed' as const }],
+  ])('converts a %s acknowledgement under re-key containment into a failed terminal', async (_label, event) => {
+    const { identity, sessionId } = seedOperation();
+    const executing = readProviderOperation(progressStore.getDb(), identity);
+    if (executing?.phase !== 'executing') throw new Error('expected executing operation');
+    const contained = providerOperationRecordSchema.parse({
+      ...executing,
+      controlIntent: {
+        kind: 'rekey-refusal-containment',
+        cause: 'coordinator_rekey_refused',
+        reason: 'The receiver refused the prepared source reservation.',
+        requestedAt: '2026-08-09T12:34:56.000Z',
+      },
+      revision: executing.revision + 1,
+    });
+    if (contained.phase !== 'executing') throw new Error('expected contained executing operation');
+    expect(compareAndSwapProviderOperation(progressStore.getDb(), executing, contained).kind).toBe('updated');
+
+    const handler = createProviderEventHandler(testDeps());
+    await expect(handler({ operation: identity, providerSeq: 1, event })).resolves.toEqual({
+      kind: 'ack',
+      committedThroughProviderSeq: 1,
+    });
+
+    expect(progressStore.readTerminalProjection(identity.jobId)?.outcome.kind).toBe('failed');
+    expect(rawEventsByType(sessionId, 'session.interrupted')).toEqual([]);
+    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'settlement-pending',
+      controlIntent: contained.controlIntent,
+    });
   });
 });

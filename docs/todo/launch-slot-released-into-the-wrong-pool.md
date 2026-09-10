@@ -1,166 +1,23 @@
-# A launch slot can be released into the wrong pool, and the release says nothing
+# Launch-slot release identity — resolved
 
-**One-time field measurement, 2026-08-23, on host `KANG-HOME`.** A coordinator reported two active launch
-entries while the persisted-job and carrier diagnostics reported no active jobs:
+Field observations on 2026-08-23 and 2026-08-24 found more active launch reservations than live jobs. A
+third report on 2026-09-09 followed a provider usage-limit stop. Those measurements established lost
+capacity, but did not distinguish a wrong-pool release from an internal `spawndurable-*` holder or a carrier
+that never returned.
 
-```
-active     = 2                                                       (LaunchCoordinator pools)
-activeJobs = 0
-diagnostics.carriers = { coverage: "complete", liveJobs: 0, unknownJobs: 0, recoveryDefectJobs: 0 }
-```
+The release defect is now closed. Admission issues an opaque, generation-bound `LaunchPermit`, and the only
+release operation accepts that exact permit. It reports whether the reservation was released, had already
+been released, or had transferred to another holder. There is no default pool and a copied permit from an
+older reservation cannot release a newer reservation that reused the job ID. Health diagnostics name aged
+or uncarried permits by reservation, job, pool, holder, and execution owner, and the reported holder can be
+aborted through its lifecycle authority.
 
-This live process state is gone and cannot be re-run as a fixture; the values above are the retained incident
-measurement. The carrier line establishes that no stored non-terminal job was observed: `liveJobs` and
-`unknownJobs` are both zero. `coverage: "complete"` means only that every stored
-non-terminal job was mapped to an observation — it is a statement about mapping, not about liveness, and
-`unknownJobs` is how that observer honestly reports a liveness it could not determine. Here there was
-nothing to map and nothing unknown. It does not classify entries held for internal permits, and the diagnostic
-did not expose the two active ids or their owners.
-
-## Why the count and the jobs disagree
-
-`active` on `LaunchCoordinator` (`src/coordinator/live/admission.ts`) is the summed size of
-`pools[*].active`, a `Map<jobId, { provider, owner }>`. It is not a persisted-job count.
-`reserveInternalPermitOrThrow` in `src/coordinator/live/admission.ts` inserts a `spawndurable-*` entry owned by
-a `system-task` before and without a persisted job. `active > activeJobs` is therefore legitimate and
-transient during a durable spawn. The observed `active = 2 / activeJobs = 0` requires inspecting the held ids
-and owners; by itself it proves neither a leak nor a wrong-pool release.
-
-## The line that makes a leak invisible
-
-```ts
-releaseLaunch(jobId: string, pool: LaunchPool = 'default'): void {
-  const activeLaunches = this.getActiveMap(pool);
-  if (!activeLaunches.delete(jobId)) return;
-  this.admitQueueHead(pool);
-```
-
-A release whose `delete` finds nothing returns through the same path as a release that freed a slot. "I
-released it" and "it was not in this pool" are the same outcome, recorded nowhere. That is principle 11 in
-`.claude/rules/design-philosophy.md`: the third answer has no representation, and the caller cannot act on
-what it cannot distinguish.
-
-The default argument compounds it. `pool` defaults to `'default'`, but slots are held in whichever of
-`default | discuss | curate` admitted the job. A release that omits the pool for a `discuss` or `curate` job
-deletes from the wrong map, finds nothing, returns silently, and leaves the real slot held forever. The
-default value is what turns a caller's omission into a silent leak instead of a type error.
-
-## Not yet established
-
-Whether either release defect produced the observed pair. The first step is to rule out internal permits by
-inspecting the active ids and owners. If neither entry was an internal permit, then either a release ran
-against the wrong pool or no release ran at all. The incident history retained on `KANG-HOME` contained five
-provider jobs ending that day with `provider became unavailable`, so a death path with no release remains a
-candidate, but that one-time count does not identify which path ran. The observation proves neither cause;
-the silent no-op and defaulted pool remain independently visible defects in `releaseLaunch`.
-
-**Circumstantial support for the second.** The same one-time process census on `KANG-HOME`, taken while the
-two entries were held, found one provider-proxy set consisting of a guardian and two children whose displayed
-start minute matched the recorded end minute of a job that had ended with `provider became unavailable`.
-That is consistent with a death path that released neither the containment nor the slot, but minute-level age
-agreement is not proof of which code path ran.
-
-That census also counted four orphaned coordinator processes from `clients/build/`, each with a displayed age
-of about three hours and still holding `/tmp/coral-cli-test-*/…/coordinator.sock`. Those one-time measurements
-are not reproducible now. They indicate a test-run cleanup leak rather than this defect and are noted only
-because the same census surfaced both.
-
-## A second, much larger observation — 2026-08-24
-
-The first observation was two slots and was correctly called evidence rather than proof. This one is harder to
-explain away:
-
-```
-active = 15   activeJobs = 2   queueDepth = 0        coordinator uptime 5.2 h
-CORAL_MAX_WORKERS = 20
-```
-
-Two jobs were actually running, one per project, and thirteen slots were held. The coordinator had been up
-5.2 hours since a deliberate restart, so this accumulated during ordinary use, and it did not clear: the same
-gap stood across repeated reads minutes apart, which rules out the transient internal-permit window that
-weakened the first observation. With the limit at 20 there were five admissions left before launches begin
-queueing and then being refused outright.
-
-**It is not every job.** One of those two jobs completed while this was being measured, and the count moved
-exactly with it — `active` 15 → 14 as `activeJobs` 2 → 1. That release was clean. So whatever leaks is
-narrower than "the completion path", which is why the two candidate causes in the section above still both
-stand.
-
-**The internal-permit release is not obviously the culprit either.** `spawnDurableJobTransport`
-(`src/coordinator/live/durable-transport.ts`) releases its `spawndurable` permit inside a `finally`, so it runs
-on normal return and on throw alike. What a `finally` does not survive is a `try` block that never exits, and
-the poll loop it wraps is exactly the shape that would not — but no evidence here distinguishes that from a
-release aimed at the wrong pool.
-
-**There is no audit trail to settle it with.** Grepping the coordinator log for admission, release, permit, or
-`spawndurable` records returns nothing: the count is published, the held identities are not, and no event is
-written when a slot is taken or freed. Anyone diagnosing this has the same three facts available that this
-entry has, which is the argument for exposing `getActiveJobIds` before arguing about causes.
-
-## Why it is not cosmetic
-
-Slots are finite. `hasLaunchCapacity` admits only while `pools[pool].active.size` is below
-`getActiveLimit(pool, env)` (`src/coordinator/live/worker-limits.ts`), after which launches queue, and past
-`getMaxQueueSize` they are refused outright with `queue_full`. An entry that is in fact leaked is never
-reclaimed by any event, so the capacity lost is permanent for the life of the process: the only recovery is a
-coordinator restart. That is a hold with no exit, which the same principle forbids. The field counts above do
-not establish that either entry reached this state.
-
-## The operator cannot see which job
-
-`getActiveJobIds` on `JobQueueReadPort` (`src/jobs/contracts/admission.ts`) exists but is not exposed through
-`/health?detailed=1` or `backend status`, both of which publish only the count. Principle 11 asks that a
-refusal be visible as durable status "keyed by the identity it can be acted on with"; a bare `2` cannot be
-acted on. Exposing the held ids is the first step: a `spawndurable-*` identity would rule an internal permit
-in or out, and owner diagnostics would distinguish it decisively. That is the argument for exposing
-`getActiveJobIds`, not a claim that the field count already proves a leak.
-
-## Shape of the fix
-
-Make the release say which of the three it did — freed a slot, found no such reservation, or could not
-determine — and make the pool a required argument so a caller cannot omit it into the wrong map. Publish the
-held ids as diagnostics. Whether a not-found release should also be reported as a defect through the carrier
-observer is the open question. Note what the carrier observer is *not* guilty of: it correctly reported zero
-live and zero unknown persisted jobs, but it does not inspect the launch coordinator's internal-permit or job
-reservations. Nothing in the carrier diagnostics could classify the two active entries, which is why exposing
-`getActiveJobIds` and ownership matters rather than expecting an existing surface to have caught it.
-
-## A third observation — 2026-09-09, and it names a death path
-
-Reported from ordinary use on the same host: a delegated `codex` job stopped because the **provider's usage
-limit was exhausted**, and the coordinator's active count did not return to zero — the slot stayed occupied
-after the job was gone. This is the first observation that names *which* death path was running, which is the
-question the two observations above could not answer.
-
-**The candidate mechanism, not yet established.** `runAsync` (`src/jobs/shell/launch.ts`) releases in a
-`finally`, but behind three gates:
-
-```ts
-const quiesced = this.quiescedAppServerJobs.has(jobId);
-if (permitAcquired && !quiesced && !preserveOwnership) {
-  launchAdmission.releaseLaunch(jobId, pool);
-}
-```
-
-`preserveOwnership` is set from `disposition === 'preserved'`, and the disposition is `preserved` whenever
-`consumed.kind === 'suspended'` or the job was quiesced for an app-server handoff. So two paths deliberately
-keep the slot, on the premise that a successor adopts the job and releases it later. `suspended` carries two
-reasons — `interrupt_unconfirmed` and `durable_state_uncommitted` (`src/jobs/shell/continuity-consumer.ts`) —
-and neither is a usage limit; nothing under `src/providers/` matches `quota`, `usage limit`, or `rate limit`
-at all, so how a quota stop is classified is exactly what has not been traced.
-
-What makes this the shape §11 forbids rather than a slow release: no path under
-`src/coordinator/services/recovery/` mentions `suspended`, so within the life of the process the retained slot
-has no named claimant. If the successor never arrives, the hold has no exit and the capacity is gone until the
-coordinator restarts — which is what all three observations report.
-
-**What would settle it**, in order: expose `getActiveJobIds` with owners (this entry already argues for it,
-and every observation so far has been blocked on the same missing diagnostic); reproduce by exhausting a
-provider's usage limit against a live coordinator; then read whether the held id is the quota-stopped job, a
-`spawndurable-*` internal permit, or neither. The reproduction is cheap for anyone who can reach a usage
-limit, which is what makes this observation more actionable than the two above.
+This does not establish that a wrong-pool call caused any of the field incidents. The most likely explanation
+for the usage-limit incident is the separately tracked local app-server stream inactivity defect, which this
+change deliberately does not close.
 
 ## Start condition
 
-Independent of `backend-routing-disposition`. Worth doing before that plan's PR3, since a leaked slot is
-recovered only by restart and this was reached in ordinary use.
+Closed by the exact-permit admission migration. Reopen only if an exact permit release fails to return
+capacity after its holder has settled, or if diagnostics show a reservation whose recorded lifecycle exit
+completed without releasing that same generation.

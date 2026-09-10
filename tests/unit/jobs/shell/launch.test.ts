@@ -790,6 +790,32 @@ describe('ExecutionService launch', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      label: 'enqueue sequence construction',
+      inject: (progressStore: JobStore) =>
+        vi.spyOn(progressStore, 'nextEnqueueSequence').mockImplementation(() => {
+          throw new Error('enqueue sequence unavailable');
+        }),
+      message: 'enqueue sequence unavailable',
+    },
+  ])('returns initial-launch capacity after post-acquisition $label fails', async ({ inject, message }) => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const progressStore = createProgressStore();
+    const service = createService(ctx, { progressStore });
+    const jobId = `construction-failure-${randomUUID()}`;
+    inject(progressStore);
+
+    await expect(service.start('codex', { prompt: 'fail after admission', jobId }, ctx)).rejects.toThrow(message);
+
+    expect(launchCoordinator.reservationFor(jobId)).toBeNull();
+    expect(launchCoordinator.active).toBe(0);
+    expect(launchCoordinator.queueDepth()).toBe(0);
+    expect(progressStore.readJobEvents(jobId)).toEqual([]);
+  });
+
   it('removes the workflow abort registration when its atomic launch commit fails', async () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);

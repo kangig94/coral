@@ -179,6 +179,12 @@ export type HealthSnapshot = {
     }>;
     providerProxySets?: ProviderProxySetOperatorStatus[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
+    settlementRefusalRecordingFailures?: Array<{
+      jobId: string;
+      cause: 'terminal-persist-failed' | 'claim-release-failed';
+      error: string;
+      observedAtMs: number;
+    }>;
     launchPermits?: Array<{
       reservationId: string;
       jobId: string;

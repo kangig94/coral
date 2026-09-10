@@ -682,6 +682,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   private queuedHandle(entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
+    void entry.promise.catch(() => undefined);
     const queuePosition = this.queuePosition(entry.jobId, pool) ?? this.getQueue(pool).length;
     return {
       type: 'queued',

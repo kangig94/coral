@@ -7,7 +7,7 @@ import { none } from '#src/providers/capability.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
-import type { JobAdmissionPort } from '#src/jobs/contracts/admission.js';
+import type { JobAdmissionPort, SettlementRefusalRecorder } from '#src/jobs/contracts/admission.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { ContinuitySnapshot } from '#src/sessions/continuity.js';
 import type { AppServerSession } from '#src/providers/contract.js';
@@ -29,6 +29,7 @@ import { attachContinuityCommit } from '#src/providers/internal/continuity-commi
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { backendLog } from '#src/infra/backend-log.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -155,6 +156,7 @@ interface QuiesceHarness {
   openedServerSpecs: unknown[];
   jobId: string;
   sessionId: string;
+  currentSession: () => ProviderSession;
 }
 
 async function buildOrchestratorAroundProviderStream(
@@ -169,6 +171,7 @@ async function buildOrchestratorAroundProviderStream(
     hostAcquisitionGate?: Promise<void>;
     artifactGate?: Promise<void>;
     checkpointFailure?: 'stale' | 'throw';
+    settlementRefusalRecorder?: SettlementRefusalRecorder;
   } = {},
 ): Promise<QuiesceHarness> {
   const jobId = 'job-quiesce';
@@ -325,7 +328,7 @@ async function buildOrchestratorAroundProviderStream(
     coordinatorCommit: (cb) => progressStoreSpy.commit(cb),
     backendNamespace: 'ns',
     bundleHash: 'bundle',
-    settlementRefusalRecorder: { record: () => true },
+    settlementRefusalRecorder: options.settlementRefusalRecorder ?? { record: () => true },
     terminalMaterializer: {
       recordProviderTerminal: recordTerminalSpy as never,
     },
@@ -431,6 +434,7 @@ async function buildOrchestratorAroundProviderStream(
     openedServerSpecs,
     jobId,
     sessionId,
+    currentSession: () => session,
   };
 }
 
@@ -615,7 +619,7 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     harness.providerStream.end();
   });
 
-  it('preserves durable ownership when a provider cannot confirm exact-turn interruption', async () => {
+  it('releases admission but preserves durable ownership when exact-turn interruption is unconfirmed', async () => {
     const harness = await buildOrchestratorAroundProviderStream();
     await harness.attachServer();
 
@@ -624,14 +628,14 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     await vi.waitFor(() => expect(tracking.appServerJobs.has(harness.jobId)).toBe(false));
 
     expect(harness.recordTerminalSpy).not.toHaveBeenCalled();
-    expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
-    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
+    expect(harness.currentSession().activeJobId).toBe(harness.jobId);
   });
 
   it.each(['stale', 'throw'] as const)(
-    'preserves durable ownership when a live provider checkpoint is %s',
+    'releases admission but preserves durable ownership when a live provider checkpoint is %s',
     async (checkpointFailure) => {
       const harness = await buildOrchestratorAroundProviderStream(undefined, { checkpointFailure });
       await harness.attachServer();
@@ -646,10 +650,10 @@ describe('LaunchOrchestrator handoff quiesce', () => {
       await vi.waitFor(() => expect(tracking.appServerJobs.has(harness.jobId)).toBe(false));
 
       expect(harness.recordTerminalSpy).not.toHaveBeenCalled();
-      expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
       expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
       expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
-      expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
+      expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
+      expect(harness.currentSession().activeJobId).toBe(harness.jobId);
     },
   );
 
@@ -728,11 +732,12 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     await expect(quiesce).resolves.toBeUndefined();
     await emitted;
     expect(harness.releaseJobClaimSpy).toHaveBeenCalledTimes(1);
-    expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
+    expect(harness.currentSession().activeJobId).toBe(harness.jobId);
     harness.providerStream.end();
   });
 
-  it('preserves ownership when terminal persistence fails', async () => {
+  it('releases admission but preserves the session claim when terminal persistence fails', async () => {
     const harness = await buildOrchestratorAroundProviderStream();
     await harness.attachServer();
     harness.recordTerminalSpy.mockImplementationOnce(() => {
@@ -748,12 +753,47 @@ describe('LaunchOrchestrator handoff quiesce', () => {
 
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
-    expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
-    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
+    expect(harness.currentSession().activeJobId).toBe(harness.jobId);
   });
 
-  it('preserves ownership when the exact-version terminal claim release is stale', async () => {
-    const harness = await buildOrchestratorAroundProviderStream(undefined, { releaseJobClaimResult: false });
+  it('releases admission and reports recording-failed when terminal and quarantine writes both fail', async () => {
+    const loggedErrors: string[] = [];
+    const error = vi.spyOn(backendLog, 'error').mockImplementation((message) => {
+      loggedErrors.push(String(message));
+    });
+    const harness = await buildOrchestratorAroundProviderStream(undefined, {
+      settlementRefusalRecorder: { record: () => false },
+    });
+    await harness.attachServer();
+    harness.recordTerminalSpy.mockImplementationOnce(() => {
+      throw new Error('terminal persistence failed');
+    });
+
+    await harness.providerStream.emit({
+      kind: 'terminal',
+      terminal: { content: 'not durably terminal', outcome: { kind: 'completed' } },
+    } as never);
+    const tracking = harness.orchestrator as unknown as { appServerJobs: Set<string> };
+    await vi.waitFor(() => expect(tracking.appServerJobs.has(harness.jobId)).toBe(false));
+
+    expect(loggedErrors.some((message) => message.includes('Failed to record settlement refusal'))).toBe(true);
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
+    expect(harness.currentSession().activeJobId).toBe(harness.jobId);
+    error.mockRestore();
+  });
+
+  it('releases admission when the exact-version terminal claim release is stale', async () => {
+    const recordedRefusals: unknown[] = [];
+    const harness = await buildOrchestratorAroundProviderStream(undefined, {
+      releaseJobClaimResult: false,
+      settlementRefusalRecorder: {
+        record: (refusal) => {
+          recordedRefusals.push(refusal);
+          return true;
+        },
+      },
+    });
     await harness.attachServer();
 
     await harness.providerStream.emit({
@@ -768,8 +808,9 @@ describe('LaunchOrchestrator handoff quiesce', () => {
       expectedVersion: 1,
     });
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
-    expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
-    expect(harness.launchCoordinator.reservationFor(harness.jobId)).not.toBeNull();
+    expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
+    expect(harness.currentSession().activeJobId).toBe(harness.jobId);
+    expect(recordedRefusals).toEqual([]);
   });
 
   it('releases a terminal claim at the version returned by the last continuity CAS', async () => {

@@ -324,16 +324,17 @@ describe('provider-proxy operation ledger', () => {
     expect(refused).toEqual({ kind: 'capacity', retryable: true, reason: 'replay-bytes' });
   });
 
-  it('reaches released only through the suspend arm once suspended', () => {
+  it('lets a suspended operation advance to failed-terminal settlement before release', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
     activate(ledger);
 
     ledger.transition(KEY, 'suspended-awaiting-durable-decision');
 
-    // A suspended operation awaits a durable decision; it cannot slip back into executing or terminal.
+    // A suspended operation cannot slip back into execution. Containment may turn its acknowledgement into
+    // the failed terminal already committed by the coordinator.
     expect(() => ledger.transition(KEY, 'executing')).toThrow(LedgerError);
-    expect(() => ledger.transition(KEY, 'terminal-awaiting-settlement')).toThrow(LedgerError);
+    ledger.transition(KEY, 'terminal-awaiting-settlement');
     ledger.beginRelease(KEY);
     ledger.transition(KEY, 'released');
     expect(ledger.get(KEY)).toBeNull();

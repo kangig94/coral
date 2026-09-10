@@ -1142,7 +1142,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       this.appendProviderTerminal(jobId, sessionId, projectRoot, event);
     } catch (error: unknown) {
       backendLog.error(`Failed to persist provider terminal for ${jobId}: ${errorMessage(error)}`, error);
-      return this.recordSettlementRefusal(jobId, 'terminal-persist-failed', error);
+      return await this.recordSettlementRefusal(jobId, 'terminal-persist-failed', error);
     }
 
     let released: boolean;
@@ -1156,7 +1156,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         `Failed to release claimed session ${sessionId} for terminal job ${jobId}: ${errorMessage(error)}`,
         error,
       );
-      return this.recordSettlementRefusal(jobId, 'claim-release-failed', error);
+      return await this.recordSettlementRefusal(jobId, 'claim-release-failed', error);
     }
     if (!released) {
       backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
@@ -1173,13 +1173,13 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     return 'settled';
   }
 
-  private recordSettlementRefusal(
+  private async recordSettlementRefusal(
     jobId: string,
     cause: 'terminal-persist-failed' | 'claim-release-failed',
     error: unknown,
-  ): SettlementRefusal {
+  ): Promise<SettlementRefusal> {
     try {
-      const recorded = this.deps.settlementRefusalRecorder.record({
+      const recorded = await this.deps.settlementRefusalRecorder.record({
         jobId,
         cause,
         failure: errorMessage(error),

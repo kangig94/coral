@@ -6,6 +6,8 @@ import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type * as CompositionWorldMod from '#src/coordinator/composition/world.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
+import { parseBackendHealth } from '#src/transport/http/backend/health.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 
 const captured = vi.hoisted(() => ({
   healthRead: null as HttpHandlerPorts['health']['read'] | null,
@@ -395,7 +397,8 @@ describe('health local carrier observation', () => {
       listJobIds: () => [],
     });
 
-    expect(readHealth().diagnostics?.launchPermits).toEqual([
+    const produced = readHealth();
+    expect(produced.diagnostics?.launchPermits).toEqual([
       {
         reservationId: old.permit.reservationId,
         jobId: 'old-live-job',
@@ -415,6 +418,43 @@ describe('health local carrier observation', () => {
         heldForMs: 0,
       },
     ]);
+
+    const roundTripReport = {
+      ...produced,
+      diagnostics: {
+        ...produced.diagnostics,
+        settlementRefusalRecordingFailures: [
+          {
+            jobId: 'failed-settlement-job',
+            cause: 'terminal-persist-failed' as const,
+            error: 'recovery quarantine unavailable',
+            observedAtMs: 12_345,
+          },
+        ],
+      },
+    };
+    const decoded = parseBackendHealth(roundTripReport);
+    if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    const formatted = formatBackendStatus(
+      {
+        status: 'ok',
+        health: {
+          ...decoded.health,
+          status: 'ok',
+          skippedProviderProxySetRows: decoded.skippedProviderProxySetRows,
+          skippedProviderProxySetTokens: decoded.skippedProviderProxySetTokens,
+        },
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(formatted).toContain(
+      `reservation=${old.permit.reservationId} job=old-live-job pool=default provider=codex heldForMs=${LAUNCH_PERMIT_REPORT_AGE_MS + 1}`,
+    );
+    expect(formatted).toContain('holder=local-execution');
+    expect(formatted).toContain('executionOwner=provider-session:old-session');
+    expect(formatted).toContain('job=failed-settlement-job cause=terminal-persist-failed observedAtMs=12345');
+    expect(formatted).toContain('error=recovery quarantine unavailable');
   });
 
   it('omits launchPermits when every permit is young and carried live', () => {

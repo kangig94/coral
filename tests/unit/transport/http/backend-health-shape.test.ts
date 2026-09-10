@@ -212,6 +212,35 @@ describe('/health typed shape (AC10a)', () => {
     ).toBeNull();
   });
 
+  it('decodes settlement recording failures and rejects malformed evidence', () => {
+    const report = {
+      ...HEALTHY_BASE,
+      diagnostics: {
+        settlementRefusalRecordingFailures: [
+          {
+            jobId: 'job-settlement-failure',
+            cause: 'claim-release-failed',
+            error: 'quarantine database unavailable',
+            observedAtMs: 123,
+          },
+        ],
+      },
+    };
+    expect(parseBackendHealth(report)?.health.diagnostics?.settlementRefusalRecordingFailures).toEqual(
+      report.diagnostics.settlementRefusalRecordingFailures,
+    );
+    expect(
+      parseBackendHealth({
+        ...report,
+        diagnostics: {
+          settlementRefusalRecordingFailures: [
+            { ...report.diagnostics.settlementRefusalRecordingFailures[0], observedAtMs: -1 },
+          ],
+        },
+      }),
+    ).toBeNull();
+  });
+
   it.each([
     { coverage: 'complete', liveJobs: 2, unknownJobs: 1, recoveryDefectJobs: 1 },
     { coverage: 'unknown', liveJobs: 0, unknownJobs: 3, recoveryDefectJobs: 0 },

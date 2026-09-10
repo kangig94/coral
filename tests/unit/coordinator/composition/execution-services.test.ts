@@ -536,6 +536,19 @@ describe('execution services provider-proxy proof composition', () => {
         throw new Error('execution service creation was not expected');
       }) as never,
     });
+    const repairedOwnership = createProviderOperationStartupOwnershipHarness({
+      runtime,
+      records: [],
+      coordinator: launchCoordinator,
+    });
+    services.connectProviderOperationRecovery({
+      adoptRepairedProviderOperationOwnership: (record: ProviderOperationRecord) => {
+        const [ownership] = repairedOwnership.ownershipFor([record]).records;
+        if (ownership === undefined) throw new Error('expected repaired operation ownership');
+        return ownership;
+      },
+      releaseProviderOperationStartupOwnership: repairedOwnership.releaseStartupOwnership,
+    } as never);
     await services.reconcileProviderOperationsAtStartup(
       startupOwnership(runtime, db, launchCoordinator),
       new AbortController().signal,
@@ -689,6 +702,7 @@ describe('execution services provider-proxy proof composition', () => {
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
+    const launchCoordinator = new LaunchCoordinator({ runtime });
     const inheritProviderProxySet = vi.fn(async () => ({ kind: 'not-bequeathed' as const, reason: 'unused' }));
     const redeemDiscoveredCapsule = vi.fn(async () => {
       throw new Error('capsule redemption was not expected');
@@ -704,6 +718,7 @@ describe('execution services provider-proxy proof composition', () => {
       providerProxySetContainmentProver: { collectContainmentProof: proveContainmentAbsent },
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
+      launchCoordinator,
     } as never;
 
     const services = createExecutionServices({
@@ -820,6 +835,14 @@ describe('execution services provider-proxy proof composition', () => {
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    const recoveryPermit = launchCoordinator.restoreActiveLaunch(
+      record.operation.jobId,
+      'codex',
+      { kind: 'provider-session', id: record.operation.jobId },
+      'default',
+    );
+    launchCoordinator.prepareProviderOperationBinding(recoveryPermit, record.operation);
     const readLaunchProjection = vi.fn(() => ({
       jobId: record.operation.jobId,
       owner: { kind: 'provider-session' as const, id: record.operation.jobId },
@@ -843,6 +866,7 @@ describe('execution services provider-proxy proof composition', () => {
       providerProxySetContainmentProver: noContainmentProver,
       reapRecordedContainment: unexpectedRecordedContainmentReap,
       providerHostManager: {},
+      launchCoordinator,
     } as never;
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const services = createExecutionServices({

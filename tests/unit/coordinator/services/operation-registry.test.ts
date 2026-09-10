@@ -30,6 +30,7 @@ function cleanupFor(m: ExecutingRecord) {
 function registryWithCleanup(release = vi.fn()) {
   const registry = new LocalOperationRegistry();
   registry.connectCleanup({ release });
+  registry.connectBinding({ settleProviderOperationBinding: () => ({ kind: 'settled-unbound' }) } as never);
   return { registry, release };
 }
 
@@ -117,6 +118,7 @@ describe('LocalOperationRegistry', () => {
     const order: string[] = [];
     const registry = new LocalOperationRegistry();
     registry.connectCleanup({ release: () => order.push('cleanup') });
+    registry.connectBinding({ settleProviderOperationBinding: () => ({ kind: 'settled-unbound' }) } as never);
     registry.connectSettlementObserver((jobId) => {
       expect(registry.stateForJob(jobId)).toBeNull();
       order.push('settlement-observer');
@@ -136,6 +138,7 @@ describe('LocalOperationRegistry', () => {
     const activated = meta();
     const release = vi.fn();
     registry.connectCleanup({ release });
+    registry.connectBinding({ settleProviderOperationBinding: () => ({ kind: 'settled-unbound' }) } as never);
     registry.activate(activated, fakeControl().control, cleanupFor(activated));
 
     expect(() =>
@@ -235,6 +238,7 @@ describe('LocalOperationRegistry', () => {
 
     it('drops a settled entry — a fixed snapshot never reports an operation this coordinator already let go', () => {
       const registry = new LocalOperationRegistry();
+      registry.connectBinding({ settleProviderOperationBinding: () => ({ kind: 'settled-unbound' }) } as never);
       const proxyInstanceId = randomUUID();
       const m = meta({ proxyInstanceId });
       registry.activate(m, fakeControl().control, cleanupFor(m));

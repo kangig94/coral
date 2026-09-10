@@ -36,12 +36,16 @@ type RawProviderOperationSagaRow = {
   readonly value: string;
 };
 
-export type RawCoordinatorJobRecoveryEnvelope = {
+type CoordinatorJobRecoveryFacts = {
   readonly jobId: string;
   readonly projection: ProjectionJobStoredRow | null;
   readonly statusEvents: readonly EventsRow[];
   readonly claimedSession: RawCoordinatorSessionRow | null;
   readonly providerOperations: readonly RawProviderOperationSagaRow[];
+};
+
+export type RawCoordinatorJobRecoveryEnvelope = CoordinatorJobRecoveryFacts & {
+  readonly subject: RecoverySubject;
 };
 
 function scanCoordinatorJobRecoveryEnvelopes(
@@ -125,7 +129,10 @@ function scanCoordinatorJobRecoveryEnvelopes(
         claimedSession,
         providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(jobId)}%`),
       }));
-    return [...jobEnvelopes, ...orphanedClaims];
+    return [...jobEnvelopes, ...orphanedClaims].map((facts) => ({
+      ...facts,
+      subject: coordinatorJobRecoverySubject(facts),
+    }));
   });
 }
 
@@ -143,7 +150,7 @@ function providerOperationRevisionFields(rows: readonly RawProviderOperationSaga
   return rows.map((row) => ({ table: 'meta', key: row.key, field: 'value', value: sha256Hex(row.value) }));
 }
 
-function coordinatorJobRecoverySubject(raw: RawCoordinatorJobRecoveryEnvelope): RecoverySubject {
+function coordinatorJobRecoverySubject(raw: CoordinatorJobRecoveryFacts): RecoverySubject {
   const fields =
     raw.projection === null
       ? [{ table: 'projection_jobs', key: raw.jobId, field: 'projection', value: null }]
@@ -157,11 +164,6 @@ function coordinatorJobRecoverySubject(raw: RawCoordinatorJobRecoveryEnvelope): 
   };
 }
 
-export function coordinatorJobRecoverySubjectFor(db: Database, jobId: string): RecoverySubject | null {
-  const envelope = scanCoordinatorJobRecoveryEnvelopes(db, jobId)[0];
-  return envelope === undefined ? null : coordinatorJobRecoverySubject(envelope);
-}
-
 export function coordinatorJobRecoverySource(
   db: Database,
   options: Readonly<{ subjectKey?: string; subject?: RecoverySubject }> = {},
@@ -173,6 +175,6 @@ export function coordinatorJobRecoverySource(
       revision: { kind: 'until-cleared' },
     },
     scan: () => scanCoordinatorJobRecoveryEnvelopes(db, options.subject?.key ?? options.subjectKey),
-    subject: coordinatorJobRecoverySubject,
+    subject: (raw) => raw.subject,
   });
 }

@@ -259,6 +259,71 @@ async function createHeldRecoveryCoordinator(
 }
 
 describe('runStartupRecovery provider-operation ownership', () => {
+  it('hydrates the complete readable phase matrix with only the phases that need a startup permit', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const phases = [
+      'prepare-pending',
+      'guardian-activation-pending',
+      'proxy-activation-pending',
+      'activation-resolution-pending',
+      'executing',
+      'prestart-cleanup-pending',
+      'local-recovery-pending',
+      'settlement-pending',
+    ] as const;
+
+    const records = phases.map((phase, index) => {
+      const jobId = randomUUID();
+      const sessionId = randomUUID();
+      const fixture = providerOperationRecord(phase, { job: index + 100 });
+      const record = providerOperationRecord(phase, {
+        operation: { ...fixture.operation, jobId, operationId: randomUUID() },
+      });
+      seedRunningAppServerJob(progressStore, {
+        jobId,
+        sessionId,
+        provider: 'codex',
+        proxyInstanceId: record.operation.proxyInstanceId,
+      });
+      insertProviderOperation(progressStore.getDb(), record);
+      return record;
+    });
+    const { recoveryCoordinator } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'readable-phase-matrix',
+    );
+
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+    const byPhase = new Map(ownership.records.map((record) => [record.phase, record]));
+    const liveCapable = phases.slice(0, 5);
+
+    for (const phase of liveCapable) {
+      expect(byPhase.get(phase)).toMatchObject({
+        restoredPermit: expect.objectContaining({ holder: { kind: 'recovery' } }),
+        bindingDisposition: { kind: 'prepared' },
+      });
+    }
+    expect(byPhase.get('prestart-cleanup-pending')).toMatchObject({
+      restoredPermit: expect.objectContaining({ holder: { kind: 'recovery' } }),
+      bindingDisposition: { kind: 'not-required', owner: 'prestart-cleanup' },
+    });
+    expect(byPhase.get('local-recovery-pending')).toMatchObject({
+      restoredPermit: null,
+      bindingDisposition: { kind: 'not-required', owner: 'generic-job-recovery' },
+    });
+    expect(byPhase.get('settlement-pending')).toMatchObject({
+      restoredPermit: null,
+      bindingDisposition: { kind: 'settled-unbound' },
+    });
+    expect(ownership.jobIds).toEqual(expect.arrayContaining(records.map((record) => record.operation.jobId)));
+    await recoveryCoordinator.teardown();
+  });
+
   it('hands a post-snapshot local fallback to exact generic recovery before deleting the saga', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);

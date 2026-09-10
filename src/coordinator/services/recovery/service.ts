@@ -16,7 +16,6 @@ import type {
   JobLaunchRecoveryPort,
   LaunchPermit,
   QueuedHandle,
-  SettlementRefusalRecorder,
 } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
 import type { SessionJobClaimReleaseResult, SessionRecoveryPort } from '../../../sessions/contracts.js';
@@ -49,10 +48,6 @@ import {
   finalizeInterruptedDurableRecovery,
   RecoveryOwnershipReleaseError,
 } from './interrupted-finalizer.js';
-import type { Database } from '../../../store/db.js';
-import type { RecoveryQuarantineWrite } from '../../../recovery/containment.js';
-import { COORDINATOR_JOB_RECOVERY_BOUNDARY } from '../../../recovery/source-registry.js';
-import { coordinatorJobRecoverySubjectFor } from './coordinator-job-source.js';
 
 const carrierDetachedRecoveryClockScope: unique symbol = Symbol('coral.recovery.carrier-detached');
 
@@ -78,32 +73,6 @@ export interface RecoveryServiceDeps {
   launchOrchestrator: RecoveredJobLifecyclePort;
   childPrincipalRegistry: ChildPrincipalRegistry;
   parentPrincipal: Principal;
-}
-
-export function createCoordinatorJobSettlementRefusalRecorder(
-  deps: Readonly<{
-    getDb(): Database;
-    isBoundaryRegistered(boundary: string): boolean;
-    upsert(write: RecoveryQuarantineWrite): boolean;
-  }>,
-): SettlementRefusalRecorder {
-  return {
-    record(input): boolean {
-      if (!deps.isBoundaryRegistered(COORDINATOR_JOB_RECOVERY_BOUNDARY)) {
-        throw new Error(`${COORDINATOR_JOB_RECOVERY_BOUNDARY} is not registered.`);
-      }
-      const subject = coordinatorJobRecoverySubjectFor(deps.getDb(), input.jobId);
-      if (subject === null) return false;
-      return deps.upsert({
-        boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY,
-        subject,
-        state: 'active',
-        stage: 'settle',
-        errorMessage: input.failure,
-        detail: `Job settlement refused after ${input.cause}.`,
-      });
-    },
-  };
 }
 
 export class RecoveryService {

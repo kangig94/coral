@@ -42,6 +42,8 @@ const DOMAIN_API_TARGETS = new Set<string>();
 // list just enumerates which domain files are public surface.
 const CONTRACT_TARGETS = new Set([
   'src/jobs/contracts/admission.ts',
+  // The coordinator-owned admission state machine implements this jobs-owned, contract-only binding seam.
+  'src/jobs/contracts/provider-operation-lifecycle.ts',
   'src/jobs/launch.ts',
   'src/jobs/outcome.ts',
   'src/jobs/wait.ts',

@@ -1303,6 +1303,16 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
+  const settlementFailures = health.diagnostics?.settlementRefusalRecordingFailures ?? [];
+  if (settlementFailures.length > 0) {
+    lines.push('', 'Settlement refusal recording failures:');
+    for (const failure of settlementFailures) {
+      lines.push(
+        `  job=${failure.jobId} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
+        `    error=${failure.error}`,
+      );
+    }
+  }
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
   const durableDispositionSkips = health.diagnostics?.providerProxyDispositionSkips ?? [];
   const skippedProviderProxySetRows = health.skippedProviderProxySetRows;

@@ -34,8 +34,9 @@ export type ProviderOperationUnreadableStartupOwnership = Readonly<{
   restoredPermit: LaunchPermit | null;
 }>;
 
-/** Generic recovery must fence every job named here until its provider-operation owner accepts or releases it. */
+/** Hydrated ownership presented to provider reconciliation; generic recovery re-snapshots after that owner runs. */
 export type ProviderOperationStartupOwnership = Readonly<{
+  /** Jobs fenced at hydration time, before provider reconciliation may accept or release them. */
   jobIds: readonly string[];
   records: readonly ProviderOperationStartupRecordOwnership[];
   unreadable: readonly ProviderOperationUnreadableStartupOwnership[];

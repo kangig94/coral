@@ -95,6 +95,9 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
 const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',
+  // Admission owns the in-process permit mailbox, while jobs owns the operation identity and binding-port
+  // vocabulary shared by the launch shell, registry, reconciler, and startup recovery.
+  'src/jobs/contracts/provider-operation-lifecycle.ts',
   // The app-server child transport. The coordinator's host pool has always spawned children through it; it
   // simply used to sit inside `coordinator/live/` and so crossed no boundary to reach. It is provider-domain
   // by what it does — spawning a provider's app-server child and framing its JSON-RPC — and it now lives

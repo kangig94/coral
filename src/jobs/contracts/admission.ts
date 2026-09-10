@@ -99,7 +99,7 @@ export interface SettlementRefusalRecorder {
       cause: 'terminal-persist-failed' | 'claim-release-failed';
       failure: string;
     }>,
-  ): boolean;
+  ): boolean | Promise<boolean>;
 }
 
 export interface JobAdmissionPort {

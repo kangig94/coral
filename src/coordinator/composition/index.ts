@@ -117,10 +117,10 @@ import {
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
 import {
+  createCoordinatorJobSettlementRefusalRecorder,
   createCoordinatorJobRecoveryRetryPlan,
   createUnreadableProviderOperationRetryPlan,
 } from '../services/recovery/index.js';
-import { createCoordinatorJobSettlementRefusalRecorder } from '../services/recovery/service.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
 import {
   createRetentionReleasePairRetryPlan,
@@ -604,11 +604,41 @@ export function createCoordinatorCore(
     createUnreadableProviderOperationRetryPlan(recoveryDb(), subject, adoptRepairedProviderOperation),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
-  const settlementRefusalRecorder = createCoordinatorJobSettlementRefusalRecorder({
+  const settlementRefusalRecordingFailures = new Map<
+    string,
+    NonNullable<NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']>[number]
+  >();
+  const durableSettlementRefusalRecorder = createCoordinatorJobSettlementRefusalRecorder({
     getDb: recoveryDb,
     isBoundaryRegistered: (boundary) => recoverySources.has(boundary),
     upsert: (write) => getRecoveryQuarantineStore().upsert(write),
   });
+  const settlementRefusalRecorder = {
+    async record(input: Parameters<typeof durableSettlementRefusalRecorder.record>[0]): Promise<boolean> {
+      try {
+        const recorded = await durableSettlementRefusalRecorder.record(input);
+        if (recorded) {
+          settlementRefusalRecordingFailures.delete(input.jobId);
+          return true;
+        }
+        settlementRefusalRecordingFailures.set(input.jobId, {
+          jobId: input.jobId,
+          cause: input.cause,
+          error: 'The recovery quarantine write did not persist.',
+          observedAtMs: runtime.time.now(),
+        });
+        return false;
+      } catch (error: unknown) {
+        settlementRefusalRecordingFailures.set(input.jobId, {
+          jobId: input.jobId,
+          cause: input.cause,
+          error: formatError(error),
+          observedAtMs: runtime.time.now(),
+        });
+        throw error;
+      }
+    },
+  };
   const recoveryQuarantineRetry = createRecoveryQuarantineRetryService({
     instanceId: world.identity.instanceId,
     ids: runtime.ids,
@@ -1312,6 +1342,9 @@ export function createCoordinatorCore(
           providerProxyDispositionSkips?: NonNullable<
             NonNullable<HealthSnapshot['diagnostics']>['providerProxyDispositionSkips']
           >;
+          settlementRefusalRecordingFailures?: NonNullable<
+            NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']
+          >;
           launchPermits?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['launchPermits']>;
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
@@ -1331,6 +1364,9 @@ export function createCoordinatorCore(
         if (providerProxyDispositionSkips.length > 0) {
           diagnostics.providerProxyDispositionSkips = [...providerProxyDispositionSkips];
         }
+        if (settlementRefusalRecordingFailures.size > 0) {
+          diagnostics.settlementRefusalRecordingFailures = [...settlementRefusalRecordingFailures.values()];
+        }
         const launchPermits = world.launchCoordinator
           .activeLaunchPermits()
           .filter(
@@ -1346,6 +1382,7 @@ export function createCoordinatorCore(
           diagnostics.consumerStuck !== undefined ||
           diagnostics.providerProxySets !== undefined ||
           diagnostics.providerProxyDispositionSkips !== undefined ||
+          diagnostics.settlementRefusalRecordingFailures !== undefined ||
           diagnostics.launchPermits !== undefined;
 
         return {

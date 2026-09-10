@@ -66,7 +66,9 @@ import type {
   RecoveryReport,
   RecoverySettlementFact,
   RecoverySubject,
+  RecoveryQuarantineWrite,
 } from '../../../recovery/containment.js';
+import { RecoveryContainment } from '../../../recovery/containment.js';
 import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -76,6 +78,7 @@ import {
 import { withImmediate, type Database } from '../../../store/db.js';
 import { runCoordinatorJobRecovery } from './startup-recovery.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
+import type { SettlementRefusalRecorder } from '../../../jobs/contracts/admission.js';
 import { appendJobRecoveryFaultTerminalInCommit } from '../terminal-materializer.js';
 import { appendJobTerminalRecorded } from '../../../jobs/terminal/recording.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
@@ -385,6 +388,58 @@ const coordinatorJobRetryPolicies = new WeakMap<
     quarantine: RecoveryQuarantinePort,
   ) => RecoveryRetryPolicy<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem>
 >();
+
+export function createCoordinatorJobSettlementRefusalRecorder(
+  deps: Readonly<{
+    getDb(): Database;
+    isBoundaryRegistered(boundary: string): boolean;
+    upsert(write: RecoveryQuarantineWrite): boolean;
+  }>,
+): SettlementRefusalRecorder {
+  const untrackedQuarantine: RecoveryQuarantinePort = {
+    read: () => null,
+    upsert: () => false,
+    delete: () => false,
+  };
+
+  return {
+    async record(input): Promise<boolean> {
+      if (!deps.isBoundaryRegistered(COORDINATOR_JOB_RECOVERY_BOUNDARY)) {
+        throw new Error(`${COORDINATOR_JOB_RECOVERY_BOUNDARY} is not registered.`);
+      }
+
+      const report = await RecoveryContainment.each(
+        coordinatorJobRecoverySource(deps.getDb(), { subjectKey: input.jobId }),
+        {
+          signal: new AbortController().signal,
+          quarantine: untrackedQuarantine,
+          processLocalCleanup: { kind: 'not-required' },
+          hydrate: (raw) => raw,
+          requiredObligations: () => [],
+          settle: (raw) => {
+            const recorded = deps.upsert({
+              boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY,
+              subject: raw.subject,
+              state: 'active',
+              stage: 'settle',
+              errorMessage: input.failure,
+              detail: `Job settlement refused after ${input.cause}.`,
+            });
+            if (!recorded) throw new Error('The recovery quarantine write did not persist.');
+            return {
+              kind: 'advanced',
+              outcome: 'settled',
+              facts: [],
+              detail: 'Job settlement refusal was recorded for recovery.',
+            };
+          },
+          onFault: (fault) => ({ kind: 'fatal', error: fault.error }),
+        },
+      );
+      return report.advanced === 1;
+    },
+  };
+}
 
 export function createCoordinatorJobRecoveryRetryPlan(
   db: Database,
@@ -2433,7 +2488,18 @@ export function createRecoveryCoordinator(
         [],
       ),
     );
-    const sagaOwnedJobIds = new Set(ctx.providerOperationStartupOwnership.jobIds);
+    const currentProviderOperationOwnership = snapshotProviderOperationStartupOwnership();
+    const sagaOwnedJobIds = new Set([
+      ...currentProviderOperationOwnership.records.map((record) => record.operation.jobId),
+      ...currentProviderOperationOwnership.unreadable.flatMap((attribution) =>
+        attribution.jobs.kind === 'known'
+          ? attribution.jobs.values.filter((jobId) => {
+              const status = progressStore.readStatus(jobId);
+              return status === null || !isTerminalPhase(status.phase);
+            })
+          : [],
+      ),
+    ]);
 
     const recoveryItems: CoordinatorRecoveryItem[] = [];
     await runCoordinatorWalk({

@@ -160,6 +160,16 @@ describe('workflow replacement launch atomicity', () => {
       mintProtectedEnv: () => ({}),
     };
 
+    const metadataFailure = vi.spyOn(progressStore, 'readLaunchProjection').mockImplementationOnce(() => {
+      throw new Error('metadata projection unavailable');
+    });
+    expect(() => orchestrator.launchWorkflowReplacement(boundProvider, pending, request, replacementOptions)).toThrow(
+      'metadata projection unavailable',
+    );
+    expect(launchAdmission.active).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: eventCountBefore });
+    metadataFailure.mockRestore();
+
     db.exec(`CREATE TRIGGER fail_replacement_admission
       BEFORE INSERT ON events
       WHEN NEW.type = 'job.queue.admitted'

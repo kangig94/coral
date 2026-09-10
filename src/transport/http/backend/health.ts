@@ -143,6 +143,12 @@ export interface BackendHealth {
     providerProxySets?: ProviderProxySetOperatorStatus[];
     providerProxySetRowSkips?: ProviderProxySetRowSkip[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
+    settlementRefusalRecordingFailures?: Array<{
+      jobId: string;
+      cause: 'terminal-persist-failed' | 'claim-release-failed';
+      error: string;
+      observedAtMs: number;
+    }>;
     launchPermits?: Array<{
       reservationId: string;
       jobId: string;
@@ -277,6 +283,24 @@ function isLaunchPermits(value: unknown): value is NonNullable<BackendHealth['di
         isLaunchPermitHolder(entry.holder) &&
         isLaunchExecutionOwner(entry.executionOwner) &&
         isNonNegativeFiniteNumber(entry.heldForMs),
+    )
+  );
+}
+
+function isSettlementRefusalRecordingFailures(
+  value: unknown,
+): value is NonNullable<BackendHealth['diagnostics']>['settlementRefusalRecordingFailures'] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.jobId === 'string' &&
+        entry.jobId.length > 0 &&
+        (entry.cause === 'terminal-persist-failed' || entry.cause === 'claim-release-failed') &&
+        typeof entry.error === 'string' &&
+        entry.error.length > 0 &&
+        isNonNegativeFiniteNumber(entry.observedAtMs),
     )
   );
 }
@@ -659,6 +683,12 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     return null;
   }
   if (value.launchPermits !== undefined && !isLaunchPermits(value.launchPermits)) {
+    return null;
+  }
+  if (
+    value.settlementRefusalRecordingFailures !== undefined &&
+    !isSettlementRefusalRecordingFailures(value.settlementRefusalRecordingFailures)
+  ) {
     return null;
   }
   const providerProxySets =
