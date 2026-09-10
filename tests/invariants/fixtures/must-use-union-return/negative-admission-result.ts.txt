@@ -1,0 +1,20 @@
+type LaunchPermit = Readonly<{ reservationId: string }>;
+type QueueCancellation = Readonly<{ kind: 'cancelled' }> | Readonly<{ kind: 'admitted'; permit: LaunchPermit }>;
+
+type QueuedHandle = {
+  type: 'queued';
+  queuePosition: number;
+  waitForPermit: () => Promise<LaunchPermit>;
+  cancel: () => QueueCancellation;
+};
+
+type AdmittedHandle = {
+  type: 'immediate';
+  permit: LaunchPermit;
+};
+
+type AdmissionResult = AdmittedHandle | QueuedHandle | 'queue_full';
+
+declare function requestLaunch(): AdmissionResult;
+
+requestLaunch();

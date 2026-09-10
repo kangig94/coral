@@ -21,7 +21,14 @@ export type ProviderOperationStartupBindingDisposition =
         | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
     }>
   | Readonly<{ kind: 'not-required'; owner: 'prestart-cleanup' | 'generic-job-recovery' }>
-  | Readonly<{ kind: 'not-reconciled'; reason: 'record-absent' }>;
+  | Readonly<{
+      kind: 'not-reconciled';
+      reason: 'record-absent';
+      owner:
+        | Readonly<{ kind: 'generic-job-recovery' }>
+        | Readonly<{ kind: 'provider-operation-recovery'; holder: LaunchPermit['holder'] }>
+        | Readonly<{ kind: 'transferred-launch'; holder: LaunchPermit['holder'] }>;
+    }>;
 
 /** Reconciliation may drive an operation only after this phase-specific ownership disposition authorizes it. */
 export type ProviderOperationStartupRecordOwnership = Readonly<{

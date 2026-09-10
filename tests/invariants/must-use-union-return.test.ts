@@ -6,8 +6,8 @@ import ts from 'typescript';
 import { listProductionSourceFiles, toCanonicalSrcPath } from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
-// The launch-permit migration owns these domains. Broadening this gate requires
-// a deliberate audit of the rest of src.
+// A root may join this scan only after every offender within it is consumed or
+// marked as a justified discard.
 const SCANNED_ROOTS = ['src/coordinator', 'src/jobs', 'src/recovery'] as const;
 const FILES = SCANNED_ROOTS.flatMap((root) => listProductionSourceFiles(resolve(REPO_ROOT, root)));
 const COMPILER_OPTIONS = {
@@ -43,19 +43,36 @@ function discardedCall(expression: ts.Expression): ts.CallExpression | ts.AwaitE
   return null;
 }
 
-function hasStringLiteralKind(type: ts.Type, location: ts.Node, checker: ts.TypeChecker): boolean {
-  const property = type.getProperty('kind');
-  if (property === undefined) return false;
+function stringLiteralPropertyValue(
+  type: ts.Type,
+  name: string,
+  location: ts.Node,
+  checker: ts.TypeChecker,
+): string | undefined {
+  const property = type.getProperty(name);
+  if (property === undefined) return undefined;
   const declaration = property.valueDeclaration ?? property.declarations?.[0] ?? location;
-  return checker.getTypeOfSymbolAtLocation(property, declaration).isStringLiteral();
+  const propertyType = checker.getTypeOfSymbolAtLocation(property, declaration);
+  return propertyType.isStringLiteral() ? propertyType.value : undefined;
 }
 
 function isMustUseUnion(type: ts.Type, location: ts.Node, checker: ts.TypeChecker): boolean {
   if (!type.isUnion() || type.types.length < 2) return false;
-  return (
-    type.types.every((member) => member.isStringLiteral()) ||
-    type.types.every((member) => hasStringLiteralKind(member, location, checker))
-  );
+  const objectMembers = type.types.filter((member) => !member.isStringLiteral());
+  if (objectMembers.length === 0) return true;
+  const [first] = objectMembers;
+  return first.getProperties().some((property) => {
+    const values = objectMembers.map((member) =>
+      stringLiteralPropertyValue(member, property.getName(), location, checker),
+    );
+    return values.every((value) => value !== undefined) && new Set(values).size === objectMembers.length;
+  });
+}
+
+function discardedResultType(result: ts.CallExpression | ts.AwaitExpression, checker: ts.TypeChecker): ts.Type {
+  const type = checker.getTypeAtLocation(result);
+  if (ts.isAwaitExpression(result)) return type;
+  return checker.getAwaitedType(type) ?? type;
 }
 
 function collectOffenders(program: ts.Program, sourceFiles: readonly ts.SourceFile[]): Offender[] {
@@ -65,7 +82,7 @@ function collectOffenders(program: ts.Program, sourceFiles: readonly ts.SourceFi
     const visit = (node: ts.Node): void => {
       if (ts.isExpressionStatement(node)) {
         const result = discardedCall(node.expression);
-        if (result !== null && isMustUseUnion(checker.getTypeAtLocation(result), result, checker)) {
+        if (result !== null && isMustUseUnion(discardedResultType(result, checker), result, checker)) {
           offenders.push({
             file: sourceFile.fileName.startsWith(resolve(REPO_ROOT, 'src'))
               ? toCanonicalSrcPath(REPO_ROOT, sourceFile.fileName)
@@ -113,6 +130,16 @@ describe('discriminated-union returns are must-use', () => {
   it('detects discarded object and string unions', () => {
     const fixture = fixtureProgram('negative');
     expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(2);
+  });
+
+  it('detects a discarded admission result with mixed string and object members', () => {
+    const fixture = fixtureProgram('negative-admission-result');
+    expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(1);
+  });
+
+  it('detects a discarded promise of a union', () => {
+    const fixture = fixtureProgram('negative-async');
+    expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(1);
   });
 
   it('accepts explicit discards and consumed union results', () => {

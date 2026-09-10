@@ -172,6 +172,14 @@ type UnreadableProviderOperationStartupResolution = Readonly<{
   readableRecords: readonly Readonly<{ recordKey: string; record: ProviderOperationRecord }>[];
 }>;
 
+type ProviderOperationStartupHoldDisposition =
+  | Readonly<{ kind: 'fenced'; record: ProviderOperationRecord }>
+  | Readonly<{ kind: 'record-absent' }>
+  | Readonly<{
+      kind: 'settlement-pending';
+      record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>;
+    }>;
+
 function providerOperationPhaseRestoresStartupPermit(phase: ProviderOperationRecord['phase']): boolean {
   return (
     phase === 'prepare-pending' ||
@@ -2097,10 +2105,11 @@ export function createRecoveryCoordinator(
   const holdProviderOperationStartupOwnership = (
     record: ProviderOperationRecord,
     reason: string,
-  ): ProviderOperationRecord | null => {
+  ): ProviderOperationStartupHoldDisposition => {
     const message = (reason.trim() || 'Provider operation startup ownership was refused.').slice(0, 4096);
     let current: ProviderOperationRecord | null = record;
-    while (current !== null && current.phase !== 'settlement-pending') {
+    while (current !== null) {
+      if (current.phase === 'settlement-pending') return { kind: 'settlement-pending', record: current };
       const next = providerOperationRecordSchema.parse({
         ...current,
         revision: current.revision + 1,
@@ -2113,10 +2122,85 @@ export function createRecoveryCoordinator(
         },
       });
       const result = compareAndSwapProviderOperation(progressStore.getDb(), current, next);
-      if (result.kind === 'updated') return next;
+      if (result.kind === 'updated') return { kind: 'fenced', record: next };
       current = result.current;
     }
-    return current;
+    return { kind: 'record-absent' };
+  };
+
+  const settleProviderOperationStartupOwnership = (
+    record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
+    restoredPermit: LaunchPermit | null,
+  ): ProviderOperationStartupRecordOwnership => {
+    const bindingDisposition =
+      restoredPermit === null
+        ? settleProviderOperationStartupBinding(record.operation)
+        : releaseRestoredPermitThroughSettlement(restoredPermit, record.operation);
+    return { phase: record.phase, operation: record.operation, restoredPermit, bindingDisposition };
+  };
+
+  const releaseAbsentProviderOperationStartupOwnership = (
+    record: ProviderOperationRecord,
+    restoredPermit: LaunchPermit | null,
+  ): ProviderOperationStartupRecordOwnership => {
+    let transferredHolder: LaunchPermit['holder'] | null = null;
+    let bindingCanRetire = true;
+    if (restoredPermit !== null) {
+      const disposition = releaseRestoredPermitThroughSettlement(restoredPermit, record.operation);
+      if (disposition.kind === 'refused') {
+        state.providerOperationStartupPermits.delete(record.operation.jobId);
+        const release = startupOwnership.releaseLaunch(restoredPermit);
+        if (release.kind === 'transferred') transferredHolder = release.holder;
+      }
+    } else {
+      bindingCanRetire = settleProviderOperationStartupBinding(record.operation).kind !== 'refused';
+    }
+    if (
+      bindingCanRetire &&
+      transferredHolder === null &&
+      !state.providerOperationStartupPermits.has(record.operation.jobId)
+    ) {
+      startupOwnership.retireProviderOperationBinding(record.operation);
+    }
+    return {
+      phase: record.phase,
+      operation: record.operation,
+      restoredPermit: null,
+      bindingDisposition:
+        transferredHolder === null
+          ? {
+              kind: 'not-reconciled',
+              reason: 'record-absent',
+              owner: { kind: 'generic-job-recovery' },
+            }
+          : {
+              kind: 'not-reconciled',
+              reason: 'record-absent',
+              owner: { kind: 'transferred-launch', holder: transferredHolder },
+            },
+    };
+  };
+
+  const resolveProviderOperationStartupHold = (
+    record: ProviderOperationRecord,
+    restoredPermit: LaunchPermit | null,
+    hold: ProviderOperationStartupHoldDisposition,
+    refusal: Extract<ProviderOperationStartupRecordOwnership['bindingDisposition'], { kind: 'refused' }>,
+  ): ProviderOperationStartupRecordOwnership => {
+    switch (hold.kind) {
+      case 'fenced':
+        return {
+          phase: hold.record.phase,
+          operation: hold.record.operation,
+          restoredPermit,
+          bindingDisposition: refusal,
+        };
+      case 'record-absent':
+        return releaseAbsentProviderOperationStartupOwnership(record, restoredPermit);
+      case 'settlement-pending':
+        return settleProviderOperationStartupOwnership(hold.record, restoredPermit);
+    }
+    return assertNever(hold);
   };
 
   const quarantineAmbiguousReadableProviderOperation = (record: ProviderOperationRecord): void => {
@@ -2153,18 +2237,27 @@ export function createRecoveryCoordinator(
   const prepareProviderOperationStartupBinding = (
     permit: LaunchPermit,
     record: ProviderOperationRecord,
-  ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
+  ): ProviderOperationStartupRecordOwnership => {
     const disposition = startupOwnership.prepareProviderOperationBinding(permit, record.operation);
     if (disposition.kind === 'prepared' || disposition.kind === 'bound' || disposition.kind === 'already-settled') {
       state.providerOperationStartupPermits.delete(record.operation.jobId);
-      return disposition;
+      return {
+        phase: record.phase,
+        operation: record.operation,
+        restoredPermit: permit,
+        bindingDisposition: disposition,
+      };
     }
     const reason =
       disposition.kind === 'refused'
         ? disposition.reason
         : `Provider operation startup binding returned unexpected disposition '${disposition.kind}'.`;
-    holdProviderOperationStartupOwnership(record, reason);
-    return { kind: 'refused', reason, exit: 'restart-or-operator-repair' };
+    const hold = holdProviderOperationStartupOwnership(record, reason);
+    return resolveProviderOperationStartupHold(record, permit, hold, {
+      kind: 'refused',
+      reason,
+      exit: 'restart-or-operator-repair',
+    });
   };
 
   const hydrateProviderOperationStartupRecord = (
@@ -2210,34 +2303,12 @@ export function createRecoveryCoordinator(
         : null;
     const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
     if (current === null) {
-      let launchTransferred = false;
-      if (restoredPermit !== null) {
-        const disposition = releaseRestoredPermitThroughSettlement(restoredPermit, snapshotRecord.operation);
-        if (disposition.kind === 'refused') {
-          state.providerOperationStartupPermits.delete(snapshotRecord.operation.jobId);
-          launchTransferred = startupOwnership.releaseLaunch(restoredPermit).kind === 'transferred';
-        }
-      } else {
-        void settleProviderOperationStartupBinding(snapshotRecord.operation);
-      }
-      if (!launchTransferred && !state.providerOperationStartupPermits.has(snapshotRecord.operation.jobId)) {
-        startupOwnership.retireProviderOperationBinding(snapshotRecord.operation);
-      }
-      return {
-        phase: snapshotRecord.phase,
-        operation: snapshotRecord.operation,
-        restoredPermit: launchTransferred ? null : restoredPermit,
-        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
-      };
+      return releaseAbsentProviderOperationStartupOwnership(snapshotRecord, restoredPermit);
     }
     clearResolvedReadableAmbiguity(current);
 
     if (current.phase === 'settlement-pending') {
-      const bindingDisposition =
-        restoredPermit === null
-          ? settleProviderOperationStartupBinding(current.operation)
-          : releaseRestoredPermitThroughSettlement(restoredPermit, current.operation);
-      return { phase: current.phase, operation: current.operation, restoredPermit, bindingDisposition };
+      return settleProviderOperationStartupOwnership(current, restoredPermit);
     }
     if (current.phase === 'local-recovery-pending') {
       return {
@@ -2250,13 +2321,12 @@ export function createRecoveryCoordinator(
     if (current.phase === 'prestart-cleanup-pending') {
       if (restoredPermit === null) {
         const reason = 'The provider prestart cleanup has no restored recovery permit.';
-        holdProviderOperationStartupOwnership(current, reason);
-        return {
-          phase: current.phase,
-          operation: current.operation,
-          restoredPermit,
-          bindingDisposition: { kind: 'refused', reason, exit: 'restart-or-operator-repair' },
-        };
+        const hold = holdProviderOperationStartupOwnership(current, reason);
+        return resolveProviderOperationStartupHold(current, restoredPermit, hold, {
+          kind: 'refused',
+          reason,
+          exit: 'restart-or-operator-repair',
+        });
       }
       return {
         phase: current.phase,
@@ -2267,17 +2337,15 @@ export function createRecoveryCoordinator(
     }
     if (restoredPermit === null) {
       const reason = 'The provider operation has no restored recovery permit.';
-      holdProviderOperationStartupOwnership(current, reason);
-      return {
-        phase: current.phase,
-        operation: current.operation,
-        restoredPermit: null,
-        bindingDisposition: { kind: 'refused', reason, exit: 'restart-or-operator-repair' },
-      };
+      const hold = holdProviderOperationStartupOwnership(current, reason);
+      return resolveProviderOperationStartupHold(current, restoredPermit, hold, {
+        kind: 'refused',
+        reason,
+        exit: 'restart-or-operator-repair',
+      });
     }
 
-    const bindingDisposition = prepareProviderOperationStartupBinding(restoredPermit, current);
-    return { phase: current.phase, operation: current.operation, restoredPermit, bindingDisposition };
+    return prepareProviderOperationStartupBinding(restoredPermit, current);
   };
 
   const refuseAmbiguousProviderOperation = (
@@ -2286,33 +2354,59 @@ export function createRecoveryCoordinator(
   ): ProviderOperationStartupRecordOwnership => {
     const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
     if (current === null) {
+      const restoredPermit = state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId)?.permit ?? null;
       return {
         phase: snapshotRecord.phase,
         operation: snapshotRecord.operation,
-        restoredPermit: state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId)?.permit ?? null,
-        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
+        restoredPermit,
+        bindingDisposition: {
+          kind: 'not-reconciled',
+          reason: 'record-absent',
+          owner:
+            restoredPermit === null
+              ? { kind: 'generic-job-recovery' }
+              : { kind: 'provider-operation-recovery', holder: restoredPermit.holder },
+        },
       };
     }
-    const held = holdProviderOperationStartupOwnership(current, reason);
-    if (held === null) {
-      return {
-        phase: current.phase,
-        operation: current.operation,
-        restoredPermit: state.providerOperationStartupPermits.get(current.operation.jobId)?.permit ?? null,
-        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
-      };
+    const hold = holdProviderOperationStartupOwnership(current, reason);
+    const restoredPermit = state.providerOperationStartupPermits.get(current.operation.jobId)?.permit ?? null;
+    switch (hold.kind) {
+      case 'record-absent':
+        return {
+          phase: current.phase,
+          operation: current.operation,
+          restoredPermit,
+          bindingDisposition: {
+            kind: 'not-reconciled',
+            reason: 'record-absent',
+            owner:
+              restoredPermit === null
+                ? { kind: 'generic-job-recovery' }
+                : { kind: 'provider-operation-recovery', holder: restoredPermit.holder },
+          },
+        };
+      case 'settlement-pending':
+        return {
+          phase: hold.record.phase,
+          operation: hold.record.operation,
+          restoredPermit,
+          bindingDisposition: settleProviderOperationStartupBinding(hold.record.operation),
+        };
+      case 'fenced':
+        quarantineAmbiguousReadableProviderOperation(hold.record);
+        return {
+          phase: hold.record.phase,
+          operation: hold.record.operation,
+          restoredPermit,
+          bindingDisposition: {
+            kind: 'refused',
+            reason,
+            exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
+          },
+        };
     }
-    quarantineAmbiguousReadableProviderOperation(held);
-    return {
-      phase: held.phase,
-      operation: held.operation,
-      restoredPermit: state.providerOperationStartupPermits.get(held.operation.jobId)?.permit ?? null,
-      bindingDisposition: {
-        kind: 'refused',
-        reason,
-        exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
-      },
-    };
+    return assertNever(hold);
   };
 
   const holdReadableProviderOperationBesideUnreadable = (
@@ -2320,11 +2414,19 @@ export function createRecoveryCoordinator(
   ): ProviderOperationStartupRecordOwnership => {
     const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
     if (current === null) {
+      const restoredPermit = state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId)?.permit ?? null;
       return {
         phase: snapshotRecord.phase,
         operation: snapshotRecord.operation,
-        restoredPermit: state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId)?.permit ?? null,
-        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
+        restoredPermit,
+        bindingDisposition: {
+          kind: 'not-reconciled',
+          reason: 'record-absent',
+          owner:
+            restoredPermit === null
+              ? { kind: 'generic-job-recovery' }
+              : { kind: 'provider-operation-recovery', holder: restoredPermit.holder },
+        },
       };
     }
     if (current.phase === 'settlement-pending') {
@@ -2767,14 +2869,21 @@ export function createRecoveryCoordinator(
       } catch (error: unknown) {
         const reason =
           `Provider operation exact-job recovery for ${record.operation.jobId} failed: ` + formatError(error);
-        void holdProviderOperationStartupOwnership(record, reason);
-        providerOperationHolds.push({
-          kind: 'operation',
-          jobId: record.operation.jobId,
-          operationId: record.operation.operationId,
+        const hold = holdProviderOperationStartupOwnership(record, reason);
+        const ownership = resolveProviderOperationStartupHold(record, null, hold, {
+          kind: 'refused',
           reason,
           exit: 'restart-or-operator-repair',
         });
+        if (ownership.bindingDisposition.kind === 'refused') {
+          providerOperationHolds.push({
+            kind: 'operation',
+            jobId: ownership.operation.jobId,
+            operationId: ownership.operation.operationId,
+            reason: ownership.bindingDisposition.reason,
+            exit: ownership.bindingDisposition.exit,
+          });
+        }
         log(`${reason}\n`);
       }
     }
