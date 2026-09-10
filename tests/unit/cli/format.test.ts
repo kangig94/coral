@@ -1040,8 +1040,29 @@ describe('cli format', () => {
                 provider: 'codex',
                 holder: { kind: 'proxy-operation' as const, operationId: 'operation-reclaimed-1' },
                 heldForMs: 30_000,
-                evidence: { kind: 'job-terminal' as const, phase: 'aborted' as const },
+                evidence: {
+                  kind: 'provider-operation-absent' as const,
+                  operationId: 'operation-reclaimed-1',
+                  jobEvidence: { kind: 'job-terminal' as const, phase: 'aborted' as const },
+                },
                 reclaimedAtMs: 123_456,
+              },
+              {
+                reservationId: 'reservation-reclaimed-2',
+                jobId: 'job-reclaimed-2',
+                pool: 'default' as const,
+                provider: 'codex',
+                holder: {
+                  kind: 'undecided-provider-operation' as const,
+                  recordKeys: ['record-a', 'record-b'],
+                },
+                heldForMs: 40_000,
+                evidence: {
+                  kind: 'provider-operation-records-absent' as const,
+                  recordKeys: ['record-a', 'record-b'],
+                  jobEvidence: { kind: 'job-absent' as const },
+                },
+                reclaimedAtMs: 123_457,
               },
             ],
           },
@@ -1053,7 +1074,10 @@ describe('cli format', () => {
           'Automatic launch reclamations:',
           '  reservation=reservation-reclaimed-1 job=job-reclaimed-1 pool=default provider=codex heldForMs=30000 reclaimedAtMs=123456',
           '    holder=proxy-operation:operation-reclaimed-1',
-          '    evidence=job-terminal:aborted',
+          '    evidence=provider-operation-absent:operation-reclaimed-1 jobEvidence=job-terminal:aborted',
+          '  reservation=reservation-reclaimed-2 job=job-reclaimed-2 pool=default provider=codex heldForMs=40000 reclaimedAtMs=123457',
+          '    holder=undecided-provider-operation:["record-a","record-b"]',
+          '    evidence=provider-operation-records-absent:["record-a","record-b"] jobEvidence=job-absent',
         ].join('\n'),
       );
     });

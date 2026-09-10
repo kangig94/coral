@@ -863,7 +863,6 @@ function createLifecycleHarness(
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        providerOperationStartupOwnership,
         signal,
         recoverPersistedDiscussFn,
         knownDiscussSources,
@@ -881,7 +880,6 @@ function createLifecycleHarness(
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
-        providerOperationStartupOwnership,
         interruptedAppServerReason: options.interruptedAppServerReason,
       });
       return recoverPersistedDiscussFn({
@@ -1040,16 +1038,16 @@ describe('lifecycle recovery', () => {
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
       .run('provider_operation_saga.v3:record:unattributable', JSON.stringify({ version: 'unknown', locator: null }));
 
-    const runStartupRecoveryFn = vi.fn(async (inputs: StartupRecoveryInputs) => {
-      expect(inputs.providerOperationStartupOwnership).toEqual({
+    const runStartupRecoveryFn = vi.fn(async (_inputs: StartupRecoveryInputs) => []);
+    const reconcileProviderOperationsAtStartup = vi.fn(async (ownership) => {
+      expect(ownership).toEqual({
         completion: { kind: 'complete' },
         jobIds: [],
         records: [],
         unreadable: [],
       });
-      return [];
+      return { examined: 0 };
     });
-    const reconcileProviderOperationsAtStartup = vi.fn(async () => ({ examined: 0 }));
     const startProviderOperationReconciler = vi.fn();
     const publish = vi.fn();
     const cleanupStaleJobsFn = vi.fn();
@@ -2358,7 +2356,6 @@ describe('lifecycle recovery', () => {
           getRecoveryService,
           createInvocationContext,
           recoveryCoordinator,
-          providerOperationStartupOwnership,
           signal,
         },
         runJobsStartup,
@@ -2383,7 +2380,6 @@ describe('lifecycle recovery', () => {
           signal,
           log: identity.log,
           coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
-          providerOperationStartupOwnership,
         });
         return [];
       },

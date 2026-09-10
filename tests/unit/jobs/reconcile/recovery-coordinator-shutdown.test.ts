@@ -535,16 +535,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
     },
     async (
-      {
-        identity,
-        runtime,
-        progressStore,
-        providerRegistry,
-        getRecoveryService,
-        createInvocationContext,
-        providerOperationStartupOwnership,
-        signal,
-      },
+      { identity, runtime, progressStore, providerRegistry, getRecoveryService, createInvocationContext, signal },
       runJobsStartup,
     ) => {
       await runJobsStartup({
@@ -558,7 +549,6 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
-        providerOperationStartupOwnership,
       });
       signal.throwIfAborted();
       const recoveredDiscussResumes = await recoverPersistedDiscussFn();

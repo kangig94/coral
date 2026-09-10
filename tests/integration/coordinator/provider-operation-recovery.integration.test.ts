@@ -272,7 +272,6 @@ describe('provider-operation startup recovery ownership', () => {
           signal: inputs.signal,
           log: inputs.identity.log,
           coordinatorCommit: (callback) => inputs.progressStore.commit(callback),
-          providerOperationStartupOwnership: inputs.providerOperationStartupOwnership,
         });
         return [];
       },

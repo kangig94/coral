@@ -1,7 +1,7 @@
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   LaunchCoordinator,
@@ -13,7 +13,7 @@ import {
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import type { LaunchPermit, LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { LaunchPermit, LaunchPool, LaunchReclamationProbeResult } from '#src/jobs/contracts/admission.js';
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { liveChildAuthority } from '#src/infra/process-supervision.js';
@@ -678,15 +678,23 @@ describe('launch admission', () => {
     expect(coordinator.getActiveJobIds('default')).toContain('queued-1');
   });
 
-  it('reclaims a terminal job permit and returns capacity without an explicit release', async () => {
+  it('does not type job evidence as proxy-shaped reclamation authorization', () => {
+    const jobEvidence = { kind: 'job-terminal', phase: 'completed' } as const;
+
+    expectTypeOf(jobEvidence).not.toMatchTypeOf<LaunchReclamationProbeResult<'proxy-operation'>>();
+    expectTypeOf(jobEvidence).not.toMatchTypeOf<LaunchReclamationProbeResult<'undecided-provider-operation'>>();
+  });
+
+  it('reclaims a terminal proxy permit only with exact operation absence evidence', async () => {
     let now = 10_000;
     const base = createRealRuntime('prod');
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
     localCoordinator.connectLaunchReclamationOracle('proxy-operation', () => ({
-      kind: 'job-terminal',
-      phase: 'completed',
+      kind: 'provider-operation-absent',
+      operationId: 'different-operation',
+      jobEvidence: { kind: 'job-terminal', phase: 'completed' },
     }));
     const ended = localCoordinator.requestLaunch('ended-job', 'codex', providerOwner('ended-session'), 'default');
     if (ended === 'queue_full' || ended.type !== 'immediate') throw new Error('expected ended permit');
@@ -698,6 +706,19 @@ describe('launch admission', () => {
     if (waiting === 'queue_full' || waiting.type !== 'queued') throw new Error('expected queued permit');
 
     now += LAUNCH_RECLAMATION_AGE_FLOOR_MS;
+    localCoordinator.sweepStaleLaunchPermits();
+    expect(localCoordinator.reservationFor(ended.permit.jobId)).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'proxy-operation', operationId: identity.operationId },
+    });
+    expect(localCoordinator.queuePosition('waiting-job', 'default')).toBe(1);
+    expect(localCoordinator.launchReclamationDiagnostics()).toEqual([]);
+
+    localCoordinator.connectLaunchReclamationOracle('proxy-operation', (permit) => ({
+      kind: 'provider-operation-absent',
+      operationId: permit.holder.operationId,
+      jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+    }));
     localCoordinator.sweepStaleLaunchPermits();
     const admitted = await waiting.waitForPermit();
 
@@ -713,7 +734,11 @@ describe('launch admission', () => {
         jobId: ended.permit.jobId,
         holder: { kind: 'proxy-operation', operationId: identity.operationId },
         heldForMs: LAUNCH_RECLAMATION_AGE_FLOOR_MS,
-        evidence: { kind: 'job-terminal', phase: 'completed' },
+        evidence: {
+          kind: 'provider-operation-absent',
+          operationId: identity.operationId,
+          jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+        },
       }),
     ]);
   });
@@ -815,7 +840,11 @@ describe('launch admission', () => {
     localCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', (permit) =>
       permit.holder.recordKeys.some((key) => presentRecords.has(key))
         ? { kind: 'job-live' }
-        : { kind: 'job-terminal', phase: 'completed' },
+        : {
+            kind: 'provider-operation-records-absent',
+            recordKeys: permit.holder.recordKeys,
+            jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+          },
     );
     const waiting = localCoordinator.requestLaunch(
       'post-ambiguity',
@@ -846,7 +875,11 @@ describe('launch admission', () => {
       expect.objectContaining({
         reservationId: held.reservationId,
         holder: { kind: 'undecided-provider-operation', recordKeys },
-        evidence: { kind: 'job-terminal', phase: 'completed' },
+        evidence: {
+          kind: 'provider-operation-records-absent',
+          recordKeys,
+          jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+        },
       }),
     ]);
   });

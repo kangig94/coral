@@ -1,6 +1,6 @@
 import { ZodError } from 'zod';
 
-import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { assertNever, errorMessage, formatError } from '../../../infra/error-format.js';
 import { StoreDecodeError } from '../../../store/body-codec.js';
 import {
   observeRecordedContainment,
@@ -99,6 +99,7 @@ import { InterruptedRecoveryCommitError, RecoveryOwnershipReleaseError } from '.
 import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
 import type {
   JobsStartupRecoveryDisposition,
+  ProviderOperationStartupHold,
   ProviderOperationStartupOwnership,
   ProviderOperationStartupRecordOwnership,
 } from '../../../jobs/startup.js';
@@ -249,7 +250,6 @@ export type StartupRecoveryContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
-  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
@@ -2046,7 +2046,15 @@ export function createRecoveryCoordinator(
       }
       state.providerOperationStartupPermits.delete(jobId);
       const disposition = startupOwnership.releaseLaunch(owned.permit);
-      if (disposition.kind !== 'transferred') released += 1;
+      switch (disposition.kind) {
+        case 'released':
+          released += 1;
+          continue;
+        case 'already-released':
+        case 'transferred':
+          continue;
+      }
+      assertNever(disposition);
     }
     return Object.freeze({ released, readableRecords: Object.freeze(readableRecords) });
   };
@@ -2671,10 +2679,10 @@ export function createRecoveryCoordinator(
         [],
       ),
     );
-    const currentProviderOperationOwnership = snapshotProviderOperationStartupOwnership();
+    const providerOperationFenceSnapshot = snapshotProviderOperationStartupOwnership();
     const sagaOwnedJobIds = new Set([
-      ...currentProviderOperationOwnership.records.map((record) => record.operation.jobId),
-      ...currentProviderOperationOwnership.unreadable.flatMap((attribution) =>
+      ...providerOperationFenceSnapshot.records.map((record) => record.operation.jobId),
+      ...providerOperationFenceSnapshot.unreadable.flatMap((attribution) =>
         attribution.jobs.kind === 'known'
           ? attribution.jobs.values.filter((jobId) => {
               const status = progressStore.readStatus(jobId);
@@ -2735,8 +2743,10 @@ export function createRecoveryCoordinator(
         abandonHeldJob: (heldJobId) => abandonHeldRecoveryJob(heldJobId),
       });
     }
+    const postReconciliationSnapshot = snapshotProviderOperationStartupOwnership();
+    const postReconciliationOwnership = hydrateProviderOperationStartupOwnership(postReconciliationSnapshot);
     const startupLocalRecoveryOperations = new Set(
-      ctx.providerOperationStartupOwnership.records.flatMap((ownership) =>
+      postReconciliationOwnership.records.flatMap((ownership) =>
         ownership.phase === 'local-recovery-pending' &&
         ownership.bindingDisposition.kind === 'not-required' &&
         ownership.bindingDisposition.owner === 'generic-job-recovery'
@@ -2744,16 +2754,28 @@ export function createRecoveryCoordinator(
           : [],
       ),
     );
-    const localRecoveryRecords = readProviderOperations(progressStore.getDb()).records.filter(
+    const localRecoveryRecords = postReconciliationSnapshot.records.filter(
       (record): record is Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> =>
         record.phase === 'local-recovery-pending' &&
         startupLocalRecoveryOperations.has(providerOperationStartupIdentityKey(record.operation)),
     );
+    const providerOperationHolds: ProviderOperationStartupHold[] =
+      postReconciliationOwnership.completion.kind === 'held' ? [...postReconciliationOwnership.completion.holds] : [];
     for (const record of localRecoveryRecords) {
       try {
         await recoverProviderOperationJob(record, signal);
       } catch (error: unknown) {
-        log(`Provider operation exact-job recovery failed for ${record.operation.jobId}: ${formatError(error)}\n`);
+        const reason =
+          `Provider operation exact-job recovery for ${record.operation.jobId} failed: ` + formatError(error);
+        void holdProviderOperationStartupOwnership(record, reason);
+        providerOperationHolds.push({
+          kind: 'operation',
+          jobId: record.operation.jobId,
+          operationId: record.operation.operationId,
+          reason,
+          exit: 'restart-or-operator-repair',
+        });
+        log(`${reason}\n`);
       }
     }
     signal.throwIfAborted();
@@ -2763,10 +2785,6 @@ export function createRecoveryCoordinator(
       const jobId = statusRead.kind === 'valid' ? statusRead.status.jobId : statusRead.jobId;
       return recoveryRegistry.has(jobId);
     });
-    const providerOperationHolds =
-      ctx.providerOperationStartupOwnership.completion.kind === 'held'
-        ? ctx.providerOperationStartupOwnership.completion.holds
-        : [];
     if (providerOperationHolds.length > 0 || durableHoldRemains) {
       const heldSubjects = providerOperationHolds.map((hold) => {
         const subject =

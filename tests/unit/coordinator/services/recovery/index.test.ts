@@ -254,7 +254,11 @@ async function createHeldRecoveryCoordinator(
   launchCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', (permit) =>
     permit.holder.recordKeys.some((key) => observeProviderOperationRecord(progressStore.getDb(), key).kind !== 'absent')
       ? { kind: 'job-live' }
-      : { kind: 'job-terminal', phase: 'completed' },
+      : {
+          kind: 'provider-operation-records-absent',
+          recordKeys: permit.holder.recordKeys,
+          jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+        },
   );
   let phaseChanged: ((event: unknown) => void) | null = null;
   const recoveryCoordinator = createRecoveryCoordinator(
@@ -398,6 +402,52 @@ describe('runStartupRecovery provider-operation ownership', () => {
     await recoveryCoordinator.teardown();
   });
 
+  it('returns a hold when exact local recovery is not accepted', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId, sessionId, enqueueSequence: 1 });
+    const fixture = providerOperationRecord('local-recovery-pending');
+    const record = providerOperationRecordSchema.parse({
+      ...fixture,
+      operation: { ...fixture.operation, jobId },
+    });
+    if (record.phase !== 'local-recovery-pending') throw new Error('expected local recovery saga');
+    insertProviderOperation(progressStore.getDb(), record);
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService({
+        recoverQueuedJob: async () => {
+          throw new Error('recovery acceptance unavailable');
+        },
+      }),
+      'local-recovery-refusal',
+    );
+
+    await expect(runStartupRecovery()).resolves.toMatchObject({
+      kind: 'held',
+      providerOperationHolds: [
+        expect.objectContaining({
+          kind: 'operation',
+          jobId,
+          operationId: record.operation.operationId,
+          reason: expect.stringContaining('recovery acceptance unavailable'),
+          exit: 'restart-or-operator-repair',
+        }),
+      ],
+    });
+    expect(readProviderOperation(progressStore.getDb(), record.operation)).toMatchObject({
+      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+      lastError: {
+        code: 'provider_operation_startup_ownership_refused',
+        message: expect.stringContaining('recovery acceptance unavailable'),
+      },
+    });
+    await recoveryCoordinator.teardown();
+  });
+
   it('allows one readable discard to unblock the exact settlement that returns capacity', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
@@ -501,6 +551,51 @@ describe('runStartupRecovery provider-operation ownership', () => {
     await recoveryCoordinator.teardown();
   });
 
+  it('does not report capacity for an unreadable ownership release that was already reclaimed', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId, sessionId: randomUUID(), enqueueSequence: 1 });
+    const unreadableKey =
+      `provider_operation_saga.v1:record:${jobId}:${randomUUID()}:` + `${randomUUID()}:${randomUUID()}`;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(unreadableKey, 'not json at all');
+    const { launchCoordinator, recoveryCoordinator } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'already-reclaimed-unreadable-ownership',
+    );
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+    const unreadable = ownership.unreadable.find((candidate) => candidate.recordKey === unreadableKey);
+    if (unreadable === undefined || unreadable.restoredPermit === null) {
+      throw new Error('expected unreadable ownership permit');
+    }
+
+    progressStore.getDb().prepare<[string]>('DELETE FROM meta WHERE key = ?').run(unreadableKey);
+    expect(launchCoordinator.reclaimLaunchPermit(unreadable.restoredPermit)).toBe(true);
+    const resolution = recoveryCoordinator.releaseUnreadableProviderOperationStartupOwnership(unreadableKey);
+
+    expect(resolution).toEqual({ released: 0, readableRecords: [] });
+    expect(launchCoordinator.active).toBe(0);
+    expect(launchCoordinator.reservationFor(jobId)).toBeNull();
+    expect(launchCoordinator.launchReclamationDiagnostics()).toEqual([
+      expect.objectContaining({
+        reservationId: unreadable.restoredPermit.reservationId,
+        evidence: {
+          kind: 'provider-operation-records-absent',
+          recordKeys: [unreadableKey],
+          jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+        },
+      }),
+    ]);
+    await recoveryCoordinator.teardown();
+  });
+
   it('retains ambiguous readable ownership on terminal events until every recorded row is absent', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
@@ -571,7 +666,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
       expect.objectContaining({
         reservationId: heldPermit.reservationId,
         holder: heldPermit.holder,
-        evidence: { kind: 'job-terminal', phase: 'completed' },
+        evidence: {
+          kind: 'provider-operation-records-absent',
+          recordKeys: heldPermit.holder.recordKeys,
+          jobEvidence: { kind: 'job-terminal', phase: 'completed' },
+        },
       }),
     ]);
     await recoveryCoordinator.teardown();
@@ -606,22 +705,22 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const targetAcceptance = deferred();
     const sentinelAcceptance = deferred();
     const sentinelStarted = deferred();
-    let recoveredLaunchCount = 0;
-    const recoverTargetQueuedJob = vi.fn(async () => {
+    const sentinelRecovered = deferred();
+    const recoverTargetQueuedJob = async () => {
       await targetAcceptance.promise;
-      recoveredLaunchCount += 1;
       return targetJobId;
-    });
-    const recoverQueuedJob = vi.fn(async (authority: ProviderRecoveryAuthority) => {
+    };
+    const recoverQueuedJob = async (authority: ProviderRecoveryAuthority) => {
       const jobId = authority.launchRecord.jobId;
       if (jobId === sentinelJobId) {
         sentinelStarted.resolve();
         await sentinelAcceptance.promise;
+        sentinelRecovered.resolve();
         return sentinelJobId;
       }
       if (jobId !== targetJobId) throw new Error(`unexpected recovery job ${jobId}`);
       return recoverTargetQueuedJob();
-    });
+    };
     const fakeService = createFakeService({ recoverQueuedJob });
     const createInvocationContext = (projectRoot: string): InvocationContext => ({
       projectRoot: fixtureCanonicalWorkDir(projectRoot),
@@ -733,29 +832,31 @@ describe('runStartupRecovery provider-operation ownership', () => {
     );
     expect(readProviderOperation(progressStore.getDb(), saga.operation)?.phase).toBe('prestart-cleanup-pending');
 
-    const startupRecovery = boundRecovery.run(recoveryCoordinator);
+    let startupSettled = false;
+    const startupRecovery = boundRecovery.run(recoveryCoordinator).finally(() => {
+      startupSettled = true;
+    });
     await sentinelStarted.promise;
 
     const staleSaga = readProviderOperation(progressStore.getDb(), saga.operation);
     if (staleSaga?.phase !== 'prestart-cleanup-pending') throw new Error('expected stale prestart cleanup saga');
     const postSnapshotReconciliation = reconciler.reconcile(staleSaga, undefined, signal);
-    await vi.waitFor(() => expect(cancelOperation).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(readProviderOperation(progressStore.getDb(), saga.operation)?.phase ?? null).toBe(
+        'local-recovery-pending',
+      ),
+    );
+
+    sentinelAcceptance.resolve();
+    await sentinelRecovered.promise;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect
-      .soft(readProviderOperation(progressStore.getDb(), saga.operation)?.phase ?? null)
-      .toBe('local-recovery-pending');
-    expect.soft(recoverTargetQueuedJob, 'recoverQueuedJob').toHaveBeenCalledTimes(1);
-    expect.soft(recoveredLaunchCount).toBe(0);
+    expect(startupSettled).toBe(false);
+    expect(readProviderOperation(progressStore.getDb(), saga.operation)?.phase).toBe('local-recovery-pending');
 
     targetAcceptance.resolve();
     await postSnapshotReconciliation;
-    expect.soft(readProviderOperation(progressStore.getDb(), saga.operation)).toBeNull();
-    expect.soft(recoveredLaunchCount).toBe(1);
-
-    sentinelAcceptance.resolve();
-    await startupRecovery;
-    expect.soft(recoverTargetQueuedJob, 'recoverQueuedJob').toHaveBeenCalledTimes(1);
-    expect.soft(recoveredLaunchCount).toBe(1);
+    await expect(startupRecovery).resolves.toMatchObject({ kind: 'complete' });
+    expect(readProviderOperation(progressStore.getDb(), saga.operation)).toBeNull();
     await recoveryCoordinator.teardown();
   });
 

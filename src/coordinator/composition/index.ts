@@ -553,7 +553,7 @@ export function createCoordinatorCore(
     const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
     return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix));
   });
-  const readJobReclamation = (jobId: string): LaunchReclamationProbeResult => {
+  const readJobReclamation = (jobId: string): LaunchReclamationProbeResult<'local-execution'> => {
     const status = getProgressStore().readStatus(jobId);
     if (status === null) return { kind: 'job-absent' };
     return isTerminalPhase(status.phase) ? { kind: 'job-terminal', phase: status.phase } : { kind: 'job-live' };
@@ -575,14 +575,24 @@ export function createCoordinatorCore(
       return { kind: 'job-live' };
     }
     const keyPrefix = `${providerOperationRecordKeyPrefix(permit.jobId)}${permit.holder.operationId}:`;
-    return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix)) ? { kind: 'job-live' } : evidence;
+    return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix))
+      ? { kind: 'job-live' }
+      : {
+          kind: 'provider-operation-absent',
+          operationId: permit.holder.operationId,
+          jobEvidence: evidence,
+        };
   });
   world.launchCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', (permit) => {
     const evidence = readJobReclamation(permit.jobId);
     if (evidence.kind === 'job-live') return evidence;
     return permit.holder.recordKeys.some((key) => observeProviderOperationRecord(recoveryDb(), key).kind !== 'absent')
       ? { kind: 'job-live' }
-      : evidence;
+      : {
+          kind: 'provider-operation-records-absent',
+          recordKeys: permit.holder.recordKeys,
+          jobEvidence: evidence,
+        };
   });
   const launchReclamationTimer = runtime.time.setInterval(() => {
     try {

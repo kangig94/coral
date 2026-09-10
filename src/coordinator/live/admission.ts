@@ -37,6 +37,7 @@ import type {
   PermitHolder,
   QueueCancellation,
   QueuedHandle,
+  ReclaimablePermitHolderKind,
 } from '../../jobs/contracts/admission.js';
 import type {
   ProviderOperationBindingIdentity,
@@ -125,9 +126,9 @@ type CleanupAttemptState =
 
 type CleanupOutcomeConsumption = Readonly<{ kind: 'observed-absent' }> | Readonly<{ kind: 'retained' }>;
 
-type LaunchReclamationOracle<K extends PermitHolder['kind'] = PermitHolder['kind']> = (
+type LaunchReclamationOracle<K extends ReclaimablePermitHolderKind = ReclaimablePermitHolderKind> = (
   permit: LaunchPermit & { holder: Extract<PermitHolder, { kind: K }> },
-) => LaunchReclamationProbeResult;
+) => LaunchReclamationProbeResult<K>;
 
 export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperationBindingPort {
   private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
@@ -144,7 +145,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly settledUnboundChecks = new Map<string, TimerHandle>();
   private readonly nonReleasedLaunches = new Map<string, LaunchReleaseDiagnostic>();
   private readonly reclaimedLaunches = new Map<string, LaunchPermitReclamationDiagnostic>();
-  private readonly launchReclamationOracles = new Map<PermitHolder['kind'], LaunchReclamationOracle>();
+  private readonly launchReclamationOracles = new Map<ReclaimablePermitHolderKind, LaunchReclamationOracle>();
   private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
   private providerOperationJournalContains: ((identity: ProviderOperationBindingIdentity) => boolean) | null = null;
@@ -163,10 +164,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     this.providerOperationJournalContains = contains;
   }
 
-  connectLaunchReclamationOracle<K extends PermitHolder['kind']>(
-    kind: K,
-    oracle: (permit: LaunchPermit & { holder: Extract<PermitHolder, { kind: K }> }) => LaunchReclamationProbeResult,
-  ): void {
+  connectLaunchReclamationOracle(kind: 'local-execution', oracle: LaunchReclamationOracle<'local-execution'>): void;
+  connectLaunchReclamationOracle(kind: 'recovery', oracle: LaunchReclamationOracle<'recovery'>): void;
+  connectLaunchReclamationOracle(kind: 'proxy-operation', oracle: LaunchReclamationOracle<'proxy-operation'>): void;
+  connectLaunchReclamationOracle(
+    kind: 'undecided-provider-operation',
+    oracle: LaunchReclamationOracle<'undecided-provider-operation'>,
+  ): void;
+  connectLaunchReclamationOracle(kind: ReclaimablePermitHolderKind, oracle: unknown): void {
     this.launchReclamationOracles.set(kind, oracle as LaunchReclamationOracle);
   }
 
@@ -408,15 +413,20 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     ) {
       return false;
     }
-    const oracle = this.launchReclamationOracles.get(permit.holder.kind);
+    if (permit.holder.kind === 'system-task' || permit.holder.kind === 'queue-handoff') return false;
+    const reclaimablePermit = permit as LaunchPermit & {
+      holder: Extract<PermitHolder, { kind: ReclaimablePermitHolderKind }>;
+    };
+    const oracle = this.launchReclamationOracles.get(reclaimablePermit.holder.kind);
     if (oracle === undefined) return false;
-    let evidence: LaunchReclamationProbeResult;
+    let probe: LaunchReclamationProbeResult<ReclaimablePermitHolderKind>;
     try {
-      evidence = oracle(permit);
+      probe = oracle(reclaimablePermit);
     } catch {
       return false;
     }
-    if (evidence.kind === 'job-live') return false;
+    const evidence = this.authorizeLaunchReclamation(reclaimablePermit, probe);
+    if (evidence === null) return false;
 
     const reclaimedAtMs = this.runtime.time.now();
     this.getActiveMap(permit.pool).delete(permit.jobId);
@@ -429,6 +439,35 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     });
     this.admitQueueHead(permit.pool);
     return true;
+  }
+
+  private authorizeLaunchReclamation(
+    permit: LaunchPermit & {
+      holder: Extract<PermitHolder, { kind: ReclaimablePermitHolderKind }>;
+    },
+    probe: LaunchReclamationProbeResult<ReclaimablePermitHolderKind>,
+  ): LaunchPermitReclamationEvidence | null {
+    if (probe.kind === 'job-live') return null;
+    switch (permit.holder.kind) {
+      case 'local-execution':
+      case 'recovery':
+        return probe.kind === 'job-absent' || probe.kind === 'job-terminal' ? probe : null;
+      case 'proxy-operation': {
+        if (probe.kind !== 'provider-operation-absent') return null;
+        return probe.operationId === permit.holder.operationId ? probe : null;
+      }
+      case 'undecided-provider-operation': {
+        if (probe.kind !== 'provider-operation-records-absent') return null;
+        return this.sameRecordKeys(probe.recordKeys, permit.holder.recordKeys) ? probe : null;
+      }
+    }
+  }
+
+  private sameRecordKeys(left: readonly string[], right: readonly string[]): boolean {
+    const leftKeys = new Set(left);
+    const rightKeys = new Set(right);
+    if (leftKeys.size !== rightKeys.size) return false;
+    return [...leftKeys].every((key) => rightKeys.has(key));
   }
 
   holdUndecidedProviderOperationLaunch(permit: LaunchPermit, recordKeys: readonly string[]): LaunchPermit | null {
@@ -776,7 +815,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }): void {
     const { permit, heldForMs, evidence, reclaimedAtMs } = input;
     this.reclaimedLaunches.delete(permit.reservationId);
-    this.reclaimedLaunches.set(permit.reservationId, {
+    const diagnostic = {
       reservationId: permit.reservationId,
       jobId: permit.jobId,
       pool: permit.pool,
@@ -785,7 +824,8 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       heldForMs,
       evidence,
       reclaimedAtMs,
-    });
+    } as LaunchPermitReclamationDiagnostic;
+    this.reclaimedLaunches.set(permit.reservationId, diagnostic);
     if (this.reclaimedLaunches.size > MAX_LAUNCH_RECLAMATION_DIAGNOSTICS) {
       const oldestReservationId = this.reclaimedLaunches.keys().next().value;
       if (oldestReservationId !== undefined) this.reclaimedLaunches.delete(oldestReservationId);

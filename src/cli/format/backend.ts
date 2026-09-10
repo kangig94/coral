@@ -1212,7 +1212,7 @@ function formatLaunchPermitHolder(holder: LaunchPermitStatus['holder']): string 
     case 'proxy-operation':
       return `${holder.kind}:${holder.operationId}`;
     case 'undecided-provider-operation':
-      return `${holder.kind}:${holder.recordKeys.join(',')}`;
+      return `${holder.kind}:${JSON.stringify(holder.recordKeys)}`;
     default:
       return assertNever(holder);
   }
@@ -1247,6 +1247,16 @@ function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evid
       return evidence.kind;
     case 'job-terminal':
       return `${evidence.kind}:${evidence.phase}`;
+    case 'provider-operation-absent':
+      return (
+        `${evidence.kind}:${evidence.operationId} ` +
+        `jobEvidence=${formatLaunchReclamationEvidence(evidence.jobEvidence)}`
+      );
+    case 'provider-operation-records-absent':
+      return (
+        `${evidence.kind}:${JSON.stringify(evidence.recordKeys)} ` +
+        `jobEvidence=${formatLaunchReclamationEvidence(evidence.jobEvidence)}`
+      );
     default:
       return assertNever(evidence);
   }

@@ -758,7 +758,6 @@ export type StartupRecoveryInputs = {
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
-  readonly providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   readonly signal: AbortSignal;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
@@ -1220,7 +1219,6 @@ async function runLifecycleStartup({
             getDiscussContext,
             createInvocationContext,
             recoveryCoordinator,
-            providerOperationStartupOwnership,
             signal,
             recoverPersistedDiscussFn,
             interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',

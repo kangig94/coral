@@ -87,23 +87,51 @@ export type LaunchReleaseDiagnostic = Readonly<{
   observedAtMs: number;
 }>;
 
-export type LaunchPermitReclamationEvidence =
+export type LaunchJobReclamationEvidence =
   | Readonly<{ kind: 'job-absent' }>
   | Readonly<{ kind: 'job-terminal'; phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'> }>;
 
-/** Evidence that does not authorize reclamation must return `job-live`. */
-export type LaunchReclamationProbeResult = LaunchPermitReclamationEvidence | Readonly<{ kind: 'job-live' }>;
+export type ReclaimablePermitHolderKind = Exclude<PermitHolder['kind'], 'system-task' | 'queue-handoff'>;
 
-export type LaunchPermitReclamationDiagnostic = Readonly<{
+export type LaunchPermitReclamationEvidenceByHolder = Readonly<{
+  'local-execution': LaunchJobReclamationEvidence;
+  recovery: LaunchJobReclamationEvidence;
+  'proxy-operation': Readonly<{
+    kind: 'provider-operation-absent';
+    operationId: string;
+    jobEvidence: LaunchJobReclamationEvidence;
+  }>;
+  'undecided-provider-operation': Readonly<{
+    kind: 'provider-operation-records-absent';
+    recordKeys: readonly string[];
+    jobEvidence: LaunchJobReclamationEvidence;
+  }>;
+}>;
+
+export type LaunchPermitReclamationEvidence =
+  LaunchPermitReclamationEvidenceByHolder[keyof LaunchPermitReclamationEvidenceByHolder];
+
+/** Evidence that does not authorize reclamation must return `job-live`. */
+export type LaunchReclamationProbeResult<K extends ReclaimablePermitHolderKind> =
+  | LaunchPermitReclamationEvidenceByHolder[K]
+  | Readonly<{ kind: 'job-live' }>;
+
+type LaunchPermitReclamationDiagnosticBase = Readonly<{
   reservationId: string;
   jobId: string;
   pool: LaunchPool;
   provider: string;
-  holder: PermitHolder;
   heldForMs: number;
-  evidence: LaunchPermitReclamationEvidence;
   reclaimedAtMs: number;
 }>;
+
+export type LaunchPermitReclamationDiagnostic = {
+  [K in ReclaimablePermitHolderKind]: LaunchPermitReclamationDiagnosticBase &
+    Readonly<{
+      holder: Extract<PermitHolder, { kind: K }>;
+      evidence: LaunchPermitReclamationEvidenceByHolder[K];
+    }>;
+}[ReclaimablePermitHolderKind];
 
 export type OperationBindingResult =
   | Readonly<{ kind: 'prepared' }>

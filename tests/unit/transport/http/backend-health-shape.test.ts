@@ -330,7 +330,7 @@ describe('/health typed shape (AC10a)', () => {
     ).toBeNull();
   });
 
-  it('decodes automatic launch reclamation evidence and rejects malformed terminal evidence', () => {
+  it('decodes holder-specific launch reclamation evidence and rejects mismatched authorization', () => {
     const reclamation = {
       reservationId: 'reservation-reclaimed-1',
       jobId: 'job-reclaimed-1',
@@ -338,7 +338,11 @@ describe('/health typed shape (AC10a)', () => {
       provider: 'codex',
       holder: { kind: 'proxy-operation', operationId: 'operation-reclaimed-1' },
       heldForMs: 30_000,
-      evidence: { kind: 'job-terminal', phase: 'aborted' },
+      evidence: {
+        kind: 'provider-operation-absent',
+        operationId: 'operation-reclaimed-1',
+        jobEvidence: { kind: 'job-terminal', phase: 'aborted' },
+      },
       reclaimedAtMs: 789,
     } as const;
 
@@ -352,7 +356,36 @@ describe('/health typed shape (AC10a)', () => {
       parseBackendHealth({
         ...HEALTHY_BASE,
         diagnostics: {
-          launchReclamations: [{ ...reclamation, evidence: { kind: 'job-terminal', phase: 'running' } }],
+          launchReclamations: [
+            {
+              ...reclamation,
+              evidence: {
+                ...reclamation.evidence,
+                jobEvidence: { kind: 'job-terminal', phase: 'running' },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: {
+          launchReclamations: [{ ...reclamation, evidence: { kind: 'job-terminal', phase: 'aborted' } }],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: {
+          launchReclamations: [
+            {
+              ...reclamation,
+              evidence: { ...reclamation.evidence, operationId: 'different-operation' },
+            },
+          ],
         },
       }),
     ).toBeNull();

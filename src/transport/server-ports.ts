@@ -113,6 +113,71 @@ const launchPermitHolderSchema = z.discriminatedUnion('kind', [
 ]);
 
 const launchPoolSchema = z.enum(['default', 'discuss', 'curate']);
+const launchJobReclamationEvidenceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('job-absent') }).strict(),
+  z.object({ kind: z.literal('job-terminal'), phase: z.enum(['completed', 'error', 'aborted']) }).strict(),
+]);
+const launchReclamationBaseShape = {
+  reservationId: z.string().min(1),
+  jobId: z.string().min(1),
+  pool: launchPoolSchema,
+  provider: z.string().min(1),
+  heldForMs: z.number().finite().nonnegative(),
+  reclaimedAtMs: z.number().finite().nonnegative(),
+};
+const launchReclamationDiagnosticSchema = z.union([
+  z
+    .object({
+      ...launchReclamationBaseShape,
+      holder: z.object({ kind: z.literal('local-execution') }).strict(),
+      evidence: launchJobReclamationEvidenceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...launchReclamationBaseShape,
+      holder: z.object({ kind: z.literal('recovery') }).strict(),
+      evidence: launchJobReclamationEvidenceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...launchReclamationBaseShape,
+      holder: z.object({ kind: z.literal('proxy-operation'), operationId: z.string().min(1) }).strict(),
+      evidence: z
+        .object({
+          kind: z.literal('provider-operation-absent'),
+          operationId: z.string().min(1),
+          jobEvidence: launchJobReclamationEvidenceSchema,
+        })
+        .strict(),
+    })
+    .strict()
+    .refine((diagnostic) => diagnostic.holder.operationId === diagnostic.evidence.operationId),
+  z
+    .object({
+      ...launchReclamationBaseShape,
+      holder: z
+        .object({
+          kind: z.literal('undecided-provider-operation'),
+          recordKeys: z.array(z.string().min(1)).min(1).readonly(),
+        })
+        .strict(),
+      evidence: z
+        .object({
+          kind: z.literal('provider-operation-records-absent'),
+          recordKeys: z.array(z.string().min(1)).min(1).readonly(),
+          jobEvidence: launchJobReclamationEvidenceSchema,
+        })
+        .strict(),
+    })
+    .strict()
+    .refine(
+      (diagnostic) =>
+        new Set(diagnostic.holder.recordKeys).size === new Set(diagnostic.evidence.recordKeys).size &&
+        diagnostic.holder.recordKeys.every((key) => diagnostic.evidence.recordKeys.includes(key)),
+    ),
+]);
 
 export const launchPermitDiagnosticsSchema = z
   .object({
@@ -181,25 +246,7 @@ export const launchPermitDiagnosticsSchema = z
           .strict(),
       )
       .optional(),
-    launchReclamations: z
-      .array(
-        z
-          .object({
-            reservationId: z.string().min(1),
-            jobId: z.string().min(1),
-            pool: launchPoolSchema,
-            provider: z.string().min(1),
-            holder: launchPermitHolderSchema,
-            heldForMs: z.number().finite().nonnegative(),
-            evidence: z.discriminatedUnion('kind', [
-              z.object({ kind: z.literal('job-absent') }).strict(),
-              z.object({ kind: z.literal('job-terminal'), phase: z.enum(['completed', 'error', 'aborted']) }).strict(),
-            ]),
-            reclaimedAtMs: z.number().finite().nonnegative(),
-          })
-          .strict(),
-      )
-      .optional(),
+    launchReclamations: z.array(launchReclamationDiagnosticSchema).optional(),
   })
   .strict();
 

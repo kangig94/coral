@@ -799,7 +799,6 @@ export function createSimulationBackend(
         getDiscussContext,
         createInvocationContext,
         recoveryCoordinator,
-        providerOperationStartupOwnership,
         signal,
         recoverPersistedDiscussFn,
       },
@@ -816,7 +815,6 @@ export function createSimulationBackend(
         signal,
         log: identity.log,
         coordinatorCommit: (cb) => progressStore.commit(cb),
-        providerOperationStartupOwnership,
       });
       if (startupDisposition.kind === 'held') {
         identity.log(

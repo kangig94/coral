@@ -76,7 +76,6 @@ export type JobsStartupContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
-  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   /**
    * Why the recovery is finalizing app-server jobs:
    * - `'restart'` (default): ordinary process restart recovery.
