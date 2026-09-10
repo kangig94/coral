@@ -70,8 +70,11 @@ import {
   type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
 import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
-import { providerOperationDiscardCoordinate } from '../../recovery/unreadable-provider-operation.js';
-import { providerOperationRecordKeyPrefix, readProviderOperations } from '../../store/provider-operation-journal.js';
+import {
+  observeProviderOperationRecord,
+  providerOperationRecordKeyPrefix,
+  readProviderOperations,
+} from '../../store/provider-operation-journal.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
@@ -546,6 +549,9 @@ export function createCoordinatorCore(
     const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
     return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix));
   });
+  world.launchCoordinator.connectProviderOperationRecordJournal(
+    (key) => observeProviderOperationRecord(recoveryDb(), key).kind !== 'absent',
+  );
   world.launchCoordinator.connectLaunchReclamationJournal((jobId) => {
     const status = getProgressStore().readStatus(jobId);
     if (status === null) return { kind: 'job-absent' };
@@ -685,7 +691,7 @@ export function createCoordinatorCore(
       });
       const result = unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
       if (result.kind === 'discarded' || result.kind === 'absent') {
-        await releaseUnreadableProviderOperationStartupOwnership(providerOperationDiscardCoordinate(result).key);
+        await releaseUnreadableProviderOperationStartupOwnership(result.key);
       }
       return result;
     },

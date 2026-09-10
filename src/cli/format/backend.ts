@@ -1199,6 +1199,8 @@ function formatLaunchPermitHolder(holder: LaunchPermitStatus['holder']): string 
       return `${holder.kind}:${holder.id}`;
     case 'proxy-operation':
       return `${holder.kind}:${holder.operationId}`;
+    case 'undecided-provider-operation':
+      return `${holder.kind}:${holder.recordKeys.join(',')}`;
     default:
       return assertNever(holder);
   }
@@ -1350,9 +1352,11 @@ function formatRunningStatus(health: RunningHealth): string {
         `    evidence=${formatLaunchReclamationEvidence(reclamation.evidence)}`,
       );
       if (reclamation.providerOperationEvidence !== undefined) {
-        lines.push(
-          `    providerOperation=${reclamation.providerOperationEvidence.kind}:${reclamation.providerOperationEvidence.operationId}`,
-        );
+        const providerOperation =
+          reclamation.providerOperationEvidence.kind === 'absent'
+            ? `${reclamation.providerOperationEvidence.kind}:${reclamation.providerOperationEvidence.operationId}`
+            : `${reclamation.providerOperationEvidence.kind}:${reclamation.providerOperationEvidence.recordKeys.join(',')}`;
+        lines.push(`    providerOperation=${providerOperation}`);
       }
     }
   }

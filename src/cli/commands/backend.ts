@@ -80,11 +80,7 @@ import {
   RecoveryQuarantineStore,
   type RecoveryQuarantineListEntry,
 } from '../../recovery/quarantine.js';
-import {
-  allowReadableProviderOperationDiscard,
-  providerOperationDiscardCoordinate,
-  unreadableProviderOperationSubject,
-} from '../../recovery/unreadable-provider-operation.js';
+import { unreadableProviderOperationSubject } from '../../recovery/unreadable-provider-operation.js';
 import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryQuarantineClearRequest,
@@ -1883,11 +1879,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           throw new Error('This Coral build does not provide provider-operation discard.');
         }
         const request = parseUnreadableProviderOperationDiscardOptions(options, recoveryQuarantine.list());
-        const commandResult = await recoveryQuarantine.discardProviderOperation(request);
-        const result =
-          options.allowReadable === true
-            ? { ...commandResult, key: providerOperationDiscardCoordinate(commandResult).key }
-            : commandResult;
+        const result = await recoveryQuarantine.discardProviderOperation(request);
         switch (result.kind) {
           case 'unsupported-coordinator':
           case 'coordinator-draining':
@@ -2164,9 +2156,13 @@ function parseUnreadableProviderOperationDiscardOptions(
   const revision = shownRevision.startsWith(RECOVERY_REVISION_FINGERPRINT_PREFIX)
     ? shownRevision.slice(RECOVERY_REVISION_FINGERPRINT_PREFIX.length)
     : shownRevision;
-  const parsed = unreadableProviderOperationDiscardRequestSchema.safeParse({ key, revision });
+  const parsed = unreadableProviderOperationDiscardRequestSchema.safeParse({
+    key,
+    revision,
+    ...(options.allowReadable === true ? { allowReadable: true } : {}),
+  });
   if (parsed.success) {
-    return options.allowReadable === true ? allowReadableProviderOperationDiscard(parsed.data) : parsed.data;
+    return parsed.data;
   }
   throw new InvalidArgumentError(
     'Invalid provider-operation coordinate. Run coral-cli backend recovery-quarantine list and copy the exact key and fingerprint revision.',
@@ -2232,8 +2228,13 @@ async function discardUnreadableProviderOperationWithCoordinator(
       return { ...parsedRequest, kind: 'coordinator-draining' };
     }
     const result = unreadableProviderOperationDiscardResultSchema.safeParse(response);
-    if (result.success && result.data.key === parsedRequest.key && result.data.revision === parsedRequest.revision) {
-      return { ...result.data, key: providerOperationDiscardCoordinate(result.data).key };
+    if (
+      result.success &&
+      result.data.key === parsedRequest.key &&
+      result.data.revision === parsedRequest.revision &&
+      result.data.allowReadable === parsedRequest.allowReadable
+    ) {
+      return result.data;
     }
     return { ...parsedRequest, kind: 'unsupported-coordinator-result' };
   } catch (error: unknown) {

@@ -74,7 +74,7 @@ describe('coordinator startup ordering', () => {
     });
     const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
-      return options.progressStore;
+      return { kind: 'complete', progressStore: options.progressStore } as const;
     });
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
@@ -160,7 +160,7 @@ describe('coordinator startup ordering', () => {
       });
     const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
-      return options.progressStore;
+      return { kind: 'complete', progressStore: options.progressStore } as const;
     });
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async () => {
@@ -305,7 +305,7 @@ describe('coordinator startup ordering', () => {
         c.append(sessionContinuationLeaseRecordedEvent(pending, lease));
         return undefined;
       });
-      return options.progressStore;
+      return { kind: 'complete', progressStore: options.progressStore } as const;
     });
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async (options) => {

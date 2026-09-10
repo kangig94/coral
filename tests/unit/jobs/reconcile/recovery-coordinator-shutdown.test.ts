@@ -917,7 +917,7 @@ describe('recovery coordinator shutdown', () => {
       const recoveryRegistry = harness.controller.getRecoveryRegistry();
       expect(recoveryRegistry?.has(RUNNING_ADOPTION_JOB_ID)).toBe(true);
       expect(recoveryLog).toHaveBeenCalledWith(
-        'Recovery reconciliation completed with durable containment held for repair or operator abandonment. Launch fence lifted.\n',
+        'Recovery reconciliation remains held: durable containment awaiting repair or operator abandonment. Launch fence lifted.\n',
       );
       expect(recoveryRegistry?.abort([RUNNING_ADOPTION_JOB_ID])).toEqual({
         aborted: [],

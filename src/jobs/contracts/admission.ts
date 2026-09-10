@@ -14,6 +14,7 @@ export type PermitHolder =
   | Readonly<{ kind: 'system-task'; id: string }>
   | Readonly<{ kind: 'proxy-operation'; operationId: string }>
   | Readonly<{ kind: 'recovery' }>
+  | Readonly<{ kind: 'undecided-provider-operation'; recordKeys: readonly string[] }>
   | Readonly<{ kind: 'queue-handoff' }>;
 
 export type LaunchPermit = Readonly<{
@@ -56,6 +57,7 @@ export type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 export type LaunchReservationView =
   | Readonly<{
       kind: 'queued';
+      reservationId: string;
       pool: LaunchPool;
       provider: string;
       executionOwner: ExecutionOwner;
@@ -104,7 +106,9 @@ export type LaunchPermitReclamationDiagnostic = Readonly<{
   holder: PermitHolder;
   heldForMs: number;
   evidence: LaunchPermitReclamationEvidence;
-  providerOperationEvidence?: Readonly<{ kind: 'absent'; operationId: string }>;
+  providerOperationEvidence?:
+    | Readonly<{ kind: 'absent'; operationId: string }>
+    | Readonly<{ kind: 'all-records-absent'; recordKeys: readonly string[] }>;
   reclaimedAtMs: number;
 }>;
 
@@ -139,7 +143,7 @@ export interface SettlementRefusalRecorder {
 export interface JobAdmissionPort {
   requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult;
   releaseLaunch(permit: LaunchPermit): LaunchRelease;
-  cancelQueued(jobId: string, pool: LaunchPool): boolean;
+  cancelQueued(reservationId: string, pool: LaunchPool): boolean;
 }
 
 export interface JobQueueReadPort {
@@ -149,8 +153,16 @@ export interface JobQueueReadPort {
 }
 
 export interface JobLaunchRecoveryPort {
-  restoreActiveLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): LaunchPermit;
+  restoreActiveLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+    holder?: Extract<PermitHolder, { kind: 'recovery' | 'undecided-provider-operation' }>,
+  ): LaunchPermit;
   restoreQueuedLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): QueuedHandle;
+  holdUndecidedProviderOperationLaunch(permit: LaunchPermit, recordKeys: readonly string[]): LaunchPermit | null;
+  reclaimLaunchPermit(permit: LaunchPermit, evidence: LaunchPermitReclamationEvidence): boolean;
 }
 
 export type LaunchCoordinatorPort = JobAdmissionPort & JobQueueReadPort & JobLaunchRecoveryPort;

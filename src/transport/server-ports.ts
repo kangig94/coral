@@ -103,6 +103,12 @@ const launchPermitHolderSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('system-task'), id: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('proxy-operation'), operationId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('recovery') }).strict(),
+  z
+    .object({
+      kind: z.literal('undecided-provider-operation'),
+      recordKeys: z.array(z.string().min(1)).min(1).readonly(),
+    })
+    .strict(),
   z.object({ kind: z.literal('queue-handoff') }).strict(),
 ]);
 
@@ -172,8 +178,15 @@ export const launchPermitDiagnosticsSchema = z
               z.object({ kind: z.literal('job-terminal'), phase: z.enum(['completed', 'error', 'aborted']) }).strict(),
             ]),
             providerOperationEvidence: z
-              .object({ kind: z.literal('absent'), operationId: z.string().min(1) })
-              .strict()
+              .discriminatedUnion('kind', [
+                z.object({ kind: z.literal('absent'), operationId: z.string().min(1) }).strict(),
+                z
+                  .object({
+                    kind: z.literal('all-records-absent'),
+                    recordKeys: z.array(z.string().min(1)).min(1).readonly(),
+                  })
+                  .strict(),
+              ])
               .optional(),
             reclaimedAtMs: z.number().finite().nonnegative(),
           })

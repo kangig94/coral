@@ -805,7 +805,7 @@ export function createSimulationBackend(
       },
       runJobsStartup,
     ) => {
-      const recoveryProgressStore = await runJobsStartup({
+      const startupDisposition = await runJobsStartup({
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
         runtime,
@@ -818,6 +818,12 @@ export function createSimulationBackend(
         coordinatorCommit: (cb) => progressStore.commit(cb),
         providerOperationStartupOwnership,
       });
+      if (startupDisposition.kind === 'held') {
+        identity.log(
+          `Startup recovery is held on ${startupDisposition.providerOperationHolds.length} provider operation(s).\n`,
+        );
+      }
+      const recoveryProgressStore = startupDisposition.progressStore;
       signal.throwIfAborted();
 
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({

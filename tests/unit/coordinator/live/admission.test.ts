@@ -436,13 +436,13 @@ describe('launch admission', () => {
     const queuedView = coordinator.reservationFor('queued-view');
     expect(queuedView).toEqual({
       kind: 'queued',
+      reservationId: expect.any(String),
       pool: 'default',
       provider: 'claude',
       executionOwner: providerOwner('queued-session'),
       position: 1,
     });
     expect(queuedView).not.toHaveProperty('permit');
-    expect(queuedView).not.toHaveProperty('reservationId');
   });
 
   it('rejects duplicate job ids without exposing or mutating the incumbent reservation', async () => {
@@ -596,7 +596,9 @@ describe('launch admission', () => {
       (error: unknown) => error as Error,
     );
 
-    expect(coordinator.cancelQueued('job-2', 'default')).toBe(true);
+    const reservation = coordinator.reservationFor('job-2');
+    if (reservation?.kind !== 'queued') throw new Error('expected queued reservation');
+    expect(coordinator.cancelQueued(reservation.reservationId, reservation.pool)).toBe(true);
     expect((await rejected)?.message).toBe('Launch canceled while queued');
 
     const thirdPermit = queuedThird.waitForPermit();
@@ -634,6 +636,8 @@ describe('launch admission', () => {
     if (firstBlocker === 'queue_full' || firstBlocker.type !== 'immediate') throw new Error('expected blocker');
     const staleHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('old-session'), 'default');
     if (staleHandle === 'queue_full' || staleHandle.type !== 'queued') throw new Error('expected old queued handle');
+    const staleReservation = coordinator.reservationFor('reused-job');
+    if (staleReservation?.kind !== 'queued') throw new Error('expected old queued reservation');
 
     coordinator.releaseLaunch(firstBlocker.permit);
     const stalePermit = await staleHandle.waitForPermit();
@@ -652,6 +656,7 @@ describe('launch admission', () => {
     }
 
     expect(staleHandle.cancel()).toEqual({ kind: 'admitted', permit: stalePermit });
+    expect(coordinator.cancelQueued(staleReservation.reservationId, staleReservation.pool)).toBe(false);
     expect(coordinator.queuePosition('reused-job', 'default')).toBe(1);
 
     const permit = currentHandle.waitForPermit();
@@ -754,6 +759,62 @@ describe('launch admission', () => {
         reservationId: starting.permit.reservationId,
         holder: { kind: 'local-execution' },
         evidence: { kind: 'job-absent' },
+      }),
+    ]);
+  });
+
+  it('retains undecided provider-operation ownership until every named record is absent', async () => {
+    let now = 25_000;
+    const base = createRealRuntime('prod');
+    const localCoordinator = new LaunchCoordinator({
+      runtime: { ...base, time: { ...base.time, now: () => now } },
+    });
+    const recordKeys = ['provider-operation-record-1', 'provider-operation-record-2'];
+    const presentRecords = new Set(recordKeys);
+    localCoordinator.connectLaunchReclamationJournal(() => ({ kind: 'job-terminal', phase: 'completed' }));
+    const held = localCoordinator.restoreActiveLaunch(
+      'ambiguous-job',
+      'codex',
+      providerOwner('ambiguous-session'),
+      'default',
+      { kind: 'undecided-provider-operation', recordKeys },
+    );
+    expect(localCoordinator.reclaimLaunchPermit(held, { kind: 'job-terminal', phase: 'completed' })).toBe(false);
+    localCoordinator.connectProviderOperationRecordJournal(() => {
+      throw new Error('record journal unavailable');
+    });
+    expect(localCoordinator.reclaimLaunchPermit(held, { kind: 'job-terminal', phase: 'completed' })).toBe(false);
+    localCoordinator.connectProviderOperationRecordJournal((key) => presentRecords.has(key));
+    const waiting = localCoordinator.requestLaunch(
+      'post-ambiguity',
+      'codex',
+      providerOwner('post-ambiguity-session'),
+      'default',
+    );
+    if (waiting === 'queue_full' || waiting.type !== 'queued') throw new Error('expected queued permit');
+
+    now += LAUNCH_RECLAMATION_AGE_FLOOR_MS;
+    localCoordinator.sweepStaleLaunchPermits();
+    presentRecords.delete(recordKeys[0] ?? '');
+    localCoordinator.sweepStaleLaunchPermits();
+
+    expect(localCoordinator.reservationFor(held.jobId)).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'undecided-provider-operation', recordKeys },
+    });
+    expect(localCoordinator.queuePosition('post-ambiguity', 'default')).toBe(1);
+
+    presentRecords.clear();
+    localCoordinator.sweepStaleLaunchPermits();
+    const admitted = await waiting.waitForPermit();
+
+    expect(localCoordinator.reservationFor(held.jobId)).toBeNull();
+    expect(admitted.jobId).toBe('post-ambiguity');
+    expect(localCoordinator.launchReclamationDiagnostics()).toEqual([
+      expect.objectContaining({
+        reservationId: held.reservationId,
+        holder: { kind: 'undecided-provider-operation', recordKeys },
+        providerOperationEvidence: { kind: 'all-records-absent', recordKeys },
       }),
     ]);
   });

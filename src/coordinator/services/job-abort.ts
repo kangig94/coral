@@ -36,7 +36,7 @@ export class JobAbortService {
         status?.phase === 'queued' &&
         status.sessionId !== null &&
         reservation?.kind === 'queued' &&
-        this.deps.launchAdmission.cancelQueued(jobId, reservation.pool)
+        this.deps.launchAdmission.cancelQueued(reservation.reservationId, reservation.pool)
       ) {
         this.finishQueuedAbort(jobId, status.sessionId, 'queue_shutdown');
         aborted.push(jobId);

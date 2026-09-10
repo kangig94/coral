@@ -3,6 +3,7 @@ import type { CoordinatorIdentity } from '#src/coordinator/lifecycle.js';
 import type { RecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import type { RecoveryCapableService } from '#src/jobs/reconcile/contracts.js';
 import type { JobStore } from '#src/jobs/store.js';
+import type { JobsStartupRecoveryDisposition } from '#src/jobs/startup.js';
 import type { ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -22,12 +23,13 @@ type BoundJobsRecoveryOptions = Readonly<{
 
 export type BoundJobsRecoveryHarness = Readonly<{
   bound: BoundCoordinator;
-  run(recoveryCoordinator: RecoveryCoordinator): Promise<void>;
+  run(recoveryCoordinator: RecoveryCoordinator): Promise<JobsStartupRecoveryDisposition>;
 }>;
 
 export async function createBoundJobsRecoveryHarness(
   options: BoundJobsRecoveryOptions,
 ): Promise<BoundJobsRecoveryHarness> {
+  const jobsStartupCapture: { disposition: JobsStartupRecoveryDisposition | null } = { disposition: null };
   const bound = await (options.bindWithHandoffFn ?? bindWithHandoff)({
     socketPath: 'bound-jobs-recovery-test.sock',
     desired: {
@@ -38,7 +40,7 @@ export async function createBoundJobsRecoveryHarness(
     },
     bindAttempt: async () => ({ kind: 'bound' }),
     runStartupRecovery: async (inputs, runJobsStartup) => {
-      await runJobsStartup({
+      jobsStartupCapture.disposition = await runJobsStartup({
         namespace: inputs.identity.namespace,
         bundleHash: inputs.identity.bundleHash,
         runtime: inputs.runtime,
@@ -62,6 +64,7 @@ export async function createBoundJobsRecoveryHarness(
   return {
     bound,
     run: async (recoveryCoordinator) => {
+      jobsStartupCapture.disposition = null;
       recoveryCoordinator.retireAbsentSupersededProviderOperations();
       const startupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
       await bound.runStartupRecovery({
@@ -85,6 +88,9 @@ export async function createBoundJobsRecoveryHarness(
         signal: options.signal,
         recoverPersistedDiscussFn: async () => [],
       });
+      const disposition = jobsStartupCapture.disposition;
+      if (disposition === null) throw new Error('Jobs startup recovery did not return a disposition');
+      return disposition;
     },
   };
 }

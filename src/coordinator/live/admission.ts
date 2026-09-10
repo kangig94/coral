@@ -125,6 +125,13 @@ type CleanupAttemptState =
 
 type CleanupOutcomeConsumption = Readonly<{ kind: 'observed-absent' }> | Readonly<{ kind: 'retained' }>;
 
+type LaunchReclamationEligibility =
+  | Readonly<{
+      kind: 'eligible';
+      providerOperationEvidence?: LaunchPermitReclamationDiagnostic['providerOperationEvidence'];
+    }>
+  | Readonly<{ kind: 'retained' }>;
+
 export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperationBindingPort {
   private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
   private readonly cleanupRetentions = new Map<DurableProcessCleanup, DurableProcessRetention>();
@@ -143,6 +150,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
   private providerOperationJournalContains: ((identity: ProviderOperationBindingIdentity) => boolean) | null = null;
+  private providerOperationRecordContains: ((key: string) => boolean) | null = null;
   private jobJournalStatusRead: ((jobId: string) => LaunchReclamationProbeResult) | null = null;
   private readonly runtime: Runtime;
 
@@ -157,6 +165,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   connectProviderOperationBindingJournal(contains: (identity: ProviderOperationBindingIdentity) => boolean): void {
     this.providerOperationJournalContains = contains;
+  }
+
+  connectProviderOperationRecordJournal(contains: (key: string) => boolean): void {
+    this.providerOperationRecordContains = contains;
   }
 
   connectLaunchReclamationJournal(readStatus: (jobId: string) => LaunchReclamationProbeResult): void {
@@ -234,9 +246,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
   }
 
-  cancelQueued(jobId: string, pool: LaunchPool): boolean {
+  cancelQueued(reservationId: string, pool: LaunchPool): boolean {
     const queuedLaunches = this.getQueue(pool);
-    const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
+    const index = queuedLaunches.findIndex((entry) => entry.reservationId === reservationId);
     if (index === -1) return false;
     const entry = queuedLaunches[index];
     if (entry === undefined) return false;
@@ -284,10 +296,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     if (readStatus === null) return;
     const now = this.runtime.time.now();
 
-    for (const [pool, state] of Object.entries(this.pools) as Array<[LaunchPool, PoolState]>) {
+    for (const state of Object.values(this.pools)) {
       for (const { permit } of state.active.values()) {
         const heldForMs = Math.max(0, now - permit.acquiredAt);
-        if (heldForMs < LAUNCH_RECLAMATION_AGE_FLOOR_MS || permit.holder.kind === 'system-task') continue;
+        if (heldForMs < LAUNCH_RECLAMATION_AGE_FLOOR_MS) continue;
 
         let probed: LaunchReclamationProbeResult;
         try {
@@ -296,30 +308,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
           continue;
         }
         if (probed.kind === 'job-live') continue;
-        const evidence: LaunchPermitReclamationEvidence = probed;
-
-        let providerOperationEvidence: LaunchPermitReclamationDiagnostic['providerOperationEvidence'];
-        if (permit.holder.kind === 'proxy-operation') {
-          const contains = this.providerOperationJournalContains;
-          if (contains === null) continue;
-          try {
-            if (contains({ jobId: permit.jobId, operationId: permit.holder.operationId })) continue;
-          } catch {
-            continue;
-          }
-          providerOperationEvidence = { kind: 'absent', operationId: permit.holder.operationId };
-        }
-
-        state.active.delete(permit.jobId);
-        this.retireOperationBindingsForReclaimedPermit(permit);
-        this.recordReclaimedLaunch({
-          permit,
-          heldForMs,
-          evidence,
-          providerOperationEvidence,
-          reclaimedAtMs: now,
-        });
-        this.admitQueueHead(pool);
+        this.reclaimLaunchPermit(permit, probed);
       }
     }
   }
@@ -342,6 +331,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       if (queued !== undefined) {
         return {
           kind: 'queued',
+          reservationId: queued.reservationId,
           pool,
           provider: queued.provider,
           executionOwner: queued.executionOwner,
@@ -406,17 +396,80 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       : spawnDurableJobTransport({ ...transport, internalPermit, abortRegistry: this.internalAbortRegistry });
   }
 
-  restoreActiveLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): LaunchPermit {
+  restoreActiveLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+    holder: Extract<PermitHolder, { kind: 'recovery' | 'undecided-provider-operation' }> = { kind: 'recovery' },
+  ): LaunchPermit {
     this.rejectDuplicateReservation(jobId);
+    if (holder.kind === 'undecided-provider-operation' && holder.recordKeys.length === 0) {
+      throw new Error('Undecided provider-operation ownership must name at least one durable record.');
+    }
+    const permitHolder: PermitHolder =
+      holder.kind === 'undecided-provider-operation'
+        ? { kind: holder.kind, recordKeys: [...new Set(holder.recordKeys)] }
+        : holder;
     const permit = this.createPermit({
       reservationId: this.runtime.ids.uuid(),
       jobId,
       pool,
       provider,
-      holder: { kind: 'recovery' },
+      holder: permitHolder,
     });
     this.getActiveMap(pool).set(jobId, { permit, executionOwner });
     return permit;
+  }
+
+  reclaimLaunchPermit(permit: LaunchPermit, evidence: LaunchPermitReclamationEvidence): boolean {
+    const active = this.getActiveMap(permit.pool).get(permit.jobId);
+    if (
+      active === undefined ||
+      active.permit.reservationId !== permit.reservationId ||
+      !this.sameHolder(active.permit.holder, permit.holder)
+    ) {
+      return false;
+    }
+    const eligibility = this.launchReclamationEligibility(permit);
+    if (eligibility.kind === 'retained') return false;
+
+    const reclaimedAtMs = this.runtime.time.now();
+    this.getActiveMap(permit.pool).delete(permit.jobId);
+    this.retireOperationBindingsForReclaimedPermit(permit);
+    this.recordReclaimedLaunch({
+      permit,
+      heldForMs: Math.max(0, reclaimedAtMs - permit.acquiredAt),
+      evidence,
+      providerOperationEvidence: eligibility.providerOperationEvidence,
+      reclaimedAtMs,
+    });
+    this.admitQueueHead(permit.pool);
+    return true;
+  }
+
+  holdUndecidedProviderOperationLaunch(permit: LaunchPermit, recordKeys: readonly string[]): LaunchPermit | null {
+    const active = this.getActiveMap(permit.pool).get(permit.jobId);
+    if (
+      (permit.holder.kind !== 'recovery' && permit.holder.kind !== 'undecided-provider-operation') ||
+      active === undefined ||
+      active.permit.reservationId !== permit.reservationId ||
+      !this.sameHolder(active.permit.holder, permit.holder)
+    ) {
+      return null;
+    }
+    const existingRecordKeys = permit.holder.kind === 'undecided-provider-operation' ? permit.holder.recordKeys : [];
+    const heldRecordKeys = [...new Set([...existingRecordKeys, ...recordKeys])];
+    if (heldRecordKeys.length === 0) return null;
+    const heldPermit = {
+      ...active.permit,
+      holder: {
+        kind: 'undecided-provider-operation',
+        recordKeys: heldRecordKeys,
+      },
+    } satisfies LaunchPermit;
+    this.getActiveMap(permit.pool).set(permit.jobId, { ...active, permit: heldPermit });
+    return heldPermit;
   }
 
   restoreQueuedLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): QueuedHandle {
@@ -456,7 +509,11 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     if (identity.jobId !== permit.jobId) {
       return { kind: 'refused', reason: 'The operation identity does not name the permit job.' };
     }
-    if (permit.holder.kind !== 'local-execution' && permit.holder.kind !== 'recovery') {
+    if (
+      permit.holder.kind !== 'local-execution' &&
+      permit.holder.kind !== 'recovery' &&
+      permit.holder.kind !== 'undecided-provider-operation'
+    ) {
       return { kind: 'refused', reason: 'The source permit holder cannot publish a proxy operation.' };
     }
 
@@ -987,6 +1044,43 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     if (left.kind === 'proxy-operation' && right.kind === 'proxy-operation') {
       return left.operationId === right.operationId;
     }
+    if (left.kind === 'undecided-provider-operation' && right.kind === 'undecided-provider-operation') {
+      return (
+        left.recordKeys.length === right.recordKeys.length &&
+        left.recordKeys.every((recordKey) => right.recordKeys.includes(recordKey))
+      );
+    }
     return true;
+  }
+
+  private launchReclamationEligibility(permit: LaunchPermit): LaunchReclamationEligibility {
+    if (permit.holder.kind === 'system-task') return { kind: 'retained' };
+    if (permit.holder.kind === 'proxy-operation') {
+      const contains = this.providerOperationJournalContains;
+      if (contains === null) return { kind: 'retained' };
+      try {
+        if (contains({ jobId: permit.jobId, operationId: permit.holder.operationId })) return { kind: 'retained' };
+      } catch {
+        return { kind: 'retained' };
+      }
+      return {
+        kind: 'eligible',
+        providerOperationEvidence: { kind: 'absent', operationId: permit.holder.operationId },
+      };
+    }
+    if (permit.holder.kind === 'undecided-provider-operation') {
+      const contains = this.providerOperationRecordContains;
+      if (contains === null) return { kind: 'retained' };
+      try {
+        if (permit.holder.recordKeys.some((recordKey) => contains(recordKey))) return { kind: 'retained' };
+      } catch {
+        return { kind: 'retained' };
+      }
+      return {
+        kind: 'eligible',
+        providerOperationEvidence: { kind: 'all-records-absent', recordKeys: permit.holder.recordKeys },
+      };
+    }
+    return { kind: 'eligible' };
   }
 }

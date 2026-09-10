@@ -110,10 +110,16 @@ export const recoveryQuarantineClearResultSchema = recoveryQuarantineClearReques
   })
   .strict();
 
+const providerOperationDiscardKeySchema = z
+  .string()
+  .min(1, 'Provider operation key is required')
+  .refine((key) => !key.includes('\u0000'), 'Provider operation key must not carry a subject tag');
+
 export const unreadableProviderOperationDiscardRequestSchema = z
   .object({
-    key: z.string().min(1, 'Provider operation key is required'),
+    key: providerOperationDiscardKeySchema,
     revision: z.string().regex(/^sha256:[0-9a-f]{64}$/u, 'Provider operation revision must be a SHA-256 fingerprint'),
+    allowReadable: z.boolean().optional(),
   })
   .strict() satisfies ZodType<UnreadableProviderOperationDiscardRequest>;
 

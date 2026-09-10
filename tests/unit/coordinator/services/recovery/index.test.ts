@@ -24,7 +24,11 @@ import type {
 } from '#src/jobs/reconcile/contracts.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  insertProviderOperation,
+  observeProviderOperationRecord,
+  readProviderOperation,
+} from '#src/store/provider-operation-journal.js';
 import { encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
@@ -38,7 +42,6 @@ import {
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
-import { allowReadableProviderOperationDiscard } from '#src/recovery/unreadable-provider-operation.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
@@ -156,13 +159,16 @@ function seedRunningDurableJob(
   });
 }
 
-function committedOperation(overrides: {
-  jobId: string;
-  operationId: string;
-  proxyInstanceId: string;
-}): ProviderOperationRecord {
-  const fixture = providerOperationRecord('executing');
-  if (fixture.phase !== 'executing') throw new Error('executing fixture failed validation');
+function committedOperation(
+  overrides: {
+    jobId: string;
+    operationId: string;
+    proxyInstanceId: string;
+  },
+  phase: 'executing' | 'settlement-pending' = 'executing',
+): ProviderOperationRecord {
+  const fixture = providerOperationRecord(phase);
+  if (!('activationAck' in fixture)) throw new Error(`Fixture phase '${phase}' carries no activation ack.`);
   return providerOperationRecordSchema.parse({
     ...fixture,
     operation: {
@@ -245,12 +251,22 @@ async function createHeldRecoveryCoordinator(
     coordinatorCommit,
   });
   const launchCoordinator = new LaunchCoordinator({ runtime });
+  launchCoordinator.connectProviderOperationRecordJournal(
+    (key) => observeProviderOperationRecord(progressStore.getDb(), key).kind !== 'absent',
+  );
+  let phaseChanged: ((event: unknown) => void) | null = null;
   const recoveryCoordinator = createRecoveryCoordinator(
     {
       progressStore,
       runtime,
       runtimeState: { setLaunchFenceActive: vi.fn() },
-      eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
+      eventBus: {
+        on: vi.fn((event: string, listener: (input: unknown) => void) => {
+          if (event === 'job:phase_changed') phaseChanged = listener;
+        }),
+        off: vi.fn(),
+        emit: vi.fn(),
+      } as never,
       getRecoveryService,
       createInvocationContext,
       log,
@@ -261,7 +277,11 @@ async function createHeldRecoveryCoordinator(
   return {
     launchCoordinator,
     recoveryCoordinator,
+    log,
     runStartupRecovery: () => boundRecovery.run(recoveryCoordinator),
+    emitTerminalPhase: (jobId: string) => {
+      phaseChanged?.({ jobId, previousPhase: 'running', phase: 'completed' });
+    },
   };
 }
 
@@ -332,6 +352,50 @@ describe('runStartupRecovery provider-operation ownership', () => {
     await recoveryCoordinator.teardown();
   });
 
+  it('returns and reports a held startup disposition while provider-operation ownership is unresolved', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const first = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+    const second = committedOperation(
+      { jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() },
+      'settlement-pending',
+    );
+    seedRunningAppServerJob(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      proxyInstanceId: first.operation.proxyInstanceId,
+    });
+    insertProviderOperation(progressStore.getDb(), first);
+    insertProviderOperation(progressStore.getDb(), second);
+    const { recoveryCoordinator, log, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'ambiguous-startup-disposition',
+    );
+
+    const disposition = await runStartupRecovery();
+
+    expect(disposition).toMatchObject({
+      kind: 'held',
+      durableContainmentHeld: false,
+      providerOperationHolds: expect.arrayContaining([
+        expect.objectContaining({
+          jobId,
+          exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
+        }),
+      ]),
+    });
+    const messages = log.mock.calls.flatMap((call) => call).join('\n');
+    expect(messages).toContain('Recovery reconciliation remains held');
+    expect(messages).toContain('discard-provider-operation --allow-readable');
+    expect(messages).not.toContain('Recovery adoption complete');
+    await recoveryCoordinator.teardown();
+  });
+
   it('allows one readable discard to unblock the exact settlement that returns capacity', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);
@@ -396,10 +460,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
       db: progressStore.getDb(),
       time: runtime.time,
     });
-    const request = allowReadableProviderOperationDiscard({
+    const request = {
       key: discarded.subject.key,
       revision: discarded.subject.revision.value,
-    });
+      allowReadable: true,
+    } as const;
     expect(discard.discard(request)).toMatchObject({ kind: 'discarded' });
     const resolution = recoveryCoordinator.releaseUnreadableProviderOperationStartupOwnership(discarded.subject.key);
     expect(resolution.released).toBe(0);
@@ -428,6 +493,85 @@ describe('runStartupRecovery provider-operation ownership', () => {
     if (successor !== 'queue_full' && successor.type === 'immediate') {
       launchCoordinator.releaseLaunch(successor.permit);
     }
+    await recoveryCoordinator.teardown();
+  });
+
+  it('retains ambiguous readable ownership on terminal events until every recorded row is absent', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const first = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+    const second = committedOperation(
+      { jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() },
+      'settlement-pending',
+    );
+    seedRunningAppServerJob(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      proxyInstanceId: first.operation.proxyInstanceId,
+    });
+    insertProviderOperation(progressStore.getDb(), first);
+    insertProviderOperation(progressStore.getDb(), second);
+    const { launchCoordinator, recoveryCoordinator, emitTerminalPhase } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'ambiguous-terminal-release',
+    );
+
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+    const heldPermit = ownership.records[0]?.restoredPermit;
+    if (heldPermit?.holder.kind !== 'undecided-provider-operation') {
+      throw new Error('expected undecided provider-operation permit');
+    }
+    expect(heldPermit.holder.recordKeys).toHaveLength(2);
+    for (const record of ownership.records) {
+      expect(heldPermit.holder.recordKeys.some((key) => key.includes(record.operation.operationId))).toBe(true);
+    }
+
+    emitTerminalPhase(jobId);
+    expect(launchCoordinator.reservationFor(jobId)).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'undecided-provider-operation' },
+    });
+
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    const discard = createUnreadableProviderOperationDiscardService({
+      instanceId: 'ambiguous-terminal-release',
+      ids: runtime.ids,
+      db: progressStore.getDb(),
+      time: runtime.time,
+    });
+    const coordinates = quarantine.list().filter((entry) => entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY);
+    expect(coordinates).toHaveLength(2);
+    for (const [index, coordinate] of coordinates.entries()) {
+      if (coordinate.subject.revision.kind !== 'fingerprint') throw new Error('expected fingerprint coordinate');
+      expect(
+        discard.discard({
+          key: coordinate.subject.key,
+          revision: coordinate.subject.revision.value,
+          allowReadable: true,
+        }),
+      ).toMatchObject({ kind: 'discarded' });
+      emitTerminalPhase(jobId);
+      expect(launchCoordinator.reservationFor(jobId) === null).toBe(index === coordinates.length - 1);
+    }
+
+    expect(launchCoordinator.active).toBe(0);
+    expect(launchCoordinator.launchReclamationDiagnostics()).toEqual([
+      expect.objectContaining({
+        reservationId: heldPermit.reservationId,
+        holder: heldPermit.holder,
+        providerOperationEvidence: {
+          kind: 'all-records-absent',
+          recordKeys: heldPermit.holder.recordKeys,
+        },
+      }),
+    ]);
     await recoveryCoordinator.teardown();
   });
 

@@ -98,14 +98,16 @@ describe('launch permit migration constraints', () => {
 
     // The readable-record discard opt-in is the only operator surface this migration adds: an
     // ambiguous readable provider-operation row is undetermined, so no automatic reclamation may
-    // free it and its exit has to be a command a person can run.
+    // free it and its exit has to be a command a person can run. Its consent must ride a declared
+    // strict request field; fencing the request schema is what once pushed that consent into the
+    // row key, where any caller could spell it.
     const authorityDeclarationPaths = changedPaths.filter(
       (path) =>
         (path.startsWith('src/cli/commands/') && path !== 'src/cli/commands/backend.ts') ||
+        (path.startsWith('src/transport/rpc/') && path !== 'src/transport/rpc/catalog.ts') ||
         path === 'src/cli/program.ts' ||
         path === 'src/cli/dispatch.ts' ||
         path === 'src/cli/parse.ts' ||
-        path.startsWith('src/transport/rpc/') ||
         path === 'src/transport/dispatch.ts' ||
         path === 'src/transport/http/handler.ts',
     );
@@ -116,9 +118,12 @@ describe('launch permit migration constraints', () => {
       .map((path) => relative(REPO_ROOT, resolve(REPO_ROOT, path)));
     expect(
       changedTransportFiles.every((path) =>
-        ['src/transport/http/backend/health.ts', 'src/transport/response.ts', 'src/transport/server-ports.ts'].includes(
-          path,
-        ),
+        [
+          'src/transport/http/backend/health.ts',
+          'src/transport/response.ts',
+          'src/transport/rpc/catalog.ts',
+          'src/transport/server-ports.ts',
+        ].includes(path),
       ),
     ).toBe(true);
   });

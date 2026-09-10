@@ -546,7 +546,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await awaitRecoveryCursorBarrier(driver, currentMaxSeq, bootFreshnessTimeoutMs);
       signal.throwIfAborted();
 
-      const recoveryProgressStore = await runJobsStartup({
+      const jobsStartup = await runJobsStartup({
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
         runtime,
@@ -559,6 +559,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         coordinatorCommit,
         providerOperationStartupOwnership,
       });
+      const recoveryProgressStore = jobsStartup.progressStore;
       signal.throwIfAborted();
 
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({

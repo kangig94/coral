@@ -22,7 +22,6 @@ import {
 import { buildProgram } from '#src/cli/program.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
-import { allowReadableProviderOperationDiscard } from '#src/recovery/unreadable-provider-operation.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
@@ -332,11 +331,39 @@ describe('backend recovery-quarantine commands', () => {
       '--allow-readable',
     ]);
 
-    expect(discardProviderOperation).toHaveBeenCalledWith(allowReadableProviderOperationDiscard({ key, revision }));
+    expect(discardProviderOperation).toHaveBeenCalledWith({ key, revision, allowReadable: true });
     expect(stdout).toContain('Discarded readable provider-operation row');
     expect(stdout).toContain(encodeRecoveryQuarantineKey(key));
     expect(stderr).toBe('');
     expect(process.exitCode).toBe(0);
+  });
+
+  it('should refuse a retired tagged key at CLI ingress without calling the destructive operation', async () => {
+    const key =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      '00000000-0000-4000-8000-000000000021:00000000-0000-4000-8000-000000000022:' +
+      '00000000-0000-4000-8000-000000000023:00000000-0000-4000-8000-000000000024';
+    const revision = `sha256:${'c'.repeat(64)}`;
+    const discardProviderOperation: NonNullable<
+      RecoveryQuarantineCommandOperations['discardProviderOperation']
+    > = async () => {
+      throw new Error('Malformed tagged key reached the destructive operation');
+    };
+
+    await programWith({ list: () => [], clear: vi.fn(), discardProviderOperation }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'discard-provider-operation',
+      '--key',
+      encodeRecoveryQuarantineKey(`readable-provider-operation\u0000${key}`),
+      '--revision',
+      `fingerprint:${revision}`,
+    ]);
+
+    expect(stderr).toContain('Invalid provider-operation coordinate');
+    expect(process.exitCode).toBe(2);
   });
 
   it.each<

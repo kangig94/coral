@@ -3,7 +3,6 @@ import { sha256Hex } from '../../../infra/hash.js';
 import type { IdPort } from '../../../runtime/ports.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '../../../recovery/source-registry.js';
 import {
-  providerOperationDiscardCoordinate,
   unreadableProviderOperationSubject,
   type UnreadableProviderOperationDiscardRequest,
   type UnreadableProviderOperationDiscardResult,
@@ -133,15 +132,14 @@ export function createUnreadableProviderOperationDiscardService(
 
   return {
     discard(request) {
-      const coordinate = providerOperationDiscardCoordinate(request);
-      if (coordinate.allowReadable) return discardReadable(request, coordinate.key);
+      if (request.allowReadable === true) return discardReadable(request, request.key);
       const result =
         discardUnreadableProviderOperationWithRecoveryAuthority<UnreadableProviderOperationDiscardOwnershipRefusal>(
           options.db,
-          coordinate.key,
+          request.key,
           request.revision,
           {
-            claim: () => claim(coordinate.key, coordinate.revision),
+            claim: () => claim(request.key, request.revision),
           },
         );
       return { ...request, ...result };

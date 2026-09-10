@@ -112,6 +112,7 @@ export function createProviderOperationStartupOwnershipHarness(
       record.bindingDisposition.kind === 'refused'
         ? [
             {
+              kind: 'operation' as const,
               jobId: record.operation.jobId,
               operationId: record.operation.operationId,
               reason: record.bindingDisposition.reason,

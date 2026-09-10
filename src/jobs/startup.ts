@@ -17,6 +17,7 @@ export type ProviderOperationStartupBindingDisposition =
       exit:
         | 'restart-or-operator-repair'
         | 'remote-settlement'
+        | 'coral-cli backend recovery-quarantine discard-provider-operation'
         | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
     }>
   | Readonly<{ kind: 'not-required'; owner: 'prestart-cleanup' | 'generic-job-recovery' }>
@@ -37,12 +38,21 @@ export type ProviderOperationUnreadableStartupOwnership = Readonly<{
   restoredPermit: LaunchPermit | null;
 }>;
 
-export type ProviderOperationStartupHold = Readonly<{
-  jobId: string;
-  operationId: string;
-  reason: string;
-  exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
-}>;
+export type ProviderOperationStartupHold =
+  | Readonly<{
+      kind: 'operation';
+      jobId: string;
+      operationId: string;
+      reason: string;
+      exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
+    }>
+  | Readonly<{
+      kind: 'unreadable-record';
+      jobId: string;
+      recordKey: string;
+      reason: string;
+      exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
+    }>;
 
 /** Hydrated ownership presented to provider reconciliation; generic recovery re-snapshots after that owner runs. */
 export type ProviderOperationStartupOwnership = Readonly<{
@@ -79,7 +89,16 @@ export type JobsStartupContext = {
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
-export type RunJobsStartupFn = (inputs: JobsStartupContext) => Promise<JobStore>;
+export type JobsStartupRecoveryDisposition =
+  | Readonly<{ kind: 'complete'; progressStore: JobStore }>
+  | Readonly<{
+      kind: 'held';
+      progressStore: JobStore;
+      providerOperationHolds: readonly ProviderOperationStartupHold[];
+      durableContainmentHeld: boolean;
+    }>;
+
+export type RunJobsStartupFn = (inputs: JobsStartupContext) => Promise<JobsStartupRecoveryDisposition>;
 
 export function createJobsStartupRunner(runCoordinatorStartupRecovery: RunJobsStartupFn): RunJobsStartupFn {
   return (inputs) => runCoordinatorStartupRecovery(inputs);

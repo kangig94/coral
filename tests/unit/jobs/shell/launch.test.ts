@@ -186,7 +186,9 @@ function _jobResultPath(jobId: string): string {
 
 function cancelQueued(jobId: string): boolean {
   const reservation = launchCoordinator.reservationFor(jobId);
-  return reservation?.kind === 'queued' ? launchCoordinator.cancelQueued(jobId, reservation.pool) : false;
+  return reservation?.kind === 'queued'
+    ? launchCoordinator.cancelQueued(reservation.reservationId, reservation.pool)
+    : false;
 }
 
 function _getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {

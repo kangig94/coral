@@ -3,15 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
-import {
-  allowReadableProviderOperationDiscard,
-  unreadableProviderOperationSubject,
-} from '#src/recovery/unreadable-provider-operation.js';
+import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation, observeProviderOperationRecord } from '#src/store/provider-operation-journal.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { unreadableProviderOperationDiscardRequestSchema } from '#src/transport/rpc/catalog.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
@@ -223,10 +221,29 @@ describe('unreadable provider-operation discard ownership', () => {
     if (raw === undefined) throw new Error('expected readable row');
     const revision = `sha256:${sha256Hex(raw)}`;
     persistActive(seeded.key, revision);
-    const request = allowReadableProviderOperationDiscard({ key: seeded.key, revision });
+    const request = { key: seeded.key, revision, allowReadable: true } as const;
 
     expect(service().discard(request)).toEqual({ ...request, kind: 'discarded' });
     expect(observeProviderOperationRecord(db, seeded.key)).toEqual({ kind: 'absent' });
     expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toBeNull();
+  });
+
+  it('refuses the retired tagged key at RPC decode without deleting readable durable state', () => {
+    const seeded = seedRaw();
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(seeded.key);
+    insertProviderOperation(db, seeded.record);
+    const raw = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(seeded.key)?.value;
+    if (raw === undefined) throw new Error('expected readable row');
+    const revision = `sha256:${sha256Hex(raw)}`;
+    persistActive(seeded.key, revision);
+
+    expect(
+      unreadableProviderOperationDiscardRequestSchema.safeParse({
+        key: `readable-provider-operation\u0000${seeded.key}`,
+        revision,
+      }).success,
+    ).toBe(false);
+    expect(observeProviderOperationRecord(db, seeded.key)).toMatchObject({ kind: 'readable' });
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toMatchObject({ state: 'active' });
   });
 });
