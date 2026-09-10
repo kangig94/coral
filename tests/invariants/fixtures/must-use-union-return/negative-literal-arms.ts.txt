@@ -1,0 +1,11 @@
+type Decision = Readonly<{ kind: 'accepted' }> | Readonly<{ kind: 'refused'; reason: string }>;
+
+declare function maybeDecision(): Decision | undefined;
+declare function nullableDecision(): Decision | null;
+declare function numericDecision(): Decision | 0;
+declare function booleanDecision(): Decision | false;
+
+maybeDecision();
+nullableDecision();
+numericDecision();
+booleanDecision();

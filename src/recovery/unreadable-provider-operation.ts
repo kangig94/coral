@@ -38,6 +38,12 @@ export type ProviderOperationStartupOwnershipReleaseDisposition =
 
 export type UnreadableProviderOperationDiscardResult = UnreadableProviderOperationDiscardRequest &
   (
+    | Readonly<{
+        kind: 'recovery-in-progress';
+        code: 'backend_recovering';
+        message: string;
+        remediation: string;
+      }>
     | Readonly<{ kind: 'discarded' }>
     | Readonly<{ kind: 'absent' }>
     | Readonly<{

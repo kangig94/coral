@@ -43,7 +43,10 @@ import {
 } from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import {
+  COORDINATOR_JOB_RECOVERY_BOUNDARY,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+} from '#src/recovery/source-registry.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
@@ -1042,6 +1045,64 @@ describe('runStartupRecovery provider-operation ownership', () => {
     await postSnapshotReconciliation;
     await expect(startupRecovery).resolves.toMatchObject({ kind: 'complete' });
     expect(readProviderOperation(progressStore.getDb(), saga.operation)).toBeNull();
+    await recoveryCoordinator.teardown();
+  });
+
+  it('hands a job to generic recovery when its provider-operation row vanishes during the recovery walk', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const proxyInstanceId = randomUUID();
+    seedRunningAppServerJob(progressStore, { jobId, sessionId, provider: 'codex', proxyInstanceId });
+    const record = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId });
+    insertProviderOperation(progressStore.getDb(), record);
+    const recoveryEvidence = 'Generic recovery finalized the app-server job after its provider-operation row vanished.';
+    const fakeService = createFakeService({
+      finalizeInterruptedAppServerJob: async () => {
+        progressStore.appendProgress(jobId, sessionId, recoveryEvidence);
+      },
+    });
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'provider-operation-walk-race-test',
+    );
+    const originalQuarantineRead = RecoveryQuarantineStore.prototype.read;
+    const hydrationWalkReached = deferred();
+    let hydrationWalkObserved = false;
+    const quarantineRead = vi.spyOn(RecoveryQuarantineStore.prototype, 'read').mockImplementation(function (
+      this: RecoveryQuarantineStore,
+      boundary,
+      subjectKey,
+    ) {
+      const record = originalQuarantineRead.call(this, boundary, subjectKey);
+      if (!hydrationWalkObserved && boundary === COORDINATOR_JOB_RECOVERY_BOUNDARY && subjectKey === jobId) {
+        hydrationWalkObserved = true;
+        hydrationWalkReached.resolve();
+      }
+      return record;
+    });
+    let startupSettled = false;
+    const startupRecovery = runStartupRecovery().finally(() => {
+      startupSettled = true;
+    });
+    await hydrationWalkReached.promise;
+    quarantineRead.mockRestore();
+    expect(startupSettled).toBe(false);
+    const current = readProviderOperation(progressStore.getDb(), record.operation);
+    if (current === null) throw new Error('expected provider operation during the recovery walk');
+    expect(deleteProviderOperation(progressStore.getDb(), current)).toMatchObject({ kind: 'deleted' });
+
+    await expect(startupRecovery).resolves.toMatchObject({ kind: 'complete' });
+
+    expect(readProviderOperation(progressStore.getDb(), record.operation)).toBeNull();
+    expect(
+      progressStore
+        .readJobEvents(jobId)
+        .some((event) => event.type === 'progress' && event.message === recoveryEvidence),
+    ).toBe(true);
     await recoveryCoordinator.teardown();
   });
 

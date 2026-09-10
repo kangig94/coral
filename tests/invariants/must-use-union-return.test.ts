@@ -14,6 +14,7 @@ const COMPILER_OPTIONS = {
   module: ts.ModuleKind.NodeNext,
   moduleResolution: ts.ModuleResolutionKind.NodeNext,
   skipLibCheck: true,
+  strictNullChecks: true,
   target: ts.ScriptTarget.ESNext,
 } satisfies ts.CompilerOptions;
 const PROGRAM = ts.createProgram(FILES, COMPILER_OPTIONS);
@@ -35,12 +36,30 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
-function discardedCall(expression: ts.Expression): ts.CallExpression | ts.AwaitExpression | null {
+function discardedCalls(expression: ts.Expression): readonly ts.CallExpression[] {
   const current = unwrapExpression(expression);
-  if (ts.isVoidExpression(current)) return null;
-  if (ts.isCallExpression(current)) return current;
-  if (ts.isAwaitExpression(current) && ts.isCallExpression(unwrapExpression(current.expression))) return current;
-  return null;
+  if (ts.isVoidExpression(current)) return [];
+  if (ts.isCallExpression(current)) return [current];
+  if (ts.isAwaitExpression(current)) return discardedCalls(current.expression);
+  if (ts.isConditionalExpression(current)) {
+    return [
+      ...discardedCalls(current.condition),
+      ...discardedCalls(current.whenTrue),
+      ...discardedCalls(current.whenFalse),
+    ];
+  }
+  if (ts.isBinaryExpression(current)) {
+    const operator = current.operatorToken.kind;
+    if (
+      operator === ts.SyntaxKind.AmpersandAmpersandToken ||
+      operator === ts.SyntaxKind.BarBarToken ||
+      operator === ts.SyntaxKind.QuestionQuestionToken ||
+      operator === ts.SyntaxKind.CommaToken
+    ) {
+      return [...discardedCalls(current.left), ...discardedCalls(current.right)];
+    }
+  }
+  return [];
 }
 
 function stringLiteralPropertyValue(
@@ -58,20 +77,43 @@ function stringLiteralPropertyValue(
 
 function isMustUseUnion(type: ts.Type, location: ts.Node, checker: ts.TypeChecker): boolean {
   if (!type.isUnion() || type.types.length < 2) return false;
-  const objectMembers = type.types.filter((member) => !member.isStringLiteral());
-  if (objectMembers.length === 0) return true;
+  const literalOrNullishMembers = type.types.filter(
+    (member) =>
+      (member.flags &
+        (ts.TypeFlags.Literal |
+          ts.TypeFlags.EnumLiteral |
+          ts.TypeFlags.UniqueESSymbol |
+          ts.TypeFlags.Null |
+          ts.TypeFlags.Undefined |
+          ts.TypeFlags.Void)) !==
+      0,
+  );
+  const objectMembers = type.types.filter(
+    (member) =>
+      !literalOrNullishMembers.includes(member) &&
+      (member.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0,
+  );
+  if (literalOrNullishMembers.length + objectMembers.length !== type.types.length) return false;
   const [first] = objectMembers;
-  return first.getProperties().some((property) => {
-    const values = objectMembers.map((member) =>
-      stringLiteralPropertyValue(member, property.getName(), location, checker),
-    );
-    return values.every((value) => value !== undefined) && new Set(values).size === objectMembers.length;
-  });
+  const discriminated =
+    first !== undefined &&
+    first.getProperties().some((property) => {
+      const values = objectMembers.map((member) =>
+        stringLiteralPropertyValue(member, property.getName(), location, checker),
+      );
+      return values.every((value) => value !== undefined) && new Set(values).size === objectMembers.length;
+    });
+  // Only a member that names an alternative outcome carries a decision: a string literal, or an
+  // object taking part in a shared string-literal discriminant. Nullish, boolean and numeric arms
+  // ride along but cannot make a union a decision by themselves, or `boolean` and every optional
+  // call would demand a disposition nobody ever offered.
+  const decisionBearing =
+    type.types.filter((member) => member.isStringLiteral()).length + (discriminated ? objectMembers.length : 0);
+  return decisionBearing >= 2;
 }
 
-function discardedResultType(result: ts.CallExpression | ts.AwaitExpression, checker: ts.TypeChecker): ts.Type {
+function discardedResultType(result: ts.CallExpression, checker: ts.TypeChecker): ts.Type {
   const type = checker.getTypeAtLocation(result);
-  if (ts.isAwaitExpression(result)) return type;
   return checker.getAwaitedType(type) ?? type;
 }
 
@@ -81,8 +123,8 @@ function collectOffenders(program: ts.Program, sourceFiles: readonly ts.SourceFi
   for (const sourceFile of sourceFiles) {
     const visit = (node: ts.Node): void => {
       if (ts.isExpressionStatement(node)) {
-        const result = discardedCall(node.expression);
-        if (result !== null && isMustUseUnion(discardedResultType(result, checker), result, checker)) {
+        for (const result of discardedCalls(node.expression)) {
+          if (!isMustUseUnion(discardedResultType(result, checker), result, checker)) continue;
           offenders.push({
             file: sourceFile.fileName.startsWith(resolve(REPO_ROOT, 'src'))
               ? toCanonicalSrcPath(REPO_ROOT, sourceFile.fileName)
@@ -140,6 +182,16 @@ describe('discriminated-union returns are must-use', () => {
   it('detects a discarded promise of a union', () => {
     const fixture = fixtureProgram('negative-async');
     expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(1);
+  });
+
+  it('detects discarded discriminated unions with literal and nullish arms', () => {
+    const fixture = fixtureProgram('negative-literal-arms');
+    expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(4);
+  });
+
+  it('detects discarded calls nested in logical, conditional, and comma expressions', () => {
+    const fixture = fixtureProgram('negative-expression-wrappers');
+    expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(7);
   });
 
   it('accepts explicit discards and consumed union results', () => {

@@ -61,7 +61,6 @@ export type ProviderOperationStartupHold =
       exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
     }>;
 
-/** Hydrated ownership presented to provider reconciliation; generic recovery re-snapshots after that owner runs. */
 export type ProviderOperationStartupOwnership = Readonly<{
   completion:
     | Readonly<{ kind: 'complete' }>

@@ -103,12 +103,9 @@ export class LocalOperationRegistry {
   }
 
   /**
-   * Ends this coordinator's live tracking of one operation and addresses local cleanup once. Remote and
-   * guardian release stay with the durable settlement reconciler, so this method retains no dead control
-   * client after the terminal commit.
-   *
-   * Idempotent: every delivery reaches the generation-fenced binding mailbox, including an identity this
-   * registry never activated or already removed.
+   * Every settlement delivery must reach the generation-fenced binding mailbox, including an identity this
+   * registry never activated or has already removed; a delivery that stops short leaves its binding
+   * unretired. No control client may outlive the terminal commit.
    */
   settled(identity: ProviderOperationEventIdentity): void {
     const bindingPort = this.bindingPort;

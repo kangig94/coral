@@ -1215,7 +1215,7 @@ export function createRecoveryCoordinator(
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         const pendingAbort = state.recoveryRegistry?.getAbortDisposition(jobId)?.settlement;
         if (pendingAbort !== undefined) {
-          await pendingAbort.catch(() => undefined);
+          void (await pendingAbort.catch(() => undefined));
           signal.throwIfAborted();
         }
         if (isAppServerRuntime(runtimeRecord)) {
@@ -2781,6 +2781,21 @@ export function createRecoveryCoordinator(
         [],
       ),
     );
+    const walkedRecoveryItems: CoordinatorRecoveryItem[] = [];
+    await runCoordinatorWalk({
+      signal,
+      coordinatorCommit: ctx.coordinatorCommit,
+      summary: 'Coordinator recovery snapshot hydration',
+      settle: (item) => {
+        walkedRecoveryItems.push(item);
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+          detail: 'raw coordinator job hydrated',
+        };
+      },
+    });
     const providerOperationFenceSnapshot = snapshotProviderOperationStartupOwnership();
     const sagaOwnedJobIds = new Set([
       ...providerOperationFenceSnapshot.records.map((record) => record.operation.jobId),
@@ -2793,22 +2808,7 @@ export function createRecoveryCoordinator(
           : [],
       ),
     ]);
-
-    const recoveryItems: CoordinatorRecoveryItem[] = [];
-    await runCoordinatorWalk({
-      signal,
-      coordinatorCommit: ctx.coordinatorCommit,
-      summary: 'Coordinator recovery snapshot hydration',
-      settle: (item) => {
-        if (!sagaOwnedJobIds.has(item.jobId)) recoveryItems.push(item);
-        return {
-          kind: 'advanced',
-          outcome: 'settled',
-          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-          detail: 'raw coordinator job hydrated',
-        };
-      },
-    });
+    const recoveryItems = walkedRecoveryItems.filter((item) => !sagaOwnedJobIds.has(item.jobId));
     const snapshot = buildRecoverySnapshot(recoveryItems, runtime.process);
     const plan = planRecovery(snapshot);
     const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));

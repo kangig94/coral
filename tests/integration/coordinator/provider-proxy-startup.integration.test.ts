@@ -1641,8 +1641,8 @@ describe('production provider proxy startup classification', () => {
         outcome: 'rejected',
         lifecycleFatal: true,
         fatalCalls: 1,
-        // A settlement that arrives before hydration parks an unbound marker, and that marker owes a
-        // bounded absence check, so retirement classification schedules one timer it did not before.
+        // An unbound marker parked by a settlement that arrived before hydration owes a bounded
+        // absence check, so retirement classification schedules that check's timer.
         timerCalls: 1,
         unlinkCalls: 1,
         syncCalls: 0,

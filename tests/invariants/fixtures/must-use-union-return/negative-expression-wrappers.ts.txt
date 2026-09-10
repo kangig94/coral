@@ -1,0 +1,10 @@
+type Decision = Readonly<{ kind: 'accepted' }> | Readonly<{ kind: 'refused'; reason: string }>;
+
+declare function decide(): Decision;
+declare const condition: boolean;
+
+condition && decide();
+condition || decide();
+undefined ?? decide();
+condition ? decide() : decide();
+(decide(), decide());

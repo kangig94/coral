@@ -513,6 +513,8 @@ export function createCoordinatorCore(
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const startupRecoveryBarrier = createStartupRecoveryBarrier();
   const world = createCoordinatorWorld(options, runtime, defaultsPlan, startupRecoveryBarrier.read);
+  const components = createRuntimeComponentRegistry();
+  const runtimeState = createRuntimeState(world.now(), components);
   const kbDaemonSupervisor = options.kbDaemonSupervisor;
   const identity = world.identity;
   const strictHealthIdentity = resolveStrictBundleIdentity();
@@ -729,6 +731,15 @@ export function createCoordinatorCore(
   const recoveryQuarantine: RpcPorts['recoveryQuarantine'] = {
     clear: (request, signal) => recoveryQuarantineRetry.clear(request, signal),
     discardProviderOperation: async (request) => {
+      if (runtimeState.getLaunchFenceActive()) {
+        return unreadableProviderOperationDiscardResultSchema.parse({
+          ...request,
+          kind: 'recovery-in-progress',
+          code: 'backend_recovering',
+          message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
+          remediation: 'Wait for startup recovery to finish, then run this command again.',
+        });
+      }
       const discard = createUnreadableProviderOperationDiscardService({
         instanceId: world.identity.instanceId,
         ids: runtime.ids,
@@ -780,8 +791,6 @@ export function createCoordinatorCore(
     (() => {
       throw storeServicesStartupNotReadyError();
     });
-  const components = createRuntimeComponentRegistry();
-  const runtimeState = createRuntimeState(world.now(), components);
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   let readIpcOpenSockets = () => 0;

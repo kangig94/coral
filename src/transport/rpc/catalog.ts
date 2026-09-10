@@ -136,6 +136,14 @@ const providerOperationAdoptionRefusalSchema = z
 
 export const unreadableProviderOperationDiscardResultSchema: ZodType<UnreadableProviderOperationDiscardResult> =
   z.discriminatedUnion('kind', [
+    unreadableProviderOperationDiscardRequestSchema
+      .extend({
+        kind: z.literal('recovery-in-progress'),
+        code: z.literal('backend_recovering'),
+        message: z.string().min(1),
+        remediation: z.string().min(1),
+      })
+      .strict(),
     unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('discarded') }).strict(),
     unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('absent') }).strict(),
     unreadableProviderOperationDiscardRequestSchema

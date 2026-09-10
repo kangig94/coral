@@ -2,8 +2,12 @@ type Decision = Readonly<{ kind: 'accepted' }> | Readonly<{ kind: 'refused'; rea
 
 declare function decide(): Decision;
 declare function execute(): Promise<'completed' | 'held'>;
+declare const condition: boolean;
 
 void decide();
+void (condition && decide());
+void (condition ? decide() : decide());
+void (decide(), decide());
 const decision = decide();
 if (decision.kind === 'refused') decision.reason;
 

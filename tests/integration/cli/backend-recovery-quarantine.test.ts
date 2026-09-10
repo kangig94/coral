@@ -378,6 +378,18 @@ describe('backend recovery-quarantine commands', () => {
       exitCode: 0,
       stream: 'stdout',
     },
+    {
+      result: {
+        key: 'raw-key',
+        revision: `sha256:${'a'.repeat(64)}`,
+        kind: 'recovery-in-progress',
+        code: 'backend_recovering',
+        message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
+        remediation: 'Wait for startup recovery to finish, then run this command again.',
+      },
+      exitCode: 75,
+      stream: 'stderr',
+    },
     { result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'absent' }, exitCode: 1, stream: 'stderr' },
     {
       result: { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}`, kind: 'readable' },
@@ -482,6 +494,10 @@ describe('backend recovery-quarantine commands', () => {
         `record=${encodeRecoveryQuarantineKey('surviving-record-key')} job=job-1 operation=operation-1`,
       );
       expect(stderr).toContain('capacity remains held');
+    }
+    if (result.kind === 'recovery-in-progress') {
+      expect(stderr).toContain('[backend_recovering]');
+      expect(stderr).toContain('Wait for startup recovery to finish, then run this command again.');
     }
   });
 
@@ -926,6 +942,24 @@ describe('backend recovery-quarantine commands', () => {
       releasedLaunchPermits: 0,
       refusals: [refusal],
     });
+  });
+
+  it('preserves a startup-recovery refusal as the discard command result', async () => {
+    const coordinate = { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}` };
+    const refusal = {
+      ...coordinate,
+      kind: 'recovery-in-progress' as const,
+      code: 'backend_recovering' as const,
+      message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
+      remediation: 'Wait for startup recovery to finish, then run this command again.',
+    };
+    vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
+      request: vi.fn().mockResolvedValue(refusal),
+    } as never);
+
+    await expect(createRecoveryQuarantineCommandOperations().discardProviderOperation?.(coordinate)).resolves.toEqual(
+      refusal,
+    );
   });
 
   it('should report coordinator contract drift without calling it unreachable', async () => {

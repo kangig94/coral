@@ -331,8 +331,7 @@ describe('provider-proxy operation ledger', () => {
 
     ledger.transition(KEY, 'suspended-awaiting-durable-decision');
 
-    // A suspended operation cannot slip back into execution. Containment may turn its acknowledgement into
-    // the failed terminal already committed by the coordinator.
+    // A suspended operation cannot slip back into execution.
     expect(() => ledger.transition(KEY, 'executing')).toThrow(LedgerError);
     ledger.transition(KEY, 'terminal-awaiting-settlement');
     ledger.beginRelease(KEY);

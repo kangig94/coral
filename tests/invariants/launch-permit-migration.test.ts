@@ -96,11 +96,9 @@ describe('launch permit migration constraints', () => {
     expect(currentLock.version).toBe(baseLock.version);
     expect(lockRootVersion(currentLock)).toBe(lockRootVersion(baseLock));
 
-    // The readable-record discard opt-in is the only operator surface this migration adds: an
-    // ambiguous readable provider-operation row is undetermined, so no automatic reclamation may
-    // free it and its exit has to be a command a person can run. Its consent must ride a declared
-    // strict request field; fencing the request schema is what once pushed that consent into the
-    // row key, where any caller could spell it.
+    // An ambiguous readable provider-operation row is undetermined, so no automatic reclamation may
+    // free it and its exit has to be a command a person can run. That command's consent must ride a
+    // declared strict request field: consent recoverable from any caller-supplied value is no consent.
     const authorityDeclarationPaths = changedPaths.filter(
       (path) =>
         (path.startsWith('src/cli/commands/') && path !== 'src/cli/commands/backend.ts') ||

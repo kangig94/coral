@@ -285,7 +285,7 @@ export const PROVIDER_PROXY_SET_CONTAIN_EXIT_CODES: Readonly<
 };
 
 export const UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES: Readonly<
-  Record<UnreadableProviderOperationDiscardResult['kind'], 0 | 1 | 75>
+  Record<Exclude<UnreadableProviderOperationDiscardResult['kind'], 'recovery-in-progress'>, 0 | 1 | 75>
 > = {
   discarded: 0,
   absent: 1,
@@ -1882,6 +1882,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         const request = parseUnreadableProviderOperationDiscardOptions(options, recoveryQuarantine.list());
         const result = await recoveryQuarantine.discardProviderOperation(request);
         switch (result.kind) {
+          case 'recovery-in-progress':
+            process.stderr.write(`${formatUnreadableProviderOperationDiscard(result)}\n`);
+            process.exitCode = errorCodeToExit(result.code);
+            return;
           case 'unsupported-coordinator':
           case 'coordinator-draining':
           case 'unsupported-coordinator-result':

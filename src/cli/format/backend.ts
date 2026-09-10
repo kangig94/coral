@@ -1116,6 +1116,14 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
     `${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`,
   )}`;
   switch (result.kind) {
+    case 'recovery-in-progress':
+      return [
+        `Refusing discard for ${coordinate} [${result.code}]: ${result.message}`,
+        'Observed: startup recovery still owns the coordinator launch fence.',
+        'Not observed: raw-row contents or an operation-settlement outcome.',
+        'Effect: the raw row, due pointers, quarantine evidence, startup permit, and launch capacity were not changed.',
+        `Next step: ${result.remediation}`,
+      ].join('\n');
     case 'discarded':
       return [
         `Discarded unreadable provider-operation row ${coordinate}.`,

@@ -646,6 +646,77 @@ describe('health local carrier observation', () => {
     expect(formatted).toContain(`reason=${refusal.reason}`);
   });
 
+  it('preserves the provider-operation row and launch capacity while startup recovery owns the fence', async () => {
+    const runtime = createRealRuntime('prod');
+    const db = createDb();
+    const unreadable = providerOperationRecord('executing', { job: 92 });
+    const unreadableKey =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      `${unreadable.operation.jobId}:${unreadable.operation.operationId}:` +
+      `${unreadable.operation.proxyInstanceId}:${unreadable.operation.buildSetId}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
+    const attribution = attributeUnreadableProviderOperations(db, readProviderOperations(db).unreadableKeys).find(
+      ({ key }) => key === unreadableKey,
+    );
+    if (attribution === undefined) throw new Error('expected unreadable provider-operation attribution');
+    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
+    expect(
+      quarantine.upsert({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: unreadableProviderOperationSubject(unreadableKey, attribution.revision),
+        state: 'active',
+        stage: 'hydrate',
+        errorMessage: 'Provider operation row is unreadable by this build.',
+        detail: 'Operator discard is required.',
+      }),
+    ).toBe(true);
+
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+    );
+    installProgressStore(core, db, {
+      getDb: () => db,
+      listStoredNonterminalJobIds: () => [unreadable.operation.jobId],
+      loadJobProjectionDetail: () => acquiredDetail(unreadable.operation.jobId),
+      liveJobCount: () => 1,
+      listJobIds: () => [unreadable.operation.jobId],
+      readStatus: () => acquiredDetail(unreadable.operation.jobId).status,
+    });
+    core.launchCoordinator.restoreActiveLaunch(
+      unreadable.operation.jobId,
+      'codex',
+      { kind: 'provider-session', id: 'fenced-discard-session' },
+      'default',
+      { kind: 'undecided-provider-operation', recordKeys: [unreadableKey] },
+    );
+    core.runtimeState.setLaunchFenceActive(true);
+    const discardProviderOperation = captured.discardProviderOperation;
+    if (discardProviderOperation === null) throw new Error('provider-operation discard port was not composed');
+
+    const result = await discardProviderOperation({ key: unreadableKey, revision: attribution.revision });
+
+    expect(result).toEqual({
+      key: unreadableKey,
+      revision: attribution.revision,
+      kind: 'recovery-in-progress',
+      code: 'backend_recovering',
+      message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
+      remediation: 'Wait for startup recovery to finish, then run this command again.',
+    });
+    expect(readProviderOperations(db).unreadableKeys).toContain(unreadableKey);
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, unreadableKey)).toMatchObject({
+      state: 'active',
+      subject: { key: unreadableKey },
+    });
+    expect(core.launchCoordinator.reservationFor(unreadable.operation.jobId)).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'undecided-provider-operation', recordKeys: [unreadableKey] },
+    });
+    expect(core.launchCoordinator.active).toBe(1);
+  });
+
   it('projects health evidence for an automatically reclaimed launch permit', () => {
     let now = 50_000;
     const baseRuntime = createRealRuntime('prod');
