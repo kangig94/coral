@@ -83,7 +83,11 @@ export function createAppServerProxyRoute(deps: {
       });
       if (record.phase !== 'prepare-pending') throw new Error('Prepare-pending journal record failed validation.');
 
-      return deps.reconciler.begin({ record, attempt, authority, signal });
+      const result = await deps.reconciler.begin({ record, attempt, authority, signal });
+      if (result.kind === 'rekey-refused-contained' && result.operationId !== operation.operationId) {
+        throw new Error('Provider ownership containment resolved a different operation identity.');
+      }
+      return result;
     },
   };
 }

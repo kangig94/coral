@@ -534,6 +534,8 @@ export function createCoordinatorCore(
     kind: 'refused',
     reason: 'the coordinator execution services are not composed',
   });
+  let releaseUnreadableProviderOperationStartupOwnership = (_recordKey: string): Promise<number> =>
+    Promise.resolve(0);
   const createSystemInvocationContext = (
     projectRoot: CanonicalWorkDir,
     credentialId: string,
@@ -609,14 +611,18 @@ export function createCoordinatorCore(
   });
   const recoveryQuarantine: RpcPorts['recoveryQuarantine'] = {
     clear: (request, signal) => recoveryQuarantineRetry.clear(request, signal),
-    discardProviderOperation: (request) => {
+    discardProviderOperation: async (request) => {
       const discard = createUnreadableProviderOperationDiscardService({
         instanceId: world.identity.instanceId,
         ids: runtime.ids,
         db: recoveryDb(),
         time: runtime.time,
       });
-      return unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
+      const result = unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
+      if (result.kind === 'discarded' || result.kind === 'absent') {
+        await releaseUnreadableProviderOperationStartupOwnership(result.key);
+      }
+      return result;
     },
   };
 
@@ -651,6 +657,8 @@ export function createCoordinatorCore(
     },
   });
   adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
+  releaseUnreadableProviderOperationStartupOwnership =
+    services.releaseUnreadableProviderOperationStartupOwnership;
 
   const discuss = createDiscussRuntime({
     world,

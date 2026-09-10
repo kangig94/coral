@@ -14,6 +14,7 @@ import {
 } from '../../jobs/provider-event.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { ProviderInterruptionCause, ProviderStopCause } from '../../providers/contract.js';
+import { providerProxyRekeyRefusalEvent } from '../../providers/proxy-failure.js';
 import { isRecord } from '../../infra/json.js';
 import { SessionManager } from '../../sessions/shell.js';
 import { releaseSessionJobClaim, type SessionReleasedEmitter } from '../../sessions/job-release.js';
@@ -397,9 +398,8 @@ export function createStoreProviderEventEffectPort(
           `Provider operation '${identity.jobId}'/'${identity.operationId}' did not commit its terminal watermark.`,
         );
       }
-      const { controlIntent: _controlIntent, ...settlementRecord } = record;
       const next = providerOperationRecordSchema.parse({
-        ...settlementRecord,
+        ...record,
         phase: 'settlement-pending',
         terminalProviderSeq,
         settlementIntent: 'release-after-terminal',
@@ -441,6 +441,18 @@ function toApplyProviderEventBody(
   identity: ProviderOperationEventIdentity,
   event: ProviderEventRequest['event'],
 ): ApplyProviderEventBody {
+  if (event.kind === 'terminal' || event.kind === 'suspended') {
+    const record = readJournalRecord(deps.db, identity);
+    if (
+      (record?.phase === 'executing' || record?.phase === 'settlement-pending') &&
+      record.controlIntent.kind === 'rekey-refusal-containment'
+    ) {
+      return providerProxyRekeyRefusalEvent(
+        resolveJobContext(deps, identity.jobId).provider,
+        record.controlIntent.reason,
+      );
+    }
+  }
   if (event.kind !== 'suspended') return event;
   const recordedStopCause = deps.recordedStopCauseFor(identity);
   if (recordedStopCause === null) {

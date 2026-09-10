@@ -25,6 +25,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
+import type { ProviderOperationStartupOwnership } from '../../jobs/startup.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
 import { readProjectionProviderSession } from '../../sessions/projections.js';
@@ -95,9 +96,16 @@ export function createExecutionServices({
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
-  adoptRepairedProviderOperation: (record: ProviderOperationRecord) => Promise<RepairedProviderOperationAdoption>;
+  adoptRepairedProviderOperation: (
+    record: ProviderOperationRecord,
+    recordKey?: string,
+  ) => Promise<RepairedProviderOperationAdoption>;
+  releaseUnreadableProviderOperationStartupOwnership: (recordKey: string) => Promise<number>;
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
-  reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
+  reconcileProviderOperationsAtStartup: (
+    ownership: ProviderOperationStartupOwnership,
+    signal: AbortSignal,
+  ) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
   stopProviderOperationReconciler: () => ProviderOperationReconcilerStopDisposition;
 } {
@@ -106,6 +114,7 @@ export function createExecutionServices({
   const storeServicesRef = world.storeServicesRef;
   const providerOperationCleanup = new ProviderOperationCleanupRouter();
   world.operationRegistry.connectCleanup(providerOperationCleanup);
+  world.operationRegistry.connectBinding(world.launchCoordinator);
   const getProgressStore = () => {
     const storeServices = storeServicesRef.tryGet();
     if (storeServices === null) throw new Error('Coordinator store services are not connected.');
@@ -291,6 +300,9 @@ export function createExecutionServices({
     },
     startupSetRecovery,
     registry: world.operationRegistry,
+    binding: world.launchCoordinator,
+    releaseStartupOwnership: (operation) =>
+      providerOperationRecovery?.releaseProviderOperationStartupOwnership(operation) ?? false,
     materializePrepare: (record) =>
       materializeProviderOperationPrepare(
         {
@@ -369,9 +381,21 @@ export function createExecutionServices({
 
   const adoptRepairedProviderOperation = async (
     record: ProviderOperationRecord,
+    recordKey?: string,
   ): Promise<RepairedProviderOperationAdoption> => {
     if (!providerProxyClaimsInitialized || !providerProxyLifecycleInitialized) {
       return { kind: 'refused', reason: 'the provider operation ownership path is not initialized' };
+    }
+    if (providerOperationRecovery === null) {
+      return { kind: 'refused', reason: 'provider operation recovery ownership is not connected' };
+    }
+
+    const ownership = providerOperationRecovery.adoptRepairedProviderOperationOwnership(record, recordKey);
+    if (ownership.bindingDisposition.kind === 'refused') {
+      return { kind: 'refused', reason: ownership.bindingDisposition.reason };
+    }
+    if (ownership.bindingDisposition.kind === 'not-reconciled') {
+      return { kind: 'refused', reason: `the repaired provider operation is ${ownership.bindingDisposition.reason}` };
     }
 
     world.providerProxyClaims.applyMutation({ kind: 'upserted', record });
@@ -516,13 +540,21 @@ export function createExecutionServices({
     getRecoveryService,
     listExecutionServices,
     adoptRepairedProviderOperation,
+    releaseUnreadableProviderOperationStartupOwnership: async (recordKey) => {
+      const resolution = providerOperationRecovery?.releaseUnreadableProviderOperationStartupOwnership(recordKey);
+      if (resolution === undefined) return 0;
+      for (const record of resolution.readableRecords) {
+        await adoptRepairedProviderOperation(record);
+      }
+      return resolution.released;
+    },
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       providerOperationRecovery = recoveryCoordinator;
     },
-    reconcileProviderOperationsAtStartup: async (signal) => {
+    reconcileProviderOperationsAtStartup: async (ownership, signal) => {
       await initializeProviderProxyClaims();
       await initializeProviderProxyLifecycle();
-      return providerOperationReconciler.reconcileAtStartup(signal);
+      return providerOperationReconciler.reconcileAtStartup(ownership, signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
     stopProviderOperationReconciler: () => {

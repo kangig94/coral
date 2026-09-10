@@ -795,7 +795,10 @@ export type LifecycleDeps = {
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ProjectRequestPort[];
   readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
-  readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
+  readonly reconcileProviderOperationsAtStartup?: (
+    ownership: ProviderOperationStartupOwnership,
+    signal: AbortSignal,
+  ) => Promise<StartupReconciliationReport>;
   readonly startProviderOperationReconciler?: () => void;
   readonly stopProviderOperationReconciler?: () => ProviderOperationReconcilerStopDisposition;
   /**
@@ -1133,6 +1136,7 @@ async function runLifecycleStartup({
         getRecoveryService,
         createInvocationContext,
         log: identity.log,
+        startupOwnership: launchCoordinator,
       },
       bound,
     );
@@ -1185,9 +1189,12 @@ async function runLifecycleStartup({
     // ===== Era II (recovery) =====
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
-    await reconcileProviderOperationsAtStartup?.(signal);
+    const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    const providerOperationStartupOwnership =
+      recoveryCoordinator.hydrateProviderOperationStartupOwnership(providerOperationStartupSnapshot);
     signal.throwIfAborted();
-    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    await reconcileProviderOperationsAtStartup?.(providerOperationStartupOwnership, signal);
+    signal.throwIfAborted();
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II

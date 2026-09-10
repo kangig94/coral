@@ -6,6 +6,7 @@ import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.j
 import type { Runtime } from '../runtime/ports.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerRequestFailed } from '../providers/fault.js';
+import { providerProxyRekeyRefusalEvent } from '../providers/proxy-failure.js';
 import {
   isAbortStopCause,
   type HostRef,
@@ -305,6 +306,7 @@ type StagedOperation = {
   cancellationMode: ProxyHostCancellationMode | null;
   cancellationEvidence: OperationCancellationEvidence | null;
   cancellationPromise: Promise<void> | null;
+  completionEmitted: boolean;
   staged: Readonly<{ hostRef: HostRef; close(): void }> | null;
   root: Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
   stageHandle: SemanticOperationStageHandle | null;
@@ -515,6 +517,24 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       return;
     }
 
+    if (reason.kind === 'stop' && reason.cause === 'coordinator_rekey_refused') {
+      await withinCancellationDeadline(completion).catch((error: unknown) => {
+        throw requireSetRelinquishment(entry, errorMessage(error));
+      });
+      if (entry.bound === null) {
+        throw requireSetRelinquishment(entry, 'the accepted operation lost its provider binding');
+      }
+      if (!entry.completionEmitted) {
+        try {
+          emitRekeyRefusalTerminal(entry, entry.bound.name);
+        } catch (error: unknown) {
+          throw requireSetRelinquishment(entry, errorMessage(error));
+        }
+      }
+      closeAndForget(entry);
+      return;
+    }
+
     if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
       await withinCancellationDeadline(completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
@@ -589,6 +609,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
   };
 
+  const emitRekeyRefusalTerminal = (entry: StagedOperation, provider: string, detail?: string): void => {
+    getProxy().emitProviderEvent(entry.key, providerProxyRekeyRefusalEvent(provider, detail));
+    entry.completionEmitted = true;
+  };
+
   const runPump = async (
     key: ProviderOperationKey,
     entry: StagedOperation,
@@ -614,8 +639,12 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: step.value.reason };
         }
         const emission = proxy.emitProviderEvent(key, step.value);
+        if (step.value.kind === 'terminal' || step.value.kind === 'suspended') {
+          entry.completionEmitted = true;
+        }
 
         if (emission.kind === 'proxy-emergency-terminal') {
+          entry.completionEmitted = true;
           try {
             await iterator.return?.();
           } catch (error: unknown) {
@@ -677,7 +706,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         // than the shape of what it threw. Interruption causes (restart/handoff) emit nothing: the coordinator
         // synthesizes `session.interrupted` itself from `operation.stop.v1`'s own `suspended-awaiting-durable-
         // decision` reply, not from a provider event this proxy would have to invent.
-        if (isAbortStopCause(cause)) emitAbortedTerminal(key, cause);
+        if (cause === 'coordinator_rekey_refused') {
+          emitRekeyRefusalTerminal(entry, provider, errorMessage(error));
+        } else if (isAbortStopCause(cause)) {
+          emitAbortedTerminal(key, cause);
+        }
         return;
       }
       // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
@@ -786,6 +819,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       cancellationMode: null,
       cancellationEvidence: null,
       cancellationPromise: null,
+      completionEmitted: false,
       staged: null,
       root: null,
       stageHandle: null,

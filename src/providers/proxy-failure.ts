@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { ProviderEventBody } from './contract.js';
-import type { ProviderFailureCause } from './fault.js';
+import { providerRequestFailed, type ProviderFailureCause } from './fault.js';
 
 export const PROVIDER_PROXY_FAILURE_ORIGIN = '@coral/provider-proxy' as const;
 export const MAX_PROVIDER_PROXY_EMERGENCY_FRAME_BYTES = 641;
@@ -92,4 +92,20 @@ export function providerProxyEmergencyEvent(input: unknown): ProviderProxyEmerge
     failureCause,
   } satisfies ProviderEventBody;
   return providerProxyEmergencyEventSchema.parse(event);
+}
+
+/** Rekey refusal cannot surface a provider-specific suspended or aborted outcome across the proxy wire. */
+export function providerProxyRekeyRefusalEvent(provider: string, detail?: string): ProviderEventBody {
+  const suffix = detail?.trim();
+  const message = (
+    suffix === undefined || suffix.length === 0
+      ? 'Coordinator ownership re-key was refused after remote acceptance.'
+      : `Coordinator ownership re-key was refused after remote acceptance: ${suffix}`
+  ).slice(0, 4096);
+  return {
+    kind: 'terminal',
+    terminal: { content: '', outcome: { kind: 'failed' }, durationMs: 0 },
+    diagnostics: {},
+    failureCause: providerRequestFailed({ provider, message }),
+  };
 }

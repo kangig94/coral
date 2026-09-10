@@ -6,7 +6,11 @@ import type {
 } from '../providers/contract.js';
 import { isInterruptionStopCause } from '../providers/contract.js';
 import { commitContinuityEvent, rejectContinuityEvent } from '../providers/internal/continuity-commit.js';
-import { providerProxyEmergencyEvent, type ProviderProxyReplayFailureReason } from '../providers/proxy-failure.js';
+import {
+  providerProxyEmergencyEvent,
+  providerProxyRekeyRefusalEvent,
+  type ProviderProxyReplayFailureReason,
+} from '../providers/proxy-failure.js';
 import {
   ControlEndpointError,
   type ControlEndpointTimer,
@@ -210,6 +214,7 @@ type SupervisedOperation = {
   pumpRunning: boolean;
   closed: boolean;
   pendingCompletion: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision' | null;
+  stopCause: ProviderStopCause | null;
 };
 
 type OperationSupervisorOptions = Readonly<{
@@ -555,6 +560,7 @@ export class OperationSupervisor {
 
   stop(operation: OperationIdentity, cause: ProviderStopCause): Promise<unknown> {
     const record = this.#requireRecord(operation);
+    if (cause === 'coordinator_rekey_refused' || record.stopCause === null) record.stopCause = cause;
     const before = this.#ledger.get(record.key);
     if (
       before !== null &&
@@ -578,12 +584,32 @@ export class OperationSupervisor {
         return proxyOperationStopResultSchema.parse({ state: 'released', committedThroughProviderSeq: 0 });
       }
       const entry = this.#requireLedger(record.key);
-      const next = isInterruptionStopCause(cause)
+      const effectiveCause = record.stopCause ?? cause;
+      const next = isInterruptionStopCause(effectiveCause)
         ? 'suspended-awaiting-durable-decision'
         : 'terminal-awaiting-settlement';
       if (entry.state === 'executing') {
-        await this.#options.host.stop({ key: record.key, cause });
+        await this.#options.host.stop({ key: record.key, cause: effectiveCause });
         if (this.#ledger.get(record.key)?.state === 'executing') this.#ledger.transition(record.key, next);
+      }
+      const completion = this.#ledger.get(record.key);
+      if (
+        effectiveCause === 'coordinator_rekey_refused' &&
+        completion !== null &&
+        (completion.state === 'terminal-awaiting-settlement' ||
+          completion.state === 'suspended-awaiting-durable-decision') &&
+        !completion.completionRecorded
+      ) {
+        this.emitProviderEvent(
+          record.key,
+          providerProxyRekeyRefusalEvent(entry.prepared.provider, 'A prior stop produced no completion event.'),
+        );
+      }
+      if (
+        effectiveCause === 'coordinator_rekey_refused' &&
+        this.#ledger.get(record.key)?.state === 'suspended-awaiting-durable-decision'
+      ) {
+        this.#ledger.transition(record.key, 'terminal-awaiting-settlement');
       }
       const after = this.#ledger.get(record.key);
       return proxyOperationStopResultSchema.parse({
@@ -835,6 +861,14 @@ export class OperationSupervisor {
 
   emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
     const record = this.#requireRecord(key);
+    const recordedEvent =
+      record.stopCause === 'coordinator_rekey_refused' &&
+      (event.kind === 'terminal' || event.kind === 'suspended')
+        ? providerProxyRekeyRefusalEvent(
+            this.#requireLedger(key).prepared.provider,
+            event.kind === 'suspended' ? event.reason : undefined,
+          )
+        : event;
     const providerSeq = this.#ledger.nextProviderSeq(key);
     const request = providerEventRequestSchema.parse({
       operation: {
@@ -844,7 +878,7 @@ export class OperationSupervisor {
         buildSetId: this.#options.buildSetId,
       },
       providerSeq,
-      event,
+      event: recordedEvent,
     });
     const message = {
       jsonrpc: '2.0',
@@ -855,13 +889,13 @@ export class OperationSupervisor {
     if (encodedProxyControlFrameByteLength(message) > MAX_PROVIDER_REPLAY_BYTES) {
       const emission = this.#recordProxyEmergencyCompletion(
         record,
-        event.kind === 'terminal' || event.kind === 'suspended'
+        recordedEvent.kind === 'terminal' || recordedEvent.kind === 'suspended'
           ? 'provider_completion_too_large'
           : 'provider_replay_operation_bytes_exhausted',
       );
-      if (event.kind === 'continuity') {
+      if (recordedEvent.kind === 'continuity') {
         rejectContinuityEvent(
-          event,
+          recordedEvent,
           new ContinuityCommitDeliveryError(
             'continuity_commit_replaced_by_proxy_terminal',
             'The continuity checkpoint was replaced by a proxy emergency terminal.',
@@ -876,14 +910,16 @@ export class OperationSupervisor {
       this.#ledger.recordEvent(
         key,
         { providerSeq, frame },
-        event.kind === 'terminal' || event.kind === 'suspended' ? { kind: 'completion' } : { kind: 'ordinary' },
+        recordedEvent.kind === 'terminal' || recordedEvent.kind === 'suspended'
+          ? { kind: 'completion' }
+          : { kind: 'ordinary' },
       );
     } catch (error: unknown) {
       if (!(error instanceof ReplayAdmissionError)) throw error;
-      const emission = this.#recordProxyEmergencyCompletion(record, this.#replayFailureReason(event, error));
-      if (event.kind === 'continuity') {
+      const emission = this.#recordProxyEmergencyCompletion(record, this.#replayFailureReason(recordedEvent, error));
+      if (recordedEvent.kind === 'continuity') {
         rejectContinuityEvent(
-          event,
+          recordedEvent,
           new ContinuityCommitDeliveryError(
             'continuity_commit_replaced_by_proxy_terminal',
             'The continuity checkpoint was replaced by a proxy emergency terminal.',
@@ -894,9 +930,9 @@ export class OperationSupervisor {
       return emission;
     }
     this.#nextProviderEventFrameId += 1;
-    this.#recordCompletion(record, event);
-    if (event.kind === 'continuity') {
-      const pending = this.#createPendingContinuityCommit(record, providerSeq, event);
+    this.#recordCompletion(record, recordedEvent);
+    if (recordedEvent.kind === 'continuity') {
+      const pending = this.#createPendingContinuityCommit(record, providerSeq, recordedEvent);
       record.continuityCommits.set(providerSeq, pending);
       this.#requestPump(record);
       return { kind: 'continuity-recorded', providerSeq, settlement: pending.settlement };
@@ -977,6 +1013,7 @@ export class OperationSupervisor {
     current.prepareRefusal = null;
     current.releaseReceipt = null;
     current.pendingCompletion = null;
+    current.stopCause = null;
     return current;
   }
 
@@ -1033,6 +1070,7 @@ export class OperationSupervisor {
       pumpRunning: false,
       closed: false,
       pendingCompletion: null,
+      stopCause: null,
     };
   }
 
@@ -1304,7 +1342,9 @@ export class OperationSupervisor {
     if (next === null) return;
     const state = this.#ledger.get(record.key)?.state;
     if (state === 'executing') this.#ledger.transition(record.key, next);
-    else if (state === 'starting' || state === 'started-awaiting-publication') record.pendingCompletion = next;
+    else if (state === 'suspended-awaiting-durable-decision' && next === 'terminal-awaiting-settlement') {
+      this.#ledger.transition(record.key, next);
+    } else if (state === 'starting' || state === 'started-awaiting-publication') record.pendingCompletion = next;
   }
 
   #ownership(record: SupervisedOperation): OperationOwnershipEpoch {

@@ -50,7 +50,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly (Pro
     'started-awaiting-publication': ['executing'],
     executing: ['terminal-awaiting-settlement', 'suspended-awaiting-durable-decision'],
     'terminal-awaiting-settlement': ['releasing'],
-    'suspended-awaiting-durable-decision': ['releasing'],
+    'suspended-awaiting-durable-decision': ['terminal-awaiting-settlement', 'releasing'],
     releasing: ['released'],
   });
 
@@ -130,6 +130,8 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
   activationFingerprint: string | null;
   activationAck: ProxyOperationActivationReceipt | null;
   committedThroughProviderSeq: number;
+  /** A second completion would create two incompatible terminal authorities for one operation. */
+  completionRecorded: boolean;
   bufferedEvents: readonly ReplayEvent[];
   bufferedBytes: number;
 }>;
@@ -244,6 +246,7 @@ function snapshot<Prepared>(entry: MutableEntry<Prepared>): OperationLedgerEntry
     activationFingerprint: entry.activationFingerprint,
     activationAck: entry.activationAck,
     committedThroughProviderSeq: entry.committedThroughProviderSeq,
+    completionRecorded: entry.completionRecorded,
     bufferedEvents: Object.freeze(entry.buffered.map((buffered) => buffered.event)),
     bufferedBytes: entry.bufferedBytes,
   });

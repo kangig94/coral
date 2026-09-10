@@ -8,16 +8,28 @@ import {
   type RecordedContainmentObservation,
 } from '../../../infra/process-containment.js';
 import { backendLog } from '../../../infra/backend-log.js';
-import { isTerminalPhase } from '../../../jobs/phase.js';
+import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import {
   attributeUnreadableProviderOperations,
+  compareAndSwapProviderOperation,
+  readProviderOperation,
   readProviderOperations,
   readSupersededProviderOperations,
   retireSupersededProviderOperation,
   type UnreadableProviderOperationAttribution,
 } from '../../../store/provider-operation-journal.js';
-import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
+import {
+  providerOperationRecordSchema,
+  type ProviderOperationRecord,
+} from '../../../store/provider-operation-record.js';
+import { readProviderOperationJobLaunch } from '../../../jobs/provider-operation-state.js';
+import type {
+  JobAdmissionPort,
+  JobLaunchRecoveryPort,
+  LaunchPermit,
+} from '../../../jobs/contracts/admission.js';
+import type { ProviderOperationBindingPort } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -78,7 +90,10 @@ import type { CoralEventInput } from '../../../store/envelope.js';
 import { normalizeProviderSession } from '../../../sessions/entry-normalization.js';
 import { InterruptedRecoveryCommitError, RecoveryOwnershipReleaseError } from './interrupted-finalizer.js';
 import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
-import type { ProviderOperationStartupOwnership } from '../../../jobs/startup.js';
+import type {
+  ProviderOperationStartupOwnership,
+  ProviderOperationStartupRecordOwnership,
+} from '../../../jobs/startup.js';
 import {
   listDurableCliContainmentStatuses,
   readDurableCliContainmentStatus,
@@ -113,6 +128,10 @@ type RecoveryCoordinatorState = {
     }>
   >;
   providerOperationRecoveries: Map<string, Promise<ProviderOperationRecoveryAcceptance>>;
+  providerOperationStartupPermits: Map<
+    string,
+    Readonly<{ permit: LaunchPermit; operationId: string | null; unreadableRecordKeys: readonly string[] }>
+  >;
   teardownRequested: boolean;
   teardownState:
     | Readonly<{ kind: 'pending' }>
@@ -126,9 +145,46 @@ export type ProviderOperationRecoveryAcceptance = Readonly<{
   owner: 'recovery-coordinator';
 }>;
 
+type ProviderOperationStartupSnapshot = Readonly<{
+  records: readonly ProviderOperationRecord[];
+  unreadable: readonly UnreadableProviderOperationAttribution[];
+}>;
+
+type UnreadableProviderOperationStartupResolution = Readonly<{
+  released: number;
+  readableRecords: readonly ProviderOperationRecord[];
+}>;
+
+function providerOperationPhaseRestoresStartupPermit(phase: ProviderOperationRecord['phase']): boolean {
+  return (
+    phase === 'prepare-pending' ||
+    phase === 'guardian-activation-pending' ||
+    phase === 'proxy-activation-pending' ||
+    phase === 'activation-resolution-pending' ||
+    phase === 'executing' ||
+    phase === 'prestart-cleanup-pending'
+  );
+}
+
+function providerOperationStartupIdentityKey(operation: ProviderOperationRecord['operation']): string {
+  return (
+    `${operation.jobId}\u0000${operation.operationId}\u0000` +
+    `${operation.proxyInstanceId}\u0000${operation.buildSetId}`
+  );
+}
+
 export interface RecoveryCoordinator {
   retireAbsentSupersededProviderOperations(): void;
-  snapshotProviderOperationStartupOwnership(): ProviderOperationStartupOwnership;
+  snapshotProviderOperationStartupOwnership(): ProviderOperationStartupSnapshot;
+  hydrateProviderOperationStartupOwnership(
+    snapshot: ProviderOperationStartupSnapshot,
+  ): ProviderOperationStartupOwnership;
+  adoptRepairedProviderOperationOwnership(
+    record: ProviderOperationRecord,
+    recordKey?: string,
+  ): ProviderOperationStartupRecordOwnership;
+  releaseProviderOperationStartupOwnership(operation: ProviderOperationRecord['operation']): boolean;
+  releaseUnreadableProviderOperationStartupOwnership(recordKey: string): UnreadableProviderOperationStartupResolution;
   recoverProviderOperationJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
@@ -148,6 +204,9 @@ type RecoveryCoordinatorContext = {
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   log: (message: string) => void;
+  startupOwnership: Pick<JobLaunchRecoveryPort, 'restoreActiveLaunch'> &
+    Pick<JobAdmissionPort, 'releaseLaunch'> &
+    ProviderOperationBindingPort;
 };
 
 export type StartupRecoveryContext = {
@@ -274,6 +333,7 @@ export function createUnreadableProviderOperationRetryPlan(
   subject: RecoverySubject,
   adopt: (
     record: ProviderOperationRecord,
+    recordKey: string,
   ) => RepairedProviderOperationAdoption | Promise<RepairedProviderOperationAdoption>,
 ): RecoverySourceFactoryPlan<RawUnreadableProviderOperationRecoveryRow, RawUnreadableProviderOperationRecoveryRow> {
   return {
@@ -291,7 +351,7 @@ export function createUnreadableProviderOperationRetryPlan(
           };
         }
 
-        const adoption = await adopt(item.record);
+        const adoption = await adopt(item.record, item.key);
         if (adoption.kind === 'refused') {
           return {
             kind: 'quarantine',
@@ -526,6 +586,7 @@ export function createRecoveryCoordinator(
     getRecoveryService,
     createInvocationContext,
     log,
+    startupOwnership,
   }: RecoveryCoordinatorContext,
   bound: BoundCoordinator | null,
 ): RecoveryCoordinator {
@@ -540,9 +601,22 @@ export function createRecoveryCoordinator(
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     inflightFinalizations: new Map(),
     providerOperationRecoveries: new Map<string, Promise<ProviderOperationRecoveryAcceptance>>(),
+    providerOperationStartupPermits: new Map(),
     teardownRequested: false,
     teardownState: { kind: 'pending' },
   };
+
+  const releaseTerminalUnreadableStartupOwnership = ({
+    jobId,
+    phase,
+  }: Readonly<{ jobId: string; phase: JobPhase; previousPhase: JobPhase }>): void => {
+    if (!isTerminalPhase(phase)) return;
+    const owned = state.providerOperationStartupPermits.get(jobId);
+    if (owned === undefined || owned.operationId !== null || owned.unreadableRecordKeys.length === 0) return;
+    state.providerOperationStartupPermits.delete(jobId);
+    startupOwnership.releaseLaunch(owned.permit);
+  };
+  eventBus.on('job:phase_changed', releaseTerminalUnreadableStartupOwnership);
 
   const clearRecoveryPoller = (jobId: string): void => {
     const pollInterval = state.recoveryPollIntervals.get(jobId);
@@ -684,6 +758,7 @@ export function createRecoveryCoordinator(
   };
 
   const performTeardown = async (): Promise<void> => {
+    eventBus.off('job:phase_changed', releaseTerminalUnreadableStartupOwnership);
     state.teardownRequested = true;
 
     for (const pollInterval of state.recoveryPollIntervals.values()) {
@@ -723,6 +798,10 @@ export function createRecoveryCoordinator(
     }
     state.cancelledRecoveryJobIds.clear();
     state.providerOperationRecoveries.clear();
+    for (const { permit } of state.providerOperationStartupPermits.values()) {
+      startupOwnership.releaseLaunch(permit);
+    }
+    state.providerOperationStartupPermits.clear();
     resetRecoveryState({ forceRegistryRelease: true });
   };
 
@@ -1707,6 +1786,11 @@ export function createRecoveryCoordinator(
 
   const completeProviderOperationJobRecovery = (jobId: string): void => {
     state.providerOperationRecoveries.delete(jobId);
+    const owned = state.providerOperationStartupPermits.get(jobId);
+    if (owned !== undefined) {
+      state.providerOperationStartupPermits.delete(jobId);
+      startupOwnership.releaseLaunch(owned.permit);
+    }
   };
 
   /**
@@ -1742,7 +1826,7 @@ export function createRecoveryCoordinator(
     }
   };
 
-  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership => {
+  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupSnapshot => {
     const scan = readProviderOperations(progressStore.getDb());
     // A row this build cannot read still names a job the provider saga owns. Fencing only the decoded ones
     // hands that job to generic recovery, which then does a keyed strict read of the same row and throws —
@@ -1752,15 +1836,432 @@ export function createRecoveryCoordinator(
     // with its key, so those are exactly the rows where the two differ — fencing the key's job alone would
     // hand the payload's job to generic recovery, which can terminalize it while its operation is live. This
     // is the sibling of the proxy-set fence in `provider-proxy-set/containment-proof.ts`.
-    const attributions = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys);
-    const unreadableJobIds = attributions.flatMap((attribution) =>
-      attribution.jobs.kind === 'known' ? attribution.jobs.values : [],
+    return Object.freeze({
+      records: Object.freeze([...scan.records]),
+      unreadable: Object.freeze(
+        attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys),
+      ),
+    });
+  };
+
+  const restoreProviderOperationStartupPermit = (
+    jobId: string,
+    operationId: string | null,
+    unreadableRecordKey: string | null = null,
+  ): LaunchPermit | null => {
+    const existing = state.providerOperationStartupPermits.get(jobId);
+    if (existing !== undefined) {
+      if (existing.operationId !== null && operationId !== null && existing.operationId !== operationId) {
+        log(`Provider operation startup ownership conflict for ${jobId}: more than one operation claims its permit.\n`);
+        return null;
+      }
+      if (existing.operationId === null && operationId !== null) {
+        state.providerOperationStartupPermits.set(jobId, {
+          permit: existing.permit,
+          operationId,
+          unreadableRecordKeys: [],
+        });
+      } else if (
+        existing.operationId === null &&
+        unreadableRecordKey !== null &&
+        !existing.unreadableRecordKeys.includes(unreadableRecordKey)
+      ) {
+        state.providerOperationStartupPermits.set(jobId, {
+          ...existing,
+          unreadableRecordKeys: [...existing.unreadableRecordKeys, unreadableRecordKey],
+        });
+      }
+      return existing.permit;
+    }
+
+    const status = progressStore.readStatus(jobId);
+    if (status === null) return null;
+    try {
+      const launch = readProviderOperationJobLaunch(progressStore, jobId);
+      const permit = startupOwnership.restoreActiveLaunch(jobId, launch.provider, launch.owner, launch.pool);
+      state.providerOperationStartupPermits.set(jobId, {
+        permit,
+        operationId,
+        unreadableRecordKeys: unreadableRecordKey === null ? [] : [unreadableRecordKey],
+      });
+      return permit;
+    } catch (error: unknown) {
+      log(`Provider operation startup permit restoration failed for ${jobId}: ${formatError(error)}\n`);
+      return null;
+    }
+  };
+
+  const releaseProviderOperationStartupOwnership = (operation: ProviderOperationRecord['operation']): boolean => {
+    const owned = state.providerOperationStartupPermits.get(operation.jobId);
+    if (owned === undefined || owned.operationId !== operation.operationId) {
+      return false;
+    }
+    state.providerOperationStartupPermits.delete(operation.jobId);
+    startupOwnership.releaseLaunch(owned.permit);
+    return true;
+  };
+
+  const releaseUnreadableProviderOperationStartupOwnership = (
+    recordKey: string,
+  ): UnreadableProviderOperationStartupResolution => {
+    let released = 0;
+    const readableRecords: ProviderOperationRecord[] = [];
+    for (const [jobId, owned] of state.providerOperationStartupPermits) {
+      if (owned.operationId !== null || !owned.unreadableRecordKeys.includes(recordKey)) continue;
+      const unreadableRecordKeys = owned.unreadableRecordKeys.filter((candidate) => candidate !== recordKey);
+      if (unreadableRecordKeys.length > 0) {
+        state.providerOperationStartupPermits.set(jobId, { ...owned, unreadableRecordKeys });
+        continue;
+      }
+
+      const scan = readProviderOperations(progressStore.getDb());
+      const remainingUnreadableKeys = attributeUnreadableProviderOperations(
+        progressStore.getDb(),
+        scan.unreadableKeys,
+      ).flatMap((attribution) =>
+        attribution.jobs.kind === 'known' && attribution.jobs.values.includes(jobId) ? [attribution.key] : [],
+      );
+      if (remainingUnreadableKeys.length > 0) {
+        state.providerOperationStartupPermits.set(jobId, {
+          ...owned,
+          unreadableRecordKeys: remainingUnreadableKeys,
+        });
+        continue;
+      }
+      const readableForJob = scan.records.filter((record) => record.operation.jobId === jobId);
+      if (readableForJob.length === 1) {
+        state.providerOperationStartupPermits.set(jobId, { ...owned, unreadableRecordKeys: [] });
+        readableRecords.push(readableForJob[0]!);
+        continue;
+      }
+      if (readableForJob.length > 1) {
+        state.providerOperationStartupPermits.set(jobId, { ...owned, unreadableRecordKeys: [] });
+        continue;
+      }
+      state.providerOperationStartupPermits.delete(jobId);
+      startupOwnership.releaseLaunch(owned.permit);
+      released += 1;
+    }
+    return Object.freeze({ released, readableRecords: Object.freeze(readableRecords) });
+  };
+
+  const settleProviderOperationStartupBinding = (
+    operation: ProviderOperationRecord['operation'],
+  ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
+    const disposition = startupOwnership.settleProviderOperationBinding(operation);
+    if (
+      disposition.kind === 'settled-unbound' ||
+      disposition.kind === 'settled' ||
+      disposition.kind === 'already-settled'
+    ) {
+      return disposition;
+    }
+    const reason =
+      disposition.kind === 'refused'
+        ? disposition.reason
+        : `Provider operation startup settlement returned unexpected disposition '${disposition.kind}'.`;
+    return { kind: 'refused', reason, exit: 'remote-settlement' };
+  };
+
+  const releaseRestoredPermitThroughSettlement = (
+    permit: LaunchPermit,
+    operation: ProviderOperationRecord['operation'],
+  ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
+    settleProviderOperationStartupBinding(operation);
+    const disposition = startupOwnership.prepareProviderOperationBinding(permit, operation);
+    if (disposition.kind === 'already-settled') {
+      state.providerOperationStartupPermits.delete(operation.jobId);
+      return disposition;
+    }
+    const reason =
+      disposition.kind === 'refused'
+        ? disposition.reason
+        : `Provider operation settlement binding returned unexpected disposition '${disposition.kind}'.`;
+    return { kind: 'refused', reason, exit: 'remote-settlement' };
+  };
+
+  const holdProviderOperationStartupOwnership = (record: ProviderOperationRecord, reason: string): void => {
+    const message = (reason.trim() || 'Provider operation startup ownership was refused.').slice(0, 4096);
+    let current: ProviderOperationRecord | null = record;
+    while (current !== null && current.phase !== 'settlement-pending') {
+      const next = providerOperationRecordSchema.parse({
+        ...current,
+        revision: current.revision + 1,
+        retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+        retryCount: current.retryCount + 1,
+        lastError: {
+          observedAtMs: runtime.time.now(),
+          code: 'provider_operation_startup_ownership_refused',
+          message,
+        },
+      });
+      const result = compareAndSwapProviderOperation(progressStore.getDb(), current, next);
+      if (result.kind === 'updated') return;
+      current = result.current;
+    }
+  };
+
+  const prepareProviderOperationStartupBinding = (
+    permit: LaunchPermit,
+    record: ProviderOperationRecord,
+  ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
+    const disposition = startupOwnership.prepareProviderOperationBinding(permit, record.operation);
+    if (
+      disposition.kind === 'prepared' ||
+      disposition.kind === 'bound' ||
+      disposition.kind === 'already-settled'
+    ) {
+      state.providerOperationStartupPermits.delete(record.operation.jobId);
+      return disposition;
+    }
+    const reason =
+      disposition.kind === 'refused'
+        ? disposition.reason
+        : `Provider operation startup binding returned unexpected disposition '${disposition.kind}'.`;
+    holdProviderOperationStartupOwnership(record, reason);
+    return { kind: 'refused', reason, exit: 'restart-or-operator-repair' };
+  };
+
+  const hydrateProviderOperationStartupRecord = (
+    snapshotRecord: ProviderOperationRecord,
+  ): ProviderOperationStartupRecordOwnership => {
+    const snapshotRestoresPermit = providerOperationPhaseRestoresStartupPermit(snapshotRecord.phase);
+    let existingPermit = state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId);
+    if (snapshotRecord.phase === 'local-recovery-pending' && existingPermit?.operationId === null) {
+      state.providerOperationStartupPermits.delete(snapshotRecord.operation.jobId);
+      startupOwnership.releaseLaunch(existingPermit.permit);
+      existingPermit = undefined;
+    }
+    if (
+      !snapshotRestoresPermit &&
+      existingPermit?.operationId === null
+    ) {
+      state.providerOperationStartupPermits.set(snapshotRecord.operation.jobId, {
+        permit: existingPermit.permit,
+        operationId: snapshotRecord.operation.operationId,
+        unreadableRecordKeys: [],
+      });
+    }
+    const reusableExistingPermit =
+      existingPermit !== undefined &&
+      (existingPermit.operationId === null || existingPermit.operationId === snapshotRecord.operation.operationId);
+    const restoredPermit = snapshotRestoresPermit
+      ? restoreProviderOperationStartupPermit(snapshotRecord.operation.jobId, snapshotRecord.operation.operationId)
+      : reusableExistingPermit
+        ? existingPermit.permit
+        : null;
+    const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
+    if (current === null) {
+      if (restoredPermit !== null) {
+        const disposition = releaseRestoredPermitThroughSettlement(restoredPermit, snapshotRecord.operation);
+        if (disposition.kind === 'refused') {
+          state.providerOperationStartupPermits.delete(snapshotRecord.operation.jobId);
+          startupOwnership.releaseLaunch(restoredPermit);
+        }
+      } else {
+        settleProviderOperationStartupBinding(snapshotRecord.operation);
+      }
+      if (!state.providerOperationStartupPermits.has(snapshotRecord.operation.jobId)) {
+        startupOwnership.retireProviderOperationBinding(snapshotRecord.operation);
+      }
+      return {
+        phase: snapshotRecord.phase,
+        operation: snapshotRecord.operation,
+        restoredPermit,
+        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
+      };
+    }
+
+    if (current.phase === 'settlement-pending') {
+      const bindingDisposition =
+        restoredPermit === null
+          ? settleProviderOperationStartupBinding(current.operation)
+          : releaseRestoredPermitThroughSettlement(restoredPermit, current.operation);
+      return { phase: current.phase, operation: current.operation, restoredPermit, bindingDisposition };
+    }
+    if (current.phase === 'local-recovery-pending') {
+      return {
+        phase: current.phase,
+        operation: current.operation,
+        restoredPermit,
+        bindingDisposition: { kind: 'not-required', owner: 'generic-job-recovery' },
+      };
+    }
+    if (current.phase === 'prestart-cleanup-pending') {
+      if (restoredPermit === null) {
+        const reason = 'The provider prestart cleanup has no restored recovery permit.';
+        holdProviderOperationStartupOwnership(current, reason);
+        return {
+          phase: current.phase,
+          operation: current.operation,
+          restoredPermit,
+          bindingDisposition: { kind: 'refused', reason, exit: 'restart-or-operator-repair' },
+        };
+      }
+      return {
+        phase: current.phase,
+        operation: current.operation,
+        restoredPermit,
+        bindingDisposition: { kind: 'not-required', owner: 'prestart-cleanup' },
+      };
+    }
+    if (restoredPermit === null) {
+      const reason = 'The provider operation has no restored recovery permit.';
+      holdProviderOperationStartupOwnership(current, reason);
+      return {
+        phase: current.phase,
+        operation: current.operation,
+        restoredPermit: null,
+        bindingDisposition: { kind: 'refused', reason, exit: 'restart-or-operator-repair' },
+      };
+    }
+
+    const bindingDisposition = prepareProviderOperationStartupBinding(restoredPermit, current);
+    return { phase: current.phase, operation: current.operation, restoredPermit, bindingDisposition };
+  };
+
+  const refuseAmbiguousProviderOperation = (
+    snapshotRecord: ProviderOperationRecord,
+    reason: string,
+  ): ProviderOperationStartupRecordOwnership => {
+    const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
+    if (current === null) {
+      return {
+        phase: snapshotRecord.phase,
+        operation: snapshotRecord.operation,
+        restoredPermit: state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId)?.permit ?? null,
+        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
+      };
+    }
+    holdProviderOperationStartupOwnership(current, reason);
+    return {
+      phase: current.phase,
+      operation: current.operation,
+      restoredPermit: state.providerOperationStartupPermits.get(current.operation.jobId)?.permit ?? null,
+      bindingDisposition: { kind: 'refused', reason, exit: 'restart-or-operator-repair' },
+    };
+  };
+
+  const holdReadableProviderOperationBesideUnreadable = (
+    snapshotRecord: ProviderOperationRecord,
+  ): ProviderOperationStartupRecordOwnership => {
+    const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
+    if (current === null) {
+      return {
+        phase: snapshotRecord.phase,
+        operation: snapshotRecord.operation,
+        restoredPermit: state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId)?.permit ?? null,
+        bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
+      };
+    }
+    if (current.phase === 'settlement-pending') {
+      const owned = state.providerOperationStartupPermits.get(current.operation.jobId);
+      const restoredPermit = owned?.operationId === null ? owned.permit : null;
+      return {
+        phase: current.phase,
+        operation: current.operation,
+        restoredPermit,
+        bindingDisposition:
+          restoredPermit === null
+            ? settleProviderOperationStartupBinding(current.operation)
+            : releaseRestoredPermitThroughSettlement(restoredPermit, current.operation),
+      };
+    }
+    const reason = 'The job is also named by an unreadable provider operation record.';
+    return refuseAmbiguousProviderOperation(current, reason);
+  };
+
+  const hydrateProviderOperationStartupOwnership = (
+    snapshot: ProviderOperationStartupSnapshot,
+  ): ProviderOperationStartupOwnership => {
+    const readableSnapshotJobIds = new Set(snapshot.records.map((record) => record.operation.jobId));
+    const settlementSnapshotJobIds = new Set(
+      snapshot.records
+        .filter((record) => record.phase === 'settlement-pending')
+        .map((record) => record.operation.jobId),
+    );
+    const restoreUnreadablePermit = (jobId: string, recordKey: string): LaunchPermit | null => {
+      const status = progressStore.readStatus(jobId);
+      return settlementSnapshotJobIds.has(jobId) ||
+        (status !== null && isTerminalPhase(status.phase) && !readableSnapshotJobIds.has(jobId))
+        ? null
+        : restoreProviderOperationStartupPermit(jobId, null, recordKey);
+    };
+    const unreadable = snapshot.unreadable.flatMap((attribution) =>
+      attribution.jobs.kind === 'known'
+        ? attribution.jobs.values
+            .map((jobId) => ({
+              recordKey: attribution.key,
+              jobId,
+              restoredPermit: restoreUnreadablePermit(jobId, attribution.key),
+            }))
+        : [],
+    );
+    const unreadableJobIds = new Set(unreadable.map(({ jobId }) => jobId));
+    const readableRecordCounts = new Map<string, number>();
+    for (const record of snapshot.records) {
+      readableRecordCounts.set(record.operation.jobId, (readableRecordCounts.get(record.operation.jobId) ?? 0) + 1);
+    }
+    for (const [jobId, count] of readableRecordCounts) {
+      if (
+        count > 1 &&
+        snapshot.records.some(
+          (record) =>
+            record.operation.jobId === jobId && providerOperationPhaseRestoresStartupPermit(record.phase),
+        )
+      ) {
+        restoreProviderOperationStartupPermit(jobId, null);
+      }
+    }
+    const records = snapshot.records.map((record) =>
+      (readableRecordCounts.get(record.operation.jobId) ?? 0) > 1
+        ? refuseAmbiguousProviderOperation(record, 'The job has more than one readable provider operation record.')
+        : unreadableJobIds.has(record.operation.jobId)
+          ? holdReadableProviderOperationBesideUnreadable(record)
+          : hydrateProviderOperationStartupRecord(record),
+    );
+    const readableJobIds = records.flatMap((record) =>
+      record.bindingDisposition.kind === 'not-reconciled' ? [] : [record.operation.jobId],
     );
     return Object.freeze({
       jobIds: Object.freeze([
-        ...new Set([...scan.records.map((record) => record.operation.jobId), ...unreadableJobIds]),
+        ...new Set([
+          ...readableJobIds,
+          ...unreadable.flatMap(({ jobId }) => {
+            const status = progressStore.readStatus(jobId);
+            return status !== null && isTerminalPhase(status.phase) ? [] : [jobId];
+          }),
+        ]),
       ]),
+      records: Object.freeze(records),
+      unreadable: Object.freeze(unreadable),
     });
+  };
+
+  const adoptRepairedProviderOperationOwnership = (
+    record: ProviderOperationRecord,
+    recordKey?: string,
+  ): ProviderOperationStartupRecordOwnership => {
+    const owned = state.providerOperationStartupPermits.get(record.operation.jobId);
+    if (owned?.operationId === null && recordKey !== undefined) {
+      state.providerOperationStartupPermits.set(record.operation.jobId, {
+        ...owned,
+        unreadableRecordKeys: owned.unreadableRecordKeys.filter((candidate) => candidate !== recordKey),
+      });
+    }
+    const scan = readProviderOperations(progressStore.getDb());
+    const unreadable = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys).filter(
+      (attribution) =>
+        attribution.jobs.kind === 'known' && attribution.jobs.values.includes(record.operation.jobId),
+    );
+    for (const attribution of unreadable) {
+      restoreProviderOperationStartupPermit(record.operation.jobId, null, attribution.key);
+    }
+    if (unreadable.length > 0) return holdReadableProviderOperationBesideUnreadable(record);
+    const readableForJob = scan.records.filter((candidate) => candidate.operation.jobId === record.operation.jobId);
+    return readableForJob.length > 1
+      ? refuseAmbiguousProviderOperation(record, 'The job has more than one readable provider operation record.')
+      : hydrateProviderOperationStartupRecord(record);
   };
 
   async function runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
@@ -1999,9 +2500,19 @@ export function createRecoveryCoordinator(
         abandonHeldJob: (heldJobId) => abandonHeldRecoveryJob(heldJobId),
       });
     }
+    const startupLocalRecoveryOperations = new Set(
+      ctx.providerOperationStartupOwnership.records.flatMap((ownership) =>
+        ownership.phase === 'local-recovery-pending' &&
+        ownership.bindingDisposition.kind === 'not-required' &&
+        ownership.bindingDisposition.owner === 'generic-job-recovery'
+          ? [providerOperationStartupIdentityKey(ownership.operation)]
+          : [],
+      ),
+    );
     const localRecoveryRecords = readProviderOperations(progressStore.getDb()).records.filter(
       (record): record is Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> =>
-        record.phase === 'local-recovery-pending',
+        record.phase === 'local-recovery-pending' &&
+        startupLocalRecoveryOperations.has(providerOperationStartupIdentityKey(record.operation)),
     );
     for (const record of localRecoveryRecords) {
       try {
@@ -2031,6 +2542,10 @@ export function createRecoveryCoordinator(
   return {
     retireAbsentSupersededProviderOperations,
     snapshotProviderOperationStartupOwnership,
+    hydrateProviderOperationStartupOwnership,
+    adoptRepairedProviderOperationOwnership,
+    releaseProviderOperationStartupOwnership,
+    releaseUnreadableProviderOperationStartupOwnership,
     recoverProviderOperationJob,
     completeProviderOperationJobRecovery,
     releaseAdoptedJob,
