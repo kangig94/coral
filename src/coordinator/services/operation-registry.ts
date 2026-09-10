@@ -112,7 +112,8 @@ export class LocalOperationRegistry {
     if (bindingPort === null) {
       throw new Error('Provider operation binding authority is not connected.');
     }
-    void bindingPort.settleProviderOperationBinding(identity);
+    const binding = bindingPort.settleProviderOperationBinding(identity);
+    if (binding.kind === 'refused') return;
 
     const key = registryKey(identity.jobId, identity.operationId);
     const entry = this.entries.get(key);

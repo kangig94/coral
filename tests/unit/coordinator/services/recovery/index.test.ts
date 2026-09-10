@@ -416,6 +416,76 @@ describe('runStartupRecovery provider-operation ownership', () => {
     await recoveryCoordinator.teardown();
   });
 
+  it('retains restored startup ownership when binding settlement is refused', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const record = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+    if (record.phase !== 'executing') throw new Error('expected executing provider operation');
+    const settlement = providerOperationRecordSchema.parse({
+      ...record,
+      phase: 'settlement-pending',
+      terminalProviderSeq: record.committedThroughProviderSeq,
+      settlementIntent: 'release-after-terminal',
+      revision: record.revision + 1,
+      retryNotBeforeMs: runtime.time.now(),
+      retryCount: 0,
+      lastError: null,
+    });
+    if (settlement.phase !== 'settlement-pending') throw new Error('expected settlement provider operation');
+    seedRunningAppServerJob(progressStore, {
+      jobId,
+      sessionId: randomUUID(),
+      provider: 'codex',
+      proxyInstanceId: record.operation.proxyInstanceId,
+    });
+    insertProviderOperation(progressStore.getDb(), record);
+    const { launchCoordinator, recoveryCoordinator } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'durable-startup-settlement-refusal',
+    );
+    const prepareProviderOperationBinding = launchCoordinator.prepareProviderOperationBinding.bind(launchCoordinator);
+    vi.spyOn(launchCoordinator, 'prepareProviderOperationBinding')
+      .mockImplementationOnce(() => {
+        const advance = compareAndSwapProviderOperation(progressStore.getDb(), record, settlement);
+        if (advance.kind !== 'updated') throw new Error('provider operation did not reach settlement during the race');
+        return { kind: 'refused', reason: 'startup binding raced with settlement' };
+      })
+      .mockImplementation(prepareProviderOperationBinding);
+    vi.spyOn(launchCoordinator, 'settleProviderOperationBinding').mockReturnValue({
+      kind: 'refused',
+      reason: 'settlement mailbox full',
+    });
+
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+
+    expect(ownership.records).toEqual([
+      expect.objectContaining({
+        operation: record.operation,
+        restoredPermit: expect.objectContaining({ holder: { kind: 'recovery' } }),
+        bindingDisposition: {
+          kind: 'refused',
+          reason: 'settlement mailbox full',
+          exit: 'remote-settlement',
+        },
+      }),
+    ]);
+    expect(ownership.completion).toMatchObject({
+      kind: 'held',
+      holds: [expect.objectContaining({ jobId, exit: 'remote-settlement' })],
+    });
+    expect(readProviderOperation(progressStore.getDb(), record.operation)).toEqual(settlement);
+    expect(launchCoordinator.reservationFor(jobId)).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'recovery' },
+    });
+    await recoveryCoordinator.teardown();
+  });
+
   it('hands a vanished provider operation to generic recovery without retaining its startup permit', async () => {
     const runtime = createRealRuntime('prod');
     const progressStore = createProgressStore(runtime);

@@ -220,10 +220,18 @@ revision, allowReadable? }`: `key` must be non-empty and cannot carry the retire
 rule before dispatch and includes `allowReadable: true` only when the operator supplies `--allow-readable`.
 It never infers consent from the row becoming readable or from any other input.
 
+While startup recovery owns the coordinator launch fence, composition returns the strict
+`recovery-in-progress` result with code `backend_recovering` before inspecting or claiming a raw row and
+before any mutation. The result's message is `Provider-operation discard is unavailable while startup
+recovery owns the launch fence.` Its remediation is `Wait for startup recovery to finish, then run this
+command again.` This is a safe refusal with a definite no-effect verdict, not a destructive result and not
+one of the no-verdict outcomes where deletion may already have completed.
+
 Without that opt-in, a row this build can decode is refused. With it, the exact readable row may be deleted
 only while its current encoded-record fingerprint still equals the requested revision. This is intentional,
 irreversible loss of readable operation data; the unreadable path removes a row the current build cannot decode.
-Both paths require the coordinator to claim the exact unowned quarantine subject. The unreadable path removes
+After the launch-fence check passes, both paths require the coordinator to claim the exact unowned quarantine
+subject. The unreadable path removes
 the raw row, every known-generation due pointer, and quarantine evidence in one transaction; the readable path
 deletes the exact decoded record and settles the matching quarantine claim in the same transaction.
 
@@ -233,8 +241,9 @@ Every result arm is strict and echoes the request's key, revision, and optional 
 an invalid shape or any echo mismatch as `unsupported-coordinator-result`. The complete result and no-verdict
 treatment is:
 
-| Result | Exit | Destructive effect and required next step |
-| ------ | ---- | ----------------------------------------- |
+| Result | Exit | Effect and required next step |
+| ------ | ---- | ----------------------------- |
+| `recovery-in-progress` (`backend_recovering`) | `75` | Startup recovery still owns the coordinator launch fence. The refusal precedes raw-row inspection, a quarantine claim, and every mutation: the raw row, due pointers, quarantine evidence, startup permit, and launch capacity were not changed. Wait for startup recovery to finish, then run this command again. |
 | `discarded` | `0` | The exact row, its due pointers, and quarantine evidence were permanently removed under the requested fingerprint. Without `--allow-readable`, the row was still unreadable; with the flag, the readable deletion was explicitly authorized. No process was signalled and no operation was settled. Rerun `coral-cli backend recovery-quarantine list`, then `coral-cli backend status`. |
 | `absent` | `1` | The claimed raw row was already absent; the temporary discard claim was released and nothing was removed. Rerun `coral-cli backend recovery-quarantine list`. |
 | `adoption-refused` | `75` | The trigger row was already absent or was permanently removed, and the result names that `rowDisposition` plus `releasedLaunchPermits`. At least one surviving readable record was not adopted; each refusal carries its record key, job, operation, proxy, build set, and reason. Reconciliation or settlement was not observed for those records, so they remain unowned and their launch capacity remains held. Run `coral-cli backend status` and repair the reported adoption path before treating capacity as recovered. |

@@ -62,17 +62,20 @@ function discardedCalls(expression: ts.Expression): readonly ts.CallExpression[]
   return [];
 }
 
-function stringLiteralPropertyValue(
+function literalPropertyValue(
   type: ts.Type,
   name: string,
   location: ts.Node,
   checker: ts.TypeChecker,
-): string | undefined {
+): string | boolean | undefined {
   const property = type.getProperty(name);
   if (property === undefined) return undefined;
   const declaration = property.valueDeclaration ?? property.declarations?.[0] ?? location;
   const propertyType = checker.getTypeOfSymbolAtLocation(property, declaration);
-  return propertyType.isStringLiteral() ? propertyType.value : undefined;
+  if (propertyType.isStringLiteral()) return propertyType.value;
+  if ((propertyType.flags & ts.TypeFlags.BooleanLiteral) === 0) return undefined;
+  const value = checker.typeToString(propertyType);
+  return value === 'true' ? true : value === 'false' ? false : undefined;
 }
 
 function isMustUseUnion(type: ts.Type, location: ts.Node, checker: ts.TypeChecker): boolean {
@@ -98,15 +101,13 @@ function isMustUseUnion(type: ts.Type, location: ts.Node, checker: ts.TypeChecke
   const discriminated =
     first !== undefined &&
     first.getProperties().some((property) => {
-      const values = objectMembers.map((member) =>
-        stringLiteralPropertyValue(member, property.getName(), location, checker),
-      );
+      const values = objectMembers.map((member) => literalPropertyValue(member, property.getName(), location, checker));
       return values.every((value) => value !== undefined) && new Set(values).size === objectMembers.length;
     });
   // Only a member that names an alternative outcome carries a decision: a string literal, or an
-  // object taking part in a shared string-literal discriminant. Nullish, boolean and numeric arms
-  // ride along but cannot make a union a decision by themselves, or `boolean` and every optional
-  // call would demand a disposition nobody ever offered.
+  // object taking part in a shared string- or boolean-literal discriminant. Nullish, standalone
+  // boolean, and numeric arms cannot make a union a decision by themselves, or `boolean` and every
+  // optional call would demand a disposition nobody ever offered.
   const decisionBearing =
     type.types.filter((member) => member.isStringLiteral()).length + (discriminated ? objectMembers.length : 0);
   return decisionBearing >= 2;
@@ -176,6 +177,11 @@ describe('discriminated-union returns are must-use', () => {
 
   it('detects a discarded admission result with mixed string and object members', () => {
     const fixture = fixtureProgram('negative-admission-result');
+    expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(1);
+  });
+
+  it('detects a discarded authority capture with a boolean-literal object discriminant', () => {
+    const fixture = fixtureProgram('negative-boolean-discriminant');
     expect(collectOffenders(fixture.program, [fixture.sourceFile])).toHaveLength(1);
   });
 

@@ -223,19 +223,22 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       this.appServerHandoffAborts.has(jobId);
     if (!ownsLocalState) return false;
 
-    this.deps.abortRegistry.remove(jobId);
-    this.appServerJobs.delete(jobId);
-    this.appServerHandoffAborts.delete(jobId);
     switch (identity.kind) {
-      case 'job-local':
-        return true;
-      case 'proxy-binding':
-        void this.deps.providerOperationBinding.settleProviderOperationBinding({
+      case 'proxy-binding': {
+        const settlement = this.deps.providerOperationBinding.settleProviderOperationBinding({
           jobId,
           operationId: identity.operationId,
         });
-        return true;
+        if (settlement.kind === 'refused') return false;
+        break;
+      }
+      case 'job-local':
+        break;
     }
+    this.deps.abortRegistry.remove(jobId);
+    this.appServerJobs.delete(jobId);
+    this.appServerHandoffAborts.delete(jobId);
+    return true;
   }
 
   async quiesceAppServerJobsForHandoff(): Promise<void> {

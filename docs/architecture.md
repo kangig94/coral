@@ -94,7 +94,7 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `GET /coordinator/expansion`                  | 200       | List expansions from the KB daemon expansion state                                                                        |
 | `GET /coordinator/bindings/:binding`          | 200       | Read a single capability binding's current owner and metadata                                                             |
 | `POST /coordinator/recovery-quarantine/clear` | 403       | Catalog-projected clear route; HTTP backend-token capabilities exclude its required `system:debug`, so CLI clear uses IPC |
-| `POST /coordinator/recovery-quarantine/discard-provider-operation` | 403 | Catalog-projected exact provider-operation discard route. Its strict request accepts a canonical untagged key, SHA-256 revision, and optional readable-deletion consent; HTTP backend-token capabilities exclude its required `system:shutdown`, so the CLI uses IPC |
+| `POST /coordinator/recovery-quarantine/discard-provider-operation` | 403 | Catalog-projected exact provider-operation discard route. Its strict request accepts a canonical untagged key, SHA-256 revision, and optional readable-deletion consent. While startup recovery owns the launch fence, its strict `recovery-in-progress` result carries `backend_recovering` and refuses before any row inspection or mutation. HTTP backend-token capabilities exclude the route's required `system:shutdown`, so the CLI uses IPC |
 | `GET /coordinator/provider-hosts`             | 403       | Catalog-projected host inventory; HTTP backend-token capabilities exclude its required `system:debug`, so CLI uses IPC    |
 | `POST /coordinator/provider-hosts/inspect`    | 403       | Catalog-projected exact host inspection; the supported operator path uses authenticated IPC                               |
 | `POST /coordinator/provider-hosts/evict`      | 403       | Catalog-projected exact host eviction; HTTP backend-token capabilities exclude its required `system:shutdown`             |
@@ -310,8 +310,18 @@ The operational health snapshot uses the same conservative but network-free loca
 exact quarantined provider-operation coordinate. Its strict CLI and RPC ingress reject a key carrying the
 retired NUL-delimited subject tag. The CLI adds `allowReadable: true` only for an explicit `--allow-readable`;
 without that consent a row this build can decode is refused. With consent, readable deletion still requires
-the encoded record to match the requested SHA-256 fingerprint. The service claims the exact unowned
-quarantine subject before deletion and never signals a process or settles the operation.
+the encoded record to match the requested SHA-256 fingerprint.
+
+Composition checks the coordinator launch fence before constructing the discard service or reading the recovery
+database. While startup recovery owns that fence, it returns `recovery-in-progress` with code
+`backend_recovering`, message `Provider-operation discard is unavailable while startup recovery owns the launch
+fence.`, and remediation `Wait for startup recovery to finish, then run this command again.` This exit-`75`
+refusal inspects and claims no raw row and performs no mutation: the raw row, due pointers, quarantine evidence,
+startup permit, and launch capacity remain unchanged. It is therefore distinct from both a completed destructive
+result and a no-verdict response that may follow a completed deletion.
+
+Once the launch fence is inactive, the service claims the exact unowned quarantine subject before deletion and
+never signals a process or settles the operation.
 
 After the row is removed or observed absent, recovery releases startup permits no remaining record needs and
 offers a sole surviving readable record to the reconciler. A refused adoption returns `adoption-refused` with

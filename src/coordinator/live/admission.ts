@@ -43,6 +43,8 @@ import type {
   ProviderOperationBindingIdentity,
   ProviderOperationBindingPort,
   ProviderOperationBindingState,
+  ProviderOperationJournalProbeResult,
+  SettledUnboundStatusPort,
 } from '../../jobs/contracts/provider-operation-lifecycle.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import { assertProviderHostPlatformSupported } from '../../providers/host-admission.js';
@@ -91,6 +93,7 @@ export const LAUNCH_RECLAMATION_AGE_FLOOR_MS = 30_000;
 export const LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS = 5_000;
 export const MAX_SETTLED_UNBOUND_BINDINGS = 1_024;
 export const SETTLED_UNBOUND_ABSENCE_CHECK_MS = 30_000;
+export const SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT = 3;
 
 function unknownLaunchPool(pool: never): never {
   throw new Error(`Launch admission invariant violated: unknown pool ${JSON.stringify(pool)}.`);
@@ -148,7 +151,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly launchReclamationOracles = new Map<ReclaimablePermitHolderKind, LaunchReclamationOracle>();
   private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
-  private providerOperationJournalContains: ((identity: ProviderOperationBindingIdentity) => boolean) | null = null;
+  private providerOperationJournalProbe:
+    | ((identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult)
+    | null = null;
+  private settledUnboundStatus: SettledUnboundStatusPort | null = null;
   private readonly runtime: Runtime;
 
   constructor(options: { runtime: Runtime }) {
@@ -160,8 +166,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return this.internalAbortRegistry;
   }
 
-  connectProviderOperationBindingJournal(contains: (identity: ProviderOperationBindingIdentity) => boolean): void {
-    this.providerOperationJournalContains = contains;
+  connectProviderOperationBindingJournal(
+    probe: (identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult,
+  ): void {
+    this.providerOperationJournalProbe = probe;
+  }
+
+  connectSettledUnboundStatus(status: SettledUnboundStatusPort): void {
+    this.settledUnboundStatus = status;
   }
 
   connectLaunchReclamationOracle(kind: 'local-execution', oracle: LaunchReclamationOracle<'local-execution'>): void;
@@ -545,6 +557,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       if (!this.permitIsCurrent(permit)) {
         return { kind: 'refused', reason: 'The source permit is not the active reservation.' };
       }
+      if (!this.clearSettledUnboundSuccessor(current)) {
+        return { kind: 'refused', reason: 'The durable unsettled settlement status could not be cleared.' };
+      }
       this.clearSettledUnboundCheck(key);
       this.operationBindings.set(key, { kind: 'settled', reservationId: permit.reservationId });
       void this.releaseLaunch(permit);
@@ -635,7 +650,12 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       if (!this.scheduleSettledUnboundCheck(key, identity)) {
         return { kind: 'refused', reason: 'The unsettled binding mailbox is at capacity.' };
       }
-      this.operationBindings.set(key, { kind: 'settled-unbound' });
+      this.operationBindings.set(key, {
+        kind: 'settled-unbound',
+        identity,
+        unknownObservations: 0,
+        successor: 'mailbox',
+      });
       return { kind: 'settled-unbound' };
     }
     if (current.kind === 'settled-unbound' || current.kind === 'settled') {
@@ -848,7 +868,6 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     }
   }
 
-  /** An unbound terminal marker may outlive one check, but never journal-proven absence or the mailbox bound. */
   private scheduleSettledUnboundCheck(key: string, identity: ProviderOperationBindingIdentity): boolean {
     if (!this.settledUnboundChecks.has(key) && this.settledUnboundChecks.size >= MAX_SETTLED_UNBOUND_BINDINGS) {
       return false;
@@ -860,15 +879,57 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         this.clearSettledUnboundCheck(key);
         return;
       }
-      let present: boolean | null;
+      let observation: ProviderOperationJournalProbeResult;
       try {
-        present = this.providerOperationJournalContains?.(identity) ?? null;
-      } catch {
-        present = null;
+        observation = this.providerOperationJournalProbe?.(identity) ?? {
+          kind: 'unknown',
+          reason: 'The provider-operation journal probe is not connected.',
+        };
+      } catch (error: unknown) {
+        observation = {
+          kind: 'unknown',
+          reason: error instanceof Error ? error.message : String(error),
+        };
       }
-      if (present === false) {
-        this.deleteOperationBinding(key);
+      if (observation.kind === 'absent') {
+        if (this.deleteOperationBinding(key)) return;
+        this.scheduleSettledUnboundCheck(key, identity);
         return;
+      }
+      if (observation.kind === 'present' && current.successor !== 'recovery-quarantine') {
+        this.operationBindings.set(key, {
+          ...current,
+          unknownObservations: 0,
+          successor: 'provider-operation-journal',
+        });
+        this.scheduleSettledUnboundCheck(key, identity);
+        return;
+      }
+
+      let next = current;
+      if (observation.kind === 'unknown' && current.successor !== 'recovery-quarantine') {
+        const unknownObservations = Math.min(
+          current.unknownObservations + 1,
+          SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT,
+        );
+        next = { ...current, unknownObservations };
+        this.operationBindings.set(key, next);
+        if (unknownObservations < SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT) {
+          this.scheduleSettledUnboundCheck(key, identity);
+          return;
+        }
+      }
+
+      const successor = this.settledUnboundStatus?.record(identity) ?? {
+        kind: 'refused' as const,
+        reason: 'The durable unsettled settlement status is not connected.',
+      };
+      if (successor.kind === 'absent') {
+        if (!this.deleteOperationBinding(key)) this.scheduleSettledUnboundCheck(key, identity);
+        return;
+      }
+      if (successor.kind === 'recorded' && next.successor !== 'recovery-quarantine') {
+        this.operationBindings.set(key, { ...next, successor: 'recovery-quarantine' });
       }
       this.scheduleSettledUnboundCheck(key, identity);
     }, SETTLED_UNBOUND_ABSENCE_CHECK_MS);
@@ -885,8 +946,17 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   private deleteOperationBinding(key: string): boolean {
+    const current = this.operationBindings.get(key);
+    if (current?.kind === 'settled-unbound' && !this.clearSettledUnboundSuccessor(current)) return false;
     this.clearSettledUnboundCheck(key);
     return this.operationBindings.delete(key);
+  }
+
+  private clearSettledUnboundSuccessor(
+    binding: Extract<ProviderOperationBindingState, { kind: 'settled-unbound' }>,
+  ): boolean {
+    if (this.settledUnboundStatus === null) return binding.successor !== 'recovery-quarantine';
+    return this.settledUnboundStatus.clear(binding.identity);
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {

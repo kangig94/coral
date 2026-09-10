@@ -42,7 +42,7 @@ describe('launch permit migration constraints', () => {
     ].map((match) => match[1]?.replace(/\s+/gu, ' ').trim());
 
     expect(new Set(declarations)).toEqual(new Set(['permit: LaunchPermit']));
-    expect(declarations).toHaveLength(2); // The jobs contract and its sole coordinator implementation.
+    expect(declarations).toHaveLength(2);
     for (const legacyName of [
       'releaseByAbortAuthority',
       'jobPools',

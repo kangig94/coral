@@ -70,6 +70,7 @@ import {
   type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
 import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
+import { createSettledUnboundStatusPort } from '../services/recovery/settled-unbound-status.js';
 import {
   observeProviderOperationRecord,
   providerOperationRecordKeyPrefix,
@@ -543,17 +544,23 @@ export function createCoordinatorCore(
   };
   const recoverySources = createRecoverySourceRegistry();
   const recoveryDb = () => getProgressStore().getDb();
+  world.launchCoordinator.connectSettledUnboundStatus(createSettledUnboundStatusPort(recoveryDb, runtime.time));
   world.launchCoordinator.connectProviderOperationBindingJournal((identity) => {
-    const scan = readProviderOperations(recoveryDb());
-    if (
-      scan.records.some(
-        (record) => record.operation.jobId === identity.jobId && record.operation.operationId === identity.operationId,
-      )
-    ) {
-      return true;
+    try {
+      const scan = readProviderOperations(recoveryDb());
+      if (
+        scan.records.some(
+          (record) =>
+            record.operation.jobId === identity.jobId && record.operation.operationId === identity.operationId,
+        )
+      ) {
+        return { kind: 'present' };
+      }
+      const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
+      return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix)) ? { kind: 'present' } : { kind: 'absent' };
+    } catch (error: unknown) {
+      return { kind: 'unknown', reason: formatError(error) };
     }
-    const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
-    return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix));
   });
   const readJobReclamation = (jobId: string): LaunchReclamationProbeResult<'local-execution'> => {
     const status = getProgressStore().readStatus(jobId);

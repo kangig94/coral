@@ -1122,6 +1122,30 @@ describe('ProviderOperationReconciler publication', () => {
     expect(harness.startupOwnership.binding.reservationFor(settlement.operation.jobId)).toBeNull();
   });
 
+  it('retains a settled durable row when binding settlement is refused', async () => {
+    const harness = createHarness({
+      binding: (source) => ({
+        prepareProviderOperationBinding: (permit, identity) => source.prepareProviderOperationBinding(permit, identity),
+        cancelProviderOperationBinding: (permit, identity) => source.cancelProviderOperationBinding(permit, identity),
+        commitProviderOperationBinding: (identity) => source.commitProviderOperationBinding(identity),
+        settleProviderOperationBinding: () => ({ kind: 'refused', reason: 'mailbox full' }),
+        retireProviderOperationBinding: (identity) => source.retireProviderOperationBinding(identity),
+      }),
+    });
+    const settlement = providerOperationRecord('settlement-pending');
+    insertProviderOperation(harness.db, settlement);
+
+    await harness.reconciler.reconcile(settlement, harness.authority);
+
+    expect(readProviderOperation(harness.db, settlement.operation)).toMatchObject({
+      phase: 'settlement-pending',
+      retryCount: 1,
+      lastError: {
+        message: 'Provider operation binding settlement was refused: mailbox full',
+      },
+    });
+  });
+
   it('does not send prepare until recovery credential installation is explicit', async () => {
     let registrationAttempts = 0;
     const registerSuccessionOperation = vi.fn<DurableProviderProxyOperationAuthority['registerSuccessionOperation']>(

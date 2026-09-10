@@ -125,6 +125,21 @@ describe('LocalOperationRegistry', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it('retains identity-addressed local state when binding settlement is refused', () => {
+    const registry = new LocalOperationRegistry();
+    registry.connectCleanup({ release: vi.fn() });
+    registry.connectBinding({
+      settleProviderOperationBinding: () => ({ kind: 'refused', reason: 'mailbox full' }),
+    } as never);
+    const m = meta();
+    registry.activate(m, fakeControl().control, cleanupFor(m));
+
+    registry.settled(identityFor(m));
+
+    expect(registry.stateForJob(m.operation.jobId)).toBe('activated');
+    expect(registry.operationsFor(m.operation.proxyInstanceId)).toEqual([identityFor(m)]);
+  });
+
   it('publishes settlement only after registry and admission cleanup are complete', () => {
     const order: string[] = [];
     const registry = new LocalOperationRegistry();

@@ -46,8 +46,28 @@ export type ProviderOperationBindingIdentity = Readonly<{
   operationId: string;
 }>;
 
+export type ProviderOperationJournalProbeResult =
+  | Readonly<{ kind: 'present' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unknown'; reason: string }>;
+
+export type SettledUnboundStatusResult =
+  | Readonly<{ kind: 'recorded' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'refused'; reason: string }>;
+
+export interface SettledUnboundStatusPort {
+  record(identity: ProviderOperationBindingIdentity): SettledUnboundStatusResult;
+  clear(identity: ProviderOperationBindingIdentity): boolean;
+}
+
 export type ProviderOperationBindingState =
-  | Readonly<{ kind: 'settled-unbound' }>
+  | Readonly<{
+      kind: 'settled-unbound';
+      identity: ProviderOperationBindingIdentity;
+      unknownObservations: number;
+      successor: 'mailbox' | 'provider-operation-journal' | 'recovery-quarantine';
+    }>
   | Readonly<{ kind: 'prepared'; sourcePermit: LaunchPermit }>
   | Readonly<{ kind: 'bound'; proxyPermit: LaunchPermit }>
   | Readonly<{ kind: 'settled'; reservationId: string }>;

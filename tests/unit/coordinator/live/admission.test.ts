@@ -9,6 +9,7 @@ import {
   MAX_LAUNCH_RELEASE_DIAGNOSTICS,
   MAX_SETTLED_UNBOUND_BINDINGS,
   SETTLED_UNBOUND_ABSENCE_CHECK_MS,
+  SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT,
 } from '#src/coordinator/live/admission.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
@@ -1110,11 +1111,17 @@ describe('launch admission', () => {
   it('retires an unknown settlement after journal absence is established', async () => {
     vi.useFakeTimers();
     try {
-      coordinator.connectProviderOperationBindingJournal(() => false);
+      coordinator.connectProviderOperationBindingJournal(() => ({ kind: 'absent' }));
       const identity = { jobId: 'job-absent-settlement', operationId: 'operation-absent-settlement' };
+      const statuses = new Set([`${identity.jobId}:${identity.operationId}`]);
+      coordinator.connectSettledUnboundStatus({
+        record: () => ({ kind: 'recorded' }),
+        clear: (settled) => statuses.delete(`${settled.jobId}:${settled.operationId}`),
+      });
       expect(coordinator.settleProviderOperationBinding(identity)).toEqual({ kind: 'settled-unbound' });
 
       await vi.advanceTimersByTimeAsync(SETTLED_UNBOUND_ABSENCE_CHECK_MS);
+      expect(statuses).toEqual(new Set());
       const admission = coordinator.requestLaunch(
         identity.jobId,
         'codex',
@@ -1124,6 +1131,44 @@ describe('launch admission', () => {
       if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
       expect(coordinator.prepareProviderOperationBinding(admission.permit, identity)).toEqual({ kind: 'prepared' });
       expect(coordinator.releaseLaunch(admission.permit)).toMatchObject({ kind: 'released' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves persistently unknown settlement evidence to a durable successor until preparation consumes it', async () => {
+    vi.useFakeTimers();
+    try {
+      const statuses = new Set<string>();
+      coordinator.connectProviderOperationBindingJournal(() => ({
+        kind: 'unknown',
+        reason: 'journal unavailable',
+      }));
+      coordinator.connectSettledUnboundStatus({
+        record: (identity) => {
+          statuses.add(`${identity.jobId}:${identity.operationId}`);
+          return { kind: 'recorded' };
+        },
+        clear: (identity) => statuses.delete(`${identity.jobId}:${identity.operationId}`),
+      });
+      const identity = { jobId: 'job-unknown-settlement', operationId: 'operation-unknown-settlement' };
+
+      expect(coordinator.settleProviderOperationBinding(identity)).toEqual({ kind: 'settled-unbound' });
+      await vi.advanceTimersByTimeAsync(SETTLED_UNBOUND_ABSENCE_CHECK_MS * SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT);
+      expect(statuses).toEqual(new Set([`${identity.jobId}:${identity.operationId}`]));
+
+      const admission = coordinator.requestLaunch(
+        identity.jobId,
+        'codex',
+        providerOwner('session-after-unknown'),
+        'default',
+      );
+      if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
+      expect(coordinator.prepareProviderOperationBinding(admission.permit, identity)).toEqual({
+        kind: 'already-settled',
+      });
+      expect(statuses).toEqual(new Set());
+      expect(coordinator.reservationFor(identity.jobId)).toBeNull();
     } finally {
       vi.useRealTimers();
     }

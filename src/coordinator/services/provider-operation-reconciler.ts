@@ -1696,6 +1696,7 @@ export class ProviderOperationReconciler
     directive: Extract<ProviderOperationAfterReleaseDirective, { kind: 'terminal-failed' | 'terminal-aborted' }>,
   ): ProviderOperationRecord | null {
     this.#assertActiveDrive();
+    this.#settleBindingOrThrow(record.operation);
     const result = this.#deps.terminalization.terminalize(record, directive);
     if (result.kind === 'conflict') return result.current;
     this.#releaseTerminalizedOwnership(record);
@@ -1847,6 +1848,7 @@ export class ProviderOperationReconciler
     | ProviderOperationTerminalizationResult
     | Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>
   > {
+    this.#settleBindingOrThrow(record.operation);
     return new Promise((resolve, reject) => {
       const turn = this.#deps.recoveryDispatcher.begin(
         'disappearance-delivery',
@@ -1881,6 +1883,7 @@ export class ProviderOperationReconciler
     | ProviderOperationTerminalizationResult
     | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>
   > {
+    this.#settleBindingOrThrow(record.operation);
     return new Promise((resolve, reject) => {
       const turn = this.#deps.recoveryDispatcher.begin(
         'representation-abandonment-delivery',
@@ -2346,7 +2349,7 @@ export class ProviderOperationReconciler
     record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   ): ReturnType<typeof deleteProviderOperation> {
     this.#assertActiveDrive();
-    void this.#deps.binding.settleProviderOperationBinding(record.operation);
+    this.#settleBindingOrThrow(record.operation);
     const result = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
     if (result.kind === 'deleted' || result.current === null) {
       const release = this.#deps.releaseStartupOwnership(record.operation);
@@ -2367,8 +2370,14 @@ export class ProviderOperationReconciler
     ) {
       return;
     }
-    void this.#deps.binding.settleProviderOperationBinding(record.operation);
     this.#deps.binding.retireProviderOperationBinding(record.operation);
+  }
+
+  #settleBindingOrThrow(operation: ProviderOperationIdentity): void {
+    const settlement = this.#deps.binding.settleProviderOperationBinding(operation);
+    if (settlement.kind === 'refused') {
+      throw new Error(`Provider operation binding settlement was refused: ${settlement.reason}`);
+    }
   }
 
   #rekeyRefusalDirective(

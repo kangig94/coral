@@ -2089,7 +2089,8 @@ export function createRecoveryCoordinator(
     permit: LaunchPermit,
     operation: ProviderOperationRecord['operation'],
   ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
-    void settleProviderOperationStartupBinding(operation);
+    const settlement = settleProviderOperationStartupBinding(operation);
+    if (settlement.kind === 'refused') return settlement;
     const disposition = startupOwnership.prepareProviderOperationBinding(permit, operation);
     if (disposition.kind === 'already-settled') {
       state.providerOperationStartupPermits.delete(operation.jobId);

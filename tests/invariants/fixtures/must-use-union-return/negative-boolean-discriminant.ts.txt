@@ -1,0 +1,9 @@
+type ProviderRecoveryAuthority = Readonly<{ provider: string }>;
+type ProviderBindingFailure = Readonly<{ reason: string }>;
+type ProviderRecoveryAuthorityCapture =
+  | Readonly<{ ok: true; authority: ProviderRecoveryAuthority }>
+  | Readonly<{ ok: false; failure: ProviderBindingFailure }>;
+
+declare function captureProviderRecoveryAuthority(): ProviderRecoveryAuthorityCapture;
+
+captureProviderRecoveryAuthority();
