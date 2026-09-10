@@ -16,6 +16,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import type {
   ProviderRecoveryAuthority,
   ProviderRecoveryAuthorityCapture,
@@ -35,6 +36,10 @@ import {
   writeDurableCliProcessRuntimeMeta,
 } from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import { allowReadableProviderOperationDiscard } from '#src/recovery/unreadable-provider-operation.js';
+import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
@@ -239,6 +244,7 @@ async function createHeldRecoveryCoordinator(
     signal,
     coordinatorCommit,
   });
+  const launchCoordinator = new LaunchCoordinator({ runtime });
   const recoveryCoordinator = createRecoveryCoordinator(
     {
       progressStore,
@@ -248,11 +254,12 @@ async function createHeldRecoveryCoordinator(
       getRecoveryService,
       createInvocationContext,
       log,
-      startupOwnership: new LaunchCoordinator({ runtime }),
+      startupOwnership: launchCoordinator,
     },
     boundRecovery.bound,
   );
   return {
+    launchCoordinator,
     recoveryCoordinator,
     runStartupRecovery: () => boundRecovery.run(recoveryCoordinator),
   };
@@ -299,6 +306,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
       recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
     );
+    expect(ownership.completion).toEqual({ kind: 'complete' });
     const byPhase = new Map(ownership.records.map((record) => [record.phase, record]));
     const liveCapable = phases.slice(0, 5);
 
@@ -321,6 +329,105 @@ describe('runStartupRecovery provider-operation ownership', () => {
       bindingDisposition: { kind: 'settled-unbound' },
     });
     expect(ownership.jobIds).toEqual(expect.arrayContaining(records.map((record) => record.operation.jobId)));
+    await recoveryCoordinator.teardown();
+  });
+
+  it('allows one readable discard to unblock the exact settlement that returns capacity', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = randomUUID();
+    const first = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+    const second = committedOperation({ jobId, operationId: randomUUID(), proxyInstanceId: randomUUID() });
+    seedRunningAppServerJob(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      proxyInstanceId: first.operation.proxyInstanceId,
+    });
+    insertProviderOperation(progressStore.getDb(), first);
+    insertProviderOperation(progressStore.getDb(), second);
+    const { launchCoordinator, recoveryCoordinator } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'ambiguous-readable-discard',
+    );
+
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+    expect(ownership.completion).toMatchObject({
+      kind: 'held',
+      holds: expect.arrayContaining([
+        expect.objectContaining({
+          jobId,
+          exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
+        }),
+      ]),
+    });
+    expect(launchCoordinator.reservationFor(jobId)).toMatchObject({ kind: 'active' });
+    expect(readProviderOperation(progressStore.getDb(), first.operation)).toMatchObject({
+      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+    });
+    expect(readProviderOperation(progressStore.getDb(), second.operation)).toMatchObject({
+      retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
+    });
+
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    const coordinates = quarantine
+      .list()
+      .filter(
+        (entry) => entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY && entry.errorMessage.includes('readable'),
+      );
+    expect(coordinates).toHaveLength(2);
+    const listing = formatRecoveryQuarantineList(coordinates);
+    for (const entry of coordinates) {
+      expect(listing).toContain(encodeRecoveryQuarantineKey(entry.subject.key));
+      if (entry.subject.revision.kind !== 'fingerprint') throw new Error('expected fingerprint coordinate');
+      expect(listing).toContain(entry.subject.revision.value);
+    }
+    expect(listing).toContain('--allow-readable');
+    const discarded = coordinates.find((entry) => entry.subject.key.includes(first.operation.operationId));
+    if (discarded?.subject.revision.kind !== 'fingerprint') throw new Error('expected first record coordinate');
+    const discard = createUnreadableProviderOperationDiscardService({
+      instanceId: 'ambiguous-readable-discard',
+      ids: runtime.ids,
+      db: progressStore.getDb(),
+      time: runtime.time,
+    });
+    const request = allowReadableProviderOperationDiscard({
+      key: discarded.subject.key,
+      revision: discarded.subject.revision.value,
+    });
+    expect(discard.discard(request)).toMatchObject({ kind: 'discarded' });
+    const resolution = recoveryCoordinator.releaseUnreadableProviderOperationStartupOwnership(discarded.subject.key);
+    expect(resolution.released).toBe(0);
+    expect(resolution.readableRecords).toHaveLength(1);
+    const surviving = resolution.readableRecords[0];
+    if (surviving === undefined) throw new Error('expected surviving provider operation');
+    expect(surviving.operation.operationId).toBe(second.operation.operationId);
+    expect(recoveryCoordinator.adoptRepairedProviderOperationOwnership(surviving).bindingDisposition).toEqual({
+      kind: 'prepared',
+    });
+
+    expect(readProviderOperation(progressStore.getDb(), first.operation)).toBeNull();
+    expect(readProviderOperation(progressStore.getDb(), second.operation)).not.toBeNull();
+    expect(quarantine.list()).toEqual([]);
+    expect(launchCoordinator.settleProviderOperationBinding(second.operation)).toMatchObject({ kind: 'settled' });
+    expect(launchCoordinator.retireProviderOperationBinding(second.operation)).toBe(true);
+    expect(launchCoordinator.reservationFor(jobId)).toBeNull();
+    expect(launchCoordinator.active).toBe(0);
+    const successor = launchCoordinator.requestLaunch(
+      randomUUID(),
+      'codex',
+      { kind: 'system-task', id: 'post-discard-capacity' },
+      'default',
+    );
+    expect(successor).toMatchObject({ type: 'immediate' });
+    if (successor !== 'queue_full' && successor.type === 'immediate') {
+      launchCoordinator.releaseLaunch(successor.permit);
+    }
     await recoveryCoordinator.teardown();
   });
 

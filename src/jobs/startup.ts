@@ -14,7 +14,10 @@ export type ProviderOperationStartupBindingDisposition =
   | Readonly<{
       kind: 'refused';
       reason: string;
-      exit: 'restart-or-operator-repair' | 'remote-settlement';
+      exit:
+        | 'restart-or-operator-repair'
+        | 'remote-settlement'
+        | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
     }>
   | Readonly<{ kind: 'not-required'; owner: 'prestart-cleanup' | 'generic-job-recovery' }>
   | Readonly<{ kind: 'not-reconciled'; reason: 'record-absent' }>;
@@ -34,8 +37,18 @@ export type ProviderOperationUnreadableStartupOwnership = Readonly<{
   restoredPermit: LaunchPermit | null;
 }>;
 
+export type ProviderOperationStartupHold = Readonly<{
+  jobId: string;
+  operationId: string;
+  reason: string;
+  exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
+}>;
+
 /** Hydrated ownership presented to provider reconciliation; generic recovery re-snapshots after that owner runs. */
 export type ProviderOperationStartupOwnership = Readonly<{
+  completion:
+    | Readonly<{ kind: 'complete' }>
+    | Readonly<{ kind: 'held'; holds: readonly ProviderOperationStartupHold[] }>;
   /** Jobs fenced at hydration time, before provider reconciliation may accept or release them. */
   jobIds: readonly string[];
   records: readonly ProviderOperationStartupRecordOwnership[];

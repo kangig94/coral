@@ -2827,6 +2827,7 @@ describe('ProviderOperationReconciler publication', () => {
       }),
     ]);
     expect(harness.registry.attach).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), {
+      kind: 'job-local',
       jobId: recovered.operation.jobId,
       pool: 'curate',
     });

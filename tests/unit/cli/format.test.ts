@@ -951,6 +951,108 @@ describe('cli format', () => {
       );
     });
 
+    it('renders transferred launch ownership with both the attempted and current holders', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          diagnostics: {
+            launchReleaseDispositions: [
+              {
+                reservationId: 'reservation-1',
+                jobId: 'job-1',
+                pool: 'default' as const,
+                provider: 'codex',
+                attemptedHolder: { kind: 'local-execution' as const },
+                disposition: {
+                  kind: 'transferred' as const,
+                  pool: 'default' as const,
+                  holder: { kind: 'proxy-operation' as const, operationId: 'operation-1' },
+                },
+                observedAtMs: 123_456,
+              },
+            ],
+          },
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain(
+        [
+          'Launch release dispositions:',
+          '  reservation=reservation-1 job=job-1 pool=default provider=codex observedAtMs=123456',
+          '    attemptedHolder=local-execution',
+          '    disposition=transferred pool=default holder=proxy-operation:operation-1',
+        ].join('\n'),
+      );
+    });
+
+    it('renders automatic launch reclamation evidence', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          diagnostics: {
+            launchReclamations: [
+              {
+                reservationId: 'reservation-reclaimed-1',
+                jobId: 'job-reclaimed-1',
+                pool: 'default' as const,
+                provider: 'codex',
+                holder: { kind: 'proxy-operation' as const, operationId: 'operation-reclaimed-1' },
+                heldForMs: 30_000,
+                evidence: { kind: 'job-terminal' as const, phase: 'aborted' as const },
+                providerOperationEvidence: {
+                  kind: 'absent' as const,
+                  operationId: 'operation-reclaimed-1',
+                },
+                reclaimedAtMs: 123_456,
+              },
+            ],
+          },
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain(
+        [
+          'Automatic launch reclamations:',
+          '  reservation=reservation-reclaimed-1 job=job-reclaimed-1 pool=default provider=codex heldForMs=30000 reclaimedAtMs=123456',
+          '    holder=proxy-operation:operation-reclaimed-1',
+          '    evidence=job-terminal:aborted',
+          '    providerOperation=absent:operation-reclaimed-1',
+        ].join('\n'),
+      );
+    });
+
+    it.each(['terminal-persist-failed', 'claim-release-failed', 'claim-already-reassigned'] as const)(
+      'renders the settlement refusal cause %s',
+      (cause) => {
+        const status = {
+          status: 'ok',
+          health: {
+            ...baseHealth,
+            components: [],
+            queueDepth: 0,
+            diagnostics: {
+              settlementRefusalRecordingFailures: [
+                {
+                  jobId: 'job-1',
+                  cause,
+                  error: 'quarantine recording failed',
+                  observedAtMs: 123_456,
+                },
+              ],
+            },
+          },
+        } satisfies BackendStatusFull;
+
+        expect(formatBackendStatus(status)).toContain(`job=job-1 cause=${cause} observedAtMs=123456`);
+      },
+    );
+
     it('renders skipped provider-proxy-set candidate identities without offering an unauthorized command', () => {
       const invalidToken = 'pps1.future-row';
       const disagreementToken = 'pps2.other-identity';

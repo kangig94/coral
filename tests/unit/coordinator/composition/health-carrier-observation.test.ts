@@ -50,6 +50,7 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 });
 
 import { createCoordinatorCore, LAUNCH_PERMIT_REPORT_AGE_MS } from '#src/coordinator/composition/index.js';
+import { LAUNCH_RECLAMATION_AGE_FLOOR_MS } from '#src/coordinator/live/admission.js';
 import type { FetchFn } from '#src/coordinator/composition/types.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
@@ -70,7 +71,6 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import type { LaunchReleaseDiagnostic } from '#src/jobs/contracts/admission.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -188,7 +188,8 @@ function installProgressStore(
   progressStore: Pick<
     JobStore,
     'getDb' | 'listStoredNonterminalJobIds' | 'loadJobProjectionDetail' | 'liveJobCount' | 'listJobIds'
-  >,
+  > &
+    Partial<Pick<JobStore, 'readStatus'>>,
 ): void {
   setStoreServicesForTest(core.storeServicesRef, {
     storeDb: db,
@@ -502,17 +503,66 @@ describe('health local carrier observation', () => {
     core.launchCoordinator.releaseLaunch(admission.permit);
     core.launchCoordinator.releaseLaunch(admission.permit);
 
-    const diagnostics = readHealth().diagnostics as
-      | (NonNullable<ReturnType<typeof readHealth>['diagnostics']> & {
-          launchReleaseDispositions?: LaunchReleaseDiagnostic[];
-        })
-      | undefined;
-    expect(diagnostics?.launchReleaseDispositions).toEqual([
+    const decoded = parseBackendHealth(readHealth());
+    if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    expect(decoded.health.diagnostics?.launchReleaseDispositions).toEqual([
       expect.objectContaining({
         reservationId: admission.permit.reservationId,
         jobId: admission.permit.jobId,
         disposition: { kind: 'already-released', pool: 'default' },
       }),
     ]);
+  });
+
+  it('projects health evidence for an automatically reclaimed launch permit', () => {
+    let now = 50_000;
+    const baseRuntime = createRealRuntime('prod');
+    const runtime = { ...baseRuntime, time: { ...baseRuntime.time, now: () => now } } satisfies Runtime;
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+    );
+    const admission = core.launchCoordinator.requestLaunch(
+      'automatically-reclaimed-job',
+      'codex',
+      { kind: 'provider-session', id: 'reclaimed-session' },
+      'default',
+    );
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
+    const db = createDb();
+    const terminalStatus = { ...acquiredDetail(admission.permit.jobId).status!, phase: 'error' as const };
+    installProgressStore(core, db, {
+      getDb: () => db,
+      listStoredNonterminalJobIds: () => [],
+      loadJobProjectionDetail: () => ({ status: terminalStatus, launch: null, runtime: null, exit: null }),
+      liveJobCount: () => 0,
+      listJobIds: () => [],
+      readStatus: () => terminalStatus,
+    });
+
+    now += LAUNCH_RECLAMATION_AGE_FLOOR_MS;
+    core.eventBus.emit('job:phase_changed', {
+      jobId: admission.permit.jobId,
+      phase: 'error',
+      previousPhase: 'running',
+    });
+
+    const decoded = parseBackendHealth(readHealth());
+    if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    expect(decoded.health.diagnostics?.launchReclamations).toEqual([
+      {
+        reservationId: admission.permit.reservationId,
+        jobId: admission.permit.jobId,
+        pool: 'default',
+        provider: 'codex',
+        holder: { kind: 'local-execution' },
+        heldForMs: LAUNCH_RECLAMATION_AGE_FLOOR_MS,
+        evidence: { kind: 'job-terminal', phase: 'error' },
+        reclaimedAtMs: now,
+      },
+    ]);
+    expect(core.launchCoordinator.active).toBe(0);
+    expect(core.launchCoordinator.reservationFor(admission.permit.jobId)).toBeNull();
   });
 });

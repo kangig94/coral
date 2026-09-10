@@ -26,6 +26,9 @@ import type {
   LaunchCoordinatorPort,
   LaunchPermit,
   LaunchPermitDiagnostic,
+  LaunchPermitReclamationDiagnostic,
+  LaunchPermitReclamationEvidence,
+  LaunchReclamationProbeResult,
   LaunchPool,
   LaunchRelease,
   LaunchReleaseDiagnostic,
@@ -42,6 +45,7 @@ import type {
 } from '../../jobs/contracts/provider-operation-lifecycle.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import { assertProviderHostPlatformSupported } from '../../providers/host-admission.js';
+import type { TimerHandle } from '../../infra/port-types.js';
 
 /**
  * Admission queue capacity per pool. Operator knob — see §16(d) triage rule:
@@ -80,6 +84,12 @@ const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
 const SHUTDOWN_LAUNCH_REJECTED_MESSAGE = 'Launch rejected because shutdown has begun';
 const TERMINATION_RETRY_INTERVAL_MS = 50;
 export const MAX_LAUNCH_RELEASE_DIAGNOSTICS = 100;
+export const MAX_LAUNCH_RECLAMATION_DIAGNOSTICS = 100;
+// Admission precedes the first job journal append, so journal absence cannot authorize release inside this window.
+export const LAUNCH_RECLAMATION_AGE_FLOOR_MS = 30_000;
+export const LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS = 5_000;
+export const MAX_SETTLED_UNBOUND_BINDINGS = 1_024;
+export const SETTLED_UNBOUND_ABSENCE_CHECK_MS = 30_000;
 
 function unknownLaunchPool(pool: never): never {
   throw new Error(`Launch admission invariant violated: unknown pool ${JSON.stringify(pool)}.`);
@@ -127,9 +137,13 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     curate: { active: new Map(), queued: [] },
   };
   private readonly operationBindings = new Map<string, ProviderOperationBindingState>();
+  private readonly settledUnboundChecks = new Map<string, TimerHandle>();
   private readonly nonReleasedLaunches = new Map<string, LaunchReleaseDiagnostic>();
+  private readonly reclaimedLaunches = new Map<string, LaunchPermitReclamationDiagnostic>();
   private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
+  private providerOperationJournalContains: ((identity: ProviderOperationBindingIdentity) => boolean) | null = null;
+  private jobJournalStatusRead: ((jobId: string) => LaunchReclamationProbeResult) | null = null;
   private readonly runtime: Runtime;
 
   constructor(options: { runtime: Runtime }) {
@@ -139,6 +153,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   getInternalAbortRegistry(): ReturnType<typeof createDurableTaskAbortRegistry> {
     return this.internalAbortRegistry;
+  }
+
+  connectProviderOperationBindingJournal(contains: (identity: ProviderOperationBindingIdentity) => boolean): void {
+    this.providerOperationJournalContains = contains;
+  }
+
+  connectLaunchReclamationJournal(readStatus: (jobId: string) => LaunchReclamationProbeResult): void {
+    this.jobJournalStatusRead = readStatus;
   }
 
   get active(): number {
@@ -208,6 +230,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       });
     }
     activeLaunches.delete(permit.jobId);
+    this.cancelPreparedBindingsForPermit(permit);
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
   }
 
@@ -250,6 +273,55 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   launchReleaseDiagnostics(): LaunchReleaseDiagnostic[] {
     return [...this.nonReleasedLaunches.values()];
+  }
+
+  launchReclamationDiagnostics(): LaunchPermitReclamationDiagnostic[] {
+    return [...this.reclaimedLaunches.values()];
+  }
+
+  sweepStaleLaunchPermits(): void {
+    const readStatus = this.jobJournalStatusRead;
+    if (readStatus === null) return;
+    const now = this.runtime.time.now();
+
+    for (const [pool, state] of Object.entries(this.pools) as Array<[LaunchPool, PoolState]>) {
+      for (const { permit } of state.active.values()) {
+        const heldForMs = Math.max(0, now - permit.acquiredAt);
+        if (heldForMs < LAUNCH_RECLAMATION_AGE_FLOOR_MS || permit.holder.kind === 'system-task') continue;
+
+        let probed: LaunchReclamationProbeResult;
+        try {
+          probed = readStatus(permit.jobId);
+        } catch {
+          continue;
+        }
+        if (probed.kind === 'job-live') continue;
+        const evidence: LaunchPermitReclamationEvidence = probed;
+
+        let providerOperationEvidence: LaunchPermitReclamationDiagnostic['providerOperationEvidence'];
+        if (permit.holder.kind === 'proxy-operation') {
+          const contains = this.providerOperationJournalContains;
+          if (contains === null) continue;
+          try {
+            if (contains({ jobId: permit.jobId, operationId: permit.holder.operationId })) continue;
+          } catch {
+            continue;
+          }
+          providerOperationEvidence = { kind: 'absent', operationId: permit.holder.operationId };
+        }
+
+        state.active.delete(permit.jobId);
+        this.retireOperationBindingsForReclaimedPermit(permit);
+        this.recordReclaimedLaunch({
+          permit,
+          heldForMs,
+          evidence,
+          providerOperationEvidence,
+          reclaimedAtMs: now,
+        });
+        this.admitQueueHead(pool);
+      }
+    }
   }
 
   reservationFor(jobId: string): LaunchReservationView | null {
@@ -394,6 +466,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       if (!this.permitIsCurrent(permit)) {
         return { kind: 'refused', reason: 'The source permit is not the active reservation.' };
       }
+      this.clearSettledUnboundCheck(key);
       this.operationBindings.set(key, { kind: 'settled', reservationId: permit.reservationId });
       this.releaseLaunch(permit);
       return { kind: 'already-settled' };
@@ -480,6 +553,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const key = this.operationBindingKey(identity);
     const current = this.operationBindings.get(key);
     if (current === undefined) {
+      if (!this.scheduleSettledUnboundCheck(key, identity)) {
+        return { kind: 'refused', reason: 'The unsettled binding mailbox is at capacity.' };
+      }
       this.operationBindings.set(key, { kind: 'settled-unbound' });
       return { kind: 'settled-unbound' };
     }
@@ -497,7 +573,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const key = this.operationBindingKey(identity);
     const current = this.operationBindings.get(key);
     if (current?.kind !== 'settled' && current?.kind !== 'settled-unbound') return false;
-    return this.operationBindings.delete(key);
+    return this.deleteOperationBinding(key);
   }
 
   async terminateAll(signal?: AbortSignal): Promise<TerminateAllDisposition> {
@@ -650,6 +726,89 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       if (oldestReservationId !== undefined) this.nonReleasedLaunches.delete(oldestReservationId);
     }
     return disposition;
+  }
+
+  private recordReclaimedLaunch(input: {
+    permit: LaunchPermit;
+    heldForMs: number;
+    evidence: LaunchPermitReclamationEvidence;
+    providerOperationEvidence: LaunchPermitReclamationDiagnostic['providerOperationEvidence'];
+    reclaimedAtMs: number;
+  }): void {
+    const { permit, heldForMs, evidence, providerOperationEvidence, reclaimedAtMs } = input;
+    this.reclaimedLaunches.delete(permit.reservationId);
+    this.reclaimedLaunches.set(permit.reservationId, {
+      reservationId: permit.reservationId,
+      jobId: permit.jobId,
+      pool: permit.pool,
+      provider: permit.provider,
+      holder: permit.holder,
+      heldForMs,
+      evidence,
+      ...(providerOperationEvidence === undefined ? {} : { providerOperationEvidence }),
+      reclaimedAtMs,
+    });
+    if (this.reclaimedLaunches.size > MAX_LAUNCH_RECLAMATION_DIAGNOSTICS) {
+      const oldestReservationId = this.reclaimedLaunches.keys().next().value;
+      if (oldestReservationId !== undefined) this.reclaimedLaunches.delete(oldestReservationId);
+    }
+  }
+
+  private cancelPreparedBindingsForPermit(permit: LaunchPermit): void {
+    for (const [key, binding] of this.operationBindings) {
+      if (binding.kind === 'prepared' && binding.sourcePermit.reservationId === permit.reservationId) {
+        this.deleteOperationBinding(key);
+      }
+    }
+  }
+
+  private retireOperationBindingsForReclaimedPermit(permit: LaunchPermit): void {
+    for (const [key, binding] of this.operationBindings) {
+      const boundPermit =
+        binding.kind === 'prepared' ? binding.sourcePermit : binding.kind === 'bound' ? binding.proxyPermit : null;
+      if (boundPermit?.reservationId === permit.reservationId) this.deleteOperationBinding(key);
+    }
+  }
+
+  /** An unbound terminal marker may outlive one check, but never journal-proven absence or the mailbox bound. */
+  private scheduleSettledUnboundCheck(key: string, identity: ProviderOperationBindingIdentity): boolean {
+    if (!this.settledUnboundChecks.has(key) && this.settledUnboundChecks.size >= MAX_SETTLED_UNBOUND_BINDINGS) {
+      return false;
+    }
+    this.clearSettledUnboundCheck(key);
+    const timer = this.runtime.time.setTimeout(() => {
+      const current = this.operationBindings.get(key);
+      if (current?.kind !== 'settled-unbound') {
+        this.clearSettledUnboundCheck(key);
+        return;
+      }
+      let present: boolean | null;
+      try {
+        present = this.providerOperationJournalContains?.(identity) ?? null;
+      } catch {
+        present = null;
+      }
+      if (present === false) {
+        this.deleteOperationBinding(key);
+        return;
+      }
+      this.scheduleSettledUnboundCheck(key, identity);
+    }, SETTLED_UNBOUND_ABSENCE_CHECK_MS);
+    timer.unref?.();
+    this.settledUnboundChecks.set(key, timer);
+    return true;
+  }
+
+  private clearSettledUnboundCheck(key: string): void {
+    const timer = this.settledUnboundChecks.get(key);
+    if (timer === undefined) return;
+    this.runtime.time.clearTimeout(timer);
+    this.settledUnboundChecks.delete(key);
+  }
+
+  private deleteOperationBinding(key: string): boolean {
+    this.clearSettledUnboundCheck(key);
+    return this.operationBindings.delete(key);
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {

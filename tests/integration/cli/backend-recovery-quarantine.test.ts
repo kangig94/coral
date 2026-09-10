@@ -22,6 +22,7 @@ import {
 import { buildProgram } from '#src/cli/program.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import { allowReadableProviderOperationDiscard } from '#src/recovery/unreadable-provider-operation.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
@@ -292,6 +293,48 @@ describe('backend recovery-quarantine commands', () => {
     expect(discardProviderOperation).toHaveBeenCalledWith({ key, revision });
     expect(stdout).toBe(`${formatUnreadableProviderOperationDiscard({ key, revision, kind: 'discarded' })}\n`);
     expect(stdout).toContain('permanently removed');
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('should require and transmit explicit consent before discarding a readable row', async () => {
+    const key =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      '00000000-0000-4000-8000-000000000011:00000000-0000-4000-8000-000000000012:' +
+      '00000000-0000-4000-8000-000000000013:00000000-0000-4000-8000-000000000014';
+    const revision = `sha256:${'b'.repeat(64)}`;
+    const entry = {
+      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+      subject: { key, revision: { kind: 'fingerprint' as const, value: revision } },
+      state: 'active' as const,
+      stage: 'hydrate' as const,
+      retry: null,
+      continuation: null,
+      errorMessage: 'More than one readable provider operation row claims this job.',
+      detail: 'Run the printed command with --allow-readable.',
+      detectedAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    };
+    const discardProviderOperation = vi.fn<
+      NonNullable<RecoveryQuarantineCommandOperations['discardProviderOperation']>
+    >(async (request) => ({ ...request, kind: 'discarded' as const }));
+
+    await programWith({ list: () => [entry], clear: vi.fn(), discardProviderOperation }).parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'recovery-quarantine',
+      'discard-provider-operation',
+      '--key',
+      encodeRecoveryQuarantineKey(key),
+      '--revision',
+      `fingerprint:${revision}`,
+      '--allow-readable',
+    ]);
+
+    expect(discardProviderOperation).toHaveBeenCalledWith(allowReadableProviderOperationDiscard({ key, revision }));
+    expect(stdout).toContain('Discarded readable provider-operation row');
+    expect(stdout).toContain(encodeRecoveryQuarantineKey(key));
     expect(stderr).toBe('');
     expect(process.exitCode).toBe(0);
   });

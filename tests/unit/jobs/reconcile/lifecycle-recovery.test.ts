@@ -1041,7 +1041,12 @@ describe('lifecycle recovery', () => {
       .run('provider_operation_saga.v3:record:unattributable', JSON.stringify({ version: 'unknown', locator: null }));
 
     const runStartupRecoveryFn = vi.fn(async (inputs: StartupRecoveryInputs) => {
-      expect(inputs.providerOperationStartupOwnership).toEqual({ jobIds: [], records: [], unreadable: [] });
+      expect(inputs.providerOperationStartupOwnership).toEqual({
+        completion: { kind: 'complete' },
+        jobIds: [],
+        records: [],
+        unreadable: [],
+      });
       return [];
     });
     const reconcileProviderOperationsAtStartup = vi.fn(async () => ({ examined: 0 }));

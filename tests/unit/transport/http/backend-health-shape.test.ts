@@ -210,6 +210,19 @@ describe('/health typed shape (AC10a)', () => {
         diagnostics: { launchPermits: [{ ...launchPermit, holder: { kind: 'system-task' } }] },
       }),
     ).toBeNull();
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: {
+          launchPermits: [
+            {
+              ...launchPermit,
+              holder: { kind: 'local-execution', operationId: 'op-1' },
+            },
+          ],
+        },
+      }),
+    ).toBeNull();
   });
 
   it('decodes settlement recording failures and rejects malformed evidence', () => {
@@ -222,6 +235,12 @@ describe('/health typed shape (AC10a)', () => {
             cause: 'claim-release-failed',
             error: 'quarantine database unavailable',
             observedAtMs: 123,
+          },
+          {
+            jobId: 'job-reassigned-claim',
+            cause: 'claim-already-reassigned',
+            error: 'claim belongs to a successor',
+            observedAtMs: 124,
           },
         ],
       },
@@ -236,6 +255,75 @@ describe('/health typed shape (AC10a)', () => {
           settlementRefusalRecordingFailures: [
             { ...report.diagnostics.settlementRefusalRecordingFailures[0], observedAtMs: -1 },
           ],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('decodes non-release launch dispositions and rejects conflicting disposition data', () => {
+    const launchReleaseDisposition = {
+      reservationId: 'reservation-release-1',
+      jobId: 'job-release-1',
+      pool: 'default',
+      provider: 'codex',
+      attemptedHolder: { kind: 'local-execution' },
+      disposition: {
+        kind: 'transferred',
+        pool: 'default',
+        holder: { kind: 'proxy-operation', operationId: 'operation-successor' },
+      },
+      observedAtMs: 456,
+    } as const;
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { launchReleaseDispositions: [launchReleaseDisposition] },
+      })?.health.diagnostics?.launchReleaseDispositions,
+    ).toEqual([launchReleaseDisposition]);
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: {
+          launchReleaseDispositions: [
+            {
+              ...launchReleaseDisposition,
+              disposition: {
+                kind: 'already-released',
+                pool: 'default',
+                holder: { kind: 'proxy-operation', operationId: 'operation-successor' },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('decodes automatic launch reclamation evidence and rejects malformed terminal evidence', () => {
+    const reclamation = {
+      reservationId: 'reservation-reclaimed-1',
+      jobId: 'job-reclaimed-1',
+      pool: 'default',
+      provider: 'codex',
+      holder: { kind: 'proxy-operation', operationId: 'operation-reclaimed-1' },
+      heldForMs: 30_000,
+      evidence: { kind: 'job-terminal', phase: 'aborted' },
+      providerOperationEvidence: { kind: 'absent', operationId: 'operation-reclaimed-1' },
+      reclaimedAtMs: 789,
+    } as const;
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { launchReclamations: [reclamation] },
+      })?.health.diagnostics?.launchReclamations,
+    ).toEqual([reclamation]);
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: {
+          launchReclamations: [{ ...reclamation, evidence: { kind: 'job-terminal', phase: 'running' } }],
         },
       }),
     ).toBeNull();

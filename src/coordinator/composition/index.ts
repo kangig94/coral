@@ -70,6 +70,8 @@ import {
   type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
 import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
+import { providerOperationDiscardCoordinate } from '../../recovery/unreadable-provider-operation.js';
+import { providerOperationRecordKeyPrefix, readProviderOperations } from '../../store/provider-operation-journal.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
@@ -107,7 +109,8 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import type { LaunchReleaseDiagnostic } from '../../jobs/contracts/admission.js';
+import type { LaunchPermitReclamationDiagnostic, LaunchReleaseDiagnostic } from '../../jobs/contracts/admission.js';
+import { LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS } from '../live/admission.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
@@ -531,6 +534,31 @@ export function createCoordinatorCore(
   };
   const recoverySources = createRecoverySourceRegistry();
   const recoveryDb = () => getProgressStore().getDb();
+  world.launchCoordinator.connectProviderOperationBindingJournal((identity) => {
+    const scan = readProviderOperations(recoveryDb());
+    if (
+      scan.records.some(
+        (record) => record.operation.jobId === identity.jobId && record.operation.operationId === identity.operationId,
+      )
+    ) {
+      return true;
+    }
+    const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
+    return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix));
+  });
+  world.launchCoordinator.connectLaunchReclamationJournal((jobId) => {
+    const status = getProgressStore().readStatus(jobId);
+    if (status === null) return { kind: 'job-absent' };
+    return isTerminalPhase(status.phase) ? { kind: 'job-terminal', phase: status.phase } : { kind: 'job-live' };
+  });
+  const launchReclamationTimer = runtime.time.setInterval(() => {
+    try {
+      world.launchCoordinator.sweepStaleLaunchPermits();
+    } catch {
+      // A maintenance timer must not terminate a coordinator that booted successfully.
+    }
+  }, LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS);
+  launchReclamationTimer.unref?.();
   let adoptRepairedProviderOperation: ReturnType<
     typeof createExecutionServices
   >['adoptRepairedProviderOperation'] = async () => ({
@@ -657,7 +685,7 @@ export function createCoordinatorCore(
       });
       const result = unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
       if (result.kind === 'discarded' || result.kind === 'absent') {
-        await releaseUnreadableProviderOperationStartupOwnership(result.key);
+        await releaseUnreadableProviderOperationStartupOwnership(providerOperationDiscardCoordinate(result).key);
       }
       return result;
     },
@@ -823,6 +851,15 @@ export function createCoordinatorCore(
       world.childPrincipalRegistry.revokeParentJob(event.jobId);
     }
   };
+  const onLaunchReclamationJobPhaseChanged = (): void => {
+    try {
+      if (world.launchCoordinator.active > 0 && getProgressStore().liveJobCount() === 0) {
+        world.launchCoordinator.sweepStaleLaunchPermits();
+      }
+    } catch {
+      // An unreadable liveness view cannot authorize reclamation or escape an event callback.
+    }
+  };
   const onChildPrincipalJobCompleted = (event: { jobId: string }): void => {
     world.childPrincipalRegistry.revokeParentJob(event.jobId);
   };
@@ -832,10 +869,12 @@ export function createCoordinatorCore(
     }
   };
   world.eventBus.on('job:phase_changed', onChildPrincipalJobPhaseChanged);
+  world.eventBus.on('job:phase_changed', onLaunchReclamationJobPhaseChanged);
   world.eventBus.on('job:completed', onChildPrincipalJobCompleted);
   world.eventBus.on('discuss:updated', onChildPrincipalDiscussUpdated);
   const disposeChildPrincipalTerminalListeners = (): void => {
     world.eventBus.off('job:phase_changed', onChildPrincipalJobPhaseChanged);
+    world.eventBus.off('job:phase_changed', onLaunchReclamationJobPhaseChanged);
     world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
     world.eventBus.off('discuss:updated', onChildPrincipalDiscussUpdated);
   };
@@ -1348,6 +1387,7 @@ export function createCoordinatorCore(
           >;
           launchPermits?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['launchPermits']>;
           launchReleaseDispositions?: LaunchReleaseDiagnostic[];
+          launchReclamations?: LaunchPermitReclamationDiagnostic[];
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
@@ -1382,6 +1422,10 @@ export function createCoordinatorCore(
         if (launchReleaseDispositions.length > 0) {
           diagnostics.launchReleaseDispositions = launchReleaseDispositions;
         }
+        const launchReclamations = world.launchCoordinator.launchReclamationDiagnostics();
+        if (launchReclamations.length > 0) {
+          diagnostics.launchReclamations = launchReclamations;
+        }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||
           diagnostics.mutationBlocked !== undefined ||
@@ -1390,7 +1434,8 @@ export function createCoordinatorCore(
           diagnostics.providerProxyDispositionSkips !== undefined ||
           diagnostics.settlementRefusalRecordingFailures !== undefined ||
           diagnostics.launchPermits !== undefined ||
-          diagnostics.launchReleaseDispositions !== undefined;
+          diagnostics.launchReleaseDispositions !== undefined ||
+          diagnostics.launchReclamations !== undefined;
 
         return {
           status: coarseStatus,
@@ -1531,6 +1576,7 @@ export function createCoordinatorCore(
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: async () => {
+      runtime.time.clearInterval(launchReclamationTimer);
       disposeChildPrincipalTerminalListeners();
       disposeKbDaemonExitListener();
       disposeDaemonJobTerminalListeners();

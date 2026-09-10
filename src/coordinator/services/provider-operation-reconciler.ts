@@ -71,10 +71,7 @@ import {
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
 } from './provider-proxy-set/identity.js';
-import type {
-  ProviderOperationRecoveryAcceptance,
-  ProviderOperationStartupRelease,
-} from './recovery/index.js';
+import type { ProviderOperationRecoveryAcceptance, ProviderOperationStartupRelease } from './recovery/index.js';
 import {
   type ContainmentAbsenceAcceptance,
   type ContainmentAbsenceOperationalIncident,

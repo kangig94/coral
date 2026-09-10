@@ -80,7 +80,11 @@ import {
   RecoveryQuarantineStore,
   type RecoveryQuarantineListEntry,
 } from '../../recovery/quarantine.js';
-import { unreadableProviderOperationSubject } from '../../recovery/unreadable-provider-operation.js';
+import {
+  allowReadableProviderOperationDiscard,
+  providerOperationDiscardCoordinate,
+  unreadableProviderOperationSubject,
+} from '../../recovery/unreadable-provider-operation.js';
 import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryQuarantineClearRequest,
@@ -1865,20 +1869,25 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   recoveryQuarantineCommand
     .command('discard-provider-operation')
-    .description('Permanently discard one exact still-unreadable raw provider-operation row')
-    .requiredOption('--key <key>', 'Exact unreadable provider-operation key shown by recovery-quarantine list')
+    .description('Permanently discard one exact quarantined provider-operation row')
+    .requiredOption('--key <key>', 'Exact provider-operation key shown by recovery-quarantine list')
     .requiredOption('--revision <revision>', 'Exact fingerprint revision shown by recovery-quarantine list')
+    .option('--allow-readable', 'Explicitly permit permanent loss of a readable quarantined row')
     .addHelpText(
       'after',
-      '\nThis permanently removes the raw operation record, its due pointers, and its exact persisted quarantine evidence without settling or signalling its work. The command refuses if recovery owns the evidence or the row is readable, absent, or at a different revision.',
+      '\nThis permanently removes the raw operation record, its due pointers, and its exact persisted quarantine evidence without settling or signalling its work. Readable rows require --allow-readable. The command refuses if recovery owns the evidence, the row is absent, or the revision changed.',
     )
-    .action(async (options: { key: string; revision: string }) => {
+    .action(async (options: { key: string; revision: string; allowReadable?: boolean }) => {
       try {
         if (recoveryQuarantine.discardProviderOperation === undefined) {
-          throw new Error('This Coral build does not provide unreadable provider-operation discard.');
+          throw new Error('This Coral build does not provide provider-operation discard.');
         }
         const request = parseUnreadableProviderOperationDiscardOptions(options, recoveryQuarantine.list());
-        const result = await recoveryQuarantine.discardProviderOperation(request);
+        const commandResult = await recoveryQuarantine.discardProviderOperation(request);
+        const result =
+          options.allowReadable === true
+            ? { ...commandResult, key: providerOperationDiscardCoordinate(commandResult).key }
+            : commandResult;
         switch (result.kind) {
           case 'unsupported-coordinator':
           case 'coordinator-draining':
@@ -1889,6 +1898,22 @@ export function registerBackendCommands(program: Command, operations: BackendCom
             return;
           default: {
             const exitCode = UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES[result.kind];
+            if (options.allowReadable === true && result.kind === 'discarded') {
+              const coordinate =
+                `key=${encodeRecoveryQuarantineKey(result.key)} ` +
+                `revision=${JSON.stringify(`fingerprint:${result.revision}`)}`;
+              process.stdout.write(
+                [
+                  `Discarded readable provider-operation row ${coordinate}.`,
+                  'Observed: the exact quarantined row was readable and matched the operator-approved fingerprint.',
+                  'Not observed: process state or an operation-settlement outcome.',
+                  'Effect: the exact operation record, its due pointer, and its quarantine evidence were permanently removed; no process was signalled and the operation was not settled.',
+                  'Next step: run coral-cli backend recovery-quarantine list, then run coral-cli backend status.',
+                ].join('\n') + '\n',
+              );
+              process.exitCode = exitCode;
+              return;
+            }
             (exitCode === 0 ? process.stdout : process.stderr).write(
               `${formatUnreadableProviderOperationDiscard(result)}\n`,
             );
@@ -2126,7 +2151,7 @@ function parseRecoveryQuarantineClearOptions(
 }
 
 function parseUnreadableProviderOperationDiscardOptions(
-  options: Readonly<{ key: string; revision: string }>,
+  options: Readonly<{ key: string; revision: string; allowReadable?: boolean }>,
   storedEntries: readonly RecoveryQuarantineListEntry[],
 ): UnreadableProviderOperationDiscardRequest {
   const plainKey = unquoteRecoveryCoordinate(options.key);
@@ -2140,9 +2165,11 @@ function parseUnreadableProviderOperationDiscardOptions(
     ? shownRevision.slice(RECOVERY_REVISION_FINGERPRINT_PREFIX.length)
     : shownRevision;
   const parsed = unreadableProviderOperationDiscardRequestSchema.safeParse({ key, revision });
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    return options.allowReadable === true ? allowReadableProviderOperationDiscard(parsed.data) : parsed.data;
+  }
   throw new InvalidArgumentError(
-    'Invalid unreadable provider-operation coordinate. Run coral-cli backend recovery-quarantine list and copy the exact key and fingerprint revision.',
+    'Invalid provider-operation coordinate. Run coral-cli backend recovery-quarantine list and copy the exact key and fingerprint revision.',
   );
 }
 
@@ -2206,7 +2233,7 @@ async function discardUnreadableProviderOperationWithCoordinator(
     }
     const result = unreadableProviderOperationDiscardResultSchema.safeParse(response);
     if (result.success && result.data.key === parsedRequest.key && result.data.revision === parsedRequest.revision) {
-      return result.data;
+      return { ...result.data, key: providerOperationDiscardCoordinate(result.data).key };
     }
     return { ...parsedRequest, kind: 'unsupported-coordinator-result' };
   } catch (error: unknown) {

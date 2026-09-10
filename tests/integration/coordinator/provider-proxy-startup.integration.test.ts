@@ -1641,7 +1641,9 @@ describe('production provider proxy startup classification', () => {
         outcome: 'rejected',
         lifecycleFatal: true,
         fatalCalls: 1,
-        timerCalls: 0,
+        // A settlement that arrives before hydration parks an unbound marker, and that marker owes a
+        // bounded absence check, so retirement classification schedules one timer it did not before.
+        timerCalls: 1,
         unlinkCalls: 1,
         syncCalls: 0,
         capsuleExists: true,
@@ -1649,7 +1651,7 @@ describe('production provider proxy startup classification', () => {
       directorySyncUnavailable: {
         outcome: 'fulfilled',
         fatalCalls: 0,
-        timerCalls: 1,
+        timerCalls: 2,
         unlinkCalls: 1,
         syncCalls: 1,
       },

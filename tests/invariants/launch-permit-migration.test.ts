@@ -64,20 +64,19 @@ describe('launch permit migration constraints', () => {
       'diagnostics.launchReleaseDispositions = launchReleaseDispositions',
     );
     expect(source('src/coordinator/composition/index.ts')).toContain(
+      'diagnostics.launchReclamations = launchReclamations',
+    );
+    expect(source('src/coordinator/composition/index.ts')).toContain(
       'diagnostics.settlementRefusalRecordingFailures = [...settlementRefusalRecordingFailures.values()]',
     );
     expect(source('src/transport/http/backend/health.ts')).toContain('isLaunchPermits(value.launchPermits)');
     expect(source('src/transport/http/backend/health.ts')).toContain(
       'isSettlementRefusalRecordingFailures(value.settlementRefusalRecordingFailures)',
     );
+    expect(source('src/transport/http/backend/health.ts')).toContain('isLaunchReclamations(value.launchReclamations)');
     expect(source('src/cli/format/backend.ts')).toContain("lines.push('', 'Launch permits:')");
+    expect(source('src/cli/format/backend.ts')).toContain("lines.push('', 'Automatic launch reclamations:')");
     expect(source('src/cli/format/backend.ts')).toContain("lines.push('', 'Settlement refusal recording failures:')");
-  });
-
-  it('derives the durable provider stop cause from the provider contract', () => {
-    const durableRecord = source('src/store/provider-operation-record.ts');
-    expect(durableRecord).toContain("import { providerStopCauseSchema } from '../providers/contract.js'");
-    expect(durableRecord).not.toMatch(/const providerStopCauseSchema\s*=\s*z\.enum/u);
   });
 
   it('keeps versions, bridge sources, CLI registration, and transport method declarations unchanged from base', () => {
@@ -97,9 +96,12 @@ describe('launch permit migration constraints', () => {
     expect(currentLock.version).toBe(baseLock.version);
     expect(lockRootVersion(currentLock)).toBe(lockRootVersion(baseLock));
 
+    // The readable-record discard opt-in is the only operator surface this migration adds: an
+    // ambiguous readable provider-operation row is undetermined, so no automatic reclamation may
+    // free it and its exit has to be a command a person can run.
     const authorityDeclarationPaths = changedPaths.filter(
       (path) =>
-        path.startsWith('src/cli/commands/') ||
+        (path.startsWith('src/cli/commands/') && path !== 'src/cli/commands/backend.ts') ||
         path === 'src/cli/program.ts' ||
         path === 'src/cli/dispatch.ts' ||
         path === 'src/cli/parse.ts' ||

@@ -1,4 +1,5 @@
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
+import type { JobPhase } from '../phase.js';
 
 /**
  * Pool selector for admission. Lives here because admission is the
@@ -84,6 +85,29 @@ export type LaunchReleaseDiagnostic = Readonly<{
   observedAtMs: number;
 }>;
 
+export type LaunchPermitReclamationEvidence =
+  | Readonly<{ kind: 'job-absent' }>
+  | Readonly<{ kind: 'job-terminal'; phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'> }>;
+
+/**
+ * What the jobs layer answers when the coordinator asks whether a permit's work has ended. The
+ * classification is made where job phase means something; `job-live` is a named answer so that a
+ * probe which cannot decide is distinguishable from one that decided "keep holding".
+ */
+export type LaunchReclamationProbeResult = LaunchPermitReclamationEvidence | Readonly<{ kind: 'job-live' }>;
+
+export type LaunchPermitReclamationDiagnostic = Readonly<{
+  reservationId: string;
+  jobId: string;
+  pool: LaunchPool;
+  provider: string;
+  holder: PermitHolder;
+  heldForMs: number;
+  evidence: LaunchPermitReclamationEvidence;
+  providerOperationEvidence?: Readonly<{ kind: 'absent'; operationId: string }>;
+  reclaimedAtMs: number;
+}>;
+
 export type OperationBindingResult =
   | Readonly<{ kind: 'prepared' }>
   | Readonly<{ kind: 'bound'; successorPermit: LaunchPermit }>
@@ -93,10 +117,7 @@ export type OperationBindingResult =
   | Readonly<{ kind: 'already-settled' }>
   | Readonly<{ kind: 'refused'; reason: string }>;
 
-export type SettlementRefusalCause =
-  | 'terminal-persist-failed'
-  | 'claim-release-failed'
-  | 'claim-already-reassigned';
+export type SettlementRefusalCause = 'terminal-persist-failed' | 'claim-release-failed' | 'claim-already-reassigned';
 
 export type SettlementRefusal = Readonly<{
   kind: 'settlement-refused';

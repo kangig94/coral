@@ -4,6 +4,7 @@ import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
+import { launchPermitDiagnosticsSchema, type LaunchPermitDiagnostics } from '../../server-ports.js';
 import {
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
@@ -123,7 +124,7 @@ export interface BackendHealth {
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
-  diagnostics?: {
+  diagnostics?: LaunchPermitDiagnostics & {
     carriers?: {
       coverage: 'complete' | 'unknown';
       liveJobs: number;
@@ -143,30 +144,6 @@ export interface BackendHealth {
     providerProxySets?: ProviderProxySetOperatorStatus[];
     providerProxySetRowSkips?: ProviderProxySetRowSkip[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
-    settlementRefusalRecordingFailures?: Array<{
-      jobId: string;
-      cause: 'terminal-persist-failed' | 'claim-release-failed';
-      error: string;
-      observedAtMs: number;
-    }>;
-    launchPermits?: Array<{
-      reservationId: string;
-      jobId: string;
-      pool: 'default' | 'discuss' | 'curate';
-      provider: string;
-      holder:
-        | { kind: 'local-execution' }
-        | { kind: 'system-task'; id: string }
-        | { kind: 'proxy-operation'; operationId: string }
-        | { kind: 'recovery' }
-        | { kind: 'queue-handoff' };
-      executionOwner:
-        | { kind: 'provider-session'; id: string }
-        | { kind: 'workflow'; id: string }
-        | { kind: 'discussion'; id: string }
-        | { kind: 'system-task'; id: string };
-      heldForMs: number;
-    }>;
   };
 }
 
@@ -235,74 +212,26 @@ function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['di
   });
 }
 
-function isLaunchPermitHolder(
-  value: unknown,
-): value is NonNullable<NonNullable<BackendHealth['diagnostics']>['launchPermits']>[number]['holder'] {
-  if (!isRecord(value)) return false;
-  switch (value.kind) {
-    case 'local-execution':
-    case 'recovery':
-    case 'queue-handoff':
-      return true;
-    case 'system-task':
-      return typeof value.id === 'string' && value.id.length > 0;
-    case 'proxy-operation':
-      return typeof value.operationId === 'string' && value.operationId.length > 0;
-    default:
-      return false;
-  }
-}
-
-function isLaunchExecutionOwner(
-  value: unknown,
-): value is NonNullable<NonNullable<BackendHealth['diagnostics']>['launchPermits']>[number]['executionOwner'] {
-  return (
-    isRecord(value) &&
-    (value.kind === 'provider-session' ||
-      value.kind === 'workflow' ||
-      value.kind === 'discussion' ||
-      value.kind === 'system-task') &&
-    typeof value.id === 'string' &&
-    value.id.length > 0
-  );
-}
-
 function isLaunchPermits(value: unknown): value is NonNullable<BackendHealth['diagnostics']>['launchPermits'] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        isRecord(entry) &&
-        typeof entry.reservationId === 'string' &&
-        entry.reservationId.length > 0 &&
-        typeof entry.jobId === 'string' &&
-        entry.jobId.length > 0 &&
-        (entry.pool === 'default' || entry.pool === 'discuss' || entry.pool === 'curate') &&
-        typeof entry.provider === 'string' &&
-        entry.provider.length > 0 &&
-        isLaunchPermitHolder(entry.holder) &&
-        isLaunchExecutionOwner(entry.executionOwner) &&
-        isNonNegativeFiniteNumber(entry.heldForMs),
-    )
-  );
+  return launchPermitDiagnosticsSchema.safeParse({ launchPermits: value }).success;
 }
 
 function isSettlementRefusalRecordingFailures(
   value: unknown,
 ): value is NonNullable<BackendHealth['diagnostics']>['settlementRefusalRecordingFailures'] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        isRecord(entry) &&
-        typeof entry.jobId === 'string' &&
-        entry.jobId.length > 0 &&
-        (entry.cause === 'terminal-persist-failed' || entry.cause === 'claim-release-failed') &&
-        typeof entry.error === 'string' &&
-        entry.error.length > 0 &&
-        isNonNegativeFiniteNumber(entry.observedAtMs),
-    )
-  );
+  return launchPermitDiagnosticsSchema.safeParse({ settlementRefusalRecordingFailures: value }).success;
+}
+
+function isLaunchReleaseDispositions(
+  value: unknown,
+): value is NonNullable<BackendHealth['diagnostics']>['launchReleaseDispositions'] {
+  return launchPermitDiagnosticsSchema.safeParse({ launchReleaseDispositions: value }).success;
+}
+
+function isLaunchReclamations(
+  value: unknown,
+): value is NonNullable<BackendHealth['diagnostics']>['launchReclamations'] {
+  return launchPermitDiagnosticsSchema.safeParse({ launchReclamations: value }).success;
 }
 
 type ProviderProxySet = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
@@ -691,6 +620,12 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   ) {
     return null;
   }
+  if (value.launchReleaseDispositions !== undefined && !isLaunchReleaseDispositions(value.launchReleaseDispositions)) {
+    return null;
+  }
+  if (value.launchReclamations !== undefined && !isLaunchReclamations(value.launchReclamations)) {
+    return null;
+  }
   const providerProxySets =
     value.providerProxySets === undefined ? null : parseProviderProxySets(value.providerProxySets);
   if (value.providerProxySets !== undefined && providerProxySets === null) {
@@ -711,11 +646,26 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   ) {
     return null;
   }
+  const launchPermitDiagnostics: LaunchPermitDiagnostics = {
+    ...(value.launchPermits === undefined ? {} : { launchPermits: value.launchPermits }),
+    ...(value.settlementRefusalRecordingFailures === undefined
+      ? {}
+      : { settlementRefusalRecordingFailures: value.settlementRefusalRecordingFailures }),
+    ...(value.launchReleaseDispositions === undefined
+      ? {}
+      : { launchReleaseDispositions: value.launchReleaseDispositions }),
+    ...(value.launchReclamations === undefined ? {} : { launchReclamations: value.launchReclamations }),
+  };
   const diagnostics = { ...value };
   delete diagnostics.providerProxySetRowSkips;
+  delete diagnostics.launchPermits;
+  delete diagnostics.settlementRefusalRecordingFailures;
+  delete diagnostics.launchReleaseDispositions;
+  delete diagnostics.launchReclamations;
   return {
     diagnostics: {
       ...diagnostics,
+      ...launchPermitDiagnostics,
       ...(providerProxySets === null
         ? {}
         : {

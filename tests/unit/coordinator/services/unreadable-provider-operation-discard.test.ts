@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
-import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
+import {
+  allowReadableProviderOperationDiscard,
+  unreadableProviderOperationSubject,
+} from '#src/recovery/unreadable-provider-operation.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation, observeProviderOperationRecord } from '#src/store/provider-operation-journal.js';
@@ -210,5 +213,20 @@ describe('unreadable provider-operation discard ownership', () => {
       }),
       state: 'active',
     });
+  });
+
+  it('discards a matching readable row only with explicit readable-data opt-in', () => {
+    const seeded = seedRaw();
+    db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(seeded.key);
+    insertProviderOperation(db, seeded.record);
+    const raw = db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(seeded.key)?.value;
+    if (raw === undefined) throw new Error('expected readable row');
+    const revision = `sha256:${sha256Hex(raw)}`;
+    persistActive(seeded.key, revision);
+    const request = allowReadableProviderOperationDiscard({ key: seeded.key, revision });
+
+    expect(service().discard(request)).toEqual({ ...request, kind: 'discarded' });
+    expect(observeProviderOperationRecord(db, seeded.key)).toEqual({ kind: 'absent' });
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, seeded.key)).toBeNull();
   });
 });

@@ -1,11 +1,13 @@
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { ServerResponse } from 'node:http';
+import { z } from 'zod';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';
+import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
@@ -96,6 +98,93 @@ type TransportKbDaemonHealthSnapshot = {
   lastError?: string;
 };
 
+const launchPermitHolderSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('local-execution') }).strict(),
+  z.object({ kind: z.literal('system-task'), id: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('proxy-operation'), operationId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('recovery') }).strict(),
+  z.object({ kind: z.literal('queue-handoff') }).strict(),
+]);
+
+const launchPoolSchema = z.enum(['default', 'discuss', 'curate']);
+
+export const launchPermitDiagnosticsSchema = z
+  .object({
+    launchPermits: z
+      .array(
+        z
+          .object({
+            reservationId: z.string().min(1),
+            jobId: z.string().min(1),
+            pool: launchPoolSchema,
+            provider: z.string().min(1),
+            holder: launchPermitHolderSchema,
+            executionOwner: executionOwnerSchema,
+            heldForMs: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      )
+      .optional(),
+    settlementRefusalRecordingFailures: z
+      .array(
+        z
+          .object({
+            jobId: z.string().min(1),
+            cause: z.enum(['terminal-persist-failed', 'claim-release-failed', 'claim-already-reassigned']),
+            error: z.string().min(1),
+            observedAtMs: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      )
+      .optional(),
+    launchReleaseDispositions: z
+      .array(
+        z
+          .object({
+            reservationId: z.string().min(1),
+            jobId: z.string().min(1),
+            pool: launchPoolSchema,
+            provider: z.string().min(1),
+            attemptedHolder: launchPermitHolderSchema,
+            disposition: z.discriminatedUnion('kind', [
+              z.object({ kind: z.literal('already-released'), pool: launchPoolSchema }).strict(),
+              z
+                .object({ kind: z.literal('transferred'), pool: launchPoolSchema, holder: launchPermitHolderSchema })
+                .strict(),
+            ]),
+            observedAtMs: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      )
+      .optional(),
+    launchReclamations: z
+      .array(
+        z
+          .object({
+            reservationId: z.string().min(1),
+            jobId: z.string().min(1),
+            pool: launchPoolSchema,
+            provider: z.string().min(1),
+            holder: launchPermitHolderSchema,
+            heldForMs: z.number().finite().nonnegative(),
+            evidence: z.discriminatedUnion('kind', [
+              z.object({ kind: z.literal('job-absent') }).strict(),
+              z.object({ kind: z.literal('job-terminal'), phase: z.enum(['completed', 'error', 'aborted']) }).strict(),
+            ]),
+            providerOperationEvidence: z
+              .object({ kind: z.literal('absent'), operationId: z.string().min(1) })
+              .strict()
+              .optional(),
+            reclaimedAtMs: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
+  .strict();
+
+export type LaunchPermitDiagnostics = z.infer<typeof launchPermitDiagnosticsSchema>;
+
 export type HealthSnapshot = {
   /**
    * Coarse lifecycle visibility surface for clients that validate the strict
@@ -160,7 +249,7 @@ export type HealthSnapshot = {
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.
    */
-  diagnostics?: {
+  diagnostics?: LaunchPermitDiagnostics & {
     carriers?: {
       coverage: 'complete' | 'unknown';
       liveJobs: number;
@@ -179,30 +268,6 @@ export type HealthSnapshot = {
     }>;
     providerProxySets?: ProviderProxySetOperatorStatus[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
-    settlementRefusalRecordingFailures?: Array<{
-      jobId: string;
-      cause: 'terminal-persist-failed' | 'claim-release-failed';
-      error: string;
-      observedAtMs: number;
-    }>;
-    launchPermits?: Array<{
-      reservationId: string;
-      jobId: string;
-      pool: 'default' | 'discuss' | 'curate';
-      provider: string;
-      holder:
-        | { kind: 'local-execution' }
-        | { kind: 'system-task'; id: string }
-        | { kind: 'proxy-operation'; operationId: string }
-        | { kind: 'recovery' }
-        | { kind: 'queue-handoff' };
-      executionOwner:
-        | { kind: 'provider-session'; id: string }
-        | { kind: 'workflow'; id: string }
-        | { kind: 'discussion'; id: string }
-        | { kind: 'system-task'; id: string };
-      heldForMs: number;
-    }>;
   };
 };
 

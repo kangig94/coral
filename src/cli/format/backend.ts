@@ -1184,6 +1184,10 @@ type RuntimeComponent = BackendHealth['components'][number];
 type DegradedReason = Extract<RuntimeComponent, { phase: 'degraded' }>['reason'];
 type ProviderProxySetStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
 type LaunchPermitStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['launchPermits']>[number];
+type LaunchReleaseDispositionStatus = NonNullable<
+  NonNullable<BackendHealth['diagnostics']>['launchReleaseDispositions']
+>[number];
+type LaunchReclamationStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['launchReclamations']>[number];
 
 function formatLaunchPermitHolder(holder: LaunchPermitStatus['holder']): string {
   switch (holder.kind) {
@@ -1209,6 +1213,28 @@ function formatLaunchExecutionOwner(owner: LaunchPermitStatus['executionOwner'])
       return `${owner.kind}:${owner.id}`;
     default:
       return assertNever(owner);
+  }
+}
+
+function formatLaunchReleaseDisposition(disposition: LaunchReleaseDispositionStatus['disposition']): string {
+  switch (disposition.kind) {
+    case 'already-released':
+      return `${disposition.kind} pool=${disposition.pool}`;
+    case 'transferred':
+      return `${disposition.kind} pool=${disposition.pool} holder=${formatLaunchPermitHolder(disposition.holder)}`;
+    default:
+      return assertNever(disposition);
+  }
+}
+
+function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evidence']): string {
+  switch (evidence.kind) {
+    case 'job-absent':
+      return evidence.kind;
+    case 'job-terminal':
+      return `${evidence.kind}:${evidence.phase}`;
+    default:
+      return assertNever(evidence);
   }
 }
 
@@ -1301,6 +1327,33 @@ function formatRunningStatus(health: RunningHealth): string {
         `    holder=${formatLaunchPermitHolder(permit.holder)}`,
         `    executionOwner=${formatLaunchExecutionOwner(permit.executionOwner)}`,
       );
+    }
+  }
+  const launchReleaseDispositions = health.diagnostics?.launchReleaseDispositions ?? [];
+  if (launchReleaseDispositions.length > 0) {
+    lines.push('', 'Launch release dispositions:');
+    for (const release of launchReleaseDispositions) {
+      lines.push(
+        `  reservation=${release.reservationId} job=${release.jobId} pool=${release.pool} provider=${release.provider} observedAtMs=${release.observedAtMs}`,
+        `    attemptedHolder=${formatLaunchPermitHolder(release.attemptedHolder)}`,
+        `    disposition=${formatLaunchReleaseDisposition(release.disposition)}`,
+      );
+    }
+  }
+  const launchReclamations = health.diagnostics?.launchReclamations ?? [];
+  if (launchReclamations.length > 0) {
+    lines.push('', 'Automatic launch reclamations:');
+    for (const reclamation of launchReclamations) {
+      lines.push(
+        `  reservation=${reclamation.reservationId} job=${reclamation.jobId} pool=${reclamation.pool} provider=${reclamation.provider} heldForMs=${reclamation.heldForMs} reclaimedAtMs=${reclamation.reclaimedAtMs}`,
+        `    holder=${formatLaunchPermitHolder(reclamation.holder)}`,
+        `    evidence=${formatLaunchReclamationEvidence(reclamation.evidence)}`,
+      );
+      if (reclamation.providerOperationEvidence !== undefined) {
+        lines.push(
+          `    providerOperation=${reclamation.providerOperationEvidence.kind}:${reclamation.providerOperationEvidence.operationId}`,
+        );
+      }
     }
   }
   const settlementFailures = health.diagnostics?.settlementRefusalRecordingFailures ?? [];

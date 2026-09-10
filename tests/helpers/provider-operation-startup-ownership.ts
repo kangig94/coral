@@ -25,7 +25,10 @@ function operationKey(operation: ProviderOperationRecord['operation']): string {
 
 function startupBindingDisposition(
   disposition: ReturnType<LaunchCoordinator['prepareProviderOperationBinding']>,
-  exit: 'restart-or-operator-repair' | 'remote-settlement',
+  exit:
+    | 'restart-or-operator-repair'
+    | 'remote-settlement'
+    | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
 ): ProviderOperationStartupOwnership['records'][number]['bindingDisposition'] {
   return disposition.kind === 'refused' ? { ...disposition, exit } : disposition;
 }
@@ -105,7 +108,20 @@ export function createProviderOperationStartupOwnershipHarness(
       };
     });
 
+    const holds = records.flatMap((record) =>
+      record.bindingDisposition.kind === 'refused'
+        ? [
+            {
+              jobId: record.operation.jobId,
+              operationId: record.operation.operationId,
+              reason: record.bindingDisposition.reason,
+              exit: record.bindingDisposition.exit,
+            },
+          ]
+        : [],
+    );
     return {
+      completion: holds.length === 0 ? { kind: 'complete' } : { kind: 'held', holds },
       jobIds: [...new Set(records.map((record) => record.operation.jobId))],
       records,
       unreadable: [],
