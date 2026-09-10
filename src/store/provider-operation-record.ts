@@ -3,6 +3,7 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import { providerStopCauseSchema } from '../providers/contract.js';
 import { PERSISTED_PROVIDER_NAME_PATTERN } from '../providers/registry.js';
 
 const canonicalUuidSchema = z
@@ -24,14 +25,6 @@ const receiptSchema = z.string().min(1).max(4096);
 const directiveReasonSchema = z.string().min(1).max(4096);
 const directiveCodeSchema = z.string().min(1).max(128);
 const providerAbortCauseSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
-const providerStopCauseSchema = z.enum([
-  'restart',
-  'handoff',
-  'signal_abort',
-  'user_abort',
-  'queue_shutdown',
-  'coordinator_rekey_refused',
-]);
 const MAX_PROVIDER_OPERATION_RECORD_BYTES = 64 * 1024;
 const MAX_PRINCIPAL_WIRE_BYTES = 64 * 1024;
 

@@ -856,7 +856,7 @@ async function completeCapacityLocalHandoff(
     startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: capacityAuthority }) },
     registry,
     binding,
-    releaseStartupOwnership: () => false,
+    releaseStartupOwnership: () => ({ kind: 'not-owned' }),
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
     completeLocalRecovery: () => {

@@ -4,6 +4,7 @@ import type { ProviderOperationStartupOwnership } from '#src/jobs/startup.js';
 import type { ExecutionOwner } from '#src/runtime/execution-owner.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import type { ProviderOperationStartupRelease } from '#src/coordinator/services/recovery/index.js';
 
 type StartupLaunch = Readonly<{
   provider: string;
@@ -15,7 +16,7 @@ type StartupOwnershipHarness = Readonly<{
   binding: LaunchCoordinator;
   ownership: ProviderOperationStartupOwnership;
   ownershipFor(records: readonly ProviderOperationRecord[]): ProviderOperationStartupOwnership;
-  releaseStartupOwnership(operation: ProviderOperationRecord['operation']): boolean;
+  releaseStartupOwnership(operation: ProviderOperationRecord['operation']): ProviderOperationStartupRelease;
 }>;
 
 function operationKey(operation: ProviderOperationRecord['operation']): string {
@@ -120,9 +121,9 @@ export function createProviderOperationStartupOwnershipHarness(
     releaseStartupOwnership: (operation) => {
       const key = operationKey(operation);
       const permit = retainedStartupPermits.get(key);
-      if (permit === undefined) return false;
+      if (permit === undefined) return { kind: 'not-owned' };
       retainedStartupPermits.delete(key);
-      return binding.releaseLaunch(permit).kind === 'released';
+      return binding.releaseLaunch(permit);
     },
   };
 }

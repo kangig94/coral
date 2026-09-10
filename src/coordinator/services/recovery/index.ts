@@ -24,7 +24,12 @@ import {
   type ProviderOperationRecord,
 } from '../../../store/provider-operation-record.js';
 import { readProviderOperationJobLaunch } from '../../../jobs/provider-operation-state.js';
-import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPermit } from '../../../jobs/contracts/admission.js';
+import type {
+  JobAdmissionPort,
+  JobLaunchRecoveryPort,
+  LaunchPermit,
+  LaunchRelease,
+} from '../../../jobs/contracts/admission.js';
 import type { ProviderOperationBindingPort } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
@@ -145,6 +150,8 @@ export type ProviderOperationRecoveryAcceptance = Readonly<{
   owner: 'recovery-coordinator';
 }>;
 
+export type ProviderOperationStartupRelease = LaunchRelease | Readonly<{ kind: 'not-owned' }>;
+
 type ProviderOperationStartupSnapshot = Readonly<{
   records: readonly ProviderOperationRecord[];
   unreadable: readonly UnreadableProviderOperationAttribution[];
@@ -183,7 +190,9 @@ export interface RecoveryCoordinator {
     record: ProviderOperationRecord,
     recordKey?: string,
   ): ProviderOperationStartupRecordOwnership;
-  releaseProviderOperationStartupOwnership(operation: ProviderOperationRecord['operation']): boolean;
+  releaseProviderOperationStartupOwnership(
+    operation: ProviderOperationRecord['operation'],
+  ): ProviderOperationStartupRelease;
   releaseUnreadableProviderOperationStartupOwnership(recordKey: string): UnreadableProviderOperationStartupResolution;
   recoverProviderOperationJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
@@ -1841,7 +1850,10 @@ export function createRecoveryCoordinator(
     const owned = state.providerOperationStartupPermits.get(jobId);
     if (owned !== undefined) {
       state.providerOperationStartupPermits.delete(jobId);
-      startupOwnership.releaseLaunch(owned.permit);
+      const release = startupOwnership.releaseLaunch(owned.permit);
+      if (release.kind === 'transferred') {
+        throw new Error(`Launch ownership transferred to ${JSON.stringify(release.holder)}.`);
+      }
     }
   };
 
@@ -1941,14 +1953,15 @@ export function createRecoveryCoordinator(
     }
   };
 
-  const releaseProviderOperationStartupOwnership = (operation: ProviderOperationRecord['operation']): boolean => {
+  const releaseProviderOperationStartupOwnership = (
+    operation: ProviderOperationRecord['operation'],
+  ): ProviderOperationStartupRelease => {
     const owned = state.providerOperationStartupPermits.get(operation.jobId);
     if (owned === undefined || owned.operationId !== operation.operationId) {
-      return false;
+      return { kind: 'not-owned' };
     }
     state.providerOperationStartupPermits.delete(operation.jobId);
-    startupOwnership.releaseLaunch(owned.permit);
-    return true;
+    return startupOwnership.releaseLaunch(owned.permit);
   };
 
   const releaseUnreadableProviderOperationStartupOwnership = (
@@ -1990,8 +2003,8 @@ export function createRecoveryCoordinator(
         continue;
       }
       state.providerOperationStartupPermits.delete(jobId);
-      startupOwnership.releaseLaunch(owned.permit);
-      released += 1;
+      const disposition = startupOwnership.releaseLaunch(owned.permit);
+      if (disposition.kind !== 'transferred') released += 1;
     }
     return Object.freeze({ released, readableRecords: Object.freeze(readableRecords) });
   };
@@ -2076,7 +2089,19 @@ export function createRecoveryCoordinator(
     let existingPermit = state.providerOperationStartupPermits.get(snapshotRecord.operation.jobId);
     if (snapshotRecord.phase === 'local-recovery-pending' && existingPermit?.operationId === null) {
       state.providerOperationStartupPermits.delete(snapshotRecord.operation.jobId);
-      startupOwnership.releaseLaunch(existingPermit.permit);
+      const release = startupOwnership.releaseLaunch(existingPermit.permit);
+      if (release.kind === 'transferred') {
+        return {
+          phase: snapshotRecord.phase,
+          operation: snapshotRecord.operation,
+          restoredPermit: null,
+          bindingDisposition: {
+            kind: 'refused',
+            reason: `Launch ownership transferred to ${JSON.stringify(release.holder)}.`,
+            exit: 'remote-settlement',
+          },
+        };
+      }
       existingPermit = undefined;
     }
     if (!snapshotRestoresPermit && existingPermit?.operationId === null) {
@@ -2096,22 +2121,23 @@ export function createRecoveryCoordinator(
         : null;
     const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
     if (current === null) {
+      let launchTransferred = false;
       if (restoredPermit !== null) {
         const disposition = releaseRestoredPermitThroughSettlement(restoredPermit, snapshotRecord.operation);
         if (disposition.kind === 'refused') {
           state.providerOperationStartupPermits.delete(snapshotRecord.operation.jobId);
-          startupOwnership.releaseLaunch(restoredPermit);
+          launchTransferred = startupOwnership.releaseLaunch(restoredPermit).kind === 'transferred';
         }
       } else {
         settleProviderOperationStartupBinding(snapshotRecord.operation);
       }
-      if (!state.providerOperationStartupPermits.has(snapshotRecord.operation.jobId)) {
+      if (!launchTransferred && !state.providerOperationStartupPermits.has(snapshotRecord.operation.jobId)) {
         startupOwnership.retireProviderOperationBinding(snapshotRecord.operation);
       }
       return {
         phase: snapshotRecord.phase,
         operation: snapshotRecord.operation,
-        restoredPermit,
+        restoredPermit: launchTransferred ? null : restoredPermit,
         bindingDisposition: { kind: 'not-reconciled', reason: 'record-absent' },
       };
     }

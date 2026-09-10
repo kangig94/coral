@@ -50,10 +50,6 @@ export class LocalOperationRegistry {
   private cleanupPort: ProviderOperationCleanupPort = { release: () => undefined };
   private bindingPort: ProviderOperationBindingPort | null = null;
   private settlementObserver: (jobId: string) => void = () => undefined;
-  // A job carries at most one live operation at a time, so a job id alone finds "whichever operation is
-  // currently live for it" — the shape `stop()` needs, since the abort registry only ever knows a job id
-  // (registration happens in `activateCommittedProviderLaunch`, before an operation id even exists — see
-  // `jobs/shell/launch.ts`).
   private readonly liveJobIndex = new Map<string, string>();
 
   connectCleanup(port: ProviderOperationCleanupPort): void {
@@ -78,15 +74,16 @@ export class LocalOperationRegistry {
     const key = registryKey(identity.jobId, identity.operationId);
     const providerRoot = record.providerRoot;
     const stopCause = record.controlIntent.kind === 'run' ? null : record.controlIntent.cause;
-    this.entries.set(key, { identity, providerRoot, control, cleanup, state, stopCause });
+    const proxyCleanup: ProviderOperationCleanupIdentity = {
+      kind: 'proxy-binding',
+      jobId: identity.jobId,
+      operationId: identity.operationId,
+      pool: cleanup.pool,
+    };
+    this.entries.set(key, { identity, providerRoot, control, cleanup: proxyCleanup, state, stopCause });
     this.liveJobIndex.set(identity.jobId, key);
   }
 
-  /**
-   * Registers a live operation only after the activation ACK and runtime-started event commit together — see
-   * `ProviderOperationReconciler`, the only production caller. The cleanup identity comes from the immutable
-   * job launch, so the same registration path remains available after coordinator restart.
-   */
   activate(
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     control: OperationStopControl,
@@ -127,9 +124,10 @@ export class LocalOperationRegistry {
       return;
     }
     this.entries.delete(key);
-    if (this.liveJobIndex.get(identity.jobId) === key) this.liveJobIndex.delete(identity.jobId);
+    const isCurrentOperation = this.liveJobIndex.get(identity.jobId) === key;
+    if (isCurrentOperation) this.liveJobIndex.delete(identity.jobId);
     try {
-      this.cleanupPort.release(entry.cleanup);
+      if (isCurrentOperation) this.cleanupPort.release(entry.cleanup);
     } finally {
       this.settlementObserver(identity.jobId);
     }

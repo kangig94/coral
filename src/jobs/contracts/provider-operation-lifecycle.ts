@@ -16,10 +16,18 @@ export type ProviderOperationEnvironmentInput =
   | Readonly<Record<string, string>>
   | ProviderOperationProtectedEnvironment;
 
-export type ProviderOperationCleanupIdentity = Readonly<{
-  jobId: string;
-  pool: LaunchPool;
-}>;
+export type ProviderOperationCleanupIdentity =
+  | Readonly<{
+      kind: 'job-local';
+      jobId: string;
+      pool: LaunchPool;
+    }>
+  | Readonly<{
+      kind: 'proxy-binding';
+      jobId: string;
+      operationId: string;
+      pool: LaunchPool;
+    }>;
 
 export interface ProviderOperationCleanupOwner {
   releaseProviderOperationLocalState(identity: ProviderOperationCleanupIdentity): boolean;

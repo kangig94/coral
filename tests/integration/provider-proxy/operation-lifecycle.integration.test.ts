@@ -686,7 +686,7 @@ async function launchThroughRoute(
     startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: activeAuthority }) },
     registry,
     binding,
-    releaseStartupOwnership: () => false,
+    releaseStartupOwnership: () => ({ kind: 'not-owned' }),
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
     completeLocalRecovery: () => undefined,

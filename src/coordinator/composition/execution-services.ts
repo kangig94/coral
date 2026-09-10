@@ -305,7 +305,7 @@ export function createExecutionServices({
     registry: world.operationRegistry,
     binding: world.launchCoordinator,
     releaseStartupOwnership: (operation) =>
-      providerOperationRecovery?.releaseProviderOperationStartupOwnership(operation) ?? false,
+      providerOperationRecovery?.releaseProviderOperationStartupOwnership(operation) ?? { kind: 'not-owned' },
     materializePrepare: (record) =>
       materializeProviderOperationPrepare(
         {

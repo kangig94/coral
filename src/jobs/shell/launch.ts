@@ -90,7 +90,6 @@ type JobExecutionDisposition = 'settled' | 'suspended' | 'handed-off' | 'proxied
 type QueuedPermitOutcome = Readonly<{ kind: 'admitted'; permit: LaunchPermit }> | Readonly<{ kind: 'aborted' }>;
 
 function releasesLaunchPermit(disposition: JobExecutionDisposition): boolean {
-  if (typeof disposition !== 'string') return true;
   switch (disposition) {
     case 'settled':
     case 'suspended':
@@ -99,6 +98,12 @@ function releasesLaunchPermit(disposition: JobExecutionDisposition): boolean {
     case 'handed-off':
     case 'proxied':
       return false;
+  }
+  switch (disposition.cause) {
+    case 'terminal-persist-failed':
+    case 'claim-release-failed':
+    case 'claim-already-reassigned':
+      return true;
   }
 }
 
@@ -203,7 +208,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   private readonly quiescedAppServerJobs = new Set<string>();
   private readonly appServerHandoffAborts = new Map<string, AbortController>();
   private readonly inFlightAppServerWrites = new Map<string, Set<Promise<unknown>>>();
-  private readonly proxiedOperationIds = new Map<string, string>();
   private appServerHandoffQuiesced = false;
 
   private readonly deps: LaunchOrchestratorDeps;
@@ -213,9 +217,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   releaseProviderOperationLocalState(identity: ProviderOperationCleanupIdentity): boolean {
     const { jobId } = identity;
-    const operationId = this.proxiedOperationIds.get(jobId);
     const ownsLocalState =
-      operationId !== undefined ||
       this.deps.abortRegistry.getSignal(jobId) !== null ||
       this.appServerJobs.has(jobId) ||
       this.appServerHandoffAborts.has(jobId);
@@ -224,11 +226,16 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     this.deps.abortRegistry.remove(jobId);
     this.appServerJobs.delete(jobId);
     this.appServerHandoffAborts.delete(jobId);
-    if (operationId !== undefined) {
-      this.deps.providerOperationBinding.settleProviderOperationBinding({ jobId, operationId });
-      this.proxiedOperationIds.delete(jobId);
+    switch (identity.kind) {
+      case 'job-local':
+        return true;
+      case 'proxy-binding':
+        this.deps.providerOperationBinding.settleProviderOperationBinding({
+          jobId,
+          operationId: identity.operationId,
+        });
+        return true;
     }
-    return true;
   }
 
   async quiesceAppServerJobsForHandoff(): Promise<void> {
@@ -1145,22 +1152,23 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       return await this.recordSettlementRefusal(jobId, 'terminal-persist-failed', error);
     }
 
-    let released: boolean;
+    let claimRefusal: Readonly<{ cause: SettlementRefusal['cause']; error: unknown }> | null = null;
     try {
-      released = await this.deps.sessionManager.releaseJobClaimAtomic(sessionId, {
+      const released = await this.deps.sessionManager.releaseJobClaimAtomic(sessionId, {
         expectedActiveJobId: jobId,
         expectedVersion: expectedClaimVersion,
       });
+      if (!released) {
+        const error = new Error(`The session claim for terminal job ${jobId} is owned by another job.`);
+        backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
+        claimRefusal = { cause: 'claim-already-reassigned', error };
+      }
     } catch (error: unknown) {
       backendLog.error(
         `Failed to release claimed session ${sessionId} for terminal job ${jobId}: ${errorMessage(error)}`,
         error,
       );
-      return await this.recordSettlementRefusal(jobId, 'claim-release-failed', error);
-    }
-    if (!released) {
-      backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
-      return { kind: 'settlement-refused', cause: 'claim-already-reassigned' };
+      claimRefusal = { cause: 'claim-release-failed', error };
     }
 
     try {
@@ -1170,12 +1178,15 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
 
     this.deps.abortRegistry.remove(jobId);
+    if (claimRefusal !== null) {
+      return await this.recordSettlementRefusal(jobId, claimRefusal.cause, claimRefusal.error);
+    }
     return 'settled';
   }
 
   private async recordSettlementRefusal(
     jobId: string,
-    cause: 'terminal-persist-failed' | 'claim-release-failed',
+    cause: SettlementRefusal['cause'],
     error: unknown,
   ): Promise<SettlementRefusal> {
     try {
@@ -1368,7 +1379,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           throw new Error(`Provider operation binding preparation failed: ${reason}.`);
         }
 
-        this.proxiedOperationIds.set(jobId, operationId);
         let activation: Awaited<ReturnType<AppServerProxyRoute['activate']>>;
         try {
           activation = await route.activate(
@@ -1391,11 +1401,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             signal,
           );
         } catch (error: unknown) {
-          const cancellation = this.deps.providerOperationBinding.cancelProviderOperationBinding(
-            permit,
-            operationIdentity,
-          );
-          if (cancellation.kind === 'cancelled') this.proxiedOperationIds.delete(jobId);
+          this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
           throw error;
         }
         if (activation.kind === 'remote-executing') {
@@ -1411,7 +1417,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           return { kind: 'proxied', operationId };
         }
         if (activation.kind === 'terminalized' || activation.kind === 'rekey-refused-contained') {
-          this.proxiedOperationIds.delete(jobId);
           return { kind: 'terminalized' };
         }
         const cancellation = this.deps.providerOperationBinding.cancelProviderOperationBinding(
@@ -1423,7 +1428,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             cancellation.kind === 'refused' ? cancellation.reason : `unexpected '${cancellation.kind}' disposition`;
           throw new Error(`Provider operation binding cancellation failed: ${reason}.`);
         }
-        this.proxiedOperationIds.delete(jobId);
       }
       return {
         kind: 'local',

@@ -2521,13 +2521,19 @@ describe('ExecutionService', () => {
 
         const restoredPermit = restoreActiveLaunch(jobId, 'codex', 'default');
         expect(restoredPermit.reservationId).not.toBe('');
-        service.completeRecoveredJob(
+        const completion = service.completeRecoveredJob(
           jobId,
           session.sessionId,
           { content: 'recovered done', durationMs: 0, outcome: { kind: 'completed' } },
           'completed',
           { permit: restoredPermit },
         );
+        expect(completion).toMatchObject({
+          kind: 'completed',
+          sessionClaimRelease: 'released',
+          launchRelease: { kind: 'released', pool: 'default' },
+        });
+        expect(launchCoordinator.reservationFor(jobId)).toBeNull();
 
         const status = progressStore.readStatus(jobId);
         expect(status).toMatchObject({
@@ -2539,6 +2545,61 @@ describe('ExecutionService', () => {
 
         const updatedSession = sessionManager.readById(session.sessionId, { forceFresh: true });
         expect(updatedSession?.activeJobId).toBeUndefined();
+      });
+
+      it('returns successor ownership instead of reporting a transferred permit as completed', () => {
+        const service = createService(ctx);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `transferred-recovered-${randomUUID()}`;
+        trackJob(jobId);
+        const session = allocateCodexSession(sessionManager, 'recover-transferred', 'gpt-5', ctx.projectRoot);
+        expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: session.backendNamespace,
+          initialPhase: 'running',
+        });
+        progressStore.appendLaunchRequested(
+          jobId,
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            backendNamespace: TEST_BACKEND_NAMESPACE,
+          }),
+        );
+        const restoredPermit = restoreActiveLaunch(jobId, 'codex', 'default');
+        const operationId = randomUUID();
+        expect(launchCoordinator.prepareProviderOperationBinding(restoredPermit, { jobId, operationId })).toEqual({
+          kind: 'prepared',
+        });
+        expect(launchCoordinator.commitProviderOperationBinding({ jobId, operationId })).toMatchObject({
+          kind: 'bound',
+        });
+
+        const completion = service.completeRecoveredJob(
+          jobId,
+          session.sessionId,
+          { content: 'recovered after transfer', durationMs: 0, outcome: { kind: 'completed' } },
+          'completed',
+          { permit: restoredPermit },
+        );
+
+        expect(completion).toEqual({
+          kind: 'transferred',
+          sessionClaimRelease: 'released',
+          pool: 'default',
+          holder: { kind: 'proxy-operation', operationId },
+        });
+        expect(launchCoordinator.reservationFor(jobId)).toMatchObject({
+          kind: 'active',
+          holder: { kind: 'proxy-operation', operationId },
+        });
       });
     });
 

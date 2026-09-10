@@ -142,6 +142,8 @@ interface QuiesceHarness {
   writeArtifactSpy: ReturnType<typeof vi.fn>;
   releaseLaunchSpy: ReturnType<typeof vi.fn>;
   abortRemoveSpy: ReturnType<typeof vi.fn>;
+  hasAbortRegistration: () => boolean;
+  hasResultArtifact: () => boolean;
   releaseJobClaimSpy: ReturnType<typeof vi.fn>;
   checkpointSpy: ReturnType<typeof vi.fn>;
   recordArtifactHandleSpy: ReturnType<typeof vi.fn>;
@@ -181,7 +183,9 @@ async function buildOrchestratorAroundProviderStream(
   const recordTerminalSpy = vi.fn();
   const appendProgressSpy = vi.fn();
   const writeArtifactSpy = vi.fn();
-  const abortRemoveSpy = vi.fn();
+  const activeAbortJobs = new Set([jobId]);
+  const abortRemoveSpy = vi.fn((removedJobId: string) => activeAbortJobs.delete(removedJobId));
+  const ensuredResultArtifacts = new Set<string>();
   const releaseJobClaimSpy = vi.fn(async () => {
     await options.releaseJobClaimGate;
     if (options.releaseJobClaimError !== undefined) throw options.releaseJobClaimError;
@@ -230,7 +234,7 @@ async function buildOrchestratorAroundProviderStream(
   const abortController = new AbortController();
   const abortRegistry = {
     register: () => {},
-    getSignal: () => abortController.signal,
+    getSignal: (registeredJobId: string) => (activeAbortJobs.has(registeredJobId) ? abortController.signal : null),
     remove: abortRemoveSpy,
   } as unknown as AbortRegistry;
 
@@ -262,7 +266,9 @@ async function buildOrchestratorAroundProviderStream(
       return [];
     },
     jobDir: () => '/tmp/job-dir',
-    ensureResultArtifact: () => {},
+    ensureResultArtifact: (artifactJobId: string) => {
+      ensuredResultArtifacts.add(artifactJobId);
+    },
   } as unknown as JobProgressStore;
 
   const writeResultArtifactWatcher = writeArtifactSpy;
@@ -420,6 +426,8 @@ async function buildOrchestratorAroundProviderStream(
     writeArtifactSpy,
     releaseLaunchSpy,
     abortRemoveSpy,
+    hasAbortRegistration: () => activeAbortJobs.has(jobId),
+    hasResultArtifact: () => ensuredResultArtifacts.has(jobId),
     releaseJobClaimSpy,
     checkpointSpy,
     recordArtifactHandleSpy,
@@ -734,6 +742,8 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     expect(harness.releaseJobClaimSpy).toHaveBeenCalledTimes(1);
     expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
     expect(harness.currentSession().activeJobId).toBe(harness.jobId);
+    expect(harness.hasResultArtifact()).toBe(true);
+    expect(harness.hasAbortRegistration()).toBe(false);
     harness.providerStream.end();
   });
 
@@ -807,10 +817,17 @@ describe('LaunchOrchestrator handoff quiesce', () => {
       expectedActiveJobId: harness.jobId,
       expectedVersion: 1,
     });
-    expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
+    expect(harness.hasResultArtifact()).toBe(true);
+    expect(harness.hasAbortRegistration()).toBe(false);
     expect(harness.launchCoordinator.reservationFor(harness.jobId)).toBeNull();
     expect(harness.currentSession().activeJobId).toBe(harness.jobId);
-    expect(recordedRefusals).toEqual([]);
+    expect(recordedRefusals).toEqual([
+      {
+        jobId: harness.jobId,
+        cause: 'claim-already-reassigned',
+        failure: `The session claim for terminal job ${harness.jobId} is owned by another job.`,
+      },
+    ]);
   });
 
   it('releases a terminal claim at the version returned by the last continuity CAS', async () => {

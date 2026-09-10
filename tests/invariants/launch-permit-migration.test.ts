@@ -43,7 +43,13 @@ describe('launch permit migration constraints', () => {
 
     expect(new Set(declarations)).toEqual(new Set(['permit: LaunchPermit']));
     expect(declarations).toHaveLength(2); // The jobs contract and its sole coordinator implementation.
-    for (const legacyName of ['releaseByAbortAuthority', 'jobPools', 'permitAcquired', 'preserveOwnership']) {
+    for (const legacyName of [
+      'releaseByAbortAuthority',
+      'jobPools',
+      'permitAcquired',
+      'preserveOwnership',
+      'proxiedOperationIds',
+    ]) {
       expect(SOURCE).not.toMatch(new RegExp(`\\b${legacyName}\\b`, 'u'));
     }
   });
@@ -55,6 +61,9 @@ describe('launch permit migration constraints', () => {
 
     expect(source('src/coordinator/composition/index.ts')).toContain('diagnostics.launchPermits = launchPermits');
     expect(source('src/coordinator/composition/index.ts')).toContain(
+      'diagnostics.launchReleaseDispositions = launchReleaseDispositions',
+    );
+    expect(source('src/coordinator/composition/index.ts')).toContain(
       'diagnostics.settlementRefusalRecordingFailures = [...settlementRefusalRecordingFailures.values()]',
     );
     expect(source('src/transport/http/backend/health.ts')).toContain('isLaunchPermits(value.launchPermits)');
@@ -63,6 +72,12 @@ describe('launch permit migration constraints', () => {
     );
     expect(source('src/cli/format/backend.ts')).toContain("lines.push('', 'Launch permits:')");
     expect(source('src/cli/format/backend.ts')).toContain("lines.push('', 'Settlement refusal recording failures:')");
+  });
+
+  it('derives the durable provider stop cause from the provider contract', () => {
+    const durableRecord = source('src/store/provider-operation-record.ts');
+    expect(durableRecord).toContain("import { providerStopCauseSchema } from '../providers/contract.js'");
+    expect(durableRecord).not.toMatch(/const providerStopCauseSchema\s*=\s*z\.enum/u);
   });
 
   it('keeps versions, bridge sources, CLI registration, and transport method declarations unchanged from base', () => {

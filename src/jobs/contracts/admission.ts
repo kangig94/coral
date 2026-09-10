@@ -74,6 +74,16 @@ export type LaunchRelease =
   | Readonly<{ kind: 'already-released'; pool: LaunchPool }>
   | Readonly<{ kind: 'transferred'; pool: LaunchPool; holder: PermitHolder }>;
 
+export type LaunchReleaseDiagnostic = Readonly<{
+  reservationId: string;
+  jobId: string;
+  pool: LaunchPool;
+  provider: string;
+  attemptedHolder: PermitHolder;
+  disposition: Exclude<LaunchRelease, { kind: 'released' }>;
+  observedAtMs: number;
+}>;
+
 export type OperationBindingResult =
   | Readonly<{ kind: 'prepared' }>
   | Readonly<{ kind: 'bound'; successorPermit: LaunchPermit }>
@@ -83,20 +93,23 @@ export type OperationBindingResult =
   | Readonly<{ kind: 'already-settled' }>
   | Readonly<{ kind: 'refused'; reason: string }>;
 
-export type SettlementRefusal =
-  | Readonly<{
-      kind: 'settlement-refused';
-      cause: 'terminal-persist-failed' | 'claim-release-failed';
-      quarantine: 'recorded' | 'recording-failed';
-    }>
-  | Readonly<{ kind: 'settlement-refused'; cause: 'claim-already-reassigned' }>;
+export type SettlementRefusalCause =
+  | 'terminal-persist-failed'
+  | 'claim-release-failed'
+  | 'claim-already-reassigned';
+
+export type SettlementRefusal = Readonly<{
+  kind: 'settlement-refused';
+  cause: SettlementRefusalCause;
+  quarantine: 'recorded' | 'recording-failed';
+}>;
 
 /** Persists durable recovery work left behind by a refused job settlement. */
 export interface SettlementRefusalRecorder {
   record(
     input: Readonly<{
       jobId: string;
-      cause: 'terminal-persist-failed' | 'claim-release-failed';
+      cause: SettlementRefusalCause;
       failure: string;
     }>,
   ): boolean | Promise<boolean>;

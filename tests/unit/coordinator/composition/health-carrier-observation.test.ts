@@ -70,6 +70,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import type { LaunchReleaseDiagnostic } from '#src/jobs/contracts/admission.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -238,7 +239,11 @@ describe('health local carrier observation', () => {
 
     const operationRegistry = new LocalOperationRegistry();
     const liveRecord = providerOperationRecord('executing', { job: 97 }) as ExecutingRecord;
-    operationRegistry.activate(liveRecord, { stop: async () => undefined }, { jobId: LIVE_JOB_ID, pool: 'default' });
+    operationRegistry.activate(
+      liveRecord,
+      { stop: async () => undefined },
+      { kind: 'job-local', jobId: LIVE_JOB_ID, pool: 'default' },
+    );
 
     const networkObserver = vi.fn(async () => {
       throw new Error('health issued a network carrier probe');
@@ -480,5 +485,34 @@ describe('health local carrier observation', () => {
 
     expect(readHealth().diagnostics).toBeDefined();
     expect(readHealth().diagnostics?.launchPermits).toBeUndefined();
+  });
+
+  it('projects non-release dispositions from coordinator-owned diagnostic state', () => {
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+    );
+    const admission = core.launchCoordinator.requestLaunch(
+      'already-released-job',
+      'codex',
+      { kind: 'provider-session', id: 'already-released-session' },
+      'default',
+    );
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
+    core.launchCoordinator.releaseLaunch(admission.permit);
+    core.launchCoordinator.releaseLaunch(admission.permit);
+
+    const diagnostics = readHealth().diagnostics as
+      | (NonNullable<ReturnType<typeof readHealth>['diagnostics']> & {
+          launchReleaseDispositions?: LaunchReleaseDiagnostic[];
+        })
+      | undefined;
+    expect(diagnostics?.launchReleaseDispositions).toEqual([
+      expect.objectContaining({
+        reservationId: admission.permit.reservationId,
+        jobId: admission.permit.jobId,
+        disposition: { kind: 'already-released', pool: 'default' },
+      }),
+    ]);
   });
 });

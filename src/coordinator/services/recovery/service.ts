@@ -18,7 +18,7 @@ import type {
   QueuedHandle,
 } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
-import type { SessionJobClaimReleaseResult, SessionRecoveryPort } from '../../../sessions/contracts.js';
+import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
@@ -29,6 +29,7 @@ import type {
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
   RecoveredAppServerInterruptResult,
+  RecoveredJobCompletionDisposition,
 } from '../../../jobs/reconcile/contracts.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
 import type { RecoveredAppServerFinalizationReason } from '../../../jobs/reconcile/interrupted-reason.js';
@@ -395,12 +396,23 @@ export class RecoveryService {
       if (queuedHandle !== null) {
         void queuedHandle.waitForPermit().catch(() => undefined);
         const cancellation = queuedHandle.cancel();
-        if (cancellation.kind === 'admitted') this.deps.launchAdmission.releaseLaunch(cancellation.permit);
+        if (cancellation.kind === 'admitted') this.releaseRecoveryOwnership(cancellation.permit);
       }
       this.deps.abortRegistry.remove(jobId);
-      if (permit !== null) this.deps.launchAdmission.releaseLaunch(permit);
+      if (permit !== null) this.releaseRecoveryOwnership(permit);
     } catch (error: unknown) {
+      if (error instanceof RecoveryOwnershipReleaseError) throw error;
       throw new RecoveryOwnershipReleaseError(jobId, error);
+    }
+  }
+
+  private releaseRecoveryOwnership(permit: LaunchPermit): void {
+    const release = this.deps.launchAdmission.releaseLaunch(permit);
+    if (release.kind === 'transferred') {
+      throw new RecoveryOwnershipReleaseError(
+        permit.jobId,
+        new Error(`Launch ownership transferred to ${JSON.stringify(release.holder)}.`),
+      );
     }
   }
 
@@ -410,7 +422,7 @@ export class RecoveryService {
     result: JobTerminalInput,
     phase: JobPhase,
     options: TerminalWriteOptions & { permit: LaunchPermit },
-  ): SessionJobClaimReleaseResult {
+  ): RecoveredJobCompletionDisposition {
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
       this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
@@ -431,11 +443,22 @@ export class RecoveryService {
 
     try {
       this.deps.abortRegistry.remove(jobId);
-      this.deps.launchAdmission.releaseLaunch(options.permit);
+      const launchRelease = this.deps.launchAdmission.releaseLaunch(options.permit);
+      switch (launchRelease.kind) {
+        case 'released':
+        case 'already-released':
+          return { kind: 'completed', sessionClaimRelease: releaseResult, launchRelease };
+        case 'transferred':
+          return {
+            kind: 'transferred',
+            sessionClaimRelease: releaseResult,
+            pool: launchRelease.pool,
+            holder: launchRelease.holder,
+          };
+      }
     } catch (error: unknown) {
       throw new RecoveryOwnershipReleaseError(jobId, error);
     }
-    return releaseResult;
   }
 
   private sessionProviderContinuity(

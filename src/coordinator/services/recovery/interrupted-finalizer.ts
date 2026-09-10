@@ -126,7 +126,12 @@ function exportResultAndReleaseOwnership(
   }
   try {
     deps.abortRegistry.remove(plan.launchRecord.jobId);
-    if (deps.launchPermit !== null) deps.launchAdmission.releaseLaunch(deps.launchPermit);
+    if (deps.launchPermit !== null) {
+      const release = deps.launchAdmission.releaseLaunch(deps.launchPermit);
+      if (release.kind === 'transferred') {
+        throw new Error(`Launch ownership transferred to ${JSON.stringify(release.holder)}.`);
+      }
+    }
   } catch (error: unknown) {
     throw new RecoveryOwnershipReleaseError(plan.launchRecord.jobId, error);
   }

@@ -142,7 +142,7 @@ describe('provider-operation startup recovery ownership', () => {
       registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
       binding: launchCoordinator,
       releaseStartupOwnership: (operation) =>
-        recoveryCoordinator?.releaseProviderOperationStartupOwnership(operation) ?? false,
+        recoveryCoordinator?.releaseProviderOperationStartupOwnership(operation) ?? { kind: 'not-owned' },
       materializePrepare: () => {
         throw new Error('startup ownership test unexpectedly materialized a prepare');
       },

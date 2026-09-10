@@ -71,7 +71,10 @@ import {
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
 } from './provider-proxy-set/identity.js';
-import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
+import type {
+  ProviderOperationRecoveryAcceptance,
+  ProviderOperationStartupRelease,
+} from './recovery/index.js';
 import {
   type ContainmentAbsenceAcceptance,
   type ContainmentAbsenceOperationalIncident,
@@ -295,7 +298,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
   startupSetRecovery: StartupSetRecoveryPort;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   binding: ProviderOperationBindingPort;
-  releaseStartupOwnership(operation: ProviderOperationIdentity): boolean;
+  releaseStartupOwnership(operation: ProviderOperationIdentity): ProviderOperationStartupRelease;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
   ) => Promise<ProviderOperationPrepareMaterializationResult> | ProviderOperationPrepareMaterializationResult;
@@ -2017,8 +2020,10 @@ export class ProviderOperationReconciler
       this.#attachments.delete(key);
       this.#deps.registry.settled(record.operation);
       if (attempt.current === null) {
-        this.#deps.releaseStartupOwnership(record.operation);
-        this.#deps.binding.retireProviderOperationBinding(record.operation);
+        const release = this.#deps.releaseStartupOwnership(record.operation);
+        if (release.kind !== 'transferred') {
+          this.#deps.binding.retireProviderOperationBinding(record.operation);
+        }
       }
       return attempt.current;
     }
@@ -2047,8 +2052,10 @@ export class ProviderOperationReconciler
         return null;
       }
       if (current === null) {
-        this.#deps.releaseStartupOwnership(record.operation);
-        this.#deps.binding.retireProviderOperationBinding(record.operation);
+        const release = this.#deps.releaseStartupOwnership(record.operation);
+        if (release.kind !== 'transferred') {
+          this.#deps.binding.retireProviderOperationBinding(record.operation);
+        }
       }
       return current;
     }
@@ -2115,8 +2122,10 @@ export class ProviderOperationReconciler
         this.#attachments.delete(operationKey(record.operation));
         this.#deps.registry.settled(record.operation);
         if (result.current === null) {
-          this.#deps.releaseStartupOwnership(record.operation);
-          this.#deps.binding.retireProviderOperationBinding(record.operation);
+          const release = this.#deps.releaseStartupOwnership(record.operation);
+          if (release.kind !== 'transferred') {
+            this.#deps.binding.retireProviderOperationBinding(record.operation);
+          }
         }
         return result.current;
       case 'retry-superseded':
@@ -2343,18 +2352,21 @@ export class ProviderOperationReconciler
     this.#deps.binding.settleProviderOperationBinding(record.operation);
     const result = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
     if (result.kind === 'deleted' || result.current === null) {
-      this.#deps.releaseStartupOwnership(record.operation);
-      this.#deps.binding.retireProviderOperationBinding(record.operation);
+      const release = this.#deps.releaseStartupOwnership(record.operation);
+      if (release.kind !== 'transferred') {
+        this.#deps.binding.retireProviderOperationBinding(record.operation);
+      }
     }
     return result;
   }
 
   #releaseTerminalizedOwnership(record: ProviderOperationRecord): void {
-    const releasedStartupOwnership = this.#deps.releaseStartupOwnership(record.operation);
+    const release = this.#deps.releaseStartupOwnership(record.operation);
+    if (release.kind === 'transferred') return;
     if (
       record.phase !== 'executing' &&
       this.#publications.has(operationKey(record.operation)) &&
-      !releasedStartupOwnership
+      release.kind === 'not-owned'
     ) {
       return;
     }

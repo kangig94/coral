@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { LaunchCoordinator, MAX_LAUNCH_RELEASE_DIAGNOSTICS } from '#src/coordinator/live/admission.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
@@ -740,6 +740,21 @@ describe('launch admission', () => {
       pool: 'default',
       holder: { kind: 'proxy-operation', operationId: 'operation-proxy' },
     });
+    expect(coordinator.launchReleaseDiagnostics()).toEqual([
+      {
+        reservationId: admission.permit.reservationId,
+        jobId: admission.permit.jobId,
+        pool: 'default',
+        provider: 'codex',
+        attemptedHolder: { kind: 'local-execution' },
+        disposition: {
+          kind: 'transferred',
+          pool: 'default',
+          holder: { kind: 'proxy-operation', operationId: 'operation-proxy' },
+        },
+        observedAtMs: expect.any(Number),
+      },
+    ]);
     expect(coordinator.settleProviderOperationBinding(identity)).toMatchObject({
       kind: 'settled',
       reservationId: admission.permit.reservationId,
@@ -776,6 +791,32 @@ describe('launch admission', () => {
     });
     expect(coordinator.releaseLaunch(binding.successorPermit)).toEqual({ kind: 'already-released', pool: 'default' });
     expect(coordinator.releaseLaunch(admission.permit)).toEqual({ kind: 'already-released', pool: 'default' });
+  });
+
+  it('bounds non-release diagnostics by reservation identity', () => {
+    let evictedReservationId = '';
+    for (let index = 0; index <= MAX_LAUNCH_RELEASE_DIAGNOSTICS; index += 1) {
+      const admission = coordinator.requestLaunch(
+        `diagnostic-${index}`,
+        'codex',
+        providerOwner(`diagnostic-session-${index}`),
+        'default',
+      );
+      if (admission === 'queue_full' || admission.type !== 'immediate') {
+        throw new Error('expected diagnostic source permit');
+      }
+      coordinator.releaseLaunch(admission.permit);
+      coordinator.releaseLaunch(admission.permit);
+      if (index === 0) evictedReservationId = admission.permit.reservationId;
+    }
+
+    const diagnostics = coordinator.launchReleaseDiagnostics();
+    expect(diagnostics).toHaveLength(MAX_LAUNCH_RELEASE_DIAGNOSTICS);
+    expect(diagnostics.some(({ reservationId }) => reservationId === evictedReservationId)).toBe(false);
+    expect(diagnostics.at(-1)).toMatchObject({
+      jobId: `diagnostic-${MAX_LAUNCH_RELEASE_DIAGNOSTICS}`,
+      disposition: { kind: 'already-released' },
+    });
   });
 
   it('commutes settlement before preparation without inventing a reservation id', () => {

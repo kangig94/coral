@@ -50,5 +50,5 @@ export function readProviderOperationJobLaunchEventSeq(db: Database, jobId: stri
 export function providerOperationCleanupIdentity(
   launch: Pick<ProviderJobLaunch, 'jobId' | 'pool'>,
 ): ProviderOperationCleanupIdentity {
-  return { jobId: launch.jobId, pool: launch.pool };
+  return { kind: 'job-local', jobId: launch.jobId, pool: launch.pool };
 }

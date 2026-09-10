@@ -107,6 +107,7 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
+import type { LaunchReleaseDiagnostic } from '../../jobs/contracts/admission.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
@@ -1346,6 +1347,7 @@ export function createCoordinatorCore(
             NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']
           >;
           launchPermits?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['launchPermits']>;
+          launchReleaseDispositions?: LaunchReleaseDiagnostic[];
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
@@ -1376,6 +1378,10 @@ export function createCoordinatorCore(
         if (launchPermits.length > 0) {
           diagnostics.launchPermits = launchPermits;
         }
+        const launchReleaseDispositions = world.launchCoordinator.launchReleaseDiagnostics();
+        if (launchReleaseDispositions.length > 0) {
+          diagnostics.launchReleaseDispositions = launchReleaseDispositions;
+        }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||
           diagnostics.mutationBlocked !== undefined ||
@@ -1383,7 +1389,8 @@ export function createCoordinatorCore(
           diagnostics.providerProxySets !== undefined ||
           diagnostics.providerProxyDispositionSkips !== undefined ||
           diagnostics.settlementRefusalRecordingFailures !== undefined ||
-          diagnostics.launchPermits !== undefined;
+          diagnostics.launchPermits !== undefined ||
+          diagnostics.launchReleaseDispositions !== undefined;
 
         return {
           status: coarseStatus,

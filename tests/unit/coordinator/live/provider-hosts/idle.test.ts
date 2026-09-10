@@ -260,7 +260,7 @@ describe('provider host idle properties', () => {
       operationRegistry.activate(
         record,
         { stop: async () => undefined },
-        { jobId: record.operation.jobId, pool: 'default' },
+        { kind: 'job-local', jobId: record.operation.jobId, pool: 'default' },
       );
 
       operationRegistry.settled(record.operation);
@@ -305,7 +305,7 @@ describe('provider host idle properties', () => {
     operationRegistry.activate(
       record,
       { stop: async () => undefined },
-      { jobId: record.operation.jobId, pool: 'default' },
+      { kind: 'job-local', jobId: record.operation.jobId, pool: 'default' },
     );
 
     expect(() => operationRegistry.settled(record.operation)).not.toThrow();

@@ -28,6 +28,7 @@ import type {
   LaunchPermitDiagnostic,
   LaunchPool,
   LaunchRelease,
+  LaunchReleaseDiagnostic,
   LaunchReservationView,
   OperationBindingResult,
   PermitHolder,
@@ -78,6 +79,7 @@ const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
 const SHUTDOWN_LAUNCH_REJECTED_MESSAGE = 'Launch rejected because shutdown has begun';
 const TERMINATION_RETRY_INTERVAL_MS = 50;
+export const MAX_LAUNCH_RELEASE_DIAGNOSTICS = 100;
 
 function unknownLaunchPool(pool: never): never {
   throw new Error(`Launch admission invariant violated: unknown pool ${JSON.stringify(pool)}.`);
@@ -125,6 +127,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     curate: { active: new Map(), queued: [] },
   };
   private readonly operationBindings = new Map<string, ProviderOperationBindingState>();
+  private readonly nonReleasedLaunches = new Map<string, LaunchReleaseDiagnostic>();
   private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
   private readonly runtime: Runtime;
@@ -195,10 +198,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const activeLaunches = this.getActiveMap(permit.pool);
     const active = activeLaunches.get(permit.jobId);
     if (active === undefined || active.permit.reservationId !== permit.reservationId) {
-      return { kind: 'already-released', pool: permit.pool };
+      return this.recordNonReleasedLaunch(permit, { kind: 'already-released', pool: permit.pool });
     }
     if (!this.sameHolder(active.permit.holder, permit.holder)) {
-      return { kind: 'transferred', pool: permit.pool, holder: active.permit.holder };
+      return this.recordNonReleasedLaunch(permit, {
+        kind: 'transferred',
+        pool: permit.pool,
+        holder: active.permit.holder,
+      });
     }
     activeLaunches.delete(permit.jobId);
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
@@ -239,6 +246,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         heldForMs: Math.max(0, now - permit.acquiredAt),
       })),
     );
+  }
+
+  launchReleaseDiagnostics(): LaunchReleaseDiagnostic[] {
+    return [...this.nonReleasedLaunches.values()];
   }
 
   reservationFor(jobId: string): LaunchReservationView | null {
@@ -618,6 +629,27 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   private getActiveMap(pool: LaunchPool): Map<string, ActiveLaunchReservation> {
     return this.getPoolState(pool).active;
+  }
+
+  private recordNonReleasedLaunch(
+    permit: LaunchPermit,
+    disposition: Exclude<LaunchRelease, { kind: 'released' }>,
+  ): LaunchRelease {
+    this.nonReleasedLaunches.delete(permit.reservationId);
+    this.nonReleasedLaunches.set(permit.reservationId, {
+      reservationId: permit.reservationId,
+      jobId: permit.jobId,
+      pool: permit.pool,
+      provider: permit.provider,
+      attemptedHolder: permit.holder,
+      disposition,
+      observedAtMs: this.runtime.time.now(),
+    });
+    if (this.nonReleasedLaunches.size > MAX_LAUNCH_RELEASE_DIAGNOSTICS) {
+      const oldestReservationId = this.nonReleasedLaunches.keys().next().value;
+      if (oldestReservationId !== undefined) this.nonReleasedLaunches.delete(oldestReservationId);
+    }
+    return disposition;
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
