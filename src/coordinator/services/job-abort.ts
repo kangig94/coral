@@ -1,14 +1,13 @@
 import type { AbortReason } from '../../jobs/outcome.js';
 import type { JobAbortRegistryPort, AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import type { JobAdmissionPort, LaunchPool } from '../../jobs/contracts/admission.js';
+import type { LaunchCoordinatorPort } from '../../jobs/contracts/admission.js';
 import type { QueuedJobAbortPort } from '../../jobs/contracts/job-runner.js';
 
 export interface JobAbortServiceDeps {
   abortRegistry: JobAbortRegistryPort;
   progressStore: JobProgressStore;
-  launchAdmission: JobAdmissionPort;
-  jobPools: Map<string, LaunchPool>;
+  launchAdmission: Pick<LaunchCoordinatorPort, 'cancelQueued' | 'reservationFor'>;
   launchOrchestrator: QueuedJobAbortPort;
 }
 
@@ -32,11 +31,12 @@ export class JobAbortService {
       }
 
       const status = this.deps.progressStore.readStatus(jobId);
-      const pool = this.deps.jobPools.get(jobId) ?? 'default';
+      const reservation = this.deps.launchAdmission.reservationFor(jobId);
       if (
         status?.phase === 'queued' &&
         status.sessionId !== null &&
-        this.deps.launchAdmission.cancelQueued(jobId, pool)
+        reservation?.kind === 'queued' &&
+        this.deps.launchAdmission.cancelQueued(jobId, reservation.pool)
       ) {
         this.finishQueuedAbort(jobId, status.sessionId, 'queue_shutdown');
         aborted.push(jobId);

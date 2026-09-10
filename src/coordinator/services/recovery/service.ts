@@ -14,8 +14,9 @@ import type { ProviderBindingFailure } from '../../../providers/contracts/bindin
 import type {
   JobAdmissionPort,
   JobLaunchRecoveryPort,
-  LaunchPool,
+  LaunchPermit,
   QueuedHandle,
+  SettlementRefusalRecorder,
 } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
 import type { SessionJobClaimReleaseResult, SessionRecoveryPort } from '../../../sessions/contracts.js';
@@ -48,6 +49,10 @@ import {
   finalizeInterruptedDurableRecovery,
   RecoveryOwnershipReleaseError,
 } from './interrupted-finalizer.js';
+import type { Database } from '../../../store/db.js';
+import type { RecoveryQuarantineWrite } from '../../../recovery/containment.js';
+import { COORDINATOR_JOB_RECOVERY_BOUNDARY } from '../../../recovery/source-registry.js';
+import { coordinatorJobRecoverySubjectFor } from './coordinator-job-source.js';
 
 const carrierDetachedRecoveryClockScope: unique symbol = Symbol('coral.recovery.carrier-detached');
 
@@ -70,10 +75,35 @@ export interface RecoveryServiceDeps {
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   launchRecovery: JobLaunchRecoveryPort;
   providerRegistry: ProviderBindingCatalog;
-  jobPools: Map<string, LaunchPool>;
   launchOrchestrator: RecoveredJobLifecyclePort;
   childPrincipalRegistry: ChildPrincipalRegistry;
   parentPrincipal: Principal;
+}
+
+export function createCoordinatorJobSettlementRefusalRecorder(
+  deps: Readonly<{
+    getDb(): Database;
+    isBoundaryRegistered(boundary: string): boolean;
+    upsert(write: RecoveryQuarantineWrite): boolean;
+  }>,
+): SettlementRefusalRecorder {
+  return {
+    record(input): boolean {
+      if (!deps.isBoundaryRegistered(COORDINATOR_JOB_RECOVERY_BOUNDARY)) {
+        throw new Error(`${COORDINATOR_JOB_RECOVERY_BOUNDARY} is not registered.`);
+      }
+      const subject = coordinatorJobRecoverySubjectFor(deps.getDb(), input.jobId);
+      if (subject === null) return false;
+      return deps.upsert({
+        boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY,
+        subject,
+        state: 'active',
+        stage: 'settle',
+        errorMessage: input.failure,
+        detail: `Job settlement refused after ${input.cause}.`,
+      });
+    },
+  };
 }
 
 export class RecoveryService {
@@ -288,7 +318,7 @@ export class RecoveryService {
       sessionManager: this.deps.sessionManager,
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
-      jobPools: this.deps.jobPools,
+      launchPermit: null,
     });
   }
 
@@ -299,17 +329,12 @@ export class RecoveryService {
 
     let queuedHandle: QueuedHandle | null = null;
     try {
-      this.deps.jobPools.set(jobId, pool);
       queuedHandle = this.deps.launchRecovery.restoreQueuedLaunch(
         jobId,
         launchRecord.provider,
         launchRecord.owner,
         pool,
       );
-      this.deps.abortRegistry.register(jobId, () => {
-        queuedHandle?.cancel();
-      });
-
       this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
       this.deps.launchOrchestrator.runRecoveredQueuedJob(
@@ -322,7 +347,7 @@ export class RecoveryService {
 
       return jobId;
     } catch (error: unknown) {
-      this.cleanupRecoveryRegistration(jobId, pool, queuedHandle);
+      this.cleanupRecoveryRegistration(jobId, queuedHandle);
       throw error;
     }
   }
@@ -357,7 +382,7 @@ export class RecoveryService {
       sessionManager: this.deps.sessionManager,
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
-      jobPools: this.deps.jobPools,
+      launchPermit: null,
     });
   }
 
@@ -372,12 +397,12 @@ export class RecoveryService {
     if (!isDurableCliRuntime(runtimeRecord)) {
       throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
     }
+    let permit: LaunchPermit | null = null;
     try {
-      this.deps.jobPools.set(jobId, pool);
-      this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
+      permit = this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
       this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
     } catch (error: unknown) {
-      this.cleanupRecoveryRegistration(jobId, pool);
+      this.cleanupRecoveryRegistration(jobId, null, permit);
       throw error;
     }
 
@@ -387,20 +412,24 @@ export class RecoveryService {
       cleanup: () => {
         if (cleaned) return;
         cleaned = true;
-        this.cleanupRecoveryRegistration(jobId, pool);
+        this.cleanupRecoveryRegistration(jobId, null, permit);
       },
     };
   }
 
-  private cleanupRecoveryRegistration(jobId: string, pool: LaunchPool, queuedHandle: QueuedHandle | null = null): void {
+  private cleanupRecoveryRegistration(
+    jobId: string,
+    queuedHandle: QueuedHandle | null = null,
+    permit: LaunchPermit | null = null,
+  ): void {
     try {
       if (queuedHandle !== null) {
         void queuedHandle.waitForPermit().catch(() => undefined);
-        queuedHandle.cancel();
+        const cancellation = queuedHandle.cancel();
+        if (cancellation.kind === 'admitted') this.deps.launchAdmission.releaseLaunch(cancellation.permit);
       }
       this.deps.abortRegistry.remove(jobId);
-      this.deps.jobPools.delete(jobId);
-      this.deps.launchAdmission.releaseLaunch(jobId, pool);
+      if (permit !== null) this.deps.launchAdmission.releaseLaunch(permit);
     } catch (error: unknown) {
       throw new RecoveryOwnershipReleaseError(jobId, error);
     }
@@ -411,7 +440,7 @@ export class RecoveryService {
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options: TerminalWriteOptions & { pool: LaunchPool },
+    options: TerminalWriteOptions & { permit: LaunchPermit },
   ): SessionJobClaimReleaseResult {
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
@@ -431,11 +460,9 @@ export class RecoveryService {
     }
     const releaseResult = this.deps.sessionManager.releaseJob(sessionId, jobId);
 
-    const pool = this.deps.jobPools.get(jobId) ?? options.pool;
     try {
       this.deps.abortRegistry.remove(jobId);
-      this.deps.jobPools.delete(jobId);
-      this.deps.launchAdmission.releaseLaunch(jobId, pool);
+      this.deps.launchAdmission.releaseLaunch(options.permit);
     } catch (error: unknown) {
       throw new RecoveryOwnershipReleaseError(jobId, error);
     }

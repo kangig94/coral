@@ -589,6 +589,7 @@ describe('interrupted recovery settlement ownership', () => {
         sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
         abortRegistry,
         launchAdmission,
+        launchPermit,
       },
     };
   }

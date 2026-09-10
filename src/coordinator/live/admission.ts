@@ -7,6 +7,7 @@ import {
   type PendingDurableLaunch,
   type PendingDurableLaunchIdentity,
   type SpawnDurableJobOptions,
+  createDurableTaskAbortRegistry,
   spawnDurableJobTransport,
 } from './durable-transport.js';
 import {
@@ -123,11 +124,17 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     curate: { active: new Map(), queued: [] },
   };
   private readonly operationBindings = new Map<string, ProviderOperationBindingState>();
+  private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
   private readonly runtime: Runtime;
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
+    this.internalAbortRegistry = createDurableTaskAbortRegistry(options.runtime);
+  }
+
+  getInternalAbortRegistry(): ReturnType<typeof createDurableTaskAbortRegistry> {
+    return this.internalAbortRegistry;
   }
 
   get active(): number {
@@ -286,16 +293,18 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       return this.rejectedPermitPromise(error);
     }
 
-    return spawnDurableJobTransport({
+    const transport = {
       runtime: this.runtime,
       options,
       pool,
-      internalPermit,
       cleanupHandles: this.cleanupHandles,
       cleanupRetentions: this.cleanupRetentions,
       pendingLaunches: this.pendingDurableLaunches,
-      releaseLaunch: (permit) => this.releaseLaunch(permit),
-    });
+      releaseLaunch: (permit: LaunchPermit) => this.releaseLaunch(permit),
+    };
+    return internalPermit === null
+      ? spawnDurableJobTransport({ ...transport, internalPermit })
+      : spawnDurableJobTransport({ ...transport, internalPermit, abortRegistry: this.internalAbortRegistry });
   }
 
   restoreActiveLaunch(

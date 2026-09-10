@@ -368,6 +368,7 @@ describe('bound-provider execution architecture', () => {
       progressStore: progressStore as never,
       sessionManager: sessionManager as never,
       launchAdmission: launchCoordinator,
+      providerOperationBinding: launchCoordinator,
       durableSpawner: {
         async spawnDurableJob(options: { exactEnv?: Record<string, string> }) {
           observedCliEnv = options.exactEnv;
@@ -379,6 +380,7 @@ describe('bound-provider execution architecture', () => {
       coordinatorCommit: coordinatorCommit as never,
       backendNamespace: 'fixture-backend',
       bundleHash: 'fixture-bundle',
+      settlementRefusalRecorder: { record: () => true },
       terminalMaterializer: {
         recordProviderTerminal(_store: unknown, event: unknown, metadata: unknown) {
           terminalCalls.push({ event, metadata });

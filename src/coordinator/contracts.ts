@@ -4,7 +4,7 @@ import type {
   ProviderSessionLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
-import type { LaunchCoordinatorPort } from '../jobs/contracts/admission.js';
+import type { LaunchCoordinatorPort, SettlementRefusalRecorder } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
@@ -63,6 +63,7 @@ export type ExecutionServiceDeps = {
   bundleHash?: string;
   backendNamespace: string;
   launchCoordinator: CoordinatorLaunchCoordinator;
+  settlementRefusalRecorder: SettlementRefusalRecorder;
   eventBus: TypedEventBus;
   providerRegistry: ProviderBindingCatalog;
   childPrincipalRegistry: ChildPrincipalRegistry;

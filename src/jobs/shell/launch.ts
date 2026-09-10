@@ -41,6 +41,7 @@ import type {
   LaunchPool,
   QueuedHandle,
   SettlementRefusal,
+  SettlementRefusalRecorder,
 } from '../contracts/admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
@@ -156,13 +157,7 @@ export interface LaunchOrchestratorDeps {
   coordinatorCommit: CommitEventsFn;
   backendNamespace: string;
   bundleHash: string;
-  settlementRefusalRecorder: {
-    record(input: Readonly<{
-      jobId: string;
-      cause: 'terminal-persist-failed' | 'claim-release-failed';
-      failure: string;
-    }>): boolean;
-  };
+  settlementRefusalRecorder: SettlementRefusalRecorder;
   getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
   /**
    * Tries to hand an app-server operation to a live, detached provider proxy set before running it in this
@@ -715,7 +710,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       // Registered before placement so the same signal governs either owner. Local execution observes the
       // signal directly; durable publication rechecks an already-aborted signal at insertion and records later
       // stops in the saga before the proxy can act on them.
-      this.deps.abortRegistry.register(input.jobId, () => this.deps.operations?.stop(input.jobId, 'signal_abort'));
+      this.registerLaunchAbort(input.jobId, input.admission);
       if (this.deps.abortRegistry.getSignal(input.jobId) === null) {
         throw new Error(`Abort registration produced no signal for committed job ${input.jobId}.`);
       }
@@ -861,6 +856,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     if (sessionId === null) {
       throw new Error(`Recovered queued job ${jobId} requires a provider session id.`);
     }
+    this.registerLaunchAbort(jobId, admission);
     const signal = abortRegistry.getSignal(jobId);
     if (!signal) {
       this.releaseAdmissionReservation(admission);
@@ -1687,6 +1683,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
+  }
+
+  private registerLaunchAbort(jobId: string, admission: AcceptedAdmission): void {
+    this.deps.abortRegistry.register(
+      jobId,
+      () => this.deps.operations?.stop(jobId, 'signal_abort'),
+      () => this.releaseAdmissionReservation(admission),
+    );
   }
 
   private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {

@@ -11,9 +11,10 @@ import {
 import type { RecoveryQuarantineClaim, RecoveryQuarantineReclaim } from './quarantine.js';
 
 export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY = 'provider-operation-unreadable';
+export const COORDINATOR_JOB_RECOVERY_BOUNDARY = 'coordinator-job-recovery';
 
 export const repeatableRecoveryBoundaryIds = [
-  'coordinator-job-recovery',
+  COORDINATOR_JOB_RECOVERY_BOUNDARY,
   'discussion-source',
   'discussion-candidate',
   'session-projection',

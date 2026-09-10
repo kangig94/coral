@@ -209,6 +209,7 @@ describe('coordinator continuity lifecycle integration', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       bundleHash: 'bundle-test',
       launchCoordinator,
+      settlementRefusalRecorder: { record: () => true },
       eventBus,
       providerRegistry,
       pluginRegistry: { discoverPluginRoot: () => null },
@@ -505,6 +506,12 @@ describe('coordinator continuity lifecycle integration', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
+    const permit = launchCoordinator.restoreActiveLaunch(
+      preserveJobId,
+      'codex',
+      { kind: 'provider-session', id: preservedSession.sessionId },
+      'default',
+    );
 
     service.completeRecoveredJob(
       preserveJobId,
@@ -515,7 +522,7 @@ describe('coordinator continuity lifecycle integration', () => {
         outcome: { kind: 'completed' },
       },
       'completed',
-      { pool: 'default' },
+      { permit },
     );
 
     expect(sessionManager.get('codex', preservedSession.sessionId)).toMatchObject({

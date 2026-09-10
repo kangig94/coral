@@ -154,6 +154,7 @@ function createHarness(
       sessionManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
       abortRegistry: { remove },
       launchAdmission: launchCoordinator,
+      launchPermit,
     } as never,
   };
 }

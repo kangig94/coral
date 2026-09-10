@@ -1,4 +1,9 @@
-import type { AbortHoldDisposition, AbortResult, JobAbortRegistryPort } from '../contracts/abort-registry.js';
+import type {
+  AbortHoldDisposition,
+  AbortResult,
+  AbortSettledCallback,
+  JobAbortRegistryPort,
+} from '../contracts/abort-registry.js';
 import type { IdPort } from '../../runtime/ports.js';
 
 export class AbortRegistry implements JobAbortRegistryPort {
@@ -8,6 +13,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
   }
 
   private readonly controllers = new Map<string, AbortController>();
+  private readonly abortSettledCallbacks = new Map<string, AbortSettledCallback>();
   private readonly holds = new Map<
     string,
     Readonly<{
@@ -18,12 +24,14 @@ export class AbortRegistry implements JobAbortRegistryPort {
   /** An abandoned job must remain addressable until its terminal phase is persisted. */
   private readonly abandonments = new Map<string, NonNullable<AbortResult['abandoned']>[number]>();
 
-  register(jobId: string = this.ids.uuid(), onAbort?: () => void): string {
+  register(jobId: string = this.ids.uuid(), onAbort?: () => void, onAbortSettled?: AbortSettledCallback): string {
     const controller = new AbortController();
     if (onAbort) {
       controller.signal.addEventListener('abort', onAbort);
     }
     this.controllers.set(jobId, controller);
+    if (onAbortSettled === undefined) this.abortSettledCallbacks.delete(jobId);
+    else this.abortSettledCallbacks.set(jobId, onAbortSettled);
     this.holds.delete(jobId);
     this.abandonments.delete(jobId);
     return jobId;
@@ -39,6 +47,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
 
   releaseHold(jobId: string): void {
     this.holds.delete(jobId);
+    if (this.controllers.get(jobId)?.signal.aborted === true) this.settleAbort(jobId);
   }
 
   getSignal(jobId: string): AbortSignal | null {
@@ -78,6 +87,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
           const record = { jobId, reason: disposition.reason, nextStep: disposition.nextStep };
           this.abandonments.set(jobId, record);
           abandoned.push(record);
+          this.settleAbort(jobId);
         } else {
           refused.push({ jobId, reason: disposition.reason, nextStep: disposition.nextStep });
         }
@@ -87,6 +97,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
       const hold = this.holds.get(jobId);
       if (hold === undefined) {
         aborted.push(jobId);
+        this.settleAbort(jobId);
       } else {
         refused.push(hold.refusal);
       }
@@ -102,7 +113,15 @@ export class AbortRegistry implements JobAbortRegistryPort {
   /** Call after terminal phase is persisted. */
   remove(jobId: string): void {
     this.abandonments.delete(jobId);
+    this.abortSettledCallbacks.delete(jobId);
     this.controllers.delete(jobId);
     this.holds.delete(jobId);
+  }
+
+  private settleAbort(jobId: string): void {
+    const callback = this.abortSettledCallbacks.get(jobId);
+    if (callback === undefined) return;
+    this.abortSettledCallbacks.delete(jobId);
+    callback();
   }
 }

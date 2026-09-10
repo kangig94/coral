@@ -96,7 +96,6 @@ import type {
   UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
-import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { ProviderHostAdministrationAuthority, ProviderHostManager } from '../live/provider-hosts/index.js';
 import {
@@ -111,6 +110,7 @@ import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
+  COORDINATOR_JOB_RECOVERY_BOUNDARY,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -120,6 +120,7 @@ import {
   createCoordinatorJobRecoveryRetryPlan,
   createUnreadableProviderOperationRetryPlan,
 } from '../services/recovery/index.js';
+import { createCoordinatorJobSettlementRefusalRecorder } from '../services/recovery/service.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
 import {
   createRetentionReleasePairRetryPlan,
@@ -555,7 +556,7 @@ export function createCoordinatorCore(
     const projectRoot = canonicalizeWorkDir(rawProjectRoot, runtime.env.cwd());
     return createSystemInvocationContext(projectRoot, 'recovery-retry');
   };
-  recoverySources.register('coordinator-job-recovery', (subject, signal, quarantine) =>
+  recoverySources.register(COORDINATOR_JOB_RECOVERY_BOUNDARY, (subject, signal, quarantine) =>
     createCoordinatorJobRecoveryRetryPlan(recoveryDb(), subject, signal, quarantine),
   );
   recoverySources.register('discussion-source', (subject, signal) =>
@@ -603,6 +604,11 @@ export function createCoordinatorCore(
     createUnreadableProviderOperationRetryPlan(recoveryDb(), subject, adoptRepairedProviderOperation),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
+  const settlementRefusalRecorder = createCoordinatorJobSettlementRefusalRecorder({
+    getDb: recoveryDb,
+    isBoundaryRegistered: (boundary) => recoverySources.has(boundary),
+    upsert: (write) => getRecoveryQuarantineStore().upsert(write),
+  });
   const recoveryQuarantineRetry = createRecoveryQuarantineRetryService({
     instanceId: world.identity.instanceId,
     ids: runtime.ids,
@@ -650,6 +656,7 @@ export function createCoordinatorCore(
     runtime,
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
+    settlementRefusalRecorder,
     createExecutionService: defaults.createExecutionService,
     onProviderProxyLifecycleFatal: (error) => {
       world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
@@ -669,7 +676,7 @@ export function createCoordinatorCore(
       ? { discardSessionArtifacts: options.discardSessionArtifacts }
       : {}),
   });
-  const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+  const internalJobAbortRegistry = world.launchCoordinator.getInternalAbortRegistry();
 
   const control = createCoordinatorControl({
     world,

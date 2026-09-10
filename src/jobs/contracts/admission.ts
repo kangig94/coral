@@ -83,6 +83,15 @@ export type SettlementRefusal =
     }>
   | Readonly<{ kind: 'settlement-refused'; cause: 'claim-already-reassigned' }>;
 
+/** Persists durable recovery work left behind by a refused job settlement. */
+export interface SettlementRefusalRecorder {
+  record(input: Readonly<{
+    jobId: string;
+    cause: 'terminal-persist-failed' | 'claim-release-failed';
+    failure: string;
+  }>): boolean;
+}
+
 export interface JobAdmissionPort {
   requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult;
   releaseLaunch(permit: LaunchPermit): LaunchRelease;

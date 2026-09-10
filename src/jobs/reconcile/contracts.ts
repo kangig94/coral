@@ -3,7 +3,7 @@ import type { JobPhase } from '../phase.js';
 import type { TerminalWriteOptions } from '../contracts/job-store.js';
 import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { LaunchPool } from '../contracts/admission.js';
+import type { LaunchPermit } from '../contracts/admission.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
@@ -80,6 +80,6 @@ export interface RecoveryCapableService {
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options: TerminalWriteOptions & { pool: LaunchPool },
+    options: TerminalWriteOptions & { permit: LaunchPermit },
   ): SessionJobClaimReleaseResult;
 }

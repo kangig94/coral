@@ -158,6 +158,7 @@ function createUnreadableStartupHarness() {
     runtime,
     bundleHash: namespace,
     backendNamespace: namespace,
+    settlementRefusalRecorder: { record: () => true },
     onProviderProxyLifecycleFatal: (error) => {
       throw error;
     },
@@ -240,6 +241,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
     runtime,
     bundleHash: namespace,
     backendNamespace: namespace,
+    settlementRefusalRecorder: { record: () => true },
     onProviderProxyLifecycleFatal: (error) => {
       throw error;
     },
@@ -420,6 +422,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: namespace,
       backendNamespace: namespace,
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -483,6 +486,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: namespace,
       backendNamespace: namespace,
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -656,6 +660,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-assembly-test',
       backendNamespace: 'execution-services-assembly-test',
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -699,6 +704,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-stored-fault-test',
       backendNamespace: 'execution-services-stored-fault-test',
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -793,6 +799,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-fresh-publication-test',
       backendNamespace: 'execution-services-fresh-publication-test',
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -998,6 +1005,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-test',
       backendNamespace: 'execution-services-test',
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -1116,6 +1124,7 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-inheritance-test',
       backendNamespace: 'execution-services-inheritance-test',
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },
@@ -1190,6 +1199,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       runtime,
       bundleHash: namespace,
       backendNamespace: namespace,
+      settlementRefusalRecorder: { record: () => true },
       onProviderProxyLifecycleFatal: (error) => {
         throw error;
       },

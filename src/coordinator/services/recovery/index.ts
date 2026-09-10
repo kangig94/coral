@@ -72,6 +72,7 @@ import type {
   RecoverySubject,
 } from '../../../recovery/containment.js';
 import {
+  COORDINATOR_JOB_RECOVERY_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryPolicy,
   type RecoverySourceFactoryPlan,
@@ -924,9 +925,9 @@ export function createRecoveryCoordinator(
   };
 
   const deleteCoordinatorRecoveryQuarantine = (jobId: string): boolean => {
-    const record = quarantine.read('coordinator-job-recovery', jobId);
+    const record = quarantine.read(COORDINATOR_JOB_RECOVERY_BOUNDARY, jobId);
     if (record === null) return true;
-    return quarantine.delete({ boundary: 'coordinator-job-recovery', subject: record.subject });
+    return quarantine.delete({ boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY, subject: record.subject });
   };
 
   const settleFault = (

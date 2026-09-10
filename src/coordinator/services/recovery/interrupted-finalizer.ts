@@ -4,8 +4,6 @@ import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { JobStatus, JobTerminalInput } from '../../../jobs/records.js';
 import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
-import type { LaunchPool } from '../../../jobs/contracts/admission.js';
-import type { JobAdmissionPort } from '../../../jobs/contracts/admission.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
@@ -19,6 +17,7 @@ import {
   appendSessionInterruptedTerminalInCommit,
 } from '../terminal-materializer.js';
 import { appendJobTerminalRecorded } from '../../../jobs/terminal/recording.js';
+import type { JobAdmissionPort, LaunchPermit } from '../../../jobs/contracts/admission.js';
 import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
 import type { PerformedDurableRecovery, PerformedInterruptedRecovery } from './interrupted-performer.js';
 
@@ -48,7 +47,7 @@ type InterruptedFinalizerDeps = Readonly<{
   sessionManager: Pick<SessionRecoveryPort, 'recordArtifactHandleAtomic' | 'finalizeJobContinuityAtomic'>;
   abortRegistry: JobAbortRegistryPort;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
-  jobPools: Map<string, LaunchPool>;
+  launchPermit: LaunchPermit | null;
 }>;
 
 type RecoveryCommitPlan = Pick<
@@ -125,11 +124,9 @@ function exportResultAndReleaseOwnership(
   } catch (error: unknown) {
     backendLog.warn(`Writing terminal artifact failed for ${plan.launchRecord.jobId}: ${String(error)}`);
   }
-  const pool = deps.jobPools.get(plan.launchRecord.jobId) ?? plan.launchRecord.pool;
   try {
     deps.abortRegistry.remove(plan.launchRecord.jobId);
-    deps.jobPools.delete(plan.launchRecord.jobId);
-    deps.launchAdmission.releaseLaunch(plan.launchRecord.jobId, pool);
+    if (deps.launchPermit !== null) deps.launchAdmission.releaseLaunch(deps.launchPermit);
   } catch (error: unknown) {
     throw new RecoveryOwnershipReleaseError(plan.launchRecord.jobId, error);
   }

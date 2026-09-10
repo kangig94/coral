@@ -132,12 +132,14 @@ describe('workflow replacement launch atomicity', () => {
       progressStore,
       sessionManager,
       launchAdmission,
+      providerOperationBinding: launchAdmission,
       durableSpawner: {} as never,
       providerRegistry,
       runtime,
       coordinatorCommit,
       backendNamespace: 'test-ns',
       bundleHash: 'test-bundle',
+      settlementRefusalRecorder: { record: () => true },
       terminalMaterializer: { recordProviderTerminal: vi.fn() },
     });
     const request: ProviderRequest = {

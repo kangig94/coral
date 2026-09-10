@@ -6,6 +6,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
 import type { AbortHoldDisposition } from '../../jobs/contracts/abort-registry.js';
+import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type {
@@ -38,6 +39,10 @@ import type {
 } from '../../providers/cli-runner.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
+
+export function createDurableTaskAbortRegistry(runtime: Pick<Runtime, 'ids'>): AbortRegistry {
+  return new AbortRegistry(runtime.ids);
+}
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
 const durableProcessCleanupClockScope = Symbol('durable-process-cleanup');
 declare const durableContainmentAbsenceBrand: unique symbol;
@@ -261,18 +266,37 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   onDurableProcessIdentity?: DurableProcessIdentityCallback;
 };
 
-export async function spawnDurableJobTransport(params: {
+type SpawnDurableJobTransportParams = {
   runtime: Runtime;
   options: SpawnDurableJobOptions;
   pool: LaunchPool;
-  internalPermit: LaunchPermit | null;
   cleanupHandles: Map<symbol, DurableProcessCleanup>;
   cleanupRetentions: Map<DurableProcessCleanup, DurableProcessRetention>;
   pendingLaunches: Set<PendingDurableLaunch>;
   releaseLaunch: (permit: LaunchPermit) => LaunchRelease;
-}): Promise<CliExecResult> {
+} &
+  (Readonly<{ internalPermit: null }> | Readonly<{ internalPermit: LaunchPermit; abortRegistry: AbortRegistry }>);
+
+export async function spawnDurableJobTransport(params: SpawnDurableJobTransportParams): Promise<CliExecResult> {
   const { runtime, options, pool, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
   const { internalPermit } = params;
+  const abortRegistry = internalPermit === null ? null : params.abortRegistry;
+  const transportAbortController = internalPermit === null ? null : new AbortController();
+  const signal = transportAbortController?.signal ?? options.signal;
+  let forwardExternalAbort: (() => void) | null = null;
+  if (internalPermit !== null && transportAbortController !== null && abortRegistry !== null) {
+    abortRegistry.register(
+      internalPermit.jobId,
+      () => transportAbortController.abort(),
+      () => releaseLaunch(internalPermit),
+    );
+    if (options.signal?.aborted === true) {
+      transportAbortController.abort(options.signal.reason);
+    } else if (options.signal !== undefined) {
+      forwardExternalAbort = () => transportAbortController.abort(options.signal?.reason);
+      options.signal.addEventListener('abort', forwardExternalAbort, { once: true });
+    }
+  }
   let abortHandler: (() => void) | null = null;
   let abortedBySignal = false;
   let cleanupKey: symbol | null = null;
@@ -357,6 +381,7 @@ export async function spawnDurableJobTransport(params: {
       cleanupRetryInterval = null;
     }
     containmentAbsenceConfirmed = true;
+    if (internalPermit !== null) abortRegistry?.releaseHold(internalPermit.jobId);
     resolveContainmentAbsence();
     lastUnsettledDetail = null;
     return { kind: 'released' };
@@ -445,6 +470,14 @@ export async function spawnDurableJobTransport(params: {
 
   const enterContainmentHold = (reason: string): void => {
     providerResultHeld = true;
+    if (internalPermit !== null) {
+      abortRegistry?.hold(
+        internalPermit.jobId,
+        reason,
+        `Run coral-cli abort jobs ${internalPermit.jobId} again to abandon the durable containment hold.`,
+        operatorControl.abandon,
+      );
+    }
     publishContainmentStatus({
       kind: 'held',
       reason,
@@ -653,7 +686,7 @@ export async function spawnDurableJobTransport(params: {
   };
 
   try {
-    if (options.signal?.aborted) {
+    if (signal?.aborted) {
       return { stdout: '', stderr: '', code: null, aborted: true };
     }
 
@@ -670,7 +703,7 @@ export async function spawnDurableJobTransport(params: {
       onWrapperIdentified: publishWrapperSpawned,
       onSpawned: publishSpawned,
     };
-    if (options.signal) {
+    if (signal) {
       abortHandler = () => {
         if (abortedBySignal) return;
         abortedBySignal = true;
@@ -682,8 +715,8 @@ export async function spawnDurableJobTransport(params: {
         operatorControl.retry();
       };
 
-      if (options.signal.aborted) abortHandler();
-      else options.signal.addEventListener('abort', abortHandler, { once: true });
+      if (signal.aborted) abortHandler();
+      else signal.addEventListener('abort', abortHandler, { once: true });
     }
     let durable: DurableLaunchResult;
     try {
@@ -814,11 +847,13 @@ export async function spawnDurableJobTransport(params: {
     }
   } finally {
     if (pendingWrapperObligation === null) releasePendingLaunch();
-    if (abortHandler && options.signal) {
-      options.signal.removeEventListener('abort', abortHandler);
+    if (abortHandler && signal) {
+      signal.removeEventListener('abort', abortHandler);
     }
+    if (forwardExternalAbort !== null) options.signal?.removeEventListener('abort', forwardExternalAbort);
     if (internalPermit !== null) {
       releaseLaunch(internalPermit);
+      abortRegistry?.remove(internalPermit.jobId);
     }
   }
 }

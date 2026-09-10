@@ -457,6 +457,7 @@ function composeProductionStartup(
     runtime,
     bundleHash: 'provider-proxy-startup-integration',
     backendNamespace: 'provider-proxy-startup-integration',
+    settlementRefusalRecorder: { record: () => true },
     onProviderProxyLifecycleFatal: fatals,
     createExecutionService: (() => {
       throw new Error('production startup fixture unexpectedly created an execution service');

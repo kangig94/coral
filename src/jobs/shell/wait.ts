@@ -16,7 +16,7 @@ import {
   type WaitStreamOnceResult,
   type WaitStreamRequest,
 } from '../wait.js';
-import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
+import type { JobQueueReadPort } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import { queuedProgressTiming } from '../progress-timing.js';
 import type { TimePort } from '../../infra/port-types.js';
@@ -211,7 +211,6 @@ export interface WaitCoordinatorDeps {
   sessionManager: SessionJobReadPort;
   launchQueue: JobQueueReadPort;
   eventBus: JobEventBus;
-  jobPools: ReadonlyMap<string, LaunchPool>;
   time: TimePort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobEvents: (jobId: string) => JobEvent[];
@@ -495,7 +494,7 @@ export class WaitCoordinator {
   }
 
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const { launchQueue, jobPools, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
+    const { launchQueue, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
@@ -535,12 +534,12 @@ export class WaitCoordinator {
 
         if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
           emittedQueued.add(jobId);
-          const pool = jobPools.get(jobId) ?? 'default';
+          const reservation = launchQueue.reservationFor(jobId);
           const queued = {
             type: 'queued',
             jobId,
-            queuePosition: launchQueue.queuePosition(jobId, pool) ?? 0,
-            runningJobIds: launchQueue.getActiveJobIds(pool),
+            queuePosition: reservation?.kind === 'queued' ? reservation.position : 0,
+            runningJobIds: reservation === null ? [] : launchQueue.getActiveJobIds(reservation.pool),
             timing: queuedProgressTiming(status, this.deps.time.now()),
           } as const;
           if (status.jobKind === 'provider') {

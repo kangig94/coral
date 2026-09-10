@@ -225,10 +225,6 @@ function queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
   return launchCoordinator.queueDepth(pool);
 }
 
-function releaseLaunch(permit: LaunchPermit): void {
-  launchCoordinator.releaseLaunch(permit);
-}
-
 function restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool): LaunchPermit {
   return launchCoordinator.restoreActiveLaunch(
     jobId,
@@ -334,6 +330,7 @@ function createService(
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     launchCoordinator,
+    settlementRefusalRecorder: { record: () => true },
     eventBus,
     providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
@@ -781,7 +778,6 @@ describe('ExecutionService', () => {
     terminateAll();
     for (const jobId of createdJobIds) {
       cancelQueued(jobId);
-      releaseLaunch(jobId);
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
     closeServiceStoreDatabases();
@@ -1347,9 +1343,6 @@ describe('ExecutionService', () => {
     );
 
     const service = createService(ctx);
-    for (const jobId of getActiveJobIds()) {
-      releaseLaunch(jobId);
-    }
     expect(queueDepth()).toBe(0);
     const activeJobIds = await occupyProviderSlots(service, ctx, 'codex');
 
@@ -2514,7 +2507,7 @@ describe('ExecutionService', () => {
           session.sessionId,
           { content: 'recovered done', durationMs: 0, outcome: { kind: 'completed' } },
           'completed',
-          { pool: 'default' },
+          { permit: restoredPermit },
         );
 
         const status = progressStore.readStatus(jobId);
@@ -3207,7 +3200,6 @@ describe('ExecutionService adversarial', () => {
     terminateAll();
     for (const jobId of createdJobIds) {
       cancelQueued(jobId);
-      releaseLaunch(jobId);
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
     closeServiceStoreDatabases();

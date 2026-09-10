@@ -31,7 +31,7 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import type { LaunchPermit, LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
@@ -129,10 +129,6 @@ function _queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
   return launchCoordinator.queueDepth(pool);
 }
 
-function releaseLaunch(permit: LaunchPermit): void {
-  launchCoordinator.releaseLaunch(permit);
-}
-
 function createService(
   ctx: InvocationContext,
   options: {
@@ -155,6 +151,7 @@ function createService(
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     launchCoordinator,
+    settlementRefusalRecorder: { record: () => true },
     eventBus,
     providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
@@ -665,7 +662,6 @@ describe('ExecutionService abort', () => {
     terminateAll();
     for (const jobId of createdJobIds) {
       cancelQueued(jobId);
-      releaseLaunch(jobId);
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
     for (const jobId of createdJobIds) {
