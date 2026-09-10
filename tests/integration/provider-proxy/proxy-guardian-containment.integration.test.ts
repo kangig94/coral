@@ -80,6 +80,7 @@ import {
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
@@ -810,6 +811,16 @@ async function completeCapacityLocalHandoff(
     }
   };
   const sessionId = randomUUID();
+  const binding = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+  const admission = binding.requestLaunch(
+    operation.jobId,
+    PREPARED.provider,
+    { kind: 'provider-session', id: sessionId },
+    'default',
+  );
+  if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
+  const preparedBinding = binding.prepareProviderOperationBinding(admission.permit, operation);
+  if (preparedBinding.kind !== 'prepared') throw new Error('expected prepared operation binding');
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => ({
       getDb: () => db,
@@ -844,6 +855,8 @@ async function completeCapacityLocalHandoff(
     authorityFor: () => capacityAuthority,
     startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: capacityAuthority }) },
     registry,
+    binding,
+    releaseStartupOwnership: () => false,
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
     completeLocalRecovery: () => {

@@ -418,7 +418,6 @@ export type ProviderOperationActivationAck = Readonly<z.infer<typeof providerOpe
 export type ProviderOperationAfterReleaseDirective = Readonly<
   z.infer<typeof providerOperationAfterReleaseDirectiveSchema>
 >;
-export type ProviderOperationControlIntent = Readonly<z.infer<typeof providerOperationControlIntentSchema>>;
 export type ProviderOperationNeverStartedDirective = Readonly<
   z.infer<typeof providerOperationNeverStartedDirectiveSchema>
 >;

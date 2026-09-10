@@ -134,6 +134,7 @@ import { jobInCallerScope } from '../../jobs/scope.js';
 import type { ProviderProxySetBooleanOperatorExitResult } from '../services/provider-proxy-set/index.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
+export const LAUNCH_PERMIT_REPORT_AGE_MS = 15 * 60 * 1000;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
 type KbReadRpcPort = Pick<
@@ -535,8 +536,7 @@ export function createCoordinatorCore(
     kind: 'refused',
     reason: 'the coordinator execution services are not composed',
   });
-  let releaseUnreadableProviderOperationStartupOwnership = (_recordKey: string): Promise<number> =>
-    Promise.resolve(0);
+  let releaseUnreadableProviderOperationStartupOwnership = (_recordKey: string): Promise<number> => Promise.resolve(0);
   const createSystemInvocationContext = (
     projectRoot: CanonicalWorkDir,
     credentialId: string,
@@ -664,8 +664,7 @@ export function createCoordinatorCore(
     },
   });
   adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
-  releaseUnreadableProviderOperationStartupOwnership =
-    services.releaseUnreadableProviderOperationStartupOwnership;
+  releaseUnreadableProviderOperationStartupOwnership = services.releaseUnreadableProviderOperationStartupOwnership;
 
   const discuss = createDiscussRuntime({
     world,
@@ -1241,6 +1240,7 @@ export function createCoordinatorCore(
         const systemProviderScope = world.systemProviderScope;
 
         let activeJobs = 0;
+        let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
         let carrierDiagnostics: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
         if (storeServices === null) {
           carrierDiagnostics = {
@@ -1281,6 +1281,9 @@ export function createCoordinatorCore(
             const recoveryDefectJobs = observations.filter(
               ({ observation }) => observation.defect === 'local-unknown-after-recovery-decision',
             ).length;
+            carrierLivenessByJobId = new Map(
+              observations.map(({ jobId, observation }) => [jobId, observation.liveness]),
+            );
             activeJobs = liveJobs + unknownJobs;
             carrierDiagnostics = { coverage: 'complete', liveJobs, unknownJobs, recoveryDefectJobs };
           } catch {
@@ -1309,6 +1312,7 @@ export function createCoordinatorCore(
           providerProxyDispositionSkips?: NonNullable<
             NonNullable<HealthSnapshot['diagnostics']>['providerProxyDispositionSkips']
           >;
+          launchPermits?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['launchPermits']>;
         } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
@@ -1327,12 +1331,22 @@ export function createCoordinatorCore(
         if (providerProxyDispositionSkips.length > 0) {
           diagnostics.providerProxyDispositionSkips = [...providerProxyDispositionSkips];
         }
+        const launchPermits = world.launchCoordinator
+          .activeLaunchPermits()
+          .filter(
+            ({ jobId, heldForMs }) =>
+              heldForMs > LAUNCH_PERMIT_REPORT_AGE_MS || carrierLivenessByJobId.get(jobId) !== 'live',
+          );
+        if (launchPermits.length > 0) {
+          diagnostics.launchPermits = launchPermits;
+        }
         const hasDiagnostics =
           diagnostics.carriers !== undefined ||
           diagnostics.mutationBlocked !== undefined ||
           diagnostics.consumerStuck !== undefined ||
           diagnostics.providerProxySets !== undefined ||
-          diagnostics.providerProxyDispositionSkips !== undefined;
+          diagnostics.providerProxyDispositionSkips !== undefined ||
+          diagnostics.launchPermits !== undefined;
 
         return {
           status: coarseStatus,

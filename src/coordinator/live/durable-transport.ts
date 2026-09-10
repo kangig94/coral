@@ -274,11 +274,10 @@ type SpawnDurableJobTransportParams = {
   cleanupRetentions: Map<DurableProcessCleanup, DurableProcessRetention>;
   pendingLaunches: Set<PendingDurableLaunch>;
   releaseLaunch: (permit: LaunchPermit) => LaunchRelease;
-} &
-  (Readonly<{ internalPermit: null }> | Readonly<{ internalPermit: LaunchPermit; abortRegistry: AbortRegistry }>);
+} & (Readonly<{ internalPermit: null }> | Readonly<{ internalPermit: LaunchPermit; abortRegistry: AbortRegistry }>);
 
 export async function spawnDurableJobTransport(params: SpawnDurableJobTransportParams): Promise<CliExecResult> {
-  const { runtime, options, pool, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
+  const { runtime, options, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
   const { internalPermit } = params;
   const abortRegistry = internalPermit === null ? null : params.abortRegistry;
   const transportAbortController = internalPermit === null ? null : new AbortController();

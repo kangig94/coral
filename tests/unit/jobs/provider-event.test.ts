@@ -275,7 +275,7 @@ describe('applyProviderEventAtSeq', () => {
   // instead of falling into the `else` branch and writing a false `session.interrupted`.
   it('refuses an unrecognised stop cause instead of silently writing a false interruption', async () => {
     const { port, calls } = createFakePort({ initialWatermark: 0 });
-    const unrecognisedCause = 'not_a_real_stop_cause' as ProviderStopCause;
+    const unrecognisedCause = 'not_a_real_stop_cause' as Exclude<ProviderStopCause, 'coordinator_rekey_refused'>;
 
     const error = await rejection(
       applyProviderEventAtSeq(port, {
@@ -291,8 +291,8 @@ describe('applyProviderEventAtSeq', () => {
 
   // Driven from the production-exported cause list, not a hand-written literal, so a future addition to
   // `PROVIDER_INTERRUPTION_CAUSES` is exercised here automatically instead of the test silently going stale.
-  const ABORT_CAUSES: readonly ProviderStopCause[] = PROVIDER_STOP_CAUSES.filter(
-    (cause) =>
+  const ABORT_CAUSES = PROVIDER_STOP_CAUSES.filter(
+    (cause): cause is Exclude<ProviderStopCause, 'coordinator_rekey_refused'> =>
       !(PROVIDER_INTERRUPTION_CAUSES as readonly string[]).includes(cause) &&
       !(PROVIDER_CONTAINMENT_CAUSES as readonly string[]).includes(cause),
   );

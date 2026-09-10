@@ -40,6 +40,7 @@ import {
   insertProviderOperation,
   providerOperationMutationAdmission,
   readProviderOperation,
+  readProviderOperations,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
 import type { HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
@@ -59,6 +60,7 @@ import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
+import { createProviderOperationStartupOwnershipHarness } from '#tests/helpers/provider-operation-startup-ownership.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -296,8 +298,14 @@ function reconcilerFor(
   db: Database,
   time: VirtualTime,
   startupSetRecovery: StartupSetRecoveryPort,
-): ProviderOperationReconciler {
-  return new ProviderOperationReconciler({
+): Readonly<{
+  reconcileAtStartup(signal: AbortSignal): ReturnType<ProviderOperationReconciler['reconcileAtStartup']>;
+}> {
+  const startupOwnership = createProviderOperationStartupOwnershipHarness({
+    runtime: sandboxedRuntime(time),
+    records: readProviderOperations(db).records,
+  });
+  const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => ({
       getDb: () => db,
       commit: () => {
@@ -309,6 +317,8 @@ function reconcilerFor(
     authorityFor: () => null,
     startupSetRecovery,
     registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
+    binding: startupOwnership.binding,
+    releaseStartupOwnership: startupOwnership.releaseStartupOwnership,
     materializePrepare: () => {
       throw new Error('startup fixture unexpectedly materialized prepare input');
     },
@@ -328,6 +338,9 @@ function reconcilerFor(
     },
     time,
   });
+  return {
+    reconcileAtStartup: (signal) => reconciler.reconcileAtStartup(startupOwnership.ownership, signal),
+  };
 }
 
 function v1CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV1 {
@@ -373,6 +386,7 @@ type ProductionStartupHarness = Readonly<{
   fatals: ReturnType<typeof vi.fn>;
   lifecycleRef: ProviderProxySetLifecycleRef;
   services: ReturnType<typeof createExecutionServices>;
+  startupOwnership: ReturnType<typeof createProviderOperationStartupOwnershipHarness>['ownership'];
 }>;
 
 /** Later than every `incarnation` the shared fixture records, so no recorded identity can match. */
@@ -439,6 +453,7 @@ function composeProductionStartup(
     readLaunchProjection: () => null,
     ...options.progressStore,
   };
+  const startupOwnership = createProviderOperationStartupOwnershipHarness({ runtime, records: [record] });
   const world = {
     identity: { instanceId: randomUUID(), buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
@@ -451,6 +466,7 @@ function composeProductionStartup(
       throw new Error('provider proxy startup fixture unexpectedly requested recorded containment reaping');
     },
     providerHostManager: {},
+    launchCoordinator: startupOwnership.binding,
   } as never;
   const services = createExecutionServices({
     world,
@@ -463,14 +479,16 @@ function composeProductionStartup(
       throw new Error('production startup fixture unexpectedly created an execution service');
     }) as never,
   });
-  return { db, time, fatals, lifecycleRef, services };
+  return { db, time, fatals, lifecycleRef, services, startupOwnership: startupOwnership.ownership };
 }
 
 async function productionStartupOutcome(harness: ProductionStartupHarness) {
-  return harness.services.reconcileProviderOperationsAtStartup(new AbortController().signal).then(
-    (report) => ({ kind: 'fulfilled' as const, report }),
-    (error: unknown) => ({ kind: 'rejected' as const, error }),
-  );
+  return harness.services
+    .reconcileProviderOperationsAtStartup(harness.startupOwnership, new AbortController().signal)
+    .then(
+      (report) => ({ kind: 'fulfilled' as const, report }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
 }
 
 function capsuleBackedStorage(

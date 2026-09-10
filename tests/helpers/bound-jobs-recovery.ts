@@ -63,6 +63,7 @@ export async function createBoundJobsRecoveryHarness(
     bound,
     run: async (recoveryCoordinator) => {
       recoveryCoordinator.retireAbsentSupersededProviderOperations();
+      const startupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
       await bound.runStartupRecovery({
         identity: options.identity,
         runtime: options.runtime,
@@ -79,7 +80,8 @@ export async function createBoundJobsRecoveryHarness(
         },
         createInvocationContext: options.createInvocationContext,
         recoveryCoordinator,
-        providerOperationStartupOwnership: recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+        providerOperationStartupOwnership:
+          recoveryCoordinator.hydrateProviderOperationStartupOwnership(startupSnapshot),
         signal: options.signal,
         recoverPersistedDiscussFn: async () => [],
       });

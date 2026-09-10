@@ -143,6 +143,24 @@ export interface BackendHealth {
     providerProxySets?: ProviderProxySetOperatorStatus[];
     providerProxySetRowSkips?: ProviderProxySetRowSkip[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
+    launchPermits?: Array<{
+      reservationId: string;
+      jobId: string;
+      pool: 'default' | 'discuss' | 'curate';
+      provider: string;
+      holder:
+        | { kind: 'local-execution' }
+        | { kind: 'system-task'; id: string }
+        | { kind: 'proxy-operation'; operationId: string }
+        | { kind: 'recovery' }
+        | { kind: 'queue-handoff' };
+      executionOwner:
+        | { kind: 'provider-session'; id: string }
+        | { kind: 'workflow'; id: string }
+        | { kind: 'discussion'; id: string }
+        | { kind: 'system-task'; id: string };
+      heldForMs: number;
+    }>;
   };
 }
 
@@ -209,6 +227,58 @@ function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['di
     }
     return entry.metadataSeq === undefined || Number.isFinite(entry.metadataSeq);
   });
+}
+
+function isLaunchPermitHolder(
+  value: unknown,
+): value is NonNullable<NonNullable<BackendHealth['diagnostics']>['launchPermits']>[number]['holder'] {
+  if (!isRecord(value)) return false;
+  switch (value.kind) {
+    case 'local-execution':
+    case 'recovery':
+    case 'queue-handoff':
+      return true;
+    case 'system-task':
+      return typeof value.id === 'string' && value.id.length > 0;
+    case 'proxy-operation':
+      return typeof value.operationId === 'string' && value.operationId.length > 0;
+    default:
+      return false;
+  }
+}
+
+function isLaunchExecutionOwner(
+  value: unknown,
+): value is NonNullable<NonNullable<BackendHealth['diagnostics']>['launchPermits']>[number]['executionOwner'] {
+  return (
+    isRecord(value) &&
+    (value.kind === 'provider-session' ||
+      value.kind === 'workflow' ||
+      value.kind === 'discussion' ||
+      value.kind === 'system-task') &&
+    typeof value.id === 'string' &&
+    value.id.length > 0
+  );
+}
+
+function isLaunchPermits(value: unknown): value is NonNullable<BackendHealth['diagnostics']>['launchPermits'] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.reservationId === 'string' &&
+        entry.reservationId.length > 0 &&
+        typeof entry.jobId === 'string' &&
+        entry.jobId.length > 0 &&
+        (entry.pool === 'default' || entry.pool === 'discuss' || entry.pool === 'curate') &&
+        typeof entry.provider === 'string' &&
+        entry.provider.length > 0 &&
+        isLaunchPermitHolder(entry.holder) &&
+        isLaunchExecutionOwner(entry.executionOwner) &&
+        isNonNegativeFiniteNumber(entry.heldForMs),
+    )
+  );
 }
 
 type ProviderProxySet = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
@@ -586,6 +656,9 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     return null;
   }
   if (value.consumerStuck !== undefined && !isConsumerStuck(value.consumerStuck)) {
+    return null;
+  }
+  if (value.launchPermits !== undefined && !isLaunchPermits(value.launchPermits)) {
     return null;
   }
   const providerProxySets =

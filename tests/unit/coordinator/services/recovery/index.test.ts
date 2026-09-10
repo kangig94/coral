@@ -15,6 +15,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import type {
   ProviderRecoveryAuthority,
   ProviderRecoveryAuthorityCapture,
@@ -243,10 +244,11 @@ async function createHeldRecoveryCoordinator(
       progressStore,
       runtime,
       runtimeState: { setLaunchFenceActive: vi.fn() },
-      eventBus: { emit: vi.fn() } as never,
+      eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
       getRecoveryService,
       createInvocationContext,
       log,
+      startupOwnership: new LaunchCoordinator({ runtime }),
     },
     boundRecovery.bound,
   );
@@ -339,15 +341,17 @@ describe('runStartupRecovery provider-operation ownership', () => {
       signal,
       coordinatorCommit,
     });
+    const startupOwnership = new LaunchCoordinator({ runtime });
     const recoveryCoordinator = createRecoveryCoordinator(
       {
         progressStore,
         runtime,
         runtimeState: { setLaunchFenceActive: vi.fn() },
-        eventBus: { emit: vi.fn() } as never,
+        eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
         getRecoveryService,
         createInvocationContext,
         log,
+        startupOwnership,
       },
       boundRecovery.bound,
     );
@@ -379,6 +383,8 @@ describe('runStartupRecovery provider-operation ownership', () => {
         },
       },
       registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
+      binding: startupOwnership,
+      releaseStartupOwnership: (operation) => recoveryCoordinator.releaseProviderOperationStartupOwnership(operation),
       materializePrepare: () => {
         throw new Error('race test unexpectedly materialized a prepare');
       },
@@ -402,7 +408,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
       },
     });
 
-    await reconciler.reconcileAtStartup(signal);
+    const startupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    await reconciler.reconcileAtStartup(
+      recoveryCoordinator.hydrateProviderOperationStartupOwnership(startupSnapshot),
+      signal,
+    );
     expect(readProviderOperation(progressStore.getDb(), saga.operation)?.phase).toBe('prestart-cleanup-pending');
 
     const startupRecovery = boundRecovery.run(recoveryCoordinator);
@@ -547,10 +557,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
         progressStore,
         runtime,
         runtimeState: { setLaunchFenceActive: vi.fn() },
-        eventBus: { emit: vi.fn() } as never,
+        eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
         getRecoveryService,
         createInvocationContext,
         log,
+        startupOwnership: new LaunchCoordinator({ runtime }),
       },
       boundRecovery.bound,
     );
@@ -567,7 +578,9 @@ describe('runStartupRecovery provider-operation ownership', () => {
       .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
       .run(unattributableKey, JSON.stringify({ version: 1, locator: {} }));
 
-    const beforeRetirement = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    const beforeRetirement = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
     const payloadJobId = providerOperationRecord('prepare-pending').operation.jobId;
     expect([...beforeRetirement.jobIds].sort()).toEqual(
       [goneJobId, liveJobId, groupJobId, zeroTargetJobId, failedProbeJobId, unwalkableJobId, payloadJobId].sort(),
@@ -575,7 +588,9 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect([goneKey, liveKey, groupKey, zeroTargetKey, failedProbeKey, unwalkableKey].every(rowExists)).toBe(true);
 
     recoveryCoordinator.retireAbsentSupersededProviderOperations();
-    const ownership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    const ownership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
 
     expect({
       fenced: [...ownership.jobIds].sort(),
@@ -660,18 +675,22 @@ describe('runStartupRecovery provider-operation ownership', () => {
         progressStore,
         runtime,
         runtimeState: { setLaunchFenceActive: vi.fn() },
-        eventBus: { emit: vi.fn() } as never,
+        eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
         getRecoveryService,
         createInvocationContext,
         log,
+        startupOwnership: new LaunchCoordinator({ runtime }),
       },
       boundRecovery.bound,
     );
 
-    const startupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
-    expect(startupOwnership).toEqual({ jobIds: [jobId] });
+    const startupOwnership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
+    );
+    expect(startupOwnership.jobIds).toEqual([jobId]);
     expect(Object.isFrozen(startupOwnership)).toBe(true);
     expect(Object.isFrozen(startupOwnership.jobIds)).toBe(true);
+    expect(Object.isFrozen(startupOwnership.records)).toBe(true);
 
     await boundRecovery.run(recoveryCoordinator);
     expect(recoverQueuedJob).toHaveBeenCalledTimes(1);
@@ -754,10 +773,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
           progressStore,
           runtime,
           runtimeState: { setLaunchFenceActive: vi.fn() },
-          eventBus: { emit: vi.fn() } as never,
+          eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
           getRecoveryService,
           createInvocationContext,
           log,
+          startupOwnership: new LaunchCoordinator({ runtime }),
         },
         boundRecovery.bound,
       );
@@ -1210,7 +1230,7 @@ describe('recovery coordinator teardown', () => {
         progressStore,
         runtime,
         runtimeState,
-        eventBus: { emit: vi.fn() } as never,
+        eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
         getRecoveryService: () => createFakeService(),
         createInvocationContext: (projectRoot: string): InvocationContext => ({
           projectRoot: fixtureCanonicalWorkDir(projectRoot),
@@ -1218,6 +1238,7 @@ describe('recovery coordinator teardown', () => {
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
         }),
+        startupOwnership: new LaunchCoordinator({ runtime }),
         log: vi.fn(),
       },
       null,

@@ -460,6 +460,9 @@ function toApplyProviderEventBody(
       `Received a suspended provider event for job '${identity.jobId}' with no recorded operation.stop.v1 cause.`,
     );
   }
+  if (recordedStopCause === 'coordinator_rekey_refused') {
+    return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity.jobId).provider);
+  }
   return { ...event, recordedStopCause };
 }
 

@@ -86,16 +86,8 @@ import { readProviderOperationJobLaunchEventSeq } from '../provider-operation-st
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
-type JobExecutionDisposition =
-  | 'settled'
-  | 'suspended'
-  | 'handed-off'
-  | 'proxied'
-  | 'terminalized'
-  | SettlementRefusal;
-type QueuedPermitOutcome =
-  | Readonly<{ kind: 'admitted'; permit: LaunchPermit }>
-  | Readonly<{ kind: 'aborted' }>;
+type JobExecutionDisposition = 'settled' | 'suspended' | 'handed-off' | 'proxied' | 'terminalized' | SettlementRefusal;
+type QueuedPermitOutcome = Readonly<{ kind: 'admitted'; permit: LaunchPermit }> | Readonly<{ kind: 'aborted' }>;
 
 function releasesLaunchPermit(disposition: JobExecutionDisposition): boolean {
   if (typeof disposition !== 'string') return true;
@@ -806,15 +798,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           throw new Error(`Launch permit for ${jobId} does not match its admitted pool.`);
         }
 
-        disposition = await this.executeJob(
-          provider,
-          request,
-          jobId,
-          sessionId,
-          executionSignal,
-          permit,
-          protectedEnv,
-        );
+        disposition = await this.executeJob(provider, request, jobId, sessionId, executionSignal, permit, protectedEnv);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
@@ -1639,10 +1623,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     return session.version;
   }
 
-  private async waitForQueuedPermit(
-    admission: QueuedHandle,
-    signal: AbortSignal,
-  ): Promise<QueuedPermitOutcome> {
+  private async waitForQueuedPermit(admission: QueuedHandle, signal: AbortSignal): Promise<QueuedPermitOutcome> {
     return new Promise<QueuedPermitOutcome>((resolve, reject) => {
       let settled = false;
 

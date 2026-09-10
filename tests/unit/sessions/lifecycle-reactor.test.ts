@@ -281,6 +281,7 @@ async function runCoordinatorStartupRecovery(harness: Harness): Promise<void> {
       getRecoveryService,
       createInvocationContext,
       log: (message) => harness.logs.push(message),
+      startupOwnership: new LaunchCoordinator({ runtime: harness.runtime }),
     },
     boundRecovery.bound,
   );

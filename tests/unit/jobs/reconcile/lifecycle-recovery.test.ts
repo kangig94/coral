@@ -926,6 +926,7 @@ function createActualRecoveryService(
       bundleHash: '1111111111111111',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
       launchCoordinator: options.launchCoordinator,
+      settlementRefusalRecorder: { record: () => true },
       eventBus: options.eventBus,
       providerRegistry: options.providerRegistry,
       pluginRegistry: {
@@ -3516,6 +3517,7 @@ describe('lifecycle recovery', () => {
     const coordinatorCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
     const signal = new AbortController().signal;
     const providerRegistry = createRecoveryProviderRegistry(modules);
+    const startupOwnership = new modules.engineModule.LaunchCoordinator({ runtime });
     const identity = {
       pluginRoot,
       namespace,
@@ -3563,6 +3565,7 @@ describe('lifecycle recovery', () => {
           principal: testProjectPrincipal(root),
         }),
         log,
+        startupOwnership,
       },
       boundRecovery.bound,
     );

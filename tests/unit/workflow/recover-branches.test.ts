@@ -1668,6 +1668,7 @@ describe('workflow recovery branch rules', () => {
         getRecoveryService: () => backend.service,
         createInvocationContext: backend.createInvocationContext,
         log,
+        startupOwnership: backend.launchCoordinator,
       },
       boundRecovery.bound,
     );

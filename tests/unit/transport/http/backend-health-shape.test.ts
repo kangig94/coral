@@ -189,6 +189,29 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(stuck)).toBe(true);
   });
 
+  it('decodes launch permit diagnostics and rejects a malformed entry', () => {
+    const launchPermit = {
+      reservationId: 'reservation-1',
+      jobId: 'job-1',
+      pool: 'default',
+      provider: 'codex',
+      holder: { kind: 'proxy-operation', operationId: 'operation-1' },
+      executionOwner: { kind: 'provider-session', id: 'session-1' },
+      heldForMs: 900_001,
+    } as const;
+
+    expect(
+      parseBackendHealth({ ...HEALTHY_BASE, diagnostics: { launchPermits: [launchPermit] } })?.health.diagnostics
+        ?.launchPermits,
+    ).toEqual([launchPermit]);
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { launchPermits: [{ ...launchPermit, holder: { kind: 'system-task' } }] },
+      }),
+    ).toBeNull();
+  });
+
   it.each([
     { coverage: 'complete', liveJobs: 2, unknownJobs: 1, recoveryDefectJobs: 1 },
     { coverage: 'unknown', liveJobs: 0, unknownJobs: 3, recoveryDefectJobs: 0 },

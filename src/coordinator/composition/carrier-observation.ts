@@ -11,7 +11,6 @@ import {
 } from '../../jobs/carrier-observation.js';
 import type { JobProjectionDetail } from '../../jobs/read-queries.js';
 import { readMatchingDurableCliProcessRuntimeMeta } from '../../jobs/runtime-meta-store.js';
-import { LAUNCH_POOLS, type LaunchPool } from '../../jobs/contracts/admission.js';
 import type { CarrierWaitObservation } from '../../jobs/shell/wait.js';
 import { hasProviderOperationForJob, readProviderOperationForJob } from '../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
@@ -49,13 +48,10 @@ export type LocalCarrierRegistries = Readonly<{
  *  state — never persisted, so it is naturally scoped to this process and answers `false` for anything a
  *  predecessor generation admitted before a handoff. */
 export function admittedByThisCoordinator(
-  launchCoordinator: Pick<LaunchCoordinator, 'getActiveJobIds' | 'queuePosition'>,
+  launchCoordinator: Pick<LaunchCoordinator, 'reservationFor'>,
   jobId: string,
 ): boolean {
-  return (LAUNCH_POOLS as readonly LaunchPool[]).some(
-    (pool) =>
-      launchCoordinator.getActiveJobIds(pool).includes(jobId) || launchCoordinator.queuePosition(jobId, pool) !== null,
-  );
+  return launchCoordinator.reservationFor(jobId) !== null;
 }
 
 function durableCliEvidence(

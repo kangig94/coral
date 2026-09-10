@@ -179,6 +179,24 @@ export type HealthSnapshot = {
     }>;
     providerProxySets?: ProviderProxySetOperatorStatus[];
     providerProxyDispositionSkips?: ProviderProxySetDurableDispositionSkipStatus[];
+    launchPermits?: Array<{
+      reservationId: string;
+      jobId: string;
+      pool: 'default' | 'discuss' | 'curate';
+      provider: string;
+      holder:
+        | { kind: 'local-execution' }
+        | { kind: 'system-task'; id: string }
+        | { kind: 'proxy-operation'; operationId: string }
+        | { kind: 'recovery' }
+        | { kind: 'queue-handoff' };
+      executionOwner:
+        | { kind: 'provider-session'; id: string }
+        | { kind: 'workflow'; id: string }
+        | { kind: 'discussion'; id: string }
+        | { kind: 'system-task'; id: string };
+      heldForMs: number;
+    }>;
   };
 };
 

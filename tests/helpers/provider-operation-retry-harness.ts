@@ -31,6 +31,7 @@ import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provid
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { createProviderOperationStartupOwnershipHarness } from '#tests/helpers/provider-operation-startup-ownership.js';
 
 export type RetryOrdering = 'before-effect' | 'after-effect';
 export type RetryMethod = 'attach' | 'stop';
@@ -211,11 +212,23 @@ export function createProviderOperationRetryHarness(method: RetryMethod, orderin
     { 'disappearance-terminalization': async () => unexpected() },
     unexpected,
   );
+  const startupOwnership = createProviderOperationStartupOwnershipHarness({
+    runtime,
+    records: [record],
+    launchFor: () => {
+      const launch = progressStore.readLaunchProjection(record.operation.jobId);
+      if (launch === null) throw new Error('expected the seeded launch projection');
+      if (launch.provider === null) throw new Error('expected a provider launch projection');
+      return { provider: launch.provider, owner: launch.owner, pool: launch.pool };
+    },
+  });
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => progressStore,
     authorityFor: () => authority,
     startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority }) },
     registry,
+    binding: startupOwnership.binding,
+    releaseStartupOwnership: startupOwnership.releaseStartupOwnership,
     materializePrepare: unexpected,
     recoverLocalJob: async () => unexpected(),
     completeLocalRecovery: unexpected,

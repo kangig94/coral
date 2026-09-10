@@ -1,9 +1,5 @@
 import type { PrincipalWire } from '../../security/principal-wire.js';
-import type {
-  LaunchPermit,
-  LaunchPool,
-  OperationBindingResult,
-} from './admission.js';
+import type { LaunchPermit, LaunchPool, OperationBindingResult } from './admission.js';
 
 export type ProviderOperationChildAuthorization = Readonly<{
   principalWire: PrincipalWire;

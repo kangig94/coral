@@ -25,6 +25,7 @@ import type {
   AdmissionResult,
   LaunchCoordinatorPort,
   LaunchPermit,
+  LaunchPermitDiagnostic,
   LaunchPool,
   LaunchRelease,
   LaunchReservationView,
@@ -225,6 +226,21 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return [...this.getActiveMap(pool).keys()];
   }
 
+  activeLaunchPermits(): LaunchPermitDiagnostic[] {
+    const now = this.runtime.time.now();
+    return (Object.entries(this.pools) as Array<[LaunchPool, PoolState]>).flatMap(([pool, state]) =>
+      [...state.active.values()].map(({ permit, executionOwner }) => ({
+        reservationId: permit.reservationId,
+        jobId: permit.jobId,
+        pool,
+        provider: permit.provider,
+        holder: permit.holder,
+        executionOwner,
+        heldForMs: Math.max(0, now - permit.acquiredAt),
+      })),
+    );
+  }
+
   reservationFor(jobId: string): LaunchReservationView | null {
     for (const [pool, state] of Object.entries(this.pools) as Array<[LaunchPool, PoolState]>) {
       const active = state.active.get(jobId);
@@ -307,12 +323,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       : spawnDurableJobTransport({ ...transport, internalPermit, abortRegistry: this.internalAbortRegistry });
   }
 
-  restoreActiveLaunch(
-    jobId: string,
-    provider: string,
-    executionOwner: ExecutionOwner,
-    pool: LaunchPool,
-  ): LaunchPermit {
+  restoreActiveLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): LaunchPermit {
     this.rejectDuplicateReservation(jobId);
     const permit = this.createPermit({
       reservationId: this.runtime.ids.uuid(),
@@ -325,12 +336,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return permit;
   }
 
-  restoreQueuedLaunch(
-    jobId: string,
-    provider: string,
-    executionOwner: ExecutionOwner,
-    pool: LaunchPool,
-  ): QueuedHandle {
+  restoreQueuedLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): QueuedHandle {
     this.rejectDuplicateReservation(jobId);
     const queuedLaunches = this.getQueue(pool);
 

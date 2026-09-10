@@ -24,9 +24,17 @@ export type LaunchPermit = Readonly<{
   acquiredAt: number;
 }>;
 
-export type QueueCancellation =
-  | Readonly<{ kind: 'cancelled' }>
-  | Readonly<{ kind: 'admitted'; permit: LaunchPermit }>;
+export type LaunchPermitDiagnostic = Readonly<{
+  reservationId: string;
+  jobId: string;
+  pool: LaunchPool;
+  provider: string;
+  holder: PermitHolder;
+  executionOwner: ExecutionOwner;
+  heldForMs: number;
+}>;
+
+export type QueueCancellation = Readonly<{ kind: 'cancelled' }> | Readonly<{ kind: 'admitted'; permit: LaunchPermit }>;
 
 export type QueuedHandle = {
   type: 'queued';
@@ -85,11 +93,13 @@ export type SettlementRefusal =
 
 /** Persists durable recovery work left behind by a refused job settlement. */
 export interface SettlementRefusalRecorder {
-  record(input: Readonly<{
-    jobId: string;
-    cause: 'terminal-persist-failed' | 'claim-release-failed';
-    failure: string;
-  }>): boolean;
+  record(
+    input: Readonly<{
+      jobId: string;
+      cause: 'terminal-persist-failed' | 'claim-release-failed';
+      failure: string;
+    }>,
+  ): boolean;
 }
 
 export interface JobAdmissionPort {
@@ -105,18 +115,8 @@ export interface JobQueueReadPort {
 }
 
 export interface JobLaunchRecoveryPort {
-  restoreActiveLaunch(
-    jobId: string,
-    provider: string,
-    executionOwner: ExecutionOwner,
-    pool: LaunchPool,
-  ): LaunchPermit;
-  restoreQueuedLaunch(
-    jobId: string,
-    provider: string,
-    executionOwner: ExecutionOwner,
-    pool: LaunchPool,
-  ): QueuedHandle;
+  restoreActiveLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): LaunchPermit;
+  restoreQueuedLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): QueuedHandle;
 }
 
 export type LaunchCoordinatorPort = JobAdmissionPort & JobQueueReadPort & JobLaunchRecoveryPort;

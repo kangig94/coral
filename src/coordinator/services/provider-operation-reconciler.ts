@@ -171,9 +171,7 @@ export interface StartupSetRecoveryPort {
   recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult>;
 }
 
-function startupOperationCanReconcile(
-  ownership: ProviderOperationStartupOwnership['records'][number],
-): boolean {
+function startupOperationCanReconcile(ownership: ProviderOperationStartupOwnership['records'][number]): boolean {
   if (ownership.bindingDisposition.kind === 'not-reconciled') return false;
   if (ownership.phase === 'local-recovery-pending') return false;
   if (ownership.bindingDisposition.kind === 'refused') return false;
@@ -1833,10 +1831,7 @@ export class ProviderOperationReconciler
       if (record.phase === 'local-recovery-pending') {
         return { kind: 'accepted', operation: notice.operation, disposition: 'local-recovery-committed' };
       }
-      const terminalized = await this.#terminalizeAbandonment(
-        record,
-        this.#rekeyRefusalDirective(record) ?? directive,
-      );
+      const terminalized = await this.#terminalizeAbandonment(record, this.#rekeyRefusalDirective(record) ?? directive);
       if (terminalized.kind === 'operational-failure') return terminalized;
       if (terminalized.kind === 'conflict') continue;
       this.#releaseTerminalizedOwnership(record);

@@ -918,6 +918,39 @@ describe('cli format', () => {
       );
     });
 
+    it('renders launch permit holder and execution owner as separate identities', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          diagnostics: {
+            launchPermits: [
+              {
+                reservationId: 'reservation-1',
+                jobId: 'job-1',
+                pool: 'default' as const,
+                provider: 'codex',
+                holder: { kind: 'system-task' as const, id: 'permit-task' },
+                executionOwner: { kind: 'system-task' as const, id: 'execution-task' },
+                heldForMs: 900_001,
+              },
+            ],
+          },
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain(
+        [
+          'Launch permits:',
+          '  reservation=reservation-1 job=job-1 pool=default provider=codex heldForMs=900001',
+          '    holder=system-task:permit-task',
+          '    executionOwner=system-task:execution-task',
+        ].join('\n'),
+      );
+    });
+
     it('renders skipped provider-proxy-set candidate identities without offering an unauthorized command', () => {
       const invalidToken = 'pps1.future-row';
       const disagreementToken = 'pps2.other-identity';

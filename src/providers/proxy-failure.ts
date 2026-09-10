@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { ProviderEventBody } from './contract.js';
+import type { ProviderEventBody, ProviderTerminalEventBody } from './contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from './fault.js';
 
 export const PROVIDER_PROXY_FAILURE_ORIGIN = '@coral/provider-proxy' as const;
@@ -95,7 +95,7 @@ export function providerProxyEmergencyEvent(input: unknown): ProviderProxyEmerge
 }
 
 /** Rekey refusal cannot surface a provider-specific suspended or aborted outcome across the proxy wire. */
-export function providerProxyRekeyRefusalEvent(provider: string, detail?: string): ProviderEventBody {
+export function providerProxyRekeyRefusalEvent(provider: string, detail?: string): ProviderTerminalEventBody {
   const suffix = detail?.trim();
   const message = (
     suffix === undefined || suffix.length === 0

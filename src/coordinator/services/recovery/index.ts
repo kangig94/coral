@@ -24,11 +24,7 @@ import {
   type ProviderOperationRecord,
 } from '../../../store/provider-operation-record.js';
 import { readProviderOperationJobLaunch } from '../../../jobs/provider-operation-state.js';
-import type {
-  JobAdmissionPort,
-  JobLaunchRecoveryPort,
-  LaunchPermit,
-} from '../../../jobs/contracts/admission.js';
+import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPermit } from '../../../jobs/contracts/admission.js';
 import type { ProviderOperationBindingPort } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
@@ -1839,9 +1835,7 @@ export function createRecoveryCoordinator(
     // is the sibling of the proxy-set fence in `provider-proxy-set/containment-proof.ts`.
     return Object.freeze({
       records: Object.freeze([...scan.records]),
-      unreadable: Object.freeze(
-        attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys),
-      ),
+      unreadable: Object.freeze(attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys)),
     });
   };
 
@@ -1930,9 +1924,10 @@ export function createRecoveryCoordinator(
         continue;
       }
       const readableForJob = scan.records.filter((record) => record.operation.jobId === jobId);
-      if (readableForJob.length === 1) {
+      const soleReadable = readableForJob.length === 1 ? readableForJob[0] : undefined;
+      if (soleReadable !== undefined) {
         state.providerOperationStartupPermits.set(jobId, { ...owned, unreadableRecordKeys: [] });
-        readableRecords.push(readableForJob[0]!);
+        readableRecords.push(soleReadable);
         continue;
       }
       if (readableForJob.length > 1) {
@@ -2007,11 +2002,7 @@ export function createRecoveryCoordinator(
     record: ProviderOperationRecord,
   ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
     const disposition = startupOwnership.prepareProviderOperationBinding(permit, record.operation);
-    if (
-      disposition.kind === 'prepared' ||
-      disposition.kind === 'bound' ||
-      disposition.kind === 'already-settled'
-    ) {
+    if (disposition.kind === 'prepared' || disposition.kind === 'bound' || disposition.kind === 'already-settled') {
       state.providerOperationStartupPermits.delete(record.operation.jobId);
       return disposition;
     }
@@ -2033,10 +2024,7 @@ export function createRecoveryCoordinator(
       startupOwnership.releaseLaunch(existingPermit.permit);
       existingPermit = undefined;
     }
-    if (
-      !snapshotRestoresPermit &&
-      existingPermit?.operationId === null
-    ) {
+    if (!snapshotRestoresPermit && existingPermit?.operationId === null) {
       state.providerOperationStartupPermits.set(snapshotRecord.operation.jobId, {
         permit: existingPermit.permit,
         operationId: snapshotRecord.operation.operationId,
@@ -2048,7 +2036,7 @@ export function createRecoveryCoordinator(
       (existingPermit.operationId === null || existingPermit.operationId === snapshotRecord.operation.operationId);
     const restoredPermit = snapshotRestoresPermit
       ? restoreProviderOperationStartupPermit(snapshotRecord.operation.jobId, snapshotRecord.operation.operationId)
-      : reusableExistingPermit
+      : reusableExistingPermit && existingPermit !== undefined
         ? existingPermit.permit
         : null;
     const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
@@ -2190,12 +2178,11 @@ export function createRecoveryCoordinator(
     };
     const unreadable = snapshot.unreadable.flatMap((attribution) =>
       attribution.jobs.kind === 'known'
-        ? attribution.jobs.values
-            .map((jobId) => ({
-              recordKey: attribution.key,
-              jobId,
-              restoredPermit: restoreUnreadablePermit(jobId, attribution.key),
-            }))
+        ? attribution.jobs.values.map((jobId) => ({
+            recordKey: attribution.key,
+            jobId,
+            restoredPermit: restoreUnreadablePermit(jobId, attribution.key),
+          }))
         : [],
     );
     const unreadableJobIds = new Set(unreadable.map(({ jobId }) => jobId));
@@ -2207,8 +2194,7 @@ export function createRecoveryCoordinator(
       if (
         count > 1 &&
         snapshot.records.some(
-          (record) =>
-            record.operation.jobId === jobId && providerOperationPhaseRestoresStartupPermit(record.phase),
+          (record) => record.operation.jobId === jobId && providerOperationPhaseRestoresStartupPermit(record.phase),
         )
       ) {
         restoreProviderOperationStartupPermit(jobId, null);
@@ -2252,8 +2238,7 @@ export function createRecoveryCoordinator(
     }
     const scan = readProviderOperations(progressStore.getDb());
     const unreadable = attributeUnreadableProviderOperations(progressStore.getDb(), scan.unreadableKeys).filter(
-      (attribution) =>
-        attribution.jobs.kind === 'known' && attribution.jobs.values.includes(record.operation.jobId),
+      (attribution) => attribution.jobs.kind === 'known' && attribution.jobs.values.includes(record.operation.jobId),
     );
     for (const attribution of unreadable) {
       restoreProviderOperationStartupPermit(record.operation.jobId, null, attribution.key);

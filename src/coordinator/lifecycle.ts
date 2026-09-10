@@ -1190,8 +1190,9 @@ async function runLifecycleStartup({
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
-    const providerOperationStartupOwnership =
-      recoveryCoordinator.hydrateProviderOperationStartupOwnership(providerOperationStartupSnapshot);
+    const providerOperationStartupOwnership = recoveryCoordinator.hydrateProviderOperationStartupOwnership(
+      providerOperationStartupSnapshot,
+    );
     signal.throwIfAborted();
     await reconcileProviderOperationsAtStartup?.(providerOperationStartupOwnership, signal);
     signal.throwIfAborted();

@@ -41,7 +41,6 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
@@ -148,8 +147,9 @@ function jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string, pool: LaunchPool): boolean {
-  return launchCoordinator.cancelQueued(jobId, pool);
+function cancelQueued(jobId: string): boolean {
+  const reservation = launchCoordinator.reservationFor(jobId);
+  return reservation?.kind === 'queued' ? launchCoordinator.cancelQueued(jobId, reservation.pool) : false;
 }
 
 function _getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {

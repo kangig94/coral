@@ -47,7 +47,7 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   return { ...actual, probeProcessIncarnation: probeSelfIncarnation };
 });
 
-import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import { createCoordinatorCore, LAUNCH_PERMIT_REPORT_AGE_MS } from '#src/coordinator/composition/index.js';
 import type { FetchFn } from '#src/coordinator/composition/types.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
@@ -55,6 +55,7 @@ import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/i
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
 import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
 import type { JobStore } from '#src/jobs/store.js';
@@ -113,6 +114,15 @@ function acquiredDetail(jobId: string): JobProjectionDetail {
   return { status, launch: null, runtime, exit: null };
 }
 
+function queuedDetail(jobId: string): JobProjectionDetail {
+  return {
+    status: { ...acquiredDetail(jobId).status!, phase: 'queued' },
+    launch: null,
+    runtime: null,
+    exit: null,
+  };
+}
+
 function providerHostManager(): ProviderHostManager {
   return {
     openSession: async () => {
@@ -135,8 +145,11 @@ function providerHostManager(): ProviderHostManager {
   };
 }
 
-function createCore(operationRegistry: LocalOperationRegistry, networkObserver: FetchFn) {
-  const runtime = createRealRuntime('prod');
+function createCore(
+  operationRegistry: LocalOperationRegistry,
+  networkObserver: FetchFn,
+  runtime: Runtime = createRealRuntime('prod'),
+) {
   const core = createCoordinatorCore(
     {
       runtime,
@@ -329,5 +342,103 @@ describe('health local carrier observation', () => {
     expect(liveJobCount).toHaveBeenCalledOnce();
     expect(observeCarrierStatuses).not.toHaveBeenCalled();
     expect(networkObserver).not.toHaveBeenCalled();
+  });
+
+  it('reports only aged permits or permits whose carrier is not live, preserving both ownership identities', () => {
+    let now = 10_000;
+    const baseRuntime = createRealRuntime('prod');
+    const runtime = { ...baseRuntime, time: { ...baseRuntime.time, now: () => now } } satisfies Runtime;
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+    );
+
+    const old = core.launchCoordinator.requestLaunch(
+      'old-live-job',
+      'codex',
+      { kind: 'provider-session', id: 'old-session' },
+      'default',
+    );
+    if (old === 'queue_full' || old.type !== 'immediate') throw new Error('expected immediate old permit');
+
+    now += LAUNCH_PERMIT_REPORT_AGE_MS + 1;
+    const young = core.launchCoordinator.requestLaunch(
+      'young-live-job',
+      'claude',
+      { kind: 'workflow', id: 'workflow-1' },
+      'curate',
+    );
+    const unknown = core.launchCoordinator.requestLaunch(
+      'unknown-carrier-job',
+      'codex',
+      { kind: 'discussion', id: 'discussion-1' },
+      'discuss',
+    );
+    if (young === 'queue_full' || young.type !== 'immediate') throw new Error('expected immediate young permit');
+    if (unknown === 'queue_full' || unknown.type !== 'immediate') {
+      throw new Error('expected immediate unknown-carrier permit');
+    }
+
+    const db = createDb();
+    const details = new Map([
+      ['old-live-job', queuedDetail('old-live-job')],
+      ['young-live-job', queuedDetail('young-live-job')],
+      ['unknown-carrier-job', acquiredDetail('unknown-carrier-job')],
+    ]);
+    installProgressStore(core, db, {
+      getDb: () => db,
+      listStoredNonterminalJobIds: () => [...details.keys()],
+      loadJobProjectionDetail: (jobId) =>
+        details.get(jobId) ?? { status: null, launch: null, runtime: null, exit: null },
+      liveJobCount: () => 0,
+      listJobIds: () => [],
+    });
+
+    expect(readHealth().diagnostics?.launchPermits).toEqual([
+      {
+        reservationId: old.permit.reservationId,
+        jobId: 'old-live-job',
+        pool: 'default',
+        provider: 'codex',
+        holder: { kind: 'local-execution' },
+        executionOwner: { kind: 'provider-session', id: 'old-session' },
+        heldForMs: LAUNCH_PERMIT_REPORT_AGE_MS + 1,
+      },
+      {
+        reservationId: unknown.permit.reservationId,
+        jobId: 'unknown-carrier-job',
+        pool: 'discuss',
+        provider: 'codex',
+        holder: { kind: 'local-execution' },
+        executionOwner: { kind: 'discussion', id: 'discussion-1' },
+        heldForMs: 0,
+      },
+    ]);
+  });
+
+  it('omits launchPermits when every permit is young and carried live', () => {
+    const db = createDb();
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+    );
+    const admission = core.launchCoordinator.requestLaunch(
+      'young-live-job',
+      'codex',
+      { kind: 'provider-session', id: 'young-session' },
+      'default',
+    );
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
+    installProgressStore(core, db, {
+      getDb: () => db,
+      listStoredNonterminalJobIds: () => ['young-live-job'],
+      loadJobProjectionDetail: () => queuedDetail('young-live-job'),
+      liveJobCount: () => 0,
+      listJobIds: () => [],
+    });
+
+    expect(readHealth().diagnostics).toBeDefined();
+    expect(readHealth().diagnostics?.launchPermits).toBeUndefined();
   });
 });

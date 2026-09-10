@@ -105,30 +105,25 @@ function registriesFor(
 }
 
 describe('admittedByThisCoordinator', () => {
-  it('is true for a job in the active set', () => {
+  it.each(['default', 'discuss', 'curate'] as const)('is true for an active job in the %s pool', (pool) => {
     const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
-    launchCoordinator.requestLaunch(
-      'active-job',
-      'codex',
-      { kind: 'provider-session', id: 'session-1' },
-      'default',
-    );
+    launchCoordinator.requestLaunch(`active-${pool}-job`, 'codex', { kind: 'provider-session', id: 'session-1' }, pool);
 
-    expect(admittedByThisCoordinator(launchCoordinator, 'active-job')).toBe(true);
+    expect(admittedByThisCoordinator(launchCoordinator, `active-${pool}-job`)).toBe(true);
   });
 
-  it('is true for a job only in the queue', () => {
+  it.each(['default', 'discuss', 'curate'] as const)('is true for a queued job in the %s pool', (pool) => {
     const runtime = createRealRuntime('prod');
     const launchCoordinator = new LaunchCoordinator({ runtime });
     launchCoordinator.restoreQueuedLaunch(
-      'queued-job',
+      `queued-${pool}-job`,
       'codex',
       { kind: 'provider-session', id: 'session-2' },
-      'default',
+      pool,
     );
 
-    expect(admittedByThisCoordinator(launchCoordinator, 'queued-job')).toBe(true);
+    expect(admittedByThisCoordinator(launchCoordinator, `queued-${pool}-job`)).toBe(true);
   });
 
   it('is false for a job this coordinator process never admitted', () => {

@@ -862,8 +862,7 @@ export class OperationSupervisor {
   emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
     const record = this.#requireRecord(key);
     const recordedEvent =
-      record.stopCause === 'coordinator_rekey_refused' &&
-      (event.kind === 'terminal' || event.kind === 'suspended')
+      record.stopCause === 'coordinator_rekey_refused' && (event.kind === 'terminal' || event.kind === 'suspended')
         ? providerProxyRekeyRefusalEvent(
             this.#requireLedger(key).prepared.provider,
             event.kind === 'suspended' ? event.reason : undefined,

@@ -1183,6 +1183,34 @@ type RunningHealth = Extract<BackendStatusFull, { status: 'ok' }>['health'];
 type RuntimeComponent = BackendHealth['components'][number];
 type DegradedReason = Extract<RuntimeComponent, { phase: 'degraded' }>['reason'];
 type ProviderProxySetStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
+type LaunchPermitStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['launchPermits']>[number];
+
+function formatLaunchPermitHolder(holder: LaunchPermitStatus['holder']): string {
+  switch (holder.kind) {
+    case 'local-execution':
+    case 'recovery':
+    case 'queue-handoff':
+      return holder.kind;
+    case 'system-task':
+      return `${holder.kind}:${holder.id}`;
+    case 'proxy-operation':
+      return `${holder.kind}:${holder.operationId}`;
+    default:
+      return assertNever(holder);
+  }
+}
+
+function formatLaunchExecutionOwner(owner: LaunchPermitStatus['executionOwner']): string {
+  switch (owner.kind) {
+    case 'provider-session':
+    case 'workflow':
+    case 'discussion':
+    case 'system-task':
+      return `${owner.kind}:${owner.id}`;
+    default:
+      return assertNever(owner);
+  }
+}
 
 export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
   switch (set.operatorExit.kind) {
@@ -1263,6 +1291,17 @@ function formatRunningStatus(health: RunningHealth): string {
   ];
   if (typeof health.queueDepth === 'number') {
     lines.push(`Queue depth: ${health.queueDepth}`);
+  }
+  const launchPermits = health.diagnostics?.launchPermits ?? [];
+  if (launchPermits.length > 0) {
+    lines.push('', 'Launch permits:');
+    for (const permit of launchPermits) {
+      lines.push(
+        `  reservation=${permit.reservationId} job=${permit.jobId} pool=${permit.pool} provider=${permit.provider} heldForMs=${permit.heldForMs}`,
+        `    holder=${formatLaunchPermitHolder(permit.holder)}`,
+        `    executionOwner=${formatLaunchExecutionOwner(permit.executionOwner)}`,
+      );
+    }
   }
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
   const durableDispositionSkips = health.diagnostics?.providerProxyDispositionSkips ?? [];

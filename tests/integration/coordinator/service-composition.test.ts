@@ -209,8 +209,13 @@ function jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string, pool: LaunchPool): boolean {
-  return launchCoordinator.cancelQueued(jobId, pool);
+function cancelQueued(jobId: string): boolean {
+  const reservation = launchCoordinator.reservationFor(jobId);
+  return reservation?.kind === 'queued' ? launchCoordinator.cancelQueued(jobId, reservation.pool) : false;
+}
+
+function releaseLaunch(permit: LaunchPermit): void {
+  launchCoordinator.releaseLaunch(permit);
 }
 
 function getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
@@ -709,12 +714,24 @@ async function occupyProviderSlots(
   service: ExecutionService,
   ctx: InvocationContext,
   providerName: string,
-): Promise<string[]> {
-  const decisions = await Promise.all(
-    Array.from({ length: getMaxWorkers(runtime.env) }, (_value, index) =>
-      service.start(providerName, { prompt: `occupy-${index}` }, ctx),
-    ),
-  );
+): Promise<Readonly<{ jobIds: string[]; permits: LaunchPermit[] }>> {
+  const requestLaunch = vi.spyOn(launchCoordinator, 'requestLaunch');
+  let decisions: Awaited<ReturnType<ExecutionService['start']>>[];
+  const permits: LaunchPermit[] = [];
+  try {
+    decisions = await Promise.all(
+      Array.from({ length: getMaxWorkers(runtime.env) }, (_value, index) =>
+        service.start(providerName, { prompt: `occupy-${index}` }, ctx),
+      ),
+    );
+    permits.push(
+      ...requestLaunch.mock.results.flatMap(({ type, value }) =>
+        type === 'return' && value !== 'queue_full' && value.type === 'immediate' ? [value.permit] : [],
+      ),
+    );
+  } finally {
+    requestLaunch.mockRestore();
+  }
 
   const jobIds: string[] = [];
   for (const decision of decisions) {
@@ -726,7 +743,8 @@ async function occupyProviderSlots(
     jobIds.push(decision.jobId);
   }
 
-  return jobIds;
+  if (permits.length !== jobIds.length) throw new Error('expected one issued permit for every occupying job');
+  return { jobIds, permits };
 }
 
 async function waitForTerminalEvent(
@@ -929,7 +947,7 @@ describe('ExecutionService', () => {
           subject,
         }),
       });
-      const occupied = await occupyProviderSlots(service, ctx, 'codex');
+      const { permits: occupied } = await occupyProviderSlots(service, ctx, 'codex');
       const callsAtCapacity = execute.mock.calls.length;
 
       const decision = await service.start('codex', { prompt: 'queued-account-a' }, ctx);
@@ -1344,7 +1362,7 @@ describe('ExecutionService', () => {
 
     const service = createService(ctx);
     expect(queueDepth()).toBe(0);
-    const activeJobIds = await occupyProviderSlots(service, ctx, 'codex');
+    const { jobIds: activeJobIds } = await occupyProviderSlots(service, ctx, 'codex');
 
     const decision = await service.executeWorkflow(
       'codex',
@@ -2175,7 +2193,7 @@ describe('ExecutionService', () => {
         const { progressStore } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
           getInternals(service);
-        const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
+        const { permits: occupyPermits } = await occupyProviderSlots(service, ctx, 'codex');
 
         const jobId = `recover-exec-${randomUUID()}`;
         const mgr = createSessionManager(ctx.projectRoot);
@@ -2203,8 +2221,9 @@ describe('ExecutionService', () => {
 
         expect(queueDepth()).toBeGreaterThanOrEqual(1);
 
-        const releasedJob = occupyIds[0];
-        releaseLaunch(releasedJob);
+        const releasedPermit = occupyPermits[0];
+        if (releasedPermit === undefined) throw new Error('expected an occupying permit');
+        releaseLaunch(releasedPermit);
 
         await new Promise((resolve) => setTimeout(resolve, 50));
 

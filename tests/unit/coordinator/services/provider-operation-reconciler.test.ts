@@ -33,6 +33,7 @@ import {
   insertProviderOperation,
   readProviderOperation,
   readProviderOperationDueSelections,
+  readProviderOperations,
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
@@ -66,6 +67,7 @@ import {
   asJointContainmentReceipt,
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
+import { createProviderOperationStartupOwnershipHarness } from '#tests/helpers/provider-operation-startup-ownership.js';
 
 function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
   return {
@@ -610,6 +612,16 @@ function createHarness(
     buildOperationControl: () => ({ stop: overrides.stopOperation ?? (async () => undefined) }),
   };
   const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };
+  const startupOwnership = createProviderOperationStartupOwnershipHarness({
+    runtime: createRealRuntime('prod'),
+    records: [record],
+    launchFor: () => {
+      const launch = progressStore.readLaunchProjection(record.operation.jobId);
+      if (launch === null) throw new Error('expected launch projection for startup ownership');
+      if (launch.provider === null) throw new Error('expected provider launch projection');
+      return { provider: launch.provider, owner: launch.owner, pool: launch.pool };
+    },
+  });
   let now = 100;
   const terminalization = {
     terminalize:
@@ -639,6 +651,8 @@ function createHarness(
       recoverSetAtStartup: async () => ({ kind: 'authority', authority }),
     },
     registry,
+    binding: startupOwnership.binding,
+    releaseStartupOwnership: startupOwnership.releaseStartupOwnership,
     materializePrepare: overrides.materializePrepare ?? (() => ({ state: 'prepared', prepared })),
     recoverLocalJob:
       overrides.recoverLocalJob ?? (async (localRecord) => providerRecoveryAccepted(localRecord.operation.jobId)),
@@ -678,6 +692,7 @@ function createHarness(
     registry,
     terminalization,
     reconciler,
+    startupOwnership,
     recoveryDispatcher,
     fatalErrors,
     dispatcherFatalErrors,
@@ -860,7 +875,10 @@ describe('provider host unserviceable refusal durability', () => {
       lastError: hostUnserviceableLastError,
     });
     insertProviderOperation(startup.db, startupRecord);
-    await startup.reconciler.reconcileAtStartup(new AbortController().signal);
+    await startup.reconciler.reconcileAtStartup(
+      startup.startupOwnership.ownershipFor(readProviderOperations(startup.db).records),
+      new AbortController().signal,
+    );
     expectStructuredTerminal(startup.appended);
     expect(startupRecovery).not.toHaveBeenCalled();
 
@@ -899,7 +917,12 @@ describe('provider host unserviceable refusal durability', () => {
       expectStructuredTerminal(retry.harness.appended);
 
       const restart = await failCleanupOnce(failOnce);
-      await restart.harness.restart().reconcileAtStartup(new AbortController().signal);
+      await restart.harness
+        .restart()
+        .reconcileAtStartup(
+          restart.harness.startupOwnership.ownershipFor(readProviderOperations(restart.harness.db).records),
+          new AbortController().signal,
+        );
       expect(restart.cancelOperation).toHaveBeenCalledTimes(2);
       expectStructuredTerminal(restart.harness.appended);
 
@@ -1157,7 +1180,10 @@ describe('ProviderOperationReconciler publication', () => {
     const recovered = providerOperationRecord('executing');
     insertProviderOperation(harness.db, recovered);
 
-    await harness.reconciler.reconcileAtStartup(new AbortController().signal);
+    await harness.reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor(readProviderOperations(harness.db).records),
+      new AbortController().signal,
+    );
 
     expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
       phase: 'executing',
@@ -1782,7 +1808,10 @@ describe('ProviderOperationReconciler publication', () => {
     if (recovered.phase !== 'executing') throw new Error('expected executing recovery fixture');
     insertProviderOperation(harness.db, recovered);
 
-    await harness.reconciler.reconcileAtStartup(new AbortController().signal);
+    await harness.reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor(readProviderOperations(harness.db).records),
+      new AbortController().signal,
+    );
 
     expect(stopOperation).toHaveBeenCalledOnce();
     expect(stopOperation).toHaveBeenCalledWith('user_abort');
@@ -2058,6 +2087,8 @@ describe('ProviderOperationReconciler publication', () => {
         },
       },
       registry: harness.registry,
+      binding: harness.startupOwnership.binding,
+      releaseStartupOwnership: harness.startupOwnership.releaseStartupOwnership,
       materializePrepare: () => MATERIALIZED_PREPARED,
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
@@ -2074,7 +2105,10 @@ describe('ProviderOperationReconciler publication', () => {
       },
     });
 
-    await recreated.reconcileAtStartup(new AbortController().signal);
+    await recreated.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor([recovered]),
+      new AbortController().signal,
+    );
 
     expect(acquireAuthority).toHaveBeenCalledOnce();
     expect(successorCalls).toEqual(['register', 'prepare']);
@@ -2133,6 +2167,8 @@ describe('ProviderOperationReconciler publication', () => {
         },
       },
       registry: harness.registry,
+      binding: harness.startupOwnership.binding,
+      releaseStartupOwnership: harness.startupOwnership.releaseStartupOwnership,
       materializePrepare: () => MATERIALIZED_PREPARED,
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
@@ -2149,7 +2185,10 @@ describe('ProviderOperationReconciler publication', () => {
       },
     });
 
-    await reconciler.reconcileAtStartup(new AbortController().signal);
+    await reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor([recovered]),
+      new AbortController().signal,
+    );
 
     expect(acquireAuthority).toHaveBeenCalledWith(recovered, expect.any(AbortSignal));
     expect(activatePreparedOperation).toHaveBeenCalledOnce();
@@ -2182,6 +2221,8 @@ describe('ProviderOperationReconciler publication', () => {
         },
       },
       registry,
+      binding: harness.startupOwnership.binding,
+      releaseStartupOwnership: harness.startupOwnership.releaseStartupOwnership,
       materializePrepare: () => MATERIALIZED_PREPARED,
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
@@ -2198,7 +2239,10 @@ describe('ProviderOperationReconciler publication', () => {
       },
     });
 
-    await reconciler.reconcileAtStartup(new AbortController().signal);
+    await reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor([recovered]),
+      new AbortController().signal,
+    );
 
     expect(acquireAuthority).toHaveBeenCalledWith(recovered, expect.any(AbortSignal));
     expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
@@ -2350,7 +2394,10 @@ describe('ProviderOperationReconciler publication', () => {
     const record = providerOperationRecord('local-recovery-pending');
     insertProviderOperation(harness.db, record);
 
-    await harness.reconciler.reconcileAtStartup(new AbortController().signal);
+    await harness.reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor(readProviderOperations(harness.db).records),
+      new AbortController().signal,
+    );
 
     expect(readProviderOperation(harness.db, record.operation)).toEqual(record);
     expect(recoverLocalJob).not.toHaveBeenCalled();

@@ -113,12 +113,7 @@ describe('backend isolation', () => {
     const busB = new TypedEventBus();
     const regB = createDiscussContextRegistry();
 
-    const admissionA = coordA.requestLaunch(
-      'job-a',
-      'codex',
-      { kind: 'provider-session', id: 'session-a' },
-      'default',
-    );
+    const admissionA = coordA.requestLaunch('job-a', 'codex', { kind: 'provider-session', id: 'session-a' }, 'default');
     coordB.requestLaunch('job-b', 'codex', { kind: 'provider-session', id: 'session-b' }, 'default');
 
     const createdJobIdsB: string[] = [];
@@ -128,7 +123,8 @@ describe('backend isolation', () => {
     regB.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
 
     coordA.terminateAll();
-    if (admissionA === 'queue_full' || admissionA.type !== 'immediate') throw new Error('expected coordinator A permit');
+    if (admissionA === 'queue_full' || admissionA.type !== 'immediate')
+      throw new Error('expected coordinator A permit');
     coordA.releaseLaunch(admissionA.permit);
     busA.removeAllListeners();
     regA.contexts.clear();

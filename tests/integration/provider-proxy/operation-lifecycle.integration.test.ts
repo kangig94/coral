@@ -50,6 +50,7 @@ import { providerOperationRecordSchema } from '#src/store/provider-operation-rec
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
@@ -640,6 +641,16 @@ async function launchThroughRoute(
     }
   };
   const time = createRealTimePort();
+  const binding = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+  const admission = binding.requestLaunch(
+    jobId,
+    PREPARED.provider,
+    { kind: 'provider-session', id: sessionId },
+    'default',
+  );
+  if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected immediate permit');
+  const preparedBinding = binding.prepareProviderOperationBinding(admission.permit, { jobId, operationId });
+  if (preparedBinding.kind !== 'prepared') throw new Error('expected prepared operation binding');
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => ({
       getDb: () => db,
@@ -674,6 +685,8 @@ async function launchThroughRoute(
     authorityFor: () => activeAuthority,
     startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: activeAuthority }) },
     registry,
+    binding,
+    releaseStartupOwnership: () => false,
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
     completeLocalRecovery: () => undefined,

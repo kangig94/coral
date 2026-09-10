@@ -363,7 +363,6 @@ export type ProviderInterruptionCause = (typeof PROVIDER_INTERRUPTION_CAUSES)[nu
 
 /** A remote operation accepted before its local ownership re-key failed and must be terminally contained. */
 export const PROVIDER_CONTAINMENT_CAUSES = ['coordinator_rekey_refused'] as const;
-export type ProviderContainmentCause = (typeof PROVIDER_CONTAINMENT_CAUSES)[number];
 
 /**
  * Every cause `operation.stop.v1` accepts. The interruption, deliberate-abort, and containment partitions

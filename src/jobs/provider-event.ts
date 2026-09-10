@@ -139,7 +139,9 @@ export interface ProviderEventEffectPort<Tx> {
  */
 export type ApplyProviderEventBody =
   | Exclude<ProviderEventBody, ProviderSuspendedEventBody>
-  | (ProviderSuspendedEventBody & { readonly recordedStopCause: ProviderStopCause });
+  | (ProviderSuspendedEventBody & {
+      readonly recordedStopCause: Exclude<ProviderStopCause, 'coordinator_rekey_refused'>;
+    });
 
 export interface ApplyProviderEventInput {
   readonly identity: ProviderOperationEventIdentity;
@@ -251,7 +253,7 @@ async function applySuspendedEffect<Tx>(
   tx: Tx,
   identity: ProviderOperationEventIdentity,
   seq: number,
-  recordedStopCause: ProviderStopCause,
+  recordedStopCause: Exclude<ProviderStopCause, 'coordinator_rekey_refused'>,
 ): Promise<void> {
   if (isInterruptionStopCause(recordedStopCause)) {
     await port.appendSessionInterrupted(tx, identity, seq, recordedStopCause);

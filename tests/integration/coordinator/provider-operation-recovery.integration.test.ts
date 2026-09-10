@@ -21,6 +21,8 @@ import { createStoreServicesRef } from '#src/coordinator/composition/store-servi
 import { createLifecycle, createRuntimeState } from '#src/coordinator/lifecycle.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { RecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
@@ -131,11 +133,16 @@ describe('provider-operation startup recovery ownership', () => {
       },
       cancelOperation,
     } as unknown as DurableProviderProxyOperationAuthority;
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    let recoveryCoordinator: RecoveryCoordinator | null = null;
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => progressStore,
       authorityFor: () => authority,
       startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority }) },
       registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
+      binding: launchCoordinator,
+      releaseStartupOwnership: (operation) =>
+        recoveryCoordinator?.releaseProviderOperationStartupOwnership(operation) ?? false,
       materializePrepare: () => {
         throw new Error('startup ownership test unexpectedly materialized a prepare');
       },
@@ -207,14 +214,16 @@ describe('provider-operation startup recovery ownership', () => {
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
-        launchCoordinator: { active: 0, queueDepth: () => 0, terminateAll: vi.fn() } as never,
+        launchCoordinator,
         providerRegistry: {} as never,
         server,
         getExecutionService: vi.fn() as never,
         getRecoveryService: () => recoveryService,
         listExecutionServices: () => [],
-        connectProviderOperationRecovery: vi.fn(),
-        reconcileProviderOperationsAtStartup: (signal) => reconciler.reconcileAtStartup(signal),
+        connectProviderOperationRecovery: (coordinator) => {
+          recoveryCoordinator = coordinator;
+        },
+        reconcileProviderOperationsAtStartup: (ownership, signal) => reconciler.reconcileAtStartup(ownership, signal),
         startProviderOperationReconciler: vi.fn(),
         stopProviderOperationReconciler: vi.fn(),
         getDiscussStoreForSource: vi.fn() as never,

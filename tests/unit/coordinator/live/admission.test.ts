@@ -600,12 +600,7 @@ describe('launch admission', () => {
   });
 
   it('binds queued-handle cancellation to its exact reservation generation', async () => {
-    const firstBlocker = coordinator.requestLaunch(
-      'blocker-1',
-      'codex',
-      providerOwner('blocker-session-1'),
-      'default',
-    );
+    const firstBlocker = coordinator.requestLaunch('blocker-1', 'codex', providerOwner('blocker-session-1'), 'default');
     if (firstBlocker === 'queue_full' || firstBlocker.type !== 'immediate') throw new Error('expected blocker');
     const staleHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('old-session'), 'default');
     if (staleHandle === 'queue_full' || staleHandle.type !== 'queued') throw new Error('expected old queued handle');
@@ -750,12 +745,7 @@ describe('launch admission', () => {
   });
 
   it('settles a prepared source permit and makes repeated settlement idempotent', () => {
-    const admission = coordinator.requestLaunch(
-      'job-prepared',
-      'codex',
-      providerOwner('session-prepared'),
-      'default',
-    );
+    const admission = coordinator.requestLaunch('job-prepared', 'codex', providerOwner('session-prepared'), 'default');
     if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected source permit');
     const identity = { jobId: 'job-prepared', operationId: 'operation-prepared' };
 
@@ -776,12 +766,12 @@ describe('launch admission', () => {
     if (second === 'queue_full' || second.type !== 'immediate') throw new Error('expected second source permit');
 
     const operationId = 'shared-operation-id';
-    expect(
-      coordinator.prepareProviderOperationBinding(first.permit, { jobId: 'job-one', operationId }),
-    ).toEqual({ kind: 'prepared' });
-    expect(
-      coordinator.prepareProviderOperationBinding(second.permit, { jobId: 'job-two', operationId }),
-    ).toEqual({ kind: 'prepared' });
+    expect(coordinator.prepareProviderOperationBinding(first.permit, { jobId: 'job-one', operationId })).toEqual({
+      kind: 'prepared',
+    });
+    expect(coordinator.prepareProviderOperationBinding(second.permit, { jobId: 'job-two', operationId })).toEqual({
+      kind: 'prepared',
+    });
     expect(coordinator.settleProviderOperationBinding({ jobId: 'job-one', operationId })).toMatchObject({
       kind: 'settled',
       reservationId: first.permit.reservationId,
