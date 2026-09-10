@@ -1142,10 +1142,10 @@ export async function runShutdownSequence({
     shutdownObligationAbandoned,
   });
   for (const obligation of openingObligations.connectionDrain) {
-    await ledger.run(obligation);
+    void (await ledger.run(obligation));
   }
   for (const obligation of openingObligations.buildTeardownObligations()) {
-    await ledger.run(obligation);
+    void (await ledger.run(obligation));
   }
 
   const providerCleanup = createProviderCleanupController({ providerHostManager, providerProxyAuthority });
@@ -1172,7 +1172,7 @@ export async function runShutdownSequence({
           stopProviderOperationReconciler,
         });
   for (const obligation of modeConsequences.obligations) {
-    await ledger.run(obligation);
+    void (await ledger.run(obligation));
   }
 
   const closingObligations = buildClosingShutdownObligations({
@@ -1187,10 +1187,10 @@ export async function runShutdownSequence({
     shutdownObligationAbandoned,
   });
   for (const obligation of closingObligations.lifecycle) {
-    await ledger.run(obligation);
+    void (await ledger.run(obligation));
   }
   for (const obligation of closingObligations.buildStoreAndFinalizerObligations()) {
-    await ledger.run(obligation);
+    void (await ledger.run(obligation));
   }
 
   const authorityRelease = buildAuthorityReleaseBoundary({

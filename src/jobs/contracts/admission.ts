@@ -91,11 +91,7 @@ export type LaunchPermitReclamationEvidence =
   | Readonly<{ kind: 'job-absent' }>
   | Readonly<{ kind: 'job-terminal'; phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'> }>;
 
-/**
- * What the jobs layer answers when the coordinator asks whether a permit's work has ended. The
- * classification is made where job phase means something; `job-live` is a named answer so that a
- * probe which cannot decide is distinguishable from one that decided "keep holding".
- */
+/** Evidence that does not authorize reclamation must return `job-live`. */
 export type LaunchReclamationProbeResult = LaunchPermitReclamationEvidence | Readonly<{ kind: 'job-live' }>;
 
 export type LaunchPermitReclamationDiagnostic = Readonly<{
@@ -106,9 +102,6 @@ export type LaunchPermitReclamationDiagnostic = Readonly<{
   holder: PermitHolder;
   heldForMs: number;
   evidence: LaunchPermitReclamationEvidence;
-  providerOperationEvidence?:
-    | Readonly<{ kind: 'absent'; operationId: string }>
-    | Readonly<{ kind: 'all-records-absent'; recordKeys: readonly string[] }>;
   reclaimedAtMs: number;
 }>;
 
@@ -143,7 +136,6 @@ export interface SettlementRefusalRecorder {
 export interface JobAdmissionPort {
   requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult;
   releaseLaunch(permit: LaunchPermit): LaunchRelease;
-  cancelQueued(reservationId: string, pool: LaunchPool): boolean;
 }
 
 export interface JobQueueReadPort {
@@ -162,7 +154,7 @@ export interface JobLaunchRecoveryPort {
   ): LaunchPermit;
   restoreQueuedLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): QueuedHandle;
   holdUndecidedProviderOperationLaunch(permit: LaunchPermit, recordKeys: readonly string[]): LaunchPermit | null;
-  reclaimLaunchPermit(permit: LaunchPermit, evidence: LaunchPermitReclamationEvidence): boolean;
+  reclaimLaunchPermit(permit: LaunchPermit): boolean;
 }
 
 export type LaunchCoordinatorPort = JobAdmissionPort & JobQueueReadPort & JobLaunchRecoveryPort;

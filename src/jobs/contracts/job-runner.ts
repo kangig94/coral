@@ -5,7 +5,6 @@ import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
 import type { ProviderSessionLaunchDecision } from '../launch.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
-import type { AbortReason } from '../outcome.js';
 import type { LaunchPool, QueuedHandle } from './admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
@@ -64,10 +63,6 @@ export interface ProviderJobLaunchPort {
       mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision;
-}
-
-export interface QueuedJobAbortPort {
-  finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void;
 }
 
 export interface WorkflowJobLifecyclePort {

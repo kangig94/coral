@@ -419,7 +419,7 @@ export function createStoreProviderEventEffectPort(
 
     releaseSessionClaim: async (tx, identity) => {
       const ctx = resolveJobContext(deps, identity.jobId);
-      releaseSessionJobClaim({
+      void releaseSessionJobClaim({
         projectRoot: ctx.projectRoot,
         runtime: deps.runtime,
         db: tx.db,

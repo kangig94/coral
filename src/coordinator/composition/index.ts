@@ -112,8 +112,12 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import type { LaunchPermitReclamationDiagnostic, LaunchReleaseDiagnostic } from '../../jobs/contracts/admission.js';
-import { LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS } from '../live/admission.js';
+import type {
+  LaunchPermitReclamationDiagnostic,
+  LaunchReclamationProbeResult,
+  LaunchReleaseDiagnostic,
+} from '../../jobs/contracts/admission.js';
+import { LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS, MAX_LAUNCH_RELEASE_DIAGNOSTICS } from '../live/admission.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
@@ -549,13 +553,36 @@ export function createCoordinatorCore(
     const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
     return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix));
   });
-  world.launchCoordinator.connectProviderOperationRecordJournal(
-    (key) => observeProviderOperationRecord(recoveryDb(), key).kind !== 'absent',
-  );
-  world.launchCoordinator.connectLaunchReclamationJournal((jobId) => {
+  const readJobReclamation = (jobId: string): LaunchReclamationProbeResult => {
     const status = getProgressStore().readStatus(jobId);
     if (status === null) return { kind: 'job-absent' };
     return isTerminalPhase(status.phase) ? { kind: 'job-terminal', phase: status.phase } : { kind: 'job-live' };
+  };
+  world.launchCoordinator.connectLaunchReclamationOracle('local-execution', (permit) =>
+    readJobReclamation(permit.jobId),
+  );
+  world.launchCoordinator.connectLaunchReclamationOracle('recovery', (permit) => readJobReclamation(permit.jobId));
+  world.launchCoordinator.connectLaunchReclamationOracle('proxy-operation', (permit) => {
+    const evidence = readJobReclamation(permit.jobId);
+    if (evidence.kind === 'job-live') return evidence;
+    const scan = readProviderOperations(recoveryDb());
+    if (
+      scan.records.some(
+        (record) =>
+          record.operation.jobId === permit.jobId && record.operation.operationId === permit.holder.operationId,
+      )
+    ) {
+      return { kind: 'job-live' };
+    }
+    const keyPrefix = `${providerOperationRecordKeyPrefix(permit.jobId)}${permit.holder.operationId}:`;
+    return scan.unreadableKeys.some((key) => key.startsWith(keyPrefix)) ? { kind: 'job-live' } : evidence;
+  });
+  world.launchCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', (permit) => {
+    const evidence = readJobReclamation(permit.jobId);
+    if (evidence.kind === 'job-live') return evidence;
+    return permit.holder.recordKeys.some((key) => observeProviderOperationRecord(recoveryDb(), key).kind !== 'absent')
+      ? { kind: 'job-live' }
+      : evidence;
   });
   const launchReclamationTimer = runtime.time.setInterval(() => {
     try {
@@ -571,7 +598,12 @@ export function createCoordinatorCore(
     kind: 'refused',
     reason: 'the coordinator execution services are not composed',
   });
-  let releaseUnreadableProviderOperationStartupOwnership = (_recordKey: string): Promise<number> => Promise.resolve(0);
+  let releaseUnreadableProviderOperationStartupOwnership: ReturnType<
+    typeof createExecutionServices
+  >['releaseUnreadableProviderOperationStartupOwnership'] = async () => ({
+    kind: 'completed',
+    releasedLaunchPermits: 0,
+  });
   const createSystemInvocationContext = (
     projectRoot: CanonicalWorkDir,
     credentialId: string,
@@ -643,6 +675,10 @@ export function createCoordinatorCore(
     string,
     NonNullable<NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']>[number]
   >();
+  const providerOperationAdoptionRefusals = new Map<
+    string,
+    NonNullable<NonNullable<HealthSnapshot['diagnostics']>['providerOperationAdoptionRefusals']>[number]
+  >();
   const durableSettlementRefusalRecorder = createCoordinatorJobSettlementRefusalRecorder({
     getDb: recoveryDb,
     isBoundaryRegistered: (boundary) => recoverySources.has(boundary),
@@ -691,7 +727,31 @@ export function createCoordinatorCore(
       });
       const result = unreadableProviderOperationDiscardResultSchema.parse(discard.discard(request));
       if (result.kind === 'discarded' || result.kind === 'absent') {
-        await releaseUnreadableProviderOperationStartupOwnership(result.key);
+        const ownership = await releaseUnreadableProviderOperationStartupOwnership(result.key);
+        if (ownership.kind === 'adoption-refused') {
+          const observedAtMs = runtime.time.now();
+          for (const refusal of ownership.refusals) {
+            providerOperationAdoptionRefusals.delete(refusal.recordKey);
+            providerOperationAdoptionRefusals.set(refusal.recordKey, {
+              triggerRecordKey: result.key,
+              rowDisposition: result.kind,
+              releasedLaunchPermits: ownership.releasedLaunchPermits,
+              ...refusal,
+              observedAtMs,
+            });
+            if (providerOperationAdoptionRefusals.size > MAX_LAUNCH_RELEASE_DIAGNOSTICS) {
+              const oldestRecordKey = providerOperationAdoptionRefusals.keys().next().value;
+              if (oldestRecordKey !== undefined) providerOperationAdoptionRefusals.delete(oldestRecordKey);
+            }
+          }
+          return unreadableProviderOperationDiscardResultSchema.parse({
+            ...result,
+            kind: 'adoption-refused',
+            rowDisposition: result.kind,
+            releasedLaunchPermits: ownership.releasedLaunchPermits,
+            refusals: ownership.refusals,
+          });
+        }
       }
       return result;
     },
@@ -1391,6 +1451,9 @@ export function createCoordinatorCore(
           settlementRefusalRecordingFailures?: NonNullable<
             NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']
           >;
+          providerOperationAdoptionRefusals?: NonNullable<
+            NonNullable<HealthSnapshot['diagnostics']>['providerOperationAdoptionRefusals']
+          >;
           launchPermits?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['launchPermits']>;
           launchReleaseDispositions?: LaunchReleaseDiagnostic[];
           launchReclamations?: LaunchPermitReclamationDiagnostic[];
@@ -1414,6 +1477,9 @@ export function createCoordinatorCore(
         }
         if (settlementRefusalRecordingFailures.size > 0) {
           diagnostics.settlementRefusalRecordingFailures = [...settlementRefusalRecordingFailures.values()];
+        }
+        if (providerOperationAdoptionRefusals.size > 0) {
+          diagnostics.providerOperationAdoptionRefusals = [...providerOperationAdoptionRefusals.values()];
         }
         const launchPermits = world.launchCoordinator
           .activeLaunchPermits()
@@ -1439,6 +1505,7 @@ export function createCoordinatorCore(
           diagnostics.providerProxySets !== undefined ||
           diagnostics.providerProxyDispositionSkips !== undefined ||
           diagnostics.settlementRefusalRecordingFailures !== undefined ||
+          diagnostics.providerOperationAdoptionRefusals !== undefined ||
           diagnostics.launchPermits !== undefined ||
           diagnostics.launchReleaseDispositions !== undefined ||
           diagnostics.launchReclamations !== undefined;

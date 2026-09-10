@@ -125,12 +125,9 @@ type CleanupAttemptState =
 
 type CleanupOutcomeConsumption = Readonly<{ kind: 'observed-absent' }> | Readonly<{ kind: 'retained' }>;
 
-type LaunchReclamationEligibility =
-  | Readonly<{
-      kind: 'eligible';
-      providerOperationEvidence?: LaunchPermitReclamationDiagnostic['providerOperationEvidence'];
-    }>
-  | Readonly<{ kind: 'retained' }>;
+type LaunchReclamationOracle<K extends PermitHolder['kind'] = PermitHolder['kind']> = (
+  permit: LaunchPermit & { holder: Extract<PermitHolder, { kind: K }> },
+) => LaunchReclamationProbeResult;
 
 export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperationBindingPort {
   private readonly cleanupHandles = new Map<symbol, DurableProcessCleanup>();
@@ -147,11 +144,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly settledUnboundChecks = new Map<string, TimerHandle>();
   private readonly nonReleasedLaunches = new Map<string, LaunchReleaseDiagnostic>();
   private readonly reclaimedLaunches = new Map<string, LaunchPermitReclamationDiagnostic>();
+  private readonly launchReclamationOracles = new Map<PermitHolder['kind'], LaunchReclamationOracle>();
   private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
   private shutdownRequested = false;
   private providerOperationJournalContains: ((identity: ProviderOperationBindingIdentity) => boolean) | null = null;
-  private providerOperationRecordContains: ((key: string) => boolean) | null = null;
-  private jobJournalStatusRead: ((jobId: string) => LaunchReclamationProbeResult) | null = null;
   private readonly runtime: Runtime;
 
   constructor(options: { runtime: Runtime }) {
@@ -167,12 +163,11 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     this.providerOperationJournalContains = contains;
   }
 
-  connectProviderOperationRecordJournal(contains: (key: string) => boolean): void {
-    this.providerOperationRecordContains = contains;
-  }
-
-  connectLaunchReclamationJournal(readStatus: (jobId: string) => LaunchReclamationProbeResult): void {
-    this.jobJournalStatusRead = readStatus;
+  connectLaunchReclamationOracle<K extends PermitHolder['kind']>(
+    kind: K,
+    oracle: (permit: LaunchPermit & { holder: Extract<PermitHolder, { kind: K }> }) => LaunchReclamationProbeResult,
+  ): void {
+    this.launchReclamationOracles.set(kind, oracle as LaunchReclamationOracle);
   }
 
   get active(): number {
@@ -246,15 +241,6 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
   }
 
-  cancelQueued(reservationId: string, pool: LaunchPool): boolean {
-    const queuedLaunches = this.getQueue(pool);
-    const index = queuedLaunches.findIndex((entry) => entry.reservationId === reservationId);
-    if (index === -1) return false;
-    const entry = queuedLaunches[index];
-    if (entry === undefined) return false;
-    return this.cancelQueuedEntry(entry, pool).kind === 'cancelled';
-  }
-
   queueDepth(pool: LaunchPool = 'default'): number {
     return this.getQueue(pool).length;
   }
@@ -292,8 +278,6 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   sweepStaleLaunchPermits(): void {
-    const readStatus = this.jobJournalStatusRead;
-    if (readStatus === null) return;
     const now = this.runtime.time.now();
 
     for (const state of Object.values(this.pools)) {
@@ -301,14 +285,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         const heldForMs = Math.max(0, now - permit.acquiredAt);
         if (heldForMs < LAUNCH_RECLAMATION_AGE_FLOOR_MS) continue;
 
-        let probed: LaunchReclamationProbeResult;
-        try {
-          probed = readStatus(permit.jobId);
-        } catch {
-          continue;
-        }
-        if (probed.kind === 'job-live') continue;
-        this.reclaimLaunchPermit(permit, probed);
+        this.reclaimLaunchPermit(permit);
       }
     }
   }
@@ -422,7 +399,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return permit;
   }
 
-  reclaimLaunchPermit(permit: LaunchPermit, evidence: LaunchPermitReclamationEvidence): boolean {
+  reclaimLaunchPermit(permit: LaunchPermit): boolean {
     const active = this.getActiveMap(permit.pool).get(permit.jobId);
     if (
       active === undefined ||
@@ -431,8 +408,15 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     ) {
       return false;
     }
-    const eligibility = this.launchReclamationEligibility(permit);
-    if (eligibility.kind === 'retained') return false;
+    const oracle = this.launchReclamationOracles.get(permit.holder.kind);
+    if (oracle === undefined) return false;
+    let evidence: LaunchReclamationProbeResult;
+    try {
+      evidence = oracle(permit);
+    } catch {
+      return false;
+    }
+    if (evidence.kind === 'job-live') return false;
 
     const reclaimedAtMs = this.runtime.time.now();
     this.getActiveMap(permit.pool).delete(permit.jobId);
@@ -441,7 +425,6 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       permit,
       heldForMs: Math.max(0, reclaimedAtMs - permit.acquiredAt),
       evidence,
-      providerOperationEvidence: eligibility.providerOperationEvidence,
       reclaimedAtMs,
     });
     this.admitQueueHead(permit.pool);
@@ -525,7 +508,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       }
       this.clearSettledUnboundCheck(key);
       this.operationBindings.set(key, { kind: 'settled', reservationId: permit.reservationId });
-      this.releaseLaunch(permit);
+      void this.releaseLaunch(permit);
       return { kind: 'already-settled' };
     }
     if (current?.kind === 'settled') {
@@ -622,7 +605,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
     const permit = current.kind === 'prepared' ? current.sourcePermit : current.proxyPermit;
     this.operationBindings.set(key, { kind: 'settled', reservationId: permit.reservationId });
-    this.releaseLaunch(permit);
+    void this.releaseLaunch(permit);
     return { kind: 'settled', reservationId: permit.reservationId };
   }
 
@@ -744,7 +727,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         for (const [index, outcome] of outcomes.entries()) {
           const attempt = attempts[index];
           if (attempt === undefined) continue;
-          consumeOutcome(attempt.cleanup, attempt.task, outcome);
+          void consumeOutcome(attempt.cleanup, attempt.task, outcome);
         }
 
         if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
@@ -789,10 +772,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     permit: LaunchPermit;
     heldForMs: number;
     evidence: LaunchPermitReclamationEvidence;
-    providerOperationEvidence: LaunchPermitReclamationDiagnostic['providerOperationEvidence'];
     reclaimedAtMs: number;
   }): void {
-    const { permit, heldForMs, evidence, providerOperationEvidence, reclaimedAtMs } = input;
+    const { permit, heldForMs, evidence, reclaimedAtMs } = input;
     this.reclaimedLaunches.delete(permit.reservationId);
     this.reclaimedLaunches.set(permit.reservationId, {
       reservationId: permit.reservationId,
@@ -802,7 +784,6 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       holder: permit.holder,
       heldForMs,
       evidence,
-      ...(providerOperationEvidence === undefined ? {} : { providerOperationEvidence }),
       reclaimedAtMs,
     });
     if (this.reclaimedLaunches.size > MAX_LAUNCH_RECLAMATION_DIAGNOSTICS) {
@@ -1051,36 +1032,5 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       );
     }
     return true;
-  }
-
-  private launchReclamationEligibility(permit: LaunchPermit): LaunchReclamationEligibility {
-    if (permit.holder.kind === 'system-task') return { kind: 'retained' };
-    if (permit.holder.kind === 'proxy-operation') {
-      const contains = this.providerOperationJournalContains;
-      if (contains === null) return { kind: 'retained' };
-      try {
-        if (contains({ jobId: permit.jobId, operationId: permit.holder.operationId })) return { kind: 'retained' };
-      } catch {
-        return { kind: 'retained' };
-      }
-      return {
-        kind: 'eligible',
-        providerOperationEvidence: { kind: 'absent', operationId: permit.holder.operationId },
-      };
-    }
-    if (permit.holder.kind === 'undecided-provider-operation') {
-      const contains = this.providerOperationRecordContains;
-      if (contains === null) return { kind: 'retained' };
-      try {
-        if (permit.holder.recordKeys.some((recordKey) => contains(recordKey))) return { kind: 'retained' };
-      } catch {
-        return { kind: 'retained' };
-      }
-      return {
-        kind: 'eligible',
-        providerOperationEvidence: { kind: 'all-records-absent', recordKeys: permit.holder.recordKeys },
-      };
-    }
-    return { kind: 'eligible' };
   }
 }

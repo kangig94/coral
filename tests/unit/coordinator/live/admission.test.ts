@@ -381,7 +381,6 @@ describe('launch admission', () => {
       invariantMessage,
     );
     expect(() => coordinator.releaseLaunch(invalidPermit)).toThrow(invariantMessage);
-    expect(() => coordinator.cancelQueued('intruder', invalidPool)).toThrow(invariantMessage);
     expect(() => coordinator.queueDepth(invalidPool)).toThrow(invariantMessage);
     expect(() => coordinator.queuePosition('intruder', invalidPool)).toThrow(invariantMessage);
     expect(() => coordinator.getActiveJobIds(invalidPool)).toThrow(invariantMessage);
@@ -579,7 +578,7 @@ describe('launch admission', () => {
     expect(coordinator.queueDepth()).toBe(0);
   });
 
-  it('cancelQueued rejects the queued permit and advances the queue head', async () => {
+  it('queued-handle cancellation rejects the queued permit and advances the queue head', async () => {
     const first = coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'), 'default');
     expect(first).toMatchObject({
       type: 'immediate',
@@ -596,9 +595,7 @@ describe('launch admission', () => {
       (error: unknown) => error as Error,
     );
 
-    const reservation = coordinator.reservationFor('job-2');
-    if (reservation?.kind !== 'queued') throw new Error('expected queued reservation');
-    expect(coordinator.cancelQueued(reservation.reservationId, reservation.pool)).toBe(true);
+    expect(queuedSecond.cancel()).toEqual({ kind: 'cancelled' });
     expect((await rejected)?.message).toBe('Launch canceled while queued');
 
     const thirdPermit = queuedThird.waitForPermit();
@@ -636,9 +633,6 @@ describe('launch admission', () => {
     if (firstBlocker === 'queue_full' || firstBlocker.type !== 'immediate') throw new Error('expected blocker');
     const staleHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('old-session'), 'default');
     if (staleHandle === 'queue_full' || staleHandle.type !== 'queued') throw new Error('expected old queued handle');
-    const staleReservation = coordinator.reservationFor('reused-job');
-    if (staleReservation?.kind !== 'queued') throw new Error('expected old queued reservation');
-
     coordinator.releaseLaunch(firstBlocker.permit);
     const stalePermit = await staleHandle.waitForPermit();
     coordinator.releaseLaunch(stalePermit);
@@ -656,7 +650,6 @@ describe('launch admission', () => {
     }
 
     expect(staleHandle.cancel()).toEqual({ kind: 'admitted', permit: stalePermit });
-    expect(coordinator.cancelQueued(staleReservation.reservationId, staleReservation.pool)).toBe(false);
     expect(coordinator.queuePosition('reused-job', 'default')).toBe(1);
 
     const permit = currentHandle.waitForPermit();
@@ -691,8 +684,10 @@ describe('launch admission', () => {
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
-    localCoordinator.connectLaunchReclamationJournal(() => ({ kind: 'job-terminal', phase: 'completed' }));
-    localCoordinator.connectProviderOperationBindingJournal(() => false);
+    localCoordinator.connectLaunchReclamationOracle('proxy-operation', () => ({
+      kind: 'job-terminal',
+      phase: 'completed',
+    }));
     const ended = localCoordinator.requestLaunch('ended-job', 'codex', providerOwner('ended-session'), 'default');
     if (ended === 'queue_full' || ended.type !== 'immediate') throw new Error('expected ended permit');
     const identity = { jobId: ended.permit.jobId, operationId: 'ended-operation' };
@@ -719,7 +714,6 @@ describe('launch admission', () => {
         holder: { kind: 'proxy-operation', operationId: identity.operationId },
         heldForMs: LAUNCH_RECLAMATION_AGE_FLOOR_MS,
         evidence: { kind: 'job-terminal', phase: 'completed' },
-        providerOperationEvidence: { kind: 'absent', operationId: identity.operationId },
       }),
     ]);
   });
@@ -730,7 +724,7 @@ describe('launch admission', () => {
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
-    localCoordinator.connectLaunchReclamationJournal(() => ({ kind: 'job-absent' }));
+    localCoordinator.connectLaunchReclamationOracle('local-execution', () => ({ kind: 'job-absent' }));
     const starting = localCoordinator.requestLaunch(
       'starting-job',
       'codex',
@@ -763,6 +757,41 @@ describe('launch admission', () => {
     ]);
   });
 
+  it('never reclaims a holder kind without a registered oracle', () => {
+    let now = 22_000;
+    const base = createRealRuntime('prod');
+    const localCoordinator = new LaunchCoordinator({
+      runtime: { ...base, time: { ...base.time, now: () => now } },
+    });
+    const blocker = localCoordinator.requestLaunch(
+      'queue-handoff-blocker',
+      'codex',
+      providerOwner('queue-handoff-blocker-session'),
+      'default',
+    );
+    const queued = localCoordinator.requestLaunch(
+      'unregistered-holder',
+      'codex',
+      providerOwner('unregistered-holder-session'),
+      'default',
+    );
+    if (blocker === 'queue_full' || blocker.type !== 'immediate') throw new Error('expected blocker permit');
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued reservation');
+
+    expect(localCoordinator.releaseLaunch(blocker.permit)).toMatchObject({ kind: 'released' });
+    now += LAUNCH_RECLAMATION_AGE_FLOOR_MS;
+    localCoordinator.sweepStaleLaunchPermits();
+
+    expect(localCoordinator.reservationFor('unregistered-holder')).toMatchObject({
+      kind: 'active',
+      holder: { kind: 'queue-handoff' },
+    });
+    expect(localCoordinator.launchReclamationDiagnostics()).toEqual([]);
+    const cancellation = queued.cancel();
+    if (cancellation.kind !== 'admitted') throw new Error('expected queue handoff permit');
+    expect(localCoordinator.releaseLaunch(cancellation.permit)).toMatchObject({ kind: 'released' });
+  });
+
   it('retains undecided provider-operation ownership until every named record is absent', async () => {
     let now = 25_000;
     const base = createRealRuntime('prod');
@@ -771,7 +800,6 @@ describe('launch admission', () => {
     });
     const recordKeys = ['provider-operation-record-1', 'provider-operation-record-2'];
     const presentRecords = new Set(recordKeys);
-    localCoordinator.connectLaunchReclamationJournal(() => ({ kind: 'job-terminal', phase: 'completed' }));
     const held = localCoordinator.restoreActiveLaunch(
       'ambiguous-job',
       'codex',
@@ -779,12 +807,16 @@ describe('launch admission', () => {
       'default',
       { kind: 'undecided-provider-operation', recordKeys },
     );
-    expect(localCoordinator.reclaimLaunchPermit(held, { kind: 'job-terminal', phase: 'completed' })).toBe(false);
-    localCoordinator.connectProviderOperationRecordJournal(() => {
+    expect(localCoordinator.reclaimLaunchPermit(held)).toBe(false);
+    localCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', () => {
       throw new Error('record journal unavailable');
     });
-    expect(localCoordinator.reclaimLaunchPermit(held, { kind: 'job-terminal', phase: 'completed' })).toBe(false);
-    localCoordinator.connectProviderOperationRecordJournal((key) => presentRecords.has(key));
+    expect(localCoordinator.reclaimLaunchPermit(held)).toBe(false);
+    localCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', (permit) =>
+      permit.holder.recordKeys.some((key) => presentRecords.has(key))
+        ? { kind: 'job-live' }
+        : { kind: 'job-terminal', phase: 'completed' },
+    );
     const waiting = localCoordinator.requestLaunch(
       'post-ambiguity',
       'codex',
@@ -814,18 +846,19 @@ describe('launch admission', () => {
       expect.objectContaining({
         reservationId: held.reservationId,
         holder: { kind: 'undecided-provider-operation', recordKeys },
-        providerOperationEvidence: { kind: 'all-records-absent', recordKeys },
+        evidence: { kind: 'job-terminal', phase: 'completed' },
       }),
     ]);
   });
 
-  it('retains permits when job status is unreadable or a proxy journal is unconnected', () => {
+  it('retains permits when an oracle throws or a holder kind has no registered oracle', () => {
     let now = 30_000;
     const base = createRealRuntime('prod');
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
-    localCoordinator.connectLaunchReclamationJournal((jobId) => {
+    localCoordinator.connectLaunchReclamationOracle('local-execution', (permit) => {
+      const jobId = permit.jobId;
       if (jobId === 'unreadable-job') throw new Error('journal unavailable');
       return { kind: 'job-terminal', phase: 'aborted' };
     });
@@ -863,7 +896,7 @@ describe('launch admission', () => {
     const localCoordinator = new LaunchCoordinator({
       runtime: { ...base, time: { ...base.time, now: () => now } },
     });
-    localCoordinator.connectLaunchReclamationJournal(() => ({ kind: 'job-live' }));
+    localCoordinator.connectLaunchReclamationOracle('local-execution', () => ({ kind: 'job-live' }));
     const live = localCoordinator.requestLaunch('live-job', 'codex', providerOwner('live-session'), 'default');
     if (live === 'queue_full' || live.type !== 'immediate') throw new Error('expected live permit');
 

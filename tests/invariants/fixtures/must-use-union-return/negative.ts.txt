@@ -1,0 +1,10 @@
+type Decision = Readonly<{ kind: 'accepted' }> | Readonly<{ kind: 'refused'; reason: string }>;
+
+declare function decide(): Decision;
+declare function execute(): Promise<'completed' | 'held'>;
+
+decide();
+
+async function discardExecutionDisposition(): Promise<void> {
+  await execute();
+}

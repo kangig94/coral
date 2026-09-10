@@ -147,13 +147,6 @@ function jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string): boolean {
-  const reservation = launchCoordinator.reservationFor(jobId);
-  return reservation?.kind === 'queued'
-    ? launchCoordinator.cancelQueued(reservation.reservationId, reservation.pool)
-    : false;
-}
-
 function _getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
   return launchCoordinator.getActiveJobIds(pool);
 }
@@ -752,9 +745,6 @@ describe('ExecutionService wait', () => {
   afterEach(async () => {
     trackAllJobDirs();
     terminateAll();
-    for (const jobId of createdJobIds) {
-      cancelQueued(jobId);
-    }
     await new Promise((resolve) => setTimeout(resolve, 0));
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });

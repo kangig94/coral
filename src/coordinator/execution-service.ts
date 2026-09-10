@@ -13,7 +13,6 @@ import type {
   ProviderSessionLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
-import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
@@ -190,9 +189,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.abortService = new JobAbortService({
       abortRegistry: this.abortRegistry,
-      progressStore: this.progressStore,
-      launchAdmission: deps.launchCoordinator,
-      launchOrchestrator: this.launchOrchestrator,
     });
   }
 
@@ -306,10 +302,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     runtimeRecord: AppServerRuntime,
   ): Promise<RecoveredAppServerInterruptResult> {
     return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
-  }
-
-  private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
-    this.abortService.finishQueuedAbort(jobId, sessionId, reason);
   }
 
   async finalizeInterruptedAppServerJob(

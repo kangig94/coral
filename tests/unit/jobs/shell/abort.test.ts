@@ -112,13 +112,6 @@ function _jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string): boolean {
-  const reservation = launchCoordinator.reservationFor(jobId);
-  return reservation?.kind === 'queued'
-    ? launchCoordinator.cancelQueued(reservation.reservationId, reservation.pool)
-    : false;
-}
-
 function _getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
   return launchCoordinator.getActiveJobIds(pool);
 }
@@ -662,9 +655,6 @@ describe('ExecutionService abort', () => {
   afterEach(async () => {
     trackAllJobDirs();
     terminateAll();
-    for (const jobId of createdJobIds) {
-      cancelQueued(jobId);
-    }
     await new Promise((resolve) => setTimeout(resolve, 0));
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
@@ -720,21 +710,25 @@ describe('ExecutionService abort', () => {
     if (decision.status !== 'queued') throw new Error('expected queued launch');
     trackJob(decision.jobId);
 
-    const abortResult = service.abort([decision.jobId]);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
+    expect(launchCoordinator.reservationFor(decision.jobId)).toMatchObject({ kind: 'queued' });
+    const abortResult = service.abort([decision.jobId]);
 
     expect(abortResult).toEqual({
       aborted: [decision.jobId],
       notFound: [],
     });
-    expect(progressStore.readStatus(decision.jobId)).toMatchObject({
-      phase: 'aborted',
-      result: {
-        outcome: { kind: 'aborted', reason: 'queue_shutdown' },
-      },
+    await vi.waitFor(() => {
+      expect(progressStore.readStatus(decision.jobId)).toMatchObject({
+        phase: 'aborted',
+        result: {
+          outcome: { kind: 'aborted', reason: 'queue_shutdown' },
+        },
+      });
     });
+    expect(launchCoordinator.reservationFor(decision.jobId)).toBeNull();
   });
 });
 import { initTestJob } from '#tests/helpers/session.js';

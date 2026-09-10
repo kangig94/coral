@@ -230,7 +230,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       case 'job-local':
         return true;
       case 'proxy-binding':
-        this.deps.providerOperationBinding.settleProviderOperationBinding({
+        void this.deps.providerOperationBinding.settleProviderOperationBinding({
           jobId,
           operationId: identity.operationId,
         });
@@ -463,10 +463,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   private releaseAdmissionReservation(admission: AcceptedAdmission): void {
     if (admission.type === 'queued') {
       const cancellation = admission.cancel();
-      if (cancellation.kind === 'admitted') this.deps.launchAdmission.releaseLaunch(cancellation.permit);
+      if (cancellation.kind === 'admitted') void this.deps.launchAdmission.releaseLaunch(cancellation.permit);
       return;
     }
-    this.deps.launchAdmission.releaseLaunch(admission.permit);
+    void this.deps.launchAdmission.releaseLaunch(admission.permit);
   }
 
   private buildProviderLaunch(
@@ -752,7 +752,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     // Every cleanup is deliberately idempotent.
     this.deps.abortRegistry.remove(jobId);
     try {
-      this.deps.sessionManager.releaseJob(sessionId, jobId);
+      void this.deps.sessionManager.releaseJob(sessionId, jobId);
     } catch (cleanupError: unknown) {
       backendLog.error(`Failed to release session claim for setup-failed job ${jobId}: ${errorMessage(cleanupError)}`);
     }
@@ -825,7 +825,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           throw finalizeError;
         }
       } finally {
-        if (permit !== null && releasesLaunchPermit(disposition)) launchAdmission.releaseLaunch(permit);
+        if (permit !== null && releasesLaunchPermit(disposition)) void launchAdmission.releaseLaunch(permit);
         this.appServerJobs.delete(jobId);
         this.quiescedAppServerJobs.delete(jobId);
         this.appServerHandoffAborts.delete(jobId);
@@ -917,7 +917,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           throw finalizeError;
         }
       } finally {
-        if (permit !== null && releasesLaunchPermit(disposition)) launchAdmission.releaseLaunch(permit);
+        if (permit !== null && releasesLaunchPermit(disposition)) void launchAdmission.releaseLaunch(permit);
         this.appServerJobs.delete(jobId);
         this.quiescedAppServerJobs.delete(jobId);
         this.appServerHandoffAborts.delete(jobId);
@@ -925,7 +925,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     })();
   }
 
-  finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
+  private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
     this.finishAbortedJob(jobId, sessionId, reason);
   }
 
@@ -937,7 +937,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   private releaseTerminalJob(jobId: string, sessionId: string): void {
     const { abortRegistry, sessionManager } = this.deps;
     abortRegistry.remove(jobId);
-    sessionManager.releaseJob(sessionId, jobId);
+    void sessionManager.releaseJob(sessionId, jobId);
   }
 
   private elapsedJobDurationMs(jobId: string): number {
@@ -1401,7 +1401,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             signal,
           );
         } catch (error: unknown) {
-          this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
+          void this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
           throw error;
         }
         if (activation.kind === 'remote-executing') {
@@ -1639,7 +1639,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         if (settled) return;
         settled = true;
         const cancellation = admission.cancel();
-        if (cancellation.kind === 'admitted') this.deps.launchAdmission.releaseLaunch(cancellation.permit);
+        if (cancellation.kind === 'admitted') void this.deps.launchAdmission.releaseLaunch(cancellation.permit);
         cleanup();
         resolve({ kind: 'aborted' });
       };
@@ -1654,7 +1654,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         .waitForPermit()
         .then((permit) => {
           if (settled) {
-            this.deps.launchAdmission.releaseLaunch(permit);
+            void this.deps.launchAdmission.releaseLaunch(permit);
             return;
           }
           settled = true;
@@ -1688,6 +1688,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       'aborted',
     );
     abortRegistry.remove(jobId);
-    sessionManager.releaseJob(sessionId, jobId);
+    void sessionManager.releaseJob(sessionId, jobId);
   }
 }

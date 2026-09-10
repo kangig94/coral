@@ -163,6 +163,24 @@ export const launchPermitDiagnosticsSchema = z
           .strict(),
       )
       .optional(),
+    providerOperationAdoptionRefusals: z
+      .array(
+        z
+          .object({
+            triggerRecordKey: z.string().min(1),
+            rowDisposition: z.enum(['discarded', 'absent']),
+            releasedLaunchPermits: z.number().int().nonnegative(),
+            recordKey: z.string().min(1),
+            jobId: z.string().min(1),
+            operationId: z.string().min(1),
+            proxyInstanceId: z.string().min(1),
+            buildSetId: z.string().min(1),
+            reason: z.string().min(1),
+            observedAtMs: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      )
+      .optional(),
     launchReclamations: z
       .array(
         z
@@ -177,17 +195,6 @@ export const launchPermitDiagnosticsSchema = z
               z.object({ kind: z.literal('job-absent') }).strict(),
               z.object({ kind: z.literal('job-terminal'), phase: z.enum(['completed', 'error', 'aborted']) }).strict(),
             ]),
-            providerOperationEvidence: z
-              .discriminatedUnion('kind', [
-                z.object({ kind: z.literal('absent'), operationId: z.string().min(1) }).strict(),
-                z
-                  .object({
-                    kind: z.literal('all-records-absent'),
-                    recordKeys: z.array(z.string().min(1)).min(1).readonly(),
-                  })
-                  .strict(),
-              ])
-              .optional(),
             reclaimedAtMs: z.number().finite().nonnegative(),
           })
           .strict(),

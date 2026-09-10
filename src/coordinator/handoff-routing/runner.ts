@@ -1357,7 +1357,7 @@ export async function runHandoff(
         terminalDisposition,
         options.signal,
       );
-      recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
+      void recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
     }
     const publicationIncidents = collectedIncidents(incidents);
     return publicationIncidents === null
@@ -1369,7 +1369,7 @@ export async function runHandoff(
       throwPhase: executionPhase.current,
     };
     const terminal = await recordTerminal(runtime, time, invocationId, selection, terminalDisposition, options.signal);
-    recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
+    void recordIncident(incidents, invocationId, { phase: 'terminal', terminalDisposition, publication: terminal });
     const publicationIncidents = collectedIncidents(incidents);
     if (publicationIncidents !== null) {
       throw new HandoffRunError(originalError, publicationIncidents);

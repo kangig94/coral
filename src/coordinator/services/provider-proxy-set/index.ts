@@ -1224,7 +1224,7 @@ export class ProviderProxySetLifecycle {
     const timer = this.#deps.time.setTimeout(() => {
       if (this.#pendingOperatorDispositionWrites.get(setKey)?.timer !== timer) return;
       this.#pendingOperatorDispositionWrites.delete(setKey);
-      this.#setOperatorDispositions(identity, new Map(desired), status, retiredSubjectKeys);
+      void this.#setOperatorDispositions(identity, new Map(desired), status, retiredSubjectKeys);
     }, OPERATOR_DISPOSITION_STORE_RETRY_MS);
     timer.unref?.();
     this.#pendingOperatorDispositionWrites.set(setKey, { timer });
@@ -1977,7 +1977,7 @@ export class ProviderProxySetLifecycle {
     }
     this.#slots.set(key, slot);
     this.#slots.delete(slotId);
-    this.#setOperatorDispositions(
+    void this.#setOperatorDispositions(
       identity,
       new Map([
         [
@@ -2299,7 +2299,7 @@ export class ProviderProxySetLifecycle {
       fault: incident.kind,
       policy: incident.policy,
     };
-    this.#recordDecision(slot, decision, preserveErrorIdentity(incident.error));
+    void this.#recordDecision(slot, decision, preserveErrorIdentity(incident.error));
   }
 
   #faultAuthority(
@@ -2492,12 +2492,16 @@ export class ProviderProxySetLifecycle {
     const availability = this.#operatorExitAvailability(slot);
     if (availability.kind === 'not-held') {
       if (slot.kind === 'available' || slot.kind === 'draining') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
+        void this.#recordOperatorExitRefusal(slot, 'operator_exit_requires_held_set', 'ordinary-drain');
       }
       return availability;
     }
     if (availability.kind === 'deadline-pending') {
-      this.#recordOperatorExitRefusal(availability.slot, 'operator_exit_deadline_pending', 'set-adoption-deadline');
+      void this.#recordOperatorExitRefusal(
+        availability.slot,
+        'operator_exit_deadline_pending',
+        'set-adoption-deadline',
+      );
       return { kind: 'deadline-pending', remainingMs: availability.remainingMs };
     }
     const authorizedSlot = availability.slot;
@@ -2705,11 +2709,11 @@ export class ProviderProxySetLifecycle {
         };
       }
       if (proofCurrentness.kind === 'store-unreadable') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+        void this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
         return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
       }
       if (evidence.kind === 'store-unreadable') {
-        this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+        void this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
         return { kind: 'store-unreadable', setIdentity: address, effect: noEffect };
       }
       if (request.behavior === 'abandon' && evidence.kind === 'reap-required') {
@@ -2724,10 +2728,10 @@ export class ProviderProxySetLifecycle {
           setIdentity: slot.identity,
         };
         if (slot.kind === 'capsule-recovering') {
-          this.#recordOperatorDisposition(decision);
+          void this.#recordOperatorDisposition(decision);
           this.#reportDecision(decision);
         } else {
-          this.#recordDecision(slot, decision);
+          void this.#recordDecision(slot, decision);
         }
         const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
           kind: 'operator-abandoned',
@@ -2833,10 +2837,10 @@ export class ProviderProxySetLifecycle {
                 setIdentity: slot.identity,
               };
               if (slot.kind === 'capsule-recovering') {
-                this.#recordOperatorDisposition(decision);
+                void this.#recordOperatorDisposition(decision);
                 this.#reportDecision(decision);
               } else {
-                this.#recordDecision(slot, decision);
+                void this.#recordDecision(slot, decision);
               }
               const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
                 kind: 'operator-abandoned',
@@ -2859,7 +2863,7 @@ export class ProviderProxySetLifecycle {
                 }),
               });
             }
-            this.#recordOperatorExitRefusal(
+            void this.#recordOperatorExitRefusal(
               slot,
               'operator_exit_recorded_group_unattributable',
               'operator-abandonment',
@@ -2879,14 +2883,18 @@ export class ProviderProxySetLifecycle {
                 effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
               };
             }
-            this.#recordOperatorExitRefusal(slot, 'operator_exit_identity_unobservable', 'operator-abandonment');
+            void this.#recordOperatorExitRefusal(slot, 'operator_exit_identity_unobservable', 'operator-abandonment');
             return {
               kind: 'identity-unobservable',
               setIdentity: address,
               effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
             };
           case 'signal-authorization-refused':
-            this.#recordOperatorExitRefusal(slot, 'operator_exit_signal_authorization_refused', 'operator-abandonment');
+            void this.#recordOperatorExitRefusal(
+              slot,
+              'operator_exit_signal_authorization_refused',
+              'operator-abandonment',
+            );
             return {
               kind: 'signal-authorization-refused',
               setIdentity: address,
@@ -2900,7 +2908,7 @@ export class ProviderProxySetLifecycle {
               effect: { signalsSent, containmentAbsent: false, representationAction: 'none' },
             };
           case 'store-unreadable':
-            this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
+            void this.#recordOperatorExitRefusal(slot, 'operator_exit_store_unreadable', 'store-repair');
             return {
               kind: 'store-unreadable',
               setIdentity: address,
@@ -2919,10 +2927,10 @@ export class ProviderProxySetLifecycle {
           setIdentity: slot.identity,
         };
         if (slot.kind === 'capsule-recovering') {
-          this.#recordOperatorDisposition(decision);
+          void this.#recordOperatorDisposition(decision);
           this.#reportDecision(decision);
         } else {
-          this.#recordDecision(slot, decision);
+          void this.#recordDecision(slot, decision);
           if (
             (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
             slot.controlReattachmentWindow !== null
@@ -2969,7 +2977,7 @@ export class ProviderProxySetLifecycle {
       }
       const enforcerVerdict = providerProxySetEnforcerVerdict(evidence.observations);
       if (request.behavior === 'contain') {
-        this.#recordOperatorExitRefusal(
+        void this.#recordOperatorExitRefusal(
           slot,
           `operator_exit_${enforcerVerdict}`,
           'operator-abandonment',
@@ -2990,10 +2998,10 @@ export class ProviderProxySetLifecycle {
         setIdentity: slot.identity,
       };
       if (slot.kind === 'capsule-recovering') {
-        this.#recordOperatorDisposition(decision);
+        void this.#recordOperatorDisposition(decision);
         this.#reportDecision(decision);
       } else {
-        this.#recordDecision(slot, decision);
+        void this.#recordDecision(slot, decision);
       }
       const abandonmentEvidence: OperatorAbandonmentEvidence = Object.freeze({
         kind: 'operator-abandoned',
@@ -3046,7 +3054,7 @@ export class ProviderProxySetLifecycle {
   }>): Promise<ProviderProxySetBooleanOperatorExitResult> {
     const commitment = this.#commitOperatorAbandonment(slot, abandonmentEvidence, proof);
     if (commitment.kind === 'held') {
-      this.#recordOperatorExitRefusal(slot, 'operator_exit_disposition_store_write_failed', 'store-repair');
+      void this.#recordOperatorExitRefusal(slot, 'operator_exit_disposition_store_write_failed', 'store-repair');
       return {
         kind: 'store-unreadable',
         setIdentity,
@@ -3780,7 +3788,7 @@ export class ProviderProxySetLifecycle {
             this.#releaseAcquisitionPublicationSession(slot, error);
             return;
           }
-          this.#deleteOperatorDispositions(slot.identity);
+          void this.#deleteOperatorDispositions(slot.identity);
           this.#establish(established.set, established.publicationReceipt, slot.routeKey, slot.capsulePath, 'serve');
           return;
         }
@@ -3829,7 +3837,7 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot) return;
     slot.completedAttempts += 1;
     const incident = singleLineErrorSummary(reason);
-    this.#setOperatorDispositions(
+    void this.#setOperatorDispositions(
       slot.identity,
       new Map([
         [
@@ -3891,7 +3899,7 @@ export class ProviderProxySetLifecycle {
     };
     this.#slots.set(slot.key, recovering);
     this.#armObservedOperatorExitGate(recovering);
-    this.#setOperatorDispositions(
+    void this.#setOperatorDispositions(
       slot.identity,
       new Map([
         [
@@ -3933,7 +3941,7 @@ export class ProviderProxySetLifecycle {
             }
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
-            this.#deleteOperatorDispositions(slot.identity);
+            void this.#deleteOperatorDispositions(slot.identity);
             this.#establish(
               outcome.set,
               outcome.publicationReceipt,
@@ -4139,7 +4147,7 @@ export class ProviderProxySetLifecycle {
     }
     const decision = this.#drainDecision(slot, reason, liveClaims);
     slot.retirementDecision = decision;
-    this.#recordDecision(slot, decision);
+    void this.#recordDecision(slot, decision);
     slot.kind = 'draining';
     this.#removeRoute(slot);
   }
@@ -4220,7 +4228,7 @@ export class ProviderProxySetLifecycle {
     const token = window.attemptToken;
     const abort = new AbortController();
     window.attemptAbort = abort;
-    this.#recordDecision(slot, this.#controlReattachmentHoldDecision(slot, window));
+    void this.#recordDecision(slot, this.#controlReattachmentHoldDecision(slot, window));
     const authority = slot.authority;
     const turn = this.#deps.recoveryDispatcher.begin(
       'control-reattachment',
@@ -4256,7 +4264,7 @@ export class ProviderProxySetLifecycle {
                   return;
                 }
                 this.#clearControlReattachment(slot, window);
-                this.#deleteOperatorDispositions(slot.identity);
+                void this.#deleteOperatorDispositions(slot.identity);
                 this.#containmentAbsent(slot.identity, outcome.disappearanceReceipt, proof);
               },
               (error: unknown) => {
@@ -4399,7 +4407,7 @@ export class ProviderProxySetLifecycle {
     this.#clearObservedOperatorExitGate(slot);
     slot.operatorExitNotBeforeMonotonicMs = null;
     this.#flushPreserveReports(slot);
-    this.#deleteOperatorDispositions(slot.identity);
+    void this.#deleteOperatorDispositions(slot.identity);
     if (slot.kind === 'available' && slot.routeKey !== null) this.#routeIndex.set(slot.routeKey, slot.key);
     this.#deps.controlEstablished(promoted);
     if (slot.kind === 'draining') this.claimsChanged(slot.identity);
@@ -4537,7 +4545,7 @@ export class ProviderProxySetLifecycle {
       setIdentity: slot.identity,
       refusedDecision,
     };
-    this.#recordDecision(slot, decision);
+    void this.#recordDecision(slot, decision);
     this.#scheduleReattachmentHoldRetry(slot, window);
   }
 
@@ -4591,7 +4599,7 @@ export class ProviderProxySetLifecycle {
                   return;
                 }
                 this.#clearControlReattachment(slot, window);
-                this.#deleteOperatorDispositions(slot.identity);
+                void this.#deleteOperatorDispositions(slot.identity);
                 this.#containmentAbsent(slot.identity, outcome.disappearanceReceipt, proof);
               },
               (error: unknown) => {
@@ -4692,7 +4700,7 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot || slot.kind === 'containing' || slot.kind === 'containment-wait') {
       return;
     }
-    this.#recordDecision(slot, decision);
+    void this.#recordDecision(slot, decision);
     this.#armObservedOperatorExitGate(slot);
     slot.retirementDecision = null;
     this.#removeRoute(slot);
@@ -4739,7 +4747,7 @@ export class ProviderProxySetLifecycle {
       ...current,
       waitingFor: outcome === 'not-sent' ? 'containment-authorization' : 'containment-outcome-unknown',
     });
-    this.#setOperatorDispositions(decision.setIdentity, dispositions);
+    void this.#setOperatorDispositions(decision.setIdentity, dispositions);
   }
 
   #recordDecision(
@@ -5007,7 +5015,7 @@ export class ProviderProxySetLifecycle {
       setIdentity: disposition.setIdentity,
       refusedDecision,
     };
-    this.#recordDecision(slot, decision);
+    void this.#recordDecision(slot, decision);
   }
 
   #recordHeartbeatObservation(slot: EstablishedSlot, incident: ProviderProxyHeartbeatObservation): void {
@@ -5039,7 +5047,7 @@ export class ProviderProxySetLifecycle {
       }
       const decision = this.#heartbeatPreserveDecision(slot, incident, 'unclassified', transition.error);
       if (transition.effect === 'unusable-holding') {
-        this.#recordDecision(slot, decision, preserveErrorIdentity(transition.error));
+        void this.#recordDecision(slot, decision, preserveErrorIdentity(transition.error));
         return;
       }
       this.#applyHeartbeatDisposition(
@@ -5053,7 +5061,7 @@ export class ProviderProxySetLifecycle {
       slot.heartbeatEvidenceWindows.set(key, transition.window);
       const decision = this.#heartbeatPreserveDecision(slot, incident, 'unanswered', transition.error);
       if (transition.effect === 'silence-holding') {
-        this.#recordDecision(slot, decision, preserveErrorIdentity(transition.error));
+        void this.#recordDecision(slot, decision, preserveErrorIdentity(transition.error));
         return;
       }
       this.#applyHeartbeatDisposition(
@@ -5145,7 +5153,7 @@ export class ProviderProxySetLifecycle {
       recoveredLiveClaimsHold = true;
     }
     if (operatorDisposition !== undefined || hasDurableDisposition) {
-      this.#setOperatorDispositions(slot.identity, dispositions ?? new Map(), undefined, new Set([subjectKey]));
+      void this.#setOperatorDispositions(slot.identity, dispositions ?? new Map(), undefined, new Set([subjectKey]));
     }
     if (recoveredLiveClaimsHold && !this.#hasLiveClaimsHold(slot)) {
       this.#clearObservedOperatorExitGate(slot);
@@ -5184,7 +5192,7 @@ export class ProviderProxySetLifecycle {
       liveClaims: this.#deps.claims.claimsFor(slot.identity).length,
       setIdentity: slot.identity,
     };
-    this.#recordOperatorDisposition(decision);
+    void this.#recordOperatorDisposition(decision);
     this.#reportDecision(decision);
     slot.recoveryPhase = 'containment-wait';
     this.#runContainmentAttempt(slot, decision);
@@ -5327,7 +5335,7 @@ export class ProviderProxySetLifecycle {
         error: singleLineErrorSummary(fault.error),
       },
     };
-    this.#recordDecision(slot, decision);
+    void this.#recordDecision(slot, decision);
   }
 
   #drainDecision(
@@ -5858,7 +5866,7 @@ export class ProviderProxySetLifecycle {
 
   #removeRepresentationSlot(slot: ReleaseDeliveryPendingSlot): void {
     this.#slots.delete(slot.key);
-    this.#deleteOperatorDispositions(slot.identity);
+    void this.#deleteOperatorDispositions(slot.identity);
     this.#identityIndex.delete(slot.identity);
     for (const [address, path] of this.#capsuleAddresses) {
       if (path === slot.capsulePath) this.#capsuleAddresses.delete(address);

@@ -19,11 +19,33 @@ export type UnreadableProviderOperationDiscardRequest = Readonly<{
   allowReadable?: boolean;
 }>;
 
-/** A destructive discard verdict or an exact recovery-ownership refusal. */
+export type ProviderOperationAdoptionRefusal = Readonly<{
+  recordKey: string;
+  jobId: string;
+  operationId: string;
+  proxyInstanceId: string;
+  buildSetId: string;
+  reason: string;
+}>;
+
+export type ProviderOperationStartupOwnershipReleaseDisposition =
+  | Readonly<{ kind: 'completed'; releasedLaunchPermits: number }>
+  | Readonly<{
+      kind: 'adoption-refused';
+      releasedLaunchPermits: number;
+      refusals: readonly ProviderOperationAdoptionRefusal[];
+    }>;
+
 export type UnreadableProviderOperationDiscardResult = UnreadableProviderOperationDiscardRequest &
   (
     | Readonly<{ kind: 'discarded' }>
     | Readonly<{ kind: 'absent' }>
+    | Readonly<{
+        kind: 'adoption-refused';
+        rowDisposition: 'discarded' | 'absent';
+        releasedLaunchPermits: number;
+        refusals: readonly ProviderOperationAdoptionRefusal[];
+      }>
     | Readonly<{ kind: 'revision-mismatch'; currentRevision: string }>
     | Readonly<{ kind: 'readable' }>
     | Readonly<{ kind: 'quarantine-not-found' }>

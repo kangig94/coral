@@ -137,7 +137,7 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
   }
 
   try {
-    deleteProviderOperation(deps.db, record);
+    void deleteProviderOperation(deps.db, record);
   } catch (error: unknown) {
     backendLog.warn(
       `Failed to retire provider operation saga for job '${record.operation.jobId}'/operation '${record.operation.operationId}': ${errorMessage(error)}`,

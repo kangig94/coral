@@ -2346,7 +2346,7 @@ export class ProviderOperationReconciler
     record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   ): ReturnType<typeof deleteProviderOperation> {
     this.#assertActiveDrive();
-    this.#deps.binding.settleProviderOperationBinding(record.operation);
+    void this.#deps.binding.settleProviderOperationBinding(record.operation);
     const result = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
     if (result.kind === 'deleted' || result.current === null) {
       const release = this.#deps.releaseStartupOwnership(record.operation);
@@ -2367,7 +2367,7 @@ export class ProviderOperationReconciler
     ) {
       return;
     }
-    this.#deps.binding.settleProviderOperationBinding(record.operation);
+    void this.#deps.binding.settleProviderOperationBinding(record.operation);
     this.#deps.binding.retireProviderOperationBinding(record.operation);
   }
 
@@ -2540,7 +2540,7 @@ export class ProviderOperationReconciler
     }
 
     try {
-      finishProviderOperationDueSelection(
+      void finishProviderOperationDueSelection(
         this.#deps.getProgressStore().getDb(),
         selection,
         scanCutoffMs,

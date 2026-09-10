@@ -94,7 +94,7 @@ export function createCoordinatorSocketAddressClaim(
   return {
     initialIncumbentSocketPath: initial.kind === 'published' ? initial.socketPath : primarySocketPath,
     acquire: async (bindAtomicallyWithPrimary) => {
-      if (acquireStarted) rememberPublishedSocket();
+      if (acquireStarted) void rememberPublishedSocket();
       acquireStarted = true;
       while (true) {
         const attemptedSocketPaths = additionalSocketPaths();
@@ -107,7 +107,7 @@ export function createCoordinatorSocketAddressClaim(
         if (binding.kind === 'incumbent') return binding;
 
         try {
-          rememberPublishedSocket();
+          void rememberPublishedSocket();
         } catch (error: unknown) {
           await binding.release();
           throw error;

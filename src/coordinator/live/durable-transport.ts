@@ -342,7 +342,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     resolvePendingLaunch();
   };
   const schedulePendingWrapperTermination = (obligation: DurablePendingLaunchObligation): void => {
-    obligation.requestTermination();
+    void obligation.requestTermination();
   };
   pendingLaunches.add(pendingLaunch);
 
@@ -477,7 +477,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         operatorControl.abandon,
       );
     }
-    publishContainmentStatus({
+    void publishContainmentStatus({
       kind: 'held',
       reason,
       retryIntervalMs: DURABLE_RUNTIME_POLL_INTERVAL_MS,
@@ -851,7 +851,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     }
     if (forwardExternalAbort !== null) options.signal?.removeEventListener('abort', forwardExternalAbort);
     if (internalPermit !== null) {
-      releaseLaunch(internalPermit);
+      void releaseLaunch(internalPermit);
       abortRegistry?.remove(internalPermit.jobId);
     }
   }

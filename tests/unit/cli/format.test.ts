@@ -988,6 +988,42 @@ describe('cli format', () => {
       );
     });
 
+    it('renders provider-operation adoption refusals with the actionable record identity', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          diagnostics: {
+            providerOperationAdoptionRefusals: [
+              {
+                triggerRecordKey: 'discarded-record-key',
+                rowDisposition: 'discarded' as const,
+                releasedLaunchPermits: 0,
+                recordKey: 'surviving-record-key',
+                jobId: 'job-1',
+                operationId: 'operation-1',
+                proxyInstanceId: 'proxy-1',
+                buildSetId: 'build-set-1',
+                reason: 'the provider operation ownership path is not initialized',
+                observedAtMs: 123_456,
+              },
+            ],
+          },
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain(
+        [
+          'Provider-operation adoption refusals:',
+          '  record=surviving-record-key job=job-1 operation=operation-1 proxy=proxy-1 buildSet=build-set-1 observedAtMs=123456',
+          '    triggerRecord=discarded-record-key rowDisposition=discarded releasedLaunchPermits=0',
+          '    reason=the provider operation ownership path is not initialized',
+        ].join('\n'),
+      );
+    });
+
     it('renders automatic launch reclamation evidence', () => {
       const status = {
         status: 'ok',
@@ -1005,10 +1041,6 @@ describe('cli format', () => {
                 holder: { kind: 'proxy-operation' as const, operationId: 'operation-reclaimed-1' },
                 heldForMs: 30_000,
                 evidence: { kind: 'job-terminal' as const, phase: 'aborted' as const },
-                providerOperationEvidence: {
-                  kind: 'absent' as const,
-                  operationId: 'operation-reclaimed-1',
-                },
                 reclaimedAtMs: 123_456,
               },
             ],
@@ -1022,7 +1054,6 @@ describe('cli format', () => {
           '  reservation=reservation-reclaimed-1 job=job-reclaimed-1 pool=default provider=codex heldForMs=30000 reclaimedAtMs=123456',
           '    holder=proxy-operation:operation-reclaimed-1',
           '    evidence=job-terminal:aborted',
-          '    providerOperation=absent:operation-reclaimed-1',
         ].join('\n'),
       );
     });

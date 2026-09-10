@@ -300,6 +300,36 @@ describe('/health typed shape (AC10a)', () => {
     ).toBeNull();
   });
 
+  it('decodes provider-operation adoption refusals and rejects incomplete identities', () => {
+    const refusal = {
+      triggerRecordKey: 'discarded-record-key',
+      rowDisposition: 'discarded',
+      releasedLaunchPermits: 0,
+      recordKey: 'surviving-record-key',
+      jobId: 'job-1',
+      operationId: 'operation-1',
+      proxyInstanceId: 'proxy-1',
+      buildSetId: 'build-set-1',
+      reason: 'the provider operation ownership path is not initialized',
+      observedAtMs: 456,
+    } as const;
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerOperationAdoptionRefusals: [refusal] },
+      })?.health.diagnostics?.providerOperationAdoptionRefusals,
+    ).toEqual([refusal]);
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: {
+          providerOperationAdoptionRefusals: [{ ...refusal, recordKey: '' }],
+        },
+      }),
+    ).toBeNull();
+  });
+
   it('decodes automatic launch reclamation evidence and rejects malformed terminal evidence', () => {
     const reclamation = {
       reservationId: 'reservation-reclaimed-1',
@@ -309,7 +339,6 @@ describe('/health typed shape (AC10a)', () => {
       holder: { kind: 'proxy-operation', operationId: 'operation-reclaimed-1' },
       heldForMs: 30_000,
       evidence: { kind: 'job-terminal', phase: 'aborted' },
-      providerOperationEvidence: { kind: 'absent', operationId: 'operation-reclaimed-1' },
       reclaimedAtMs: 789,
     } as const;
 

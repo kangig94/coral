@@ -613,6 +613,36 @@ describe('execution services provider-proxy proof composition', () => {
     }
   });
 
+  it('returns the surviving record identity when startup ownership cannot adopt it', async () => {
+    const harness = createUnreadableStartupHarness();
+    const recordKey = providerOperationRecordKey(harness.readable);
+    harness.services.connectProviderOperationRecovery({
+      releaseUnreadableProviderOperationStartupOwnership: () => ({
+        released: 0,
+        readableRecords: [{ recordKey, record: harness.readable }],
+      }),
+    } as never);
+
+    try {
+      await expect(
+        harness.services.releaseUnreadableProviderOperationStartupOwnership(harness.unreadableKey),
+      ).resolves.toEqual({
+        kind: 'adoption-refused',
+        releasedLaunchPermits: 0,
+        refusals: [
+          {
+            recordKey,
+            ...harness.readable.operation,
+            reason: 'the provider operation ownership path is not initialized',
+          },
+        ],
+      });
+    } finally {
+      harness.services.stopProviderOperationReconciler();
+      harness.db.close();
+    }
+  });
+
   it('initializes readable claims when quarantine materialization throws and writes durable status', async () => {
     const harness = createUnreadableStartupHarness();
     const write = vi.spyOn(RecoveryQuarantineStore.prototype, 'upsert').mockImplementationOnce(() => {

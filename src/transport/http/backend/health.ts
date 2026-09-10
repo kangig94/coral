@@ -228,6 +228,12 @@ function isLaunchReleaseDispositions(
   return launchPermitDiagnosticsSchema.safeParse({ launchReleaseDispositions: value }).success;
 }
 
+function isProviderOperationAdoptionRefusals(
+  value: unknown,
+): value is NonNullable<BackendHealth['diagnostics']>['providerOperationAdoptionRefusals'] {
+  return launchPermitDiagnosticsSchema.safeParse({ providerOperationAdoptionRefusals: value }).success;
+}
+
 function isLaunchReclamations(
   value: unknown,
 ): value is NonNullable<BackendHealth['diagnostics']>['launchReclamations'] {
@@ -623,6 +629,12 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   if (value.launchReleaseDispositions !== undefined && !isLaunchReleaseDispositions(value.launchReleaseDispositions)) {
     return null;
   }
+  if (
+    value.providerOperationAdoptionRefusals !== undefined &&
+    !isProviderOperationAdoptionRefusals(value.providerOperationAdoptionRefusals)
+  ) {
+    return null;
+  }
   if (value.launchReclamations !== undefined && !isLaunchReclamations(value.launchReclamations)) {
     return null;
   }
@@ -654,6 +666,9 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     ...(value.launchReleaseDispositions === undefined
       ? {}
       : { launchReleaseDispositions: value.launchReleaseDispositions }),
+    ...(value.providerOperationAdoptionRefusals === undefined
+      ? {}
+      : { providerOperationAdoptionRefusals: value.providerOperationAdoptionRefusals }),
     ...(value.launchReclamations === undefined ? {} : { launchReclamations: value.launchReclamations }),
   };
   const diagnostics = { ...value };
@@ -661,6 +676,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   delete diagnostics.launchPermits;
   delete diagnostics.settlementRefusalRecordingFailures;
   delete diagnostics.launchReleaseDispositions;
+  delete diagnostics.providerOperationAdoptionRefusals;
   delete diagnostics.launchReclamations;
   return {
     diagnostics: {

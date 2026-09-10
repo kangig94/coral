@@ -388,6 +388,27 @@ describe('backend recovery-quarantine commands', () => {
       result: {
         key: 'raw-key',
         revision: `sha256:${'a'.repeat(64)}`,
+        kind: 'adoption-refused',
+        rowDisposition: 'discarded',
+        releasedLaunchPermits: 0,
+        refusals: [
+          {
+            recordKey: 'surviving-record-key',
+            jobId: 'job-1',
+            operationId: 'operation-1',
+            proxyInstanceId: 'proxy-1',
+            buildSetId: 'build-set-1',
+            reason: 'the provider operation ownership path is not initialized',
+          },
+        ],
+      },
+      exitCode: 75,
+      stream: 'stderr',
+    },
+    {
+      result: {
+        key: 'raw-key',
+        revision: `sha256:${'a'.repeat(64)}`,
         kind: 'revision-mismatch',
         currentRevision: `sha256:${'b'.repeat(64)}`,
       },
@@ -454,6 +475,13 @@ describe('backend recovery-quarantine commands', () => {
     if (result.kind.includes('coordinator') || result.kind === 'timeout') {
       expect(stderr).toContain(`revision="fingerprint:${result.revision}"`);
       expect(stderr).toContain('No discard verdict');
+    }
+    if (result.kind === 'adoption-refused') {
+      expect(stderr).toContain('startup ownership remains unresolved');
+      expect(stderr).toContain(
+        `record=${encodeRecoveryQuarantineKey('surviving-record-key')} job=job-1 operation=operation-1`,
+      );
+      expect(stderr).toContain('capacity remains held');
     }
   });
 
@@ -869,6 +897,35 @@ describe('backend recovery-quarantine commands', () => {
       coordinate,
       expect.objectContaining({ timeoutMs: TOOL_TIMEOUT_MS }),
     );
+  });
+
+  it('preserves a coordinator adoption refusal as the discard command result', async () => {
+    const coordinate = { key: 'raw-key', revision: `sha256:${'a'.repeat(64)}` };
+    const refusal = {
+      recordKey: 'surviving-record-key',
+      jobId: '00000000-0000-4000-8000-000000000001',
+      operationId: '00000000-0000-4000-8000-000000000002',
+      proxyInstanceId: '00000000-0000-4000-8000-000000000003',
+      buildSetId: '00000000-0000-4000-8000-000000000004',
+      reason: 'the provider operation ownership path is not initialized',
+    };
+    vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
+      request: vi.fn().mockResolvedValue({
+        ...coordinate,
+        kind: 'adoption-refused',
+        rowDisposition: 'discarded',
+        releasedLaunchPermits: 0,
+        refusals: [refusal],
+      }),
+    } as never);
+
+    await expect(createRecoveryQuarantineCommandOperations().discardProviderOperation?.(coordinate)).resolves.toEqual({
+      ...coordinate,
+      kind: 'adoption-refused',
+      rowDisposition: 'discarded',
+      releasedLaunchPermits: 0,
+      refusals: [refusal],
+    });
   });
 
   it('should report coordinator contract drift without calling it unreachable', async () => {

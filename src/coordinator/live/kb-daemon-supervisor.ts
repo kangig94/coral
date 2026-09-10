@@ -756,7 +756,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       }
       if (daemonProcess !== null) {
         phase = 'restarting';
-        await stopNow(reason);
+        void (await stopNow(reason));
         if (daemonProcess !== null) {
           return read();
         }
@@ -1253,7 +1253,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         }
         requestRecoveryEnabled = true;
         phase = 'restarting';
-        await stopNow(reason);
+        void (await stopNow(reason));
         if (daemonProcess !== null) {
           return read();
         }

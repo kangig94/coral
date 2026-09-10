@@ -45,6 +45,10 @@ import {
   subscribeProviderOperationMutations,
 } from '../../store/provider-operation-journal.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
+import type {
+  ProviderOperationAdoptionRefusal,
+  ProviderOperationStartupOwnershipReleaseDisposition,
+} from '../../recovery/unreadable-provider-operation.js';
 import {
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromRecord,
@@ -103,7 +107,9 @@ export function createExecutionServices({
     record: ProviderOperationRecord,
     recordKey?: string,
   ) => Promise<RepairedProviderOperationAdoption>;
-  releaseUnreadableProviderOperationStartupOwnership: (recordKey: string) => Promise<number>;
+  releaseUnreadableProviderOperationStartupOwnership: (
+    recordKey: string,
+  ) => Promise<ProviderOperationStartupOwnershipReleaseDisposition>;
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (
     ownership: ProviderOperationStartupOwnership,
@@ -546,11 +552,23 @@ export function createExecutionServices({
     adoptRepairedProviderOperation,
     releaseUnreadableProviderOperationStartupOwnership: async (recordKey) => {
       const resolution = providerOperationRecovery?.releaseUnreadableProviderOperationStartupOwnership(recordKey);
-      if (resolution === undefined) return 0;
-      for (const record of resolution.readableRecords) {
-        await adoptRepairedProviderOperation(record);
+      if (resolution === undefined) return { kind: 'completed', releasedLaunchPermits: 0 };
+      const refusals: ProviderOperationAdoptionRefusal[] = [];
+      for (const readable of resolution.readableRecords) {
+        const adoption = await adoptRepairedProviderOperation(readable.record, readable.recordKey);
+        if (adoption.kind === 'accepted') continue;
+        refusals.push({
+          recordKey: readable.recordKey,
+          jobId: readable.record.operation.jobId,
+          operationId: readable.record.operation.operationId,
+          proxyInstanceId: readable.record.operation.proxyInstanceId,
+          buildSetId: readable.record.operation.buildSetId,
+          reason: adoption.reason,
+        });
       }
-      return resolution.released;
+      return refusals.length === 0
+        ? { kind: 'completed', releasedLaunchPermits: resolution.released }
+        : { kind: 'adoption-refused', releasedLaunchPermits: resolution.released, refusals };
     },
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       providerOperationRecovery = recoveryCoordinator;

@@ -289,6 +289,7 @@ export const UNREADABLE_PROVIDER_OPERATION_DISCARD_EXIT_CODES: Readonly<
 > = {
   discarded: 0,
   absent: 1,
+  'adoption-refused': 75,
   readable: 1,
   'revision-mismatch': 75,
   'quarantine-not-found': 75,

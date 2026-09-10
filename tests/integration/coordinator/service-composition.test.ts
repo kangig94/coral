@@ -209,13 +209,6 @@ function jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
 
-function cancelQueued(jobId: string): boolean {
-  const reservation = launchCoordinator.reservationFor(jobId);
-  return reservation?.kind === 'queued'
-    ? launchCoordinator.cancelQueued(reservation.reservationId, reservation.pool)
-    : false;
-}
-
 function releaseLaunch(permit: LaunchPermit): void {
   launchCoordinator.releaseLaunch(permit);
 }
@@ -796,9 +789,6 @@ describe('ExecutionService', () => {
   afterEach(async () => {
     trackAllJobDirs();
     terminateAll();
-    for (const jobId of createdJobIds) {
-      cancelQueued(jobId);
-    }
     await new Promise((resolve) => setTimeout(resolve, 0));
     closeServiceStoreDatabases();
     for (const jobId of createdJobIds) {
@@ -1641,11 +1631,14 @@ describe('ExecutionService', () => {
     });
 
     expect(() =>
+      /* @intentional-private-access — queued terminal failures must not require a public mutation seam */
       (
         service as unknown as {
-          finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
+          launchOrchestrator: {
+            finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
+          };
         }
-      ).finishQueuedAbort(jobId, session.sessionId, 'queue_shutdown'),
+      ).launchOrchestrator.finishQueuedAbort(jobId, session.sessionId, 'queue_shutdown'),
     ).toThrow('disk full');
 
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
@@ -3280,9 +3273,6 @@ describe('ExecutionService adversarial', () => {
   afterEach(async () => {
     trackAllJobDirs();
     terminateAll();
-    for (const jobId of createdJobIds) {
-      cancelQueued(jobId);
-    }
     await new Promise((resolve) => setTimeout(resolve, 0));
     closeServiceStoreDatabases();
     for (const jobId of createdJobIds) {

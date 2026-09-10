@@ -123,10 +123,29 @@ export const unreadableProviderOperationDiscardRequestSchema = z
   })
   .strict() satisfies ZodType<UnreadableProviderOperationDiscardRequest>;
 
+const providerOperationAdoptionRefusalSchema = z
+  .object({
+    recordKey: providerOperationDiscardKeySchema,
+    jobId: z.string().min(1),
+    operationId: z.string().min(1),
+    proxyInstanceId: z.string().min(1),
+    buildSetId: z.string().min(1),
+    reason: z.string().min(1),
+  })
+  .strict();
+
 export const unreadableProviderOperationDiscardResultSchema: ZodType<UnreadableProviderOperationDiscardResult> =
   z.discriminatedUnion('kind', [
     unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('discarded') }).strict(),
     unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('absent') }).strict(),
+    unreadableProviderOperationDiscardRequestSchema
+      .extend({
+        kind: z.literal('adoption-refused'),
+        rowDisposition: z.enum(['discarded', 'absent']),
+        releasedLaunchPermits: z.number().int().nonnegative(),
+        refusals: z.array(providerOperationAdoptionRefusalSchema).min(1).readonly(),
+      })
+      .strict(),
     unreadableProviderOperationDiscardRequestSchema
       .extend({ kind: z.literal('revision-mismatch'), currentRevision: z.string().regex(/^sha256:[0-9a-f]{64}$/u) })
       .strict(),

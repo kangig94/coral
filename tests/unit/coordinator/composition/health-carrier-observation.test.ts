@@ -4,17 +4,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type * as CompositionWorldMod from '#src/coordinator/composition/world.js';
+import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
+import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
+
+type DiscardProviderOperation = NonNullable<HttpHandlerPorts['recoveryQuarantine']['discardProviderOperation']>;
+type ReleaseStartupOwnership = (recordKey: string) => Promise<ProviderOperationStartupOwnershipReleaseDisposition>;
 
 const captured = vi.hoisted(() => ({
   healthRead: null as HttpHandlerPorts['health']['read'] | null,
   publishRecovery: null as (() => void) | null,
+  discardProviderOperation: null as DiscardProviderOperation | null,
 }));
 const observeCarrierStatuses = vi.hoisted(() => vi.fn(async () => new Map()));
 const probeSelfIncarnation = vi.hoisted(() => vi.fn());
+const releaseStartupOwnership = vi.hoisted(() => ({
+  current: null as ReleaseStartupOwnership | null,
+}));
 
 vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HttpHandlerMod>();
@@ -22,7 +31,24 @@ vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
     ...actual,
     createHttpHandler: (deps: HttpHandlerPorts) => {
       captured.healthRead = deps.health.read;
+      captured.discardProviderOperation = deps.recoveryQuarantine.discardProviderOperation ?? null;
       return actual.createHttpHandler(deps);
+    },
+  };
+});
+
+vi.mock('#src/coordinator/composition/execution-services.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ExecutionServicesMod>();
+  return {
+    ...actual,
+    createExecutionServices: (...args: Parameters<typeof actual.createExecutionServices>) => {
+      const services = actual.createExecutionServices(...args);
+      return {
+        ...services,
+        releaseUnreadableProviderOperationStartupOwnership: (recordKey: string) =>
+          releaseStartupOwnership.current?.(recordKey) ??
+          services.releaseUnreadableProviderOperationStartupOwnership(recordKey),
+      };
     },
   };
 });
@@ -62,8 +88,15 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
 import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
 import type { JobStore } from '#src/jobs/store.js';
-import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
-import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import {
+  attributeUnreadableProviderOperations,
+  insertProviderOperation,
+  readProviderOperations,
+} from '#src/store/provider-operation-journal.js';
+import {
+  PROVIDER_OPERATION_RECORD_VERSION,
+  type ProviderOperationRecord,
+} from '#src/store/provider-operation-record.js';
 import { readStoredNonterminalProjectionJobIds } from '#src/jobs/projection-row.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
@@ -71,6 +104,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
+import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -206,6 +242,8 @@ function readHealth() {
 beforeEach(() => {
   captured.healthRead = null;
   captured.publishRecovery = null;
+  captured.discardProviderOperation = null;
+  releaseStartupOwnership.current = null;
   observeCarrierStatuses.mockClear();
   probeSelfIncarnation.mockReset().mockReturnValue(testIncarnation('health-default'));
 });
@@ -512,6 +550,100 @@ describe('health local carrier observation', () => {
         disposition: { kind: 'already-released', pool: 'default' },
       }),
     ]);
+  });
+
+  it('returns and reports a surviving provider-operation adoption refusal after discard', async () => {
+    const runtime = createRealRuntime('prod');
+    const db = createDb();
+    const unreadable = providerOperationRecord('executing', { job: 93 });
+    const unreadableKey =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      `${unreadable.operation.jobId}:${unreadable.operation.operationId}:` +
+      `${unreadable.operation.proxyInstanceId}:${unreadable.operation.buildSetId}`;
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(unreadableKey, 'not-json');
+    const attribution = attributeUnreadableProviderOperations(db, readProviderOperations(db).unreadableKeys).find(
+      ({ key }) => key === unreadableKey,
+    );
+    if (attribution === undefined) throw new Error('expected unreadable provider-operation attribution');
+    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
+    expect(
+      quarantine.upsert({
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        subject: unreadableProviderOperationSubject(unreadableKey, attribution.revision),
+        state: 'active',
+        stage: 'hydrate',
+        errorMessage: 'Provider operation row is unreadable by this build.',
+        detail: 'Operator discard is required.',
+      }),
+    ).toBe(true);
+
+    const surviving = providerOperationRecord('executing', { job: 94 });
+    const survivingRecordKey =
+      `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
+      `${surviving.operation.jobId}:${surviving.operation.operationId}:` +
+      `${surviving.operation.proxyInstanceId}:${surviving.operation.buildSetId}`;
+    const refusal = {
+      recordKey: survivingRecordKey,
+      ...surviving.operation,
+      reason: 'the provider operation ownership path is not initialized',
+    };
+    releaseStartupOwnership.current = async () => ({
+      kind: 'adoption-refused',
+      releasedLaunchPermits: 0,
+      refusals: [refusal],
+    });
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+    );
+    installProgressStore(core, db, {
+      getDb: () => db,
+      listStoredNonterminalJobIds: () => [],
+      loadJobProjectionDetail: () => ({ status: null, launch: null, runtime: null, exit: null }),
+      liveJobCount: () => 0,
+      listJobIds: () => [],
+    });
+    const discardProviderOperation = captured.discardProviderOperation;
+    if (discardProviderOperation === null) throw new Error('provider-operation discard port was not composed');
+
+    const result = await discardProviderOperation({ key: unreadableKey, revision: attribution.revision });
+    expect(result).toEqual({
+      key: unreadableKey,
+      revision: attribution.revision,
+      kind: 'adoption-refused',
+      rowDisposition: 'discarded',
+      releasedLaunchPermits: 0,
+      refusals: [refusal],
+    });
+    expect(readProviderOperations(db).unreadableKeys).not.toContain(unreadableKey);
+
+    const produced = readHealth();
+    expect(produced.diagnostics?.providerOperationAdoptionRefusals).toEqual([
+      expect.objectContaining({
+        triggerRecordKey: unreadableKey,
+        rowDisposition: 'discarded',
+        releasedLaunchPermits: 0,
+        ...refusal,
+      }),
+    ]);
+    const decoded = parseBackendHealth(produced);
+    if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    const formatted = formatBackendStatus(
+      {
+        status: 'ok',
+        health: {
+          ...decoded.health,
+          status: 'ok',
+          skippedProviderProxySetRows: decoded.skippedProviderProxySetRows,
+          skippedProviderProxySetTokens: decoded.skippedProviderProxySetTokens,
+        },
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(formatted).toContain(`record=${survivingRecordKey} job=${surviving.operation.jobId}`);
+    expect(formatted).toContain(`reason=${refusal.reason}`);
   });
 
   it('projects health evidence for an automatically reclaimed launch permit', () => {

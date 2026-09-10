@@ -1124,6 +1124,18 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Effect: the exact raw operation record, every known-generation due pointer to it, and its quarantine evidence were permanently removed in one transaction; no process was signalled and the operation was not settled.',
         'Next step: run coral-cli backend recovery-quarantine list, then run coral-cli backend status.',
       ].join('\n');
+    case 'adoption-refused':
+      return [
+        `Provider-operation startup ownership remains unresolved after the raw row was ${result.rowDisposition}: ${coordinate}.`,
+        `Observed: ${result.releasedLaunchPermits} launch permit(s) were released, but ${result.refusals.length} surviving readable record(s) were not adopted.`,
+        'Not observed: reconciliation or an operation-settlement outcome for the refused records.',
+        'Effect: the refused records remain unadopted and their launch capacity remains held.',
+        ...result.refusals.map(
+          (refusal) =>
+            `Refusal: record=${encodeRecoveryQuarantineKey(refusal.recordKey)} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} reason=${refusal.reason}`,
+        ),
+        'Next step: run coral-cli backend status and repair the reported adoption path before treating the job capacity as recovered.',
+      ].join('\n');
     case 'absent':
       return [
         `Refusing discard for ${coordinate}: the raw row is absent.`,
@@ -1342,6 +1354,17 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
+  const providerOperationAdoptionRefusals = health.diagnostics?.providerOperationAdoptionRefusals ?? [];
+  if (providerOperationAdoptionRefusals.length > 0) {
+    lines.push('', 'Provider-operation adoption refusals:');
+    for (const refusal of providerOperationAdoptionRefusals) {
+      lines.push(
+        `  record=${refusal.recordKey} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} observedAtMs=${refusal.observedAtMs}`,
+        `    triggerRecord=${refusal.triggerRecordKey} rowDisposition=${refusal.rowDisposition} releasedLaunchPermits=${refusal.releasedLaunchPermits}`,
+        `    reason=${refusal.reason}`,
+      );
+    }
+  }
   const launchReclamations = health.diagnostics?.launchReclamations ?? [];
   if (launchReclamations.length > 0) {
     lines.push('', 'Automatic launch reclamations:');
@@ -1351,13 +1374,6 @@ function formatRunningStatus(health: RunningHealth): string {
         `    holder=${formatLaunchPermitHolder(reclamation.holder)}`,
         `    evidence=${formatLaunchReclamationEvidence(reclamation.evidence)}`,
       );
-      if (reclamation.providerOperationEvidence !== undefined) {
-        const providerOperation =
-          reclamation.providerOperationEvidence.kind === 'absent'
-            ? `${reclamation.providerOperationEvidence.kind}:${reclamation.providerOperationEvidence.operationId}`
-            : `${reclamation.providerOperationEvidence.kind}:${reclamation.providerOperationEvidence.recordKeys.join(',')}`;
-        lines.push(`    providerOperation=${providerOperation}`);
-      }
     }
   }
   const settlementFailures = health.diagnostics?.settlementRefusalRecordingFailures ?? [];

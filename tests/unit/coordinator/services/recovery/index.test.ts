@@ -251,8 +251,10 @@ async function createHeldRecoveryCoordinator(
     coordinatorCommit,
   });
   const launchCoordinator = new LaunchCoordinator({ runtime });
-  launchCoordinator.connectProviderOperationRecordJournal(
-    (key) => observeProviderOperationRecord(progressStore.getDb(), key).kind !== 'absent',
+  launchCoordinator.connectLaunchReclamationOracle('undecided-provider-operation', (permit) =>
+    permit.holder.recordKeys.some((key) => observeProviderOperationRecord(progressStore.getDb(), key).kind !== 'absent')
+      ? { kind: 'job-live' }
+      : { kind: 'job-terminal', phase: 'completed' },
   );
   let phaseChanged: ((event: unknown) => void) | null = null;
   const recoveryCoordinator = createRecoveryCoordinator(
@@ -453,7 +455,9 @@ describe('runStartupRecovery provider-operation ownership', () => {
     }
     expect(listing).toContain('--allow-readable');
     const discarded = coordinates.find((entry) => entry.subject.key.includes(first.operation.operationId));
+    const survivingCoordinate = coordinates.find((entry) => entry.subject.key.includes(second.operation.operationId));
     if (discarded?.subject.revision.kind !== 'fingerprint') throw new Error('expected first record coordinate');
+    if (survivingCoordinate === undefined) throw new Error('expected second record coordinate');
     const discard = createUnreadableProviderOperationDiscardService({
       instanceId: 'ambiguous-readable-discard',
       ids: runtime.ids,
@@ -471,8 +475,9 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect(resolution.readableRecords).toHaveLength(1);
     const surviving = resolution.readableRecords[0];
     if (surviving === undefined) throw new Error('expected surviving provider operation');
-    expect(surviving.operation.operationId).toBe(second.operation.operationId);
-    expect(recoveryCoordinator.adoptRepairedProviderOperationOwnership(surviving).bindingDisposition).toEqual({
+    expect(surviving.recordKey).toBe(survivingCoordinate.subject.key);
+    expect(surviving.record.operation.operationId).toBe(second.operation.operationId);
+    expect(recoveryCoordinator.adoptRepairedProviderOperationOwnership(surviving.record).bindingDisposition).toEqual({
       kind: 'prepared',
     });
 
@@ -566,10 +571,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
       expect.objectContaining({
         reservationId: heldPermit.reservationId,
         holder: heldPermit.holder,
-        providerOperationEvidence: {
-          kind: 'all-records-absent',
-          recordKeys: heldPermit.holder.recordKeys,
-        },
+        evidence: { kind: 'job-terminal', phase: 'completed' },
       }),
     ]);
     await recoveryCoordinator.teardown();

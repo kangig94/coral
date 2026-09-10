@@ -168,7 +168,7 @@ type ProviderOperationStartupSnapshot = Readonly<{
 
 type UnreadableProviderOperationStartupResolution = Readonly<{
   released: number;
-  readableRecords: readonly ProviderOperationRecord[];
+  readableRecords: readonly Readonly<{ recordKey: string; record: ProviderOperationRecord }>[];
 }>;
 
 function providerOperationPhaseRestoresStartupPermit(phase: ProviderOperationRecord['phase']): boolean {
@@ -697,7 +697,7 @@ export function createRecoveryCoordinator(
     if (!isTerminalPhase(phase)) return;
     const owned = state.providerOperationStartupPermits.get(jobId);
     if (owned?.kind !== 'undecided-provider-operation') return;
-    if (startupOwnership.reclaimLaunchPermit(owned.permit, { kind: 'job-terminal', phase })) {
+    if (startupOwnership.reclaimLaunchPermit(owned.permit)) {
       state.providerOperationStartupPermits.delete(jobId);
     }
   };
@@ -884,7 +884,7 @@ export function createRecoveryCoordinator(
     state.cancelledRecoveryJobIds.clear();
     state.providerOperationRecoveries.clear();
     for (const { permit } of state.providerOperationStartupPermits.values()) {
-      startupOwnership.releaseLaunch(permit);
+      void startupOwnership.releaseLaunch(permit);
     }
     state.providerOperationStartupPermits.clear();
     resetRecoveryState({ forceRegistryRelease: true });
@@ -2009,7 +2009,7 @@ export function createRecoveryCoordinator(
     recordKey: string,
   ): UnreadableProviderOperationStartupResolution => {
     let released = 0;
-    const readableRecords: ProviderOperationRecord[] = [];
+    const readableRecords: Array<Readonly<{ recordKey: string; record: ProviderOperationRecord }>> = [];
     for (const [jobId, owned] of state.providerOperationStartupPermits) {
       if (owned.kind !== 'undecided-provider-operation' || !owned.recordKeys.includes(recordKey)) continue;
       const retainRecordKeys = (recordKeys: readonly string[]): boolean => {
@@ -2034,7 +2034,10 @@ export function createRecoveryCoordinator(
       const soleReadable = readableForJob.length === 1 ? readableForJob[0] : undefined;
       if (soleReadable !== undefined) {
         retainRecordKeys(readableRecordKeys);
-        readableRecords.push(soleReadable);
+        readableRecords.push({
+          recordKey: providerOperationStartupRecordKey(soleReadable.operation),
+          record: soleReadable,
+        });
         continue;
       }
       if (readableForJob.length > 1) {
@@ -2070,7 +2073,7 @@ export function createRecoveryCoordinator(
     permit: LaunchPermit,
     operation: ProviderOperationRecord['operation'],
   ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
-    settleProviderOperationStartupBinding(operation);
+    void settleProviderOperationStartupBinding(operation);
     const disposition = startupOwnership.prepareProviderOperationBinding(permit, operation);
     if (disposition.kind === 'already-settled') {
       state.providerOperationStartupPermits.delete(operation.jobId);
@@ -2207,7 +2210,7 @@ export function createRecoveryCoordinator(
           launchTransferred = startupOwnership.releaseLaunch(restoredPermit).kind === 'transferred';
         }
       } else {
-        settleProviderOperationStartupBinding(snapshotRecord.operation);
+        void settleProviderOperationStartupBinding(snapshotRecord.operation);
       }
       if (!launchTransferred && !state.providerOperationStartupPermits.has(snapshotRecord.operation.jobId)) {
         startupOwnership.retireProviderOperationBinding(snapshotRecord.operation);
