@@ -177,8 +177,11 @@ function endLoop(statePath, stateDir) {
 
 // === Prompt injection ===
 
+// Stop exits when this path is absent, so text that authorizes removing it ends the loop before
+// its first iteration. This string may name the path and defer; it may not restate what to put in
+// the file, because a copy of another document's steps drifts without failing anything here.
 function buildAdditionalContext(statePath) {
-  return `Ralph loop state file created: ${statePath}. Read this file first, then edit it. In SKILL.md step 1: if plan mode, delete this file. If prompt mode, write your cleaned prompt (flags stripped) to the 'prompt' field, optionally override maxIterations and completionPromise.`;
+  return `Ralph loop state file: ${statePath}. Read it, then fill it in per SKILL.md step 1 — write the prompt field, and optionally maxIterations and completionPromise. This file drives loop continuation in every mode: leave it in place, and do not delete it.`;
 }
 
 function buildBlockReason(state, sessionId) {
