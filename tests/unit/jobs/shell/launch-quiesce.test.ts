@@ -606,19 +606,13 @@ describe('LaunchOrchestrator handoff quiesce', () => {
 
     await harness.orchestrator.quiesceAppServerJobsForHandoff();
 
-    // Drive a terminal event onto the quiesced stream — it must be ignored:
-    // - no terminal record
-    // - no result artifact
-    // - no abort registry removal
-    // - no session claim release
-    // - no admission release
-    // - no job-pool delete
     await harness.providerStream.emit({
       kind: 'terminal',
       terminal: { content: 'completed during handoff', outcome: { kind: 'completed' } },
     } as never);
 
     expect(harness.recordTerminalSpy).not.toHaveBeenCalled();
+    expect(harness.hasResultArtifact()).toBe(false);
     expect(harness.releaseLaunchSpy).not.toHaveBeenCalled();
     expect(harness.abortRemoveSpy).not.toHaveBeenCalled();
     expect(harness.releaseJobClaimSpy).not.toHaveBeenCalled();

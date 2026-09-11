@@ -18,7 +18,7 @@ import type {
   DurableProvisionalProcessSubject,
   Runtime,
 } from '../../runtime/ports.js';
-import { type GracefulKillByPidOutcome } from '../../infra/process-supervision.js';
+import { type GracefulKillByPidOutcome, type GracefulKillOutcome } from '../../infra/process-supervision.js';
 import { createMonotonicClock, createObservedDuration } from '../../infra/monotonic-clock.js';
 import {
   observeRecordedContainment,
@@ -65,6 +65,22 @@ function terminationOutcomeDetail(outcome: Exclude<GracefulKillByPidOutcome, { k
       return `${outcome.kind}:${outcome.stage}`;
   }
 }
+
+function pendingWrapperTerminationOutcomeDetail(
+  outcome: Exclude<GracefulKillOutcome, { kind: 'observed-absent' }>,
+): string {
+  switch (outcome.kind) {
+    case 'signal-failed':
+      return `${outcome.signal}:${outcome.reason}`;
+    case 'target-unobservable':
+    case 'target-alive':
+      return `${outcome.kind}:${outcome.stage}`;
+  }
+}
+
+type PendingWrapperTerminationRequestDisposition =
+  | Readonly<{ kind: 'settling' }>
+  | Readonly<{ kind: 'retained'; reason: string }>;
 
 export type DurableProcessRetention = Readonly<{
   kind: 'recorded-wrapper-group';
@@ -321,6 +337,14 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
   let resolvePendingLaunch!: () => void;
   let pendingLaunchOwned = true;
   let pendingWrapperObligation: DurablePendingLaunchObligation | null = null;
+  let pendingWrapperHoldGeneration = 0;
+  let pendingWrapperHold: {
+    generation: number;
+    obligation: DurablePendingLaunchObligation | null;
+    settlement: Promise<GracefulKillOutcome> | null;
+    settled: Promise<void>;
+    resolveSettled: () => void;
+  } | null = null;
   const pendingSettlement = new Promise<void>((resolve) => {
     resolvePendingLaunch = resolve;
   });
@@ -341,8 +365,220 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     pendingLaunches.delete(pendingLaunch);
     resolvePendingLaunch();
   };
-  const schedulePendingWrapperTermination = (obligation: DurablePendingLaunchObligation): void => {
-    void obligation.requestTermination();
+
+  function retainPendingWrapperHold(generation: number, reason: string, nextStep: string): void {
+    if (pendingWrapperHold?.generation !== generation || internalPermit === null) return;
+    abortRegistry?.hold(internalPermit.jobId, reason, nextStep, () => retryPendingWrapperTermination(generation));
+  }
+
+  function terminateCallerOwnedPendingWrapper(
+    obligation: DurablePendingLaunchObligation,
+  ): PendingWrapperTerminationRequestDisposition {
+    let termination: ReturnType<DurablePendingLaunchObligation['requestTermination']>;
+    try {
+      termination = obligation.requestTermination();
+    } catch (error: unknown) {
+      const reason = `Wrapper termination threw: ${errorMessage(error)}`;
+      backendLog.warn(`[durable-process:${obligation.pid ?? 'unknown'}] ${reason}`);
+      return { kind: 'retained', reason };
+    }
+    if (termination.kind === 'signal-failed') {
+      const reason = `Wrapper termination failed: ${termination.signal}:${termination.reason}`;
+      backendLog.warn(`[durable-process:${obligation.pid ?? 'unknown'}] ${reason}`);
+      return { kind: 'retained', reason };
+    }
+    void termination.settlement.then(
+      (outcome) => {
+        if (outcome.kind === 'observed-absent') {
+          releasePendingLaunch();
+          return outcome;
+        }
+        backendLog.warn(
+          `[durable-process:${obligation.pid ?? 'unknown'}] Wrapper termination remained unsettled: ` +
+            pendingWrapperTerminationOutcomeDetail(outcome),
+        );
+        return outcome;
+      },
+      (error: unknown) => {
+        backendLog.warn(
+          `[durable-process:${obligation.pid ?? 'unknown'}] Wrapper termination settlement failed: ` +
+            errorMessage(error),
+        );
+      },
+    );
+    return { kind: 'settling' };
+  }
+
+  function settlePendingWrapperHold(generation: number): void {
+    const hold = pendingWrapperHold;
+    if (hold?.generation !== generation) return;
+    pendingWrapperHold = null;
+    pendingWrapperHoldGeneration += 1;
+    releasePendingLaunch();
+    hold.resolveSettled();
+    if (internalPermit !== null) abortRegistry?.releaseHold(internalPermit.jobId);
+  }
+
+  function retryPendingWrapperTermination(generation: number): Extract<AbortHoldDisposition, { kind: 'retained' }> {
+    const hold = pendingWrapperHold;
+    if (hold?.generation !== generation || internalPermit === null) {
+      return {
+        kind: 'retained',
+        reason: 'pending wrapper ownership moved to another generation',
+        nextStep: 'Inspect the job before retrying its current abort disposition.',
+      };
+    }
+    if (hold.obligation === null) {
+      const disposition = {
+        kind: 'retained' as const,
+        reason: 'termination requested before the wrapper published its obligation',
+        nextStep:
+          'Wait for wrapper obligation publication; a returned launch without one proves absence and releases the permit.',
+      };
+      retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
+      return disposition;
+    }
+
+    let termination: ReturnType<DurablePendingLaunchObligation['requestTermination']>;
+    try {
+      termination = hold.obligation.requestTermination();
+    } catch (error: unknown) {
+      const disposition = {
+        kind: 'retained' as const,
+        reason: `pending wrapper termination threw: ${errorMessage(error)}`,
+        nextStep:
+          `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+          'only observed absence or wrapper settlement releases the permit.',
+      };
+      retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
+      return disposition;
+    }
+
+    if (termination.kind === 'signal-failed') {
+      const disposition = {
+        kind: 'retained' as const,
+        reason: `pending wrapper termination failed: ${termination.signal}:${termination.reason}`,
+        nextStep:
+          `Restore signal delivery, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+          'only observed absence or wrapper settlement releases the permit.',
+      };
+      retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
+      return disposition;
+    }
+
+    if (hold.settlement !== termination.settlement) {
+      hold.settlement = termination.settlement;
+      void termination.settlement.then(
+        (outcome) => {
+          if (pendingWrapperHold?.generation !== generation) return outcome;
+          if (outcome.kind === 'observed-absent') {
+            settlePendingWrapperHold(generation);
+            return outcome;
+          }
+          retainPendingWrapperHold(
+            generation,
+            `pending wrapper termination remains unsettled: ${pendingWrapperTerminationOutcomeDetail(outcome)}`,
+            `Run coral-cli abort jobs ${internalPermit.jobId} again; ` +
+              'only observed absence or wrapper settlement releases the permit.',
+          );
+          return outcome;
+        },
+        (error: unknown) => {
+          retainPendingWrapperHold(
+            generation,
+            `pending wrapper termination settlement failed: ${errorMessage(error)}`,
+            `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+              'only observed absence or wrapper settlement releases the permit.',
+          );
+        },
+      );
+    }
+    const disposition = {
+      kind: 'retained' as const,
+      reason: 'pending wrapper termination is settling',
+      nextStep:
+        'Wait for observed absence or wrapper settlement; if the target remains, retry the abort to continue termination.',
+    };
+    retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
+    return disposition;
+  }
+
+  function enterPendingWrapperHold(obligation: DurablePendingLaunchObligation | null): void {
+    if (internalPermit === null) {
+      if (obligation !== null) void terminateCallerOwnedPendingWrapper(obligation);
+      return;
+    }
+    if (pendingWrapperHold !== null) {
+      if (pendingWrapperHold.obligation === null && obligation !== null) {
+        pendingWrapperHold.obligation = obligation;
+        const generation = pendingWrapperHold.generation;
+        void obligation.settled.then(
+          () => settlePendingWrapperHold(generation),
+          (error: unknown) => {
+            retainPendingWrapperHold(
+              generation,
+              `pending wrapper settlement failed: ${errorMessage(error)}`,
+              `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+                'only observed absence or wrapper settlement releases the permit.',
+            );
+          },
+        );
+        retryPendingWrapperTermination(generation);
+      }
+      return;
+    }
+    const generation = ++pendingWrapperHoldGeneration;
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    pendingWrapperHold = {
+      generation,
+      obligation,
+      settlement: null,
+      settled,
+      resolveSettled,
+    };
+    retainPendingWrapperHold(
+      generation,
+      'termination requested while the durable wrapper identity is pending',
+      `Run coral-cli abort jobs ${internalPermit.jobId} again; ` +
+        'only observed absence or wrapper settlement releases the permit.',
+    );
+    if (obligation !== null) {
+      void obligation.settled.then(
+        () => settlePendingWrapperHold(generation),
+        (error: unknown) => {
+          retainPendingWrapperHold(
+            generation,
+            `pending wrapper settlement failed: ${errorMessage(error)}`,
+            `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+              'only observed absence or wrapper settlement releases the permit.',
+          );
+        },
+      );
+      retryPendingWrapperTermination(generation);
+    }
+  }
+
+  // A hold is only ever installed from a callback, so a read in the enclosing body narrows to the
+  // initializer; every reader must take it through its own scope.
+  function settleAnyPendingWrapperHold(): void {
+    const hold = pendingWrapperHold;
+    if (hold !== null) settlePendingWrapperHold(hold.generation);
+  }
+
+  async function awaitPendingWrapperHoldSettlement(): Promise<void> {
+    const hold = pendingWrapperHold;
+    if (hold !== null) await hold.settled;
+  }
+
+  const transferPendingWrapperHold = (): void => {
+    const hold = pendingWrapperHold;
+    if (hold === null) return;
+    pendingWrapperHold = null;
+    pendingWrapperHoldGeneration += 1;
+    hold.resolveSettled();
   };
   pendingLaunches.add(pendingLaunch);
 
@@ -352,7 +588,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     }
     pendingWrapperObligation = obligation;
     void obligation.settled.then(releasePendingLaunch);
-    if (abortedBySignal) schedulePendingWrapperTermination(obligation);
+    if (abortedBySignal) enterPendingWrapperHold(obligation);
     return { kind: 'accepted' };
   };
 
@@ -469,6 +705,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
 
   const enterContainmentHold = (reason: string): void => {
     providerResultHeld = true;
+    transferPendingWrapperHold();
     if (internalPermit !== null) {
       abortRegistry?.hold(
         internalPermit.jobId,
@@ -629,7 +866,6 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     cleanupRetentions.set(cleanup, retainedProcess);
     options.onRuntimeRecord?.(launch.runtimeRecord, provisionalSubject);
     publishProcessIdentity(provisionalSubject);
-    releasePendingLaunch();
     if (abortedBySignal) {
       enterContainmentHold('termination requested; process absence is not yet proven');
       void cleanup().catch((error: unknown) => {
@@ -637,6 +873,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         enterContainmentHold(errorMessage(error));
       });
     }
+    releasePendingLaunch();
   };
 
   const publishSpawned = (launch: {
@@ -707,7 +944,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         if (abortedBySignal) return;
         abortedBySignal = true;
         if (cleanupKey === null) {
-          if (pendingWrapperObligation !== null) schedulePendingWrapperTermination(pendingWrapperObligation);
+          enterPendingWrapperHold(pendingWrapperObligation);
           return;
         }
         enterContainmentHold('termination requested; process absence is not yet proven');
@@ -845,7 +1082,11 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
       await runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
     }
   } finally {
-    if (pendingWrapperObligation === null) releasePendingLaunch();
+    if (pendingWrapperObligation === null) {
+      releasePendingLaunch();
+      settleAnyPendingWrapperHold();
+    }
+    await awaitPendingWrapperHoldSettlement();
     if (abortHandler && signal) {
       signal.removeEventListener('abort', abortHandler);
     }

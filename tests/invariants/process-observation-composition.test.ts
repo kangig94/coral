@@ -459,13 +459,6 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     ),
   ],
   [
-    'src/coordinator/live/durable-transport.ts#spawnDurableJobTransport.schedulePendingWrapperTermination',
-    debt(
-      'pending wrapper settlement retains termination ownership while the AbortSignal callback returns void',
-      'schedulePendingWrapperTermination returns the disposition beside DurablePendingLaunchObligation.settled',
-    ),
-  ],
-  [
     'src/infra/process-containment.ts#observeContainment',
     debt(
       'unknown group liveness is translated into ProcessContainmentError',

@@ -242,6 +242,13 @@ describe('/health typed shape (AC10a)', () => {
             error: 'claim belongs to a successor',
             observedAtMs: 124,
           },
+          {
+            jobId: 'job-settled-unbound',
+            operationId: 'operation-settled-unbound',
+            cause: 'settled-unbound-status-persist-failed',
+            error: 'durable status write failed',
+            observedAtMs: 125,
+          },
         ],
       },
     };
@@ -254,6 +261,21 @@ describe('/health typed shape (AC10a)', () => {
         diagnostics: {
           settlementRefusalRecordingFailures: [
             { ...report.diagnostics.settlementRefusalRecordingFailures[0], observedAtMs: -1 },
+          ],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseBackendHealth({
+        ...report,
+        diagnostics: {
+          settlementRefusalRecordingFailures: [
+            {
+              jobId: 'job-settled-unbound',
+              cause: 'settled-unbound-status-persist-failed',
+              error: 'durable status write failed',
+              observedAtMs: 125,
+            },
           ],
         },
       }),

@@ -51,14 +51,31 @@ export type ProviderOperationJournalProbeResult =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'unknown'; reason: string }>;
 
+declare const settledUnboundStatusOwnershipBrand: unique symbol;
+
+export type SettledUnboundStatusSubject = Readonly<{
+  boundary: string;
+  key: string;
+  revision: string;
+  state: 'active';
+}>;
+
+export type SettledUnboundStatusOwnership = Readonly<{
+  identity: ProviderOperationBindingIdentity;
+  subjects: readonly SettledUnboundStatusSubject[];
+  [settledUnboundStatusOwnershipBrand]: true;
+}>;
+
 export type SettledUnboundStatusResult =
-  | Readonly<{ kind: 'recorded' }>
+  | Readonly<{ kind: 'recorded'; ownership: SettledUnboundStatusOwnership }>
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'refused'; reason: string }>;
 
 export interface SettledUnboundStatusPort {
   record(identity: ProviderOperationBindingIdentity): SettledUnboundStatusResult;
-  clear(identity: ProviderOperationBindingIdentity): boolean;
+  clear(identity: ProviderOperationBindingIdentity, ownership: SettledUnboundStatusOwnership): boolean;
+  clearAbsent(identity: ProviderOperationBindingIdentity): boolean;
+  clearRefusal(identity: ProviderOperationBindingIdentity): void;
 }
 
 export type ProviderOperationBindingState =
@@ -66,7 +83,11 @@ export type ProviderOperationBindingState =
       kind: 'settled-unbound';
       identity: ProviderOperationBindingIdentity;
       unknownObservations: number;
-      successor: 'mailbox' | 'provider-operation-journal' | 'recovery-quarantine';
+      successor:
+        | Readonly<{ kind: 'mailbox' }>
+        | Readonly<{ kind: 'provider-operation-journal' }>
+        | Readonly<{ kind: 'recovery-quarantine'; ownership: SettledUnboundStatusOwnership }>
+        | Readonly<{ kind: 'status-recording-refused' }>;
     }>
   | Readonly<{ kind: 'prepared'; sourcePermit: LaunchPermit }>
   | Readonly<{ kind: 'bound'; proxyPermit: LaunchPermit }>

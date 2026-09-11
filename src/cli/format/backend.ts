@@ -1398,8 +1398,9 @@ function formatRunningStatus(health: RunningHealth): string {
   if (settlementFailures.length > 0) {
     lines.push('', 'Settlement refusal recording failures:');
     for (const failure of settlementFailures) {
+      const operation = 'operationId' in failure ? ` operation=${failure.operationId}` : '';
       lines.push(
-        `  job=${failure.jobId} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
+        `  job=${failure.jobId}${operation} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
         `    error=${failure.error}`,
       );
     }

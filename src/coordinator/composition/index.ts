@@ -544,7 +544,52 @@ export function createCoordinatorCore(
   };
   const recoverySources = createRecoverySourceRegistry();
   const recoveryDb = () => getProgressStore().getDb();
-  world.launchCoordinator.connectSettledUnboundStatus(createSettledUnboundStatusPort(recoveryDb, runtime.time));
+  const settlementRefusalRecordingFailures = new Map<
+    string,
+    NonNullable<NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']>[number]
+  >();
+  const settledUnboundStatus = createSettledUnboundStatusPort(recoveryDb, runtime.time);
+  world.launchCoordinator.connectSettledUnboundStatus({
+    record(identity) {
+      const result = settledUnboundStatus.record(identity);
+      const diagnosticKey = JSON.stringify(['settled-unbound', identity.jobId, identity.operationId]);
+      if (result.kind === 'refused') {
+        settlementRefusalRecordingFailures.set(diagnosticKey, {
+          jobId: identity.jobId,
+          operationId: identity.operationId,
+          cause: 'settled-unbound-status-persist-failed',
+          error: result.reason,
+          observedAtMs: runtime.time.now(),
+        });
+      } else {
+        settlementRefusalRecordingFailures.delete(diagnosticKey);
+      }
+      return result;
+    },
+    clear(identity, ownership) {
+      const cleared = settledUnboundStatus.clear(identity, ownership);
+      if (cleared) {
+        settlementRefusalRecordingFailures.delete(
+          JSON.stringify(['settled-unbound', identity.jobId, identity.operationId]),
+        );
+      }
+      return cleared;
+    },
+    clearAbsent(identity) {
+      const cleared = settledUnboundStatus.clearAbsent(identity);
+      if (cleared) {
+        settlementRefusalRecordingFailures.delete(
+          JSON.stringify(['settled-unbound', identity.jobId, identity.operationId]),
+        );
+      }
+      return cleared;
+    },
+    clearRefusal(identity) {
+      settlementRefusalRecordingFailures.delete(
+        JSON.stringify(['settled-unbound', identity.jobId, identity.operationId]),
+      );
+    },
+  });
   world.launchCoordinator.connectProviderOperationBindingJournal((identity) => {
     try {
       const scan = readProviderOperations(recoveryDb());
@@ -690,10 +735,6 @@ export function createCoordinatorCore(
     createUnreadableProviderOperationRetryPlan(recoveryDb(), subject, adoptRepairedProviderOperation),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
-  const settlementRefusalRecordingFailures = new Map<
-    string,
-    NonNullable<NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']>[number]
-  >();
   const providerOperationAdoptionRefusals = new Map<
     string,
     NonNullable<NonNullable<HealthSnapshot['diagnostics']>['providerOperationAdoptionRefusals']>[number]

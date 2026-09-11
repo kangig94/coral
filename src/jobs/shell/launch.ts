@@ -201,10 +201,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   // preparation boundary. Quiesce-for-handoff acts on this set; CLI/durable
   // jobs not in the set keep the existing handoff preservation behavior.
   private readonly appServerJobs = new Set<string>();
-  // Set when shutdown is in handoff mode. Captured callbacks for matched job
-  // IDs short-circuit so the dying daemon does not write a terminal record,
-  // result artifact, release admission, remove abort registry entries,
-  // or release session continuity/claim.
+  // Once handoff quiesces a job, the dying generation must perform no
+  // terminalization or local-ownership cleanup for it.
   private readonly quiescedAppServerJobs = new Set<string>();
   private readonly appServerHandoffAborts = new Map<string, AbortController>();
   private readonly inFlightAppServerWrites = new Map<string, Set<Promise<unknown>>>();

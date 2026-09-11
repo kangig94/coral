@@ -24,10 +24,17 @@ function runCli(
   stderr: string;
   status: number;
 } {
+  const {
+    CORAL_CHILD: _coralChild,
+    CORAL_CHILD_PRINCIPAL_HANDLE: _childPrincipal,
+    CORAL_JOB_ID: _coralJobId,
+    CORAL_SESSION_ID: _coralSessionId,
+    ...topLevelEnv
+  } = process.env;
   const result = spawnSync('node', [CLI_BUNDLE, ...args], {
     encoding: 'utf8',
     timeout: 5000,
-    env: { ...process.env, ...options.env },
+    env: { ...topLevelEnv, ...options.env },
     input: options.input,
   });
   return {

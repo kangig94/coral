@@ -654,7 +654,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         kind: 'settled-unbound',
         identity,
         unknownObservations: 0,
-        successor: 'mailbox',
+        successor: { kind: 'mailbox' },
       });
       return { kind: 'settled-unbound' };
     }
@@ -892,22 +892,30 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         };
       }
       if (observation.kind === 'absent') {
+        if (
+          current.successor.kind !== 'recovery-quarantine' &&
+          this.settledUnboundStatus !== null &&
+          !this.settledUnboundStatus.clearAbsent(identity)
+        ) {
+          this.scheduleSettledUnboundCheck(key, identity);
+          return;
+        }
         if (this.deleteOperationBinding(key)) return;
         this.scheduleSettledUnboundCheck(key, identity);
         return;
       }
-      if (observation.kind === 'present' && current.successor !== 'recovery-quarantine') {
+      if (observation.kind === 'present' && current.successor.kind !== 'recovery-quarantine') {
         this.operationBindings.set(key, {
           ...current,
           unknownObservations: 0,
-          successor: 'provider-operation-journal',
+          successor: { kind: 'provider-operation-journal' },
         });
         this.scheduleSettledUnboundCheck(key, identity);
         return;
       }
 
       let next = current;
-      if (observation.kind === 'unknown' && current.successor !== 'recovery-quarantine') {
+      if (observation.kind === 'unknown' && current.successor.kind !== 'recovery-quarantine') {
         const unknownObservations = Math.min(
           current.unknownObservations + 1,
           SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT,
@@ -928,10 +936,16 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         if (!this.deleteOperationBinding(key)) this.scheduleSettledUnboundCheck(key, identity);
         return;
       }
-      if (successor.kind === 'recorded' && next.successor !== 'recovery-quarantine') {
-        this.operationBindings.set(key, { ...next, successor: 'recovery-quarantine' });
+      if (successor.kind === 'recorded') {
+        this.operationBindings.set(key, {
+          ...next,
+          successor: { kind: 'recovery-quarantine', ownership: successor.ownership },
+        });
+        this.clearSettledUnboundCheck(key);
+        return;
       }
-      this.scheduleSettledUnboundCheck(key, identity);
+      this.operationBindings.set(key, { ...next, successor: { kind: 'status-recording-refused' } });
+      this.clearSettledUnboundCheck(key);
     }, SETTLED_UNBOUND_ABSENCE_CHECK_MS);
     timer.unref?.();
     this.settledUnboundChecks.set(key, timer);
@@ -955,8 +969,13 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private clearSettledUnboundSuccessor(
     binding: Extract<ProviderOperationBindingState, { kind: 'settled-unbound' }>,
   ): boolean {
-    if (this.settledUnboundStatus === null) return binding.successor !== 'recovery-quarantine';
-    return this.settledUnboundStatus.clear(binding.identity);
+    if (binding.successor.kind === 'status-recording-refused') {
+      this.settledUnboundStatus?.clearRefusal(binding.identity);
+      return true;
+    }
+    if (binding.successor.kind !== 'recovery-quarantine') return true;
+    if (this.settledUnboundStatus === null) return false;
+    return this.settledUnboundStatus.clear(binding.identity, binding.successor.ownership);
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {

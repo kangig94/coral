@@ -1108,6 +1108,32 @@ describe('cli format', () => {
       },
     );
 
+    it('renders identity-keyed settled-unbound status persistence failures', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          diagnostics: {
+            settlementRefusalRecordingFailures: [
+              {
+                jobId: 'job-unbound',
+                operationId: 'operation-unbound',
+                cause: 'settled-unbound-status-persist-failed' as const,
+                error: 'recovery quarantine unavailable',
+                observedAtMs: 123_456,
+              },
+            ],
+          },
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain(
+        'job=job-unbound operation=operation-unbound cause=settled-unbound-status-persist-failed observedAtMs=123456',
+      );
+    });
+
     it('renders skipped provider-proxy-set candidate identities without offering an unauthorized command', () => {
       const invalidToken = 'pps1.future-row';
       const disagreementToken = 'pps2.other-identity';

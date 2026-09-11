@@ -198,14 +198,25 @@ export const launchPermitDiagnosticsSchema = z
       .optional(),
     settlementRefusalRecordingFailures: z
       .array(
-        z
-          .object({
-            jobId: z.string().min(1),
-            cause: z.enum(['terminal-persist-failed', 'claim-release-failed', 'claim-already-reassigned']),
-            error: z.string().min(1),
-            observedAtMs: z.number().finite().nonnegative(),
-          })
-          .strict(),
+        z.union([
+          z
+            .object({
+              jobId: z.string().min(1),
+              cause: z.enum(['terminal-persist-failed', 'claim-release-failed', 'claim-already-reassigned']),
+              error: z.string().min(1),
+              observedAtMs: z.number().finite().nonnegative(),
+            })
+            .strict(),
+          z
+            .object({
+              jobId: z.string().min(1),
+              operationId: z.string().min(1),
+              cause: z.literal('settled-unbound-status-persist-failed'),
+              error: z.string().min(1),
+              observedAtMs: z.number().finite().nonnegative(),
+            })
+            .strict(),
+        ]),
       )
       .optional(),
     launchReleaseDispositions: z
