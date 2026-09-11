@@ -77,8 +77,6 @@ describe('jobs AbortRegistry', () => {
     const registry = new AbortRegistry(runtime.ids);
     const admission = new LaunchCoordinator({ runtime });
     let signalledStop = false;
-    // `LocalOperationRegistry.stop` returns before the operation it signalled has stopped, so the
-    // handler registered here cannot report that the work ended.
     const signalStopWithoutWaiting = (): void => {
       signalledStop = true;
     };

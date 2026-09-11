@@ -59,6 +59,7 @@ describe('settled unbound status', () => {
     const rendered = formatRecoveryQuarantineList(quarantine.list());
     expect(rendered).toContain(SETTLED_UNBOUND_STATUS_BOUNDARY);
 
+    const restartedStatus = createSettledUnboundStatusPort(() => db, { now: () => 200 });
     let dispatched: unknown;
     const program = new Command();
     program.exitOverride();
@@ -67,6 +68,11 @@ describe('settled unbound status', () => {
         list: () => quarantine.list(),
         clear: async (request) => {
           dispatched = request;
+          if (request.revision === null) throw new Error('expected exact rendered revision');
+          const ownership = restartedStatus.rebind({ ...request, revision: request.revision, state: 'active' });
+          if (ownership === null) throw new Error('expected ownership reconstructed from the rendered coordinate');
+          if (!restartedStatus.clear(record.operation, ownership))
+            throw new Error('expected rendered remedy to clear status');
           return { ...request, disposition: 'advanced' };
         },
       },
@@ -86,13 +92,6 @@ describe('settled unbound status', () => {
       key: expect.stringContaining('settled-unbound:'),
       revision: expect.stringMatching(/^sha256:/u),
     });
-
-    const [subject] = recorded.ownership.subjects;
-    if (subject === undefined) throw new Error('expected durable status subject');
-    const restartedStatus = createSettledUnboundStatusPort(() => db, { now: () => 200 });
-    const rebound = restartedStatus.rebind(subject);
-    if (rebound === null) throw new Error('expected ownership reconstructed from the durable coordinate');
-    expect(restartedStatus.clear(record.operation, rebound)).toBe(true);
     expect(quarantine.list()).toEqual([]);
   });
 

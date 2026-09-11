@@ -94,6 +94,7 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;
 const COORDINATOR_ALLOWED = new Set([
+  'src/jobs/shell/abort-registry.ts',
   'src/jobs/contracts/admission.ts',
   // An entry below this line stays contract-only: it may declare vocabulary a coordinator module reads,
   // and may hold no coordinator-owned runtime implementation.

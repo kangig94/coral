@@ -6,7 +6,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
 import type { AbortHoldDisposition, AbortHoldOwner, AbortNextStep } from '../../jobs/contracts/abort-registry.js';
-import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
+import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type {
@@ -41,9 +41,6 @@ import type {
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 
-export function createDurableTaskAbortRegistry(runtime: Pick<Runtime, 'ids'>): AbortRegistry {
-  return new AbortRegistry(runtime.ids);
-}
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
 const durableProcessCleanupClockScope = Symbol('durable-process-cleanup');
 declare const durableContainmentAbsenceBrand: unique symbol;

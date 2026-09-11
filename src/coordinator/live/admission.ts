@@ -7,9 +7,9 @@ import {
   type PendingDurableLaunch,
   type PendingDurableLaunchIdentity,
   type SpawnDurableJobOptions,
-  createDurableTaskAbortRegistry,
   spawnDurableJobTransport,
 } from './durable-transport.js';
+import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import {
   type ContainedProviderServerHandle,
   type HeldProviderServerSpawn,
@@ -165,7 +165,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly nonReleasedLaunches = new Map<string, LaunchReleaseDiagnostic>();
   private readonly reclaimedLaunches = new Map<string, LaunchPermitReclamationDiagnostic>();
   private readonly launchReclamationOracles = new Map<ReclaimablePermitHolderKind, LaunchReclamationOracle>();
-  private readonly internalAbortRegistry: ReturnType<typeof createDurableTaskAbortRegistry>;
+  private readonly internalAbortRegistry: AbortRegistry;
   private shutdownRequested = false;
   private providerOperationJournalProbe:
     | ((identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult)
@@ -175,10 +175,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
-    this.internalAbortRegistry = createDurableTaskAbortRegistry(options.runtime);
+    this.internalAbortRegistry = new AbortRegistry(options.runtime.ids);
   }
 
-  getInternalAbortRegistry(): ReturnType<typeof createDurableTaskAbortRegistry> {
+  getInternalAbortRegistry(): AbortRegistry {
     return this.internalAbortRegistry;
   }
 

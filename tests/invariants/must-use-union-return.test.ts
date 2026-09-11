@@ -162,7 +162,7 @@ function fixtureProgram(name: string): { program: ts.Program; sourceFile: ts.Sou
 }
 
 describe('discriminated-union returns are must-use', () => {
-  it('requires every discarded union result to carry an explicit void marker', () => {
+  it('requires every discarded decision-union result to carry an explicit void marker', () => {
     const sources = FILES.flatMap((filePath) => {
       const sourceFile = PROGRAM.getSourceFile(filePath);
       return sourceFile === undefined ? [] : [sourceFile];

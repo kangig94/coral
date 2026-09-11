@@ -1022,8 +1022,6 @@ describe('runStartupRecovery provider-operation ownership', () => {
       db: progressStore.getDb(),
       time: runtime.time,
     });
-    // A row already on the settlement path is not offered to the operator: settlement owns it, and a
-    // discard would destroy a record that is about to be retired through its own path.
     const coordinates = quarantine.list().filter((entry) => entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY);
     expect(coordinates).toHaveLength(1);
     const fenced = coordinates[0];
