@@ -782,7 +782,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect(readProviderOperation(progressStore.getDb(), second.operation)).not.toBeNull();
     expect(quarantine.list()).toEqual([]);
     expect(launchCoordinator.settleProviderOperationBinding(second.operation)).toMatchObject({ kind: 'settled' });
-    expect(launchCoordinator.retireProviderOperationBinding(second.operation)).toBe(true);
+    expect(launchCoordinator.retireProviderOperationBinding(second.operation)).toEqual({ kind: 'retired' });
     expect(launchCoordinator.reservationFor(jobId)).toBeNull();
     expect(launchCoordinator.active).toBe(0);
     const successor = launchCoordinator.requestLaunch(

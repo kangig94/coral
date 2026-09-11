@@ -27,6 +27,7 @@ import type { AppServerProxyRoute } from '../jobs/contracts/app-server-proxy-rou
 import type {
   ProviderOperationBindingPort,
   ProviderOperationCleanupRegistrar,
+  SettledUnboundStatusHydrationPort,
 } from '../jobs/contracts/provider-operation-lifecycle.js';
 
 interface CoordinatorSessionOps {
@@ -58,7 +59,10 @@ export interface ListResult {
   sessions: ProviderSession[];
 }
 
-type CoordinatorLaunchCoordinator = LaunchCoordinatorPort & ProviderOperationBindingPort & ProviderDurableSpawner;
+type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
+  ProviderOperationBindingPort &
+  SettledUnboundStatusHydrationPort &
+  ProviderDurableSpawner;
 
 export type ExecutionServiceDeps = {
   runtime: Runtime;

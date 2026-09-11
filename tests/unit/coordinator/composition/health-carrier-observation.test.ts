@@ -75,8 +75,16 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   return { ...actual, probeProcessIncarnation: probeSelfIncarnation };
 });
 
-import { createCoordinatorCore, LAUNCH_PERMIT_REPORT_AGE_MS } from '#src/coordinator/composition/index.js';
-import { LAUNCH_RECLAMATION_AGE_FLOOR_MS } from '#src/coordinator/live/admission.js';
+import {
+  createCoordinatorCore,
+  LAUNCH_PERMIT_REPORT_AGE_MS,
+  MAX_SETTLEMENT_REFUSAL_DIAGNOSTICS,
+} from '#src/coordinator/composition/index.js';
+import {
+  LAUNCH_RECLAMATION_AGE_FLOOR_MS,
+  SETTLED_UNBOUND_ABSENCE_CHECK_MS,
+  SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT,
+} from '#src/coordinator/live/admission.js';
 import type { FetchFn } from '#src/coordinator/composition/types.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
@@ -106,7 +114,11 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
-import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import {
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+} from '#src/recovery/source-registry.js';
+import { MAX_SETTLED_UNBOUND_STATUS_ENTRIES } from '#src/coordinator/services/recovery/settled-unbound-status.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -254,6 +266,79 @@ afterEach(() => {
 });
 
 describe('health local carrier observation', () => {
+  it('bounds settlement refusal diagnostics with deterministic oldest-first eviction', async () => {
+    vi.useFakeTimers();
+    try {
+      const core = createCore(
+        new LocalOperationRegistry(),
+        vi.fn(async () => ({ ok: true }) as never),
+      );
+      const db = createDb();
+      installProgressStore(core, db, {
+        getDb: () => db,
+        listStoredNonterminalJobIds: () => [],
+        loadJobProjectionDetail: () => ({ status: null, launch: null, runtime: null, exit: null }),
+        liveJobCount: () => 0,
+        listJobIds: () => [],
+      });
+      const quarantine = new RecoveryQuarantineStore(db, { now: () => 100 });
+      for (let index = 0; index < MAX_SETTLED_UNBOUND_STATUS_ENTRIES; index += 1) {
+        expect(
+          quarantine.upsert({
+            boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
+            subject: {
+              key: `capacity-${index}`,
+              revision: { kind: 'fingerprint', value: `capacity-revision-${index}` },
+            },
+            state: 'active',
+            stage: 'settle',
+            errorMessage: 'capacity fixture',
+            detail: 'capacity fixture',
+          }),
+        ).toBe(true);
+      }
+      core.launchCoordinator.connectProviderOperationBindingJournal(() => ({
+        kind: 'unknown',
+        reason: 'journal unavailable',
+      }));
+      for (let index = 0; index <= MAX_SETTLEMENT_REFUSAL_DIAGNOSTICS; index += 1) {
+        const jobId = `00000000-0000-4000-8000-${String(index + 1_000).padStart(12, '0')}`;
+        const operationId = `00000000-0000-4000-8000-${String(index + 2_000).padStart(12, '0')}`;
+        const proxyInstanceId = `00000000-0000-4000-8000-${String(index + 3_000).padStart(12, '0')}`;
+        insertProviderOperation(
+          db,
+          providerOperationRecord('executing', {
+            operation: {
+              jobId,
+              operationId,
+              proxyInstanceId,
+              buildSetId: `00000000-0000-4000-8000-${String(index + 4_000).padStart(12, '0')}`,
+            },
+          }),
+        );
+        expect(
+          core.launchCoordinator.settleProviderOperationBinding({
+            jobId,
+            operationId,
+          }),
+        ).toEqual({ kind: 'settled-unbound' });
+      }
+
+      await vi.advanceTimersByTimeAsync(SETTLED_UNBOUND_ABSENCE_CHECK_MS * SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT);
+
+      const failures = readHealth().diagnostics?.settlementRefusalRecordingFailures ?? [];
+      expect(failures).toHaveLength(MAX_SETTLEMENT_REFUSAL_DIAGNOSTICS);
+      expect(failures.some(({ jobId }) => jobId.endsWith('001000'))).toBe(false);
+      expect(failures.at(-1)).toMatchObject({
+        jobId: '00000000-0000-4000-8000-000000001100',
+        operationId: '00000000-0000-4000-8000-000000002100',
+      });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('retries a failed self-incarnation probe and caches the first success', () => {
     const incarnation = testIncarnation('health-retry-success');
     probeSelfIncarnation.mockReset().mockReturnValueOnce(null).mockReturnValue(incarnation);

@@ -19,6 +19,7 @@ import {
   type PendingDurableLaunch,
 } from '#src/coordinator/live/durable-transport.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { DurableProcessExit } from '#src/runtime/durable-runtime.js';
 import type { DurableContainmentOperatorControl, DurableProcessIdentityCallback } from '#src/providers/cli-runner.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -48,6 +49,21 @@ function durableFixturePaths(label: string): { jobDir: string; stdoutPath: strin
   writeFileSync(stdoutPath, '');
   writeFileSync(stderrPath, '');
   return { jobDir, stdoutPath, stderrPath };
+}
+
+function callerOwnership(runtime: Runtime, pool: LaunchPool) {
+  return {
+    kind: 'caller' as const,
+    permit: {
+      reservationId: 'observer-reservation',
+      jobId: 'observer-job',
+      pool,
+      provider: 'codex',
+      holder: { kind: 'local-execution' as const },
+      acquiredAt: 0,
+    },
+    abortRegistry: new AbortRegistry(runtime.ids),
+  };
 }
 
 function launchResult(paths: ReturnType<typeof durableFixturePaths>): DurableLaunchResult {
@@ -86,7 +102,7 @@ function spawn(runtime: Runtime, paths: ReturnType<typeof durableFixturePaths>, 
       ...(signal === undefined ? {} : { signal }),
     },
     pool: {} as LaunchPool,
-    internalPermit: null,
+    ownership: callerOwnership(runtime, {} as LaunchPool),
     cleanupHandles: new Map<symbol, DurableProcessCleanup>(),
     cleanupRetentions: new Map<DurableProcessCleanup, DurableProcessRetention>(),
     pendingLaunches: new Set<PendingDurableLaunch>(),
@@ -193,7 +209,7 @@ describe('durable transport observer timing and cleanup ownership', () => {
         onDurableProcessIdentity: onIdentity,
       },
       pool: {} as LaunchPool,
-      internalPermit: null,
+      ownership: callerOwnership(runtime, {} as LaunchPool),
       cleanupHandles: new Map<symbol, DurableProcessCleanup>(),
       cleanupRetentions: new Map<DurableProcessCleanup, DurableProcessRetention>(),
       pendingLaunches: new Set<PendingDurableLaunch>(),
@@ -268,7 +284,7 @@ describe('durable transport observer timing and cleanup ownership', () => {
         onDurableProcessIdentity: onIdentity,
       },
       pool: {} as LaunchPool,
-      internalPermit: null,
+      ownership: callerOwnership(runtime, {} as LaunchPool),
       cleanupHandles,
       cleanupRetentions: new Map<DurableProcessCleanup, DurableProcessRetention>(),
       pendingLaunches: new Set<PendingDurableLaunch>(),

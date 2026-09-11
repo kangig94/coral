@@ -5,7 +5,7 @@ import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
-import type { AbortHoldDisposition } from '../../jobs/contracts/abort-registry.js';
+import type { AbortHoldDisposition, AbortHoldOwner } from '../../jobs/contracts/abort-registry.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
@@ -35,6 +35,7 @@ import {
 import type {
   DurableContainmentOperatorControl,
   DurableProcessIdentityCallback,
+  DurableLaunchCallerOwnership,
   DurableProcessPublicationDisposition,
 } from '../../providers/cli-runner.js';
 
@@ -77,10 +78,6 @@ function pendingWrapperTerminationOutcomeDetail(
       return `${outcome.kind}:${outcome.stage}`;
   }
 }
-
-type PendingWrapperTerminationRequestDisposition =
-  | Readonly<{ kind: 'settling' }>
-  | Readonly<{ kind: 'retained'; reason: string }>;
 
 export type DurableProcessRetention = Readonly<{
   kind: 'recorded-wrapper-group';
@@ -268,7 +265,7 @@ type SpawnCliOptions = {
   cwd?: string;
   onEvent?: (line: string) => void;
   signal?: AbortSignal;
-  permitGranted?: boolean;
+  callerOwnership?: DurableLaunchCallerOwnership;
   pool?: LaunchPool;
   extraEnv?: Record<string, string>;
   exactEnv?: Record<string, string>;
@@ -290,20 +287,23 @@ type SpawnDurableJobTransportParams = {
   cleanupRetentions: Map<DurableProcessCleanup, DurableProcessRetention>;
   pendingLaunches: Set<PendingDurableLaunch>;
   releaseLaunch: (permit: LaunchPermit) => LaunchRelease;
-} & (Readonly<{ internalPermit: null }> | Readonly<{ internalPermit: LaunchPermit; abortRegistry: AbortRegistry }>);
+  ownership:
+    | Readonly<{ kind: 'internal'; permit: LaunchPermit; abortRegistry: AbortRegistry }>
+    | Readonly<{ kind: 'caller'; permit: LaunchPermit; abortRegistry: AbortHoldOwner }>;
+};
 
 export async function spawnDurableJobTransport(params: SpawnDurableJobTransportParams): Promise<CliExecResult> {
   const { runtime, options, cleanupHandles, cleanupRetentions, pendingLaunches, releaseLaunch } = params;
-  const { internalPermit } = params;
-  const abortRegistry = internalPermit === null ? null : params.abortRegistry;
-  const transportAbortController = internalPermit === null ? null : new AbortController();
+  const { ownership } = params;
+  const { permit, abortRegistry } = ownership;
+  const transportAbortController = ownership.kind === 'internal' ? new AbortController() : null;
   const signal = transportAbortController?.signal ?? options.signal;
   let forwardExternalAbort: (() => void) | null = null;
-  if (internalPermit !== null && transportAbortController !== null && abortRegistry !== null) {
-    abortRegistry.register(
-      internalPermit.jobId,
+  if (ownership.kind === 'internal' && transportAbortController !== null) {
+    ownership.abortRegistry.register(
+      permit.jobId,
       () => transportAbortController.abort(),
-      () => releaseLaunch(internalPermit),
+      () => releaseLaunch(permit),
     );
     if (options.signal?.aborted === true) {
       transportAbortController.abort(options.signal.reason);
@@ -367,46 +367,8 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
   };
 
   function retainPendingWrapperHold(generation: number, reason: string, nextStep: string): void {
-    if (pendingWrapperHold?.generation !== generation || internalPermit === null) return;
-    abortRegistry?.hold(internalPermit.jobId, reason, nextStep, () => retryPendingWrapperTermination(generation));
-  }
-
-  function terminateCallerOwnedPendingWrapper(
-    obligation: DurablePendingLaunchObligation,
-  ): PendingWrapperTerminationRequestDisposition {
-    let termination: ReturnType<DurablePendingLaunchObligation['requestTermination']>;
-    try {
-      termination = obligation.requestTermination();
-    } catch (error: unknown) {
-      const reason = `Wrapper termination threw: ${errorMessage(error)}`;
-      backendLog.warn(`[durable-process:${obligation.pid ?? 'unknown'}] ${reason}`);
-      return { kind: 'retained', reason };
-    }
-    if (termination.kind === 'signal-failed') {
-      const reason = `Wrapper termination failed: ${termination.signal}:${termination.reason}`;
-      backendLog.warn(`[durable-process:${obligation.pid ?? 'unknown'}] ${reason}`);
-      return { kind: 'retained', reason };
-    }
-    void termination.settlement.then(
-      (outcome) => {
-        if (outcome.kind === 'observed-absent') {
-          releasePendingLaunch();
-          return outcome;
-        }
-        backendLog.warn(
-          `[durable-process:${obligation.pid ?? 'unknown'}] Wrapper termination remained unsettled: ` +
-            pendingWrapperTerminationOutcomeDetail(outcome),
-        );
-        return outcome;
-      },
-      (error: unknown) => {
-        backendLog.warn(
-          `[durable-process:${obligation.pid ?? 'unknown'}] Wrapper termination settlement failed: ` +
-            errorMessage(error),
-        );
-      },
-    );
-    return { kind: 'settling' };
+    if (pendingWrapperHold?.generation !== generation) return;
+    abortRegistry.hold(permit.jobId, reason, nextStep, () => retryPendingWrapperTermination(generation));
   }
 
   function settlePendingWrapperHold(generation: number): void {
@@ -416,12 +378,12 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     pendingWrapperHoldGeneration += 1;
     releasePendingLaunch();
     hold.resolveSettled();
-    if (internalPermit !== null) abortRegistry?.releaseHold(internalPermit.jobId);
+    abortRegistry.releaseHold(permit.jobId);
   }
 
   function retryPendingWrapperTermination(generation: number): Extract<AbortHoldDisposition, { kind: 'retained' }> {
     const hold = pendingWrapperHold;
-    if (hold?.generation !== generation || internalPermit === null) {
+    if (hold?.generation !== generation) {
       return {
         kind: 'retained',
         reason: 'pending wrapper ownership moved to another generation',
@@ -447,7 +409,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         kind: 'retained' as const,
         reason: `pending wrapper termination threw: ${errorMessage(error)}`,
         nextStep:
-          `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+          `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
           'only observed absence or wrapper settlement releases the permit.',
       };
       retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
@@ -459,7 +421,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         kind: 'retained' as const,
         reason: `pending wrapper termination failed: ${termination.signal}:${termination.reason}`,
         nextStep:
-          `Restore signal delivery, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+          `Restore signal delivery, then run coral-cli abort jobs ${permit.jobId}; ` +
           'only observed absence or wrapper settlement releases the permit.',
       };
       retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
@@ -478,7 +440,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
           retainPendingWrapperHold(
             generation,
             `pending wrapper termination remains unsettled: ${pendingWrapperTerminationOutcomeDetail(outcome)}`,
-            `Run coral-cli abort jobs ${internalPermit.jobId} again; ` +
+            `Run coral-cli abort jobs ${permit.jobId} again; ` +
               'only observed absence or wrapper settlement releases the permit.',
           );
           return outcome;
@@ -487,7 +449,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
           retainPendingWrapperHold(
             generation,
             `pending wrapper termination settlement failed: ${errorMessage(error)}`,
-            `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+            `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
               'only observed absence or wrapper settlement releases the permit.',
           );
         },
@@ -504,10 +466,6 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
   }
 
   function enterPendingWrapperHold(obligation: DurablePendingLaunchObligation | null): void {
-    if (internalPermit === null) {
-      if (obligation !== null) void terminateCallerOwnedPendingWrapper(obligation);
-      return;
-    }
     if (pendingWrapperHold !== null) {
       if (pendingWrapperHold.obligation === null && obligation !== null) {
         pendingWrapperHold.obligation = obligation;
@@ -518,7 +476,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
             retainPendingWrapperHold(
               generation,
               `pending wrapper settlement failed: ${errorMessage(error)}`,
-              `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+              `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
                 'only observed absence or wrapper settlement releases the permit.',
             );
           },
@@ -542,7 +500,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     retainPendingWrapperHold(
       generation,
       'termination requested while the durable wrapper identity is pending',
-      `Run coral-cli abort jobs ${internalPermit.jobId} again; ` +
+      `Run coral-cli abort jobs ${permit.jobId} again; ` +
         'only observed absence or wrapper settlement releases the permit.',
     );
     if (obligation !== null) {
@@ -552,7 +510,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
           retainPendingWrapperHold(
             generation,
             `pending wrapper settlement failed: ${errorMessage(error)}`,
-            `Restore wrapper termination, then run coral-cli abort jobs ${internalPermit.jobId}; ` +
+            `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
               'only observed absence or wrapper settlement releases the permit.',
           );
         },
@@ -616,7 +574,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
       cleanupRetryInterval = null;
     }
     containmentAbsenceConfirmed = true;
-    if (internalPermit !== null) abortRegistry?.releaseHold(internalPermit.jobId);
+    abortRegistry.releaseHold(permit.jobId);
     resolveContainmentAbsence();
     lastUnsettledDetail = null;
     return { kind: 'released' };
@@ -706,14 +664,12 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
   const enterContainmentHold = (reason: string): void => {
     providerResultHeld = true;
     transferPendingWrapperHold();
-    if (internalPermit !== null) {
-      abortRegistry?.hold(
-        internalPermit.jobId,
-        reason,
-        `Run coral-cli abort jobs ${internalPermit.jobId} again to abandon the durable containment hold.`,
-        operatorControl.abandon,
-      );
-    }
+    abortRegistry.hold(
+      permit.jobId,
+      reason,
+      `Run coral-cli abort jobs ${permit.jobId} again to abandon the durable containment hold.`,
+      operatorControl.abandon,
+    );
     void publishContainmentStatus({
       kind: 'held',
       reason,
@@ -1091,9 +1047,9 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
       signal.removeEventListener('abort', abortHandler);
     }
     if (forwardExternalAbort !== null) options.signal?.removeEventListener('abort', forwardExternalAbort);
-    if (internalPermit !== null) {
-      void releaseLaunch(internalPermit);
-      abortRegistry?.remove(internalPermit.jobId);
+    if (ownership.kind === 'internal') {
+      void releaseLaunch(permit);
+      ownership.abortRegistry.remove(permit.jobId);
     }
   }
 }

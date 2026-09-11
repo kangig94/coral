@@ -1697,9 +1697,9 @@ export class ProviderOperationReconciler
   ): ProviderOperationRecord | null {
     this.#assertActiveDrive();
     this.#settleBindingOrThrow(record.operation);
+    this.#releaseStartupAndRetireBindingOrThrow(record);
     const result = this.#deps.terminalization.terminalize(record, directive);
     if (result.kind === 'conflict') return result.current;
-    this.#releaseTerminalizedOwnership(record);
     this.#completeTerminalized(record);
     return null;
   }
@@ -1774,7 +1774,6 @@ export class ProviderOperationReconciler
         const terminalized = await this.#terminalizeDisappearance(record, directive);
         if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
-        this.#releaseTerminalizedOwnership(record);
         this.#completeTerminalized(record);
         return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
       }
@@ -1782,7 +1781,6 @@ export class ProviderOperationReconciler
         const terminalized = await this.#terminalizeDisappearance(record, record.afterRelease);
         if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
-        this.#releaseTerminalizedOwnership(record);
         this.#completeTerminalized(record);
         return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
       }
@@ -1835,7 +1833,6 @@ export class ProviderOperationReconciler
       const terminalized = await this.#terminalizeAbandonment(record, this.#rekeyRefusalDirective(record) ?? directive);
       if (terminalized.kind === 'operational-failure') return terminalized;
       if (terminalized.kind === 'conflict') continue;
-      this.#releaseTerminalizedOwnership(record);
       this.#completeTerminalized(record);
       return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
     }
@@ -1849,6 +1846,7 @@ export class ProviderOperationReconciler
     | Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>
   > {
     this.#settleBindingOrThrow(record.operation);
+    this.#releaseStartupAndRetireBindingOrThrow(record);
     return new Promise((resolve, reject) => {
       const turn = this.#deps.recoveryDispatcher.begin(
         'disappearance-delivery',
@@ -1884,6 +1882,7 @@ export class ProviderOperationReconciler
     | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>
   > {
     this.#settleBindingOrThrow(record.operation);
+    this.#releaseStartupAndRetireBindingOrThrow(record);
     return new Promise((resolve, reject) => {
       const turn = this.#deps.recoveryDispatcher.begin(
         'representation-abandonment-delivery',
@@ -2022,7 +2021,7 @@ export class ProviderOperationReconciler
       if (attempt.current === null) {
         const release = this.#deps.releaseStartupOwnership(record.operation);
         if (release.kind !== 'transferred') {
-          this.#deps.binding.retireProviderOperationBinding(record.operation);
+          this.#retireBindingOrThrow(record.operation);
         }
       }
       return attempt.current;
@@ -2054,7 +2053,7 @@ export class ProviderOperationReconciler
       if (current === null) {
         const release = this.#deps.releaseStartupOwnership(record.operation);
         if (release.kind !== 'transferred') {
-          this.#deps.binding.retireProviderOperationBinding(record.operation);
+          this.#retireBindingOrThrow(record.operation);
         }
       }
       return current;
@@ -2124,7 +2123,7 @@ export class ProviderOperationReconciler
         if (result.current === null) {
           const release = this.#deps.releaseStartupOwnership(record.operation);
           if (release.kind !== 'transferred') {
-            this.#deps.binding.retireProviderOperationBinding(record.operation);
+            this.#retireBindingOrThrow(record.operation);
           }
         }
         return result.current;
@@ -2350,17 +2349,11 @@ export class ProviderOperationReconciler
   ): ReturnType<typeof deleteProviderOperation> {
     this.#assertActiveDrive();
     this.#settleBindingOrThrow(record.operation);
-    const result = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-    if (result.kind === 'deleted' || result.current === null) {
-      const release = this.#deps.releaseStartupOwnership(record.operation);
-      if (release.kind !== 'transferred') {
-        this.#deps.binding.retireProviderOperationBinding(record.operation);
-      }
-    }
-    return result;
+    this.#releaseStartupAndRetireBindingOrThrow(record);
+    return deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
   }
 
-  #releaseTerminalizedOwnership(record: ProviderOperationRecord): void {
+  #releaseStartupAndRetireBindingOrThrow(record: ProviderOperationRecord): void {
     const release = this.#deps.releaseStartupOwnership(record.operation);
     if (release.kind === 'transferred') return;
     if (
@@ -2370,13 +2363,20 @@ export class ProviderOperationReconciler
     ) {
       return;
     }
-    this.#deps.binding.retireProviderOperationBinding(record.operation);
+    this.#retireBindingOrThrow(record.operation);
   }
 
   #settleBindingOrThrow(operation: ProviderOperationIdentity): void {
     const settlement = this.#deps.binding.settleProviderOperationBinding(operation);
     if (settlement.kind === 'refused') {
       throw new Error(`Provider operation binding settlement was refused: ${settlement.reason}`);
+    }
+  }
+
+  #retireBindingOrThrow(operation: ProviderOperationIdentity): void {
+    const retirement = this.#deps.binding.retireProviderOperationBinding(operation);
+    if (retirement.kind === 'refused') {
+      throw new Error(`Provider operation binding retirement was refused: ${retirement.reason}`);
     }
   }
 

@@ -22,6 +22,7 @@ import type {
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { liveChildAuthority } from '#src/infra/process-supervision.js';
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type {
   DurableCliProcessSubject,
   DurableContainmentStatus,
@@ -399,7 +400,6 @@ describe('launch admission', () => {
         command: 'never-spawned',
         args: [],
         jobDir: '/never-created',
-        permitGranted: true,
         pool: invalidPool,
       }),
     ).rejects.toThrow(invariantMessage);
@@ -1123,6 +1123,7 @@ describe('launch admission', () => {
       const identity = { jobId: 'job-absent-settlement', operationId: 'operation-absent-settlement' };
       const statuses = new Set([`${identity.jobId}:${identity.operationId}`]);
       coordinator.connectSettledUnboundStatus({
+        rebind: () => null,
         record: (settled) => ({ kind: 'recorded', ownership: testSettledUnboundOwnership(settled) }),
         clear: (settled) => statuses.delete(`${settled.jobId}:${settled.operationId}`),
         clearAbsent: (settled) => statuses.delete(`${settled.jobId}:${settled.operationId}`),
@@ -1155,6 +1156,7 @@ describe('launch admission', () => {
         reason: 'journal unavailable',
       }));
       coordinator.connectSettledUnboundStatus({
+        rebind: () => null,
         record: (identity) => {
           statuses.add(`${identity.jobId}:${identity.operationId}`);
           return { kind: 'recorded', ownership: testSettledUnboundOwnership(identity) };
@@ -1186,7 +1188,38 @@ describe('launch admission', () => {
     }
   });
 
-  it('transfers a recorded durable successor out of the bounded settlement mailbox', async () => {
+  it('reports every binding retirement disposition and retains a refused successor', async () => {
+    vi.useFakeTimers();
+    try {
+      let clearAllowed = false;
+      const identity = { jobId: 'retirement-disposition-job', operationId: 'retirement-disposition-operation' };
+      coordinator.connectProviderOperationBindingJournal(() => ({
+        kind: 'unknown',
+        reason: 'journal unavailable',
+      }));
+      coordinator.connectSettledUnboundStatus({
+        rebind: () => null,
+        record: (settled) => ({ kind: 'recorded', ownership: testSettledUnboundOwnership(settled) }),
+        clear: () => clearAllowed,
+        clearAbsent: () => clearAllowed,
+        clearRefusal: () => {},
+      });
+      expect(coordinator.settleProviderOperationBinding(identity)).toEqual({ kind: 'settled-unbound' });
+      await vi.advanceTimersByTimeAsync(SETTLED_UNBOUND_ABSENCE_CHECK_MS * SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT);
+
+      expect(coordinator.retireProviderOperationBinding(identity)).toEqual({
+        kind: 'refused',
+        reason: 'The durable unsettled settlement status could not be cleared.',
+      });
+      clearAllowed = true;
+      expect(coordinator.retireProviderOperationBinding(identity)).toEqual({ kind: 'retired' });
+      expect(coordinator.retireProviderOperationBinding(identity)).toEqual({ kind: 'nothing-to-retire' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts a recorded durable successor against the unresolved settlement budget', async () => {
     vi.useFakeTimers();
     try {
       coordinator.connectProviderOperationBindingJournal(() => ({
@@ -1194,6 +1227,7 @@ describe('launch admission', () => {
         reason: 'journal unavailable',
       }));
       coordinator.connectSettledUnboundStatus({
+        rebind: () => null,
         record: (identity) => ({ kind: 'recorded', ownership: testSettledUnboundOwnership(identity) }),
         clear: () => true,
         clearAbsent: () => true,
@@ -1207,7 +1241,7 @@ describe('launch admission', () => {
       ).toEqual({ kind: 'settled-unbound' });
       await vi.advanceTimersByTimeAsync(SETTLED_UNBOUND_ABSENCE_CHECK_MS * SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT);
 
-      for (let index = 0; index < MAX_SETTLED_UNBOUND_BINDINGS; index += 1) {
+      for (let index = 0; index < MAX_SETTLED_UNBOUND_BINDINGS - 1; index += 1) {
         expect(
           coordinator.settleProviderOperationBinding({
             jobId: `successor-mailbox-job-${index}`,
@@ -1219,6 +1253,47 @@ describe('launch admission', () => {
         coordinator.settleProviderOperationBinding({
           jobId: 'successor-mailbox-overflow',
           operationId: 'successor-mailbox-overflow',
+        }),
+      ).toMatchObject({ kind: 'refused' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts a status-recording refusal against the unresolved settlement budget', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.connectProviderOperationBindingJournal(() => ({
+        kind: 'unknown',
+        reason: 'journal unavailable',
+      }));
+      coordinator.connectSettledUnboundStatus({
+        rebind: () => null,
+        record: () => ({ kind: 'refused', reason: 'status store unavailable' }),
+        clear: () => false,
+        clearAbsent: () => false,
+        clearRefusal: () => {},
+      });
+      expect(
+        coordinator.settleProviderOperationBinding({
+          jobId: 'refused-successor-job',
+          operationId: 'refused-successor-operation',
+        }),
+      ).toEqual({ kind: 'settled-unbound' });
+      await vi.advanceTimersByTimeAsync(SETTLED_UNBOUND_ABSENCE_CHECK_MS * SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT);
+
+      for (let index = 0; index < MAX_SETTLED_UNBOUND_BINDINGS - 1; index += 1) {
+        expect(
+          coordinator.settleProviderOperationBinding({
+            jobId: `refused-successor-mailbox-job-${index}`,
+            operationId: `refused-successor-mailbox-operation-${index}`,
+          }),
+        ).toEqual({ kind: 'settled-unbound' });
+      }
+      expect(
+        coordinator.settleProviderOperationBinding({
+          jobId: 'refused-successor-mailbox-overflow',
+          operationId: 'refused-successor-mailbox-overflow',
         }),
       ).toMatchObject({ kind: 'refused' });
     } finally {
@@ -1500,7 +1575,6 @@ describe('launch admission', () => {
       command: 'codex',
       args: ['exec'],
       jobDir: '/tmp/pending-wrapper',
-      permitGranted: true,
     });
     const controller = new AbortController();
     const termination = localCoordinator.terminateAll(controller.signal);
@@ -1554,7 +1628,6 @@ describe('launch admission', () => {
       command: 'codex',
       args: ['exec'],
       jobDir: '/tmp/held-durable-launch',
-      permitGranted: true,
     });
     await launchObserved;
 
@@ -1574,9 +1647,9 @@ describe('launch admission', () => {
     await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
   });
 
-  it('terminates an accepted wrapper aborted before identification and retains it until settlement', async () => {
+  it('keeps a caller-owned launch slot while an aborted wrapper remains unsettled', async () => {
+    process.env.CORAL_MAX_WORKERS = '1';
     const base = createRealRuntime('prod');
-    const controller = new AbortController();
     const requestTermination = vi.fn(() => ({
       kind: 'signal-failed' as const,
       pid: TEST_PROVIDER_PID,
@@ -1591,47 +1664,113 @@ describe('launch admission', () => {
     const wrapperSettlement = new Promise<void>((resolve) => {
       settleWrapper = resolve;
     });
+    let identifyWrapper!: () => void;
+    let observeContainmentHold!: () => void;
+    const containmentHeld = new Promise<void>((resolve) => {
+      observeContainmentHold = resolve;
+    });
     const launch = vi.fn((options: Parameters<Runtime['process']['durable']['launch']>[0]) => {
       options.onWrapperSpawned?.({
         pid: TEST_PROVIDER_PID,
         settled: wrapperSettlement,
         requestTermination,
       });
+      identifyWrapper = () =>
+        options.onWrapperIdentified?.({
+          runtimeRecord: {
+            transport: 'durable-cli',
+            pid: TEST_PROVIDER_PID,
+            stdoutPath: '/tmp/accepted-pending-wrapper/stdout',
+            stderrPath: '/tmp/accepted-pending-wrapper/stderr',
+            startTime: new Date(0).toISOString(),
+          },
+          pid: TEST_PROVIDER_PID,
+          leaderIncarnation: TEST_PROVIDER_INCARNATION,
+          signalAuthority: testSignalAuthority(TEST_PROVIDER_PID, () => false),
+        });
       acceptWrapper();
       return new Promise<never>(() => undefined);
     });
+    let elapsedMs = 0n;
     const runtime: Runtime = {
       ...base,
+      time: {
+        ...base.time,
+        monotonicNow: () => elapsedMs,
+        sleep: async (milliseconds) => {
+          elapsedMs += BigInt(milliseconds);
+        },
+      },
       process: {
         ...base.process,
+        kill: (_pid, signal) => signal === 0,
+        observeLiveness: () => 'alive',
+        readProcessIncarnation: () => TEST_PROVIDER_INCARNATION,
+        observeRecordedProcessAsync: async () => 'alive',
         durable: { ...base.process.durable, launch },
       },
     };
     const localCoordinator = new LaunchCoordinator({ runtime });
+    const abortRegistry = new AbortRegistry(runtime.ids);
+    const admission = localCoordinator.requestLaunch(
+      'caller-owned-pending-wrapper',
+      'codex',
+      providerOwner('caller-owned-pending-wrapper'),
+      'default',
+    );
+    if (admission === 'queue_full' || admission.type !== 'immediate') throw new Error('expected caller permit');
+    const callerPermit = admission.permit;
+    abortRegistry.register(callerPermit.jobId, undefined, () => localCoordinator.releaseLaunch(callerPermit));
     void localCoordinator.spawnDurableJob({
       provider: 'codex',
       command: 'codex',
       args: ['exec'],
       jobDir: '/tmp/accepted-pending-wrapper',
-      permitGranted: true,
-      signal: controller.signal,
+      jobId: callerPermit.jobId,
+      callerOwnership: { permit: callerPermit, abortHoldOwner: abortRegistry },
+      signal: abortRegistry.getSignal(callerPermit.jobId) ?? undefined,
+      onDurableProcessIdentity: (_identity, status) => {
+        if (status?.kind === 'held') observeContainmentHold();
+        return { kind: 'published' };
+      },
     });
     await wrapperAccepted;
+    const queued = localCoordinator.requestLaunch(
+      'queued-after-caller-wrapper',
+      'codex',
+      providerOwner('queued-after-caller-wrapper'),
+      'default',
+    );
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued launch');
 
-    controller.abort();
+    const abort = abortRegistry.abort([callerPermit.jobId]);
 
     expect(requestTermination).toHaveBeenCalledOnce();
-    let terminationSettled = false;
-    const termination = localCoordinator.terminateAll().then((result) => {
-      terminationSettled = true;
-      return result;
-    });
-    await Promise.resolve();
-    expect(terminationSettled).toBe(false);
+    expect(abort.refused).toEqual([
+      expect.objectContaining({
+        jobId: callerPermit.jobId,
+        reason: 'pending wrapper termination failed: SIGTERM:kill-port-returned-false',
+      }),
+    ]);
+    expect(localCoordinator.reservationFor(callerPermit.jobId)).toMatchObject({ kind: 'active' });
+    expect(localCoordinator.queuePosition('queued-after-caller-wrapper', 'default')).toBe(1);
 
+    identifyWrapper();
+    await containmentHeld;
     settleWrapper();
+    await Promise.resolve();
+    expect(localCoordinator.reservationFor(callerPermit.jobId)).toMatchObject({ kind: 'active' });
+    expect(localCoordinator.queuePosition('queued-after-caller-wrapper', 'default')).toBe(1);
 
-    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    await vi.waitFor(() => {
+      expect(abortRegistry.abort([callerPermit.jobId]).abandoned).toEqual([
+        expect.objectContaining({ jobId: callerPermit.jobId }),
+      ]);
+    });
+    const admitted = await queued.waitForPermit();
+    expect(localCoordinator.reservationFor(callerPermit.jobId)).toBeNull();
+    expect(localCoordinator.reservationFor(admitted.jobId)).toMatchObject({ kind: 'active' });
+    expect(localCoordinator.releaseLaunch(admitted)).toMatchObject({ kind: 'released' });
   });
 
   it('keeps the launch slot while an aborted pending wrapper termination has not settled', async () => {
@@ -1771,7 +1910,6 @@ describe('launch admission', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/readiness-rejection',
-        permitGranted: true,
       }),
     ).rejects.toThrow('synthetic readiness rejection');
 
@@ -1859,7 +1997,6 @@ describe('launch admission', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/provisional-readiness-rejection',
-        permitGranted: true,
         onDurableProcessIdentity: observations,
       }),
     ).rejects.toThrow('synthetic provisional readiness rejection');
@@ -1914,7 +2051,6 @@ describe('launch admission', () => {
       command: 'codex',
       args: ['exec'],
       jobDir: '/tmp/unpublished-launch',
-      permitGranted: true,
       onRuntimeRecord,
       onDurableProcessIdentity,
     });
@@ -2022,7 +2158,6 @@ describe('launch admission', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/wrapper-crash',
-        permitGranted: true,
       }),
     ).rejects.toBe(wrapperError);
 
@@ -2217,7 +2352,6 @@ describe('launch admission', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/failed-absence-publication',
-        permitGranted: true,
         signal: abort.signal,
         onDurableProcessIdentity: observations,
       })
@@ -2273,7 +2407,6 @@ describe('launch admission', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/sim/jobs/late-job',
-        permitGranted: true,
       }),
     ).rejects.toThrow('Launch rejected because shutdown has begun');
   });

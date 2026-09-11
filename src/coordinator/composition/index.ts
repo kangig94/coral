@@ -147,6 +147,7 @@ import type { ProviderProxySetBooleanOperatorExitResult } from '../services/prov
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 export const LAUNCH_PERMIT_REPORT_AGE_MS = 15 * 60 * 1000;
+export const MAX_SETTLEMENT_REFUSAL_DIAGNOSTICS = 100;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
 type KbReadRpcPort = Pick<
@@ -548,13 +549,24 @@ export function createCoordinatorCore(
     string,
     NonNullable<NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']>[number]
   >();
+  const recordSettlementRefusalFailure = (
+    key: string,
+    failure: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['settlementRefusalRecordingFailures']>[number],
+  ): void => {
+    settlementRefusalRecordingFailures.delete(key);
+    settlementRefusalRecordingFailures.set(key, failure);
+    if (settlementRefusalRecordingFailures.size <= MAX_SETTLEMENT_REFUSAL_DIAGNOSTICS) return;
+    const oldest = settlementRefusalRecordingFailures.keys().next().value;
+    if (oldest !== undefined) settlementRefusalRecordingFailures.delete(oldest);
+  };
   const settledUnboundStatus = createSettledUnboundStatusPort(recoveryDb, runtime.time);
   world.launchCoordinator.connectSettledUnboundStatus({
+    rebind: (subject) => settledUnboundStatus.rebind(subject),
     record(identity) {
       const result = settledUnboundStatus.record(identity);
       const diagnosticKey = JSON.stringify(['settled-unbound', identity.jobId, identity.operationId]);
       if (result.kind === 'refused') {
-        settlementRefusalRecordingFailures.set(diagnosticKey, {
+        recordSettlementRefusalFailure(diagnosticKey, {
           jobId: identity.jobId,
           operationId: identity.operationId,
           cause: 'settled-unbound-status-persist-failed',
@@ -752,7 +764,7 @@ export function createCoordinatorCore(
           settlementRefusalRecordingFailures.delete(input.jobId);
           return true;
         }
-        settlementRefusalRecordingFailures.set(input.jobId, {
+        recordSettlementRefusalFailure(input.jobId, {
           jobId: input.jobId,
           cause: input.cause,
           error: 'The recovery quarantine write did not persist.',
@@ -760,7 +772,7 @@ export function createCoordinatorCore(
         });
         return false;
       } catch (error: unknown) {
-        settlementRefusalRecordingFailures.set(input.jobId, {
+        recordSettlementRefusalFailure(input.jobId, {
           jobId: input.jobId,
           cause: input.cause,
           error: formatError(error),

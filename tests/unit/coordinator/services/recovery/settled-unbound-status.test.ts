@@ -45,14 +45,19 @@ describe('settled unbound status', () => {
           errorMessage: expect.stringContaining(
             `job '${record.operation.jobId}' operation '${record.operation.operationId}'`,
           ),
-          detail: expect.stringContaining('matching preparation clears'),
+          detail: expect.stringContaining('coral-cli backend shutdown'),
         }),
       ]),
     );
     const rendered = formatRecoveryQuarantineList(quarantine.list());
     expect(rendered).toContain(SETTLED_UNBOUND_STATUS_BOUNDARY);
 
-    expect(status.clear(record.operation, recorded.ownership)).toBe(true);
+    const [subject] = recorded.ownership.subjects;
+    if (subject === undefined) throw new Error('expected durable status subject');
+    const restartedStatus = createSettledUnboundStatusPort(() => db, { now: () => 200 });
+    const rebound = restartedStatus.rebind(subject);
+    if (rebound === null) throw new Error('expected ownership reconstructed from the durable coordinate');
+    expect(restartedStatus.clear(record.operation, rebound)).toBe(true);
     expect(quarantine.list()).toEqual([]);
   });
 

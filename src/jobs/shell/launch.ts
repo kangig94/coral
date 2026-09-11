@@ -1583,6 +1583,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
       },
       jobId,
+      { permit, abortHoldOwner: this.deps.abortRegistry },
     );
     return {
       kind: 'local',

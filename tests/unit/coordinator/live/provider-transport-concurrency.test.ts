@@ -234,7 +234,6 @@ describe('provider transport concurrency hardening', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/sim/jobs/late-durable',
-        permitGranted: true,
       }),
     );
     await flushMicrotasks();
@@ -270,7 +269,6 @@ describe('provider transport concurrency hardening', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/sim/jobs/failed-signal-durable',
-        permitGranted: true,
       }),
     );
     runtime.time.tick(0);

@@ -32,7 +32,11 @@ import type {
   LaunchPermit,
   LaunchRelease,
 } from '../../../jobs/contracts/admission.js';
-import type { ProviderOperationBindingPort } from '../../../jobs/contracts/provider-operation-lifecycle.js';
+import type {
+  ProviderOperationBindingPort,
+  SettledUnboundStatusHydrationPort,
+  SettledUnboundStatusSubject,
+} from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -78,6 +82,7 @@ import type {
 import { RecoveryContainment } from '../../../recovery/containment.js';
 import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryPolicy,
   type RecoverySourceFactoryPlan,
@@ -247,7 +252,8 @@ type RecoveryCoordinatorContext = {
     'restoreActiveLaunch' | 'holdUndecidedProviderOperationLaunch' | 'reclaimLaunchPermit'
   > &
     Pick<JobAdmissionPort, 'releaseLaunch'> &
-    ProviderOperationBindingPort;
+    ProviderOperationBindingPort &
+    SettledUnboundStatusHydrationPort;
 };
 
 export type StartupRecoveryContext = {
@@ -697,6 +703,25 @@ export function createRecoveryCoordinator(
     teardownRequested: false,
     teardownState: { kind: 'pending' },
   };
+
+  for (const entry of new RecoveryQuarantineStore(progressStore.getDb(), runtime.time)
+    .list()
+    .filter(({ boundary }) => boundary === SETTLED_UNBOUND_STATUS_BOUNDARY)) {
+    if (entry.subject.revision.kind !== 'fingerprint') {
+      log(`Settled-unbound startup ownership has no fingerprint revision: ${entry.subject.key}.\n`);
+      continue;
+    }
+    const subject: SettledUnboundStatusSubject = {
+      boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
+      key: entry.subject.key,
+      revision: entry.subject.revision.value,
+      state: 'active',
+    };
+    const hydration = startupOwnership.hydrateSettledUnboundStatus(subject);
+    if (hydration.kind === 'refused') {
+      log(`Settled-unbound startup ownership was refused for ${entry.subject.key}: ${hydration.reason}.\n`);
+    }
+  }
 
   const reclaimTerminalUndecidedProviderOperationOwnership = ({
     jobId,
@@ -2161,7 +2186,19 @@ export function createRecoveryCoordinator(
       transferredHolder === null &&
       !state.providerOperationStartupPermits.has(record.operation.jobId)
     ) {
-      startupOwnership.retireProviderOperationBinding(record.operation);
+      const retirement = startupOwnership.retireProviderOperationBinding(record.operation);
+      if (retirement.kind === 'refused') {
+        return {
+          phase: record.phase,
+          operation: record.operation,
+          restoredPermit: null,
+          bindingDisposition: {
+            kind: 'refused',
+            reason: `Provider operation binding retirement was refused: ${retirement.reason}`,
+            exit: 'coral-cli backend recovery-quarantine clear',
+          },
+        };
+      }
     }
     return {
       phase: record.phase,

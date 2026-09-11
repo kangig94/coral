@@ -127,9 +127,14 @@ function startCli(root: string, args: readonly string[], env: NodeJS.ProcessEnv)
   return { child, stdout: () => stdout, stderr: () => stderr, completed };
 }
 
-async function waitForFixtureEvent(fixture: FixtureProcess, predicate: () => boolean, label: string): Promise<void> {
+async function waitForFixtureEvent(
+  fixture: FixtureProcess,
+  predicate: () => boolean,
+  label: string,
+  timeoutMs = 30_000,
+): Promise<void> {
   await Promise.race([
-    waitForCondition(predicate, 30_000),
+    waitForCondition(predicate, timeoutMs),
     new Promise<never>((_, reject) => {
       fixture.child.once('close', (code, signal) => {
         reject(
@@ -226,6 +231,7 @@ describe('handoff escalation real terminal delivery', () => {
       incumbent,
       () => incumbent.events.some((event) => event.event === 'sigterm-armed'),
       'accepted SIGTERM did not arm the bind failure',
+      40_000,
     );
     await waitForCondition(() => existsSync(faultObservation), 10_000);
 

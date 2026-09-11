@@ -22,7 +22,7 @@ function statusError(identity: ProviderOperationBindingIdentity): string {
   return `${STATUS_ERROR_PREFIX} for job '${identity.jobId}' operation '${identity.operationId}'.`;
 }
 
-function statusSubject(identity: ProviderOperationBindingIdentity): SettledUnboundStatusSubject {
+export function settledUnboundStatusSubject(identity: ProviderOperationBindingIdentity): SettledUnboundStatusSubject {
   const encodedIdentity = JSON.stringify([identity.jobId, identity.operationId]);
   return {
     boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
@@ -45,7 +45,10 @@ function sameSubject(left: SettledUnboundStatusSubject, right: SettledUnboundSta
   );
 }
 
-function matchingRecordKeys(db: Database, identity: ProviderOperationBindingIdentity): readonly string[] {
+export function matchingSettledUnboundRecordKeys(
+  db: Database,
+  identity: ProviderOperationBindingIdentity,
+): readonly string[] {
   const scan = readProviderOperations(db);
   const keyPrefix = `${providerOperationRecordKeyPrefix(identity.jobId)}${identity.operationId}:`;
   return [
@@ -59,16 +62,12 @@ function matchingRecordKeys(db: Database, identity: ProviderOperationBindingIden
 }
 
 function statusDetail(recordKeys: readonly string[] | null, scanFailure: string | null): string {
+  const exit =
+    'Run coral-cli backend shutdown, then retry any Coral command; startup reconstructs this ownership and resumes its exact journal probe.';
   if (recordKeys === null) {
-    return (
-      `The journal scan failed (${scanFailure ?? 'unknown failure'}). ` +
-      'Restore journal access; the matching preparation clears this durable status.'
-    );
+    return `The journal scan failed (${scanFailure ?? 'unknown failure'}). Restore journal access. ${exit}`;
   }
-  return (
-    `Matching provider-operation rows remain unresolved: ${recordKeys.join(', ')}. ` +
-    'The matching preparation clears this durable status.'
-  );
+  return `Matching provider-operation rows remain unresolved: ${recordKeys.join(', ')}. ${exit}`;
 }
 
 function mintOwnership(
@@ -79,6 +78,19 @@ function mintOwnership(
     identity: Object.freeze({ ...identity }),
     subjects: Object.freeze([...subjects]),
   }) as SettledUnboundStatusOwnership;
+}
+
+function identityFromStatusSubject(subject: SettledUnboundStatusSubject): ProviderOperationBindingIdentity | null {
+  if (!subject.key.startsWith(STATUS_SUBJECT_PREFIX)) return null;
+  try {
+    const value: unknown = JSON.parse(subject.key.slice(STATUS_SUBJECT_PREFIX.length));
+    if (!Array.isArray(value) || value.length !== 2 || value.some((part) => typeof part !== 'string')) return null;
+    const [jobId, operationId] = value as [string, string];
+    const identity = { jobId, operationId };
+    return sameSubject(subject, settledUnboundStatusSubject(identity)) ? identity : null;
+  } catch {
+    return null;
+  }
 }
 
 type StatusClearDisposition =
@@ -120,13 +132,13 @@ function materializeActionableStatus(
   let recordKeys: readonly string[] | null = null;
   let scanFailure: string | null = null;
   try {
-    recordKeys = matchingRecordKeys(db, identity);
+    recordKeys = matchingSettledUnboundRecordKeys(db, identity);
     if (recordKeys.length === 0) return { kind: 'absent' };
   } catch (error: unknown) {
     scanFailure = errorMessage(error);
   }
 
-  const subject = statusSubject(identity);
+  const subject = settledUnboundStatusSubject(identity);
   const existing = quarantine.read(subject.boundary, subject.key);
   if (existing === null) {
     const retained = quarantine.list().filter((entry) => entry.boundary === SETTLED_UNBOUND_STATUS_BOUNDARY).length;
@@ -164,7 +176,7 @@ function clearOwnedStatuses(
   ownership: SettledUnboundStatusOwnership,
 ): boolean {
   if (!sameIdentity(identity, ownership.identity)) return false;
-  const expectedSubject = statusSubject(identity);
+  const expectedSubject = settledUnboundStatusSubject(identity);
   const [subject] = ownership.subjects;
   if (ownership.subjects.length !== 1 || subject === undefined || !sameSubject(subject, expectedSubject)) {
     return false;
@@ -186,6 +198,24 @@ export function createSettledUnboundStatusPort(
         return { kind: 'refused', reason: errorMessage(error) };
       }
     },
+    rebind(subject): SettledUnboundStatusOwnership | null {
+      try {
+        const identity = identityFromStatusSubject(subject);
+        if (identity === null) return null;
+        const current = new RecoveryQuarantineStore(getDb(), time).read(subject.boundary, subject.key);
+        if (
+          current === null ||
+          current.boundary !== subject.boundary ||
+          current.subject.revision.kind !== 'fingerprint' ||
+          current.subject.revision.value !== subject.revision
+        ) {
+          return null;
+        }
+        return mintOwnership(identity, [subject]);
+      } catch {
+        return null;
+      }
+    },
     clear(identity, ownership): boolean {
       try {
         return clearOwnedStatuses(new RecoveryQuarantineStore(getDb(), time), identity, ownership);
@@ -196,7 +226,8 @@ export function createSettledUnboundStatusPort(
     clearAbsent(identity): boolean {
       try {
         return (
-          clearStatusSubject(new RecoveryQuarantineStore(getDb(), time), statusSubject(identity)).kind !== 'refused'
+          clearStatusSubject(new RecoveryQuarantineStore(getDb(), time), settledUnboundStatusSubject(identity)).kind !==
+          'refused'
         );
       } catch {
         return false;

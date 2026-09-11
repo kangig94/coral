@@ -17,6 +17,7 @@ export type ProviderOperationStartupBindingDisposition =
       exit:
         | 'restart-or-operator-repair'
         | 'remote-settlement'
+        | 'coral-cli backend recovery-quarantine clear'
         | 'coral-cli backend recovery-quarantine discard-provider-operation'
         | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
     }>

@@ -43,7 +43,9 @@ import type {
   ProviderOperationBindingIdentity,
   ProviderOperationBindingPort,
   ProviderOperationBindingState,
+  ProviderOperationBindingRetirementDisposition,
   ProviderOperationJournalProbeResult,
+  SettledUnboundStatusSubject,
   SettledUnboundStatusPort,
 } from '../../jobs/contracts/provider-operation-lifecycle.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
@@ -385,9 +387,31 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       pendingLaunches: this.pendingDurableLaunches,
       releaseLaunch: (permit: LaunchPermit) => this.releaseLaunch(permit),
     };
-    return internalPermit === null
-      ? spawnDurableJobTransport({ ...transport, internalPermit })
-      : spawnDurableJobTransport({ ...transport, internalPermit, abortRegistry: this.internalAbortRegistry });
+    if (internalPermit !== null) {
+      return spawnDurableJobTransport({
+        ...transport,
+        ownership: { kind: 'internal', permit: internalPermit, abortRegistry: this.internalAbortRegistry },
+      });
+    }
+    const callerOwnership = options.callerOwnership;
+    if (callerOwnership === undefined || !this.permitIsCurrent(callerOwnership.permit)) {
+      return this.rejectedPermitPromise(new Error('Caller-owned durable launch requires its active launch permit.'));
+    }
+    if (
+      callerOwnership.permit.jobId !== options.jobId ||
+      callerOwnership.permit.provider !== options.provider ||
+      callerOwnership.permit.pool !== pool
+    ) {
+      return this.rejectedPermitPromise(new Error('Caller-owned durable launch permit does not match the launch.'));
+    }
+    return spawnDurableJobTransport({
+      ...transport,
+      ownership: {
+        kind: 'caller',
+        permit: callerOwnership.permit,
+        abortRegistry: callerOwnership.abortHoldOwner,
+      },
+    });
   }
 
   restoreActiveLaunch(
@@ -668,11 +692,41 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return { kind: 'settled', reservationId: permit.reservationId };
   }
 
-  retireProviderOperationBinding(identity: ProviderOperationBindingIdentity): boolean {
+  hydrateSettledUnboundStatus(subject: SettledUnboundStatusSubject): OperationBindingResult {
+    const ownership = this.settledUnboundStatus?.rebind(subject) ?? null;
+    if (ownership === null) {
+      return { kind: 'refused', reason: 'The durable unsettled settlement status could not be rebound.' };
+    }
+    const identity = ownership.identity;
     const key = this.operationBindingKey(identity);
     const current = this.operationBindings.get(key);
-    if (current?.kind !== 'settled' && current?.kind !== 'settled-unbound') return false;
-    return this.deleteOperationBinding(key);
+    if (current !== undefined) {
+      return current.kind === 'settled-unbound'
+        ? { kind: 'already-settled' }
+        : { kind: 'refused', reason: 'The operation identity already has another binding owner.' };
+    }
+    if (this.unresolvedSettledUnboundBindingCount() >= MAX_SETTLED_UNBOUND_BINDINGS) {
+      return { kind: 'refused', reason: 'The unsettled binding mailbox is at capacity.' };
+    }
+    this.operationBindings.set(key, {
+      kind: 'settled-unbound',
+      identity,
+      unknownObservations: 0,
+      successor: { kind: 'recovery-quarantine', ownership },
+    });
+    this.scheduleSettledUnboundCheck(key, identity);
+    return { kind: 'settled-unbound' };
+  }
+
+  retireProviderOperationBinding(
+    identity: ProviderOperationBindingIdentity,
+  ): ProviderOperationBindingRetirementDisposition {
+    const key = this.operationBindingKey(identity);
+    const current = this.operationBindings.get(key);
+    if (current?.kind !== 'settled' && current?.kind !== 'settled-unbound') return { kind: 'nothing-to-retire' };
+    return this.deleteOperationBinding(key)
+      ? { kind: 'retired' }
+      : { kind: 'refused', reason: 'The durable unsettled settlement status could not be cleared.' };
   }
 
   async terminateAll(signal?: AbortSignal): Promise<TerminateAllDisposition> {
@@ -869,7 +923,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   private scheduleSettledUnboundCheck(key: string, identity: ProviderOperationBindingIdentity): boolean {
-    if (!this.settledUnboundChecks.has(key) && this.settledUnboundChecks.size >= MAX_SETTLED_UNBOUND_BINDINGS) {
+    if (
+      !this.operationBindings.has(key) &&
+      this.unresolvedSettledUnboundBindingCount() >= MAX_SETTLED_UNBOUND_BINDINGS
+    ) {
       return false;
     }
     this.clearSettledUnboundCheck(key);
@@ -941,15 +998,23 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
           ...next,
           successor: { kind: 'recovery-quarantine', ownership: successor.ownership },
         });
-        this.clearSettledUnboundCheck(key);
+        this.scheduleSettledUnboundCheck(key, identity);
         return;
       }
       this.operationBindings.set(key, { ...next, successor: { kind: 'status-recording-refused' } });
-      this.clearSettledUnboundCheck(key);
+      this.scheduleSettledUnboundCheck(key, identity);
     }, SETTLED_UNBOUND_ABSENCE_CHECK_MS);
     timer.unref?.();
     this.settledUnboundChecks.set(key, timer);
     return true;
+  }
+
+  private unresolvedSettledUnboundBindingCount(): number {
+    let count = 0;
+    for (const binding of this.operationBindings.values()) {
+      if (binding.kind === 'settled-unbound') count += 1;
+    }
+    return count;
   }
 
   private clearSettledUnboundCheck(key: string): void {
@@ -1000,12 +1065,12 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   private reserveInternalPermitOrThrow(
-    options: Pick<SpawnDurableJobOptions, 'permitGranted' | 'provider'>,
+    options: Pick<SpawnDurableJobOptions, 'callerOwnership' | 'provider'>,
     pool: LaunchPool,
     prefix: string,
   ): LaunchPermit | null {
     const poolState = this.getPoolState(pool);
-    const usingReservedPermit = options.permitGranted === true;
+    const usingReservedPermit = options.callerOwnership !== undefined;
     if (usingReservedPermit) {
       return null;
     }

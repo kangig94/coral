@@ -1146,6 +1146,33 @@ describe('ProviderOperationReconciler publication', () => {
     });
   });
 
+  it('retains the provider row and binding owner when binding retirement is refused', async () => {
+    const harness = createHarness({
+      binding: (source) => ({
+        prepareProviderOperationBinding: (permit, identity) => source.prepareProviderOperationBinding(permit, identity),
+        cancelProviderOperationBinding: (permit, identity) => source.cancelProviderOperationBinding(permit, identity),
+        commitProviderOperationBinding: (identity) => source.commitProviderOperationBinding(identity),
+        settleProviderOperationBinding: (identity) => source.settleProviderOperationBinding(identity),
+        retireProviderOperationBinding: () => ({ kind: 'refused', reason: 'status deletion unavailable' }),
+      }),
+    });
+    const settlement = providerOperationRecord('settlement-pending');
+    insertProviderOperation(harness.db, settlement);
+
+    await harness.reconciler.reconcile(settlement, harness.authority);
+
+    expect(readProviderOperation(harness.db, settlement.operation)).toMatchObject({
+      phase: 'settlement-pending',
+      retryCount: 1,
+      lastError: {
+        message: 'Provider operation binding retirement was refused: status deletion unavailable',
+      },
+    });
+    expect(harness.startupOwnership.binding.retireProviderOperationBinding(settlement.operation)).toEqual({
+      kind: 'retired',
+    });
+  });
+
   it('does not send prepare until recovery credential installation is explicit', async () => {
     let registrationAttempts = 0;
     const registerSuccessionOperation = vi.fn<DurableProviderProxyOperationAuthority['registerSuccessionOperation']>(

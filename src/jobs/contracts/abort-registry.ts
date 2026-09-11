@@ -9,6 +9,11 @@ export interface JobAbortRegistryPort {
   remove(jobId: string): void;
 }
 
+export interface AbortHoldOwner {
+  hold(jobId: string, reason: string, nextStep: string, abandon: () => AbortHoldDisposition): void;
+  releaseHold(jobId: string): void;
+}
+
 export type AbortRefusal = Readonly<{
   jobId: string;
   reason: string;

@@ -4,8 +4,8 @@ import type {
   DurableContainmentStatus,
   DurableProvisionalProcessSubject,
 } from '../runtime/ports.js';
-import type { LaunchPool } from '../jobs/contracts/admission.js';
-import type { AbortHoldDisposition } from '../jobs/contracts/abort-registry.js';
+import type { LaunchPermit, LaunchPool } from '../jobs/contracts/admission.js';
+import type { AbortHoldDisposition, AbortHoldOwner } from '../jobs/contracts/abort-registry.js';
 import type { ProviderCliRunner } from './protocol.js';
 
 export type DurableContainmentOperatorControl = Readonly<{
@@ -23,6 +23,11 @@ export type DurableProcessIdentityCallback = (
   control?: DurableContainmentOperatorControl,
 ) => DurableProcessPublicationDisposition;
 
+export type DurableLaunchCallerOwnership = Readonly<{
+  permit: LaunchPermit;
+  abortHoldOwner: AbortHoldOwner;
+}>;
+
 export interface ProviderDurableSpawner {
   spawnDurableJob(options: {
     provider: string;
@@ -32,7 +37,7 @@ export interface ProviderDurableSpawner {
     cwd?: string;
     onEvent?: (line: string) => void;
     signal?: AbortSignal;
-    permitGranted?: boolean;
+    callerOwnership?: DurableLaunchCallerOwnership;
     pool?: LaunchPool;
     extraEnv?: Record<string, string>;
     exactEnv?: Record<string, string>;
@@ -57,12 +62,12 @@ export function bindProviderRunner(
   onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void,
   onDurableProcessIdentity?: DurableProcessIdentityCallback,
   jobId?: string,
+  callerOwnership?: DurableLaunchCallerOwnership,
 ): ProviderCliRunner {
   return (request) =>
     launchCoordinator.spawnDurableJob({
       provider,
       signal,
-      permitGranted: true,
       pool,
       jobDir,
       ...(jobId === undefined ? {} : { jobId }),
@@ -80,5 +85,6 @@ export function bindProviderRunner(
         onRuntimeRecord?.(record, provisionalIdentity);
       },
       onDurableProcessIdentity,
+      ...(callerOwnership === undefined ? {} : { callerOwnership }),
     });
 }
