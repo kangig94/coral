@@ -176,3 +176,19 @@ describe('coral-hud terminal-safe rendering', () => {
     );
   });
 });
+
+describe('coral-hud facts it cannot import', () => {
+  it('shows the same Codex default the backend actually runs', () => {
+    // A skill may not import from src/, so this string is a second home for one fact. The HUD would
+    // otherwise keep printing the retired name, confidently, for every user who set no override.
+    const hud = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
+    const backend = readFileSync('src/providers/codex/request-mapping.ts', 'utf-8');
+
+    const shown = /const CODEX_MODEL_DEFAULT = '([^']+)'/u.exec(hud)?.[1];
+    const used = /const DEFAULT_CODEX_MODEL = '([^']+)'/u.exec(backend)?.[1];
+
+    expect(shown, 'coral-hud.mjs must declare CODEX_MODEL_DEFAULT').toBeDefined();
+    expect(used, 'request-mapping.ts must declare DEFAULT_CODEX_MODEL').toBeDefined();
+    expect(shown).toBe(used);
+  });
+});

@@ -847,6 +847,10 @@ function parseCodexSpendControl(spendControl) {
   };
 }
 
+// Codex bills credits at 25 to the dollar; the usage API reports credits, and the statusline shows
+// dollars. Breaking this converts every figure on line 2 by a wrong factor with nothing to notice it.
+const CODEX_CREDITS_PER_USD = 25;
+
 function formatCreditBalanceUsd(raw, showZero) {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
@@ -854,7 +858,7 @@ function formatCreditBalanceUsd(raw, showZero) {
 
   const numeric = Number(trimmed);
   if (Number.isFinite(numeric)) {
-    if (numeric > 0) return fmtUsd(numeric / 25);
+    if (numeric > 0) return fmtUsd(numeric / CODEX_CREDITS_PER_USD);
     if (showZero && numeric === 0) return fmtUsd(0);
     return null;
   }
@@ -865,7 +869,7 @@ function formatCreditBalanceUsd(raw, showZero) {
 function formatCreditValueUsd(value, showZero = false) {
   const numeric = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(numeric)) return null;
-  if (numeric > 0) return fmtUsd(numeric / 25);
+  if (numeric > 0) return fmtUsd(numeric / CODEX_CREDITS_PER_USD);
   return showZero && numeric === 0 ? fmtUsd(0) : null;
 }
 
