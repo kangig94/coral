@@ -98,19 +98,120 @@ async function readStdin() {
 
 // --- git ---
 
+// A statusline renders on every turn of every open session, so this segment's cost is multiplied by
+// both. Three properties keep that multiplication off the repository's own filesystem, and a network
+// mount is where losing any one of them stops being survivable:
+//   - `--no-optional-locks` is required, not preferred: without it `git status` refreshes and
+//     rewrites `.git/index`, so concurrent renders contend for `.git/index.lock` inside the repo.
+//   - At most one probe runs at a time across all sessions; every other render serves the cache.
+//   - A probe that did not return is not replaced by another. `execSync`'s timeout delivers a
+//     signal, and a process blocked in an uninterruptible filesystem wait does not take one, so an
+//     elapsed timeout does not establish that the previous probe is gone. Re-probing on that
+//     assumption is what turns one stalled subprocess into an accumulating pile of them.
 function renderGitBranch(input) {
   const cwd = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
   if (!cwd) return null;
+  const key = gitCacheKey(cwd);
+  const cache = readGitCache();
+  const entry = cache[key] || null;
+  const now = Date.now();
+
+  if (entry && (now - entry.ts <= GIT_TTL_MS || now < entry.backoffUntil)) return formatGitSegment(entry.value);
+
+  const lock = claimGitProbe(key, cache, now);
+  if (lock === null) return formatGitSegment(entry?.value);
+
+  let value = entry?.value ?? null;
   try {
-    const opts = { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], cwd, timeout: 2000 };
-    const branch =
-      execSync('git branch --show-current', opts).trim() || execSync('git rev-parse --short HEAD', opts).trim();
-    if (!branch) return null;
-    const dirty = execSync('git status --porcelain', opts).trim() ? `${YELLOW}*${RESET}` : '';
-    return `${CYAN}⎇ ${branch}${RESET}${dirty}`;
+    value = probeGit(cwd);
+  } catch {
+    value = null;
+  } finally {
+    releaseFetchLock(lock);
+  }
+  writeGitCache({ ...readGitCache(), [key]: { ts: Date.now(), value, backoffUntil: 0 } });
+  return formatGitSegment(value);
+}
+
+// One invocation carries both the head name and the dirty flag, so a render never costs more than a
+// single subprocess against the repository.
+function probeGit(cwd) {
+  return parseGitStatus(
+    execSync('git --no-optional-locks status --porcelain=v2 --branch', {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      cwd,
+      timeout: GIT_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    }),
+  );
+}
+
+export function parseGitStatus(out) {
+  let head = '';
+  let oid = '';
+  let dirty = false;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('# branch.head ')) head = line.slice(14).trim();
+    else if (line.startsWith('# branch.oid ')) oid = line.slice(13).trim();
+    else if (line.length > 0 && !line.startsWith('#')) dirty = true;
+  }
+  // A repository with no commits reports `(initial)` as the oid, which names no revision.
+  const detached = head === '' || head === '(detached)';
+  const branch = detached ? (oid.startsWith('(') ? '' : oid.slice(0, 7)) : head;
+  return branch === '' ? null : { branch, dirty };
+}
+
+export function formatGitSegment(value) {
+  if (!value || typeof value.branch !== 'string' || value.branch === '') return null;
+  return `${CYAN}⎇ ${value.branch}${RESET}${value.dirty ? `${YELLOW}*${RESET}` : ''}`;
+}
+
+// A lock older than the stale window means the probe holding it never reported. That is not a dead
+// holder, so the lock is surrendered without starting a replacement and the repo is left alone until
+// the back-off expires — the one exit that ends the hold without needing to observe the process.
+function claimGitProbe(key, cache, now) {
+  const lockPath = hudFetchLockPath(CACHE_DIR, GIT_LOCK_KEY);
+  try {
+    const held = JSON.parse(readFileSync(lockPath, 'utf-8'));
+    if (now - held.ts <= LOCK_STALE_MS) return null;
+    try {
+      unlinkSync(lockPath);
+    } catch {}
+    // `ts` dates the last value actually measured, so backing off must not advance it.
+    const entry = cache[key] || { ts: 0, value: null };
+    writeGitCache({ ...cache, [key]: { ...entry, backoffUntil: now + GIT_BACKOFF_MS } });
+    return null;
+  } catch {} // ENOENT or corrupt JSON → no live holder
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ ts: now }), { flag: 'wx', mode: 0o600 });
+    return lockPath;
   } catch {
     return null;
   }
+}
+
+function gitCacheKey(cwd) {
+  return createHash('sha256').update(normalize(cwd)).digest('hex').slice(0, 12);
+}
+
+function readGitCache() {
+  try {
+    const raw = JSON.parse(readFileSync(GIT_CACHE_FILE, 'utf-8'));
+    return raw !== null && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeGitCache(all) {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    const tmpPath = `${GIT_CACHE_FILE}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(all), { mode: 0o600 });
+    renameSync(tmpPath, GIT_CACHE_FILE);
+  } catch {}
 }
 
 // --- elements ---
@@ -379,6 +480,11 @@ const API_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 10_000;
 const CORAL_HEALTH_TTL_MS = 5_000;
 const CORAL_HEALTH_TIMEOUT_MS = 3_000;
+const GIT_CACHE_FILE = join(CACHE_DIR, '.coral-git-cache.json');
+const GIT_LOCK_KEY = 'git';
+const GIT_TTL_MS = 5_000;
+const GIT_TIMEOUT_MS = 1_000;
+const GIT_BACKOFF_MS = 600_000;
 
 // --- session state ---
 
