@@ -2,6 +2,8 @@ import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
+import type { AbortNextStep } from '../../jobs/contracts/abort-registry.js';
+import type { JobOperatorRemedy } from '../../recovery/provider-operation-remedy.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import { formatTable, joinLines } from './text.js';
@@ -121,7 +123,10 @@ export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): stri
 }
 
 export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId'>): string {
-  return `Run coral-cli wait jobs ${result.jobId} to wait for completion.`;
+  return [
+    'Wait for completion with the command below.',
+    formatJobsOperatorCommand({ ...result, kind: 'wait-job' }),
+  ].join('\n');
 }
 
 export function formatAbortResult(result: AbortResult): string {
@@ -130,16 +135,16 @@ export function formatAbortResult(result: AbortResult): string {
     result.notFound.length > 0 ? `Not found: ${result.notFound.join(', ')}` : undefined,
     ...(result.refused ?? []).flatMap((refusal) => [
       `Abort held for ${refusal.jobId}: ${refusal.reason}`,
-      `Next step: ${refusal.nextStep}`,
+      ...formatAbortNextStep(refusal.nextStep),
     ]),
     ...(result.held ?? []).flatMap((hold) => [
       `Abort held for ${hold.jobId}: ${hold.reason}`,
-      `Next step: ${hold.nextStep}`,
+      ...formatAbortNextStep(hold.nextStep),
     ]),
     ...(result.abandoned ?? []).flatMap((abandonment) => [
       `Job ownership abandoned for ${abandonment.jobId}: ${abandonment.reason}`,
       'Warning: Process absence remains unproven.',
-      `Next step: ${abandonment.nextStep}`,
+      ...formatAbortNextStep(abandonment.nextStep),
     ]),
   ]);
 }
@@ -258,7 +263,10 @@ export function formatJobDetail(
     response.exit?.endTime === undefined ? undefined : `Ended: ${response.exit.endTime}`,
     usage === undefined ? undefined : `Usage:\n  ${usage}`,
     response.exit === null
-      ? `Run coral-cli wait jobs ${status.jobId} to follow it.`
+      ? [
+          'Follow it with the command below.',
+          formatJobsOperatorCommand({ kind: 'wait-job', jobId: status.jobId }),
+        ].join('\n')
       : `Result:\n${truncatePreview(pickTerminalPreviewSource(response.exit, describeCauseRef))}`,
   ];
 
@@ -327,4 +335,26 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
   }
 
   return sections.join('\n\n');
+}
+type JobsOperatorCommand = JobOperatorRemedy | Readonly<{ kind: 'wait-job'; jobId: string }>;
+
+function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
+  switch (command.kind) {
+    case 'abort-job':
+      return `coral-cli abort jobs ${command.jobId}`;
+    case 'jobs-detail':
+      return `coral-cli jobs detail ${command.jobId}`;
+    case 'wait-job':
+      return `coral-cli wait jobs ${command.jobId}`;
+  }
+}
+
+function formatJobsOperatorCommand(command: JobsOperatorCommand): string {
+  return `command=${renderJobsOperatorCommand(command)}`;
+}
+
+function formatAbortNextStep(nextStep: AbortNextStep): readonly string[] {
+  return typeof nextStep === 'string'
+    ? [`Next step: ${nextStep}`]
+    : [`Next step: ${nextStep.detail}`, formatJobsOperatorCommand(nextStep.remedy)];
 }

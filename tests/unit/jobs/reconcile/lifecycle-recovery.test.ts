@@ -2570,9 +2570,10 @@ describe('lifecycle recovery', () => {
           {
             jobId,
             reason: 'recovery ownership was released without proof of recorded containment absence',
-            nextStep:
-              `Run coral-cli jobs detail ${jobId}; the recorded containment may still be live and is no longer ` +
-              'owned by recovery.',
+            nextStep: {
+              detail: 'The recorded containment may still be live and is no longer owned by recovery.',
+              remedy: { kind: 'jobs-detail', jobId },
+            },
           },
         ],
       });

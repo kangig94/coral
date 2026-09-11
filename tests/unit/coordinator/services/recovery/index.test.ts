@@ -16,6 +16,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
+import { quarantineUnreadableProviderOperations } from '#src/coordinator/services/recovery/retry-plans.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import type {
@@ -44,7 +45,6 @@ import {
 } from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
 import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -649,6 +649,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const messages = log.mock.calls.flatMap((call) => call).join('\n');
     expect(messages).toContain('Recovery reconciliation remains held');
     expect(messages).not.toContain('Recovery adoption complete');
+    expect(messages).not.toContain('coral-cli');
     const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
     const discarded = quarantine.list().find((entry) => entry.subject.key.includes(first.operation.operationId));
     if (discarded === undefined) throw new Error('expected first readable quarantine row');
@@ -671,8 +672,8 @@ describe('runStartupRecovery provider-operation ownership', () => {
           discardProviderOperation: async (request) => discard.discard(request),
         },
       });
-      await executeRenderedCommand(program, messages, {
-        label: 'command',
+      await executeRenderedCommand(program, formatRecoveryQuarantineList(quarantine.list()), {
+        label: 'discard',
         includes: encodeRecoveryQuarantineKey(discarded.subject.key),
       });
     } finally {
@@ -698,13 +699,10 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const observation = observeProviderOperationRecord(progressStore.getDb(), unreadableKey);
     if (observation.kind !== 'unreadable') throw new Error('expected unreadable provider-operation row');
     const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
-    quarantine.upsert({
-      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
-      subject: unreadableProviderOperationSubject(unreadableKey, observation.attribution.revision),
-      state: 'active',
-      stage: 'hydrate',
-      errorMessage: 'Provider operation row is unreadable by this build.',
-      detail: 'Repair or remove the raw provider operation row, then retry this exact quarantine coordinate.',
+    await expect(quarantineUnreadableProviderOperations(quarantine, [observation.attribution])).resolves.toMatchObject({
+      materialized: 1,
+      retained: 0,
+      failed: [],
     });
     const { recoveryCoordinator, log, runStartupRecovery } = await createHeldRecoveryCoordinator(
       runtime,
@@ -731,6 +729,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
       ]),
     });
     const messages = log.mock.calls.flatMap((call) => call).join('\n');
+    expect(messages).not.toContain('coral-cli');
     const entry = quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, unreadableKey);
     if (entry === null) throw new Error('expected unreadable provider-operation quarantine entry');
     const discard = createUnreadableProviderOperationDiscardService({
@@ -752,8 +751,8 @@ describe('runStartupRecovery provider-operation ownership', () => {
           discardProviderOperation: async (request) => discard.discard(request),
         },
       });
-      await executeRenderedCommand(program, messages, {
-        label: 'command',
+      await executeRenderedCommand(program, formatRecoveryQuarantineList(quarantine.list()), {
+        label: 'discard',
         includes: encodeRecoveryQuarantineKey(unreadableKey),
       });
     } finally {

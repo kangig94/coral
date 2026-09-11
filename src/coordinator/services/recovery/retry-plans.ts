@@ -13,12 +13,12 @@ import type {
 } from '../../../recovery/containment.js';
 import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryPolicy,
 } from '../../../recovery/source-registry.js';
 import type { ProviderOperationAdoptionRemedy } from '../../../recovery/unreadable-provider-operation.js';
 import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
-import { formatProviderOperationRemedy } from '../../../recovery/provider-operation-remedy.js';
 import type { RawCoordinatorJobRecoveryEnvelope } from './coordinator-job-source.js';
 import type { RawUnreadableProviderOperationRecoveryRow } from './unreadable-provider-operation-recovery-source.js';
 import type { RawSettledUnboundStatusRecovery } from './settled-unbound-status-recovery-source.js';
@@ -37,10 +37,6 @@ export type UnreadableProviderOperationQuarantineReport = Readonly<{
   failed: readonly Readonly<{ key: string; error: string }>[];
 }>;
 
-function providerOperationAdoptionRefusalRetryAdvice(remedy: ProviderOperationAdoptionRemedy): string {
-  return formatProviderOperationRemedy(remedy);
-}
-
 export async function quarantineUnreadableProviderOperations(
   quarantine: RecoveryQuarantinePort,
   rows: readonly UnreadableProviderOperationAttribution[],
@@ -58,7 +54,15 @@ export async function quarantineUnreadableProviderOperations(
       stage: 'hydrate' as const,
       errorMessage: 'Provider operation row is unreadable by this build.',
       detail: 'Repair or remove the raw provider operation row, then retry this exact quarantine coordinate.',
-      remedy: { kind: 'discard-provider-operation' as const, allowReadable: false },
+      remedy: {
+        kind: 'recovery-quarantine-discard' as const,
+        command: {
+          kind: 'discard-provider-operation' as const,
+          key: row.key,
+          revision: `fingerprint:${row.revision}`,
+          allowReadable: false,
+        },
+      },
     };
     let persisted = false;
     let writeFailure: unknown = null;
@@ -128,18 +132,8 @@ export function createUnreadableProviderOperationRetryPolicy(
           kind: 'quarantine',
           detail:
             `Provider operation row ${item.key} is readable, but this coordinator did not accept ownership: ` +
-            `${adoption.reason}. ${providerOperationAdoptionRefusalRetryAdvice(adoption.remedy)}`,
-          ...(adoption.remedy.kind === 'recovery-quarantine-discard'
-            ? {
-                remedy: {
-                  kind: 'discard-provider-operation' as const,
-                  allowReadable:
-                    adoption.remedy.command.kind === 'discard-provider-operation'
-                      ? adoption.remedy.command.allowReadable
-                      : true,
-                },
-              }
-            : {}),
+            `${adoption.reason}.`,
+          remedy: adoption.remedy,
         };
       }
       return {
@@ -192,10 +186,31 @@ export function createSettledUnboundStatusRetryPolicy(
         : {
             kind: 'quarantine',
             detail: settledUnboundStatusDetail(item.recordKeys, null),
+            remedy: {
+              kind: 'recovery-quarantine-clear',
+              command: {
+                kind: 'clear',
+                boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
+                key: item.subject.key,
+                revision: `fingerprint:${item.subject.revision}`,
+              },
+            },
           },
     onFault: (fault) => ({
       kind: 'quarantine',
       detail: settledUnboundStatusDetail(null, errorMessage(fault.error)),
+      remedy: {
+        kind: 'recovery-quarantine-clear',
+        command: {
+          kind: 'clear',
+          boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
+          key: fault.subject.key,
+          revision:
+            fault.subject.revision.kind === 'fingerprint'
+              ? `fingerprint:${fault.subject.revision.value}`
+              : 'until-cleared',
+        },
+      },
     }),
   };
 }

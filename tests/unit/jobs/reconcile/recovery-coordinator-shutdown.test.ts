@@ -839,9 +839,10 @@ describe('recovery coordinator shutdown', () => {
           {
             jobId: RUNNING_ADOPTION_JOB_ID,
             reason: 'recovery ownership was released without proof of recorded containment absence',
-            nextStep:
-              `Run coral-cli jobs detail ${RUNNING_ADOPTION_JOB_ID}; the recorded containment may still be live ` +
-              'and is no longer owned by recovery.',
+            nextStep: {
+              detail: 'The recorded containment may still be live and is no longer owned by recovery.',
+              remedy: { kind: 'jobs-detail', jobId: RUNNING_ADOPTION_JOB_ID },
+            },
           },
         ],
       });
@@ -916,9 +917,10 @@ describe('recovery coordinator shutdown', () => {
           {
             jobId: RUNNING_ADOPTION_JOB_ID,
             reason: 'recovery ownership was released without proof of recorded containment absence',
-            nextStep:
-              `Run coral-cli jobs detail ${RUNNING_ADOPTION_JOB_ID}; the recorded containment may still be live ` +
-              'and is no longer owned by recovery.',
+            nextStep: {
+              detail: 'The recorded containment may still be live and is no longer owned by recovery.',
+              remedy: { kind: 'jobs-detail', jobId: RUNNING_ADOPTION_JOB_ID },
+            },
           },
         ],
       });

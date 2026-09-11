@@ -10,7 +10,6 @@ import {
   unreadableProviderOperationSubject,
   type ProviderOperationAdoptionRemedy,
 } from '#src/recovery/unreadable-provider-operation.js';
-import { formatProviderOperationRemedy } from '#src/recovery/provider-operation-remedy.js';
 import type { RecoveryQuarantinePort } from '#src/recovery/containment.js';
 import { createRecoveryQuarantineRetryService, createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -224,7 +223,8 @@ describe('unreadable provider operation recovery quarantine', () => {
       expect(quarantine.list()).toEqual([
         expect.objectContaining({
           state: 'active',
-          detail: expect.stringContaining(formatProviderOperationRemedy(remedy)),
+          detail: expect.stringContaining('did not accept ownership'),
+          remedy,
         }),
       ]);
     },

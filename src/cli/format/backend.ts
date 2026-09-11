@@ -31,8 +31,9 @@ import type {
 } from '../../transport/rpc/catalog.js';
 import type { UnreadableProviderOperationDiscardResult } from '../../recovery/unreadable-provider-operation.js';
 import {
-  formatProviderOperationRemedy,
-  renderRecoveryQuarantineCommand,
+  type JobOperatorRemedy,
+  type ProviderOperationRemedy,
+  type RecoveryRecordRemedy,
   type RecoveryQuarantineCommand,
 } from '../../recovery/provider-operation-remedy.js';
 import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
@@ -44,6 +45,7 @@ export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
 type BackendOperatorCommand =
+  | Readonly<{ kind: 'abort-job'; jobId: string }>
   | Readonly<{ kind: 'backend-status' }>
   | Readonly<{ kind: 'backend-shutdown' }>
   | Readonly<{ kind: 'jobs-detail'; jobId: string }>
@@ -58,6 +60,9 @@ type OperatorCommandLabel = 'action' | 'clear' | 'command' | 'discard';
 function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
   let commandArguments: string;
   switch (command.kind) {
+    case 'abort-job':
+      commandArguments = `abort jobs ${command.jobId}`;
+      break;
     case 'backend-status':
       commandArguments = 'backend status';
       break;
@@ -90,6 +95,24 @@ function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
   return `coral-cli ${commandArguments}`;
 }
 
+function renderRecoveryQuarantineCommand(command: RecoveryQuarantineCommand): string {
+  switch (command.kind) {
+    case 'list':
+      return 'coral-cli backend recovery-quarantine list';
+    case 'clear':
+      return (
+        `coral-cli backend recovery-quarantine clear --boundary ${JSON.stringify(command.boundary)} ` +
+        `--key ${encodeRecoveryQuarantineKey(command.key)} --revision ${JSON.stringify(command.revision)}`
+      );
+    case 'discard-provider-operation':
+      return (
+        `coral-cli backend recovery-quarantine discard-provider-operation ` +
+        `--key ${encodeRecoveryQuarantineKey(command.key)} --revision ${JSON.stringify(command.revision)}` +
+        (command.allowReadable ? ' --allow-readable' : '')
+      );
+  }
+}
+
 function formatBackendOperatorCommand(
   command: BackendOperatorCommand,
   label: OperatorCommandLabel = 'command',
@@ -101,11 +124,89 @@ export function formatBackendStatusCommand(): string {
   return formatBackendOperatorCommand({ kind: 'backend-status' });
 }
 
-function formatRecoveryQuarantineCommand(
+export function formatRecoveryQuarantineCommand(
   command: RecoveryQuarantineCommand,
   label: OperatorCommandLabel = 'command',
 ): string {
   return `${label}=${renderRecoveryQuarantineCommand(command)}`;
+}
+
+export function formatProviderOperationRemedy(
+  remedy: ProviderOperationRemedy,
+  label: OperatorCommandLabel = 'command',
+): string {
+  switch (remedy.kind) {
+    case 'restart-coordinator':
+      return 'Restart or repair the canonical coordinator externally; Coral retries ownership adoption during startup.';
+    case 'remote-settlement':
+      return 'Coral retries the remote settlement path automatically; re-check the operation after settlement.';
+    case 'recovery-quarantine-discard':
+      return [
+        remedy.command.kind === 'list'
+          ? 'Inspect the current quarantine row and use only the complete remedy it prints if losing that row is acceptable.'
+          : 'If losing this exact row is acceptable, run the complete discard remedy below.',
+        formatRecoveryQuarantineCommand(remedy.command, label),
+      ].join('\n');
+    case 'recovery-quarantine-clear':
+      return [
+        remedy.command.kind === 'list'
+          ? 'Inspect the current quarantine row and use only the complete remedy it prints.'
+          : 'Run the complete clear remedy below.',
+        formatRecoveryQuarantineCommand(remedy.command, label),
+      ].join('\n');
+    case 'external-repair':
+      return 'External repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair.';
+  }
+}
+
+function formatJobOperatorRemedy(remedy: JobOperatorRemedy): string {
+  const command = formatBackendOperatorCommand(remedy);
+  switch (remedy.kind) {
+    case 'abort-job':
+      return [
+        'Explicitly abandon this recovery ownership only if unresolved process life is acceptable.',
+        command,
+      ].join('\n');
+    case 'jobs-detail':
+      return ['Inspect the current job state.', command].join('\n');
+  }
+}
+
+function formatRecoveryRecordRemedy(remedy: RecoveryRecordRemedy): string {
+  if (remedy.kind === 'abort-job' || remedy.kind === 'jobs-detail') return formatJobOperatorRemedy(remedy);
+  const label =
+    remedy.kind === 'recovery-quarantine-discard' && remedy.command.kind === 'discard-provider-operation'
+      ? 'discard'
+      : remedy.kind === 'recovery-quarantine-clear' && remedy.command.kind === 'clear'
+        ? 'clear'
+        : 'command';
+  return formatProviderOperationRemedy(remedy, label);
+}
+
+function recoveryRecordRemedyMatchesEntry(
+  remedy: RecoveryRecordRemedy,
+  entry: RecoveryQuarantineListEntry,
+  isClearable: boolean,
+): boolean {
+  if (remedy.kind === 'abort-job' || remedy.kind === 'jobs-detail' || remedy.kind === 'external-repair') return true;
+  if (remedy.kind === 'restart-coordinator' || remedy.kind === 'remote-settlement') return true;
+  if (remedy.command.kind === 'list') return true;
+  if (!isClearable) return false;
+  if (remedy.command.kind === 'clear') {
+    return (
+      remedy.command.boundary === entry.boundary &&
+      remedy.command.key === entry.subject.key &&
+      remedy.command.revision === formatRecoveryRevision(entry)
+    );
+  }
+  return (
+    entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY &&
+    entry.subject.revision.kind === 'fingerprint' &&
+    /^sha256:[0-9a-f]{64}$/u.test(entry.subject.revision.value) &&
+    isProviderOperationRecordKey(entry.subject.key) &&
+    remedy.command.key === entry.subject.key &&
+    remedy.command.revision === formatRecoveryRevision(entry)
+  );
 }
 
 type ProviderProxySetOperatorRefusalGround = Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'];
@@ -1273,7 +1374,9 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       entry.continuation === null &&
       entry.detectedAt !== null &&
       entry.updatedAt !== null;
-    if (isClearable) {
+    const remedyProvidesClear =
+      entry.remedy?.kind === 'recovery-quarantine-clear' && entry.remedy.command.kind === 'clear';
+    if (isClearable && !remedyProvidesClear) {
       lines.push(
         `  ${formatRecoveryQuarantineCommand(
           {
@@ -1286,24 +1389,11 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
         )}`,
       );
     }
-    if (
-      isClearable &&
-      entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY &&
-      entry.subject.revision.kind === 'fingerprint' &&
-      /^sha256:[0-9a-f]{64}$/u.test(entry.subject.revision.value) &&
-      isProviderOperationRecordKey(entry.subject.key) &&
-      entry.remedy?.kind === 'discard-provider-operation'
-    ) {
+    if (entry.remedy !== null && recoveryRecordRemedyMatchesEntry(entry.remedy, entry, isClearable)) {
       lines.push(
-        `  ${formatRecoveryQuarantineCommand(
-          {
-            kind: 'discard-provider-operation',
-            key: entry.subject.key,
-            revision: formatRecoveryRevision(entry),
-            allowReadable: entry.remedy.allowReadable,
-          },
-          'discard',
-        )}`,
+        ...formatRecoveryRecordRemedy(entry.remedy)
+          .split('\n')
+          .map((line) => `  ${line}`),
       );
     }
   }
@@ -1343,7 +1433,8 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: startup recovery still owns the coordinator launch fence.',
         'Not observed: raw-row contents or an operation-settlement outcome.',
         'Effect: the raw row, due pointers, quarantine evidence, startup permit, and launch capacity were not changed.',
-        `Next step: ${result.remediation}`,
+        'Next step: wait for startup recovery to finish, then retry with the complete command below.',
+        formatProviderOperationRemedy(result.remedy),
       ].join('\n');
     case 'discarded':
       return [

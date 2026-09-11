@@ -10,38 +10,38 @@ export interface JobAbortRegistryPort {
 }
 
 export interface AbortHoldOwner {
-  hold(jobId: string, reason: string, nextStep: string, abandon: () => AbortHoldDisposition): void;
+  hold(jobId: string, reason: string, nextStep: AbortNextStep, abandon: () => AbortHoldDisposition): void;
   releaseHold(jobId: string): void;
 }
 
 export type AbortRefusal = Readonly<{
   jobId: string;
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
 }>;
 
 export type AbortHold = Readonly<{
   jobId: string;
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
 }>;
 
 export type AbortAbandonment = Readonly<{
   jobId: string;
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
 }>;
 
 export type AbortHoldDisposition =
   | Readonly<{
       kind: 'abandoned';
       reason: string;
-      nextStep: string;
+      nextStep: AbortNextStep;
     }>
   | Readonly<{
       kind: 'retained';
       reason: string;
-      nextStep: string;
+      nextStep: AbortNextStep;
     }>;
 
 export type AbortResult = {
@@ -51,3 +51,6 @@ export type AbortResult = {
   held?: AbortHold[];
   abandoned?: AbortAbandonment[];
 };
+import type { JobOperatorRemedy } from '../../recovery/provider-operation-remedy.js';
+
+export type AbortNextStep = string | Readonly<{ detail: string; remedy: JobOperatorRemedy }>;

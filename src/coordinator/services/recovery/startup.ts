@@ -21,7 +21,6 @@ import {
 } from '../../../jobs/runtime-meta-store.js';
 import type { DurableCliContainmentStatus } from '../../../jobs/runtime-meta.js';
 import type { RecoveryDisposition, RecoverySettlementFact } from '../../../recovery/containment.js';
-import { formatProviderOperationRemedy } from '../../../recovery/provider-operation-remedy.js';
 import { installCoordinatorJobRetryPolicy } from './retry-plans.js';
 import { COORDINATOR_NOT_APPLICABLE_FACTS, type QueuedRecoverableJob, type RunningRecoverableJob } from './actions.js';
 import { buildRecoverySnapshot, type CoordinatorRecoveryItem } from './snapshot.js';
@@ -226,9 +225,10 @@ export function createCoordinatorStartupRecovery(
       return {
         kind: 'abandoned',
         reason: 'recovery ownership was released without proof of recorded containment absence',
-        nextStep:
-          `Run coral-cli jobs detail ${jobId}; the recorded containment may still be live and is no longer ` +
-          'owned by recovery.',
+        nextStep: {
+          detail: 'The recorded containment may still be live and is no longer owned by recovery.',
+          remedy: { kind: 'jobs-detail', jobId },
+        },
       };
     };
 
@@ -375,10 +375,7 @@ export function createCoordinatorStartupRecovery(
       const heldSubjects = providerOperationHolds.map((hold) => {
         const subject =
           hold.kind === 'operation' ? `operation=${hold.operationId}` : `record=${JSON.stringify(hold.recordKey)}`;
-        return (
-          `provider operation job=${hold.jobId} ${subject} reason=${JSON.stringify(hold.reason)} ` +
-          formatProviderOperationRemedy(hold.remedy)
-        );
+        return `provider operation job=${hold.jobId} ${subject} reason=${JSON.stringify(hold.reason)}`;
       });
       if (durableHoldRemains) {
         heldSubjects.push('durable containment awaiting repair or operator abandonment');

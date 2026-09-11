@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Command } from 'commander';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createSettledUnboundStatusPort,
@@ -8,11 +9,13 @@ import {
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { SETTLED_UNBOUND_STATUS_BOUNDARY } from '#src/recovery/source-registry.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
+import { registerBackendCommands } from '#src/cli/commands/backend.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 describe('settled unbound status', () => {
   let db: Database;
@@ -28,7 +31,7 @@ describe('settled unbound status', () => {
     db.close();
   });
 
-  it('persists an identity-matched exact row status until settlement clears it', () => {
+  it('persists an identity-matched exact row status and executes its rendered clear remedy', async () => {
     const record = providerOperationRecord('settlement-pending');
     insertProviderOperation(db, record);
     const status = createSettledUnboundStatusPort(() => db, { now: () => 100 });
@@ -45,12 +48,44 @@ describe('settled unbound status', () => {
           errorMessage: expect.stringContaining(
             `job '${record.operation.jobId}' operation '${record.operation.operationId}'`,
           ),
-          detail: expect.stringContaining('command=coral-cli backend recovery-quarantine list'),
+          detail: expect.not.stringContaining('coral-cli'),
+          remedy: expect.objectContaining({
+            kind: 'recovery-quarantine-clear',
+            command: expect.objectContaining({ kind: 'clear' }),
+          }),
         }),
       ]),
     );
     const rendered = formatRecoveryQuarantineList(quarantine.list());
     expect(rendered).toContain(SETTLED_UNBOUND_STATUS_BOUNDARY);
+
+    let dispatched: unknown;
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      recoveryQuarantine: {
+        list: () => quarantine.list(),
+        clear: async (request) => {
+          dispatched = request;
+          return { ...request, disposition: 'advanced' };
+        },
+      },
+    });
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await executeRenderedCommand(program, rendered, {
+        label: 'clear',
+        includes: 'recovery-quarantine clear',
+      });
+    } finally {
+      output.mockRestore();
+      process.exitCode = undefined;
+    }
+    expect(dispatched).toEqual({
+      boundary: SETTLED_UNBOUND_STATUS_BOUNDARY,
+      key: expect.stringContaining('settled-unbound:'),
+      revision: expect.stringMatching(/^sha256:/u),
+    });
 
     const [subject] = recorded.ownership.subjects;
     if (subject === undefined) throw new Error('expected durable status subject');

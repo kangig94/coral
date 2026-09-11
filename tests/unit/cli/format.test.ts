@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
@@ -11,6 +12,7 @@ import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
@@ -290,7 +292,9 @@ describe('cli format', () => {
 
   describe('formatLaunchWaitHint', () => {
     it('formats the wait command for a detached launch', () => {
-      expect(formatLaunchWaitHint(runningDecision)).toBe('Run coral-cli wait jobs job-1 to wait for completion.');
+      expect(formatLaunchWaitHint(runningDecision)).toBe(
+        'Wait for completion with the command below.\ncommand=coral-cli wait jobs job-1',
+      );
     });
   });
 
@@ -491,7 +495,7 @@ describe('cli format', () => {
       expect(formatted).toContain('Result:\nWorkflow summary');
     });
 
-    it('renders a wait hint while the job is still running', () => {
+    it('renders and executes the wait command while the job is still running', async () => {
       const running = {
         ...jobDetailResponse,
         status: {
@@ -501,7 +505,8 @@ describe('cli format', () => {
         exit: null,
       } satisfies JobDetailResponse;
 
-      expect(formatJobDetail(running)).toMatchInlineSnapshot(`
+      const rendered = formatJobDetail(running);
+      expect(rendered).toMatchInlineSnapshot(`
         "Job job-1
         Phase: running
         Readiness: ready
@@ -513,8 +518,24 @@ describe('cli format', () => {
         Work dir: /work/coral
         Updated: 2026-07-03T08:01:00.000Z
         Last seq: 5
-        Run coral-cli wait jobs job-1 to follow it."
+        Follow it with the command below.
+        command=coral-cli wait jobs job-1"
       `);
+
+      let waitedJobId: string | undefined;
+      const program = new Command();
+      program.exitOverride();
+      program
+        .command('wait')
+        .command('jobs')
+        .argument('<job-id>')
+        .action((jobId: string) => {
+          waitedJobId = jobId;
+        });
+      const tokens = await executeRenderedCommand(program, rendered, { label: 'command' });
+
+      expect(waitedJobId).toBe('job-1');
+      expect(tokens).toEqual(['coral-cli', 'wait', 'jobs', 'job-1']);
     });
 
     it('renders aborted terminal details from the outcome when content is empty', () => {

@@ -10,7 +10,7 @@ import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer
 import type * as NodeProcessMod from '#src/infra/node-process.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
-import { formatBackendStatus } from '#src/cli/format/backend.js';
+import { formatBackendStatus, formatUnreadableProviderOperationDiscard } from '#src/cli/format/backend.js';
 import { registerBackendCommands } from '#src/cli/commands/backend.js';
 
 type DiscardProviderOperation = NonNullable<HttpHandlerPorts['recoveryQuarantine']['discardProviderOperation']>;
@@ -115,7 +115,6 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import { formatProviderOperationRemedy } from '#src/recovery/provider-operation-remedy.js';
 import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 import {
@@ -795,18 +794,15 @@ describe('health local carrier observation', () => {
       kind: 'recovery-in-progress',
       code: 'backend_recovering',
       message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
-      remediation: [
-        'Wait for startup recovery to finish.',
-        formatProviderOperationRemedy({
-          kind: 'recovery-quarantine-discard',
-          command: {
-            kind: 'discard-provider-operation',
-            key: unreadableKey,
-            revision: `fingerprint:${attribution.revision}`,
-            allowReadable: false,
-          },
-        }),
-      ].join('\n'),
+      remedy: {
+        kind: 'recovery-quarantine-discard',
+        command: {
+          kind: 'discard-provider-operation',
+          key: unreadableKey,
+          revision: `fingerprint:${attribution.revision}`,
+          allowReadable: false,
+        },
+      },
     });
     if (result.kind !== 'recovery-in-progress') throw new Error('expected startup-recovery refusal');
     const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -822,7 +818,7 @@ describe('health local carrier observation', () => {
           discardProviderOperation: async (request) => discardProviderOperation(request),
         },
       });
-      await executeRenderedCommand(program, result.remediation, {
+      await executeRenderedCommand(program, formatUnreadableProviderOperationDiscard(result), {
         label: 'command',
         includes: encodeRecoveryQuarantineKey(unreadableKey),
       });

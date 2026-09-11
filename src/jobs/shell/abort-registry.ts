@@ -1,5 +1,6 @@
 import type {
   AbortHoldDisposition,
+  AbortNextStep,
   AbortResult,
   AbortSettledCallback,
   JobAbortRegistryPort,
@@ -37,7 +38,7 @@ export class AbortRegistry implements JobAbortRegistryPort {
     return jobId;
   }
 
-  hold(jobId: string, reason: string, nextStep: string, abandon: () => AbortHoldDisposition): void {
+  hold(jobId: string, reason: string, nextStep: AbortNextStep, abandon: () => AbortHoldDisposition): void {
     if (!this.controllers.has(jobId)) return;
     this.holds.set(jobId, {
       refusal: { jobId, reason, nextStep },

@@ -17,12 +17,43 @@ const RECOVERY_QUARANTINE_KEY_PREFIX = 'rqk1-';
 const ENCODED_CODE_UNIT_WIDTH = 4;
 const STRUCTURED_DETAIL_PREFIX = 'recovery-quarantine-detail.v1:';
 
-const recoveryQuarantineRemedySchema = z
+const recoveryQuarantineListCommandSchema = z.object({ kind: z.literal('list') }).strict();
+const recoveryQuarantineClearCommandSchema = z
+  .object({
+    kind: z.literal('clear'),
+    boundary: z.string(),
+    key: z.string(),
+    revision: z.string(),
+  })
+  .strict();
+const recoveryQuarantineDiscardCommandSchema = z
   .object({
     kind: z.literal('discard-provider-operation'),
+    key: z.string(),
+    revision: z.string(),
     allowReadable: z.boolean(),
   })
   .strict();
+
+const recoveryQuarantineRemedySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('restart-coordinator') }).strict(),
+  z.object({ kind: z.literal('remote-settlement') }).strict(),
+  z
+    .object({
+      kind: z.literal('recovery-quarantine-discard'),
+      command: z.union([recoveryQuarantineListCommandSchema, recoveryQuarantineDiscardCommandSchema]),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('recovery-quarantine-clear'),
+      command: z.union([recoveryQuarantineListCommandSchema, recoveryQuarantineClearCommandSchema]),
+    })
+    .strict(),
+  z.object({ kind: z.literal('external-repair') }).strict(),
+  z.object({ kind: z.literal('abort-job'), jobId: z.string() }).strict(),
+  z.object({ kind: z.literal('jobs-detail'), jobId: z.string() }).strict(),
+]);
 
 const structuredRecoveryQuarantineDetailSchema = z
   .object({

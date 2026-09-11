@@ -1,29 +1,29 @@
 import type { JobLaunch, JobRuntime } from '../records.js';
-import type { AbortResult } from '../contracts/abort-registry.js';
+import type { AbortNextStep, AbortResult } from '../contracts/abort-registry.js';
 
 type RecoveryAbortAcceptedDisposition = Readonly<{ kind: 'accepted'; settlement?: undefined }>;
 type RecoveryAbortRefusedDisposition = Readonly<{
   kind: 'refused';
   reason: string;
-  nextStep?: string;
+  nextStep?: AbortNextStep;
   settlement?: undefined;
 }>;
 type RecoveryAbortAbandonedDisposition = Readonly<{
   kind: 'abandoned';
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
   settlement?: undefined;
 }>;
 type RecoveryAbortSettledHoldDisposition = Readonly<{
   kind: 'held';
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
   settlement?: undefined;
 }>;
 type RecoveryAbortFinalizationPendingDisposition = Readonly<{
   kind: 'finalization-pending';
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
   settlement?: undefined;
 }>;
 type RecoveryAbortSettledDisposition =
@@ -35,7 +35,7 @@ type RecoveryAbortSettledDisposition =
 type RecoveryAbortPendingDisposition = Readonly<{
   kind: 'held';
   reason: string;
-  nextStep: string;
+  nextStep: AbortNextStep;
   settlement: Promise<RecoveryAbortSettledDisposition>;
 }>;
 

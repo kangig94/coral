@@ -46,7 +46,7 @@ export type UnreadableProviderOperationDiscardResult = UnreadableProviderOperati
         kind: 'recovery-in-progress';
         code: 'backend_recovering';
         message: string;
-        remediation: string;
+        remedy: ProviderOperationRemedy;
       }>
     | Readonly<{ kind: 'discarded' }>
     | Readonly<{ kind: 'absent' }>

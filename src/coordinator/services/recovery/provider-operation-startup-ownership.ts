@@ -22,10 +22,7 @@ import type {
 } from '../../../jobs/startup.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
-import {
-  formatProviderOperationRemedy,
-  type ProviderOperationRemedy,
-} from '../../../recovery/provider-operation-remedy.js';
+import { type ProviderOperationRemedy } from '../../../recovery/provider-operation-remedy.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import {
   SETTLED_UNBOUND_STATUS_BOUNDARY,
@@ -385,8 +382,8 @@ export function createProviderOperationStartupOwnership(
       state: 'active',
       stage: 'hydrate',
       errorMessage: 'More than one readable provider operation row claims this job.',
-      detail: formatProviderOperationRemedy(remedy),
-      remedy: { kind: 'discard-provider-operation', allowReadable: true },
+      detail: 'More than one readable provider operation row claims this job.',
+      remedy,
     });
     if (!persisted && quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, key) === null) {
       log(`Provider operation ambiguity quarantine failed for ${key}.\n`);

@@ -5,7 +5,7 @@ import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
-import type { AbortHoldDisposition, AbortHoldOwner } from '../../jobs/contracts/abort-registry.js';
+import type { AbortHoldDisposition, AbortHoldOwner, AbortNextStep } from '../../jobs/contracts/abort-registry.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
@@ -366,7 +366,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     resolvePendingLaunch();
   };
 
-  function retainPendingWrapperHold(generation: number, reason: string, nextStep: string): void {
+  function retainPendingWrapperHold(generation: number, reason: string, nextStep: AbortNextStep): void {
     if (pendingWrapperHold?.generation !== generation) return;
     abortRegistry.hold(permit.jobId, reason, nextStep, () => retryPendingWrapperTermination(generation));
   }
@@ -391,7 +391,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
       };
     }
     if (hold.obligation === null) {
-      const disposition = {
+      const disposition: Extract<AbortHoldDisposition, { kind: 'retained' }> = {
         kind: 'retained' as const,
         reason: 'termination requested before the wrapper published its obligation',
         nextStep:
@@ -405,24 +405,26 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     try {
       termination = hold.obligation.requestTermination();
     } catch (error: unknown) {
-      const disposition = {
+      const disposition: Extract<AbortHoldDisposition, { kind: 'retained' }> = {
         kind: 'retained' as const,
         reason: `pending wrapper termination threw: ${errorMessage(error)}`,
-        nextStep:
-          `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
-          'only observed absence or wrapper settlement releases the permit.',
+        nextStep: {
+          detail: 'Restore wrapper termination; only observed absence or wrapper settlement releases the permit.',
+          remedy: { kind: 'abort-job', jobId: permit.jobId },
+        },
       };
       retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
       return disposition;
     }
 
     if (termination.kind === 'signal-failed') {
-      const disposition = {
+      const disposition: Extract<AbortHoldDisposition, { kind: 'retained' }> = {
         kind: 'retained' as const,
         reason: `pending wrapper termination failed: ${termination.signal}:${termination.reason}`,
-        nextStep:
-          `Restore signal delivery, then run coral-cli abort jobs ${permit.jobId}; ` +
-          'only observed absence or wrapper settlement releases the permit.',
+        nextStep: {
+          detail: 'Restore signal delivery; only observed absence or wrapper settlement releases the permit.',
+          remedy: { kind: 'abort-job', jobId: permit.jobId },
+        },
       };
       retainPendingWrapperHold(generation, disposition.reason, disposition.nextStep);
       return disposition;
@@ -440,8 +442,10 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
           retainPendingWrapperHold(
             generation,
             `pending wrapper termination remains unsettled: ${pendingWrapperTerminationOutcomeDetail(outcome)}`,
-            `Run coral-cli abort jobs ${permit.jobId} again; ` +
-              'only observed absence or wrapper settlement releases the permit.',
+            {
+              detail: 'Only observed absence or wrapper settlement releases the permit.',
+              remedy: { kind: 'abort-job', jobId: permit.jobId },
+            },
           );
           return outcome;
         },
@@ -449,8 +453,10 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
           retainPendingWrapperHold(
             generation,
             `pending wrapper termination settlement failed: ${errorMessage(error)}`,
-            `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
-              'only observed absence or wrapper settlement releases the permit.',
+            {
+              detail: 'Restore wrapper termination; only observed absence or wrapper settlement releases the permit.',
+              remedy: { kind: 'abort-job', jobId: permit.jobId },
+            },
           );
         },
       );
@@ -473,12 +479,10 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         void obligation.settled.then(
           () => settlePendingWrapperHold(generation),
           (error: unknown) => {
-            retainPendingWrapperHold(
-              generation,
-              `pending wrapper settlement failed: ${errorMessage(error)}`,
-              `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
-                'only observed absence or wrapper settlement releases the permit.',
-            );
+            retainPendingWrapperHold(generation, `pending wrapper settlement failed: ${errorMessage(error)}`, {
+              detail: 'Restore wrapper termination; only observed absence or wrapper settlement releases the permit.',
+              remedy: { kind: 'abort-job', jobId: permit.jobId },
+            });
           },
         );
         retryPendingWrapperTermination(generation);
@@ -497,22 +501,18 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
       settled,
       resolveSettled,
     };
-    retainPendingWrapperHold(
-      generation,
-      'termination requested while the durable wrapper identity is pending',
-      `Run coral-cli abort jobs ${permit.jobId} again; ` +
-        'only observed absence or wrapper settlement releases the permit.',
-    );
+    retainPendingWrapperHold(generation, 'termination requested while the durable wrapper identity is pending', {
+      detail: 'Only observed absence or wrapper settlement releases the permit.',
+      remedy: { kind: 'abort-job', jobId: permit.jobId },
+    });
     if (obligation !== null) {
       void obligation.settled.then(
         () => settlePendingWrapperHold(generation),
         (error: unknown) => {
-          retainPendingWrapperHold(
-            generation,
-            `pending wrapper settlement failed: ${errorMessage(error)}`,
-            `Restore wrapper termination, then run coral-cli abort jobs ${permit.jobId}; ` +
-              'only observed absence or wrapper settlement releases the permit.',
-          );
+          retainPendingWrapperHold(generation, `pending wrapper settlement failed: ${errorMessage(error)}`, {
+            detail: 'Restore wrapper termination; only observed absence or wrapper settlement releases the permit.',
+            remedy: { kind: 'abort-job', jobId: permit.jobId },
+          });
         },
       );
       retryPendingWrapperTermination(generation);
@@ -665,7 +665,10 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     abortRegistry.hold(
       permit.jobId,
       reason,
-      `Run coral-cli abort jobs ${permit.jobId} again to abandon the durable containment hold.`,
+      {
+        detail: 'Explicitly abandon the durable containment hold only if unresolved process life is acceptable.',
+        remedy: { kind: 'abort-job', jobId: permit.jobId },
+      },
       operatorControl.abandon,
     );
     void publishContainmentStatus({

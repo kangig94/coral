@@ -16,11 +16,31 @@ type OperatorOutputSurface = Readonly<{
 const OPERATOR_OUTPUT_SURFACES: readonly OperatorOutputSurface[] = [
   {
     path: 'src/cli/format/backend.ts',
-    renderers: new Set(['renderBackendOperatorCommand']),
+    renderers: new Set(['renderBackendOperatorCommand', 'renderRecoveryQuarantineCommand']),
+  },
+  {
+    path: 'src/cli/format/jobs.ts',
+    renderers: new Set(['renderJobsOperatorCommand']),
   },
   {
     path: 'src/recovery/provider-operation-remedy.ts',
-    renderers: new Set(['renderRecoveryQuarantineCommand']),
+    renderers: new Set(),
+  },
+  {
+    path: 'src/coordinator/live/durable-transport.ts',
+    renderers: new Set(),
+  },
+  {
+    path: 'src/coordinator/services/recovery/running-adoption.ts',
+    renderers: new Set(),
+  },
+  {
+    path: 'src/coordinator/services/recovery/startup.ts',
+    renderers: new Set(),
+  },
+  {
+    path: 'src/coordinator/services/recovery/settled-unbound-status.ts',
+    renderers: new Set(),
   },
   {
     path: 'src/cli/commands/backend.ts',
@@ -28,6 +48,9 @@ const OPERATOR_OUTPUT_SURFACES: readonly OperatorOutputSurface[] = [
     functions: new Set([
       'clearRecoveryQuarantineWithCoordinator',
       'discardUnreadableProviderOperationWithCoordinator',
+      'emitRecoveryQuarantineError',
+      'parseRecoveryQuarantineClearOptions',
+      'parseUnreadableProviderOperationDiscardOptions',
       'recoveryCoordinatorRequiredError',
     ]),
   },
@@ -100,7 +123,7 @@ function readFixture(name: string): ts.SourceFile {
 }
 
 describe('operator commands are rendered, not embedded in prose', () => {
-  it('keeps coral-cli literals inside the command renderers on the owned output surfaces', () => {
+  it('keeps coral-cli literals inside CLI renderers on the fully owned and named branch-owned surfaces', () => {
     for (const surface of OPERATOR_OUTPUT_SURFACES) {
       const path = resolve(REPO_ROOT, surface.path);
       const sourceFile = parse(path, readFileSync(path, 'utf8'));

@@ -178,7 +178,7 @@ export const unreadableProviderOperationDiscardResultSchema: ZodType<UnreadableP
         kind: z.literal('recovery-in-progress'),
         code: z.literal('backend_recovering'),
         message: z.string().min(1),
-        remediation: z.string().min(1),
+        remedy: providerOperationAdoptionRefusalSchema.shape.remedy,
       })
       .strict(),
     unreadableProviderOperationDiscardRequestSchema.extend({ kind: z.literal('discarded') }).strict(),
