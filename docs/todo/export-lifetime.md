@@ -17,10 +17,21 @@ found no removal targeting it. The only prune that exists is
 `STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts`), and it removes exactly
 `progressStore.jobDir(jobId)` and the `meta` row — never the export.
 
-**The source itself states the false belief.** `resolveJobRetentionMs`'s doc comment
-(`src/coordinator/lifecycle.ts`) calls it "the terminal-job **export** retention window", for a
-setting whose prune touches only scratch. Correcting that comment belongs in Part 1; leaving it is how
-the next reader re-derives the same wrong fact.
+**The source stated the false belief twice, and both are now gone.** `resolveJobRetentionMs`'s doc
+comment called the setting "the terminal-job **export** retention window" for a prune that touches only
+scratch. `cleanupStaleJobs`'s doc comment (both `src/coordinator/lifecycle.ts`) then said it prunes
+`<exports>/jobs/<id>/` and argued the safety of doing so from `result.md` being regenerable — a
+rationale belonging to the export tree, attached to a function that never touches it. A reader checking
+whether exports were pruned would have read that comment and stopped. Neither was found by a gate;
+both were found by measuring the directory.
+
+**Measured 2026-09-12** on the author's host, which is the scale this has reached with no owner:
+
+```
+~/.coral/exports/jobs   17G   across 7,545 directories
+~/.coral (total)        19G
+/tmp/coral-jobs        628K   across 154 directories   ← the root that IS pruned
+```
 
 ### The archive-restore document was not inventing its constraint
 

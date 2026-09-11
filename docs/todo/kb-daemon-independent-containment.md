@@ -63,12 +63,12 @@ teardown, which is why they were left out rather than folded in.
   stranding more reachable, not less. Covering them means the containment authority must own or gate the spawn
   through the runtime process port; a wrapper that registers after `spawn` still has an execution race. Until
   that exists, the claim is bounded to the daemon's own process and calling it "KB containment" would be false.
-- **Coordinator shutdown can skip asking the daemon to stop at all.** `shutdown.ts` wraps KB disposal in
-  `runBudgetedStep`, and `withBudget` skips the task outright when the drain budget is exhausted — while the
-  immediately preceding `recovery coordinator teardown` is unbudgeted and can consume it. Converting it to
-  `runRequiredBudgetedStep` is _not_ the fix: on exhaustion that path fires the task with an already-aborted
-  signal on the argument that its synchronous prefix has run, and here the stdin write lives inside an async
-  `runExclusive` turn, so nothing would be sent either way — it would trade a silent skip for a shutdown error.
+- ~~**Coordinator shutdown can skip asking the daemon to stop at all.**~~ **Closed, verified 2026-09-12.** KB
+  disposal is no longer a skippable `runBudgetedStep`: it is a `ShutdownSettlementLedger` obligation
+  (`shutdown.ts`, label `kb child shutdown`) whose unconfirmed outcome returns a `hold` carrying the daemon's
+  own named exit, and `durable-operator-abandonment` when it has none. That is the disposition this member
+  said `runRequiredBudgetedStep` could not supply, so the objection recorded here was right about that path
+  and is not an argument against the one taken.
 - **Recovery teardown is itself unbounded**, and it is what exhausts that budget:
   `src/coordinator/services/recovery/index.ts` aborts finalizations and then unconditionally awaits every
   commit-started promise with no timeout.

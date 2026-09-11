@@ -108,7 +108,9 @@ A coordinator frozen past a deadline loses provider authority, and the reaper th
 on the whole proxy set, terminating every live claim on it. The jobs themselves were healthy; they were
 deliberately killed by a policy acting on the wedge.
 
-**Corrected on the unreleased branch:** channel close is now a non-terminal incident, not an authority fault.
+**Corrected, and on `main` since 2026-09-12:** channel close is a non-terminal incident, not an authority fault
+(`control-channel-fault` in `src/coordinator/services/provider-proxy-authority-fault.ts`; the hold as
+`control_channel_reattaching` in `src/coordinator/services/provider-proxy-set/decisions.ts`).
 It removes routing and opens a bounded authenticated-reattachment hold while keeping durable claims attached;
 refusal or expiry waits for independent containment absence and cannot start `stop-and-reap`. Once both
 enforcers are proven absent, the independent proof still reaps the orphaned proxy group. The log above

@@ -653,14 +653,6 @@ export function createCrashedJobTerminalizationRetryPlan(
   };
 }
 
-/**
- * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
- * rebuildable cache of the journal — `JobStore.ensureResultArtifact` regenerates
- * `result.md` from the journal terminal event on the next read — so pruning only
- * reclaims disk; `jobs list`/`detail` keep working from the journal projection.
- * A terminal job is pruned when it is left over from a previous bundle version OR
- * older than the retention window. Live jobs are never touched.
- */
 export async function cleanupStaleJobs(
   progressStore: JobStore,
   currentBundleHash: string,
