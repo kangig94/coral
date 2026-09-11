@@ -367,9 +367,6 @@ export const PROVIDER_CONTAINMENT_CAUSES = ['coordinator_rekey_refused'] as cons
 /**
  * Every cause `operation.stop.v1` accepts. The interruption, deliberate-abort, and containment partitions
  * remain separately named so downstream lifecycle code cannot silently classify one as another.
- *
- * It lives here because both sides of the wire may reach `providers/` and neither may reach the other — the
- * proxy is barred from `jobs/`, and a `jobs/`-to-proxy edge would point the dependency the wrong way.
  */
 export const PROVIDER_STOP_CAUSES = [
   ...PROVIDER_INTERRUPTION_CAUSES,

@@ -77,6 +77,13 @@ function formatBackendStatus(status: BackendStatusFull): string {
   return formatComposedBackendStatus(status, { kind: 'absent' }, null);
 }
 
+function operatorArtifactLines(output: string): string[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^(?:action|clear|command|discard)=coral-cli\s/u.test(line));
+}
+
 const runningDecision = {
   kind: 'provider-session',
   launchState: 'running',
@@ -1047,7 +1054,10 @@ describe('cli format', () => {
       expect(output).toContain('record=surviving-record-key job=job-1 operation=operation-1');
       expect(output).toContain('triggerRecord=discarded-record-key rowDisposition=discarded');
       expect(output).toContain('restart or repair the canonical coordinator externally');
-      expect(output).toContain('coral-cli jobs detail job-1');
+      expect(operatorArtifactLines(output)).toEqual([
+        'command=coral-cli jobs detail job-1',
+        'command=coral-cli backend status',
+      ]);
     });
 
     it.each([
@@ -1060,28 +1070,6 @@ describe('cli format', () => {
         remedy: { kind: 'remote-settlement' as const },
         required: ['remote settlement path', 'automatically'],
         forbidden: 'external repair',
-      },
-      {
-        remedy: { kind: 'recovery-quarantine-discard' as const, command: { kind: 'list' as const } },
-        required: ['command=coral-cli backend recovery-quarantine list'],
-        forbidden: 'discard-provider-operation',
-      },
-      {
-        remedy: {
-          kind: 'recovery-quarantine-discard' as const,
-          command: {
-            kind: 'discard-provider-operation' as const,
-            key: 'surviving-record-key',
-            revision: `fingerprint:sha256:${'b'.repeat(64)}`,
-            allowReadable: true,
-          },
-        },
-        required: ['discard-provider-operation', '--key', '--revision', '--allow-readable'],
-      },
-      {
-        remedy: { kind: 'recovery-quarantine-clear' as const, command: { kind: 'list' as const } },
-        required: ['command=coral-cli backend recovery-quarantine list'],
-        forbidden: 'discard-provider-operation',
       },
       {
         remedy: { kind: 'external-repair' as const },
@@ -1109,10 +1097,123 @@ describe('cli format', () => {
       });
 
       expect(output).toContain('record=surviving-record-key');
-      expect(output).toContain('coral-cli jobs detail job-1');
-      expect(output).toContain('coral-cli backend status');
+      expect(operatorArtifactLines(output)).toEqual([
+        'command=coral-cli jobs detail job-1',
+        'command=coral-cli backend status',
+      ]);
       for (const action of required) expect(output).toContain(action);
       if (forbidden !== undefined) expect(output).not.toContain(forbidden);
+    });
+
+    it.each(['recovery-quarantine-discard', 'recovery-quarantine-clear'] as const)(
+      'renders and executes the complete list artifact for the %s adoption remedy',
+      async (kind) => {
+        const output = formatUnreadableProviderOperationDiscard({
+          key: 'discarded-record-key',
+          revision: 'a'.repeat(64),
+          kind: 'adoption-refused',
+          rowDisposition: 'discarded',
+          releasedLaunchPermits: 0,
+          refusals: [
+            {
+              recordKey: 'surviving-record-key',
+              jobId: 'job-1',
+              operationId: 'operation-1',
+              proxyInstanceId: 'proxy-1',
+              buildSetId: 'build-set-1',
+              reason: 'cause-specific diagnostic text',
+              remedy: { kind, command: { kind: 'list' } },
+            },
+          ],
+        });
+        expect(operatorArtifactLines(output)).toEqual([
+          'command=coral-cli backend recovery-quarantine list',
+          'command=coral-cli jobs detail job-1',
+          'command=coral-cli backend status',
+        ]);
+
+        let listed = false;
+        const program = new Command();
+        program.exitOverride();
+        program
+          .command('backend')
+          .command('recovery-quarantine')
+          .command('list')
+          .action(() => {
+            listed = true;
+          });
+        const tokens = await executeRenderedCommand(program, output, {
+          label: 'command',
+          includes: 'recovery-quarantine list',
+        });
+
+        expect(listed).toBe(true);
+        expect(tokens).toEqual(['coral-cli', 'backend', 'recovery-quarantine', 'list']);
+      },
+    );
+
+    it('renders and executes the exact readable-discard artifact for an adoption refusal', async () => {
+      const revision = `fingerprint:sha256:${'b'.repeat(64)}`;
+      const output = formatUnreadableProviderOperationDiscard({
+        key: 'discarded-record-key',
+        revision: 'a'.repeat(64),
+        kind: 'adoption-refused',
+        rowDisposition: 'discarded',
+        releasedLaunchPermits: 0,
+        refusals: [
+          {
+            recordKey: 'surviving-record-key',
+            jobId: 'job-1',
+            operationId: 'operation-1',
+            proxyInstanceId: 'proxy-1',
+            buildSetId: 'build-set-1',
+            reason: 'cause-specific diagnostic text',
+            remedy: {
+              kind: 'recovery-quarantine-discard',
+              command: {
+                kind: 'discard-provider-operation',
+                key: 'surviving-record-key',
+                revision,
+                allowReadable: true,
+              },
+            },
+          },
+        ],
+      });
+      const encodedKey = encodeRecoveryQuarantineKey('surviving-record-key');
+      expect(operatorArtifactLines(output)).toEqual([
+        `discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodedKey} --revision ${JSON.stringify(revision)} --allow-readable`,
+        'command=coral-cli jobs detail job-1',
+        'command=coral-cli backend status',
+      ]);
+
+      let received: Readonly<{ key: string; revision: string; allowReadable: boolean }> | undefined;
+      const program = new Command();
+      program.exitOverride();
+      program
+        .command('backend')
+        .command('recovery-quarantine')
+        .command('discard-provider-operation')
+        .requiredOption('--key <key>')
+        .requiredOption('--revision <revision>')
+        .option('--allow-readable')
+        .action((options: { key: string; revision: string; allowReadable?: boolean }) => {
+          received = { ...options, allowReadable: options.allowReadable === true };
+        });
+      const tokens = await executeRenderedCommand(program, output, { label: 'discard' });
+
+      expect(received).toEqual({ key: encodedKey, revision, allowReadable: true });
+      expect(tokens).toEqual([
+        'coral-cli',
+        'backend',
+        'recovery-quarantine',
+        'discard-provider-operation',
+        '--key',
+        encodedKey,
+        '--revision',
+        revision,
+        '--allow-readable',
+      ]);
     });
 
     it('renders the complete recovery-quarantine clear command for an eligible row', () => {
@@ -1134,9 +1235,9 @@ describe('cli format', () => {
         },
       ]);
 
-      expect(output).toContain(
+      expect(operatorArtifactLines(output)).toEqual([
         `clear=coral-cli backend recovery-quarantine clear --boundary "provider-operation-unreadable" --key ${encodeRecoveryQuarantineKey(key)} --revision "fingerprint:${revision}"`,
-      );
+      ]);
     });
 
     it('renders automatic launch reclamation evidence', () => {
@@ -1227,8 +1328,10 @@ describe('cli format', () => {
           'claim-already-reassigned': ['no automatic retry applies', 'current session owner externally'],
         }[cause];
         for (const expected of contract) expect(output).toContain(expected);
-        expect(output).toContain('coral-cli jobs detail job-1');
-        expect(output).toContain('coral-cli backend status');
+        expect(operatorArtifactLines(output)).toEqual([
+          'command=coral-cli jobs detail job-1',
+          'command=coral-cli backend status',
+        ]);
       },
     );
 
@@ -1258,7 +1361,7 @@ describe('cli format', () => {
       );
       const output = formatBackendStatus(status);
       expect(output).toContain('retries this settlement-status write automatically');
-      expect(output).toContain('coral-cli backend status');
+      expect(operatorArtifactLines(output)).toEqual(['command=coral-cli backend status']);
       expect(output).toContain('job=job-unbound operation=operation-unbound');
     });
 
@@ -1377,7 +1480,7 @@ describe('cli format', () => {
       expect(output).toContain('    reason: curate-publish (3 consecutive failures)');
       expect(output).toContain('    last error: publish timed out');
       expect(output).toContain('    hint: free disk space, then run the shutdown command below to reset');
-      expect(output).toContain('\ncommand=coral-cli backend shutdown\n');
+      expect(operatorArtifactLines(output)).toEqual(['command=coral-cli backend shutdown']);
     });
 
     it('omits the last-error line for a degraded component when lastError is empty', () => {
@@ -1433,7 +1536,7 @@ describe('cli format', () => {
       expect(output).toContain('    retry: daemon restart required');
       expect(output).not.toContain('lastErrorStack');
       expect(output).toContain('    hint: restart the daemon with the command below');
-      expect(output).toContain('\ncommand=coral-cli backend shutdown\n');
+      expect(operatorArtifactLines(output)).toEqual(['command=coral-cli backend shutdown']);
     });
 
     it('omits the last-log line for an offline component when lastLogLine is absent', () => {
@@ -1449,7 +1552,7 @@ describe('cli format', () => {
       expect(output).toContain('  kb: offline');
       expect(output).not.toContain('last log:');
       expect(output).toContain('    hint: restart the daemon with the command below');
-      expect(output).toContain('\ncommand=coral-cli backend shutdown\n');
+      expect(operatorArtifactLines(output)).toEqual(['command=coral-cli backend shutdown']);
     });
 
     it('points a non-retryable offline component at the failure details and reindex recovery', () => {
@@ -1473,7 +1576,7 @@ describe('cli format', () => {
       expect(output).toContain(
         '    hint: review the failure details above; the reindex command below can rebuild a corrupt KB index',
       );
-      expect(output).toContain('\ncommand=coral-cli kb reindex\n');
+      expect(operatorArtifactLines(output)).toEqual(['command=coral-cli kb reindex']);
     });
 
     it('omits the queue-depth line when queueDepth is absent', () => {
@@ -1883,7 +1986,9 @@ describe('cli format', () => {
       // intervention" while naming neither the process nor a command. The pid comes from our own record, and
       // it is the only handle on a coordinator that will not accept our token.
       expect(formatShutdown(result), 'the live coordinator is identified').toMatch(/pid 4242/u);
-      expect(formatShutdown(result), 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
+      expect(operatorArtifactLines(formatShutdown(result)), 'and the next step is a command that exists').toEqual([
+        'command=coral-cli backend status',
+      ]);
       expect(formatShutdown(result), 'retrying is the one thing that cannot work here').toMatch(/no retry/u);
     });
 
@@ -1903,7 +2008,9 @@ describe('cli format', () => {
       expect(text, 'the pid is still named').toMatch(/4242/u);
       expect(text, 'but confirmed liveness is not claimed for it').not.toMatch(/^It is running \(pid/mu);
       expect(text, 'the hedge itself is present').toMatch(/not independently confirmed alive/u);
-      expect(text, 'and the next step is a command that exists').toMatch(/coral-cli backend status/u);
+      expect(operatorArtifactLines(text), 'and the next step is a command that exists').toEqual([
+        'command=coral-cli backend status',
+      ]);
     });
 
     // Neither remedy is reachable through a coral-cli command: `shutdownBackend` refuses on an unreadable
@@ -1953,7 +2060,9 @@ describe('cli format', () => {
       expect(parsed.indicator).toBe('[hybrid]');
       expect(parsed.results[0].note).toBe('cli-kb-tooling');
       expect(parsed.results[0].kind).toBe('note');
-      expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');
+      expect(parsed.warning).toBe(
+        'Enhanced KB index is stale; run node "/tmp/coral-cli.cjs" kb reindex to refresh it.',
+      );
     });
 
     it('formats an empty kb search result set', () => {

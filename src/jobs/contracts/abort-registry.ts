@@ -51,6 +51,6 @@ export type AbortResult = {
   held?: AbortHold[];
   abandoned?: AbortAbandonment[];
 };
-import type { JobOperatorRemedy } from '../../recovery/provider-operation-remedy.js';
+import type { JobOperatorRemedy } from './operator-remedy.js';
 
 export type AbortNextStep = string | Readonly<{ detail: string; remedy: JobOperatorRemedy }>;

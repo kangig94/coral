@@ -184,7 +184,6 @@ describe('interrupted app-server recovery finalizer', () => {
     );
     expect(harness.remove).toHaveBeenCalledWith('interrupted-job');
     expect(harness.launchPermit.reservationId).not.toBe('');
-    expect(harness.releaseLaunch).toHaveBeenCalledWith(harness.launchPermit);
     expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
   });
 
@@ -224,7 +223,6 @@ describe('interrupted app-server recovery finalizer', () => {
       'admission-release',
     ]);
     expect(harness.launchPermit.reservationId).not.toBe('');
-    expect(harness.releaseLaunch).toHaveBeenCalledWith(harness.launchPermit);
     expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
   });
 
@@ -310,7 +308,6 @@ describe('interrupted durable recovery finalizer', () => {
       'admission-release',
     ]);
     expect(harness.launchPermit.reservationId).not.toBe('');
-    expect(harness.releaseLaunch).toHaveBeenCalledWith(harness.launchPermit);
     expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
   });
 

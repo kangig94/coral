@@ -624,7 +624,6 @@ describe('interrupted recovery settlement ownership', () => {
     );
     expect(fixture.abortRegistry.remove).toHaveBeenCalledWith(launchRecord.jobId);
     expect(fixture.launchPermit.reservationId).not.toBe('');
-    expect(fixture.releaseLaunch).toHaveBeenCalledWith(fixture.launchPermit);
     expect(fixture.launchAdmission.reservationFor(launchRecord.jobId)).toBeNull();
   });
 

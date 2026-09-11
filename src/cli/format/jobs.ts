@@ -3,7 +3,7 @@ import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { AbortNextStep } from '../../jobs/contracts/abort-registry.js';
-import type { JobOperatorRemedy } from '../../recovery/provider-operation-remedy.js';
+import type { JobOperatorRemedy } from '../../jobs/contracts/operator-remedy.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import { formatTable, joinLines } from './text.js';

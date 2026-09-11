@@ -1,3 +1,5 @@
+import type { JobOperatorRemedy } from '../jobs/contracts/operator-remedy.js';
+
 export type RecoveryQuarantineCommand =
   | Readonly<{ kind: 'list' }>
   | Readonly<{ kind: 'clear'; boundary: string; key: string; revision: string }>
@@ -20,9 +22,5 @@ export type ProviderOperationRemedy =
       command: Extract<RecoveryQuarantineCommand, { kind: 'list' | 'clear' }>;
     }>
   | Readonly<{ kind: 'external-repair' }>;
-
-export type JobOperatorRemedy =
-  | Readonly<{ kind: 'abort-job'; jobId: string }>
-  | Readonly<{ kind: 'jobs-detail'; jobId: string }>;
 
 export type RecoveryRecordRemedy = ProviderOperationRemedy | JobOperatorRemedy;

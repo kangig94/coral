@@ -30,8 +30,8 @@ import type {
   ProviderProxySetContainResponse,
 } from '../../transport/rpc/catalog.js';
 import type { UnreadableProviderOperationDiscardResult } from '../../recovery/unreadable-provider-operation.js';
+import type { JobOperatorRemedy } from '../../jobs/contracts/operator-remedy.js';
 import {
-  type JobOperatorRemedy,
   type ProviderOperationRemedy,
   type RecoveryRecordRemedy,
   type RecoveryQuarantineCommand,
@@ -1624,7 +1624,7 @@ function formatProviderOperationAdoptionRefusalNextStep(
     case 'recovery-quarantine-discard': {
       return [
         `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
-        formatProviderOperationRemedy(refusal.remedy),
+        formatRecoveryRecordRemedy(refusal.remedy),
         'Then inspect the job and backend status.',
         inspect,
         status,
