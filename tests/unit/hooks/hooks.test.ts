@@ -41,13 +41,15 @@ import {
   cleanupFixtures,
   createFixture,
   expectHookOutput,
-  expectStopOutput,
   liveWorkSubagentsDir,
   parseHookOutput,
   runHook,
   runHookAsync,
   writeInjectBundle,
+  expectStopOutput,
+  type HookFixture,
   type HookOutput,
+  type HookRunResult,
 } from '#tests/unit/hooks/_helpers.js';
 
 afterEach(cleanupFixtures);
@@ -1716,6 +1718,75 @@ describe('ralph-loop hook', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
+  });
+
+  function startLoop(fixture: HookFixture, sessionId: string, state: Record<string, unknown>): string {
+    const env = { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot };
+    const started = runHook(
+      RALPH_LOOP_HOOK,
+      { hook_event_name: 'UserPromptSubmit', user_message: '/ralph go', session_id: sessionId },
+      env,
+    );
+    const statePath = /Ralph loop state file: (\S+\.json)/u.exec(
+      (JSON.parse(started.stdout) as HookOutput).hookSpecificOutput.additionalContext,
+    )?.[1];
+    if (statePath === undefined) throw new Error('the hook did not report a state file path');
+    writeFileSync(statePath, JSON.stringify(state));
+    return statePath;
+  }
+
+  function stop(fixture: HookFixture, sessionId: string, assistantText: string): HookRunResult {
+    return runHook(
+      RALPH_LOOP_HOOK,
+      { hook_event_name: 'Stop', session_id: sessionId, last_assistant_message: assistantText },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+  }
+
+  const PLAN_MODE_STATE = {
+    prompt: 'implement plans/topic.md — all ACs must pass',
+    iteration: 1,
+    maxIterations: 0,
+    completionPromise: 'TASK COMPLETE',
+  };
+
+  it('drives the next plan-mode iteration when the promise has not been made', () => {
+    const fixture = createFixture();
+    startLoop(fixture, 'ralph-plan-block', PLAN_MODE_STATE);
+
+    const result = stop(fixture, 'ralph-plan-block', 'Finished batch 1. Moving on.');
+
+    const output = expectStopOutput(result);
+    expect(output.decision).toBe('block');
+    expect(output.reason).toContain('implement plans/topic.md');
+    expect(output.systemMessage).toContain('Ralph iteration 2');
+  });
+
+  it('ends the loop and clears its state once the promise is made', () => {
+    const fixture = createFixture();
+    const statePath = startLoop(fixture, 'ralph-plan-done', PLAN_MODE_STATE);
+
+    const result = stop(fixture, 'ralph-plan-done', 'All done. <promise>TASK COMPLETE</promise>');
+
+    expect(result.stdout.trim()).toBe('');
+    expect(existsSync(statePath)).toBe(false);
+    expect(existsSync(statePath.replace(/\.json$/u, '.active'))).toBe(false);
+  });
+
+  it('reports a loop whose state disappeared, once, and stays silent for a session that never ran', () => {
+    const fixture = createFixture();
+    const statePath = startLoop(fixture, 'ralph-lost', PLAN_MODE_STATE);
+    rmSync(statePath);
+
+    const reported = stop(fixture, 'ralph-lost', 'I deleted the state file per protocol.');
+    const afterwards = stop(fixture, 'ralph-lost', 'Still going.');
+    const neverRan = stop(fixture, 'ralph-never-started', 'Unrelated session.');
+
+    expect((JSON.parse(reported.stdout) as { systemMessage?: string }).systemMessage).toContain(
+      'Ralph loop state is gone',
+    );
+    expect(afterwards.stdout.trim()).toBe('');
+    expect(neverRan.stdout.trim()).toBe('');
   });
 });
 
