@@ -26,8 +26,6 @@ const RULES: FaultAuthorityRule[] = [
     allowed: new Set([
       'src/providers/claude/provider.ts',
       'src/providers/claude/session-kernel.ts',
-      // The provider-domain proxy-failure adapter owns the failed terminal emitted when a remotely accepted
-      // operation cannot be re-keyed to coordinator ownership.
       'src/providers/proxy-failure.ts',
     ]),
   },

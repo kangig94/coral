@@ -150,7 +150,7 @@ export type SettlementRefusal = Readonly<{
   quarantine: 'recorded' | 'recording-failed';
 }>;
 
-/** Persists durable recovery work left behind by a refused job settlement. */
+/** A caller may treat a settlement refusal as durably contained only after `record` resolves `true`. */
 export interface SettlementRefusalRecorder {
   record(
     input: Readonly<{
