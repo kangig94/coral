@@ -154,6 +154,7 @@ import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
+  formatBackendStatusCommand,
   formatBackendStatus,
   formatHandoffRoutingResolveResult,
   formatRecoveryQuarantineClear,
@@ -2212,7 +2213,11 @@ async function clearRecoveryQuarantineWithCoordinator(
     const result = recoveryQuarantineClearResultSchema.safeParse(response);
     if (!result.success) {
       throw new RecoveryQuarantineContractError(
-        `Coordinator returned an invalid recovery quarantine retry result. Run coral-cli backend status, then retry:\n${remediation}`,
+        [
+          'Coordinator returned an invalid recovery quarantine retry result. Inspect backend status, then retry with the complete command below.',
+          formatBackendStatusCommand(),
+          remediation,
+        ].join('\n'),
       );
     }
     return result.data;
@@ -2225,7 +2230,11 @@ async function clearRecoveryQuarantineWithCoordinator(
     }
     if (isIpcRequestTimeout(error)) {
       throw new Error(
-        `Recovery quarantine clear timed out before the coordinator returned a result. Run coral-cli backend status, then retry:\n${remediation}`,
+        [
+          'Recovery quarantine clear timed out before the coordinator returned a result. Inspect backend status, then retry with the complete command below.',
+          formatBackendStatusCommand(),
+          remediation,
+        ].join('\n'),
         { cause: error },
       );
     }
@@ -2302,6 +2311,10 @@ function isIpcRequestTimeout(error: unknown): boolean {
 
 function recoveryCoordinatorRequiredError(remediation: string): BackendUnreachableError {
   return new BackendUnreachableError(
-    `Recovery quarantine mutation requires the canonical coordinator, but it is not reachable. Run coral-cli backend status, start or repair the coordinator, then retry:\n${remediation}`,
+    [
+      'Recovery quarantine mutation requires the canonical coordinator, but it is not reachable. Inspect backend status, start or repair the coordinator, then retry with the complete command below.',
+      formatBackendStatusCommand(),
+      remediation,
+    ].join('\n'),
   );
 }

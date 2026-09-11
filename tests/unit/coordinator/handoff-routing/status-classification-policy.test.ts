@@ -1,3 +1,4 @@
+import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
@@ -16,6 +17,7 @@ import {
   type HandoffRoutingStatusClassificationPolicy,
 } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 const generation = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const emptyRetirementHistory = {
@@ -38,6 +40,20 @@ type PolicyFixture = Readonly<{
   rendered: string | null;
   publicationSuccessor: 'routing-status discard' | 'retry' | null;
 }>;
+
+function routingStatusCommandProgram(dispatched: string[]): Command {
+  const program = new Command();
+  program.exitOverride();
+  const backend = program.command('backend');
+  backend.command('status').action(() => {
+    dispatched.push('status');
+  });
+  const routingStatus = backend.command('routing-status');
+  routingStatus.command('discard').action(() => {
+    dispatched.push('discard');
+  });
+  return program;
+}
 
 const policyFixtures = [
   {
@@ -90,7 +106,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status has a detached non-empty WAL beside an absent or empty main database.\nNext step: run coral-cli backend routing-status discard.',
+      'Routing status has a detached non-empty WAL beside an absent or empty main database.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -104,7 +120,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status contains application objects but no generation address.\nNext step: run coral-cli backend routing-status discard.',
+      'Routing status contains application objects but no generation address.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -117,7 +133,7 @@ const policyFixtures = [
       renderKey: 'other-generation',
       successorAction: 'routing-status-discard',
     },
-    rendered: `Routing status generation ${generation + 1} belongs to another address.\nNext step: run coral-cli backend routing-status discard.`,
+    rendered: `Routing status generation ${generation + 1} belongs to another address.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard`,
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -131,7 +147,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status has this generation address but a different durable format fingerprint.\nNext step: run coral-cli backend routing-status discard.',
+      'Routing status has this generation address but a different durable format fingerprint.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -145,7 +161,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status has this generation address but a divergent schema.\nNext step: run coral-cli backend routing-status discard.',
+      'Routing status has this generation address but a divergent schema.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -176,7 +192,8 @@ const policyFixtures = [
       renderKey: 'damaged',
       successorAction: 'routing-status-discard',
     },
-    rendered: 'Routing status is unreadable (invalid-shape).\nNext step: run coral-cli backend routing-status discard.',
+    rendered:
+      'Routing status is unreadable (invalid-shape).\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -190,7 +207,7 @@ const policyFixtures = [
       successorAction: 'retry',
     },
     rendered:
-      'Routing status could not be read (io-failed, errcode 5).\nNext step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+      'Routing status could not be read (io-failed, errcode 5).\nNext step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.\ncommand=coral-cli backend status',
     publicationSuccessor: 'retry',
   },
 ] as const satisfies readonly PolicyFixture[];
@@ -232,13 +249,16 @@ describe('handoff routing status classification policy', () => {
     }
   });
 
-  it.each(policyFixtures)('renders $classification.kind and its successor independently', (fixture) => {
+  it.each(policyFixtures)('renders $classification.kind and its successor independently', async (fixture) => {
     const rendered = formatHandoffRoutingStatus(fixture.classification);
     expect(rendered).toBe(fixture.rendered);
     if (fixture.publicationSuccessor === null) {
       expect(rendered ?? '').not.toContain('Next step:');
       return;
     }
+    const dispatched: string[] = [];
+    await executeRenderedCommand(routingStatusCommandProgram(dispatched), rendered ?? '', { label: 'command' });
+    expect(dispatched).toEqual([fixture.publicationSuccessor === 'retry' ? 'status' : 'discard']);
     const successor = formatHandoffPublicationFailureSuccessor({
       kind: 'resolution',
       invocationId: '123e4567-e89b-42d3-a456-426614174000',

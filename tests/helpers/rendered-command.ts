@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 
 type RenderedCommandSelector = Readonly<{
-  label: 'clear' | 'discard' | 'command';
+  label: 'action' | 'clear' | 'discard' | 'command';
   includes?: string;
 }>;
 

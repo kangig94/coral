@@ -1,0 +1,11 @@
+type Command = Readonly<{ kind: 'status' }> | Readonly<{ kind: 'resolve'; invocationId: string }>;
+
+function renderBackendOperatorCommand(command: Command): string {
+  return command.kind === 'status'
+    ? 'coral-cli backend status'
+    : `coral-cli backend routing-status resolve --invocation ${command.invocationId}`;
+}
+
+function formatCommand(command: Command): string {
+  return `command=${renderBackendOperatorCommand(command)}`;
+}

@@ -1,0 +1,7 @@
+function formatStatusRefusal(): string {
+  return 'Next step: run coral-cli backend status.';
+}
+
+function formatResolutionRefusal(invocationId: string): string {
+  return `Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`;
+}

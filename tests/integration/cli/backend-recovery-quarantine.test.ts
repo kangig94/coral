@@ -22,7 +22,10 @@ import {
 import { buildProgram } from '#src/cli/program.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { formatProviderOperationRemedy } from '#src/recovery/provider-operation-remedy.js';
-import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import {
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+  type RecoveryQuarantineClearRequest,
+} from '#src/recovery/source-registry.js';
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -77,6 +80,24 @@ function programWith(recoveryQuarantine: RecoveryQuarantineCommandOperations): C
   program.exitOverride();
   registerBackendCommands(program, { storeReset, recoveryQuarantine });
   return program;
+}
+
+async function expectRenderedClearDispatch(rendered: string, expected: RecoveryQuarantineClearRequest): Promise<void> {
+  let dispatched: RecoveryQuarantineClearRequest | undefined;
+  const clear: RecoveryQuarantineCommandOperations['clear'] = async (request) => {
+    dispatched = request;
+    return { ...request, disposition: 'advanced' };
+  };
+  stdout = '';
+  stderr = '';
+  process.exitCode = undefined;
+
+  await executeRenderedCommand(programWith({ list: () => [], clear }), rendered, {
+    label: 'command',
+    includes: 'recovery-quarantine clear',
+  });
+
+  expect(dispatched).toEqual(expected);
 }
 
 describe('backend recovery-quarantine commands', () => {
@@ -570,6 +591,13 @@ describe('backend recovery-quarantine commands', () => {
       expect(stderr).toContain(encodeRecoveryQuarantineKey(result.key));
       expect(process.exitCode).toBe(75);
     }
+    if (result.kind === 'readable') {
+      await expectRenderedClearDispatch(stderr, {
+        boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+        key: result.key,
+        revision: result.revision,
+      });
+    }
   });
 
   it('should round-trip a fingerprint equal to the until-cleared sentinel', async () => {
@@ -654,7 +682,7 @@ describe('backend recovery-quarantine commands', () => {
     ['advanced', 'resolved and removed', ''],
     ['quarantined', 'still quarantined', 'recovery-quarantine list'],
     ['continuation', 'partial progress', 'recovery-quarantine list'],
-  ] as const)('should render %s as an actionable operator outcome', (disposition, outcome, recovery) => {
+  ] as const)('should render %s as an actionable operator outcome', async (disposition, outcome, recovery) => {
     const formatted = formatRecoveryQuarantineClear({
       boundary: 'workflow-recovery',
       key: 'workflow-1',
@@ -663,7 +691,13 @@ describe('backend recovery-quarantine commands', () => {
     });
 
     expect(formatted).toContain(outcome);
-    if (recovery.length > 0) expect(formatted).toContain(recovery);
+    if (recovery.length > 0) {
+      expect(formatted).toContain(recovery);
+      await executeRenderedCommand(programWith({ list: () => [], clear: vi.fn() }), formatted, {
+        label: 'command',
+      });
+      expect(stdout).toBe('Recovery quarantine is empty.\n');
+    }
   });
 
   it('should report the exact retry disposition returned by the coordinator', async () => {
@@ -895,6 +929,11 @@ describe('backend recovery-quarantine commands', () => {
     expect(stderr).toContain('Recovery quarantine mutation requires the canonical coordinator');
     expect(stderr).toContain('coral-cli backend status');
     expect(process.exitCode).toBe(69);
+    await expectRenderedClearDispatch(stderr, {
+      boundary: 'workflow-recovery',
+      key: 'workflow-1',
+      revision: 'revision-1',
+    });
   });
 
   it('should use the ensured IPC catalog client for clear', async () => {
@@ -1068,6 +1107,11 @@ describe('backend recovery-quarantine commands', () => {
 
     expect(stderr).toContain('invalid recovery quarantine retry result');
     expect(stderr).not.toContain('not reachable');
+    await expectRenderedClearDispatch(stderr, {
+      boundary: 'workflow-recovery',
+      key: 'workflow-1',
+      revision: 'revision-1',
+    });
   });
 
   it('should report an IPC timeout without calling it unreachable', async () => {
@@ -1093,6 +1137,11 @@ describe('backend recovery-quarantine commands', () => {
 
     expect(stderr).toContain('timed out before the coordinator returned a result');
     expect(stderr).not.toContain('not reachable');
+    await expectRenderedClearDispatch(stderr, {
+      boundary: 'workflow-recovery',
+      key: 'workflow-1',
+      revision: 'revision-1',
+    });
   });
 
   it('should reject an invalid exact coordinate before invoking clear', async () => {

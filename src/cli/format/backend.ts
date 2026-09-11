@@ -33,6 +33,7 @@ import type { UnreadableProviderOperationDiscardResult } from '../../recovery/un
 import {
   formatProviderOperationRemedy,
   renderRecoveryQuarantineCommand,
+  type RecoveryQuarantineCommand,
 } from '../../recovery/provider-operation-remedy.js';
 import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { ProviderProxySetOperatorExit } from '../../provider-proxy/operator-disposition-vocabulary.js';
@@ -42,29 +43,117 @@ import { formatHandoffPublicationFailureSuccessor } from './handoff-publication.
 export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
 export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
+type BackendOperatorCommand =
+  | Readonly<{ kind: 'backend-status' }>
+  | Readonly<{ kind: 'backend-shutdown' }>
+  | Readonly<{ kind: 'jobs-detail'; jobId: string }>
+  | Readonly<{ kind: 'kb-reindex' }>
+  | Readonly<{ kind: 'provider-proxy-set-abandon'; token: string }>
+  | Readonly<{ kind: 'provider-proxy-set-contain'; token: string }>
+  | Readonly<{ kind: 'routing-status-discard' }>
+  | Readonly<{ kind: 'routing-status-resolve'; invocationId: string; forceUnobservable: boolean }>;
+
+type OperatorCommandLabel = 'action' | 'clear' | 'command' | 'discard';
+
+function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
+  let commandArguments: string;
+  switch (command.kind) {
+    case 'backend-status':
+      commandArguments = 'backend status';
+      break;
+    case 'backend-shutdown':
+      commandArguments = 'backend shutdown';
+      break;
+    case 'jobs-detail':
+      commandArguments = `jobs detail ${command.jobId}`;
+      break;
+    case 'kb-reindex':
+      commandArguments = 'kb reindex';
+      break;
+    case 'provider-proxy-set-abandon':
+      commandArguments = `backend provider-proxy-set abandon ${command.token}`;
+      break;
+    case 'provider-proxy-set-contain':
+      commandArguments = `backend provider-proxy-set contain ${command.token}`;
+      break;
+    case 'routing-status-discard':
+      commandArguments = 'backend routing-status discard';
+      break;
+    case 'routing-status-resolve':
+      commandArguments =
+        `backend routing-status resolve --invocation ${command.invocationId}` +
+        (command.forceUnobservable ? ' --force-unobservable' : '');
+      break;
+    default:
+      return assertNever(command);
+  }
+  return `coral-cli ${commandArguments}`;
+}
+
+function formatBackendOperatorCommand(
+  command: BackendOperatorCommand,
+  label: OperatorCommandLabel = 'command',
+): string {
+  return `${label}=${renderBackendOperatorCommand(command)}`;
+}
+
+export function formatBackendStatusCommand(): string {
+  return formatBackendOperatorCommand({ kind: 'backend-status' });
+}
+
+function formatRecoveryQuarantineCommand(
+  command: RecoveryQuarantineCommand,
+  label: OperatorCommandLabel = 'command',
+): string {
+  return `${label}=${renderRecoveryQuarantineCommand(command)}`;
+}
+
 type ProviderProxySetOperatorRefusalGround = Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'];
 
-function providerProxySetOperatorRefusalGuidance(ground: ProviderProxySetOperatorRefusalGround, token: string): string {
-  const contain = `coral-cli backend provider-proxy-set contain ${token}`;
-  const abandon = `coral-cli backend provider-proxy-set abandon ${token}`;
+function formatProviderProxySetOperatorRefusalGuidance(
+  ground: ProviderProxySetOperatorRefusalGround,
+  token: string,
+): string {
+  const contain = formatBackendOperatorCommand({ kind: 'provider-proxy-set-contain', token });
+  const abandon = formatBackendOperatorCommand({ kind: 'provider-proxy-set-abandon', token });
   switch (ground) {
     case 'enforcer-alive':
-      return `after external verification, run ${abandon}`;
+      return ['Next step: after external verification, run the abandon command below.', abandon].join('\n');
     case 'enforcer-unobservable':
-      return `restore process observation and run ${contain}; after external verification, the explicit alternative is ${abandon}`;
+      return [
+        'Next step: restore process observation and run the contain command below; after external verification, the explicit alternative is the abandon command below.',
+        contain,
+        abandon,
+      ].join('\n');
     case 'recorded-group-unattributable':
-      return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence or signalling the group`;
+      return [
+        "Next step: after external verification, run the abandon command below; abandonment releases Coral's representation without asserting absence or signalling the group.",
+        abandon,
+      ].join('\n');
     case 'signal-authorization-refused':
-      return `after external verification, run ${abandon}; abandonment releases Coral's representation without asserting absence`;
+      return [
+        "Next step: after external verification, run the abandon command below; abandonment releases Coral's representation without asserting absence.",
+        abandon,
+      ].join('\n');
     case 'identity-unobservable':
-      return `restore process-identity observation and run ${contain}; after external verification, the explicit alternative is ${abandon}`;
+      return [
+        'Next step: restore process-identity observation and run the contain command below; after external verification, the explicit alternative is the abandon command below.',
+        contain,
+        abandon,
+      ].join('\n');
     case 'store-unreadable':
-      return formatProviderOperationRemedy({
-        kind: 'recovery-quarantine-discard',
-        command: { kind: 'list' },
-      });
+      return [
+        'Next step: inspect the recovery quarantine.',
+        formatProviderOperationRemedy({
+          kind: 'recovery-quarantine-discard',
+          command: { kind: 'list' },
+        }),
+      ].join('\n');
     case 'representation-release-fatal':
-      return `run ${abandon}; this accepts the unresolved representation release without retrying its fatal operation`;
+      return [
+        'Next step: run the abandon command below; this accepts the unresolved representation release without retrying its fatal operation.',
+        abandon,
+      ].join('\n');
     default:
       return assertNever(ground);
   }
@@ -96,7 +185,7 @@ export function formatProviderProxySetContainResult(
   result: ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse,
 ): string {
   const token = encodeProviderProxySetAddress(result.setIdentity);
-  const retry = `coral-cli backend provider-proxy-set contain ${token}`;
+  const retry = formatBackendOperatorCommand({ kind: 'provider-proxy-set-contain', token });
   const observations = (values: ReadonlyArray<{ role: string; observation: string }>): string =>
     values.map(({ role, observation }) => `${role}=${observation}`).join(', ');
   const effect = [
@@ -122,7 +211,8 @@ export function formatProviderProxySetContainResult(
         "Not observed: processes outside this set's recorded proxy group and provider-root records.",
         `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
-        'Next step: run coral-cli backend status.',
+        'Next step: inspect backend status.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'abandoned':
       return [
@@ -131,7 +221,8 @@ export function formatProviderProxySetContainResult(
         'Not observed: absence of the proxy process group and recorded provider roots; guardian and reaper were not signalled.',
         `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
-        'Next step: run coral-cli backend status and verify the proxy, guardian, reaper, and provider processes externally.',
+        'Next step: inspect backend status, then verify the proxy, guardian, reaper, and provider processes externally.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'unattributable-group-abandoned':
       return [
@@ -140,7 +231,8 @@ export function formatProviderProxySetContainResult(
         'Not observed: absence of the process group or proof that its numeric group id still belongs to this set.',
         `Effect: ${effect}.`,
         formatProviderProxySetClaimDischarge(result.claimDischarge),
-        'Next step: run coral-cli backend status and verify the proxy and provider processes externally.',
+        'Next step: inspect backend status, then verify the proxy and provider processes externally.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'representation-release-abandoned':
       return [
@@ -148,7 +240,8 @@ export function formatProviderProxySetContainResult(
         'Observed: the operator command accepted the unresolved representation-release remainder.',
         'Not observed: successful delivery or capsule retirement; the fatal operation was not retried.',
         `Effect: ${effect}.`,
-        'Next step: run coral-cli backend status.',
+        'Next step: inspect backend status.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'representation-release-abandonment-required':
       return [
@@ -156,7 +249,8 @@ export function formatProviderProxySetContainResult(
         'Observed: the fatal settlement completed with operator acceptance still pending.',
         'Not observed: successful delivery or capsule retirement.',
         `Effect: ${effect}.`,
-        `Next step: run coral-cli backend provider-proxy-set abandon ${token}.`,
+        'Next step: run the abandon command below.',
+        formatBackendOperatorCommand({ kind: 'provider-proxy-set-abandon', token }),
       ].join('\n');
     case 'set-not-found':
       return [
@@ -164,7 +258,8 @@ export function formatProviderProxySetContainResult(
         'Observed: the exact set address has no coordinator representation.',
         'Not observed: enforcer state or recorded-target state.',
         `Effect: ${effect}.`,
-        'Next step: run coral-cli backend status and copy the current exact token.',
+        'Next step: inspect backend status and copy the current exact token.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'not-held':
       return [
@@ -172,7 +267,7 @@ export function formatProviderProxySetContainResult(
         `Observed: coordinator lifecycle state=${result.state}.`,
         'Not observed: enforcer state or recorded-target state.',
         `Effect: ${effect}.`,
-        `Next step: ${providerProxySetNotHeldNextStep(result.state)}.`,
+        formatProviderProxySetNotHeldNextStep(result.state),
       ].join('\n');
     case 'deadline-pending':
       return [
@@ -180,7 +275,8 @@ export function formatProviderProxySetContainResult(
         `Observed: the exact set remains held before its state-specific gate.`,
         'Not observed: enforcer state or recorded-target state.',
         `Effect: ${effect}.`,
-        `Next step: wait for the gate, then run ${retry}.`,
+        'Next step: wait for the gate, then run the contain command below.',
+        retry,
       ].join('\n');
     case 'authorization-stale':
       return [
@@ -190,7 +286,9 @@ export function formatProviderProxySetContainResult(
           : 'Observed: the held attempt changed before containment absence was confirmed.',
         "Not observed: the current held attempt's enforcer and recorded-target state.",
         `Effect: ${effect}.`,
-        `Next step: run coral-cli backend status, then run ${retry} only if the same set remains held.`,
+        'Next step: inspect backend status, then run the contain command below only if the same set remains held.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+        retry,
       ].join('\n');
     case 'enforcer-alive':
       return [
@@ -198,7 +296,7 @@ export function formatProviderProxySetContainResult(
         `Observed: ${observations(result.enforcerObservations)}.`,
         'Not observed: absence of the proxy process group and recorded provider roots.',
         `Effect: ${effect}.`,
-        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+        formatProviderProxySetOperatorRefusalGuidance(result.kind, token),
       ].join('\n');
     case 'enforcer-unobservable':
       return [
@@ -206,7 +304,7 @@ export function formatProviderProxySetContainResult(
         `Observed: ${observations(result.enforcerObservations)}.`,
         'Not observed: absence of both enforcers or of the recorded containment.',
         `Effect: ${effect}.`,
-        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+        formatProviderProxySetOperatorRefusalGuidance(result.kind, token),
       ].join('\n');
     case 'recorded-group-unattributable':
       return [
@@ -214,7 +312,7 @@ export function formatProviderProxySetContainResult(
         'Observed: the pid no longer identifies the recorded process-group leader.',
         'Not observed: absence of the recorded process group or authority to signal its numeric group id.',
         `Effect: ${effect}.`,
-        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+        formatProviderProxySetOperatorRefusalGuidance(result.kind, token),
       ].join('\n');
     case 'signal-authorization-refused':
       return [
@@ -222,7 +320,7 @@ export function formatProviderProxySetContainResult(
         'Observed: the containment was attributable and at least one recorded target was present before signal authorization.',
         'Not observed: absence of every recorded target or authority to signal every target still present at delivery.',
         `Effect: ${effect}.`,
-        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+        formatProviderProxySetOperatorRefusalGuidance(result.kind, token),
       ].join('\n');
     case 'identity-unobservable':
       return [
@@ -230,7 +328,7 @@ export function formatProviderProxySetContainResult(
         'Observed: identity observation became unavailable before Coral delivered any process signal.',
         'Not observed: whether the recorded proxy process group and every recorded provider root still identify this set.',
         `Effect: ${effect}.`,
-        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+        formatProviderProxySetOperatorRefusalGuidance(result.kind, token),
       ].join('\n');
     case 'store-unreadable':
       return [
@@ -238,7 +336,7 @@ export function formatProviderProxySetContainResult(
         'Observed: the durable provider-operation scan contains an unreadable row attributable to this set.',
         'Not observed: enforcer state and the complete recorded target set were not established.',
         `Effect: ${effect}. The abandon command cannot override this store fence.`,
-        `Next step: ${providerProxySetOperatorRefusalGuidance(result.kind, token)}.`,
+        formatProviderProxySetOperatorRefusalGuidance(result.kind, token),
       ].join('\n');
     case 'containment-unconfirmed':
       return [
@@ -246,33 +344,53 @@ export function formatProviderProxySetContainResult(
         'Observed: the recorded-containment attempt ended without absence proof.',
         'Not observed: absence of the recorded proxy process group and every recorded provider root.',
         `Effect: ${effect}.`,
-        `Next step: run ${retry}.`,
+        'Next step: run the contain command below.',
+        retry,
       ].join('\n');
     default:
       return assertNever(result);
   }
 }
 
-function providerProxySetNotHeldNextStep(state: ProviderProxySetLifecycleState): string {
+function formatProviderProxySetNotHeldNextStep(state: ProviderProxySetLifecycleState): string {
   switch (state) {
     case 'available':
     case 'draining':
-      return 'run coral-cli backend shutdown to use ordinary drain, or run coral-cli backend status without forcing this set';
+      return [
+        'Next step: use ordinary drain, or inspect backend status without forcing this set.',
+        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'acquiring':
-      return 'let acquisition finish, then run coral-cli backend status';
+      return [
+        'Next step: let acquisition finish, then inspect backend status.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'capsule-recovering':
     case 'recovering':
-      return 'let recovery finish, then run coral-cli backend status';
+      return [
+        'Next step: let recovery finish, then inspect backend status.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'absence-delivery-pending':
     case 'abandonment-delivery-pending':
-      return 'let successor delivery finish, then run coral-cli backend status';
+      return [
+        'Next step: let successor delivery finish, then inspect backend status.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'capsule-foreign':
-      return 'run coral-cli backend status and use the Coral build that owns the foreign capsule';
+      return [
+        'Next step: inspect backend status and use the Coral build that owns the foreign capsule.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'reattaching':
     case 'reattachment-hold':
     case 'containing':
     case 'containment-wait':
-      return 'run coral-cli backend status, copy its current exact token, and retry only after the reported gate';
+      return [
+        'Next step: inspect backend status, copy its current exact token, and retry only after the reported gate.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     default:
       return assertNever(state);
   }
@@ -303,12 +421,16 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
     case 'incumbent-absent':
       return 'Handoff: continuing current build — no incumbent coordinator was observed.';
     case 'incumbent-unresolved':
-      return [
-        `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-        basis.cause === 'health-shape-rejected'
-          ? 'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff from the current installation.'
-          : 'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
-      ].join('\n');
+      return basis.cause === 'health-shape-rejected'
+        ? [
+            `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
+            'Next step: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+            formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+          ].join('\n')
+        : [
+            `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
+            'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
+          ].join('\n');
     case 'incumbent-unusable':
       return formatUnusableIncumbent(basis);
     case 'invoking-identity-unavailable':
@@ -319,7 +441,8 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
     case 'incumbent-identity-unavailable':
       return [
         `Handoff: continuing current build — incumbent ${basis.incumbent.version} did not report a complete bundle identity.`,
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     case 'same-build-set':
       return `Handoff: continuing current build — invoking and incumbent builds share build set ${basis.buildSetId}.`;
@@ -335,8 +458,10 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
 function formatInvokingBuildNotOlder(
   basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
 ): string {
-  const nextStep =
-    'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.';
+  const nextStep = [
+    'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+    formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+  ].join('\n');
   switch (basis.comparison) {
     case 'same-version':
       return [
@@ -379,7 +504,8 @@ function formatUnusableIncumbent(basis: Extract<HandoffRoutingBasis, { kind: 'in
     case 'identity-mismatch':
       return [
         'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
-        'Next step: run coral-cli backend shutdown, wait for shutdown to finish, then retry.',
+        'Next step: run the shutdown command below, wait for shutdown to finish, then retry.',
+        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     default:
       return assertNever(basis.cause);
@@ -439,7 +565,10 @@ function formatInvalidTargetFailure(
 
 // Shared by every shutdown disposition this run could not resolve either way: none of them may tell an
 // operator to do anything but ask again.
-const SHUTDOWN_RETRY_NEXT_STEP = 'Next step: run coral-cli backend status, then retry the shutdown.';
+const SHUTDOWN_RETRY_NEXT_STEP = [
+  'Next step: inspect backend status, then retry the shutdown.',
+  formatBackendOperatorCommand({ kind: 'backend-status' }),
+].join('\n');
 const SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP =
   'Next step: retry shortly in case a coordinator is still publishing its discovery record. If this persists, verify that no other Coral coordinator process is running before treating the backend as stopped.';
 
@@ -463,9 +592,9 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'ok':
       return formatRunningStatus(result.health);
     case 'no_record_no_socket':
-      return 'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.';
+      return 'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.';
     case 'recorded_process_absent':
-      return `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.`;
+      return `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`;
     case 'undecodable_record':
       return formatUndecodableRecordStatus(result);
     case 'unreachable':
@@ -477,7 +606,10 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
-      return 'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry a coral-cli mutating command; it attempts startup or handoff with a fresh token.';
+      return [
+        'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
+        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+      ].join('\n');
     default:
       return assertNever(result);
   }
@@ -531,19 +663,22 @@ function formatRoutingOwnerLiveness(
       return [
         `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
         selectionEvidence,
-        `Next step: run coral-cli backend routing-status resolve --invocation ${invocationId}.`,
+        'Next step: run the resolution command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: false }),
       ].join('\n');
     case 'unobservable':
       return liveness.cause === 'deadline-expired'
         ? [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Next step: rerun coral-cli backend status; an expired sweep cannot authorize resolution.',
+            'Next step: inspect backend status again; an expired sweep cannot authorize resolution.',
+            formatBackendOperatorCommand({ kind: 'backend-status' }),
           ].join('\n')
         : [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            `Next step: verify the owner externally, then run coral-cli backend routing-status resolve --invocation ${invocationId} --force-unobservable to abandon it.`,
+            'Next step: verify the owner externally, then run the forced resolution command below to abandon it.',
+            formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: true }),
           ].join('\n');
     default:
       return assertNever(liveness);
@@ -615,7 +750,16 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
           const terminalEvidence = status.tombstone.terminalExisted
             ? 'terminal recorded: yes'
             : 'terminal recorded: no';
-          return `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).\nSelected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.\nNext step: run coral-cli backend routing-status resolve --invocation ${status.tombstone.invocationId} to acknowledge the retained capacity eviction.`;
+          return [
+            `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).`,
+            `Selected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.`,
+            'Next step: run the resolution command below to acknowledge the retained capacity eviction.',
+            formatBackendOperatorCommand({
+              kind: 'routing-status-resolve',
+              invocationId: status.tombstone.invocationId,
+              forceUnobservable: false,
+            }),
+          ].join('\n');
         }
         case 'completed-pair-compaction':
           return `Routing invocation ${status.tombstone.invocationId}: retired (completed-pair-compaction). No action is needed.`;
@@ -649,40 +793,47 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
     case 'detached-wal':
       return [
         'Routing status has a detached non-empty WAL beside an absent or empty main database.',
-        'Next step: run coral-cli backend routing-status discard.',
+        'Next step: run the discard command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'no-generation':
       return [
         'Routing status contains application objects but no generation address.',
-        'Next step: run coral-cli backend routing-status discard.',
+        'Next step: run the discard command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'other-generation':
       if (result.kind !== 'foreign-generation') throw new Error('Foreign-generation render policy is invalid.');
       return [
         `Routing status generation ${result.generation} belongs to another address.`,
-        'Next step: run coral-cli backend routing-status discard.',
+        'Next step: run the discard command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'other-format':
       return [
         'Routing status has this generation address but a different durable format fingerprint.',
-        'Next step: run coral-cli backend routing-status discard.',
+        'Next step: run the discard command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'divergent-schema':
       return [
         'Routing status has this generation address but a divergent schema.',
-        'Next step: run coral-cli backend routing-status discard.',
+        'Next step: run the discard command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'damaged':
       if (result.kind !== 'unreadable') throw new Error('Unreadable render policy is invalid.');
       return [
         `Routing status is unreadable (${result.reason}).`,
-        'Next step: run coral-cli backend routing-status discard.',
+        'Next step: run the discard command below.',
+        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'could-not-observe':
       if (result.kind !== 'undeterminable') throw new Error('Undeterminable render policy is invalid.');
       return [
         `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
-        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+        'Next step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'content-dependent': {
       if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
@@ -706,9 +857,15 @@ function formatUnavailableRoutingResolution(
     case 'format-mismatch':
     case 'schema-divergent':
     case 'unreadable':
-      return 'Next step: run coral-cli backend status, then run the routing-status discard command it reports before attempting another resolution.';
+      return [
+        'Next step: inspect backend status, then run the routing-status discard command it reports before attempting another resolution.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'undeterminable':
-      return 'Next step: retry coral-cli backend status without discarding and repair the reported storage condition if it persists; resolution requires a current journal.';
+      return [
+        'Next step: inspect backend status again without discarding and repair the reported storage condition if it persists; resolution requires a current journal.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     default:
       return assertNever(status);
   }
@@ -734,15 +891,40 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
     case 'acknowledged-capacity-eviction':
       return `Acknowledged capacity eviction for routing invocation ${result.invocationId} (selection sequence ${result.selectionSequence}).`;
     case 'stale':
-      return `Routing invocation ${result.invocationId} is stale or no longer retained.\nNext step: rerun coral-cli backend status and copy an invocation still shown as unresolved.`;
+      return [
+        `Routing invocation ${result.invocationId} is stale or no longer retained.`,
+        'Next step: inspect backend status again and copy an invocation still shown as unresolved.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'already-terminal':
       return `Routing invocation ${result.invocationId} is already terminal. No resolution is needed.\nNext step: no action is needed.`;
     case 'live-owner':
-      return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`;
+      return [
+        `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.`,
+        'Next step: wait for the owner to finish, then inspect backend status again.',
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
+      ].join('\n');
     case 'unauthorized-unobservable':
       return result.cause === 'deadline-expired'
-        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then run coral-cli backend routing-status resolve --invocation ${result.invocationId}; --force-unobservable cannot override an expired observation budget.`
-        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).\nNext step: verify the owner externally, then run coral-cli backend routing-status resolve --invocation ${result.invocationId} --force-unobservable only if abandoning it is safe.`;
+        ? [
+            `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.`,
+            'Next step: inspect backend status again, then run the unforced resolution command below; --force-unobservable cannot override an expired observation budget.',
+            formatBackendOperatorCommand({ kind: 'backend-status' }),
+            formatBackendOperatorCommand({
+              kind: 'routing-status-resolve',
+              invocationId: result.invocationId,
+              forceUnobservable: false,
+            }),
+          ].join('\n')
+        : [
+            `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).`,
+            'Next step: verify the owner externally, then run the forced resolution command below only if abandoning it is safe.',
+            formatBackendOperatorCommand({
+              kind: 'routing-status-resolve',
+              invocationId: result.invocationId,
+              forceUnobservable: true,
+            }),
+          ].join('\n');
     case 'status-unavailable':
       return `Refusing to resolve routing invocation ${result.invocationId} because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
     case 'not-published':
@@ -769,14 +951,14 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
 // coordinator is serving. The remedy names the file because nothing in Coral rewrites it while a coordinator is
 // up — it is written once at startup — so an operator is the only party who can clear it.
 //
-// The remedy is the operator rather than a coral-cli command because every command that could stop a
+// The remedy is the operator rather than a Coral command because every command that could stop a
 // coordinator needs its host, port and boot token, and all three live in the record this status exists to
 // report unreadable. Nothing that reads them can act while it cannot be read.
 function formatUndecodableRecordStatus(result: Extract<BackendStatusFull, { status: 'undecodable_record' }>): string {
   return [
     `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
     'A coordinator may still be running; this is not a report that none is.',
-    `Next step: no coral-cli command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run a coral-cli mutating command; it attempts startup or handoff.`,
+    `Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run a mutating Coral command; it attempts startup or handoff.`,
   ].join('\n');
 }
 
@@ -809,7 +991,7 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
     case 'no_response':
       return 'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.';
     case 'foreign_peer':
-      return 'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A coral-cli mutating command (or a Claude Code session start) still attempts startup or handoff.';
+      return 'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A mutating Coral command (or a Claude Code session start) still attempts startup or handoff.';
     default:
       return assertNever(result);
   }
@@ -819,7 +1001,7 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
 // process and deleting the record. The same evidence must reach the operator with the same remedy whichever
 // surface observed it.
 function checkRecordedProcessThenClear(pid: number, recordPath: string): string {
-  return `run 'ps -p ${pid}' (or check your process manager), and if that is not Coral, delete ${recordPath} and run a coral-cli mutating command; it attempts startup or handoff.`;
+  return `run 'ps -p ${pid}' (or check your process manager), and if that is not Coral, delete ${recordPath} and run a mutating Coral command; it attempts startup or handoff.`;
 }
 
 function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 'unreachable' }>): string {
@@ -830,7 +1012,7 @@ function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 
     case 'refused':
       return `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: ${checkRecordedProcessThenClear(result.pid, result.recordPath)}`;
     case 'foreign_peer':
-      return `Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: ${checkRecordedProcessThenClear(result.pid, result.recordPath)} coral-cli backend shutdown cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.`;
+      return `Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: ${checkRecordedProcessThenClear(result.pid, result.recordPath)} The ordinary shutdown command cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.`;
     default:
       return assertNever(result);
   }
@@ -846,7 +1028,7 @@ function formatNoRecordSocketPresentStatus(
     'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
     `Socket: ${result.socketPath}`,
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
-    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way; it attempts startup or handoff. If it reports the backend unreachable, the coordinator log is what says why.',
+    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a mutating Coral command (or start a Claude Code session) either way; it attempts startup or handoff. If it reports the backend unreachable, the coordinator log is what says why.',
   ].join('\n');
 }
 
@@ -855,7 +1037,7 @@ function formatNoRecordSocketPresentStatus(
 // that resolves it, so pointing at one sends the operator after something that does not exist.
 function unrenderedSetupErrorNextStep(authorship: SetupErrorAuthorshipKind): string {
   const retry =
-    "then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.";
+    "then retry a mutating Coral command; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.";
   switch (authorship) {
     case 'this-build':
     case 'unprovable':
@@ -919,7 +1101,7 @@ function formatSetupErrorLines(setupError: OperatorFacingCoralSetupError): reado
     case 'invalid_diagnostic':
       return [
         'Cause: Coral recorded a setup refusal that carries no readable setup-error code.',
-        'Next step: inspect the coordinator log, then retry a coral-cli mutating command so a current valid startup diagnostic replaces this one.',
+        'Next step: inspect the coordinator log, then retry a mutating Coral command so a current valid startup diagnostic replaces this one.',
       ];
     default:
       return assertNever(setupError);
@@ -936,7 +1118,7 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
     // A failure that is not a setup error has no authored remediation, and its raw message can carry provider
     // payloads or credentials, so the log stays the only place it is rendered.
     lines.push(
-      'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
+      'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
     );
     return lines.join('\n');
   }
@@ -971,7 +1153,8 @@ export function formatShutdown(result: ShutdownResult): string {
     case 'nested_child':
       return [
         'Shutdown refused: this nested Coral process cannot shut down its parent coordinator.',
-        "Next step: return to the top-level Coral session and run 'coral-cli backend shutdown' there.",
+        'Next step: return to the top-level Coral session and run the shutdown command below there.',
+        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     case 'capability_rejected':
       return formatCapabilityRejected(result);
@@ -982,14 +1165,14 @@ export function formatShutdown(result: ShutdownResult): string {
   }
 }
 
-// No coral-cli command reaches this: shutdown needs host/port/bootToken from the very record it just failed to
+// No Coral command reaches this: shutdown needs host/port/bootToken from the very record it just failed to
 // read, so the manual path is the only one that exists. `backend status` is named only for the file's path,
 // not as a command that can stop anything here.
 function formatUnreadableRecordShutdown(detail: string): string {
   return [
     `Shutdown not attempted: the coordinator discovery record could not be read (${detail}).`,
     'A coordinator may still be running; this is not confirmation that one stopped.',
-    'Next step: no coral-cli command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (run coral-cli backend status to see its path) and run a coral-cli mutating command; it attempts startup or handoff.',
+    'Next step: no Coral command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (backend status reports its path) and run a mutating Coral command; it attempts startup or handoff.',
   ].join('\n');
 }
 
@@ -1020,7 +1203,7 @@ function formatNoRecordSocketPresentShutdown(): string {
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
     // Not `SHUTDOWN_RETRY_NEXT_STEP`: `backend status` is a read, so for a stale socket it reports this same
     // state forever and the two commands loop. Only a bind clears a stale socket, and no read command binds.
-    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a coral-cli mutating command (or start a Claude Code session) either way; it attempts startup or handoff, and starting up is what clears a stale socket. If it instead reports the backend unreachable, the coordinator log is what says why. Once a coordinator is serving, retry the shutdown.',
+    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a mutating Coral command (or start a Claude Code session) either way; it attempts startup or handoff, and starting up is what clears a stale socket. If it instead reports the backend unreachable, the coordinator log is what says why. Once a coordinator is serving, retry the shutdown.',
   ].join('\n');
 }
 
@@ -1057,7 +1240,8 @@ function formatCapabilityRejected(result: Extract<ShutdownResult, { reason: 'cap
   return [
     "Shutdown refused: the coordinator rejected the boot token in this build's discovery record.",
     whatRespondedMeans,
-    'Next step: run coral-cli backend status to see which build is answering; if it is not this one, shut it down from its own install, or confirm with your process manager that the recorded pid is still the process serving that address before stopping it directly.',
+    'Next step: inspect backend status to see which build is answering; if it is not this one, shut it down from its own install, or confirm with your process manager that the recorded pid is still the process serving that address before stopping it directly.',
+    formatBackendOperatorCommand({ kind: 'backend-status' }),
   ].join('\n');
 }
 
@@ -1091,12 +1275,15 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       entry.updatedAt !== null;
     if (isClearable) {
       lines.push(
-        `  clear=${renderRecoveryQuarantineCommand({
-          kind: 'clear',
-          boundary: entry.boundary,
-          key: entry.subject.key,
-          revision: formatRecoveryRevision(entry),
-        })}`,
+        `  ${formatRecoveryQuarantineCommand(
+          {
+            kind: 'clear',
+            boundary: entry.boundary,
+            key: entry.subject.key,
+            revision: formatRecoveryRevision(entry),
+          },
+          'clear',
+        )}`,
       );
     }
     if (
@@ -1108,12 +1295,15 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       entry.remedy?.kind === 'discard-provider-operation'
     ) {
       lines.push(
-        `  discard=${renderRecoveryQuarantineCommand({
-          kind: 'discard-provider-operation',
-          key: entry.subject.key,
-          revision: formatRecoveryRevision(entry),
-          allowReadable: entry.remedy.allowReadable,
-        })}`,
+        `  ${formatRecoveryQuarantineCommand(
+          {
+            kind: 'discard-provider-operation',
+            key: entry.subject.key,
+            revision: formatRecoveryRevision(entry),
+            allowReadable: entry.remedy.allowReadable,
+          },
+          'discard',
+        )}`,
       );
     }
   }
@@ -1128,9 +1318,15 @@ export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearRes
     case 'advanced':
       return `Recovery quarantine resolved and removed: ${coordinate}`;
     case 'quarantined':
-      return `Recovery retry failed again; the subject is still quarantined: ${coordinate}. Inspect the updated error:\ncommand=${renderRecoveryQuarantineCommand({ kind: 'list' })}`;
+      return [
+        `Recovery retry failed again; the subject is still quarantined: ${coordinate}. Inspect the updated error:`,
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
+      ].join('\n');
     case 'continuation':
-      return `Recovery retry made partial progress: ${coordinate}. Do not run clear again with this coordinate; inspect the durable continuation:\ncommand=${renderRecoveryQuarantineCommand({ kind: 'list' })}`;
+      return [
+        `Recovery retry made partial progress: ${coordinate}. Do not run clear again with this coordinate; inspect the durable continuation:`,
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
+      ].join('\n');
     default:
       return assertNever(result.disposition);
   }
@@ -1155,7 +1351,9 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: the exact raw-row coordinate was still unreadable and the transactional discard completed.',
         'Not observed: process state or an operation-settlement outcome.',
         'Effect: the exact raw operation record, every known-generation due pointer to it, and its quarantine evidence were permanently removed in one transaction; no process was signalled and the operation was not settled.',
-        'Next step: run coral-cli backend recovery-quarantine list, then run coral-cli backend status.',
+        'Next step: inspect the recovery quarantine, then inspect backend status.',
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
+        formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'adoption-refused':
       return [
@@ -1175,7 +1373,8 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: the exact raw-row key was absent after the quarantine subject was claimed.',
         'Not observed: process state or an operation-settlement outcome.',
         'Effect: nothing was removed and the temporary discard claim was released.',
-        'Next step: run coral-cli backend recovery-quarantine list.',
+        'Next step: inspect the recovery quarantine.',
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
       ].join('\n');
     case 'readable':
       return [
@@ -1183,7 +1382,8 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: the exact raw row decoded under this build.',
         'Not observed: process state or an operation-settlement outcome.',
         'Effect: nothing was removed and the temporary discard claim was released.',
-        `Next step: ${formatProviderOperationRemedy({
+        'Next step: retry the readable row through the complete clear remedy below.',
+        formatProviderOperationRemedy({
           kind: 'recovery-quarantine-clear',
           command: {
             kind: 'clear',
@@ -1191,7 +1391,7 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
             key: result.key,
             revision: `${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`,
           },
-        })}`,
+        }),
       ].join('\n');
     case 'revision-mismatch':
       return [
@@ -1199,7 +1399,8 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: either the persisted quarantine subject or the raw row carries a different fingerprint.',
         'Not observed: which persisted source changed; the result reports only the current authority fingerprint.',
         'Effect: nothing was removed and any temporary discard claim was released.',
-        'Next step: run coral-cli backend recovery-quarantine list and inspect the new exact revision.',
+        'Next step: inspect the recovery quarantine and use the new exact revision.',
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
       ].join('\n');
     case 'quarantine-not-found':
       return [
@@ -1207,7 +1408,8 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: no persisted quarantine subject authorizes this exact coordinate.',
         'Not observed: the raw row contents, because no discard authority was established.',
         'Effect: the raw row and due pointers were not changed.',
-        'Next step: start or repair the canonical coordinator, then run coral-cli backend recovery-quarantine list and use only a currently printed discard command.',
+        'Next step: start or repair the canonical coordinator, then inspect the recovery quarantine and use only a currently printed discard command.',
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
       ].join('\n');
     case 'owned':
       return [
@@ -1215,7 +1417,8 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         `Observed: the exact quarantine subject is ${result.state} under another recovery owner.`,
         'Not observed: the raw row contents, because another recovery owner retains authority.',
         'Effect: the raw row, due pointers, and quarantine evidence were not changed.',
-        'Next step: let that recovery owner finish, then run coral-cli backend recovery-quarantine list before deciding whether to retry.',
+        'Next step: let that recovery owner finish, then inspect the recovery quarantine before deciding whether to retry.',
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
       ].join('\n');
     default:
       return assertNever(result);
@@ -1312,32 +1515,74 @@ function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evid
 function formatProviderOperationAdoptionRefusalNextStep(
   refusal: Pick<ProviderOperationAdoptionRefusalStatus, 'jobId' | 'recordKey' | 'remedy'>,
 ): string {
-  const inspect = `coral-cli jobs detail ${refusal.jobId}`;
+  const inspect = formatBackendOperatorCommand({ kind: 'jobs-detail', jobId: refusal.jobId });
+  const status = formatBackendOperatorCommand({ kind: 'backend-status' });
   switch (refusal.remedy.kind) {
     case 'restart-coordinator':
-      return `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with ${inspect}, then coral-cli backend status.`;
+      return [
+        `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Then inspect the job and backend status.`,
+        inspect,
+        status,
+      ].join('\n');
     case 'remote-settlement':
-      return `Next step: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Re-check with ${inspect}, then coral-cli backend status.`;
+      return [
+        `Next step: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Then inspect the job and backend status.`,
+        inspect,
+        status,
+      ].join('\n');
     case 'recovery-quarantine-discard': {
-      return `Next step for record=${refusal.recordKey}: ${formatProviderOperationRemedy(refusal.remedy)}\nThen run ${inspect} and coral-cli backend status.`;
+      return [
+        `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
+        formatProviderOperationRemedy(refusal.remedy),
+        'Then inspect the job and backend status.',
+        inspect,
+        status,
+      ].join('\n');
     }
     case 'recovery-quarantine-clear':
-      return `Next step for record=${refusal.recordKey}: ${formatProviderOperationRemedy(refusal.remedy)}\nThen run ${inspect} and coral-cli backend status.`;
+      return [
+        `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
+        formatProviderOperationRemedy(refusal.remedy),
+        'Then inspect the job and backend status.',
+        inspect,
+        status,
+      ].join('\n');
     case 'external-repair':
-      return `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then run ${inspect} and coral-cli backend status.`;
+      return [
+        `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then inspect the job and backend status.`,
+        inspect,
+        status,
+      ].join('\n');
   }
 }
 
 function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefusalRecordingFailureStatus): string {
+  const inspect = formatBackendOperatorCommand({ kind: 'jobs-detail', jobId: failure.jobId });
+  const status = formatBackendOperatorCommand({ kind: 'backend-status' });
   switch (failure.cause) {
     case 'terminal-persist-failed':
-      return `    nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail ${failure.jobId}, then coral-cli backend status.`;
+      return [
+        '    nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
+        `    ${inspect}`,
+        `    ${status}`,
+      ].join('\n');
     case 'claim-release-failed':
-      return `    nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail ${failure.jobId}, then coral-cli backend status.`;
+      return [
+        '    nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
+        `    ${inspect}`,
+        `    ${status}`,
+      ].join('\n');
     case 'claim-already-reassigned':
-      return `    nextStep=no automatic retry applies because the session claim belongs to another job. Run coral-cli jobs detail ${failure.jobId}, verify the current session owner externally, then run coral-cli backend status.`;
+      return [
+        '    nextStep=no automatic retry applies because the session claim belongs to another job. Inspect the job, verify the current session owner externally, then inspect backend status.',
+        `    ${inspect}`,
+        `    ${status}`,
+      ].join('\n');
     case 'settled-unbound-status-persist-failed':
-      return `    nextStep=Coral retries this settlement-status write automatically. Run coral-cli backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`;
+      return [
+        `    nextStep=Coral retries this settlement-status write automatically. Inspect backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`,
+        `    ${status}`,
+      ].join('\n');
     default:
       return assertNever(failure);
   }
@@ -1346,16 +1591,16 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
 export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
   switch (set.operatorExit.kind) {
     case 'contain':
-      return `action=coral-cli backend provider-proxy-set contain ${set.setToken}`;
+      return formatBackendOperatorCommand({ kind: 'provider-proxy-set-contain', token: set.setToken }, 'action');
     case 'abandon':
-      return `action=coral-cli backend provider-proxy-set abandon ${set.setToken}`;
+      return formatBackendOperatorCommand({ kind: 'provider-proxy-set-abandon', token: set.setToken }, 'action');
     case 'gated':
       return (
         `action=wait ~${Math.ceil(set.operatorExit.remainingMs)}ms for the operator-exit gate, ` +
         `then contain ${set.setToken}`
       );
     case 'refused':
-      return `action=${providerProxySetOperatorRefusalGuidance(set.operatorExit.ground, set.setToken)}.`;
+      return formatProviderProxySetOperatorRefusalGuidance(set.operatorExit.ground, set.setToken);
     case 'none':
       if (set.holds.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
         return 'action=wait; Coral retries publication automatically until publication is confirmed or control is released.';
@@ -1522,7 +1767,8 @@ function formatRunningStatus(health: RunningHealth): string {
         ).map((skip) => `    ${skip}`),
       );
       lines.push(
-        '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Run coral-cli backend status from a build that understands the row.',
+        '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.',
+        `    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`,
       );
     }
     for (const skipped of durableDispositionSkips) {
@@ -1595,9 +1841,14 @@ function formatOfflineRetry(retry: 'restart-daemon' | 'none'): string {
 
 function formatOfflineHint(retry: 'restart-daemon' | 'none' | undefined): string {
   if (retry === 'none') {
-    return 'review the failure details above; coral-cli kb reindex can rebuild a corrupt KB index';
+    return [
+      'review the failure details above; the reindex command below can rebuild a corrupt KB index',
+      formatBackendOperatorCommand({ kind: 'kb-reindex' }),
+    ].join('\n');
   }
-  return 'restart the daemon: coral-cli backend shutdown';
+  return ['restart the daemon with the command below', formatBackendOperatorCommand({ kind: 'backend-shutdown' })].join(
+    '\n',
+  );
 }
 
 function formatDegradedDetail(reason: DegradedReason): string {
@@ -1614,9 +1865,15 @@ function formatDegradedDetail(reason: DegradedReason): string {
 function formatDegradedHint(reason: DegradedReason): string {
   switch (reason.kind) {
     case 'curate-publish':
-      return 'free disk space, then coral-cli backend shutdown to reset';
+      return [
+        'free disk space, then run the shutdown command below to reset',
+        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+      ].join('\n');
     case 'recovery-quarantine':
-      return 'inspect quarantined recovery work: coral-cli backend recovery-quarantine list';
+      return [
+        'inspect quarantined recovery work with the command below',
+        formatRecoveryQuarantineCommand({ kind: 'list' }),
+      ].join('\n');
     default:
       return assertNever(reason);
   }

@@ -47,10 +47,57 @@ import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transp
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const PUBLICATION_INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
+
+type RecordedBackendCommand =
+  | Readonly<{ kind: 'status' | 'shutdown' | 'routing-status-discard' | 'recovery-quarantine-list' }>
+  | Readonly<{ kind: 'routing-status-resolve'; invocationId: string; forceUnobservable: boolean }>
+  | Readonly<{ kind: 'provider-proxy-set-contain' | 'provider-proxy-set-abandon'; token: string }>;
+
+function backendCommandProgram(dispatched: RecordedBackendCommand[]): Command {
+  const program = new Command();
+  program.exitOverride();
+  const backend = program.command('backend');
+  backend.command('status').action(() => {
+    dispatched.push({ kind: 'status' });
+  });
+  backend.command('shutdown').action(() => {
+    dispatched.push({ kind: 'shutdown' });
+  });
+  const routingStatus = backend.command('routing-status');
+  routingStatus.command('discard').action(() => {
+    dispatched.push({ kind: 'routing-status-discard' });
+  });
+  routingStatus
+    .command('resolve')
+    .requiredOption('--invocation <id>')
+    .option('--force-unobservable')
+    .action((options: { invocation: string; forceUnobservable?: boolean }) => {
+      dispatched.push({
+        kind: 'routing-status-resolve',
+        invocationId: options.invocation,
+        forceUnobservable: options.forceUnobservable ?? false,
+      });
+    });
+  backend
+    .command('recovery-quarantine')
+    .command('list')
+    .action(() => {
+      dispatched.push({ kind: 'recovery-quarantine-list' });
+    });
+  const providerProxySet = backend.command('provider-proxy-set');
+  providerProxySet.command('contain <token>').action((token: string) => {
+    dispatched.push({ kind: 'provider-proxy-set-contain', token });
+  });
+  providerProxySet.command('abandon <token>').action((token: string) => {
+    dispatched.push({ kind: 'provider-proxy-set-abandon', token });
+  });
+  return program;
+}
 
 function liveHandoffResult(
   continuation: LiveHandoffContinuationResult,
@@ -300,19 +347,28 @@ describe('backend status generation readiness', () => {
   it.each([
     [{ kind: 'unreadable', reason: 'invalid-json' } as const, 'Routing status is unreadable (invalid-json).'],
     [{ kind: 'foreign-generation', generation: 2 } as const, 'Routing status generation 2 belongs to another address.'],
-  ])('names discard as the successor for a durable routing-status hold', (status, summary) => {
-    expect(formatHandoffRoutingStatus(status)).toBe(
-      `${summary}\nNext step: run coral-cli backend routing-status discard.`,
+  ])('names discard as the successor for a durable routing-status hold', async (status, summary) => {
+    const rendered = formatHandoffRoutingStatus(status) ?? '';
+    expect(rendered).toBe(
+      `${summary}\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard`,
     );
+    const dispatched: RecordedBackendCommand[] = [];
+    await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
+    expect(dispatched).toEqual([{ kind: 'routing-status-discard' }]);
   });
 
-  it('refuses discard after an undeterminable read and names a non-destructive successor', () => {
-    expect(formatHandoffRoutingStatus({ kind: 'undeterminable', cause: 'io-failed', errcode: 5 })).toBe(
+  it('refuses discard after an undeterminable read and names a non-destructive successor', async () => {
+    const rendered = formatHandoffRoutingStatus({ kind: 'undeterminable', cause: 'io-failed', errcode: 5 }) ?? '';
+    expect(rendered).toBe(
       [
         'Routing status could not be read (io-failed, errcode 5).',
-        'Next step: retry coral-cli backend status without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+        'Next step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+        'command=coral-cli backend status',
       ].join('\n'),
     );
+    const dispatched: RecordedBackendCommand[] = [];
+    await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
+    expect(dispatched).toEqual([{ kind: 'status' }]);
   });
 
   it('prints the ignored-legacy-generation notice directly in the CLI', async () => {
@@ -364,7 +420,7 @@ describe('backend status generation readiness', () => {
         'Coral recorded a recent coordinator failure.',
         'Phase: startup_failed',
         'Retryable: no',
-        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
+        'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
         '',
       ].join('\n'),
     );
@@ -567,12 +623,16 @@ describe('backend status live handoff disposition', () => {
 
     expect(stdout).toBe(
       [
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — the CLI and running backend are both version 0.10.9 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'command=coral-cli backend shutdown',
         '',
       ].join('\n'),
     );
+    const dispatched: RecordedBackendCommand[] = [];
+    await executeRenderedCommand(backendCommandProgram(dispatched), stdout, { label: 'command' });
+    expect(dispatched).toEqual([{ kind: 'shutdown' }]);
     expect(process.exitCode).toBe(75);
   });
 
@@ -601,7 +661,7 @@ describe('backend status live handoff disposition', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toBe(
-      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.\n',
     );
     expect(process.exitCode).toBe(0);
   });
@@ -884,7 +944,7 @@ describe('backend status local exit combination', () => {
 });
 
 describe('backend routing status', () => {
-  it('renders invocation dispositions and aggregate retirement history in journal order', () => {
+  it('renders invocation dispositions and aggregate retirement history in journal order', async () => {
     const routingStatus = {
       kind: 'current',
       generation: HANDOFF_ROUTING_STATUS_GENERATION,
@@ -981,14 +1041,21 @@ describe('backend routing status', () => {
       },
     } satisfies HandoffRoutingStatusReadResult;
 
-    expect(formatHandoffRoutingStatus(routingStatus)?.split('\n')).toEqual([
+    const rendered = formatHandoffRoutingStatus(routingStatus) ?? '';
+    expect(rendered.split('\n')).toEqual([
       'Routing invocation unresolved-invocation: unresolved; its recorded owner is absent.',
       'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
-      'Next step: run coral-cli backend routing-status resolve --invocation unresolved-invocation.',
+      'Next step: run the resolution command below.',
+      'command=coral-cli backend routing-status resolve --invocation unresolved-invocation',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
       'Routing invocation operator-resolved-invocation: retired (operator-resolved; reason: owner-absent). No action is needed.',
       'Routing retirement history: 2 exact invocation identities expired (selection-evicted-at-capacity=1, completed-pair-compaction=1, operator-resolved=0); observed selection sequence range 4-8, selected 2026-07-01T00:00:00.000Z through 2026-07-03T00:00:00.000Z.',
+    ]);
+    const dispatched: RecordedBackendCommand[] = [];
+    await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
+    expect(dispatched).toEqual([
+      { kind: 'routing-status-resolve', invocationId: 'unresolved-invocation', forceUnobservable: false },
     ]);
   });
 
@@ -1040,14 +1107,14 @@ describe('backend routing status', () => {
       retirementCause: 'selection-evicted-at-capacity',
       terminalExisted: false,
       expected:
-        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run the resolution command below to acknowledge the retained capacity eviction.\ncommand=coral-cli backend routing-status resolve --invocation retired-invocation',
     },
     {
       name: 'capacity eviction with a terminal',
       retirementCause: 'selection-evicted-at-capacity',
       terminalExisted: true,
       expected:
-        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run coral-cli backend routing-status resolve --invocation retired-invocation to acknowledge the retained capacity eviction.',
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run the resolution command below to acknowledge the retained capacity eviction.\ncommand=coral-cli backend routing-status resolve --invocation retired-invocation',
     },
     {
       name: 'absent-owner resolution',
@@ -1065,7 +1132,7 @@ describe('backend routing status', () => {
       expected:
         'Routing invocation retired-invocation: retired (operator-resolved; reason: operator-abandoned-unobservable). No action is needed.',
     },
-  ] as const)('renders retained evidence for $name', ({ retirementCause, terminalExisted, ...testCase }) => {
+  ] as const)('renders retained evidence for $name', async ({ retirementCause, terminalExisted, ...testCase }) => {
     const tombstone = handoffRoutingRecordSchemaRegistry.retirement.parse({
       generation: HANDOFF_ROUTING_STATUS_GENERATION,
       sequence: 1,
@@ -1104,7 +1171,15 @@ describe('backend routing status', () => {
       },
     };
 
-    expect(formatHandoffRoutingStatus(result)).toBe(testCase.expected);
+    const rendered = formatHandoffRoutingStatus(result) ?? '';
+    expect(rendered).toBe(testCase.expected);
+    if (retirementCause === 'selection-evicted-at-capacity') {
+      const dispatched: RecordedBackendCommand[] = [];
+      await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
+      expect(dispatched).toEqual([
+        { kind: 'routing-status-resolve', invocationId: 'retired-invocation', forceUnobservable: false },
+      ]);
+    }
   });
 
   it('renders an unresolved invocation ID and contributes exit 75 for an absent owner', async () => {
@@ -1335,9 +1410,11 @@ describe('backend routing status', () => {
     expect(stdout).toContain(
       'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
     );
-    expect(stdout).toContain(
-      'coral-cli backend routing-status resolve --invocation routing-invocation to acknowledge the retained capacity eviction',
-    );
+    const dispatched: RecordedBackendCommand[] = [];
+    await executeRenderedCommand(backendCommandProgram(dispatched), stdout, { label: 'command' });
+    expect(dispatched).toEqual([
+      { kind: 'routing-status-resolve', invocationId: 'routing-invocation', forceUnobservable: false },
+    ]);
     expect(process.exitCode).toBe(75);
   });
 });
@@ -1347,6 +1424,7 @@ describe('handoff continuation remediation', () => {
     name: string;
     reason: HandoffContinuationReason;
     expected: string;
+    expectedCommand?: RecordedBackendCommand;
   }> = [
     {
       name: 'unrecognized incumbent health',
@@ -1356,8 +1434,10 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
-        'Next step: run coral-cli backend shutdown, then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+        'Next step: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+        'command=coral-cli backend shutdown',
       ].join('\n'),
+      expectedCommand: { kind: 'shutdown' },
     },
     {
       name: 'unreadable incumbent record',
@@ -1367,7 +1447,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its coordinator record could not be read.',
-        'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
+        'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
       ].join('\n'),
     },
     {
@@ -1378,7 +1458,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health request did not complete.',
-        'Next step: follow the daemon-status remediation above; do not proceed while coral-cli backend status exits 75.',
+        'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
       ].join('\n'),
     },
     {
@@ -1419,8 +1499,10 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — incumbent 2.1.0 did not report a complete bundle identity.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'command=coral-cli backend shutdown',
       ].join('\n'),
+      expectedCommand: { kind: 'shutdown' },
     },
     {
       name: 'same-version invoking build',
@@ -1445,8 +1527,10 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the CLI and running backend are both version 2.1.0 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'command=coral-cli backend shutdown',
       ].join('\n'),
+      expectedCommand: { kind: 'shutdown' },
     },
     {
       name: 'invalid incumbent target',
@@ -1491,10 +1575,17 @@ describe('handoff continuation remediation', () => {
     'expected-manifest-invalid',
   ];
 
-  it.each(cases)('authors a next step for $name', ({ reason, expected }) => {
+  it.each(cases)('authors a next step for $name', async ({ reason, expected, expectedCommand }) => {
     const rendered = formatHandoffContinuationReason(reason);
 
     expect(rendered).toBe(expected);
+    if (expectedCommand === undefined) {
+      expect(rendered).not.toContain('command=');
+    } else {
+      const dispatched: RecordedBackendCommand[] = [];
+      await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
+      expect(dispatched).toEqual([expectedCommand]);
+    }
     expect(RAW_ENUM_TOKENS.filter((token) => rendered.includes(token))).toEqual([]);
     expect(rendered).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
     expect(rendered).not.toContain('Backend not running');
@@ -1502,7 +1593,7 @@ describe('handoff continuation remediation', () => {
 });
 
 describe('backend status recovery quarantine propagation', () => {
-  it('carries the canonical producer reason through HTTP validation into CLI output', () => {
+  it('carries the canonical producer reason through HTTP validation into CLI output', async () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -1538,14 +1629,19 @@ describe('backend status recovery quarantine propagation', () => {
 
       const status = runningStatusFromHealthPayload(produced);
 
-      expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
+      const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
+      expect(rendered).toContain(
         [
           '  recovery: degraded',
           '    reason: recovery-quarantine (1 unresolved row)',
           '    last error: failed to hydrate persisted workflow',
-          '    hint: inspect quarantined recovery work: coral-cli backend recovery-quarantine list',
+          '    hint: inspect quarantined recovery work with the command below',
+          'command=coral-cli backend recovery-quarantine list',
         ].join('\n'),
       );
+      const dispatched: RecordedBackendCommand[] = [];
+      await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
+      expect(dispatched).toEqual([{ kind: 'recovery-quarantine-list' }]);
     } finally {
       db.close();
     }
@@ -1587,7 +1683,7 @@ describe('backend status recovery quarantine propagation', () => {
 });
 
 describe('backend status provider proxy dispositions', () => {
-  it('renders every asserted set exit and shares refusal guidance with the command result', () => {
+  it('renders every asserted set exit and shares refusal guidance with the command result', async () => {
     const setIdentity = {
       buildSetId: '11111111-1111-4111-8111-111111111111',
       hostFingerprint: 'a'.repeat(64),
@@ -1648,8 +1744,18 @@ describe('backend status provider proxy dispositions', () => {
     expect(rendered).toContain('action=wait for control-reattachment');
     expect(rendered).toContain(`action=wait ~1201ms for the operator-exit gate, then contain ${setToken}`);
     expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
-    expect(commandGuidance).toBeDefined();
-    expect(rendered).toContain(`action=${commandGuidance?.slice('Next step: '.length)}`);
+    if (commandGuidance === undefined) throw new Error('Expected refusal guidance');
+    expect(rendered).toContain(commandGuidance);
+    const dispatched: RecordedBackendCommand[] = [];
+    const program = backendCommandProgram(dispatched);
+    await executeRenderedCommand(program, rendered, { label: 'action', includes: 'coral-cli' });
+    await executeRenderedCommand(program, rendered, { label: 'command', includes: ' contain ' });
+    await executeRenderedCommand(program, rendered, { label: 'command', includes: ' abandon ' });
+    expect(dispatched).toEqual([
+      { kind: 'provider-proxy-set-contain', token: setToken },
+      { kind: 'provider-proxy-set-contain', token: setToken },
+      { kind: 'provider-proxy-set-abandon', token: setToken },
+    ]);
   });
 
   it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {

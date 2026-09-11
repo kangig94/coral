@@ -315,7 +315,8 @@ the encoded record to match the requested SHA-256 fingerprint.
 Composition checks the coordinator launch fence before constructing the discard service or reading the recovery
 database. While startup recovery owns that fence, it returns `recovery-in-progress` with code
 `backend_recovering`, message `Provider-operation discard is unavailable while startup recovery owns the launch
-fence.`, and remediation `Wait for startup recovery to finish, then run this command again.` This exit-`75`
+fence.`, and remediation that prints the complete retry invocation with the exact key, revision, and consent
+flag. Run it as printed once startup recovery finishes. This exit-`75`
 refusal inspects and claims no raw row and performs no mutation: the raw row, due pointers, quarantine evidence,
 startup permit, and launch capacity remain unchanged. It is therefore distinct from both a completed destructive
 result and a no-verdict response that may follow a completed deletion.

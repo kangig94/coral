@@ -9,6 +9,7 @@ import type * as BackendCommandMod from '#src/cli/commands/backend.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import type * as HandoffRoutingStatusMod from '#src/coordinator/handoff-routing/status.js';
 import { filterForwardableCoralEnv } from '#src/infra/env-sanitize.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 const mockState = vi.hoisted(() => ({
   getBackendStatusFull: vi.fn(),
@@ -86,6 +87,18 @@ function commandWithAction(action: () => void): Command {
   return program;
 }
 
+function shutdownCommandProgram(dispatched: string[]): Command {
+  const program = new Command();
+  program.exitOverride();
+  program
+    .command('backend')
+    .command('shutdown')
+    .action(() => {
+      dispatched.push('shutdown');
+    });
+  return program;
+}
+
 async function loadProgramFresh(): Promise<ProgramModule> {
   vi.resetModules();
   return import('#src/cli/program.js');
@@ -118,7 +131,7 @@ describe('program', () => {
     await buildProgram().parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout.join('')).toBe(
-      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.\n',
     );
   });
 
@@ -147,14 +160,19 @@ describe('program', () => {
 
     await parseProgramWithHandoff(program, ['node', 'coral-cli', 'backend', 'status']);
 
-    expect(stdout.join('')).toBe(
+    const rendered = stdout.join('');
+    expect(rendered).toBe(
       [
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
-        'Next step: run coral-cli backend shutdown, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'command=coral-cli backend shutdown',
         '',
       ].join('\n'),
     );
+    const dispatched: string[] = [];
+    await executeRenderedCommand(shutdownCommandProgram(dispatched), rendered, { label: 'command' });
+    expect(dispatched).toEqual(['shutdown']);
     expect(process.exitCode).toBe(75);
   });
 

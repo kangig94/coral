@@ -10,9 +10,11 @@ import { formatHandoffRoutingResolveResult } from '#src/cli/format/backend.js';
 import { parseHandoffRepairOperation } from '#src/coordinator/handoff-routing/repair-operation.js';
 import {
   handoffRoutingStatusStoreSchema,
+  type HandoffRoutingResolveRequest,
   type HandoffRoutingResolveResult,
 } from '#src/coordinator/handoff-routing/status.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 const INVOCATION_ID = '123e4567-e89b-42d3-a456-426614174000';
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -208,6 +210,43 @@ describe('backend routing-status resolve grammar', () => {
 
     expect(process.exitCode).toBe(exitCode);
     expect(exitCode === 0 ? stdout : stderr).toHaveBeenCalledWith(`${formatHandoffRoutingResolveResult(result)}\n`);
+  });
+
+  it.each([
+    ['incarnation-unavailable', true],
+    ['probe-not-available', true],
+    ['probe-failed', true],
+    ['deadline-expired', false],
+  ] as const)('dispatches the rendered %s remedy with forceUnobservable=%s', async (cause, forceUnobservable) => {
+    let dispatched: HandoffRoutingResolveRequest | undefined;
+    const routingStatus: HandoffRoutingStatusCommandOperations = {
+      resolve: async (request) => {
+        dispatched = request;
+        return { kind: 'resolved', invocationId: request.invocationId, reason: 'owner-absent', sequence: 1 };
+      },
+      discard: async () => ({ kind: 'refused', status: { kind: 'absent' } }),
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { routingStatus });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await executeRenderedCommand(
+      program,
+      formatHandoffRoutingResolveResult({
+        kind: 'unauthorized-unobservable',
+        invocationId: INVOCATION_ID,
+        cause,
+      }),
+      { label: 'command', includes: 'routing-status resolve' },
+    );
+
+    expect(dispatched).toEqual({
+      kind: 'routing-status-resolve',
+      invocationId: INVOCATION_ID,
+      forceUnobservable,
+    });
   });
 
   it.each<readonly [HandoffRoutingResolveResult, string]>([

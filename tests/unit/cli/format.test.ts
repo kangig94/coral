@@ -1355,7 +1355,8 @@ describe('cli format', () => {
       expect(output).toContain('  kb: degraded');
       expect(output).toContain('    reason: curate-publish (3 consecutive failures)');
       expect(output).toContain('    last error: publish timed out');
-      expect(output).toContain('    hint: free disk space, then coral-cli backend shutdown to reset');
+      expect(output).toContain('    hint: free disk space, then run the shutdown command below to reset');
+      expect(output).toContain('\ncommand=coral-cli backend shutdown\n');
     });
 
     it('omits the last-error line for a degraded component when lastError is empty', () => {
@@ -1410,7 +1411,8 @@ describe('cli format', () => {
       expect(output).toContain('    attempts: 4');
       expect(output).toContain('    retry: daemon restart required');
       expect(output).not.toContain('lastErrorStack');
-      expect(output).toContain('    hint: restart the daemon: coral-cli backend shutdown');
+      expect(output).toContain('    hint: restart the daemon with the command below');
+      expect(output).toContain('\ncommand=coral-cli backend shutdown\n');
     });
 
     it('omits the last-log line for an offline component when lastLogLine is absent', () => {
@@ -1425,7 +1427,8 @@ describe('cli format', () => {
       const output = formatBackendStatus(status);
       expect(output).toContain('  kb: offline');
       expect(output).not.toContain('last log:');
-      expect(output).toContain('    hint: restart the daemon: coral-cli backend shutdown');
+      expect(output).toContain('    hint: restart the daemon with the command below');
+      expect(output).toContain('\ncommand=coral-cli backend shutdown\n');
     });
 
     it('points a non-retryable offline component at the failure details and reindex recovery', () => {
@@ -1447,8 +1450,9 @@ describe('cli format', () => {
       const output = formatBackendStatus(status);
       expect(output).toContain('    retry: not retryable');
       expect(output).toContain(
-        '    hint: review the failure details above; coral-cli kb reindex can rebuild a corrupt KB index',
+        '    hint: review the failure details above; the reindex command below can rebuild a corrupt KB index',
       );
+      expect(output).toContain('\ncommand=coral-cli kb reindex\n');
     });
 
     it('omits the queue-depth line when queueDepth is absent', () => {
@@ -1465,10 +1469,10 @@ describe('cli format', () => {
 
     it('formats each no-daemon observation without inventing a general absence', () => {
       expect(formatBackendStatus({ status: 'no_record_no_socket' })).toBe(
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any coral-cli mutating command (or a Claude Code session start) attempts startup.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
       );
       expect(formatBackendStatus({ status: 'recorded_process_absent', pid: 4242 })).toBe(
-        'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any coral-cli mutating command (or a Claude Code session start) attempts startup or handoff.',
+        'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.',
       );
     });
 
@@ -1490,8 +1494,8 @@ describe('cli format', () => {
       expect(text).toBe(
         [
           'Backend state is unknown: the recorded coordinator address is answered by a Coral coordinator for namespace=another-installation flavor=dev, which is not the identity the discovery record carries.',
-          'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A coral-cli mutating command (or a Claude Code session start) still attempts startup or handoff.',
-          "Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: run 'ps -p 4242' (or check your process manager), and if that is not Coral, delete /run/coral/coordinator.json and run a coral-cli mutating command; it attempts startup or handoff. coral-cli backend shutdown cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.",
+          'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A mutating Coral command (or a Claude Code session start) still attempts startup or handoff.',
+          "Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: run 'ps -p 4242' (or check your process manager), and if that is not Coral, delete /run/coral/coordinator.json and run a mutating Coral command; it attempts startup or handoff. The ordinary shutdown command cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.",
         ].join('\n'),
       );
       expect(text, 'nothing observed here says startup cannot proceed').not.toMatch(/stays held|remains held/u);
@@ -1567,7 +1571,7 @@ describe('cli format', () => {
 
       expect(text).toMatch(/ps -p 4242/u);
       expect(text).toContain('/run/coral/coordinator.json');
-      expect(text).toMatch(/coral-cli mutating command; it attempts startup or handoff/u);
+      expect(text).toMatch(/mutating Coral command; it attempts startup or handoff/u);
     });
 
     // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in
@@ -1595,7 +1599,7 @@ describe('cli format', () => {
           'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
-          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command; it attempts startup or handoff.',
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
         ].join('\n'),
       );
     });
@@ -1650,7 +1654,7 @@ describe('cli format', () => {
           'Phase: startup_failed',
           'Retryable: no',
           'Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=future_setup_refusal]',
-          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a mutating Coral command; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.",
         ].join('\n'),
       );
     });
@@ -1731,7 +1735,7 @@ describe('cli format', () => {
           'Phase: startup_failed',
           'Retryable: no',
           'Cause: Coral documents this setup refusal, but the details recorded with it are not in the shape this build renders that code from, so its text could not be regenerated. [code=handoff_socket_holder_unverified]',
-          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a coral-cli mutating command; it attempts startup or handoff. Rerun coral-cli backend status to observe that attempt's result.",
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a mutating Coral command; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.",
         ].join('\n'),
       );
     });
@@ -1758,7 +1762,10 @@ describe('cli format', () => {
 
     it('formats an unauthorized backend status with a recovery hint', () => {
       expect(formatBackendStatus({ status: 'unauthorized' })).toBe(
-        'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry a coral-cli mutating command; it attempts startup or handoff with a fresh token.',
+        [
+          'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
+          'command=coral-cli backend shutdown',
+        ].join('\n'),
       );
     });
 
@@ -2128,7 +2135,7 @@ describe('cli format', () => {
       expect(formatErrorEnvelope(envelope, error.statusCode)).toBe('Missing prompt [code=bad_request, http=400]');
     });
 
-    it('does not normalize multi-line envelope heads while omitting diagnostics', () => {
+    it('keeps envelope tags on the first line of a multi-line message', () => {
       const formatted = formatErrorEnvelope(
         {
           error: true,
@@ -2139,7 +2146,18 @@ describe('cli format', () => {
         400,
       );
 
-      expect(formatted.split('\n')).toEqual(['line one', 'line two [code=bad_request, http=400]']);
+      expect(formatted.split('\n')).toEqual(['line one [code=bad_request, http=400]', 'line two']);
+    });
+
+    it('preserves a rendered command line byte-for-byte in a multi-line error', () => {
+      const command = 'command=coral-cli backend recovery-quarantine list';
+      const formatted = formatErrorEnvelope({
+        error: true,
+        code: 'transient',
+        message: `Retry after recovery.\n${command}`,
+      });
+
+      expect(formatted.split('\n')).toEqual(['Retry after recovery. [code=transient]', command]);
     });
 
     it('formats BackendUnreachableError envelopes on a single line with recovery guidance', () => {

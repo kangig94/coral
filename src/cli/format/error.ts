@@ -8,8 +8,8 @@ export function formatErrorEnvelope(envelope: CliErrorEnvelope, statusCode?: num
   const message = needsCoordinatorStatusHint
     ? `${envelope.message} Run 'coral-cli backend status' to diagnose.`
     : envelope.message;
-  const head = `${message} [${tags.join(', ')}]`;
-  const lines = [head];
+  const [firstLine = '', ...messageLines] = message.split('\n');
+  const lines = [`${firstLine} [${tags.join(', ')}]`, ...messageLines];
   if (envelope.remediation !== undefined) {
     lines.push(`remediation: ${envelope.remediation}`);
   }
