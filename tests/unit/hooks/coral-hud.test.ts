@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, formatGitSegment, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
+import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, extractUserText, formatGitSegment, stripControlSequences, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 function visible(value: string): string {
   // eslint-disable-next-line no-control-regex -- Strips ANSI SGR escape sequences from hook output.
@@ -147,5 +147,32 @@ describe('coral-hud shared-state writes', () => {
       const options = call.slice(0, call.indexOf('})'));
       if (options.includes('timeout:')) expect(options).toContain("killSignal: 'SIGKILL'");
     }
+  });
+});
+
+describe('coral-hud terminal-safe rendering', () => {
+  const hyperlink = (url: string, text: string) => `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
+
+  it('right-aligns against a line carrying a hyperlink, whose wrapper occupies no columns', () => {
+    const line = `\x1b[36mcoral\x1b[0m ${hyperlink('http://127.0.0.1:41237', 'reef')}`;
+
+    const composed = composeCoralThirdLine(line, null, 'what did I just ask', 80);
+
+    expect(stripControlSequences(composed)).toHaveLength(80);
+  });
+
+  it('removes control bytes from transcript text before it reaches the terminal', () => {
+    expect(stripControlSequences('hi \x1b[31mred\x1b[0m there')).toBe('hi red there');
+    expect(stripControlSequences(`click ${hyperlink('http://evil', 'here')}`)).toBe('click here');
+    expect(stripControlSequences('line\u0007bell')).toBe('line bell');
+  });
+
+  it('sanitizes on the path a pasted prompt actually travels, not only in the helper', () => {
+    // A prompt is echoed on every later render of the session, so an escape that survives extraction
+    // is replayed into the terminal each time.
+    expect(extractUserText('deploy \x1b[2Jnow')).toBe('deploy now');
+    expect(extractUserText('<command-name>/ship</command-name><command-args>\x1b[31mprod</command-args>')).toBe(
+      '/ship prod',
+    );
   });
 });

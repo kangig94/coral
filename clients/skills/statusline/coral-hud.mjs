@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 // Coral HUD Statusline
-// Line 1: model │ limits │ ctx │ session │ skill
-// Line 2: codex model │ codex limits │ codex credits
 
 import {
   readFileSync,
@@ -23,8 +21,6 @@ import { execSync } from 'child_process';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 
-// Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
-// inherited by this statusLine subprocess). Falls back to ~/.claude.
 export function codexCacheKey(codexDir) {
   return `codex-${createHash('sha256').update(normalize(codexDir)).digest('hex').slice(0, 12)}`;
 }
@@ -138,8 +134,6 @@ function probeWasCutShort(error) {
   return error?.signal === 'SIGKILL' || error?.code === 'ETIMEDOUT' || error?.code === 'ENOBUFS';
 }
 
-// One invocation carries both the head name and the dirty flag, so a render never costs more than a
-// single subprocess against the repository.
 function probeGit(cwd) {
   return parseGitStatus(
     execSync('git --no-optional-locks status --porcelain=v2 --branch', {
@@ -338,7 +332,6 @@ function readTranscriptTail(transcriptPath) {
 function parseLastSkill(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    // Case 1: user-typed slash command → user message with <command-message> tag
     if (line.includes('command-message')) {
       try {
         const entry = JSON.parse(line);
@@ -349,7 +342,6 @@ function parseLastSkill(lines) {
         }
       } catch {}
     }
-    // Case 2: Claude-invoked Skill tool_use (e.g. ralph calling /commit)
     if (line.includes('"tool_use"') && (line.includes('"Skill"') || line.includes('"proxy_Skill"'))) {
       try {
         const entry = JSON.parse(line);
@@ -397,24 +389,33 @@ function parseRunningAgents(lines) {
   return Array.from(agentMap.values()).filter((a) => !a.startTime || now - a.startTime.getTime() < STALE_AGENT_MS);
 }
 
-function extractUserText(raw) {
-  // Command invocation: extract /name + args as the original input
+// Everything this returns was typed by someone and is printed to a terminal. An escape sequence that
+// survives here is executed by the terminal on every later render of the session, and it also miscounts
+// in visualLen, so control bytes are removed rather than escaped.
+export function stripControlSequences(text) {
+  /* eslint-disable no-control-regex -- Removing terminal control bytes is the point. */
+  return text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/[\x00-\x1f\x7f]/g, ' ');
+  /* eslint-enable no-control-regex */
+}
+
+export function extractUserText(raw) {
   const cmdMatch = raw.match(/<command-name>([^<]+)<\/command-name>/);
   if (cmdMatch) {
     const name = cmdMatch[1].trim();
     const argsMatch = raw.match(/<command-args>([^<]*)<\/command-args>/);
     const args = argsMatch?.[1]?.trim();
-    return args ? `${name} ${args}` : name;
+    return stripControlSequences(args ? `${name} ${args}` : name);
   }
-  // System-injected content — skip entirely
   if (
     /<task-notification>|<local-command|^Base directory for this skill:|^This session is being continued from|^Stop hook feedback:/i.test(
       raw,
     )
   )
     return null;
-  // Strip remaining XML tags (system-reminder etc.) and noise markers
-  const clean = raw.replace(/<[^>]+>/g, '').trim();
+  const clean = stripControlSequences(raw.replace(/<[^>]+>/g, '')).trim();
   if (!clean || /^\[Request interrupted|^\[Tool cancelled|^\[User cancelled/i.test(clean)) return null;
   return clean;
 }
@@ -539,7 +540,8 @@ let _sessionsCache = null;
 function readSessions() {
   if (_sessionsCache) return _sessionsCache;
   try {
-    _sessionsCache = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
+    const raw = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
+    _sessionsCache = raw !== null && typeof raw === 'object' ? raw : {};
   } catch {
     _sessionsCache = {};
   }
@@ -666,7 +668,7 @@ function acquireFetchLock(key) {
     let isStale = true;
     try {
       const lockData = JSON.parse(raw);
-      isStale = Date.now() - lockData.ts > LOCK_STALE_MS;
+      isStale = !Number.isFinite(lockData?.ts) || Date.now() - lockData.ts > LOCK_STALE_MS;
     } catch {} // corrupt/empty JSON → treat as stale
     if (!isStale) return null;
     try {
@@ -714,11 +716,11 @@ function readStaleBackendSlot() {
   }
 }
 
-function writeBackendSlot(slot, online) {
+function writeBackendSlot(slot) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
     const tmp = `${BACKEND_CACHE_FILE}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify({ ts: Date.now(), ...slot, online }), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ ts: Date.now(), ...slot }), { mode: 0o600 });
     renameSync(tmp, BACKEND_CACHE_FILE);
   } catch {}
 }
@@ -742,7 +744,6 @@ function getClaudeAccessToken() {
       }
     } catch {}
   }
-  // File fallback
   try {
     const credPath = join(CLAUDE_DIR, '.credentials.json');
     const parsed = JSON.parse(readFileSync(credPath, 'utf-8'));
@@ -941,8 +942,7 @@ async function renderLimits() {
   try {
     const token = getClaudeAccessToken();
     // Absence has to be recorded, or a machine that never logged in reaches the credential source on
-    // every render — on macOS that is a Keychain subprocess per render. The fail TTL is the retry,
-    // so a later login is still picked up without anything being asked of the user.
+    // every render — on macOS that is a Keychain subprocess per render.
     if (!token) {
       writeCacheSlot('claude', null, true, 0, NO_CREDENTIALS_KIND);
       return null;
@@ -984,12 +984,13 @@ function readCodexCredentials() {
   }
 }
 
-function writeBackCodexCredentials(creds, refreshed) {
+function writeBackCodexCredentials(refreshed) {
   try {
     const authPath = join(CODEX_DIR, 'auth.json');
     const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
     parsed.tokens.access_token = refreshed.accessToken;
-    parsed.tokens.refresh_token = refreshed.refreshToken;
+    // A refresh need not rotate the refresh token, and writing an absent one back logs the user out.
+    if (refreshed.refreshToken) parsed.tokens.refresh_token = refreshed.refreshToken;
     const tmpPath = `${authPath}.tmp-${process.pid}`;
     writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
     renameSync(tmpPath, authPath);
@@ -1112,7 +1113,7 @@ async function renderCodexData() {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
       if (!refreshed) return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
       token = refreshed.accessToken;
-      if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
+      writeBackCodexCredentials(refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
@@ -1141,12 +1142,6 @@ async function renderCodexData() {
 
 // Coral daemon state is account-neutral; Claude credentials only select the
 // provider context for an individual request.
-function coralStateRoot() {
-  return join(homedir(), '.coral');
-}
-
-// The statusline is gated to the prod flavor by `hud-auto-update.mjs`, so we
-// read prod's runDir directly.
 function resolveBackendInfoPath() {
   const infoPath = coralBackendInfoPath(homedir());
   try {
@@ -1163,7 +1158,6 @@ function resolveBackendInfoPath() {
   }
 }
 
-// Resolved dynamically on each cache-miss (not cached at module load)
 const REEF_INFO_PATH = join(CLAUDE_DIR, 'coral', 'reef.json');
 
 function readReefInfo() {
@@ -1203,15 +1197,6 @@ export function composeCoralThirdLine(coralLine, rightIndicator, lastUserMessage
 }
 
 async function renderCoralLine() {
-  // Migrate: remove retired backend slot from shared cache
-  try {
-    const shared = readFullCache();
-    if (shared.backend) {
-      delete shared.backend;
-      writeFullCache(shared);
-    }
-  } catch {}
-
   const cached = readBackendSlot();
   if (cached) return cached;
 
@@ -1232,17 +1217,14 @@ async function renderCoralLine() {
   }
 
   try {
-    // The bare `/health` ping carries no job counts; the live snapshot
-    // (active/queueDepth/liveDiscuss/textProjectionState) lives behind
-    // `?detailed=1`, gated by the boot token — mirror `coral-cli backend status`,
-    // including its discovered advertise host (e.g. `::1`), not a hardcoded loopback.
+    // Job counts live behind `?detailed=1` and the boot token; the bare `/health` ping carries none.
     const resp = await fetch(`http://${info.host ?? '127.0.0.1'}:${info.port}/health?detailed=1`, {
       headers: { 'X-Coral-Boot-Token': info.bootToken },
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
     if (!resp.ok) {
       const slot = { line: `${DIM}coral${RESET}`, indicator: null };
-      writeBackendSlot(slot, false);
+      writeBackendSlot(slot);
       return slot;
     }
     const data = await resp.json();
@@ -1263,11 +1245,11 @@ async function renderCoralLine() {
     }
 
     const slot = { line: parts.join(' '), indicator };
-    writeBackendSlot(slot, true);
+    writeBackendSlot(slot);
     return slot;
   } catch {
     const slot = { line: `${DIM}coral${RESET}`, indicator: null };
-    writeBackendSlot(slot, false);
+    writeBackendSlot(slot);
     return slot;
   } finally {
     releaseFetchLock(lock);
@@ -1276,8 +1258,13 @@ async function renderCoralLine() {
 
 // --- main ---
 
+// An OSC hyperlink wrapper occupies no columns and is as long as the URL inside it, so a width taken
+// without stripping it pushes every right-aligned slot left by that much.
+const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
+const ANSI_OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
 function visualLen(str) {
-  return str.replace(/\x1b\[[0-9;]*m/g, '').length;
+  return str.replace(ANSI_SGR_RE, '').replace(ANSI_OSC_RE, '').length;
 }
 
 function padVisual(str, len) {
@@ -1293,8 +1280,6 @@ function alignColumns(a, b) {
 
 const CODEX_MODEL_DEFAULT = 'gpt-5.6-sol';
 
-// Read one key from a settings.json `env` block; undefined on any miss (no file,
-// bad JSON, absent/empty value).
 function readSettingsEnvValue(path, key) {
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8'))?.env?.[key];
@@ -1304,14 +1289,9 @@ function readSettingsEnvValue(path, key) {
   }
 }
 
-// Codex model shown on line 2. Read the effective CORAL_CODEX_MODEL fresh from
-// settings.json on every render so an edit (including unset) reflects without a
-// session restart — this statusLine subprocess inherits the parent session's
-// env, frozen at session start, so `process.env` would go stale. Precedence
-// mirrors Claude Code's settings merge: project-local > project > user; no
-// settings value means the built-in default. A shell-exported CORAL_CODEX_MODEL
-// is deliberately not consulted — it is a frozen session-start snapshot, so
-// honoring it would defeat "unset -> default".
+// This statusLine subprocess inherits the parent session's env, frozen at session start, so
+// `process.env` cannot answer what CORAL_CODEX_MODEL is now and a shell-exported one may not be
+// consulted either — honoring that frozen snapshot would make unsetting the value impossible.
 function resolveCodexModelDisplay(input) {
   const projectDir = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
   const paths = [];
@@ -1342,7 +1322,6 @@ async function main() {
   ]);
   const codexData = rawCodexData ?? { kind: 'none' };
 
-  // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
   const envModel = resolveCodexModelDisplay(input);
   let col1Claude, col1Codex, col2Claude, col2Codex;
@@ -1360,10 +1339,8 @@ async function main() {
     col2Codex = null;
   }
 
-  // Parse transcript once for activity + last user message
   const transcript = parseTranscript(input);
 
-  // Line 1: Claude
   const line1 = [
     col1Claude,
     col2Claude,
@@ -1375,7 +1352,6 @@ async function main() {
 
   let output = line1.join(SEP);
 
-  // Line 2: Codex
   if (codexData.kind === 'data') {
     if (col1Codex) col1Codex = `${GREEN}${col1Codex}${RESET}`;
     const line2 = [col1Codex, col2Codex, codexCreditStr].filter(Boolean);
@@ -1386,7 +1362,6 @@ async function main() {
     output += '\n' + codexData.message;
   }
 
-  // Line 3: Coral backend + right-aligned last user input
   if (coralSlot) {
     const coralLine = typeof coralSlot === 'string' ? coralSlot : coralSlot.line;
     const rightIndicator = typeof coralSlot === 'string' ? null : coralSlot.indicator;
@@ -1395,7 +1370,6 @@ async function main() {
     output += '\n' + coralFinal;
   }
 
-  // Write session state
   const sessionId = input.session_id;
   if (sessionId && transcript._session) {
     const ctx = input.context_window?.used_percentage ?? null;
