@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, extractUserText, formatGitSegment, stripControlSequences, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
+import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, extractUserText, formatGitSegment, holdIsLive, renderActivityStr, stripControlSequences, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 function visible(value: string): string {
   // eslint-disable-next-line no-control-regex -- Strips ANSI SGR escape sequences from hook output.
@@ -190,5 +193,82 @@ describe('coral-hud facts it cannot import', () => {
     expect(shown, 'coral-hud.mjs must declare CODEX_MODEL_DEFAULT').toBeDefined();
     expect(used, 'request-mapping.ts must declare DEFAULT_CODEX_MODEL').toBeDefined();
     expect(shown).toBe(used);
+  });
+});
+
+describe('coral-hud holds and staleness', () => {
+  it('treats a hold stamped in the future as expired rather than as one that never ends', () => {
+    const now = 1_000_000;
+
+    expect(holdIsLive({ ts: now - 1_000, key: null, nonce: null }, now)).toBe(true);
+    expect(holdIsLive({ ts: now - 60_000, key: null, nonce: null }, now)).toBe(false);
+    // A clock that moved backward leaves the difference negative for the length of the skew.
+    expect(holdIsLive({ ts: now + 60_000, key: null, nonce: null }, now)).toBe(false);
+  });
+
+  it('retires a cached subagent by its own age, since nothing else will', () => {
+    const fresh = { a: { subagent_type: 'code-critic', ts: Date.now() } };
+    const stranded = { a: { subagent_type: 'code-critic', ts: Date.now() - 31 * 60 * 1000 } };
+
+    expect(visible(renderActivityStr(fresh, null) as string)).toContain('code-critic');
+    expect(renderActivityStr(stranded, null)).toBeNull();
+  });
+});
+
+describe('coral-hud transcript rendering end to end', () => {
+  function renderWithTranscript(sessionId: string, lines: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'coral-hud-'));
+    const transcript = join(dir, 'session.jsonl');
+    writeFileSync(transcript, lines.join('\n'));
+    const result = spawnSync(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
+      input: JSON.stringify({
+        cwd: dir,
+        session_id: sessionId,
+        transcript_path: transcript,
+        model: { display_name: 'O' },
+      }),
+      env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'cfg') },
+      encoding: 'utf-8',
+    });
+    rmSync(dir, { recursive: true, force: true });
+    return result.stdout ?? '';
+  }
+
+  // Each extractor owns a different slot and one hides the others — a running agent outranks the
+  // activity name — so a single transcript cannot prove all three are sanitized.
+  const ESCAPE = '\u001b]0;pwned\u0007\u001b[2J';
+
+  it('sanitizes the slash-command name it prints as activity', () => {
+    const printed = renderWithTranscript('esc-cmd', [
+      JSON.stringify({ message: { content: `<command-message>${ESCAPE}deploy</command-message>` } }),
+    ]);
+
+    expect(printed).toContain('deploy');
+    expect(printed).not.toContain('\u001b]');
+    expect(printed).not.toContain('\u001b[2J');
+  });
+
+  it('sanitizes the skill name taken from a Skill tool call', () => {
+    const printed = renderWithTranscript('esc-skill', [
+      JSON.stringify({
+        message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: `${ESCAPE}coral:ralph` } }] },
+      }),
+    ]);
+
+    expect(printed).toContain('coral:ralph');
+    expect(printed).not.toContain('\u001b]');
+    expect(printed).not.toContain('\u001b[2J');
+  });
+
+  it('sanitizes the subagent type it prints as a running-agent count', () => {
+    const printed = renderWithTranscript('esc-agent', [
+      JSON.stringify({
+        message: { content: [{ type: 'tool_use', name: 'Task', id: 't1', input: { subagent_type: `ev${ESCAPE}il` } }] },
+        timestamp: new Date().toISOString(),
+      }),
+    ]);
+
+    expect(printed).not.toContain('\u001b]');
+    expect(printed).not.toContain('\u001b[2J');
   });
 });

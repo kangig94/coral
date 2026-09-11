@@ -116,17 +116,17 @@ function renderGitBranch(input) {
     writeGitEntry(key, { ts: Date.now(), value, backoffUntil: 0 });
     return formatGitSegment(value);
   } catch (error) {
-    // A git that ran and refused answered the question: this is not a repository, and `null` is that
-    // answer. A probe cut short answered nothing, and re-asking every TTL is what spends a
-    // subprocess per render against whatever made it slow.
+    // A probe cut short answered nothing. Anything else is an answer — no repository here, no git to
+    // run, a repository git will not open — and re-asking any of them at branch cadence is what spends
+    // a subprocess per render forever.
     if (probeWasCutShort(error)) {
       backOffRepo(key, now);
       return formatGitSegment(entry?.value);
     }
-    writeGitEntry(key, { ts: Date.now(), value: null, backoffUntil: 0 });
+    writeGitEntry(key, { ts: Date.now(), value: null, backoffUntil: now + GIT_NEGATIVE_TTL_MS });
     return null;
   } finally {
-    releaseGitProbe(claim);
+    releaseHudLock(claim);
   }
 }
 
@@ -172,27 +172,20 @@ export function formatGitSegment(value) {
 // back-off expiring is the only exit this hold has.
 function claimGitProbe(key, now) {
   const lockPath = hudFetchLockPath(CACHE_DIR, GIT_LOCK_KEY);
-  const held = readGitProbeHold(lockPath);
+  const held = readHudLockHold(lockPath);
   if (held !== null) {
-    if (now - held.ts <= LOCK_STALE_MS) return null;
+    if (holdIsLive(held, now)) return null;
     deleteHudFile(lockPath);
     if (held.key !== null) backOffRepo(held.key, now);
     return null;
   }
-  const nonce = `${process.pid}-${now}-${Math.random().toString(36).slice(2)}`;
-  try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(lockPath, JSON.stringify({ ts: now, key, nonce }), { flag: 'wx', mode: 0o600 });
-    return { lockPath, nonce };
-  } catch {
-    return null;
-  }
+  return claimHudLock(lockPath, key, now);
 }
 
 // A record that cannot be read still proves a holder created the file, and its age is the only thing
-// it can still say. Treating it as no holder is what let one interrupted write hold the lock forever:
-// `wx` cannot replace a file that is already there, so the claim below would fail on every render.
-function readGitProbeHold(lockPath) {
+// it can still say. Reading that as no holder leaves the file in place while `wx` refuses to replace
+// it, which is a lock nothing can ever take again.
+function readHudLockHold(lockPath) {
   let mtimeMs;
   try {
     mtimeMs = statSync(lockPath).mtimeMs;
@@ -206,10 +199,31 @@ function readGitProbeHold(lockPath) {
   return { ts: mtimeMs, key: null, nonce: null };
 }
 
-// Releasing by path alone deletes whatever lock is there, including a successor's.
-function releaseGitProbe(claim) {
-  const held = readGitProbeHold(claim.lockPath);
-  if (held !== null && held.nonce !== claim.nonce) return;
+// A `ts` ahead of `now` is a clock that moved backward, not a hold with a long future. Left unguarded
+// the difference stays negative for the length of the skew and the hold never expires.
+export function holdIsLive(held, now) {
+  return held.ts <= now && now - held.ts <= LOCK_STALE_MS;
+}
+
+// The exclusive create is the whole arbitration, so a stale lock is surrendered by whoever finds it
+// and claimed by a later render that finds none. Deleting and creating in one pass instead lets two
+// renders each delete the other's fresh claim and both proceed.
+function claimHudLock(lockPath, key, now) {
+  const nonce = `${process.pid}-${now}-${Math.random().toString(36).slice(2)}`;
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ ts: now, key, nonce }), { flag: 'wx', mode: 0o600 });
+    return { lockPath, nonce };
+  } catch {
+    return null;
+  }
+}
+
+// Releasing by path alone deletes whatever lock is there, including a successor's — and a vanished
+// file is not proof the lock is ours either.
+function releaseHudLock(claim) {
+  const held = readHudLockHold(claim.lockPath);
+  if (held === null || held.nonce !== claim.nonce) return;
   deleteHudFile(claim.lockPath);
 }
 
@@ -221,7 +235,14 @@ function backOffRepo(key, now) {
 }
 
 function writeGitEntry(key, entry) {
-  writeGitCache({ ...readGitCache(), [key]: entry });
+  const cache = readGitCache();
+  const now = Date.now();
+  for (const [cached, value] of Object.entries(cache)) {
+    if (cached !== key && now - (value?.ts || 0) > GIT_ENTRY_PRUNE_MS && now > (value?.backoffUntil || 0)) {
+      delete cache[cached];
+    }
+  }
+  writeGitCache({ ...cache, [key]: entry });
 }
 
 function deleteHudFile(path) {
@@ -338,7 +359,7 @@ function parseLastSkill(lines) {
         const content = entry?.message?.content;
         if (typeof content === 'string') {
           const m = content.match(/<command-message>([^<]+)<\/command-message>/);
-          if (m?.[1]) return m[1];
+          if (m?.[1]) return stripControlSequences(m[1]);
         }
       } catch {}
     }
@@ -354,7 +375,7 @@ function parseLastSkill(lines) {
             (block.name === 'Skill' || block.name === 'proxy_Skill') &&
             block.input?.skill
           ) {
-            return block.input.skill;
+            return stripControlSequences(block.input.skill);
           }
         }
       } catch {}
@@ -375,7 +396,7 @@ function parseRunningAgents(lines) {
       for (const block of content) {
         if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'proxy_Task') && block.id) {
           agentMap.set(block.id, {
-            subagent_type: block.input?.subagent_type || 'unknown',
+            subagent_type: stripControlSequences(block.input?.subagent_type || 'unknown'),
             startTime: ts,
           });
         }
@@ -389,9 +410,9 @@ function parseRunningAgents(lines) {
   return Array.from(agentMap.values()).filter((a) => !a.startTime || now - a.startTime.getTime() < STALE_AGENT_MS);
 }
 
-// Everything this returns was typed by someone and is printed to a terminal. An escape sequence that
-// survives here is executed by the terminal on every later render of the session, and it also miscounts
-// in visualLen, so control bytes are removed rather than escaped.
+// Every transcript-derived string printed to the terminal passes through here. An escape that survives
+// is executed on every later render of the session, and is persisted into the session cache and
+// replayed after the transcript is gone, so control bytes are removed rather than escaped.
 export function stripControlSequences(text) {
   /* eslint-disable no-control-regex -- Removing terminal control bytes is the point. */
   return text
@@ -453,8 +474,13 @@ function formatAgentCounts(agents) {
     .join(' ')}${RESET}`;
 }
 
-function renderActivityStr(agents, activity) {
-  const agentList = Array.isArray(agents) ? agents : Object.values(agents || {});
+export function renderActivityStr(agents, activity) {
+  const now = Date.now();
+  // A subagent whose completion never lands keeps its entry, and the cached entry stops being rewritten
+  // once the transcript size settles, so its own age is the only thing that can retire it.
+  const agentList = (Array.isArray(agents) ? agents : Object.values(agents || {})).filter(
+    (agent) => !agent.ts || now - agent.ts < STALE_AGENT_MS,
+  );
   if (agentList.length > 0) return formatAgentCounts(agentList);
   if (activity?.name && activity?.ts && Date.now() - activity.ts < ACTIVITY_TTL_MS) {
     return `${CYAN}${activity.name}${RESET}`;
@@ -531,11 +557,24 @@ const GIT_LOCK_KEY = 'git';
 const GIT_TTL_MS = 5_000;
 const GIT_TIMEOUT_MS = 1_000;
 const GIT_BACKOFF_MS = 600_000;
+// A directory that is not a repository, a git that will not run, and a repository git refuses to open
+// are all answers that will not change in five seconds; a branch name is the only thing here that can.
+const GIT_NEGATIVE_TTL_MS = 300_000;
+const GIT_ENTRY_PRUNE_MS = 7 * 24 * 60 * 60_000;
 
 // --- session state ---
 
 const SESSIONS_FILE = join(CACHE_DIR, '.coral-sessions.json');
 let _sessionsCache = null;
+
+function readSessionsFromDisk() {
+  try {
+    const raw = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
+    return raw !== null && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
 
 function readSessions() {
   if (_sessionsCache) return _sessionsCache;
@@ -554,9 +593,12 @@ function readSessionEntry(sessionId) {
 
 function writeSession(sessionId, data) {
   try {
-    const all = readSessions();
-    const existing = all[sessionId];
+    const existing = readSessions()[sessionId];
     if (existing && existing.ctx === data.ctx && existing.transcriptSize === data.transcriptSize) return;
+    // Every open session writes this one file. The rename publishes a whole document but does not make
+    // the read-modify-write around it atomic, so the merge has to start from what is on disk now — a
+    // snapshot taken when this process started drops every entry written since.
+    const all = readSessionsFromDisk();
     all[sessionId] = { ...data, ts: Date.now() };
     const now = Date.now();
     for (const key of Object.keys(all)) {
@@ -663,37 +705,20 @@ function readStaleCacheData(key) {
 
 function acquireFetchLock(key) {
   const lockPath = hudFetchLockPath(CACHE_DIR, key);
-  try {
-    const raw = readFileSync(lockPath, 'utf-8');
-    let isStale = true;
-    try {
-      const lockData = JSON.parse(raw);
-      isStale = !Number.isFinite(lockData?.ts) || Date.now() - lockData.ts > LOCK_STALE_MS;
-    } catch {} // corrupt/empty JSON → treat as stale
-    if (!isStale) return null;
-    try {
-      unlinkSync(lockPath);
-    } catch {}
-  } catch {} // ENOENT → no lock exists
-  try {
-    writeFileSync(lockPath, JSON.stringify({ ts: Date.now() }), { flag: 'wx', mode: 0o600 });
-    return lockPath;
-  } catch {
+  const now = Date.now();
+  const held = readHudLockHold(lockPath);
+  if (held !== null) {
+    if (!holdIsLive(held, now)) deleteHudFile(lockPath);
     return null;
   }
-}
-
-function releaseFetchLock(lockPath) {
-  try {
-    unlinkSync(lockPath);
-  } catch {}
+  return claimHudLock(lockPath, key, now);
 }
 
 function readBackendSlot() {
   try {
     const raw = JSON.parse(readFileSync(BACKEND_CACHE_FILE, 'utf-8'));
     if (!raw || !Number.isFinite(raw.ts)) return null;
-    if (Date.now() - raw.ts > CORAL_HEALTH_TTL_MS) return null;
+    if (raw.ts > Date.now() || Date.now() - raw.ts > CORAL_HEALTH_TTL_MS) return null;
     return normalizeBackendSlot(raw);
   } catch {
     return null;
@@ -922,9 +947,24 @@ function formatErrorIndicator(cache) {
   }
 }
 
+// `writeCacheSlot` carries last-known-good data forward across an error, so the two answers a caller
+// can get after one are not interchangeable: a badge shown over data that still renders tells someone
+// their login is broken while it is working.
 function cacheError(slot, errorKind, rateLimit = 0) {
   writeCacheSlot(slot, null, true, rateLimit, errorKind);
-  return formatErrorIndicator({ error: true, errorKind, ts: Date.now(), rateLimit });
+  const preserved = normalizeCacheEntry(readFullCache(slot)[slot]).data;
+  if (preserved != null) return { preserved };
+  return { indicator: formatErrorIndicator({ error: true, errorKind, ts: Date.now(), rateLimit }) };
+}
+
+function claudeCacheError(errorKind, rateLimit = 0) {
+  const outcome = cacheError('claude', errorKind, rateLimit);
+  return outcome.preserved ? formatLimits(outcome.preserved) : outcome.indicator;
+}
+
+function codexCacheError(errorKind, rateLimit = 0) {
+  const outcome = cacheError(CODEX_CACHE_SLOT, errorKind, rateLimit);
+  return outcome.preserved ? { kind: 'data', ...outcome.preserved } : { kind: 'error', message: outcome.indicator };
 }
 
 async function renderLimits() {
@@ -953,9 +993,9 @@ async function renderLimits() {
     }
 
     const resp = await fetchUsage(token, controller.signal);
-    if (resp?.unauthorized) return cacheError('claude', 'auth');
-    if (resp?.rateLimited) return cacheError('claude', 'rateLimit', readBackoffState('claude') + 1);
-    if (!resp) return cacheError('claude', 'generic');
+    if (resp?.unauthorized) return claudeCacheError('auth');
+    if (resp?.rateLimited) return claudeCacheError('rateLimit', readBackoffState('claude') + 1);
+    if (!resp) return claudeCacheError('generic');
 
     const data = {
       fiveHour: resp.five_hour?.utilization,
@@ -968,7 +1008,7 @@ async function renderLimits() {
     return formatLimits(data);
   } finally {
     clearTimeout(timer);
-    releaseFetchLock(lock);
+    releaseHudLock(lock);
   }
 }
 
@@ -1115,30 +1155,26 @@ async function renderCodexData() {
 
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
-      if (!refreshed) return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
+      if (!refreshed) return codexCacheError('generic');
       token = refreshed.accessToken;
       writeBackCodexCredentials(refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
-    if (result?.unauthorized) return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'auth') };
-    if (result?.rateLimited)
-      return {
-        kind: 'error',
-        message: cacheError(CODEX_CACHE_SLOT, 'rateLimit', readBackoffState(CODEX_CACHE_SLOT) + 1),
-      };
+    if (result?.unauthorized) return codexCacheError('auth');
+    if (result?.rateLimited) return codexCacheError('rateLimit', readBackoffState(CODEX_CACHE_SLOT) + 1);
 
     if (result) {
       writeCacheSlot(CODEX_CACHE_SLOT, result);
       return { kind: 'data', ...result };
     }
 
-    return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
+    return codexCacheError('generic');
   } catch {
-    return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
+    return codexCacheError('generic');
   } finally {
     clearTimeout(timer);
-    releaseFetchLock(lock);
+    releaseHudLock(lock);
   }
 }
 
@@ -1256,7 +1292,7 @@ async function renderCoralLine() {
     writeBackendSlot(slot);
     return slot;
   } finally {
-    releaseFetchLock(lock);
+    releaseHudLock(lock);
   }
 }
 
@@ -1327,12 +1363,11 @@ async function main() {
   const codexData = rawCodexData ?? { kind: 'none' };
 
   const claudeModel = renderModel(input);
-  const envModel = resolveCodexModelDisplay(input);
   let col1Claude, col1Codex, col2Claude, col2Codex;
   let codexCreditStr = null;
 
   if (codexData.kind === 'data') {
-    [col1Claude, col1Codex] = alignColumns(claudeModel, envModel);
+    [col1Claude, col1Codex] = alignColumns(claudeModel, resolveCodexModelDisplay(input));
     const codexLimits = formatLimits(codexData.codex);
     codexCreditStr = formatCodexCreditState(codexData.codex?.credits, codexData.codex?.spendControl, !codexLimits);
     [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
