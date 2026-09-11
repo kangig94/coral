@@ -675,6 +675,7 @@ export function createCoordinatorCore(
   >['adoptRepairedProviderOperation'] = async () => ({
     kind: 'refused',
     reason: 'the coordinator execution services are not composed',
+    remedy: { kind: 'restart-coordinator' },
   });
   let releaseUnreadableProviderOperationStartupOwnership: ReturnType<
     typeof createExecutionServices

@@ -333,6 +333,7 @@ describe('/health typed shape (AC10a)', () => {
       proxyInstanceId: 'proxy-1',
       buildSetId: 'build-set-1',
       reason: 'the provider operation ownership path is not initialized',
+      remedy: { kind: 'restart-coordinator' },
       observedAtMs: 456,
     } as const;
 

@@ -671,7 +671,8 @@ describe('health local carrier observation', () => {
       recordKey: survivingRecordKey,
       ...surviving.operation,
       reason: 'the provider operation ownership path is not initialized',
-    };
+      remedy: { kind: 'restart-coordinator' },
+    } as const;
     releaseStartupOwnership.current = async () => ({
       kind: 'adoption-refused',
       releasedLaunchPermits: 0,

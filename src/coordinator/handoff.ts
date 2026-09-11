@@ -23,7 +23,7 @@ import {
 } from '../runtime/errors.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
-import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/index.js';
+import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/startup.js';
 import {
   requestIncumbentShutdown,
   type DesiredIncumbentIdentity,

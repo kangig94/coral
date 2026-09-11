@@ -26,17 +26,17 @@ import { backendLog } from '../../infra/backend-log.js';
 import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
-import type { ProviderOperationStartupOwnership } from '../../jobs/startup.js';
+import type { ProviderOperationStartupHold, ProviderOperationStartupOwnership } from '../../jobs/startup.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
 import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
+import type { RecoveryCoordinator } from '../services/recovery/index.js';
 import {
   quarantineUnreadableProviderOperations,
   type RepairedProviderOperationAdoption,
-  type RecoveryCoordinator,
-} from '../services/recovery/index.js';
+} from '../services/recovery/retry-plans.js';
 import {
   attributeUnreadableProviderOperations,
   providerOperationMutationAdmission,
@@ -47,6 +47,7 @@ import {
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import type {
   ProviderOperationAdoptionRefusal,
+  ProviderOperationAdoptionRemedy,
   ProviderOperationStartupOwnershipReleaseDisposition,
 } from '../../recovery/unreadable-provider-operation.js';
 import {
@@ -89,6 +90,21 @@ type CreateExecutionServicesDeps = {
 
 function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
   return [...services.values()];
+}
+
+function adoptionRemedyForStartupExit(exit: ProviderOperationStartupHold['exit']): ProviderOperationAdoptionRemedy {
+  switch (exit) {
+    case 'restart-or-operator-repair':
+      return { kind: 'restart-coordinator' };
+    case 'remote-settlement':
+      return { kind: 'remote-settlement' };
+    case 'coral-cli backend recovery-quarantine discard-provider-operation':
+      return { kind: 'recovery-quarantine-discard', allowReadable: false };
+    case 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable':
+      return { kind: 'recovery-quarantine-discard', allowReadable: true };
+    case 'coral-cli backend recovery-quarantine clear':
+      return { kind: 'recovery-quarantine-clear' };
+  }
 }
 
 export function createExecutionServices({
@@ -393,25 +409,45 @@ export function createExecutionServices({
     recordKey?: string,
   ): Promise<RepairedProviderOperationAdoption> => {
     if (!providerProxyClaimsInitialized || !providerProxyLifecycleInitialized) {
-      return { kind: 'refused', reason: 'the provider operation ownership path is not initialized' };
+      return {
+        kind: 'refused',
+        reason: 'the provider operation ownership path is not initialized',
+        remedy: { kind: 'restart-coordinator' },
+      };
     }
     if (providerOperationRecovery === null) {
-      return { kind: 'refused', reason: 'provider operation recovery ownership is not connected' };
+      return {
+        kind: 'refused',
+        reason: 'provider operation recovery ownership is not connected',
+        remedy: { kind: 'restart-coordinator' },
+      };
     }
 
     const ownership = providerOperationRecovery.adoptRepairedProviderOperationOwnership(record, recordKey);
     if (ownership.bindingDisposition.kind === 'refused') {
-      return { kind: 'refused', reason: ownership.bindingDisposition.reason };
+      return {
+        kind: 'refused',
+        reason: ownership.bindingDisposition.reason,
+        remedy: adoptionRemedyForStartupExit(ownership.bindingDisposition.exit),
+      };
     }
     if (ownership.bindingDisposition.kind === 'not-reconciled') {
-      return { kind: 'refused', reason: `the repaired provider operation is ${ownership.bindingDisposition.reason}` };
+      return {
+        kind: 'refused',
+        reason: `the repaired provider operation is ${ownership.bindingDisposition.reason}`,
+        remedy: { kind: 'external-repair' },
+      };
     }
 
     world.providerProxyClaims.applyMutation({ kind: 'upserted', record });
     const setIdentity = providerProxySetIdentityFromRecord(record);
     const accepted = world.providerProxyClaims.claimFor(record.operation);
     if (accepted === null || !providerProxySetIdentitiesEqual(accepted.setIdentity, setIdentity)) {
-      return { kind: 'refused', reason: 'the provider operation claim mirror did not retain the decoded record' };
+      return {
+        kind: 'refused',
+        reason: 'the provider operation claim mirror did not retain the decoded record',
+        remedy: { kind: 'external-repair' },
+      };
     }
     providerProxyLifecycle.claimsChanged(setIdentity);
     await providerOperationReconciler.reconcile(record);
@@ -564,6 +600,7 @@ export function createExecutionServices({
           proxyInstanceId: readable.record.operation.proxyInstanceId,
           buildSetId: readable.record.operation.buildSetId,
           reason: adoption.reason,
+          remedy: adoption.remedy,
         });
       }
       return refusals.length === 0

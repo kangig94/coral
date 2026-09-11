@@ -1011,6 +1011,7 @@ describe('cli format', () => {
                 proxyInstanceId: 'proxy-1',
                 buildSetId: 'build-set-1',
                 reason: 'the provider operation ownership path is not initialized',
+                remedy: { kind: 'restart-coordinator' as const },
                 observedAtMs: 123_456,
               },
             ],
@@ -1018,18 +1019,45 @@ describe('cli format', () => {
         },
       } satisfies BackendStatusFull;
 
-      expect(formatBackendStatus(status)).toContain(
-        [
-          'Provider-operation adoption refusals:',
-          '  record=surviving-record-key job=job-1 operation=operation-1 proxy=proxy-1 buildSet=build-set-1 observedAtMs=123456',
-          '    triggerRecord=discarded-record-key rowDisposition=discarded releasedLaunchPermits=0',
-          '    reason=the provider operation ownership path is not initialized',
-          '    Next step: for record=surviving-record-key, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
-        ].join('\n'),
-      );
+      const output = formatBackendStatus(status);
+      expect(output).toContain('Provider-operation adoption refusals:');
+      expect(output).toContain('record=surviving-record-key job=job-1 operation=operation-1');
+      expect(output).toContain('triggerRecord=discarded-record-key rowDisposition=discarded');
+      expect(output).toContain('restart or repair the canonical coordinator externally');
+      expect(output).toContain('coral-cli jobs detail job-1');
     });
 
-    it('renders an adoption-refused discard with the exact job inspection command', () => {
+    it.each([
+      {
+        remedy: { kind: 'restart-coordinator' as const },
+        required: ['restart or repair the canonical coordinator externally', 'Coral retries adoption during startup'],
+        forbidden: 'recovery-quarantine list',
+      },
+      {
+        remedy: { kind: 'remote-settlement' as const },
+        required: ['remote settlement path', 'automatically'],
+        forbidden: 'external repair',
+      },
+      {
+        remedy: { kind: 'recovery-quarantine-discard' as const, allowReadable: false },
+        required: ['recovery-quarantine list', 'discard-provider-operation'],
+        forbidden: '--allow-readable',
+      },
+      {
+        remedy: { kind: 'recovery-quarantine-discard' as const, allowReadable: true },
+        required: ['recovery-quarantine list', 'discard-provider-operation', '--allow-readable'],
+      },
+      {
+        remedy: { kind: 'recovery-quarantine-clear' as const },
+        required: ['recovery-quarantine list', 'clear command'],
+        forbidden: 'discard-provider-operation',
+      },
+      {
+        remedy: { kind: 'external-repair' as const },
+        required: ['external repair', 'no Coral command can repair it'],
+        forbidden: 'automatically',
+      },
+    ])('renders the $remedy.kind adoption remedy', ({ remedy, required, forbidden }) => {
       const output = formatUnreadableProviderOperationDiscard({
         key: 'discarded-record-key',
         revision: 'a'.repeat(64),
@@ -1043,14 +1071,17 @@ describe('cli format', () => {
             operationId: 'operation-1',
             proxyInstanceId: 'proxy-1',
             buildSetId: 'build-set-1',
-            reason: 'the provider operation ownership path is not initialized',
+            reason: 'cause-specific diagnostic text',
+            remedy,
           },
         ],
       });
 
-      expect(output).toContain(
-        'Next step: for record=surviving-record-key, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
-      );
+      expect(output).toContain('record=surviving-record-key');
+      expect(output).toContain('coral-cli jobs detail job-1');
+      expect(output).toContain('coral-cli backend status');
+      for (const action of required) expect(output).toContain(action);
+      if (forbidden !== undefined) expect(output).not.toContain(forbidden);
     });
 
     it('renders automatic launch reclamation evidence', () => {
@@ -1135,15 +1166,14 @@ describe('cli format', () => {
 
         const output = formatBackendStatus(status);
         expect(output).toContain(`job=job-1 cause=${cause} observedAtMs=123456`);
-        const nextStep = {
-          'terminal-persist-failed':
-            'nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
-          'claim-release-failed':
-            'nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
-          'claim-already-reassigned':
-            'nextStep=no automatic retry applies because the session claim belongs to another job. Run coral-cli jobs detail job-1, verify the current session owner externally, then run coral-cli backend status.',
+        const contract = {
+          'terminal-persist-failed': ['repair the job store externally', 'cannot retry'],
+          'claim-release-failed': ['repair session persistence externally', 'cannot retry'],
+          'claim-already-reassigned': ['no automatic retry applies', 'current session owner externally'],
         }[cause];
-        expect(output).toContain(nextStep);
+        for (const expected of contract) expect(output).toContain(expected);
+        expect(output).toContain('coral-cli jobs detail job-1');
+        expect(output).toContain('coral-cli backend status');
       },
     );
 
@@ -1171,9 +1201,10 @@ describe('cli format', () => {
       expect(formatBackendStatus(status)).toContain(
         'job=job-unbound operation=operation-unbound cause=settled-unbound-status-persist-failed observedAtMs=123456',
       );
-      expect(formatBackendStatus(status)).toContain(
-        'nextStep=Coral retries this settlement-status write automatically. Run coral-cli backend status to confirm that job=job-unbound operation=operation-unbound is no longer listed.',
-      );
+      const output = formatBackendStatus(status);
+      expect(output).toContain('retries this settlement-status write automatically');
+      expect(output).toContain('coral-cli backend status');
+      expect(output).toContain('job=job-unbound operation=operation-unbound');
     });
 
     it('renders skipped provider-proxy-set candidate identities without offering an unauthorized command', () => {

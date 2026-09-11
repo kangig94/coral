@@ -3,10 +3,8 @@ import { randomUUID } from 'node:crypto';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  createUnreadableProviderOperationRetryPlan,
-  quarantineUnreadableProviderOperations,
-} from '#src/coordinator/services/recovery/index.js';
+import { createUnreadableProviderOperationRetryPlan } from '#src/coordinator/services/recovery/index.js';
+import { quarantineUnreadableProviderOperations } from '#src/coordinator/services/recovery/retry-plans.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
 import type { RecoveryQuarantinePort } from '#src/recovery/containment.js';
@@ -144,7 +142,11 @@ describe('unreadable provider operation recovery quarantine', () => {
     sources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
       createUnreadableProviderOperationRetryPlan(db, subject, () => {
         adoptionCalls += 1;
-        return { kind: 'refused', reason: 'an absent row cannot be adopted' };
+        return {
+          kind: 'refused',
+          reason: 'an absent row cannot be adopted',
+          remedy: { kind: 'external-repair' },
+        };
       }),
     );
     const retry = createRecoveryQuarantineRetryService({

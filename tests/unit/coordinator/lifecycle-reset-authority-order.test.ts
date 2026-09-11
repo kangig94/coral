@@ -19,7 +19,7 @@ import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '#src/
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
-import type { RunCoordinatorStartupRecoveryFn } from '#src/coordinator/services/recovery/index.js';
+import type { RunCoordinatorStartupRecoveryFn } from '#src/coordinator/services/recovery/startup.js';
 import type * as BackendStoreResetMod from '#src/store/backend-store-reset.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as StartupStoreRoutingMod from '#src/store/startup-store-routing.js';

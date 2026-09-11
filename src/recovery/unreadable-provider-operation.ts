@@ -19,6 +19,13 @@ export type UnreadableProviderOperationDiscardRequest = Readonly<{
   allowReadable?: boolean;
 }>;
 
+export type ProviderOperationAdoptionRemedy =
+  | Readonly<{ kind: 'restart-coordinator' }>
+  | Readonly<{ kind: 'remote-settlement' }>
+  | Readonly<{ kind: 'recovery-quarantine-discard'; allowReadable: boolean }>
+  | Readonly<{ kind: 'recovery-quarantine-clear' }>
+  | Readonly<{ kind: 'external-repair' }>;
+
 export type ProviderOperationAdoptionRefusal = Readonly<{
   recordKey: string;
   jobId: string;
@@ -26,6 +33,7 @@ export type ProviderOperationAdoptionRefusal = Readonly<{
   proxyInstanceId: string;
   buildSetId: string;
   reason: string;
+  remedy: ProviderOperationAdoptionRemedy;
 }>;
 
 export type ProviderOperationStartupOwnershipReleaseDisposition =

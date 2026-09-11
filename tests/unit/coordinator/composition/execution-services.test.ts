@@ -27,10 +27,8 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
-import {
-  createUnreadableProviderOperationRetryPlan,
-  quarantineUnreadableProviderOperations,
-} from '#src/coordinator/services/recovery/index.js';
+import { createUnreadableProviderOperationRetryPlan } from '#src/coordinator/services/recovery/index.js';
+import { quarantineUnreadableProviderOperations } from '#src/coordinator/services/recovery/retry-plans.js';
 import {
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
@@ -634,6 +632,50 @@ describe('execution services provider-proxy proof composition', () => {
             recordKey,
             ...harness.readable.operation,
             reason: 'the provider operation ownership path is not initialized',
+            remedy: { kind: 'restart-coordinator' },
+          },
+        ],
+      });
+    } finally {
+      harness.services.stopProviderOperationReconciler();
+      harness.db.close();
+    }
+  });
+
+  it('preserves the remote-settlement remedy when repaired ownership is refused', async () => {
+    const harness = createUnreadableStartupHarness();
+    const recordKey = providerOperationRecordKey(harness.readable);
+
+    try {
+      await harness.services.reconcileProviderOperationsAtStartup(
+        startupOwnership(harness.runtime, harness.db, harness.launchCoordinator),
+        new AbortController().signal,
+      );
+      harness.services.connectProviderOperationRecovery({
+        adoptRepairedProviderOperationOwnership: (record: ProviderOperationRecord) => ({
+          phase: 'settlement-pending',
+          operation: record.operation,
+          restoredPermit: null,
+          bindingDisposition: {
+            kind: 'refused',
+            reason: 'the remote provider still owns settlement',
+            exit: 'remote-settlement',
+          },
+        }),
+        releaseUnreadableProviderOperationStartupOwnership: () => ({
+          released: 0,
+          readableRecords: [{ recordKey, record: harness.readable }],
+        }),
+      } as never);
+
+      await expect(
+        harness.services.releaseUnreadableProviderOperationStartupOwnership(harness.unreadableKey),
+      ).resolves.toMatchObject({
+        kind: 'adoption-refused',
+        refusals: [
+          {
+            recordKey,
+            remedy: { kind: 'remote-settlement' },
           },
         ],
       });

@@ -16,6 +16,7 @@ import type {
 } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type {
+  ProviderOperationSettlementDisposition,
   ProviderOperationStartupOwnership,
   ProviderOperationStartupRecordOwnership,
 } from '../../../jobs/startup.js';
@@ -76,6 +77,11 @@ type StartupHoldDisposition =
       kind: 'settlement-pending';
       record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>;
     }>;
+
+type StartupPreparationRecord = Exclude<
+  ProviderOperationRecord,
+  { phase: 'settlement-pending' | 'local-recovery-pending' | 'prestart-cleanup-pending' }
+>;
 
 type StartupOwnershipBinding = Pick<
   JobLaunchRecoveryPort,
@@ -231,9 +237,7 @@ export function createProviderOperationStartupOwnership(
     }
   };
 
-  const settleBinding = (
-    operation: ProviderOperationRecord['operation'],
-  ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
+  const settleBinding = (operation: ProviderOperationRecord['operation']): ProviderOperationSettlementDisposition => {
     const disposition = binding.settleProviderOperationBinding(operation);
     if (disposition.kind === 'refused') return { ...disposition, exit: 'remote-settlement' };
     return disposition;
@@ -242,19 +246,15 @@ export function createProviderOperationStartupOwnership(
   const releasePermitThroughSettlement = (
     permit: LaunchPermit,
     operation: ProviderOperationRecord['operation'],
-  ): ProviderOperationStartupRecordOwnership['bindingDisposition'] => {
+  ): ProviderOperationSettlementDisposition => {
+    const preparation = binding.prepareProviderOperationBinding(permit, operation);
+    if (preparation.kind === 'refused') {
+      return { ...preparation, exit: 'remote-settlement' };
+    }
     const settlement = settleBinding(operation);
     if (settlement.kind === 'refused') return settlement;
-    const disposition = binding.prepareProviderOperationBinding(permit, operation);
-    if (disposition.kind === 'already-settled') {
-      permits.delete(operation.jobId);
-      return disposition;
-    }
-    const reason =
-      disposition.kind === 'refused'
-        ? disposition.reason
-        : `Provider operation settlement binding returned unexpected disposition '${disposition.kind}'.`;
-    return { kind: 'refused', reason, exit: 'remote-settlement' };
+    permits.delete(operation.jobId);
+    return { kind: 'already-settled' };
   };
 
   const hold = (record: ProviderOperationRecord, reason: string): StartupHoldDisposition => {
@@ -396,7 +396,7 @@ export function createProviderOperationStartupOwnership(
 
   const prepareBinding = (
     permit: LaunchPermit,
-    record: ProviderOperationRecord,
+    record: StartupPreparationRecord,
   ): ProviderOperationStartupRecordOwnership => {
     const disposition = binding.prepareProviderOperationBinding(permit, record.operation);
     if (disposition.kind !== 'refused') {

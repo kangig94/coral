@@ -23,15 +23,33 @@ function operationKey(operation: ProviderOperationRecord['operation']): string {
   return `${operation.jobId}\u0000${operation.operationId}`;
 }
 
-function startupBindingDisposition(
-  disposition:
-    | ReturnType<LaunchCoordinator['prepareProviderOperationBinding']>
-    | ReturnType<LaunchCoordinator['settleProviderOperationBinding']>,
-  exit:
-    | 'restart-or-operator-repair'
-    | 'remote-settlement'
-    | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
-): ProviderOperationStartupOwnership['records'][number]['bindingDisposition'] {
+type StartupSettlementDisposition = Extract<
+  ProviderOperationStartupOwnership['records'][number],
+  { phase: 'settlement-pending' }
+>['bindingDisposition'];
+
+type StartupPreparationDisposition = Extract<
+  ProviderOperationStartupOwnership['records'][number],
+  {
+    phase:
+      | 'prepare-pending'
+      | 'guardian-activation-pending'
+      | 'proxy-activation-pending'
+      | 'activation-resolution-pending'
+      | 'executing';
+  }
+>['bindingDisposition'];
+
+function startupSettlementDisposition(
+  disposition: ReturnType<LaunchCoordinator['settleProviderOperationBinding']>,
+): StartupSettlementDisposition {
+  return disposition.kind === 'refused' ? { ...disposition, exit: 'remote-settlement' } : disposition;
+}
+
+function startupPreparationDisposition(
+  disposition: ReturnType<LaunchCoordinator['prepareProviderOperationBinding']>,
+): StartupPreparationDisposition {
+  const exit = 'restart-or-operator-repair';
   return disposition.kind === 'refused' ? { ...disposition, exit } : disposition;
 }
 
@@ -62,10 +80,7 @@ export function createProviderOperationStartupOwnershipHarness(
           phase: record.phase,
           operation: record.operation,
           restoredPermit: null,
-          bindingDisposition: startupBindingDisposition(
-            binding.settleProviderOperationBinding(record.operation),
-            'remote-settlement',
-          ),
+          bindingDisposition: startupSettlementDisposition(binding.settleProviderOperationBinding(record.operation)),
         };
       }
       if (record.phase === 'local-recovery-pending') {
@@ -103,9 +118,8 @@ export function createProviderOperationStartupOwnershipHarness(
         phase: record.phase,
         operation: record.operation,
         restoredPermit: permit,
-        bindingDisposition: startupBindingDisposition(
+        bindingDisposition: startupPreparationDisposition(
           binding.prepareProviderOperationBinding(permit, record.operation),
-          'restart-or-operator-repair',
         ),
       };
     });

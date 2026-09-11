@@ -17,7 +17,7 @@ import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
-import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/index.js';
+import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/provider-operation-job-recovery.js';
 import type { ProviderOperationBindingPort } from '#src/jobs/contracts/provider-operation-lifecycle.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {

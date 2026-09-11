@@ -252,6 +252,13 @@ export const launchPermitDiagnosticsSchema = z
             proxyInstanceId: z.string().min(1),
             buildSetId: z.string().min(1),
             reason: z.string().min(1),
+            remedy: z.discriminatedUnion('kind', [
+              z.object({ kind: z.literal('restart-coordinator') }).strict(),
+              z.object({ kind: z.literal('remote-settlement') }).strict(),
+              z.object({ kind: z.literal('recovery-quarantine-discard'), allowReadable: z.boolean() }).strict(),
+              z.object({ kind: z.literal('recovery-quarantine-clear') }).strict(),
+              z.object({ kind: z.literal('external-repair') }).strict(),
+            ]),
             observedAtMs: z.number().finite().nonnegative(),
           })
           .strict(),

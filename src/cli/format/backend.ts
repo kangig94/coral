@@ -1277,17 +1277,23 @@ function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evid
 }
 
 function formatProviderOperationAdoptionRefusalNextStep(
-  refusal: Pick<ProviderOperationAdoptionRefusalStatus, 'jobId' | 'reason' | 'recordKey'>,
+  refusal: Pick<ProviderOperationAdoptionRefusalStatus, 'jobId' | 'recordKey' | 'remedy'>,
 ): string {
   const inspect = `coral-cli jobs detail ${refusal.jobId}`;
-  const reason = refusal.reason.toLowerCase();
-  if (reason.includes('not initialized') || reason.includes('not connected')) {
-    return `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with ${inspect}, then coral-cli backend status.`;
+  switch (refusal.remedy.kind) {
+    case 'restart-coordinator':
+      return `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with ${inspect}, then coral-cli backend status.`;
+    case 'remote-settlement':
+      return `Next step: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Re-check with ${inspect}, then coral-cli backend status.`;
+    case 'recovery-quarantine-discard': {
+      const consent = refusal.remedy.allowReadable ? ' with --allow-readable' : '';
+      return `Next step: for record=${refusal.recordKey}, run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command${consent} it prints if losing that row is acceptable. Then run ${inspect} and coral-cli backend status.`;
+    }
+    case 'recovery-quarantine-clear':
+      return `Next step: for record=${refusal.recordKey}, run coral-cli backend recovery-quarantine list and use its exact clear command. Then run ${inspect} and coral-cli backend status.`;
+    case 'external-repair':
+      return `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then run ${inspect} and coral-cli backend status.`;
   }
-  if (reason.includes('more than one readable') || reason.includes('unreadable provider operation')) {
-    return `Next step: for record=${refusal.recordKey}, run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command it prints if losing that row is acceptable. Then run ${inspect} and coral-cli backend status.`;
-  }
-  return `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then run ${inspect} and coral-cli backend status.`;
 }
 
 function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefusalRecordingFailureStatus): string {

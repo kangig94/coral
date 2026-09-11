@@ -57,12 +57,6 @@ import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import { assertProviderHostPlatformSupported } from '../../providers/host-admission.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 
-/**
- * Admission queue capacity per pool. Operator knob — see §16(d) triage rule:
- * default 20 is reasonable for all environments tested; large deployments may
- * raise it via `CORAL_MAX_QUEUE_SIZE`. Clamped to [1, 1000] to keep memory
- * pressure bounded.
- */
 export function getMaxQueueSize(env: Pick<Runtime['env'], 'get'>): number {
   return Math.min(Math.max(parsePositiveInt(env.get('CORAL_MAX_QUEUE_SIZE'), 20), 1), 1000);
 }

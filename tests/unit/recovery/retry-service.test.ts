@@ -202,7 +202,11 @@ describe('recovery quarantine retry service', () => {
           key: 'provider-operation-row',
           revision: { kind: 'fingerprint', value: 'revision-1' },
         },
-        () => ({ kind: 'refused', reason: 'not exercised by the boundary manifest test' }),
+        () => ({
+          kind: 'refused',
+          reason: 'not exercised by the boundary manifest test',
+          remedy: { kind: 'external-repair' },
+        }),
       ).source.boundary,
     ];
 
@@ -261,6 +265,7 @@ describe('recovery quarantine retry service', () => {
       createUnreadableProviderOperationRetryPlan(db, retrySubject, () => ({
         kind: 'refused',
         reason: 'not exercised by the registry completeness test',
+        remedy: { kind: 'external-repair' },
       })),
     );
 

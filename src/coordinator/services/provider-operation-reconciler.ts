@@ -71,7 +71,7 @@ import {
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
 } from './provider-proxy-set/identity.js';
-import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
+import type { ProviderOperationRecoveryAcceptance } from './recovery/provider-operation-job-recovery.js';
 import type { ProviderOperationStartupRelease } from './recovery/provider-operation-startup-ownership.js';
 import {
   type ContainmentAbsenceAcceptance,
@@ -174,9 +174,9 @@ export interface StartupSetRecoveryPort {
 
 function startupOperationCanReconcile(ownership: ProviderOperationStartupOwnership['records'][number]): boolean {
   if (ownership.bindingDisposition.kind === 'not-reconciled') return false;
-  if (ownership.phase === 'local-recovery-pending') return false;
   if (ownership.bindingDisposition.kind === 'refused') return false;
   if (ownership.phase === 'settlement-pending') return true;
+  if (ownership.phase === 'local-recovery-pending') return false;
   if (ownership.phase === 'prestart-cleanup-pending') return ownership.restoredPermit !== null;
   return (
     ownership.bindingDisposition.kind === 'prepared' ||

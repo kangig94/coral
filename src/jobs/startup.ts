@@ -15,35 +15,72 @@ import type { ProviderOperationIdentity, ProviderOperationRecord } from '../stor
 import type { SettledUnboundStatusRemediationExit } from '../recovery/source-registry.js';
 
 /** A refused startup association must name the event that can end its ownership hold. */
-export type ProviderOperationStartupBindingDisposition =
-  | Exclude<ProviderOperationPrepareResult | ProviderOperationSettlementResult, ProviderOperationBindingRefusal>
-  | Readonly<{
-      kind: 'refused';
-      reason: string;
-      exit:
-        | 'restart-or-operator-repair'
-        | 'remote-settlement'
-        | SettledUnboundStatusRemediationExit
-        | 'coral-cli backend recovery-quarantine discard-provider-operation'
-        | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
-    }>
-  | Readonly<{ kind: 'not-required'; owner: 'prestart-cleanup' | 'generic-job-recovery' }>
-  | Readonly<{
-      kind: 'not-reconciled';
-      reason: 'record-absent';
-      owner:
-        | Readonly<{ kind: 'generic-job-recovery' }>
-        | Readonly<{ kind: 'provider-operation-recovery'; holder: LaunchPermit['holder'] }>
-        | Readonly<{ kind: 'transferred-launch'; holder: LaunchPermit['holder'] }>;
-    }>;
+type ProviderOperationStartupBindingRefusal = Readonly<{
+  kind: 'refused';
+  reason: string;
+  exit:
+    | 'restart-or-operator-repair'
+    | 'remote-settlement'
+    | SettledUnboundStatusRemediationExit
+    | 'coral-cli backend recovery-quarantine discard-provider-operation'
+    | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
+}>;
 
-/** Reconciliation may drive an operation only after this phase-specific ownership disposition authorizes it. */
-export type ProviderOperationStartupRecordOwnership = Readonly<{
-  phase: ProviderOperationRecord['phase'];
+type ProviderOperationStartupNotReconciled = Readonly<{
+  kind: 'not-reconciled';
+  reason: 'record-absent';
+  owner:
+    | Readonly<{ kind: 'generic-job-recovery' }>
+    | Readonly<{ kind: 'provider-operation-recovery'; holder: LaunchPermit['holder'] }>
+    | Readonly<{ kind: 'transferred-launch'; holder: LaunchPermit['holder'] }>;
+}>;
+
+type ProviderOperationPreparationDisposition =
+  | Exclude<ProviderOperationPrepareResult, ProviderOperationBindingRefusal>
+  | ProviderOperationStartupBindingRefusal
+  | ProviderOperationStartupNotReconciled;
+
+export type ProviderOperationSettlementDisposition =
+  | Exclude<ProviderOperationSettlementResult, ProviderOperationBindingRefusal>
+  | ProviderOperationStartupBindingRefusal
+  | ProviderOperationStartupNotReconciled;
+
+export type ProviderOperationStartupBindingDisposition =
+  | ProviderOperationPreparationDisposition
+  | ProviderOperationSettlementDisposition
+  | Readonly<{ kind: 'not-required'; owner: 'prestart-cleanup' | 'generic-job-recovery' }>;
+
+type ProviderOperationPreparationPhase = Exclude<
+  ProviderOperationRecord['phase'],
+  'settlement-pending' | 'local-recovery-pending' | 'prestart-cleanup-pending'
+>;
+
+type ProviderOperationStartupOwnershipFor<
+  Phase extends ProviderOperationRecord['phase'],
+  Disposition extends ProviderOperationStartupBindingDisposition,
+> = Readonly<{
+  phase: Phase;
   operation: ProviderOperationIdentity;
   restoredPermit: LaunchPermit | null;
-  bindingDisposition: ProviderOperationStartupBindingDisposition;
+  bindingDisposition: Disposition;
 }>;
+
+/** Reconciliation may drive an operation only after this phase-specific ownership disposition authorizes it. */
+export type ProviderOperationStartupRecordOwnership =
+  | ProviderOperationStartupOwnershipFor<ProviderOperationPreparationPhase, ProviderOperationPreparationDisposition>
+  | ProviderOperationStartupOwnershipFor<'settlement-pending', ProviderOperationSettlementDisposition>
+  | ProviderOperationStartupOwnershipFor<
+      'local-recovery-pending',
+      | ProviderOperationStartupBindingRefusal
+      | ProviderOperationStartupNotReconciled
+      | Readonly<{ kind: 'not-required'; owner: 'generic-job-recovery' }>
+    >
+  | ProviderOperationStartupOwnershipFor<
+      'prestart-cleanup-pending',
+      | ProviderOperationStartupBindingRefusal
+      | ProviderOperationStartupNotReconciled
+      | Readonly<{ kind: 'not-required'; owner: 'prestart-cleanup' }>
+    >;
 
 /** An unreadable row's permit cannot be released by operation identity until repair supplies that identity. */
 export type ProviderOperationUnreadableStartupOwnership = Readonly<{

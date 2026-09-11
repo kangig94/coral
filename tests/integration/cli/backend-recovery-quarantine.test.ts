@@ -411,6 +411,7 @@ describe('backend recovery-quarantine commands', () => {
             proxyInstanceId: 'proxy-1',
             buildSetId: 'build-set-1',
             reason: 'the provider operation ownership path is not initialized',
+            remedy: { kind: 'restart-coordinator' },
           },
         ],
       },
@@ -924,6 +925,7 @@ describe('backend recovery-quarantine commands', () => {
       proxyInstanceId: '00000000-0000-4000-8000-000000000003',
       buildSetId: '00000000-0000-4000-8000-000000000004',
       reason: 'the provider operation ownership path is not initialized',
+      remedy: { kind: 'restart-coordinator' },
     };
     vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
       request: vi.fn().mockResolvedValue({
