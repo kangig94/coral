@@ -13,6 +13,13 @@ function parseCommand(command: string): string[] {
   return tokens;
 }
 
+export function operatorArtifactLines(output: string): string[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^(?:action|clear|command|discard)=coral-cli\s/u.test(line));
+}
+
 export async function executeRenderedCommand(
   program: Command,
   output: string,

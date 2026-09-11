@@ -1362,18 +1362,20 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     launch: PreparedProviderLaunchContext,
   ): Promise<PreparedProviderExecutionResult> {
     if (prepared.kind === 'app-server') {
-      return this.executePreparedAppServer(prepared, launch);
+      if (launch.signal.aborted) return { kind: 'cancelled' };
+      const proxyPlacement = await this.activateAppServerProxyPlacement(prepared, launch);
+      if (proxyPlacement !== undefined) return proxyPlacement;
+      return this.executeLocalAppServerPlacement(prepared, launch);
     }
-    return this.executePreparedStandalone(prepared, launch);
+    return this.executeStandalonePlacement(prepared, launch);
   }
 
-  private async executePreparedAppServer(
+  private async activateAppServerProxyPlacement(
     prepared: Extract<BoundProviderPreparedExecution, { kind: 'app-server' }>,
     launch: PreparedProviderLaunchContext,
-  ): Promise<PreparedProviderExecutionResult> {
+  ): Promise<Exclude<PreparedProviderExecutionResult, { kind: 'local' }> | undefined> {
     const {
       provider,
-      runtime,
       jobId,
       signal,
       permit,
@@ -1384,61 +1386,67 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       forceLocalAppServerPlacement,
     } = launch;
     const route = forceLocalAppServerPlacement ? undefined : this.deps.appServerProxyRoute;
-    if (signal.aborted) return { kind: 'cancelled' };
-    if (route !== undefined) {
-      if (operationEnvironment.childAuthorization === undefined) {
-        throw new Error('Provider operation child authorization is unavailable for durable publication.');
-      }
-      const operationId = this.deps.runtime.ids.uuid();
-      const operationIdentity = { jobId, operationId };
-      const jobLaunchEventSeq = readProviderOperationJobLaunchEventSeq(this.deps.progressStore.getDb(), jobId);
-      const binding = this.deps.providerOperationBinding.prepareProviderOperationBinding(permit, operationIdentity);
-      if (binding.kind === 'already-settled') return { kind: 'terminalized' };
-      if (binding.kind === 'refused') {
-        throw new Error(`Provider operation binding preparation failed: ${binding.reason}.`);
-      }
-      if (binding.kind === 'bound') {
-        throw new Error('Provider operation binding preparation failed: the new operation identity is already bound.');
-      }
-
-      let activation: Awaited<ReturnType<AppServerProxyRoute['activate']>>;
-      try {
-        activation = await route.activate(
-          {
-            jobId,
-            operationId,
-            jobLaunchEventSeq,
-            sessionId: requestForRoute.sessionId,
-            sessionVersion,
-            childAuthorization: operationEnvironment.childAuthorization,
-            hostSpec: prepared.hostSpec,
-            provider: provider.name,
-            binding: provider.envelope,
-            request: requestForRoute,
-            persistedContinuity: persistedContinuity ?? null,
-            baseEnv: this.deps.runtime.env.fullSnapshot(),
-            protectedEnv: operationEnvironment.env,
-            platform: this.deps.runtime.env.platform(),
-          },
-          signal,
-        );
-      } catch (error: unknown) {
-        void this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
-        throw error;
-      }
-      if (activation.kind === 'remote-executing') {
-        this.appServerJobs.delete(jobId);
-        this.appServerHandoffAborts.delete(jobId);
-        return { kind: 'proxied', operationId };
-      }
-      if (activation.kind === 'terminalized' || activation.kind === 'rekey-refused-contained') {
-        return { kind: 'terminalized' };
-      }
-      const cancellation = this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
-      if (cancellation.kind === 'refused') {
-        throw new Error(`Provider operation binding cancellation failed: ${cancellation.reason}.`);
-      }
+    if (route === undefined) return undefined;
+    if (operationEnvironment.childAuthorization === undefined) {
+      throw new Error('Provider operation child authorization is unavailable for durable publication.');
     }
+    const operationId = this.deps.runtime.ids.uuid();
+    const operationIdentity = { jobId, operationId };
+    const jobLaunchEventSeq = readProviderOperationJobLaunchEventSeq(this.deps.progressStore.getDb(), jobId);
+    const binding = this.deps.providerOperationBinding.prepareProviderOperationBinding(permit, operationIdentity);
+    if (binding.kind === 'already-settled') return { kind: 'terminalized' };
+    if (binding.kind === 'refused') {
+      throw new Error(`Provider operation binding preparation failed: ${binding.reason}.`);
+    }
+    if (binding.kind === 'bound') {
+      throw new Error('Provider operation binding preparation failed: the new operation identity is already bound.');
+    }
+
+    let activation: Awaited<ReturnType<AppServerProxyRoute['activate']>>;
+    try {
+      activation = await route.activate(
+        {
+          jobId,
+          operationId,
+          jobLaunchEventSeq,
+          sessionId: requestForRoute.sessionId,
+          sessionVersion,
+          childAuthorization: operationEnvironment.childAuthorization,
+          hostSpec: prepared.hostSpec,
+          provider: provider.name,
+          binding: provider.envelope,
+          request: requestForRoute,
+          persistedContinuity: persistedContinuity ?? null,
+          baseEnv: this.deps.runtime.env.fullSnapshot(),
+          protectedEnv: operationEnvironment.env,
+          platform: this.deps.runtime.env.platform(),
+        },
+        signal,
+      );
+    } catch (error: unknown) {
+      void this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
+      throw error;
+    }
+    if (activation.kind === 'remote-executing') {
+      this.appServerJobs.delete(jobId);
+      this.appServerHandoffAborts.delete(jobId);
+      return { kind: 'proxied', operationId };
+    }
+    if (activation.kind === 'terminalized' || activation.kind === 'rekey-refused-contained') {
+      return { kind: 'terminalized' };
+    }
+    const cancellation = this.deps.providerOperationBinding.cancelProviderOperationBinding(permit, operationIdentity);
+    if (cancellation.kind === 'refused') {
+      throw new Error(`Provider operation binding cancellation failed: ${cancellation.reason}.`);
+    }
+    return undefined;
+  }
+
+  private executeLocalAppServerPlacement(
+    prepared: Extract<BoundProviderPreparedExecution, { kind: 'app-server' }>,
+    launch: PreparedProviderLaunchContext,
+  ): Extract<PreparedProviderExecutionResult, { kind: 'local' }> {
+    const { runtime, jobId } = launch;
     return {
       kind: 'local',
       stream: prepared.execute({
@@ -1467,36 +1475,28 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     };
   }
 
-  private publishDurableContainmentDisposition(
-    launch: PreparedProviderLaunchContext,
-    publication: DurableContainmentPublication,
-  ): DurableProcessPublicationDisposition {
-    const { jobId, requestForRoute } = launch;
-    try {
-      publication.persist();
-    } catch (error: unknown) {
-      const reason = `${publication.persistenceFailure}: ${errorMessage(error)}`;
-      publication.onPersistenceFailure?.(reason);
-      return { kind: 'retained', reason };
-    }
-    publication.afterPersistence?.();
-    try {
-      this.appendProgressEvent(jobId, requestForRoute.sessionId, publication.progress);
-    } catch (error: unknown) {
-      backendLog.warn(
-        `Failed to append durable containment ${publication.progressFailure} for ${jobId}: ${errorMessage(error)}`,
-      );
-    }
-    return { kind: 'published' };
-  }
-
-  private executePreparedStandalone(
+  private executeStandalonePlacement(
     prepared: Extract<BoundProviderPreparedExecution, { kind: 'standalone' }>,
     launch: PreparedProviderLaunchContext,
   ): Extract<PreparedProviderExecutionResult, { kind: 'local' }> {
-    const { provider, runtime, jobId, signal, permit } = launch;
+    const { runtime } = launch;
+    const runCli = this.createStandalonePlacementRunner(launch);
+    return {
+      kind: 'local',
+      stream: prepared.execute({
+        ...runtime,
+        transport: 'standalone',
+        runCli: (request) => runCli(prepared.prepareCliRequest(request)),
+      }),
+    };
+  }
 
-    const runCli = bindProviderRunner(
+  private createStandalonePlacementRunner(
+    launch: PreparedProviderLaunchContext,
+  ): ReturnType<typeof bindProviderRunner> {
+    const { provider, jobId, signal, permit } = launch;
+
+    return bindProviderRunner(
       this.deps.durableSpawner,
       provider.name,
       signal,
@@ -1597,14 +1597,29 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       jobId,
       { permit, abortHoldOwner: this.deps.abortRegistry },
     );
-    return {
-      kind: 'local',
-      stream: prepared.execute({
-        ...runtime,
-        transport: 'standalone',
-        runCli: (request) => runCli(prepared.prepareCliRequest(request)),
-      }),
-    };
+  }
+
+  private publishDurableContainmentDisposition(
+    launch: PreparedProviderLaunchContext,
+    publication: DurableContainmentPublication,
+  ): DurableProcessPublicationDisposition {
+    const { jobId, requestForRoute } = launch;
+    try {
+      publication.persist();
+    } catch (error: unknown) {
+      const reason = `${publication.persistenceFailure}: ${errorMessage(error)}`;
+      publication.onPersistenceFailure?.(reason);
+      return { kind: 'retained', reason };
+    }
+    publication.afterPersistence?.();
+    try {
+      this.appendProgressEvent(jobId, requestForRoute.sessionId, publication.progress);
+    } catch (error: unknown) {
+      backendLog.warn(
+        `Failed to append durable containment ${publication.progressFailure} for ${jobId}: ${errorMessage(error)}`,
+      );
+    }
+    return { kind: 'published' };
   }
 
   private appendProviderTerminal(

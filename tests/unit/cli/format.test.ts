@@ -12,7 +12,7 @@ import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
+import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
@@ -75,13 +75,6 @@ import {
 
 function formatBackendStatus(status: BackendStatusFull): string {
   return formatComposedBackendStatus(status, { kind: 'absent' }, null);
-}
-
-function operatorArtifactLines(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^(?:action|clear|command|discard)=coral-cli\s/u.test(line));
 }
 
 const runningDecision = {
@@ -1969,8 +1962,6 @@ describe('cli format', () => {
       expect(formatShutdown(result)).not.toBe('Backend shutdown initiated');
     });
 
-    // Was `reason: 'unauthorized'` — a token no producer emits, pinning the raw-token render that the closed
-    // union and the exhaustive switch now make impossible to reach.
     it('formats a rejected shutdown capability as a refusal that names an exit', () => {
       const result = {
         ok: false,
@@ -1982,9 +1973,6 @@ describe('cli format', () => {
       expect(formatShutdown(result), 'the coordinator is up; this is not a report that it stopped').toMatch(
         /did not accept the request/u,
       );
-      // A refusal with nothing an operator can do is the shape §11 forbids, and this one said "needs manual
-      // intervention" while naming neither the process nor a command. The pid comes from our own record, and
-      // it is the only handle on a coordinator that will not accept our token.
       expect(formatShutdown(result), 'the live coordinator is identified').toMatch(/pid 4242/u);
       expect(operatorArtifactLines(formatShutdown(result)), 'and the next step is a command that exists').toEqual([
         'command=coral-cli backend status',
@@ -2013,8 +2001,6 @@ describe('cli format', () => {
       ]);
     });
 
-    // Neither remedy is reachable through a coral-cli command: `shutdownBackend` refuses on an unreadable
-    // record before it ever dials, since host/port/bootToken all live in the record it could not read.
     it('does not tell the operator to run a coral-cli command that cannot reach an unreadable record', () => {
       const statusText = formatBackendStatus({
         status: 'undecodable_record',

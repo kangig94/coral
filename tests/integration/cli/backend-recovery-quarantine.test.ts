@@ -36,7 +36,7 @@ import { encodeProviderOperationRecord } from '#src/store/provider-operation-rec
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import * as ipcEnsure from '#src/transport/ipc/ensure.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
-import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
+import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const storeReset: StoreResetCommandOperations = {
@@ -52,13 +52,6 @@ const storeReset: StoreResetCommandOperations = {
 const tempDirectories: string[] = [];
 let stdout = '';
 let stderr = '';
-
-function operatorArtifactLines(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^(?:action|clear|command|discard)=coral-cli\s/u.test(line));
-}
 
 beforeEach(() => {
   stdout = '';
